@@ -10,10 +10,10 @@ dependency adoption or a completed benchmark gate.
 candidate for the milestone-0 comparison, behind a small Rust adapter. Its
 source exposes the required terminal state, Unicode handling and incremental
 render data. However, the published Rust crate and current Git revision have
-different APIs; Rust handles cannot simply cross threads; and neither a local
-build nor parser throughput was established by this research. Compare it with
-the newly separated `rio-vt` core before making performance or maintenance
-claims. [G1][G2][G3][R1]
+different APIs; Rust handles cannot simply cross threads; and the exploratory
+published-crate probe below does not validate the Git candidate or end-to-end
+performance. Compare it with the newly separated `rio-vt` core before making
+performance or maintenance claims. [G1][G2][G3][R1]
 
 The table distinguishes observed source capabilities from the inferred choice.
 All versions and repository snapshots below were inspected on the research date.
@@ -46,9 +46,10 @@ Its workspace manifest still says version `0.2.1`; a version string therefore
 does not identify this source. In this document, **Git candidate** means that
 exact wrapper/core pair, not either repository's moving default branch. [G2]
 
-| API distinction | Published 0.2.2 | Git candidate |
+| API/build distinction | Published 0.2.2 | Git candidate |
 | --- | --- | --- |
-| Terminal construction | `Terminal::new(TerminalOptions { ... })` | `Terminal::new(cols, rows)` and terminal options through setters |
+| Paired Ghostty toolchain | Zig 0.15.x, patch at least 2; use 0.15.2 | Zig 0.16.x, minimum 0.16.0 |
+| Terminal construction | `Terminal::new(terminal::Options { ... })`; root alias `TerminalOptions` | `Terminal::new(cols, rows)` and terminal options through setters |
 | Selection and grapheme access | Present | Present, with additional tracked references |
 | Search module | Absent from public modules | `search::Search` and match snapshots present |
 | Snapshot serialization module | Absent from public modules | Present; distinct from a render snapshot |
@@ -56,7 +57,7 @@ exact wrapper/core pair, not either repository's moving default branch. [G2]
 
 **[Observed]** These differences come from the downloaded registry packages and
 the pinned Git source, not from assuming that current online documentation
-describes the release. [G1][G2][G3][G4]
+describes the release. [G1][G2][G3][G4][G10][G11]
 
 **[Inferred]** A spike needing search should pin the Git candidate's full commit,
 keep its matching `-sys` crate and checked-in bindings, and record both Ghostty
@@ -160,13 +161,30 @@ or dropped output. [T1]
 
 ## Build, portability and licence surface
 
-**[Observed]** The Git wrapper requires Zig **0.16.x** on `PATH`; the paired
-Ghostty package declares minimum Zig **0.16.0**. The build script invokes
+**[Observed]** The published **0.2.2** crate pins Ghostty `a887df42`, whose
+package declares Zig **0.15.2**. Its build-time `requireZig` check requires the
+same major/minor and a patch at least 2, so Zig 0.16 does not satisfy that pin.
+The **Git candidate** instead requires Zig **0.16.x** on `PATH`; its paired
+Ghostty `3425025e` declares minimum Zig **0.16.0**. Treat these as separate
+toolchain pairs. [G1][G2][G10][G11]
+
+**[Observed]** The Git candidate's build script invokes
 `zig build -Demit-lib-vt=true -Dapp-runtime=none`, disables XCFramework output
 for ordinary desktop builds, and links the static archive by default. It uses
-baseline CPU targeting; `LIBGHOSTTY_VT_SYS_CPU` can override it. Cargo profile
-settings select Debug, ReleaseSmall or ReleaseFast unless explicitly overridden.
+baseline CPU targeting; `LIBGHOSTTY_VT_SYS_CPU` can override it.
 Checked-in bindings avoid requiring bindgen/libclang for normal builds. [G2][G10]
+
+**[Observed]** Both inspected wrapper build scripts first honour
+`LIBGHOSTTY_VT_SYS_OPTIMIZE`, then select Zig `Debug` if Cargo supplies
+`DEBUG=true`; only otherwise do they map `OPT_LEVEL=s/z` to `ReleaseSmall` and
+other values to `ReleaseFast`. Cargo's `DEBUG` describes debug information,
+not whether optimisation is disabled. A release profile with debuginfo can
+therefore build the native core in Zig Debug mode. [G1][G2][C1]
+
+**[Inferred]** For measured release builds, explicitly set
+`LIBGHOSTTY_VT_SYS_OPTIMIZE=ReleaseFast` and record the actual native build
+arguments alongside the Cargo profile. `cargo build --release` alone does not
+establish the native optimisation mode. [G1][G2][C1]
 
 **[Observed]** Without overrides, Cargo's build script clones the pinned Ghostty
 source, and Zig may fetch native build dependencies. `GHOSTTY_SOURCE_DIR` and
@@ -177,12 +195,13 @@ Apple Silicon/Intel macOS and ARM64/x86-64 Linux GNU and musl. Upstream CI decla
 macOS ARM64 and Linux ARM64/x86-64 jobs; this is evidence of configured coverage,
 not a locally reproduced successful build. [G2][G10]
 
-**[Inferred]** Pin an exact Zig 0.16 patch release for the first build, use the
-macOS SDK/toolchain for native macOS linking and the intended Linux toolchain
-for Linux linking, and record cold build time, cached build time, final binary
+**[Inferred]** Pin Zig 0.15.2 for the published pair or an exact Zig 0.16 patch
+release for the Git candidate. Use the macOS SDK/toolchain for native macOS
+linking and the intended Linux toolchain for Linux linking. Record cold build
+time, cached build time, final binary
 dependencies and archive size. Cross-target mappings alone do not establish a
 working release pipeline. Test offline/pre-fetched builds separately from
-ordinary network-enabled developer builds. [G2][G10]
+ordinary network-enabled developer builds. [G2][G10][G11]
 
 | Layer | Observed licence evidence and purpose | Remaining check |
 | --- | --- | --- |
@@ -253,13 +272,60 @@ the source does not establish which is faster. [R1]
 history, reflow, Unicode layout, selection, modes and protocol edge cases.
 That is a poor foundation for parity-first delivery. [P1]
 
+## Exploratory headless probe
+
+**[Observed: captured local results, 17 October 2026]** A headless harness fed
+the three published engines below and periodically inspected their visible
+state. The captured output records these decimal MB/s rates, calculated as
+input bytes divided by the shortest elapsed time of three repetitions:
+
+| Published engine | ASCII, 4 KiB / 256 KiB | ASCII, 1 KiB / 64 KiB | Mixed UTF-8, 4 KiB / 256 KiB | Mixed UTF-8, 1 KiB / 64 KiB |
+| --- | ---: | ---: | ---: | ---: |
+| libghostty-vt 0.2.2 | 576.2 | 401.2 | 117.2 | 94.3 |
+| alacritty_terminal 0.26.0 | 141.1 | 134.2 | 78.5 | 74.0 |
+| vt100 0.16.2 | 106.6 | Not run | 66.4 | Not run |
+
+Column sizes mean **feed chunk / state-walk interval**. The 1 KiB configuration
+also performs state walks four times as often, so its difference cannot be
+attributed to chunk size alone.
+
+**[Reported: run metadata]** The host was Apple M5, macOS 27.0.1, with other work
+running. Rust/Cargo were 1.99.1. Ghostty used its published `a887df42` pin with
+Zig 0.15.2, `LIBGHOSTTY_VT_SYS_OPTIMIZE=ReleaseFast` and
+`LIBGHOSTTY_VT_SYS_CPU=native`. The Cargo release profile enabled `debug=1`.
+The payloads contained 20,000,036 ASCII bytes and 20,000,057 mixed UTF-8 bytes:
+generated log-like lines, ASCII SGR colour sequences, and multilingual text
+including wide characters and emoji sequences. The generator was not retained;
+the exact payload composition is not independently reproducible from this
+document.
+
+**[Observed: harness inspection]** Every repetition creates a fresh 200×50
+terminal with a 10,000-line history setting before starting the timer. File
+reading and terminal initialization are excluded. Timed work includes feeding
+all chunks and periodic state inspection: Ghostty updates a `RenderState`, walks
+dirty rows and counts cell grapheme lengths; Alacritty walks its visible-cell
+iterator and resets damage; vt100 walks screen cells and reads their contents.
+There is no forced final walk for bytes below the next interval. These are
+different readout costs, not equivalent complete display snapshots. The
+harness does not assert equivalent final terminal state.
+
+**[Inferred]** These results justify continuing the libghostty-vt investigation,
+but do not establish a general speed ranking or pass milestone 0. Only the best
+of three times was retained, without a separate warmup or timing distribution;
+the host was not quiet and the Rust engines' CPU targeting was not recorded
+alongside Ghostty's explicit native setting. No tmux process, control-mode
+decoding, full display-data extraction, font shaping, GPU work or presentation
+was timed. Neither the Git candidate nor `rio-vt` was tested. The next benchmark
+must retain its payload generator, normalize work and CPU policy, check final
+state, and report repeated-run distributions.
+
 ## Evidence still needed before adoption
 
-No local terminal-core build, fidelity test or throughput benchmark ran for this
-document. Source capability is **observed**; upstream feature descriptions are
-**reported** where not supported by inspected implementation; all preferences
-and proposed gates are **inferred**. No parser MB/s or renderer FPS ranking is
-claimed.
+The exploratory results above supplement source inspection; they do not supply
+a reproducible fidelity or end-to-end performance gate. Source capability and
+captured output are **observed**; run metadata and upstream claims not checked
+in implementation are **reported**; preferences and proposed gates are
+**inferred**.
 
 1. **Build and pin spike:** build the exact Git pair on macOS ARM64 and Linux
    x86-64, then test the other supported deployment targets. Verify static
@@ -320,6 +386,12 @@ links use exact versions. Upstream issue state is an observation on that date.
   [Zig package](https://github.com/ghostty-org/ghostty/blob/3425025e585a3403340d4dc6d65132f42e05e605/build.zig.zon),
   [VT module dependencies](https://github.com/ghostty-org/ghostty/blob/3425025e585a3403340d4dc6d65132f42e05e605/src/build/GhosttyZig.zig)
   and wrapper [CI](https://github.com/Uzaaft/libghostty-rs/blob/d2036baeb605d31d09a9e2ba6d0c923e04c34d54/.github/workflows/ci.yml).
+- **[G11]** Published crate's paired Ghostty [Zig package](https://github.com/ghostty-org/ghostty/blob/a887df42c56f6de86c0fe6da9c4eeca37931e083/build.zig.zon),
+  [build entry point](https://github.com/ghostty-org/ghostty/blob/a887df42c56f6de86c0fe6da9c4eeca37931e083/build.zig)
+  and [version check](https://github.com/ghostty-org/ghostty/blob/a887df42c56f6de86c0fe6da9c4eeca37931e083/src/build/zig.zig).
+- **[C1]** Cargo's [build-script environment variables](https://doc.rust-lang.org/cargo/reference/environment-variables.html#environment-variables-cargo-sets-for-build-scripts)
+  and [debug information profile setting](https://doc.rust-lang.org/cargo/reference/profiles.html#debug),
+  inspected on the research date.
 - **[A1]** Alacritty [0.26.0 packaged source](https://docs.rs/crate/alacritty_terminal/0.26.0/source/),
   [pinned character handling](https://github.com/alacritty/alacritty/blob/94e7c8874e526b1e67b349d9ba30ddf81669119e/alacritty_terminal/src/term/mod.rs#L1062),
   and [emoji modifier issue](https://github.com/alacritty/alacritty/issues/3975).
