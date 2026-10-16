@@ -78,6 +78,44 @@ it is **not an exclusive lock held for the lifetime of a viewer attachment**.
 Creation uses no user tmux config and sets status off, mouse on and
 remain-on-exit on for the created session/window. [Shell ownership][python-shells]
 
+**Observed:** shell creation also has an environment contract. Python's
+`clean_env()` gives tmux only `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TERM`,
+`LANG`, `TMPDIR`, `COLORTERM`, `TERMINFO`, `TERMINFO_DIRS` and variables starting
+with `LC_`. It does not pass arbitrary launcher variables or API keys.
+[Environment allowlist][python-tmux-env], [documented policy][python-shell-environment]
+
+**Observed:** the new shell command starts with `env -u TMUX -u TMUX_PANE`,
+clears every supported shell-context variable, then supplies only the values
+present in the creating viewer before starting the shell with `-l -i`.
+That context is `SSH_AUTH_SOCK`, `XDG_CONFIG_HOME`, `XDG_CONFIG_DIRS`,
+`XDG_DATA_HOME`, `XDG_DATA_DIRS`, `XDG_CACHE_HOME`, `XDG_STATE_HOME` and
+`XDG_RUNTIME_DIR`. Explicitly clearing missing values prevents the persistent
+server from supplying stale context to new shells. Existing shells keep their
+own environment, and normal shell startup files still run.
+[Per-shell reset][python-shells], [environment behavior][python-shell-environment]
+
+**Inferred acquisition candidate, derived from this creation policy:** at app
+startup, snapshot only the allowlisted base environment and supported SSH/XDG
+context from the launcher, preserving absent values as absent. Use a validated
+absolute executable path for the configured shell. Run it once with login and
+interactive startup, a fixed timeout and an output cap, to obtain its `PATH`
+through a framed result. Give this resolver only the filtered snapshot, with
+`TMUX` and `TMUX_PANE` removed; retain only `PATH` from its result, not a dump of
+the shell's environment. Resolve the tmux executable within that `PATH`.
+Missing shell/executable, an unusable `PATH`, timeout or malformed output should
+leave creation disabled with a diagnostic. Keep SSH/XDG values from the launcher
+snapshot; missing values remain explicitly unset for each new shell. Never
+recover them from the persistent tmux server's environment. This preserves the
+allowlist and per-viewer reset rules above without assuming a desktop/Dock
+launch has a terminal launch's environment.
+
+**Unverified:** this candidate has not been implemented or tested. Before
+enabling creation, verify desktop/Dock and terminal launch, shell startup output
+and hangs, changed or absent context after reconnect, and simultaneous viewers
+while preserving existing shells. The pinned Python policy establishes the
+parity requirement; it does not establish that this native acquisition candidate
+works. [Environment contract][python-shell-environment]
+
 **Observed implementation detail:** Python's external attachment first resolves
 the source's session ID, window ID, server PID and `destroy-unattached` policy.
 Only policy `off` uses a grouped helper. Other or unknown policies use direct `attach-session -E`,
@@ -169,8 +207,10 @@ pause and continue produced the following *structure*:
 
 The corresponding continue response contained `%continue %0` inside its guards.
 The [notification deferral fix][guard-fix] is included in **3.8**. **Inferred:**
-prefer 3.8 for the first supported runtime baseline. Supporting earlier versions
-requires explicit compatibility fixtures for this behavior; a blanket rule to
+this simplifies reply parsing, but does not alone settle the minimum version
+([compatibility tradeoff below](#version-and-implementation-baseline)). Supporting
+earlier versions requires fixtures for the observed 3.7c guard interleaving and
+each supported version; a blanket rule to
 classify all percent-prefixed response lines as notifications would corrupt
 legitimate captured terminal text. [Observed 3.8 implementation][control38]
 
@@ -338,8 +378,17 @@ make a benchmark or UI fit. [Refresh][refresh], [sizing][resize]
 [`e476c123`][tmux37]. GitHub's latest release resolved to **3.8**; its tag points
 to [`7f2a35ad`][tmux38]. Current master was `6e157ce9` when checked. The table
 uses release history and tagged source, not an assumption that latest master
-and the installed binary behave identically. The proposed initial support
-baseline is **3.8**; older-version compatibility remains an explicit decision.
+and the installed binary behave identically.
+
+**Observed:** Python documents and enforces **tmux 3.3+**.
+[Prerequisites][python-readme], [startup version check][python-preflight]
+**Inferred tradeoff:** a Rust floor of 3.8 would simplify guard handling and
+provide bounded buffered replies, but would exclude Python-compatible 3.3–3.7
+installations, including users whose distribution packages an older version.
+Retaining the 3.3 floor preserves that reach but requires compatibility work for
+the differences below. **The Rust minimum version remains open, not selected**;
+neither native-client compatibility with 3.3 nor a requirement for 3.8 has been
+established by this research.
 
 | Mechanism used here | First relevant release / qualification | Primary evidence |
 | --- | --- | --- |
@@ -357,6 +406,12 @@ baseline is **3.8**; older-version compatibility remains an explicit decision.
 | Deferred notifications outside reply guards; bounded buffered command replies | 3.8 | [Fix][guard-fix], [3.8 control source][control38] |
 
 **Inferred:** feature detection and fixtures should supplement version checks.
+Supporting older versions requires the 3.7c reply-interleaving fixtures above,
+an explicit input policy without `send-keys -K` on 3.3, and handling missing
+formats and commands. In particular, an unavailable `pane_key_mode` or
+`bracket_paste_flag` must not silently become a known false value. Specify and
+test fallbacks or exposed limitations before claiming parity; the version table
+identifies capability boundaries, not already-implemented compatibility.
 The native layout parser needs an explicit choice between legacy layouts and
 `new-layouts`; silently flattening an unfamiliar floating-pane layout is not
 parity. The `active-pane` client flag was removed in 3.8, so it is not a stable
@@ -498,6 +553,10 @@ These are **inferred validation tasks**, not new performance thresholds:
 [python-context]: https://github.com/eandualem/tmux-workspaces/blob/51de6757cd0aeda3c19fe68fa4ec5b93ab206804/tmux_workspaces/supervisor.py
 [python-launch]: https://github.com/eandualem/tmux-workspaces/blob/51de6757cd0aeda3c19fe68fa4ec5b93ab206804/tmux_workspaces/application.py
 [python-shells]: https://github.com/eandualem/tmux-workspaces/blob/51de6757cd0aeda3c19fe68fa4ec5b93ab206804/tmux_workspaces/shells.py
+[python-tmux-env]: https://github.com/eandualem/tmux-workspaces/blob/51de6757cd0aeda3c19fe68fa4ec5b93ab206804/tmux_workspaces/tmux.py
+[python-shell-environment]: https://github.com/eandualem/tmux-workspaces/blob/51de6757cd0aeda3c19fe68fa4ec5b93ab206804/docs/SHELL_ENVIRONMENT.md
+[python-readme]: https://github.com/eandualem/tmux-workspaces/blob/51de6757cd0aeda3c19fe68fa4ec5b93ab206804/README.md
+[python-preflight]: https://github.com/eandualem/tmux-workspaces/blob/51de6757cd0aeda3c19fe68fa4ec5b93ab206804/tmux_workspaces/preflight.py
 [python-attachments]: https://github.com/eandualem/tmux-workspaces/blob/51de6757cd0aeda3c19fe68fa4ec5b93ab206804/tmux_workspaces/attachments.py
 [wez-commands]: https://github.com/wezterm/wezterm/blob/e2a98e1b8af156988ad0ac778658ac27b60a55fb/mux/src/tmux_commands.rs
 [python-naming]: https://github.com/eandualem/tmux-workspaces/blob/51de6757cd0aeda3c19fe68fa4ec5b93ab206804/docs/NAMING.md
