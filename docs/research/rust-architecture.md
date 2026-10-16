@@ -160,18 +160,31 @@ the Rust adapter must test; they are not a claim that compatibility is complete.
 
 | Surface | Existing behavior | Consequence for the Rust design (Inferred) |
 |---|---|---|
-| Storage | `layouts.db`; current `terminal_layout(id INTEGER PRIMARY KEY, value TEXT)`, row `id = 1`; older `shared_layout` and `layout` are retained | Open the current table read-only first. Missing/unknown schema is an actionable error, not permission to initialize or migrate. |
+| Storage | `layouts.db`; current `terminal_layout(id INTEGER PRIMARY KEY, value TEXT)`, row `id = 1`; older `shared_layout` and `layout` are retained | Open the current table read-only. Missing `terminal_layout` means not initialized for this reader; never import a legacy table. A missing current row or invalid schema remains an error. |
 | Initialization | Python `Store.load` enters `BEGIN IMMEDIATE`, including when the current table exists | A read-only Rust opener cannot simply reproduce Python initialization. Separate reading from migration and writing. |
 | Record decoding | Text capped at 16 MiB measured as UTF-8; duplicate JSON fields rejected | Bound input before recursive parsing and reject duplicate keys before constructing an ordinary JSON value/map. |
 | Save/refresh | Save reads latest state under `BEGIN IMMEDIATE`, merges base/local/latest, validates, restores local navigation, then replaces row 1. Refresh samples `data_version` before reading the row | Preserve transaction order and refresh invalidation; a generic upsert or database pool does not implement the conflict contract. |
 
-**Observed:** Validation also requires globally unique 12-character lowercase
-hexadecimal identities, a split-tree depth at most 64, finite ratios between
-0.01 and 0.99, valid navigation references, and absolute NUL-free paths. Generic
-JSON containers and values have separate bounds, including unknown fields.
-[Validation source](https://github.com/eandualem/tmux-workspaces/blob/51de6757cd0aeda3c19fe68fa4ec5b93ab206804/tmux_workspaces/layout_validation.py)
+**Observed:** The wire schema has distinctions that a Rust enum/default policy
+must preserve:
+
+| Record detail | Read behavior |
+|---|---|
+| Leaf discriminator | Presence of the `agent` **key** marks a leaf. Null means an ordinary shell unless `empty: true` marks an empty placeholder. A non-null value is any valid tmux session name, not necessarily an agent. |
+| Leaf options | `cwd` is optional; supplied paths must be absolute and NUL-free. If present, `empty` must be true with null `agent`. `source_socket` requires non-null `agent`; an attached session without it uses the launcher's source socket, as described in [area A](tmux-control-mode.md). |
+| Split options | `ratio` defaults to 0.5 and must be finite, from 0.01 to 0.99. Splits cannot contain `cwd` or `source_socket`; split nesting is limited to 64. |
+| Identities and defaults | IDs are 12 lowercase hexadecimal characters, unique across all workspaces, tabs and tree nodes. At least one workspace exists; zero tabs is valid with `selected: ""`. `icon` may be absent/null or one or two printable characters; `show_agents` defaults to false. |
+
+Generic JSON containers and values have separate bounds, including unknown
+fields. Unknown fields are tolerated, not grounds for rejecting an otherwise
+valid record. [Validation source](https://github.com/eandualem/tmux-workspaces/blob/51de6757cd0aeda3c19fe68fa4ec5b93ab206804/tmux_workspaces/layout_validation.py),
+[leaf traversal](https://github.com/eandualem/tmux-workspaces/blob/51de6757cd0aeda3c19fe68fa4ec5b93ab206804/tmux_workspaces/model.py#L28)
 
 **Observed:** The merge removes per-viewer navigation from shared comparisons.
+Stored `selected` and `focus` values seed new windows; existing windows preserve
+their own navigation. Top-level `focus` is true for terminal-area keyboard focus
+and false for the navigation panel. These stored values are navigation hints,
+not shared selection state.
 It merges dictionaries recursively and lists by stable IDs, with explicit order
 conflicts; concurrent changes to the same split tree conflict as a unit. It is
 not a last-writer-wins policy. Unknown fields survive the model's copying and
@@ -204,31 +217,52 @@ domain. Bundling uses a C compiler through the `cc` build dependency.
 [bundled header](https://github.com/rusqlite/rusqlite/blob/v0.40.2/libsqlite3-sys/sqlite3/sqlite3.h),
 [SQLite copyright statement](https://sqlite.org/copyright.html)
 
-**Observed:** SQLite's `data_version` can only be compared across time on the
-same connection. A read transaction retains its snapshot until it ends, and
-`BEGIN IMMEDIATE` can fail with `SQLITE_BUSY`. Read-only WAL databases require
-accessible sidecar files or conditions allowing their creation. `immutable=1`
-disables locking/change detection and is invalid for a library another process
-may modify. [SQLite data-version documentation](https://sqlite.org/pragma.html#pragma_data_version),
-[transactions](https://sqlite.org/lang_transaction.html),
-[WAL read-only behavior](https://sqlite.org/wal.html#read_only_databases),
-[open flags and immutable semantics](https://sqlite.org/c3ref/open.html)
+**Observed:** Python opens SQLite with `timeout=5` and does not request WAL;
+SQLite's default is rollback-journal `DELETE` mode. A reader's SHARED lock can
+block a writer's commit. Holding a read transaction or unfinished statement
+across polls can therefore exhaust Python's five-second busy timeout.
+[Python connection](https://github.com/eandualem/tmux-workspaces/blob/51de6757cd0aeda3c19fe68fa4ec5b93ab206804/tmux_workspaces/persistence.py#L42),
+[journal-mode defaults](https://sqlite.org/pragma.html#pragma_journal_mode),
+[rollback-journal locking](https://sqlite.org/lockingv3.html)
 
-**Inferred:** Use `SQLITE_OPEN_READONLY` without creation or migrations, keep read
-transactions short, and retain one polling connection. Do not change journal
-mode, checkpoint, repair, or use `immutable=1` on the shared library. Report a
-busy/unreadable/corrupt store while preserving the user's current arrangement.
-Logical read-only access can still involve SQLite sidecars; do not promise zero
-filesystem activity.
+**Observed:** `data_version` comparisons require the same retained connection.
+`immutable=1` disables locking/change detection and is invalid when another
+process may modify the file. `SQLITE_READONLY_ROLLBACK` means a hot journal needs
+recovery that the read-only connection cannot perform.
+[Data-version documentation](https://sqlite.org/pragma.html#pragma_data_version),
+[open flags and immutable semantics](https://sqlite.org/c3ref/open.html),
+[extended error definition](https://sqlite.org/rescode.html#readonly_rollback)
 
-**Inferred:** Writes remain disabled until Rust passes the Python conflict
-fixtures and mixed-process tests for rename/delete/move/reorder, concurrent split
+**Inferred:** Open with `SQLITE_OPEN_READONLY` / `mode=ro`, without creation or
+migration, and retain one polling connection. Finish or reset each SELECT before
+returning to the poll loop; never retain a read transaction across polls. Use a
+bounded busy timeout for brief commit locks. Retry `SQLITE_READONLY_ROLLBACK` for
+a bounded interval while a writable Python client may recover the journal on
+access; if it persists, report recovery required and preserve the current view.
+Waiting does not itself repair a journal, and no recovery is guaranteed if the
+writer is absent. Never reopen writable, change journal mode, checkpoint,
+`VACUUM`, repair, or use `immutable=1` as a reader workaround.
+
+**Inferred:** Shared-store writes need a separately agreed compatibility
+contract and remain disabled until Rust passes the Python conflict fixtures and
+mixed-process tests for rename/delete/move/reorder, concurrent split
 edits, unknown fields, local navigation and failures. The write gate includes
 legacy migration behavior; supporting v2 reads does not authorize rewriting
 older records. A new private store is an alternative only after an explicit
 product decision, not an automatic fallback when compatibility is difficult.
 
 ## Configuration, errors and observability
+
+**Observed:** Documented compatibility boundaries include data-directory
+precedence, shell socket identities, stable leaf/session IDs, the version-2
+record, saved attachment references, XDG configuration paths and keymap
+snapshots. [Compatibility boundaries](https://github.com/eandualem/tmux-workspaces/blob/51de6757cd0aeda3c19fe68fa4ec5b93ab206804/docs/NAMING.md#compatibility-boundaries),
+[Python architecture](https://github.com/eandualem/tmux-workspaces/blob/51de6757cd0aeda3c19fe68fa4ec5b93ab206804/docs/ARCHITECTURE.md)
+**Inferred:** Preserve these surfaces without treating every implementation detail
+as a stable API. Private viewer/action/demo sockets, helper naming,
+`windows/<instance>/` runtime files, private CLI modes, pane options and theme
+transport are not general cross-client interfaces. A native client should not
+create or clean up the Python viewer's runtime directories.
 
 **Observed:** The Python tool already reads TOML theme and keymap files, with
 CLI/environment/XDG path resolution. Its data directory precedence is explicit
@@ -250,9 +284,11 @@ previously read bytes, write a temporary file and replace atomically; they refus
 unsafe write targets. Uncooperative external editors leave a documented race
 between the final comparison and replacement. Serialization can lose comments
 and ordering. [Configuration-file source](https://github.com/eandualem/tmux-workspaces/blob/51de6757cd0aeda3c19fe68fa4ec5b93ab206804/tmux_workspaces/configfile.py)
-**Inferred:** Port the observable conflict behavior before enabling configuration
-editing; TOML syntax compatibility alone is not save compatibility. Avoid a new
-unified configuration format or general configuration framework at this stage.
+**Inferred:** Read shared theme/keymap files only during initial interoperability.
+A native editor needs a separately agreed write contract as well as matching
+conflict behavior; TOML syntax compatibility alone is not save compatibility.
+Private display-server action bindings do not automatically define native input
+semantics. Avoid a new unified configuration format at this stage.
 
 **Inferred:** Expose typed errors only where callers need different responses:
 malformed protocol, disconnected transport, unsupported schema, invalid layout,
@@ -303,7 +339,10 @@ on the same lineage. The lockfile records ordinary transitive Rust dependencies;
 also pin Zig, Ghostty's source commit and native build inputs. `--locked` does not
 make arbitrary build-script downloads reproducible. Record target architecture,
 SDK/compiler, native library versions, features and native optimization settings
-with benchmark results. Do not use `target-cpu=native` in distributed binaries
+with benchmark results. Check concrete Zig release availability and the
+Cargo-to-Zig build-profile mapping in the [terminal-core build findings](terminal-core.md#build-portability-and-licence-surface);
+Cargo release mode alone is not proof of native optimization settings.
+Do not use `target-cpu=native` in distributed binaries
 without an explicit portability decision.
 
 ## Testing and continuous integration
@@ -315,7 +354,7 @@ items below are proposed validation, not completed tests.
 |---|---|
 | Pure model | Examples for layout operations; property tests for valid identities/structure and unchanged edits; Python differential tests for merge results and conflicts. Do not assume merge commutativity when ordering rules are asymmetric. |
 | Protocol and terminal | Split fixtures at every relevant byte boundary, including escaped bytes/UTF-8/VT sequences; disconnect and reconnect; malformed records; version-specific notification interleaving inside command replies; snapshot lifetime checks; owned display-data snapshots with a fixed viewport. |
-| Store | Synthetic schema-v2 databases, duplicate/oversized/deep records, missing tables/rows, read-only enforcement, retained-connection refresh, busy errors and two-writer conflicts. |
+| Store | Synthetic schema-v2 databases, optional/default fields, duplicate/oversized/deep records, missing-table versus missing-row behavior, read-only enforcement, short rollback-journal reads, bounded hot-journal retry, retained-connection refresh and two-writer conflicts. |
 | Real tmux | Disposable sessions on private servers; process exit/reaping, resize, multiple windows/panes, output pressure and recovery. Version coverage follows area A's capability findings. |
 | Roster | Fixture responses and a local fake endpoint; absent provider, timeouts, invalid responses and recovery. Ordinary tests require neither a live roster service nor credentials. |
 | UI/native boundary | First build and headless library tests; after the benchmark gate, native smoke tests for input, IME and rendering on macOS plus Linux Wayland and X11. Hosted CI build success is not display-latency evidence. |
