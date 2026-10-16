@@ -5,9 +5,10 @@ workspaces, tabs and an optional agents roster; the rest of the window shows
 terminal panes that the app draws itself. tmux runs every shell, and the app is
 a tmux client.
 
-The code is not written yet. This page describes the design decided so far and
-links the decision record behind each part. It will describe the code as the
-code lands.
+This page describes the design decided so far, with the decision record behind
+each part, and then the code that exists today. So far the code is the Cargo
+workspace, its build and its test fixtures. Features come after the milestone-0
+measurements ([0013](decisions/0013-milestone-0-benchmark-method.md)).
 
 ## The design at a glance
 
@@ -35,6 +36,14 @@ selected window with that window's own panes
 | `roster` | Optional, read-only agents roster |
 | `app` | The window, workers and the wiring between the other crates |
 
+**Threads.** Inside the one app process, the user-interface thread runs the
+window and draws. A terminal worker owns every terminal engine handle and
+publishes owned display data, a storage worker owns the database connection,
+and background input and output drives the tmux processes. The library crates
+stay synchronous; `app` owns the threads, scheduling and shutdown
+([0007](decisions/0007-threads-ownership-and-event-ordering.md),
+[0008](decisions/0008-background-io-runtime.md)).
+
 **From pane output to a frame.** tmux reports pane output on a control
 connection. The `tmux` crate decodes it, and a terminal worker feeds the bytes
 to that pane's terminal state in `term`. The worker publishes owned display
@@ -51,6 +60,44 @@ ready ([0007](decisions/0007-threads-ownership-and-event-ordering.md),
 watches it for changes made by the Python tool. Writing waits until the Python
 tool's merge and conflict rules are ported and tested
 ([0009](decisions/0009-python-library-and-shell-server-compatibility.md)).
+
+## The code today
+
+The repository is a Cargo workspace. Each crate above is a package under
+`crates/`, named `tmux-workspaces-<crate>`.
+
+| Path | What is there now |
+| --- | --- |
+| `Cargo.toml` | The workspace: its members, and the metadata, lints and dependency versions they share. Every public item must be documented. |
+| `rust-toolchain.toml` | The pinned Rust toolchain ([0011](decisions/0011-toolchain-and-dependency-policy.md)). |
+| `deny.toml` | The allowed licences, the advisory and source checks, and the dependency direction between the crates. |
+| `crates/core`, `crates/store`, `crates/tmux`, `crates/roster` | Crate documentation stating each crate's responsibility; no code yet. |
+| `crates/term` | `Terminal`, a minimal wrapper around the terminal engine that creates a terminal, feeds it bytes and reads the cursor. It proves the engine builds and runs on each platform. |
+| `crates/app` | The `tmux-workspaces` binary. It only prints its version: there is no window yet. |
+| `crates/test-support` | Development-only fixtures. `TmuxServer` starts the private tmux servers that tests use ([0012](decisions/0012-testing-strategy-and-tmux-isolation.md)). |
+| `docs/` | This page, the decision records, the research and the parity checklist. |
+| `.github/workflows/ci.yml` | Continuous integration on macOS and Linux. |
+
+The milestone-0 benchmark harness will be a development-only crate,
+`crates/bench`, with its results in `docs/benchmarks/`
+([0013](decisions/0013-milestone-0-benchmark-method.md)).
+
+**Dependency direction.** A crate can use only the crates its manifest lists,
+and `cargo deny check` fails when a project crate depends on one that
+[0006](decisions/0006-workspace-and-crate-layout.md) does not allow. The
+`bans.deny` table in `deny.toml` names, for each crate, the only crates that
+may depend on it.
+
+**Native build.** `term` depends on `libghostty-vt` 0.2.2, whose build script
+compiles Ghostty's terminal core with Zig 0.15.2
+([0004](decisions/0004-terminal-emulation-core.md)). The
+[contributor guide](../CONTRIBUTING.md#the-terminal-engines-native-build)
+covers its build modes, CPU targets and offline builds.
+
+**Where to start reading.** Read `Cargo.toml` and `deny.toml` for the shape
+of the workspace, then `crates/term/src/lib.rs` for the boundary around the
+terminal engine and `crates/test-support/src/lib.rs` for how tests isolate
+tmux. `.github/workflows/ci.yml` shows every check a change must pass.
 
 ## Decision records
 
@@ -83,3 +130,5 @@ described in [0001](decisions/0001-record-architecture-decisions.md).
   records, with the alternatives and licences examined.
 - [Parity checklist](PARITY.md): every behaviour of the Python tool and what
   this app does with it.
+- [Contributor guide](../CONTRIBUTING.md): setting up, building, testing and
+  proposing changes.
