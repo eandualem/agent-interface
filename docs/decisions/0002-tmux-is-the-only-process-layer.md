@@ -45,11 +45,16 @@ The app starts no daemon, background service or helper server. The only tmux
 servers it may start are the library's shell server, the same server the
 Python tool uses ([0009](0009-python-library-and-shell-server-compatibility.md)),
 and the disposable fixture server of demo mode
-([DM-1](../PARITY.md#demo-and-preview-modes)).
-That server belongs to tmux once started; closing the app never stops it.
+([DM-1](../PARITY.md#demo-and-preview-modes)). The shell server belongs to
+tmux once started; closing the app never stops it. The demo fixture server is
+the one exception: like the Python tool, the app stops the fixture server it
+started when its demo window closes, and a new demo launch starts a fresh one
+(DM-3). Ordinary shells in the demo library persist like any other library's
+(DM-2).
 
-The app never runs `kill-server`, and never changes options on a server or
-session it did not create. Closing a window or quitting detaches. An ordinary
+The app never runs `kill-server` except on a demo fixture server it started
+itself, and never changes options on a server or session it did not create.
+Closing a window or quitting detaches. An ordinary
 shell ends only when the user explicitly closes its pane or tab (SH-12), and
 external sessions are never ended by the app (CH-13).
 

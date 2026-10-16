@@ -74,9 +74,11 @@ extraction, with a forced final extraction after the last chunk.
 - Its final screen and cursor must match the other engines' before its timing
   counts. Differences from tmux's own capture of the pane are reported as
   fidelity findings.
-- Every rate divides the generated payload bytes, the pane bytes before tmux's
-  control-mode escaping, by elapsed time. The same numerator is used for the
-  engine path and for tmux, never the larger control-wire byte count.
+- Every rate divides the generator's payload bytes, counted as the generator
+  writes them and before the terminal driver's output processing (such as LF
+  to CRLF) or tmux's control-mode escaping, by elapsed time. The same
+  numerator is used for the engine path and for tmux. Decoded pane bytes and
+  control-wire bytes are reported separately, never as the numerator.
 
 Pass: at least 200 MB/s for ASCII on the benchmark machine, and at least five
 times tmux's own throughput for every payload. tmux's throughput is the rate at
