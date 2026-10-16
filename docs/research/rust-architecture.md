@@ -140,6 +140,29 @@ has work. [Tokio GUI integration guidance](https://tokio.rs/tokio/topics/bridgin
   explicit: stop new requests, terminate/reap only child clients the app owns,
   then join workers. Persistent sessions belong to tmux.
 
+**Observed:** Python holds each client's command queue until the controller has
+applied a navigation action, set focus and drawn, then acknowledged it. This
+orders shortcut/navigation-panel actions before text from the same terminal
+read. [Python input ordering](https://github.com/eandualem/tmux-workspaces/blob/51de6757cd0aeda3c19fe68fa4ec5b93ab206804/docs/ARCHITECTURE.md#input-ordering)
+
+**Inferred:** The `app` controller owns the current input target: the connection
+generation and exact session/pane destination. UI navigation and terminal input
+must enter one ordered application event stream. A navigation action immediately
+gates subsequent key/paste events behind that transition; generation checks
+alone do not provide this ordering. Hold events within a bounded queue tagged
+with their intended transition, and encode them for the destination only after
+its transport confirms attachment/readiness. The controller then commits the
+target, updates focus and the displayed view, and acknowledges navigation before
+releasing input to that exact destination. Previously accepted input retains its
+original target.
+
+**Inferred:** A failed, disconnected or superseded transition rejects its held
+input with visible status; it must never replay into the old pane or a later
+selection. Queue exhaustion likewise reports rejection. After a failed switch,
+keep input gated until an explicit selection succeeds. A stale attachment
+completion cannot acknowledge a newer transition. These rules preserve the
+Python ordering guarantee without adopting its private action-helper protocol.
+
 **Observed:** Tokio's `Child` continues running when dropped by default; even
 `kill_on_drop` is not a substitute for explicitly waiting when deterministic
 cleanup matters. Its string `read_line` requires valid UTF-8 and is not
@@ -180,15 +203,23 @@ fields. Unknown fields are tolerated, not grounds for rejecting an otherwise
 valid record. [Validation source](https://github.com/eandualem/tmux-workspaces/blob/51de6757cd0aeda3c19fe68fa4ec5b93ab206804/tmux_workspaces/layout_validation.py),
 [leaf traversal](https://github.com/eandualem/tmux-workspaces/blob/51de6757cd0aeda3c19fe68fa4ec5b93ab206804/tmux_workspaces/model.py#L28)
 
-**Observed:** The merge removes per-viewer navigation from shared comparisons.
-Stored `selected` and `focus` values seed new windows; existing windows preserve
-their own navigation. Top-level `focus` is true for terminal-area keyboard focus
-and false for the navigation panel. These stored values are navigation hints,
-not shared selection state.
-It merges dictionaries recursively and lists by stable IDs, with explicit order
-conflicts; concurrent changes to the same split tree conflict as a unit. It is
-not a last-writer-wins policy. Unknown fields survive the model's copying and
-merging rather than being discarded by a fixed schema projection.
+**Observed:** The merge removes per-viewer navigation and presentation fields
+from shared comparisons. Stored `selected` and `focus` values seed new windows;
+existing windows preserve their own values. Top-level `focus` is the single-pane
+presentation toggle: true requests the focused leaf alone; false requests the
+split layout. The menu actions are "Focus one pane" and "Restore layout".
+Tab-level `focus` is the focused leaf ID. The top-level flag does not select
+keyboard focus between the terminal and navigation panel. These values are
+per-viewer hints, not shared selection or presentation state.
+[Focus toggle](https://github.com/eandualem/tmux-workspaces/blob/51de6757cd0aeda3c19fe68fa4ec5b93ab206804/tmux_workspaces/sidebar.py#L832),
+[menu actions](https://github.com/eandualem/tmux-workspaces/blob/51de6757cd0aeda3c19fe68fa4ec5b93ab206804/tmux_workspaces/sidebar.py#L1053),
+[single-pane presentation](https://github.com/eandualem/tmux-workspaces/blob/51de6757cd0aeda3c19fe68fa4ec5b93ab206804/tmux_workspaces/display.py#L827)
+
+**Observed:** The merge combines dictionaries recursively and lists by stable
+IDs, with explicit order conflicts; concurrent changes to the same split tree
+conflict as a unit. It is not a last-writer-wins policy. Unknown fields survive
+the model's copying and merging rather than being discarded by a fixed schema
+projection.
 [Model and merge source](https://github.com/eandualem/tmux-workspaces/blob/51de6757cd0aeda3c19fe68fa4ec5b93ab206804/tmux_workspaces/model.py#L179)
 
 **Observed:** `serde_json::Value` normally inserts object fields into a map,
@@ -290,6 +321,20 @@ conflict behavior; TOML syntax compatibility alone is not save compatibility.
 Private display-server action bindings do not automatically define native input
 semantics. Avoid a new unified configuration format at this stage.
 
+**Observed:** The optional Backbone roster adapter accepts only HTTP URLs with
+hostname `localhost`, `127.0.0.1` or `::1`, and rejects user information, query
+strings and fragments. It rejects redirects and disables environment proxies
+with `ProxyHandler({})`. Only after validating the endpoint does it attach the
+optional bearer key to the `/api/agents` request.
+[Endpoint validation](https://github.com/eandualem/tmux-workspaces/blob/51de6757cd0aeda3c19fe68fa4ec5b93ab206804/tmux_workspaces/adapters/backbone.py#L50),
+[redirect refusal](https://github.com/eandualem/tmux-workspaces/blob/51de6757cd0aeda3c19fe68fa4ec5b93ab206804/tmux_workspaces/adapters/backbone.py#L58),
+[request construction](https://github.com/eandualem/tmux-workspaces/blob/51de6757cd0aeda3c19fe68fa4ec5b93ab206804/tmux_workspaces/adapters/backbone.py#L74)
+**Inferred:** Keep this credential-confinement policy in `roster`: validate before
+network access, disable proxies and all redirects, and send a bearer credential
+only to that validated local endpoint. Do not export it to tmux or include it in
+diagnostics. The roster remains optional and read-only; a configuration or
+transport failure must not prevent terminal use.
+
 **Inferred:** Expose typed errors only where callers need different responses:
 malformed protocol, disconnected transport, unsupported schema, invalid layout,
 database busy, and merge conflict. Keep source errors for diagnostics, but avoid
@@ -354,9 +399,10 @@ items below are proposed validation, not completed tests.
 |---|---|
 | Pure model | Examples for layout operations; property tests for valid identities/structure and unchanged edits; Python differential tests for merge results and conflicts. Do not assume merge commutativity when ordering rules are asymmetric. |
 | Protocol and terminal | Split fixtures at every relevant byte boundary, including escaped bytes/UTF-8/VT sequences; disconnect and reconnect; malformed records; version-specific notification interleaving inside command replies; snapshot lifetime checks; owned display-data snapshots with a fixed viewport. |
+| Navigation/input ordering | Rapid switch followed by typing/paste, delayed attachment acknowledgement, failure, disconnection and superseded switches. Assert that post-switch input reaches only its intended ready pane; failed/superseded input is visibly rejected and never sent to the old or next pane. |
 | Store | Synthetic schema-v2 databases, optional/default fields, duplicate/oversized/deep records, missing-table versus missing-row behavior, read-only enforcement, short rollback-journal reads, bounded hot-journal retry, retained-connection refresh and two-writer conflicts. |
 | Real tmux | Disposable sessions on private servers; process exit/reaping, resize, multiple windows/panes, output pressure and recovery. Version coverage follows area A's capability findings. |
-| Roster | Fixture responses and a local fake endpoint; absent provider, timeouts, invalid responses and recovery. Ordinary tests require neither a live roster service nor credentials. |
+| Roster | Fixture responses and a local fake endpoint; absent provider, timeouts, invalid responses and recovery. Reject non-allowlisted URLs, user information, query strings and fragments before any request; refuse redirects even to another local endpoint and ignore proxy environment variables. A synthetic bearer key reaches only the intended fake endpoint, never a redirect/proxy receiver or failure diagnostics. Ordinary tests require neither a live roster service nor real credentials. |
 | UI/native boundary | First build and headless library tests; after the benchmark gate, native smoke tests for input, IME and rendering on macOS plus Linux Wayland and X11. Hosted CI build success is not display-latency evidence. |
 
 **Inferred:** Use Rust's test harness first. [proptest 1.12.0](https://docs.rs/crate/proptest/1.12.0)
