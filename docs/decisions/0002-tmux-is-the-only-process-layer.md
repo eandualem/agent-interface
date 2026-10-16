@@ -42,8 +42,10 @@ only these:
   removes when it no longer needs them.
 
 The app starts no daemon, background service or helper server. The only tmux
-server it may start is the library's shell server, the same server the Python
-tool uses ([0009](0009-python-library-and-shell-server-compatibility.md)).
+servers it may start are the library's shell server, the same server the
+Python tool uses ([0009](0009-python-library-and-shell-server-compatibility.md)),
+and the disposable fixture server of demo mode
+([DM-1](../PARITY.md#demo-and-preview-modes)).
 That server belongs to tmux once started; closing the app never stops it.
 
 The app never runs `kill-server`, and never changes options on a server or

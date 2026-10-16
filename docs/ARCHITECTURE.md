@@ -62,7 +62,7 @@ described in [0001](decisions/0001-record-architecture-decisions.md).
 | --- | --- |
 | [0001. Record architecture decisions](decisions/0001-record-architecture-decisions.md) | Accepted |
 | [0002. tmux is the only process layer](decisions/0002-tmux-is-the-only-process-layer.md) | Accepted |
-| [0003. Control-mode connection and attachment model](decisions/0003-control-mode-connection-and-attachment-model.md) | Accepted |
+| [0003. Control-mode connection and attachment model](decisions/0003-control-mode-connection-and-attachment-model.md) | Proposed |
 | [0004. Terminal emulation core](decisions/0004-terminal-emulation-core.md) | Proposed |
 | [0005. UI framework and terminal renderer](decisions/0005-ui-framework-and-terminal-renderer.md) | Proposed |
 | [0006. Workspace and crate layout](decisions/0006-workspace-and-crate-layout.md) | Accepted |

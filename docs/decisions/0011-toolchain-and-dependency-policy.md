@@ -15,8 +15,9 @@ numbers need to be reproducible.
 
 Observed facts from the research:
 
-- Rust 1.99.1 was released on 16 October 2026. The GPUI source snapshot builds
-  with Rust 1.98.1, which is a build baseline, not a published minimum.
+- Rust 1.99.1 was released on 16 October 2026. The GPUI source snapshot's
+  toolchain file selects Rust 1.98.1. That is not a published minimum, and no
+  build of the snapshot has been verified here yet.
 - Cargo's Rust-version-aware resolver prefers compatible packages but can still
   pick an incompatible one, so it does not prove a minimum supported version.
 - `libghostty-vt-sys` builds Ghostty's core in Zig Debug mode whenever Cargo

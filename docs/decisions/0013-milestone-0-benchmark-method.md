@@ -67,13 +67,21 @@ not a usable baseline: tmux's rate depends on the workload and the machine.
 **Gate 1: headless headroom.** Record control-mode traffic from a private tmux
 server while it runs the generated payloads. Replay it through control-mode
 decoding, the terminal engine, the render-state update and owned display-data
-extraction, with a forced final extraction after the last chunk. Every engine
-compared produces the same owned display data, and its final screen and cursor
-must match the other engines' before its timing counts. Differences from
-tmux's own capture of the pane are reported as fidelity findings. Pass: at least 200 MB/s for ASCII on the benchmark machine, and at
-least five times tmux's own control-mode throughput for every payload, where
-tmux's throughput is the drain rate of the same payload measured on the same
-machine in the same session.
+extraction, with a forced final extraction after the last chunk.
+
+- Every engine compared uses the same grid size, history limit, replay chunk
+  size and extraction schedule, and produces the same owned display data.
+- Its final screen and cursor must match the other engines' before its timing
+  counts. Differences from tmux's own capture of the pane are reported as
+  fidelity findings.
+- Every rate divides the generated payload bytes, the pane bytes before tmux's
+  control-mode escaping, by elapsed time. The same numerator is used for the
+  engine path and for tmux, never the larger control-wire byte count.
+
+Pass: at least 200 MB/s for ASCII on the benchmark machine, and at least five
+times tmux's own throughput for every payload. tmux's throughput is the rate at
+which a drained control-mode client receives the same payload, measured on the
+same machine in the same session.
 
 **Gate 2: end-to-end bulk output.** vtebench inside a tmux pane, plus a 20 MB
 marker probe, in the app and in Ghostty running `tmux attach` on the same kind
@@ -93,10 +101,26 @@ problem.
 at least 0.95 times plain Ghostty's frame rate, with at least 99% of frames
 within 1.5 times the refresh interval.
 
-**Gate 5: control-mode fidelity.** On disposable fixtures: the rebuilt pane
-state after attach matches the pane; resizing works while another client is
-attached; and flow control under a fast-streaming pane recovers without
-corrupting state.
+**Gate 5: control-mode fidelity.** On disposable fixtures, with an ordinary
+tmux client attached to the same pane as the reference:
+
+- **Attach and recovery.** Rebuild the pane's state on attach and after a
+  forced pause, during coloured output, alternate-screen switches, partial
+  escape and UTF-8 sequences, and concurrent output. Compare every cell's text,
+  width and style, the cursor position and visibility, and the modes tmux
+  exports with the reference. Then send further output and input and compare
+  again, so state that a capture hides still shows up.
+- **Resize.** Resize while another client is attached, and check both clients
+  agree on the pane's geometry and contents.
+- **Flow control.** Under a fast-streaming pane, pausing and continuing ends in
+  a rebuilt state that passes the comparison above, with no output applied
+  twice.
+
+A mismatch passes only if it is caused by state tmux cannot export, such as the
+current text style or a general saved cursor, and that limitation is written
+into the recovery follow-up decision of
+[0003](0003-control-mode-connection-and-attachment-model.md). Any other
+mismatch fails the gate.
 
 Gates 2 to 4 need a minimal window that draws one terminal grid. That window
 is benchmark scaffolding, not product UI.
@@ -107,14 +131,18 @@ gate is recorded as failed, with the follow-up decision linked.
 
 ## Consequences
 
-- The gate issue's typing-latency comparison changes from Ghostty with tmux to
-  plain Ghostty, matching the product target stated in the same issue and in
-  the project's contract.
-- The proposed terminal engine, UI framework and I/O runtime records
-  ([0004](0004-terminal-emulation-core.md),
+- Two refinements of the gate issue's draft: gate 1's "tmux's own throughput"
+  is the control-mode drain rate measured in the same session rather than a
+  fixed figure, and gate 3 compares typing latency with plain Ghostty instead
+  of Ghostty with tmux, matching the product target stated in the same issue
+  and in the project's contract.
+- The proposed connection, terminal engine, UI framework, I/O runtime and tmux
+  version records ([0003](0003-control-mode-connection-and-attachment-model.md),
+  [0004](0004-terminal-emulation-core.md),
   [0005](0005-ui-framework-and-terminal-renderer.md),
-  [0008](0008-background-io-runtime.md)) are accepted or superseded from these
-  results.
+  [0008](0008-background-io-runtime.md),
+  [0014](0014-supported-tmux-versions.md)) are accepted or superseded using
+  these results.
 - Speed claims anywhere in the project cite a result produced this way.
 
 ## Revisit when

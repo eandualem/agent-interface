@@ -74,11 +74,18 @@ and terminal input enter one ordered event stream.
 3. The controller then commits the target, updates focus and the displayed
    view, acknowledges the navigation and releases the held input to that exact
    pane. Input accepted earlier keeps its original target.
-4. A navigation that fails, disconnects or is superseded rejects its held input
+4. Navigations are applied one at a time, in the order they were made. A
+   navigation made while an earlier one is still waiting is queued behind it;
+   the earlier one is not abandoned, so input typed for it still reaches its
+   destination exactly once (IN-10, [PF-12](../PARITY.md#performance-budgets)).
+   This keeps the Python tool's ordering. The research's draft rule, which
+   rejected input held for a navigation that a later one superseded, would
+   drop keystrokes during burst navigation.
+5. A navigation that fails, or whose connection drops, rejects its held input
    with a visible status. That input is never replayed into the old pane or a
    later selection. A full queue is also reported as a rejection. After a
-   failed switch, input stays held until a selection succeeds.
-5. A late attachment confirmation cannot acknowledge a newer navigation.
+   failed switch, input stays held until a selection succeeds (IN-11).
+6. A late attachment confirmation cannot acknowledge a different navigation.
 
 **Shutdown.** Stop accepting new requests, end and reap only the tmux client
 processes the app started, then join the workers. Sessions belong to tmux and
@@ -88,9 +95,9 @@ keep running ([0002](0002-tmux-is-the-only-process-layer.md)).
 
 - Copying display data to the user-interface thread has a cost that the
   milestone-0 benchmark measures ([0013](0013-milestone-0-benchmark-method.md)).
-- Tests must cover rapid switching followed by typing or paste, delayed
-  attachment confirmation, failures, disconnects and superseded switches, and
-  check that input reaches only its intended ready pane
+- Tests must cover rapid and burst switching with typing or paste between
+  switches, delayed attachment confirmation, failures and disconnects, and
+  check that input reaches only its intended ready pane, exactly once
   ([0012](0012-testing-strategy-and-tmux-isolation.md)).
 - Generation tags and per-pane parser state make reconnect handling explicit
   rather than accidental.

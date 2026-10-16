@@ -1,6 +1,7 @@
 # 0003. Control-mode connection and attachment model
 
-- **Status:** Accepted
+- **Status:** Proposed. Waits on milestone-0 gate 5 and the coexistence tests
+  described under **Accept when**.
 - **Date:** 2026-10-17
 
 ## Context
@@ -76,9 +77,12 @@ CH-21):
 - The app never renames, kills or changes options on the source session.
 
 **Protocol handling.** Match each command's reply by its `%begin` and
-`%end`/`%error` guards and command number, and treat lines inside a reply as
-reply data even when they start with `%`. Handle notifications without assuming
-they complete an outstanding command. Decode `%output` and `%extended-output`
+`%end`/`%error` guards and command number. A line inside a reply is reply data
+even when it starts with `%`, because captured terminal text can. The one
+exception is the notifications that tmux releases before 3.8 can emit inside a
+reply; they are recognised only as [0014](0014-supported-tmux-versions.md)
+describes, from recorded per-version fixtures. Handle notifications without
+assuming they complete an outstanding command. Decode `%output` and `%extended-output`
 escaping first, then feed the bytes to a persistent parser for that pane;
 escape sequences and UTF-8 characters can span notifications, and pane output
 need not be UTF-8. Which tmux versions interleave notifications inside replies
@@ -86,15 +90,22 @@ is covered in [0014](0014-supported-tmux-versions.md).
 
 **Sizing.** Draw each pane at the size tmux reports, with padding when the leaf
 is larger. Never detach other clients or rewrite their window options to make
-a pane fit. The app sizes windows of the sessions it owns; when it may resize
-an external session's windows is a follow-up decision, settled with the
-coexistence tests listed below.
+a pane fit. The app declares its size for ordinary shells on the library's
+shell server, as the Python tool's clients do. A grouped helper shares the
+source session's windows, so owning the helper gives the app no right to
+resize them. When the app may resize an external session's windows, directly
+or through a helper, is a follow-up decision, settled with the coexistence
+tests listed below.
 
 **State recovery.** On attach, reconnect or after a pause, rebuild the pane's
 state from tmux: captures of the visible and saved screens, pane formats and
 any pending parser bytes, installed at a defined reply boundary before later
-output is applied. The exact command sequence is a follow-up decision, settled
-by the recovery-fidelity tests listed below.
+output is applied. This is the research's candidate and has not been
+validated. tmux does not export every piece of terminal state, such as the
+current text style or a general saved cursor, so an exact copy of an arbitrary
+running program's screen cannot be promised yet. The exact command sequence
+and its limits are a follow-up decision, settled by the recovery-fidelity
+tests listed below.
 
 ## Consequences
 
@@ -120,12 +131,23 @@ exist:
 3. Whether hidden windows keep live terminal state or are rebuilt when shown.
 4. How floating panes and tmux 3.8's newer layout format are parsed.
 
-## Revisit when
+## Accept when
 
-The recovery-fidelity or coexistence tests in the research's
-[spike list](../research/tmux-control-mode.md#spikes-needed-before-selecting-the-final-contract)
-show that control mode cannot reproduce pane state well enough for parity. In
-that case, compare an ordinary tmux client for attached sessions.
+The `tmux` crate is built on this design in the meantime. It is accepted when
+both of these pass on disposable fixtures:
+
+- Milestone-0 gate 5, control-mode fidelity, measured as
+  [0013](0013-milestone-0-benchmark-method.md) describes, on the tmux versions
+  of [0014](0014-supported-tmux-versions.md).
+- The coexistence tests in the research's
+  [spike list](../research/tmux-control-mode.md#spikes-needed-before-selecting-the-final-contract):
+  ordinary and control clients on one session, grouped helpers, every sizing
+  policy, detach, helper cleanup and reconnect, without killing source
+  sessions.
+
+If those tests show that control mode cannot reproduce pane state well enough
+for parity, compare an ordinary tmux client for attached sessions in a
+superseding record.
 
 ## Evidence
 
