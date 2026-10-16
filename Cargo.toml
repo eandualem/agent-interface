@@ -1,0 +1,29 @@
+# The crates and the dependencies each may use are set out in
+# docs/decisions/0006-workspace-and-crate-layout.md; deny.toml enforces them.
+[workspace]
+resolver = "3"
+members = [
+    "crates/core",
+    "crates/store",
+    "crates/tmux",
+    "crates/term",
+    "crates/roster",
+    "crates/app",
+    "crates/test-support",
+]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/eandualem/tmux-workspaces-rs"
+publish = false
+
+[workspace.dependencies]
+# Exact pin: the terminal engine's API is explicitly unstable (decision record 0004).
+libghostty-vt = "=0.2.2"
+tempfile = "3.27.0"
+thiserror = "2.0.21"
+
+[workspace.lints.rust]
+missing_docs = "warn"
