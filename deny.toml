@@ -1,0 +1,54 @@
+# cargo-deny configuration: licences, advisories, banned crates and sources,
+# checked in CI with `cargo deny check` (decision record 0011).
+
+[graph]
+# Check every target and feature, so a platform-specific dependency is audited
+# even when CI does not build that platform.
+all-features = true
+
+[advisories]
+# Vulnerable, unmaintained, unsound and yanked crates anywhere in the graph
+# fail the check. An ignored advisory needs an `ignore` entry with its reason.
+unmaintained = "all"
+unsound = "all"
+yanked = "deny"
+
+[licenses]
+# Reviewed licences only. Add one here only with the dependency's decision
+# record, and keep any exception narrow, with its reason.
+allow = [
+    "Apache-2.0",
+    "MIT",
+    "Unicode-3.0",
+]
+confidence-threshold = 0.9
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# Path dependencies between workspace members carry no version.
+allow-wildcard-paths = true
+# The dependency direction between the project's crates
+# (decision record 0006). Each crate may be used only by the crates listed in
+# its `wrappers`; any other project crate that depends on it fails the check.
+deny = [
+    { crate = "tmux-workspaces-core", wrappers = ["tmux-workspaces-store", "tmux-workspaces-app"], reason = "only store and app depend on the model" },
+    { crate = "tmux-workspaces-store", wrappers = ["tmux-workspaces-app"], reason = "only app wires storage" },
+    { crate = "tmux-workspaces-tmux", wrappers = ["tmux-workspaces-app"], reason = "only app connects tmux to the other crates" },
+    { crate = "tmux-workspaces-term", wrappers = ["tmux-workspaces-app"], reason = "only app connects the terminal engine to the other crates" },
+    { crate = "tmux-workspaces-roster", wrappers = ["tmux-workspaces-app"], reason = "only app maps roster data into the model" },
+    { crate = "tmux-workspaces-test-support", wrappers = [
+        "tmux-workspaces-core",
+        "tmux-workspaces-store",
+        "tmux-workspaces-tmux",
+        "tmux-workspaces-term",
+        "tmux-workspaces-roster",
+        "tmux-workspaces-app",
+    ], reason = "only the six crates use the test fixtures; review checks that they do so as a development dependency, which cargo-deny cannot tell apart" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

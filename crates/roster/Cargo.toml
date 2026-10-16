@@ -1,0 +1,11 @@
+[package]
+name = "tmux-workspaces-roster"
+description = "Optional, read-only agents roster for tmux-workspaces"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
