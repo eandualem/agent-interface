@@ -44,7 +44,7 @@ deny = [
         "tmux-workspaces-term",
         "tmux-workspaces-roster",
         "tmux-workspaces-app",
-    ], reason = "test fixtures are development dependencies of the six crates only" },
+    ], reason = "only the six crates use the test fixtures; review checks that they do so as a development dependency, which cargo-deny cannot tell apart" },
 ]
 
 [sources]

@@ -69,6 +69,9 @@ impl TmuxServer {
 
     /// Returns a `tmux` command bound to this server, for callers that manage
     /// the process themselves, such as a control-mode client.
+    ///
+    /// Callers may add client flags such as `-C`, but never `-L` or `-S`,
+    /// which would point the command at another server.
     pub fn command(&self) -> Command {
         let mut command = Command::new("tmux");
         command
@@ -82,8 +85,10 @@ impl TmuxServer {
     /// Runs one tmux command on this server and returns its standard output.
     ///
     /// A non-zero exit status is an error carrying tmux's standard error.
+    /// `args` can only be a tmux command: `--` ends tmux's own options, so a
+    /// socket option in `args` cannot point the command at another server.
     pub fn run(&self, args: &[&str]) -> io::Result<String> {
-        let output = self.command().args(args).output()?;
+        let output = self.command().arg("--").args(args).output()?;
         if !output.status.success() {
             return Err(io::Error::other(format!(
                 "tmux {} failed: {}",
@@ -122,6 +127,7 @@ mod tests {
             .run(&["list-sessions", "-F", "#{session_name}"])
             .unwrap();
         assert_eq!(sessions, "fixture\n");
+        assert!(server.run(&["-L", "other", "list-sessions"]).is_err());
     }
 
     #[test]

@@ -213,6 +213,7 @@ name = "tmux-workspaces-term"
 version = "0.0.0"
 dependencies = [
  "libghostty-vt",
+ "libghostty-vt-sys",
  "thiserror",
 ]
 

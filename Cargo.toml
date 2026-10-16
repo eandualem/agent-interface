@@ -20,8 +20,10 @@ repository = "https://github.com/eandualem/tmux-workspaces-rs"
 publish = false
 
 [workspace.dependencies]
-# Exact pin: the terminal engine's API is explicitly unstable (decision record 0004).
+# Exact pins: the terminal engine's API is explicitly unstable, and the -sys
+# crate fixes the Ghostty source commit and the Zig version (decision record 0004).
 libghostty-vt = "=0.2.2"
+libghostty-vt-sys = "=0.2.2"
 tempfile = "3.27.0"
 thiserror = "2.0.21"
 
