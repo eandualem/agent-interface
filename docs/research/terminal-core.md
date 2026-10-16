@@ -116,6 +116,10 @@ independent consumers should use extracted data rather than competing to consume
 the terminal's dirty markers. Cache shaped rows in the UI, invalidate on font,
 scale, palette, cursor and selection changes as well as terminal text changes,
 and acknowledge damage only after the renderer has retained or drawn the update.
+If UI notifications coalesce, retain all unconsumed row changes or publish a
+complete owned snapshot with a revision; replacing a pending delta with only
+the newest dirty rows can lose earlier changes. Dropping a presentation is safe
+only when its state changes remain represented in the next consumed update.
 Prefer reusable buffers over allocating a new `Vec<char>` per cell. Whether
 this design is fast enough requires measurement. [G3]
 
