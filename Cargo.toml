@@ -1,5 +1,6 @@
 # The crates and the dependencies each may use are set out in
-# docs/decisions/0006-workspace-and-crate-layout.md; deny.toml enforces them.
+# docs/decisions/0006-workspace-and-crate-layout.md; deny.toml enforces the
+# direction between them.
 [workspace]
 resolver = "3"
 members = [

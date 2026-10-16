@@ -67,12 +67,10 @@ impl TmuxServer {
         Ok(server)
     }
 
-    /// Returns a `tmux` command bound to this server, for callers that manage
-    /// the process themselves, such as a control-mode client.
-    ///
-    /// Callers may add client flags such as `-C`, but never `-L` or `-S`,
-    /// which would point the command at another server.
-    pub fn command(&self) -> Command {
+    /// Returns a `tmux` command bound to this server, before any command
+    /// arguments. It stays private so that no caller can add `-L` or `-S`
+    /// and point it at another server.
+    fn command(&self) -> Command {
         let mut command = Command::new("tmux");
         command
             .env_remove("TMUX")
