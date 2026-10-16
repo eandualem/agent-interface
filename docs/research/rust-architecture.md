@@ -208,11 +208,14 @@ from shared comparisons. Stored `selected` and `focus` values seed new windows;
 existing windows preserve their own values. Top-level `focus` is the single-pane
 presentation toggle: true requests the focused leaf alone; false requests the
 split layout. The menu actions are "Focus one pane" and "Restore layout".
+Splitting a pane resets top-level `focus` to false. A display too small for the
+full layout temporarily shows one pane without changing the saved flag or tree.
 Tab-level `focus` is the focused leaf ID. The top-level flag does not select
 keyboard focus between the terminal and navigation panel. These values are
 per-viewer hints, not shared selection or presentation state.
 [Focus toggle](https://github.com/eandualem/tmux-workspaces/blob/51de6757cd0aeda3c19fe68fa4ec5b93ab206804/tmux_workspaces/sidebar.py#L832),
 [menu actions](https://github.com/eandualem/tmux-workspaces/blob/51de6757cd0aeda3c19fe68fa4ec5b93ab206804/tmux_workspaces/sidebar.py#L1053),
+[split reset](https://github.com/eandualem/tmux-workspaces/blob/51de6757cd0aeda3c19fe68fa4ec5b93ab206804/tmux_workspaces/model.py#L122),
 [single-pane presentation](https://github.com/eandualem/tmux-workspaces/blob/51de6757cd0aeda3c19fe68fa4ec5b93ab206804/tmux_workspaces/display.py#L827)
 
 **Observed:** The merge combines dictionaries recursively and lists by stable
