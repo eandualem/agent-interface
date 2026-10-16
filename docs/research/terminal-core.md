@@ -67,6 +67,19 @@ the build documentation does not promise ABI compatibility across revisions.
 A future upgrade must move wrapper, headers, bindings and native library
 together. [G2]
 
+**[Observed]** The alternative core sources also have a different scope from
+the renderer snapshots in the [UI study](ui-framework.md). This document uses
+the published packages' VCS metadata: Rio `rio-vt`/`rio-backend` 0.5.28 at
+`37624389e8dde79ba25a8147a5e809c01d16d1c9`, and `alacritty_terminal` 0.26.0 at
+`94e7c8874e526b1e67b349d9ba30ddf81669119e`. The UI study instead inspects newer
+renderer source: Rio's Sugarloaf at
+[`59203ccd5fa1e6b760a738c1ad653bb29f2f3465`](https://github.com/raphamorim/rio/blob/59203ccd5fa1e6b760a738c1ad653bb29f2f3465/sugarloaf/Cargo.toml)
+and Alacritty's renderer at
+[`542147067dd016fc5f49120ef0ba605a98a4e3a7`](https://github.com/alacritty/alacritty/blob/542147067dd016fc5f49120ef0ba605a98a4e3a7/alacritty/src/renderer/mod.rs).
+The release sources establish available core APIs; the later snapshots explain
+renderer structure. These are separate inspections, not a common tested build
+pin, and later renderer changes are not attributed to the older cores. [R1][A1]
+
 ## Feature coverage and boundaries
 
 ### State, Unicode and user interaction
@@ -293,6 +306,9 @@ attributed to chunk size alone.
 running. Rust/Cargo were 1.99.1. Ghostty used its published `a887df42` pin with
 Zig 0.15.2, `LIBGHOSTTY_VT_SYS_OPTIMIZE=ReleaseFast` and
 `LIBGHOSTTY_VT_SYS_CPU=native`. The Cargo release profile enabled `debug=1`.
+The harness build set no `RUSTFLAGS` or `target-cpu` override: Alacritty and
+vt100 used Rust's default generic target CPU, whereas Ghostty used native CPU
+targeting.
 The payloads contained 20,000,036 ASCII bytes and 20,000,057 mixed UTF-8 bytes:
 generated log-like lines, ASCII SGR colour sequences, and multilingual text
 including wide characters and emoji sequences. The generator was not retained;
@@ -312,8 +328,8 @@ harness does not assert equivalent final terminal state.
 **[Inferred]** These results justify continuing the libghostty-vt investigation,
 but do not establish a general speed ranking or pass milestone 0. Only the best
 of three times was retained, without a separate warmup or timing distribution;
-the host was not quiet and the Rust engines' CPU targeting was not recorded
-alongside Ghostty's explicit native setting. No tmux process, control-mode
+the host was not quiet and generic Rust versus native Ghostty CPU targeting
+was unequal. No tmux process, control-mode
 decoding, full display-data extraction, font shaping, GPU work or presentation
 was timed. Neither the Git candidate nor `rio-vt` was tested. The next benchmark
 must retain its payload generator, normalize work and CPU policy, check final
