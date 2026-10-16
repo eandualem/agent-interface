@@ -27,7 +27,7 @@ session, not just its selected pane. [Observed: control output routing][control]
 | Mirror the selected tmux window's panes inside each leaf | Preserves split-pane visibility, zoom and pane targeting; follows iTerm2 and Ghostty's viewer model | **Preferred research direction.** Parse window/layout notifications, retain a terminal state per pane and distinguish workspace splits from tmux splits. Hidden windows still need state or an explicit reseed policy. |
 | Show only the active pane | Smallest renderer integration | **Reject as the parity architecture.** Hides other running panes and their geometry; selection elsewhere can unexpectedly replace the visible terminal. Could only be a separately defined zoom presentation. |
 | Attach directly and keep window/pane selection local to the app | No helper sessions; explicit pane targets avoid many navigation side effects | Feasible if all navigation is native. tmux key bindings that select windows still act on the shared session, so this does not preserve independent tmux navigation automatically. |
-| Create a grouped helper session, then control-attach to it | Independent current/previous window and session options, while sharing the source's windows | **Preferred candidate when the source lifetime policy permits grouping.** Grouping does not isolate pane processes, window sizes, split layouts or the window's active pane. It also creates server state needing ownership and cleanup rules. |
+| Create a grouped helper session, then control-attach to it | Independent current/previous window and session options, while sharing the source's windows | Candidate when independent tmux window selection is needed and source lifetime policy permits grouping; prefer direct attach if native navigation suffices. Grouping does not isolate pane processes, window sizes, split layouts or the window's active pane. It also creates server state needing ownership and cleanup rules. |
 | Ordinary tmux client inside a PTY | Retains tmux's own key tables, status line, copy-mode display and custom interactive UI | Valid comparison/fallback, but renders tmux's composed terminal stream and retains much of the behavior this native client is intended to improve. No extra application daemon is needed. |
 | One server-wide synthetic session containing all windows | Could reduce connection count | Reject as the initial design: changes server session/window membership and complicates isolation and ownership merely to save client connections. |
 
@@ -52,28 +52,38 @@ requirement for one connection per pane. [Observed identity/lifetime contract][m
 ## Existing shell-server compatibility
 
 **Observed in Python tmux-workspaces commit `51de6757`**, checked 17 October
-2026: the launch context expands and resolves the library directory. The shell
+2026: documented compatibility boundaries include library selection, shell
+socket identity, stable leaf/session IDs and saved attachment references.
+The launch context expands and resolves the library directory. The shell
 socket is `/tmp/tmux-workspaces-<uid>/<digest>-terminals.sock`, where `digest`
 is the first 16 hexadecimal characters of SHA-256 of the UTF-8 encoding of
 `str(data_dir.resolve())`. The runtime directory must be owned by the current
-user, private and not a symlink. Viewer sockets use a different suffix and
-source/viewer/shell sockets must be distinct. These are product protocol paths,
-not a licence to discover or alter unrelated servers. [Launch context][python-context],
-[socket derivation and launch][python-launch]
+user, private and not a symlink. Python's viewer sockets use a different suffix
+and source/viewer/shell sockets must be distinct. Its transient viewer/action
+socket names and grouped-helper names are internal implementation details,
+not identities a second client needs to clone. [Documented boundaries][python-naming],
+[launch context][python-context], [socket derivation][python-launch]
 
 **Observed:** an ordinary shell leaf uses `terminal-<leaf id>` with a validated
-12-character lowercase hexadecimal ID. `Shells.ensure_many` opens the shell
+12-character lowercase hexadecimal ID. Sessions are created lazily for displayed
+leaves with `agent: null` and without `empty: true`; a missing session is normal,
+not evidence of a broken library. Saved external attachments use the historical
+`agent` field for the session name and optional `source_socket`; an absent
+socket uses the launcher's source socket. [Display/creation path][python-display]
+
+**Observed:** `Shells.ensure_many` opens the shell
 socket name plus `.viewer-lock`, takes an exclusive `flock`, lists sessions and
 creates missing ones under that lock. It releases the lock after that operation;
 it is **not an exclusive lock held for the lifetime of a viewer attachment**.
 Creation uses no user tmux config and sets status off, mouse on and
 remain-on-exit on for the created session/window. [Shell ownership][python-shells]
 
-**Observed:** external attachment first resolves the source's session ID,
-window ID, server PID and `destroy-unattached` policy. Only policy `off` uses a
-grouped helper. Other or unknown policies use direct `attach-session -E`,
+**Observed implementation detail:** Python's external attachment first resolves
+the source's session ID, window ID, server PID and `destroy-unattached` policy.
+Only policy `off` uses a grouped helper. Other or unknown policies use direct `attach-session -E`,
 because grouping can destroy a detached `keep-last` source or change its
-lifetime. Helpers use a generated `tw-` name, the
+lifetime. Helpers live on the external source server, not the library's shell
+server. Python uses a generated `tw-` name, the
 `@tmux_workspaces_attachment=1` marker and a source-session marker. They copy
 source session options except status and destruction policy, then configure
 their own presentation and `destroy-unattached=on`. The client checks source
@@ -82,16 +92,29 @@ is gone, avoiding an orphan helper keeping the source's windows alive. Stored
 window hints are validated against the original server PID/session ID.
 [Attachment implementation][python-attachments]
 
-**Inferred:** the Rust client should recognize this identity contract without
-calling the Python creation or cleanup routines merely to view existing shells.
-Opening `layouts.db` read-only does not make a control attachment read-only:
-resizing, sending keys and adding grouped sessions still affect tmux. Database
-write conflict rules and shell creation/attachment ownership are separate
-contracts. Before enabling concurrent creation, confirm lock interoperability,
-missing-session behavior, helper cleanup and source-incarnation handling with
-the existing implementation's compatibility tests. These are pinned source observations; interoperability with simultaneous
-Python and Rust viewers remains unverified. See [Rust architecture](rust-architecture.md)
-for the database boundary.
+**Observed/inferred:** the chooser's discovery filter checks the attachment
+marker, not the `tw-` prefix. A native client that needs grouped helpers should
+use its own name prefix and set `@tmux_workspaces_attachment=1`, so Python does
+not offer transient helpers as saved attachment targets. It must set
+`destroy-unattached=on`, own cleanup when the source disappears, and never
+change options on, rename or kill the source session itself. The helper name
+and two-second polling interval above describe Python; they are not public API
+requirements to reproduce. [Discovery filter][python-discovery],
+[helper lifecycle][python-attachments]
+
+**Inferred:** a read-only consumer should attach to existing shells without
+running creation or cleanup merely because it read their saved leaf IDs. It
+must tolerate missing sessions and never kill `terminal-*` sessions; Python
+ends an ordinary shell only on explicit pane/tab removal, not viewer exit.
+[Process lifetime contract][python-architecture] Opening `layouts.db` read-only
+does not make a control attachment read-only: resizing, sending keys and adding
+grouped sessions still affect tmux. Database write conflict rules and shell
+creation/attachment ownership are separate contracts. Future concurrent shell
+creation must preserve the same creation policy and lock; test lock
+interoperability, helper cleanup and source-incarnation handling before enabling
+it. Interoperability with simultaneous Python and Rust viewers remains
+unverified. See [Rust architecture](rust-architecture.md) for the database
+boundary.
 
 ## Process lifetime, transport and protocol
 
@@ -477,3 +500,7 @@ These are **inferred validation tasks**, not new performance thresholds:
 [python-shells]: https://github.com/eandualem/tmux-workspaces/blob/51de6757cd0aeda3c19fe68fa4ec5b93ab206804/tmux_workspaces/shells.py
 [python-attachments]: https://github.com/eandualem/tmux-workspaces/blob/51de6757cd0aeda3c19fe68fa4ec5b93ab206804/tmux_workspaces/attachments.py
 [wez-commands]: https://github.com/wezterm/wezterm/blob/e2a98e1b8af156988ad0ac778658ac27b60a55fb/mux/src/tmux_commands.rs
+[python-naming]: https://github.com/eandualem/tmux-workspaces/blob/51de6757cd0aeda3c19fe68fa4ec5b93ab206804/docs/NAMING.md
+[python-architecture]: https://github.com/eandualem/tmux-workspaces/blob/51de6757cd0aeda3c19fe68fa4ec5b93ab206804/docs/ARCHITECTURE.md
+[python-display]: https://github.com/eandualem/tmux-workspaces/blob/51de6757cd0aeda3c19fe68fa4ec5b93ab206804/tmux_workspaces/display.py
+[python-discovery]: https://github.com/eandualem/tmux-workspaces/blob/51de6757cd0aeda3c19fe68fa4ec5b93ab206804/tmux_workspaces/adapters/tmux.py
