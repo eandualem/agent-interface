@@ -454,16 +454,20 @@ mod tests {
         };
         let stdout = client.stdout.take().unwrap();
         drop(client.stdin.take());
-        read(&shared, stdout);
+        // Read on another thread, so that a client that never exits fails
+        // the test instead of hanging it: killing the client ends the read.
+        let reader = std::thread::spawn(move || read(&shared, stdout));
 
         let deadline = Instant::now() + Duration::from_secs(10);
         while client.try_wait().unwrap().is_none() {
             if Instant::now() > deadline {
                 let _ = client.kill();
+                let _ = client.wait();
                 panic!("the client did not exit");
             }
             std::thread::sleep(Duration::from_millis(10));
         }
+        reader.join().unwrap();
     }
 
     #[test]
@@ -488,15 +492,23 @@ mod tests {
         .unwrap();
 
         // An update holding the streaming pane waits, untaken, when the quiet
-        // pane echoes a key.
+        // pane echoes a key. Only joining changes a waiting update, so without
+        // it the echo never shows in this one.
         woken.recv_timeout(Duration::from_secs(10)).unwrap();
         panes.send_input(quiet, b"x").unwrap();
-        std::thread::sleep(Duration::from_millis(500));
-        let update = panes.take_update().unwrap();
-        let echoed = update
-            .iter()
-            .any(|(id, screen)| *id == quiet && screen.cell(0, 0).is_some_and(|(t, _)| t == "x"));
-        assert!(echoed, "the echo waited for the next update");
+        let echoed = |update: &Update| {
+            update.iter().any(|(id, screen)| {
+                *id == quiet && screen.cell(0, 0).is_some_and(|(t, _)| t == "x")
+            })
+        };
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !panes.shared.lock().update.as_ref().is_some_and(echoed) {
+            assert!(
+                Instant::now() < deadline,
+                "the echo waited for the next update"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 
     #[test]
