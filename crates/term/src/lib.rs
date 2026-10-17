@@ -16,13 +16,14 @@
 mod controls;
 mod del;
 mod rename;
+pub mod restore;
 mod screen;
 
 use libghostty_vt::build_info;
 use libghostty_vt::render::{CellIterator, RenderState, RowIterator};
 use libghostty_vt::screen::{CellContentTag, CellWide};
 use libghostty_vt::style::{self as engine_style, StyleColor};
-use libghostty_vt::terminal::{Mode, Options, Terminal as Engine};
+use libghostty_vt::terminal::{Mode, Options, Point, PointCoordinate, Terminal as Engine};
 
 pub use screen::{Attributes, Cell, Color, Cursor, Screen, Style, Underline, Width};
 
@@ -30,6 +31,16 @@ pub use screen::{Attributes, Cell, Color, Cursor, Screen, Style, Underline, Widt
 #[derive(Debug, thiserror::Error)]
 #[error("terminal engine error: {0}")]
 pub struct Error(libghostty_vt::Error);
+
+/// What a cell holds besides what a [`Screen`] copies, for comparing
+/// terminals.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CellDetails {
+    /// The underline colour.
+    pub underline_color: Color,
+    /// The target of the hyperlink the cell belongs to, if any.
+    pub link: Option<String>,
+}
 
 /// The terminal state of one pane.
 pub struct Terminal {
@@ -160,6 +171,40 @@ impl Terminal {
         };
         screen.set_cursor(cursor);
         Ok(())
+    }
+
+    /// Returns the underline colour and hyperlink of the cell at `row` and
+    /// `col` of the screen, counted from zero at the top left.
+    ///
+    /// This reads one cell at a time, too slowly for drawing; it is for
+    /// comparing terminals.
+    pub fn cell_details(&self, row: u16, col: u16) -> Result<CellDetails, Error> {
+        let cell = self
+            .engine
+            .grid_ref(Point::Active(PointCoordinate {
+                x: col,
+                y: u32::from(row),
+            }))
+            .map_err(Error)?;
+        let underline_color = if cell.cell().map_err(Error)?.has_styling().map_err(Error)? {
+            color_from_engine(cell.style().map_err(Error)?.underline_color)
+        } else {
+            Color::Default
+        };
+        let link = match cell.hyperlink_uri(&mut []) {
+            Ok(_) => None,
+            Err(libghostty_vt::Error::OutOfSpace { required }) => {
+                let mut uri = vec![0; required];
+                let len = cell.hyperlink_uri(&mut uri).map_err(Error)?;
+                uri.truncate(len);
+                Some(String::from_utf8_lossy(&uri).into_owned())
+            }
+            Err(error) => return Err(Error(error)),
+        };
+        Ok(CellDetails {
+            underline_color,
+            link,
+        })
     }
 }
 
