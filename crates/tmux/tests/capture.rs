@@ -27,9 +27,14 @@ fn read(directory: &Path, name: &str) -> Vec<u8> {
     std::fs::read(directory.join(format!("{name}.txt"))).unwrap()
 }
 
+/// The recorded reply lines: one per row of the 20x5 fixture pane, each
+/// ended by a line feed in the file.
 fn rows(directory: &Path, name: &str) -> Vec<Row> {
     let capture = read(directory, name);
-    capture::rows(capture.split(|&byte| byte == b'\n')).unwrap()
+    let lines = capture.strip_suffix(b"\n").unwrap_or(&capture);
+    let rows = capture::rows(lines.split(|&byte| byte == b'\n')).unwrap();
+    assert_eq!(rows.len(), 5, "{}/{name}", directory.display());
+    rows
 }
 
 /// Whether the version is at least `major.minor`.
