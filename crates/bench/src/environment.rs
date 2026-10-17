@@ -14,11 +14,10 @@ pub fn describe(tmux_version: &str) -> Vec<(&'static str, String)> {
         ("cpu", cpu()),
         ("memory", memory()),
         ("power", power()),
-        ("load average", load()),
-        ("other builds running", builds()),
+        ("other builds running before", builds()),
         ("tmux", tmux_version.to_owned()),
         ("rustc", env!("BENCH_RUSTC").to_owned()),
-        ("zig", run("zig", &["version"])),
+        ("zig", env!("BENCH_ZIG").to_owned()),
         (
             "build profile",
             format!(
