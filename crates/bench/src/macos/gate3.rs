@@ -34,6 +34,10 @@ const LETTERS: &[u8] = b"abcdefghijklmnopqrstuvwxyz";
 const KEY_TIMEOUT: Duration = Duration::from_secs(1);
 /// Keys typed on one line before an unmeasured Return starts the next.
 const LINE_KEYS: usize = 60;
+/// The most keys a run may type, warm-up included. Each line takes two rows
+/// (the echo and cat's copy), and ten lines stay inside the busy condition's
+/// measured region of the 50-row window.
+const MAX_KEYS: usize = LINE_KEYS * 10;
 /// How long the busy condition's streaming pane may take to write its first
 /// output.
 const STREAM_TIMEOUT: Duration = Duration::from_secs(5);
@@ -129,6 +133,12 @@ pub fn run(options: &Options) -> Result<(), String> {
     };
     if settings.keys == 0 || settings.runs == 0 || settings.targets.is_empty() {
         return Err("--keys, --runs and --targets must not be empty".to_owned());
+    }
+    if settings.keys + settings.warmup_keys > MAX_KEYS {
+        return Err(format!(
+            "--keys and --warmup-keys may add up to at most {MAX_KEYS}, \
+             so that typing stays inside the measured region"
+        ));
     }
     let programs = Programs::from_options(options)?;
     let environment = report::environment(&programs);
