@@ -47,10 +47,11 @@ used by the benchmark window now and by the app later:
   interface, which takes it when it draws a frame, so the worker copies at
   most one update per frame and the update holds every change since the last.
 - `view`: a GPUI view that draws the panes. Backgrounds are filled rectangles.
-  Each run of plain ASCII text with one style is shaped as one line at its
-  first column, with every character's advance forced to one cell, and any
-  other character is shaped alone at its own column, so text layout never
-  moves terminal columns. Typed keys go to one pane as
+  Ligatures and other contextual substitutions are off. With a monospaced
+  font, each run of plain ASCII text with one style is shaped as one line at
+  its first column, with every character's advance forced to one cell; any
+  other character, and every character of a proportional font, is shaped
+  alone at its own column. So text layout never moves terminal columns. Typed keys go to one pane as
   literal bytes with `send-keys -H`
   ([0015](0015-input-routing.md)).
 

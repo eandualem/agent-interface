@@ -1,10 +1,12 @@
 //! The terminal grid: draws the panes' owned display data with GPUI
 //! (`docs/decisions/0005-ui-framework-and-terminal-renderer.md`).
 //!
-//! Terminal columns come from the display data, never from text layout: each
-//! run of plain ASCII text with one style is shaped as one line, with every
-//! character's advance forced to one cell, and placed at its first column;
-//! every other character is shaped on its own and placed at its own column.
+//! Terminal columns come from the display data, never from text layout.
+//! Ligatures are off. With a monospaced font, each run of plain ASCII text
+//! with one style is shaped as one line, with every character's advance
+//! forced to one cell, and placed at its first column; every other
+//! character, and every character of a proportional font, is shaped on its
+//! own and placed at its own column.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -14,10 +16,10 @@ use std::sync::Arc;
 use futures::StreamExt;
 use futures::channel::mpsc::UnboundedReceiver;
 use gpui::{
-    App, Bounds, Context, FocusHandle, Font, FontStyle, FontWeight, Hsla, IntoElement,
-    KeyDownEvent, Keystroke, Pixels, Render, Rgba, SharedString, Size, StrikethroughStyle,
-    TextAlign, TextRun, TextSystem, UnderlineStyle, Window, canvas, div, fill, point, prelude::*,
-    px, size,
+    App, Bounds, Context, FocusHandle, Font, FontFeatures, FontStyle, FontWeight, Hsla,
+    IntoElement, KeyDownEvent, Keystroke, Pixels, Render, Rgba, SharedString, Size,
+    StrikethroughStyle, TextAlign, TextRun, TextSystem, UnderlineStyle, Window, canvas, div, fill,
+    point, prelude::*, px, size,
 };
 use tmux_workspaces_term::{Attributes, Color, Screen, Style, Underline, Width};
 use tmux_workspaces_tmux::control::PaneId;
@@ -44,7 +46,7 @@ pub struct Appearance {
 
 /// The size of one terminal cell, in pixels.
 pub fn cell_size(text_system: &TextSystem, appearance: &Appearance) -> Size<Pixels> {
-    let font = gpui::font(appearance.font_family.clone());
+    let font = terminal_font(&appearance.font_family);
     let font_id = text_system.resolve_font(&font);
     let font_size = px(appearance.font_size);
     let width = text_system
@@ -55,6 +57,29 @@ pub fn cell_size(text_system: &TextSystem, appearance: &Appearance) -> Size<Pixe
     let ascent = f32::from(text_system.ascent(font_id, font_size));
     let descent = f32::from(text_system.descent(font_id, font_size)).abs();
     size(width, px((ascent + descent).ceil()))
+}
+
+/// Returns the font for terminal text: `family` with ligatures and other
+/// contextual substitutions off, so that each character keeps its own cell.
+fn terminal_font(family: &SharedString) -> Font {
+    let mut font = gpui::font(family.clone());
+    font.features = FontFeatures(Arc::new(
+        ["calt", "liga", "dlig", "clig"]
+            .into_iter()
+            .map(|tag| (tag.to_owned(), 0))
+            .collect(),
+    ));
+    font
+}
+
+/// Returns whether every printable ASCII character of the font advances as
+/// far as `M`, so a run of them can be shaped as one line.
+fn is_monospaced(text_system: &TextSystem, appearance: &Appearance) -> bool {
+    let font_id = text_system.resolve_font(&terminal_font(&appearance.font_family));
+    let size = px(appearance.font_size);
+    let advance = |ch| text_system.advance(font_id, size, ch).map(|a| a.width).ok();
+    let cell = advance('M');
+    cell.is_some() && (b' '..=b'~').all(|byte| advance(char::from(byte)) == cell)
 }
 
 /// A view that draws the panes of one tmux window and sends typed keys to one
@@ -72,6 +97,9 @@ struct Grid {
     screens: HashMap<PaneId, Screen>,
     appearance: Appearance,
     cell: Size<Pixels>,
+    /// Whether runs of ASCII text may be shaped together: only with a
+    /// monospaced font, so that no character moves off its column.
+    batch_ascii: bool,
 }
 
 impl TerminalView {
@@ -109,6 +137,7 @@ impl TerminalView {
         })
         .detach();
         let cell = cell_size(cx.text_system(), &appearance);
+        let batch_ascii = is_monospaced(cx.text_system(), &appearance);
         Self {
             panes,
             grid: Rc::new(RefCell::new(Grid {
@@ -116,6 +145,7 @@ impl TerminalView {
                 screens: HashMap::new(),
                 appearance,
                 cell,
+                batch_ascii,
             })),
             input,
             focus,
@@ -145,8 +175,13 @@ impl TerminalView {
 }
 
 impl Render for TerminalView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.take_update();
+        if self.panes.is_finished() {
+            // The client has gone: close once this frame, which shows its last
+            // output, has been drawn.
+            window.on_next_frame(|_, cx| cx.quit());
+        }
         let grid = Rc::clone(&self.grid);
         let background = self.grid.borrow().appearance.background;
         div()
@@ -252,7 +287,8 @@ impl Grid {
                 style.color = self.appearance.background.into();
             }
             let text = if text.is_empty() { " " } else { text };
-            let plain = cell.width == Width::Narrow
+            let plain = self.batch_ascii
+                && cell.width == Width::Narrow
                 && matches!(text.as_bytes(), [byte] if byte.is_ascii_graphic() || *byte == b' ');
             if plain && !is_cursor && run_style.as_ref() == Some(&style) {
                 run.push_str(text);
@@ -310,7 +346,7 @@ impl Grid {
 
     /// Returns the text style of a cell, with its length left at zero.
     fn text_run(&self, style: Style) -> TextRun {
-        let mut font: Font = gpui::font(self.appearance.font_family.clone());
+        let mut font = terminal_font(&self.appearance.font_family);
         if style.attributes.contains(Attributes::BOLD) {
             font.weight = FontWeight::BOLD;
         }

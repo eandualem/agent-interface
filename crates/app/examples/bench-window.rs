@@ -11,9 +11,11 @@
 //! `ready COLSxROWS cell WIDTHxHEIGHT`, then tab-separated fields, each a
 //! name, a space and a value, saying how it was built: `revision` (the
 //! revision, as the harness states its own), `profile` (`debug` or
-//! `release`) and `engine` (the terminal engine's build). The harness refuses
-//! a window built from another revision, or a debug window when it is a
-//! release build itself.
+//! `release`), `cpu` (the CPU the terminal engine was built for),
+//! `optimize` (the engine's optimisation mode, as the engine reports it) and
+//! `engine` (the engine's build, described). The harness refuses a window
+//! built from another revision or with another engine CPU target or
+//! optimisation, or a debug window when it is a release build itself.
 
 use std::io::Write;
 use std::sync::Arc;
@@ -142,8 +144,9 @@ fn run() -> Result<(), String> {
             return;
         }
         // The harness waits for this line before it looks for the window.
+        let engine = tmux_workspaces_term::engine_build();
         println!(
-            "ready {}x{} cell {}x{}\trevision {}\tprofile {}\tengine {}",
+            "ready {}x{} cell {}x{}\trevision {}\tprofile {}\tcpu {}\toptimize {}\tengine {}",
             cols,
             rows,
             f32::from(cell.width),
@@ -154,22 +157,21 @@ fn run() -> Result<(), String> {
             } else {
                 "release"
             },
-            engine()
+            env!("BENCH_GHOSTTY_CPU"),
+            engine
+                .as_ref()
+                .map_or("unknown", |engine| engine.optimize.as_str()),
+            match &engine {
+                Ok(engine) => format!(
+                    "libghostty-vt {}, {}, SIMD {}",
+                    engine.version, engine.optimize, engine.simd
+                ),
+                Err(error) => format!("unknown ({error})"),
+            }
         );
         let _ = std::io::stdout().flush();
     });
     Ok(())
-}
-
-/// Describes the terminal engine's build on one line.
-fn engine() -> String {
-    match tmux_workspaces_term::engine_build() {
-        Ok(engine) => format!(
-            "libghostty-vt {}, {}, SIMD {}",
-            engine.version, engine.optimize, engine.simd
-        ),
-        Err(error) => format!("unknown ({error})"),
-    }
 }
 
 fn parse(mut args: impl Iterator<Item = String>) -> Result<Options, String> {

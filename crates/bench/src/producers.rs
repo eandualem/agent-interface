@@ -4,8 +4,12 @@
 //! the terminal accepts it, for a fixed time.
 //!
 //! Both are seeded, so every run draws the same frames in the same order.
+//! With `--ready FILE`, each creates FILE once its first output has been
+//! written, so a harness can tell the producer is really running.
 
+use std::fs;
 use std::io::{self, Write};
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -24,13 +28,14 @@ const FIRE_COLORS: [u8; HEAT_LEVELS] = [
 
 /// `fire`: draws a fire animation that fills `--cols` by `--rows` cells, the
 /// terminal's size by default, redrawing every cell each frame, for
-/// `--seconds`.
+/// `--seconds`, and creates `--ready` after the first frame.
 pub fn fire(options: &Options) -> Result<(), String> {
     let (default_cols, default_rows) = terminal_size().unwrap_or((200, 50));
     let cols: usize = options.get("cols", default_cols)?;
     let rows: usize = options.get("rows", default_rows)?;
     let seconds: f64 = options.get("seconds", 30.0)?;
     let mut rng = Rng(options.get("seed", 1)?);
+    let mut ready = Ready::from_options(options);
     let mut fire = Fire::new(cols, rows);
     let mut frame = Vec::with_capacity(cols * rows * 12);
     let stdout = io::stdout();
@@ -44,30 +49,71 @@ pub fn fire(options: &Options) -> Result<(), String> {
         fire.draw(&mut frame);
         out.write_all(&frame).map_err(|error| error.to_string())?;
         out.flush().map_err(|error| error.to_string())?;
+        ready.written(&mut out)?;
     }
     out.write_all(b"\x1b[0m\x1b[?25h")
         .map_err(|error| error.to_string())
 }
 
 /// `scroll-test`: prints the `ascii` payload's log lines over and over for
-/// `--seconds`, so the screen scrolls continuously.
+/// `--seconds`, so the screen scrolls continuously, and creates `--ready`
+/// after the first chunk.
 pub fn scroll_test(options: &Options) -> Result<(), String> {
     let seconds: f64 = options.get("seconds", 30.0)?;
     let lines = payload::generate(Kind::Ascii, options.get("seed", 1)?, 1 << 20);
-    let stdout = io::stdout();
-    let mut out = stdout.lock();
     let end = Instant::now() + Duration::from_secs_f64(seconds);
+    scroll(
+        &mut io::stdout().lock(),
+        &lines,
+        end,
+        Ready::from_options(options),
+    )
+}
+
+/// Writes `lines` to `out` over and over until `end`, creating `ready`'s file
+/// after the first chunk is written.
+fn scroll(
+    out: &mut impl Write,
+    lines: &[u8],
+    end: Instant,
+    mut ready: Ready,
+) -> Result<(), String> {
     while Instant::now() < end {
         // A chunk at a time, so the time limit holds within a few
         // milliseconds.
         for chunk in lines.chunks(16 * 1024) {
             out.write_all(chunk).map_err(|error| error.to_string())?;
+            ready.written(out)?;
             if Instant::now() >= end {
                 break;
             }
         }
     }
     out.flush().map_err(|error| error.to_string())
+}
+
+/// The file a producer creates once its first output is written: `--ready`.
+struct Ready(Option<PathBuf>);
+
+impl Ready {
+    fn from_options(options: &Options) -> Self {
+        Self(options.required("ready").ok().map(PathBuf::from))
+    }
+
+    /// Notes that output was written to `out`: the first time, flushes it and
+    /// then creates the file.
+    fn written(&mut self, out: &mut impl Write) -> Result<(), String> {
+        if let Some(path) = self.0.take() {
+            out.flush().map_err(|error| error.to_string())?;
+            create(&path)?;
+        }
+        Ok(())
+    }
+}
+
+/// Creates an empty file at `path`.
+fn create(path: &Path) -> Result<(), String> {
+    fs::write(path, b"").map_err(|error| format!("{}: {error}", path.display()))
 }
 
 /// Returns the columns and rows of the terminal on standard input, as `stty`
@@ -167,6 +213,36 @@ mod tests {
         assert!(frame.starts_with(b"\x1b[H"));
         assert_eq!(frame.iter().filter(|&&byte| byte == b' ').count(), 21);
         assert_eq!(frame.windows(2).filter(|pair| pair == b"\r\n").count(), 2);
+    }
+
+    /// A writer that fails every write.
+    struct Broken;
+
+    impl Write for Broken {
+        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+            Err(io::Error::other("broken pipe"))
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn the_ready_file_appears_only_after_output_was_written() {
+        let work = tempfile::tempdir().unwrap();
+        let lines = b"line\n".repeat(10);
+        let soon = || Instant::now() + Duration::from_millis(20);
+
+        let ready = work.path().join("written");
+        let mut out = Vec::new();
+        scroll(&mut out, &lines, soon(), Ready(Some(ready.clone()))).unwrap();
+        assert!(out.starts_with(b"line\n"));
+        assert!(ready.exists());
+
+        let never = work.path().join("never");
+        assert!(scroll(&mut Broken, &lines, soon(), Ready(Some(never.clone()))).is_err());
+        assert!(!never.exists());
     }
 
     #[test]

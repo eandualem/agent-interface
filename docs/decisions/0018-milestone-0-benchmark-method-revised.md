@@ -102,8 +102,9 @@ How displayed frames are timed for gates 2 to 4:
 
 - This instrument leaves out the display's scan-out and pixel response, so its
   latencies are lower than a camera's, by the same amount for both programs.
-  A result within one refresh interval of a threshold is confirmed with a
-  camera before the gate is decided.
+  A latency or end-time comparison (gates 2 and 3) within one refresh
+  interval of its limit is confirmed with a camera before the gate is
+  decided. Frame counts and intervals (gate 4) do not depend on scan-out.
 
 **Gate 1: headless headroom.** Record control-mode traffic from a private tmux
 server while it runs the generated payloads. Replay it through control-mode

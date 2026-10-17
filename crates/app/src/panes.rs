@@ -148,10 +148,11 @@ impl Panes {
         stdin.flush()
     }
 
-    /// Returns whether the client has exited and the worker has handed over
-    /// every change its output made. The last update may still be waiting.
+    /// Returns whether the client has exited, the worker has handed over
+    /// every change its output made, and the last update has been taken.
     pub fn is_finished(&self) -> bool {
-        self.shared.lock().finished
+        let state = self.shared.lock();
+        state.finished && state.update.is_none()
     }
 }
 

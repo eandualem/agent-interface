@@ -8,6 +8,7 @@
 #![forbid(unsafe_code)]
 
 use std::io;
+use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -167,6 +168,19 @@ impl ServerRef {
             return Err(io::Error::other(format!(
                 "{} is not a private tmux directory made by TmuxServer",
                 tmpdir.display()
+            )));
+        }
+        // The socket and its directory must be the files tmux made there, not
+        // links to another server's.
+        let directory = canonical.join(format!("tmux-{}", canonical.metadata()?.uid()));
+        let socket = directory.join(socket_name);
+        let is = |path: &Path, kind: fn(&std::fs::FileType) -> bool| {
+            std::fs::symlink_metadata(path).is_ok_and(|metadata| kind(&metadata.file_type()))
+        };
+        if !is(&directory, std::fs::FileType::is_dir) || !is(&socket, FileTypeExt::is_socket) {
+            return Err(io::Error::other(format!(
+                "{} is not a tmux socket that TmuxServer made",
+                socket.display()
             )));
         }
         Ok(Self {
@@ -347,6 +361,24 @@ mod tests {
             .tempdir_in(other.path())
             .unwrap();
         assert!(ServerRef::new(nested.path(), "tw-1-0").is_err());
+    }
+
+    #[test]
+    fn a_server_ref_refuses_a_link_to_another_server() {
+        let server = TmuxServer::start().unwrap();
+        let other = TmuxServer::start().unwrap();
+        let socket = |server: &TmuxServer| {
+            PathBuf::from(
+                server
+                    .run(&["display-message", "-p", "#{socket_path}"])
+                    .unwrap()
+                    .trim(),
+            )
+        };
+        let link = socket(&server).with_file_name("tw-9-9");
+        std::os::unix::fs::symlink(socket(&other), &link).unwrap();
+        let (tmpdir, _) = server.address();
+        assert!(ServerRef::new(tmpdir, "tw-9-9").is_err());
     }
 
     #[test]

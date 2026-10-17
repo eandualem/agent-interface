@@ -139,8 +139,11 @@ Before running them:
   awake and unlocked, and keep the machine quiet. The windows open at the top
   left of the main display (`--origin` moves them) and must lie entirely on
   it. Once a second, and before every key, the harness checks that the window
-  is on screen, not covered by another window, and that the display is awake
-  and the screen unlocked; otherwise it stops the run as failed, not slow.
+  it started is still on screen, within a point of where it started, not
+  covered by another window, and that the display is awake and the screen
+  unlocked; otherwise it stops the run as failed, not slow. The window's own
+  title-bar buttons, which macOS draws as a separate small window, do not
+  count as covering it.
 - Do not type or click while a run is going: the measured window must keep
   its place and contents. Keys go only to the measured process, and only
   while its window is frontmost; otherwise the run stops before any key is
@@ -164,11 +167,13 @@ with `--refresh HZ`. An acceptance result needs three runs of each gate, as
 for gate 1.
 
 The benchmark window prints its revision and build when it starts, and the
-harness refuses one built from a different revision, or a debug window run by
-a release harness. A run with fewer cases than the gate needs (fewer
+harness refuses one built from a different revision, CPU target or engine
+optimisation, or a debug window run by a release harness. The report lists
+both programs' builds. A run with fewer cases than the gate needs (fewer
 payloads, conditions, keys or seconds) is reported as an exploratory subset:
-it can fail, but it cannot pass. A comparison within one refresh interval of
-its limit is not decided until a camera confirms it (0018).
+it can fail, but it cannot pass. A latency or end-time comparison (gates 2
+and 3) within one refresh interval of its limit is not decided until a
+camera confirms it (0018).
 
 ## How gates 2 to 4 measure
 
@@ -202,8 +207,9 @@ bytes by it. The app is compared with Ghostty running tmux. vtebench, which
 one at a time, at seeded random gaps of 150 to 350 ms, after a few unmeasured
 warm-up keys. A key's latency runs from just before it is posted to the first
 frame in which the typing pane's region changed. In the busy condition a
-second pane below streams output, and only the top 45% of the window is
-compared. A key with no change within one second is reported as missed, and a
+second pane below streams output, the keys start only once that producer has
+written its first output, and only the top 45% of the window is compared.
+A key with no change within one second is reported as missed, and a
 condition with missed keys is not decided. The app is compared with plain
 Ghostty, and Ghostty running tmux shows tmux's share.
 

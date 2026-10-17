@@ -6,8 +6,8 @@
 //! this module checks but never requests.
 //!
 //! Before every key, the process's window must also be frontmost, with no
-//! ordinary window of another process in front of it; otherwise nothing is
-//! posted.
+//! other ordinary window in front of it, whichever process owns that window;
+//! otherwise nothing is posted.
 
 use std::io;
 
@@ -122,8 +122,8 @@ fn check_frontmost(pid: i32, window: &WindowInfo) -> io::Result<()> {
         Ok(())
     } else {
         Err(io::Error::other(format!(
-            "window not frontmost: another program's window is in front of process {pid}'s \
-             window; no keys sent"
+            "window not frontmost: another window is in front of process {pid}'s window; \
+             no keys sent"
         )))
     }
 }

@@ -6,10 +6,13 @@
 //! before it is posted to the display time of the first frame in which the
 //! typing pane's region differs from the frame shown before the key.
 //!
-//! Every key, measured or not, is posted only while the measured window is
-//! frontmost, and the window is checked to be shown between keys.
+//! Just before every key, measured or not, the harness checks that the
+//! measured window is still shown where it was, uncovered, on an awake and
+//! unlocked main display, and frontmost; the key's time is read after those
+//! checks.
 
 use std::fmt::Write;
+use std::fs;
 use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -31,6 +34,9 @@ const LETTERS: &[u8] = b"abcdefghijklmnopqrstuvwxyz";
 const KEY_TIMEOUT: Duration = Duration::from_secs(1);
 /// Keys typed on one line before an unmeasured Return starts the next.
 const LINE_KEYS: usize = 60;
+/// How long the busy condition's streaming pane may take to write its first
+/// output.
+const STREAM_TIMEOUT: Duration = Duration::from_secs(5);
 /// The gate's limits: the app's median and 95th percentile may exceed plain
 /// Ghostty's by at most these.
 const MEDIAN_LIMIT: Duration = Duration::from_millis(4);
@@ -158,7 +164,20 @@ fn measure(
     rng: &mut Rng,
 ) -> Result<Measured, String> {
     let bench = std::env::current_exe().map_err(|error| error.to_string())?;
-    let stream = format!("exec '{}' scroll-test --seconds 3600", bench.display());
+    // Plain Ghostty runs its command in its first split, and again in the
+    // split opened below it, which streams instead; the first leaves the
+    // marker that tells the second which it is.
+    let marker = work.join(format!("{}-{run}.split", target.name()));
+    // The streaming producer creates this once its output is flowing.
+    let streaming = work.join(format!("{}-{run}.streaming", target.name()));
+    for stale in [&marker, &streaming] {
+        let _ = fs::remove_file(stale);
+    }
+    let stream = format!(
+        "exec '{}' scroll-test --seconds 3600 --ready '{}'",
+        bench.display(),
+        streaming.display()
+    );
     let server = if target.uses_tmux() {
         let server = targets::session("exec cat").map_err(|error| error.to_string())?;
         if condition == Condition::Busy {
@@ -172,18 +191,11 @@ fn measure(
     } else {
         None
     };
-    // Plain Ghostty runs this in its first split, and again in the split
-    // opened below it, which streams instead.
-    let marker = work.join(format!("{}-{run}.split", target.name()));
-    // The second split leaves its own file, so its existence shows the
-    // streaming split really started.
-    let streaming = work.join(format!("{}-{run}.streaming", target.name()));
     let plain = match condition {
         Condition::Idle => "exec cat".to_owned(),
         Condition::Busy => format!(
-            "if [ -e '{0}' ]; then : > '{1}'; {stream}; fi; : > '{0}'; exec cat",
+            "if [ -e '{0}' ]; then {stream}; fi; : > '{0}'; exec cat",
             marker.display(),
-            streaming.display()
         ),
     };
     let running = targets::start(target, programs, server.as_ref(), &plain, work)?;
@@ -203,20 +215,22 @@ fn measure(
         running.post_key(keycode::D, split)?;
         thread::sleep(Duration::from_secs(1));
         running.post_key(keycode::UP, up)?;
-        thread::sleep(Duration::from_millis(500));
-        if !streaming.exists() {
-            // Not measured rather than measured without its neighbour.
-            let after = running.check_visible()?;
-            let window = Window::new(target, &running, CaptureStats::default(), after);
-            return Ok(Measured {
-                condition,
-                target,
-                run,
-                latencies: Vec::new(),
-                window,
-                skipped: Some("plain Ghostty did not open the streaming split".to_owned()),
-            });
-        }
+    }
+    if condition == Condition::Busy && !appears(&streaming, STREAM_TIMEOUT) {
+        // Not measured rather than measured without its neighbour.
+        let after = running.check_visible()?;
+        let window = Window::new(target, &running, CaptureStats::default(), after);
+        return Ok(Measured {
+            condition,
+            target,
+            run,
+            latencies: Vec::new(),
+            window,
+            skipped: Some(format!(
+                "the streaming pane wrote nothing within {} s",
+                STREAM_TIMEOUT.as_secs()
+            )),
+        });
     }
     let region = condition.region();
     let frames = Frames::start(running.window().id, move |image| {
@@ -236,15 +250,14 @@ fn measure(
             watch.before(seen);
         }
         let letter = char::from(LETTERS[index % LETTERS.len()]);
+        // A window that stopped being visible stopped drawing, so posting
+        // checks it first and the run is then void; the key's time is read
+        // after the checks.
         let posted = running.post_text(&letter.to_string())?;
         let shown = wait_for_change(&frames, &mut watch, posted);
         if index >= settings.warmup_keys {
             latencies.push(shown.map(|time| time.since(posted)));
         }
-        // A window that stopped being visible stopped drawing: the run is
-        // void. Checking here, after the key showed, keeps the check out of
-        // the measured time.
-        running.check_visible()?;
         let gap = Duration::from_millis(rng.range(150, 350) as u64);
         thread::sleep(gap.saturating_sub(clock::now().since(posted)));
     }
@@ -261,6 +274,18 @@ fn measure(
         window,
         skipped: None,
     })
+}
+
+/// Waits up to `timeout` for `path` to exist, and returns whether it does.
+fn appears(path: &Path, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    while !path.exists() {
+        if Instant::now() >= deadline {
+            return false;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    true
 }
 
 /// Waits up to [`KEY_TIMEOUT`] for the first frame after `posted` that
@@ -350,8 +375,9 @@ fn summary(settings: &Settings, environment: &[(&str, String)], results: &[Measu
         "\n## Settings\n\n\
          - {} measured keys per run after {} unmeasured ones, {} run(s) per target and \
            condition, gaps of 150 to 350 ms from seed {}; Return after every {} keys.\n\
-         - The pane runs `cat`. Busy: a pane below it streams `scroll-test`, and only the \
-           top 45% of the window is compared.\n\
+         - The pane runs `cat`. Busy: a pane below it streams `scroll-test`, whose first \
+           output is awaited before any key, and only the top 45% of the window is \
+           compared.\n\
          - A key is missed if no changed frame shows within {} ms.\n",
         settings.keys,
         settings.warmup_keys,
@@ -618,6 +644,15 @@ mod tests {
             "Gate 3 not decided (exploratory subset: idle: 8 measured keys of app, needs 40; \
              idle: 8 measured keys of ghostty, needs 40; busy not run)"
         );
+    }
+
+    #[test]
+    fn a_file_that_never_appears_times_out() {
+        let work = tempfile::tempdir().unwrap();
+        let path = work.path().join("streaming");
+        assert!(!appears(&path, Duration::from_millis(100)));
+        fs::write(&path, b"").unwrap();
+        assert!(appears(&path, Duration::ZERO));
     }
 
     #[test]

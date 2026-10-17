@@ -49,6 +49,10 @@ fn main() {
     println!("cargo:rerun-if-env-changed=LIBGHOSTTY_VT_SYS_OPTIMIZE");
     let cpu = env::var("LIBGHOSTTY_VT_SYS_CPU").unwrap_or_else(|_| "baseline".to_owned());
     println!("cargo:rustc-env=BENCH_GHOSTTY_CPU={cpu}");
+    // Unset, the engine chooses its optimisation from the Cargo profile.
+    let optimize = env::var("LIBGHOSTTY_VT_SYS_OPTIMIZE")
+        .unwrap_or_else(|_| "not set (chosen by the profile)".to_owned());
+    println!("cargo:rustc-env=BENCH_GHOSTTY_OPTIMIZE={optimize}");
 
     let rustc = env::var("RUSTC").unwrap_or_else(|_| "rustc".to_owned());
     println!("cargo:rustc-env=BENCH_RUSTC={}", version(&rustc, "-V"));

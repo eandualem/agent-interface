@@ -68,9 +68,10 @@ usage: tmux-workspaces-bench gate2|gate3|gate4 --out DIR [options]   (macOS)
   than the gate needs is an exploratory subset: it can fail the gate but not
   pass it
 
-usage: tmux-workspaces-bench fire|scroll-test [--seconds S] [--seed N]
-  output the display gates run in the measured pane; fire also takes
-  --cols N --rows N (the terminal's size)
+usage: tmux-workspaces-bench fire|scroll-test [--seconds S] [--seed N] [--ready FILE]
+  output the display gates run in the measured pane; --ready creates FILE
+  once the first output is written; fire also takes --cols N --rows N (the
+  terminal's size)
 
 usage: tmux-workspaces-bench probe-display --pid PID [options]   (macOS)
   lists the windows of process PID and captures one, printing frame intervals

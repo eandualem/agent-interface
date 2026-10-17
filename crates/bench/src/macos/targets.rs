@@ -13,10 +13,12 @@
 //! that file's path. Only a process found that way is ever signalled: the
 //! user's own Ghostty may be running live sessions.
 //!
-//! A window counts as shown only while it is entirely on the main display,
-//! uncovered, with that display awake and the screen unlocked. The benchmark
-//! window must also have been built from the same revision as this program,
-//! and not as a debug build when this program is a release build.
+//! A window counts as shown only while the very window found at the start is
+//! on screen where it was, entirely on the main display and uncovered, with
+//! that display awake and the screen unlocked. The benchmark window must also
+//! have been built from the same revision as this program, with the same
+//! engine CPU target and optimisation, and not as a debug build when this
+//! program is a release build.
 
 use std::ffi::OsString;
 use std::fs;
@@ -71,6 +73,9 @@ palette = 15=#ffffff
 const START_TIMEOUT: Duration = Duration::from_secs(30);
 /// How often a run that is waiting checks that its window is still shown.
 pub const CHECK_EVERY: Duration = Duration::from_secs(1);
+/// How far, in points, a measured window may move or change size during a
+/// run before the run fails.
+const MOVE_TOLERANCE: f64 = 1.0;
 
 /// A program a display gate measures.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -195,7 +200,8 @@ pub struct Running {
     display: DisplayState,
 }
 
-/// How the benchmark window was built, as its `ready` line states it.
+/// How a program was built: the benchmark window, as its `ready` line
+/// states it, or this program.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Build {
     /// The revision it was built from, in the form this program's own
@@ -203,8 +209,41 @@ pub struct Build {
     pub revision: String,
     /// `debug` or `release`: whether it was built with debug assertions.
     pub profile: String,
+    /// The CPU the terminal engine was built for: `LIBGHOSTTY_VT_SYS_CPU`
+    /// when it was built, or `baseline`.
+    pub cpu: String,
+    /// The terminal engine's optimisation mode, as the engine reports it.
+    pub optimize: String,
     /// The terminal engine's version, optimisation mode and SIMD support.
     pub engine: String,
+}
+
+impl Build {
+    /// Returns how this program was built, in the terms the benchmark window
+    /// uses for itself.
+    pub fn own() -> Self {
+        let engine = tmux_workspaces_term::engine_build();
+        Self {
+            revision: env!("BENCH_REVISION").to_owned(),
+            profile: if cfg!(debug_assertions) {
+                "debug"
+            } else {
+                "release"
+            }
+            .to_owned(),
+            cpu: env!("BENCH_GHOSTTY_CPU").to_owned(),
+            optimize: engine
+                .as_ref()
+                .map_or_else(|_| "unknown".to_owned(), |engine| engine.optimize.clone()),
+            engine: match engine {
+                Ok(engine) => format!(
+                    "libghostty-vt {}, {}, SIMD {}",
+                    engine.version, engine.optimize, engine.simd
+                ),
+                Err(error) => format!("unknown ({error})"),
+            },
+        }
+    }
 }
 
 enum Process {
@@ -272,9 +311,8 @@ pub fn start(
     loop {
         // A window may appear before it reaches its place, so the display is
         // checked until the deadline too.
-        let shown = visible_window(pid).and_then(|(window, display)| {
-            on_main_display(pid, &window).map(|()| (window, display))
-        });
+        let shown = first_window(pid)
+            .and_then(|window| check_shown(pid, &window).map(|display| (window, display)));
         match shown {
             Ok((window, display)) => {
                 return Ok(Running {
@@ -310,13 +348,15 @@ impl Running {
         self.display
     }
 
-    /// Checks that the program's window is still on screen and uncovered, on
-    /// an awake display with the screen unlocked, and returns the display's
-    /// state. A window that is covered, minimised or on another Space, or on
-    /// a display that is asleep or locked, does not draw, so a run with one
-    /// is a failed run, not a slow one.
+    /// Checks that the window found at the start is still on screen where
+    /// it was, entirely on the main display and uncovered, on an awake
+    /// display with the screen unlocked, and returns the display's state. A
+    /// window that is covered, minimised or on another Space, or on a
+    /// display that is asleep or locked, does not draw, and one that moved
+    /// is no longer the window captured, so a run with one is a failed run,
+    /// not a slow one.
     pub fn check_visible(&self) -> Result<DisplayState, String> {
-        visible_window(self.pid).map(|(_, display)| display)
+        check_shown(self.pid, &self.window)
     }
 
     /// Waits for `span`, checking every [`CHECK_EVERY`] and at the end that
@@ -334,15 +374,20 @@ impl Running {
         }
     }
 
-    /// Types `text` into the program, if its window is frontmost, and
-    /// returns the host time just before the first key was posted.
+    /// Types `text` into the program, if its window passes
+    /// [`Running::check_visible`] and is frontmost just before, and returns
+    /// the host time read after those checks, just before the first key was
+    /// posted.
     pub fn post_text(&self, text: &str) -> Result<HostTime, String> {
+        self.check_visible()?;
         keys::post_text(self.pid, &self.window, text).map_err(|error| error.to_string())
     }
 
-    /// Presses one key with `modifiers` in the program, if its window is
-    /// frontmost, and returns the host time just before it was posted.
+    /// Presses one key with `modifiers` in the program, if its window passes
+    /// [`Running::check_visible`] and is frontmost just before, and returns
+    /// the host time read after those checks, just before it was posted.
     pub fn post_key(&self, code: u16, modifiers: Modifiers) -> Result<HostTime, String> {
+        self.check_visible()?;
         keys::post_key(self.pid, &self.window, code, modifiers).map_err(|error| error.to_string())
     }
 
@@ -358,11 +403,11 @@ impl Drop for Running {
     }
 }
 
-/// Returns the ordinary window of `pid` that is on screen and uncovered, on
-/// an awake display with the screen unlocked, with the display's state.
-fn visible_window(pid: i32) -> Result<(WindowInfo, DisplayState), String> {
-    let windows = windows_of(pid).map_err(|error| error.to_string())?;
-    let window = windows
+/// Returns the ordinary window of `pid` that is on screen: the window a run
+/// measures from then on.
+fn first_window(pid: i32) -> Result<WindowInfo, String> {
+    windows_of(pid)
+        .map_err(|error| error.to_string())?
         .into_iter()
         .find(|window| window.layer == 0 && window.on_screen)
         .ok_or_else(|| {
@@ -370,17 +415,43 @@ fn visible_window(pid: i32) -> Result<(WindowInfo, DisplayState), String> {
                 "window not visible: process {pid} has no ordinary window on screen; \
                  leave a normal desktop Space showing where the window opens"
             )
-        })?;
-    let display = DisplayState::read(window.bounds);
-    display.check()?;
-    // A window ordered on screen can still be covered by another one, and a
-    // covered window stops drawing.
-    if windows::is_covered(pid, &window).map_err(|error| error.to_string())? {
+        })
+}
+
+/// Checks that `expected`, the window of `pid` a run measures, is still
+/// listed and on screen within [`MOVE_TOLERANCE`] of where it was, entirely
+/// on the main display and uncovered, on an awake display with the screen
+/// unlocked, and returns the display's state.
+fn check_shown(pid: i32, expected: &WindowInfo) -> Result<DisplayState, String> {
+    let id = expected.id;
+    let window = windows::window_of(pid, id)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("window not visible: process {pid}'s window {id} is gone"))?;
+    if !window.on_screen {
         return Err(format!(
-            "window not visible: another window covers part of process {pid}'s window"
+            "window not visible: process {pid}'s window {id} is not on screen; leave a normal \
+             desktop Space showing where the window opens"
         ));
     }
-    Ok((window, display))
+    let (now, then) = (window.bounds, expected.bounds);
+    if !now.is_near(then, MOVE_TOLERANCE) {
+        return Err(format!(
+            "window moved: process {pid}'s window {id} is at {},{} sized {}×{}, not at {},{} \
+             sized {}×{} as at the start",
+            now.x, now.y, now.width, now.height, then.x, then.y, then.width, then.height
+        ));
+    }
+    on_main_display(pid, &window)?;
+    let display = DisplayState::read(window.bounds);
+    display.check()?;
+    // A window ordered on screen can still be covered by another one, even
+    // one of its own process, and a covered window stops drawing.
+    if windows::is_covered(pid, &window).map_err(|error| error.to_string())? {
+        return Err(format!(
+            "window not visible: another window covers part of process {pid}'s window {id}"
+        ));
+    }
+    Ok(display)
 }
 
 /// Checks that `window`, of process `pid`, lies entirely on the main
@@ -460,8 +531,7 @@ fn wait_until_ready(child: &mut Child) -> Result<Build, String> {
         match received.recv_timeout(left) {
             Ok(line) if line.starts_with("ready") => {
                 let build = build_of(&line);
-                break check_build(&build, env!("BENCH_REVISION"), cfg!(debug_assertions))
-                    .map(|()| build);
+                break check_build(&build, &Build::own()).map(|()| build);
             }
             Ok(_) => {}
             Err(_) => break Err("the benchmark window did not become ready".to_owned()),
@@ -489,34 +559,53 @@ fn build_of(ready: &str) -> Build {
     Build {
         revision: field("revision"),
         profile: field("profile"),
+        cpu: field("cpu"),
+        optimize: field("optimize"),
         engine: field("engine"),
     }
 }
 
-/// Refuses a benchmark window built from another revision than `revision`,
-/// this program's, or as a debug build when this program is not one
-/// (`debug` false): it would measure other code, or unoptimised code.
-fn check_build(build: &Build, revision: &str, debug: bool) -> Result<(), String> {
-    if build.revision.is_empty() || build.profile.is_empty() {
+/// Refuses a benchmark window built otherwise than `own`, this program: from
+/// another revision, with another engine CPU target or optimisation, or as a
+/// debug build when this program is not one. It would measure other code, or
+/// code built another way.
+fn check_build(build: &Build, own: &Build) -> Result<(), String> {
+    if [&build.revision, &build.profile, &build.cpu, &build.optimize]
+        .iter()
+        .any(|field| field.is_empty())
+    {
         return Err(
-            "the benchmark window does not say what it was built from; build both programs \
-             together"
+            "the benchmark window does not say how it was built; build both programs together"
                 .to_owned(),
         );
     }
-    if build.revision != revision {
+    if build.revision != own.revision {
         return Err(format!(
-            "the benchmark window was built from {}, but this program from {revision}; \
+            "the benchmark window was built from {}, but this program from {}; \
              build both programs together",
-            build.revision
+            build.revision, own.revision
         ));
     }
-    if build.profile == "debug" && !debug {
+    if build.profile == "debug" && own.profile != "debug" {
         return Err(
             "the benchmark window is a debug build, but this program a release build; \
              build the window with --release too"
                 .to_owned(),
         );
+    }
+    if build.cpu != own.cpu {
+        return Err(format!(
+            "the benchmark window's terminal engine was built for CPU {}, but this program's \
+             for {}; build both with the same LIBGHOSTTY_VT_SYS_CPU",
+            build.cpu, own.cpu
+        ));
+    }
+    if build.optimize != own.optimize {
+        return Err(format!(
+            "the benchmark window's terminal engine is optimised {}, but this program's {}; \
+             build both with the same LIBGHOSTTY_VT_SYS_OPTIMIZE",
+            build.optimize, own.optimize
+        ));
     }
     Ok(())
 }
@@ -704,39 +793,72 @@ mod tests {
     #[test]
     fn the_ready_line_states_how_the_window_was_built() {
         let ready = "ready 200x50 cell 7.8x16\trevision 0123abc with uncommitted changes\t\
-                     profile release\tengine libghostty-vt 1.2.0, ReleaseFast, SIMD true";
-        assert_eq!(
-            build_of(ready),
-            Build {
-                revision: "0123abc with uncommitted changes".to_owned(),
-                profile: "release".to_owned(),
-                engine: "libghostty-vt 1.2.0, ReleaseFast, SIMD true".to_owned(),
-            }
-        );
-        assert_eq!(
-            build_of("ready 200x50 cell 7.8x16"),
-            Build {
-                revision: String::new(),
-                profile: String::new(),
-                engine: String::new(),
-            }
-        );
+                     profile release\tcpu baseline\toptimize ReleaseFast\t\
+                     engine libghostty-vt 1.2.0, ReleaseFast, SIMD true";
+        assert_eq!(build_of(ready), build("0123abc with uncommitted changes"));
+        let unsaid = Build {
+            revision: String::new(),
+            profile: String::new(),
+            cpu: String::new(),
+            optimize: String::new(),
+            engine: String::new(),
+        };
+        assert_eq!(build_of("ready 200x50 cell 7.8x16"), unsaid);
+    }
+
+    /// A release build from `revision`, for a baseline CPU and optimised
+    /// ReleaseFast.
+    fn build(revision: &str) -> Build {
+        Build {
+            revision: revision.to_owned(),
+            profile: "release".to_owned(),
+            cpu: "baseline".to_owned(),
+            optimize: "ReleaseFast".to_owned(),
+            engine: "libghostty-vt 1.2.0, ReleaseFast, SIMD true".to_owned(),
+        }
     }
 
     #[test]
     fn only_a_window_built_like_this_program_is_measured() {
-        let build = |revision: &str, profile: &str| Build {
-            revision: revision.to_owned(),
-            profile: profile.to_owned(),
-            engine: "libghostty-vt 1.2.0, ReleaseFast, SIMD true".to_owned(),
+        let own = build("abc");
+        let debug = |build: Build| Build {
+            profile: "debug".to_owned(),
+            ..build
         };
-        assert_eq!(check_build(&build("abc", "release"), "abc", false), Ok(()));
-        assert_eq!(check_build(&build("abc", "debug"), "abc", true), Ok(()));
-        assert_eq!(check_build(&build("abc", "release"), "abc", true), Ok(()));
-        // Other code, unoptimised code, or a window that does not say.
-        assert!(check_build(&build("def", "release"), "abc", false).is_err());
-        assert!(check_build(&build("abc", "debug"), "abc", false).is_err());
-        assert!(check_build(&build("", ""), "abc", false).is_err());
+        assert_eq!(check_build(&build("abc"), &own), Ok(()));
+        assert_eq!(
+            check_build(&debug(build("abc")), &debug(own.clone())),
+            Ok(())
+        );
+        assert_eq!(check_build(&build("abc"), &debug(own.clone())), Ok(()));
+        // Other code, unoptimised code, or code built for another CPU or
+        // with another engine optimisation.
+        assert!(check_build(&build("def"), &own).is_err());
+        assert!(check_build(&debug(build("abc")), &own).is_err());
+        let native = Build {
+            cpu: "native".to_owned(),
+            ..build("abc")
+        };
+        assert!(check_build(&native, &own).is_err());
+        let safe = Build {
+            optimize: "ReleaseSafe".to_owned(),
+            ..build("abc")
+        };
+        assert!(check_build(&safe, &own).is_err());
+        // A window that does not say.
+        let silent = Build {
+            cpu: String::new(),
+            ..build("abc")
+        };
+        assert!(check_build(&silent, &own).is_err());
+    }
+
+    #[test]
+    fn this_program_states_its_own_build() {
+        let own = Build::own();
+        assert_eq!(own.revision, env!("BENCH_REVISION"));
+        assert_eq!(own.cpu, env!("BENCH_GHOSTTY_CPU"));
+        assert!(!own.optimize.is_empty());
     }
 
     #[test]

@@ -134,14 +134,15 @@ pub fn windows_table(windows: &[(String, Window)]) -> String {
     builds.dedup();
     if !builds.is_empty() {
         out.push_str(
-            "\n## Benchmark window build\n\n| Revision | Profile | Terminal engine |\n\
-             | --- | --- | --- |\n",
+            "\n## Benchmark window build\n\n| Revision | Profile | Engine CPU target | \
+             Engine optimisation | Terminal engine |\n\
+             | --- | --- | --- | --- | --- |\n",
         );
         for build in builds {
             let _ = writeln!(
                 out,
-                "| {} | {} | {} |",
-                build.revision, build.profile, build.engine
+                "| {} | {} | {} | {} | {} |",
+                build.revision, build.profile, build.cpu, build.optimize, build.engine
             );
         }
     }
