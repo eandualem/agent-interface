@@ -13,8 +13,8 @@ use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, LazyLock, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
@@ -165,7 +165,9 @@ impl Drop for TmuxServer {
 /// the process, so that the process does not end first.
 pub fn wait_if_interrupted() {
     let mut started = started();
-    while started.interrupted {
+    // A signal sets `RECEIVED` as it arrives, before the thread that stops
+    // the servers has marked the list.
+    while started.interrupted || RECEIVED.load(Ordering::SeqCst) {
         started = STOPPED
             .wait(started)
             .unwrap_or_else(PoisonError::into_inner);
@@ -188,6 +190,9 @@ pub fn wait_if_interrupted() {
 /// can end on its own meanwhile calls [`wait_if_interrupted`] before it
 /// ends.
 pub fn stop_servers_when_interrupted(first: fn()) -> io::Result<()> {
+    for signal in [SIGINT, SIGTERM, SIGHUP] {
+        signal_hook::flag::register(signal, Arc::clone(&RECEIVED))?;
+    }
     let mut signals = Signals::new([SIGINT, SIGTERM, SIGHUP])?;
     std::thread::Builder::new()
         .name("stop-tmux-servers".to_owned())
@@ -321,6 +326,9 @@ static STARTED: Mutex<Started> = Mutex::new(Started {
 
 /// Notified whenever a server being dropped has stopped.
 static STOPPED: Condvar = Condvar::new();
+
+/// Set by the signal handler itself once an interrupt has arrived.
+static RECEIVED: LazyLock<Arc<AtomicBool>> = LazyLock::new(|| Arc::new(AtomicBool::new(false)));
 
 fn started() -> MutexGuard<'static, Started> {
     STARTED.lock().unwrap_or_else(PoisonError::into_inner)
@@ -498,7 +506,6 @@ fn control(tmpdir: &Path, socket_name: &str, args: &[&str]) -> io::Result<Child>
 mod tests {
     use std::io::{BufRead, BufReader, Write};
     use std::os::unix::process::ExitStatusExt;
-    use std::sync::atomic::AtomicBool;
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
 
