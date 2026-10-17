@@ -57,12 +57,16 @@ usage: tmux-workspaces-bench gate2|gate3|gate4 --out DIR [options]   (macOS)
                       this program)
   --ghostty PATH      Ghostty's app bundle (/Applications/Ghostty.app); each run
                       starts a separate instance with its own configuration
-  --origin X,Y        top left of every measured window, in points (40,60)
+  --origin X,Y        top left of every measured window, in points (40,60);
+                      the window must lie on the main display
+  --refresh HZ        the display's refresh rate, when it reports none
   gate2: --payloads LIST (all four), --size BYTES (20000000), --seed N (1),
          --warmup N (1); vtebench is not run yet
   gate3: --keys N (40), --warmup-keys N (5), --conditions idle,busy, --seed N (1)
-  gate4: --seconds S (30), --scenarios fire,scroll, --refresh HZ (when the
-         display reports none)
+  gate4: --seconds S (30), --scenarios fire,scroll
+  a run with fewer payloads, conditions, scenarios, keys, bytes or seconds
+  than the gate needs is an exploratory subset: it can fail the gate but not
+  pass it
 
 usage: tmux-workspaces-bench fire|scroll-test [--seconds S] [--seed N]
   output the display gates run in the measured pane; fire also takes

@@ -1,11 +1,19 @@
 //! The milestone-0 benchmark window: the panes of one tmux window, drawn by
 //! the app's terminal path. Benchmark scaffolding, not product UI
-//! (`docs/decisions/0018-benchmark-window-and-display-measurement.md`).
+//! (`docs/decisions/0019-benchmark-window.md`).
 //!
 //! The benchmark harness starts it, attached to a session on a private tmux
 //! server that the harness owns. Its font and colours come from the same file
 //! the harness gives the Ghostty it compares with, which uses Ghostty's
 //! configuration format; this window reads only the keys it needs.
+//!
+//! Once the window is open it prints one line, which the harness waits for:
+//! `ready COLSxROWS cell WIDTHxHEIGHT`, then tab-separated fields, each a
+//! name, a space and a value, saying how it was built: `revision` (the
+//! revision, as the harness states its own), `profile` (`debug` or
+//! `release`) and `engine` (the terminal engine's build). The harness refuses
+//! a window built from another revision, or a debug window when it is a
+//! release build itself.
 
 use std::io::Write;
 use std::sync::Arc;
@@ -135,15 +143,33 @@ fn run() -> Result<(), String> {
         }
         // The harness waits for this line before it looks for the window.
         println!(
-            "ready {}x{} cell {}x{}",
+            "ready {}x{} cell {}x{}\trevision {}\tprofile {}\tengine {}",
             cols,
             rows,
             f32::from(cell.width),
-            f32::from(cell.height)
+            f32::from(cell.height),
+            env!("BENCH_REVISION"),
+            if cfg!(debug_assertions) {
+                "debug"
+            } else {
+                "release"
+            },
+            engine()
         );
         let _ = std::io::stdout().flush();
     });
     Ok(())
+}
+
+/// Describes the terminal engine's build on one line.
+fn engine() -> String {
+    match tmux_workspaces_term::engine_build() {
+        Ok(engine) => format!(
+            "libghostty-vt {}, {}, SIMD {}",
+            engine.version, engine.optimize, engine.simd
+        ),
+        Err(error) => format!("unknown ({error})"),
+    }
 }
 
 fn parse(mut args: impl Iterator<Item = String>) -> Result<Options, String> {

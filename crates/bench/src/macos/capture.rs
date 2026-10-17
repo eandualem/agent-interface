@@ -17,7 +17,7 @@ use block2::RcBlock;
 use dispatch2::{DispatchQueue, DispatchRetained};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol, ProtocolObject};
-use objc2::{AllocAnyThread, DefinedClass, define_class, msg_send};
+use objc2::{AllocAnyThread, DefinedClass, define_class, msg_send, sel};
 use objc2_core_foundation::{CFArray, CGRect};
 use objc2_core_graphics::CGPreflightScreenCaptureAccess;
 use objc2_core_media::{CMSampleBuffer, CMTime};
@@ -411,8 +411,15 @@ fn configuration(
         config.setHeight(pixels(frame.size.height));
         config.setPixelFormat(kCVPixelFormatType_32BGRA);
         config.setShowsCursor(false);
-        config.setCapturesAudio(false);
-        config.setIgnoreShadowsSingleWindow(true);
+        // ScreenCaptureKit itself needs macOS 12.3, but these two settings
+        // came later, audio in macOS 13 and shadows in macOS 14; older
+        // systems capture no audio anyway, and keep the shadow.
+        if config.respondsToSelector(sel!(setCapturesAudio:)) {
+            config.setCapturesAudio(false);
+        }
+        if config.respondsToSelector(sel!(setIgnoreShadowsSingleWindow:)) {
+            config.setIgnoreShadowsSingleWindow(true);
+        }
         config.setMinimumFrameInterval(CMTime::new(interval, 1_000_000_000));
         config.setQueueDepth(queue_depth);
         Ok(config)

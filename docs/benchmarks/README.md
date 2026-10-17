@@ -135,12 +135,16 @@ Before running them:
   harness checks both and stops if either is missing; it never asks for them.
 - Install Ghostty, by default at `/Applications/Ghostty.app`, for the
   baselines.
-- Leave a display free where the measured windows stay fully visible, and keep
-  the machine quiet. A covered or hidden window stops drawing, and the harness
-  then records a failed run, not a slow one. The windows open at the top left
-  of the main display (`--origin` moves them).
+- Leave the main display free where the measured windows stay fully visible,
+  awake and unlocked, and keep the machine quiet. The windows open at the top
+  left of the main display (`--origin` moves them) and must lie entirely on
+  it. Once a second, and before every key, the harness checks that the window
+  is on screen, not covered by another window, and that the display is awake
+  and the screen unlocked; otherwise it stops the run as failed, not slow.
 - Do not type or click while a run is going: the measured window must keep
-  its place and contents.
+  its place and contents. Keys go only to the measured process, and only
+  while its window is frontmost; otherwise the run stops before any key is
+  sent.
 
 Build the harness and the window in the distributable configuration, as two
 commands, then run each gate:
@@ -155,8 +159,16 @@ LIBGHOSTTY_VT_SYS_OPTIMIZE=ReleaseFast cargo build --release --locked -p tmux-wo
 
 Each writes `summary.md`, with the environment, the windows and a verdict per
 case, and `raw.tsv`, every sample. Running `tmux-workspaces-bench` without
-arguments lists the options. An acceptance result needs three runs of each
-gate, as for gate 1.
+arguments lists the options. If the display reports no refresh rate, give it
+with `--refresh HZ`. An acceptance result needs three runs of each gate, as
+for gate 1.
+
+The benchmark window prints its revision and build when it starts, and the
+harness refuses one built from a different revision, or a debug window run by
+a release harness. A run with fewer cases than the gate needs (fewer
+payloads, conditions, keys or seconds) is reported as an exploratory subset:
+it can fail, but it cannot pass. A comparison within one refresh interval of
+its limit is not decided until a camera confirms it (0018).
 
 ## How gates 2 to 4 measure
 
@@ -167,8 +179,11 @@ The method is [0018](../decisions/0018-milestone-0-benchmark-method-revised.md).
 control-mode client. Ghostty runs either the workload directly ("plain
 Ghostty") or an ordinary `tmux attach` to the same kind of session. Both read
 one configuration file written by the harness: Menlo 13, the same colours and
-16-colour palette, no padding and no blinking cursor. Targets alternate run by
-run.
+16-colour palette, no padding and no blinking cursor. Ghostty starts without
+its default configuration files and with private XDG configuration, data,
+state and cache directories, so it never reads or changes the user's own
+configuration; it is stopped by the exact process it started. Targets
+alternate run by run.
 
 **Timing.** ScreenCaptureKit captures the measured window, and each frame
 carries the time the window server displayed it. Times the harness takes, such
@@ -188,9 +203,9 @@ one at a time, at seeded random gaps of 150 to 350 ms, after a few unmeasured
 warm-up keys. A key's latency runs from just before it is posted to the first
 frame in which the typing pane's region changed. In the busy condition a
 second pane below streams output, and only the top 45% of the window is
-compared. A key with no change within one second is reported as missed. The
-app is compared with plain Ghostty, and Ghostty running tmux shows tmux's
-share.
+compared. A key with no change within one second is reported as missed, and a
+condition with missed keys is not decided. The app is compared with plain
+Ghostty, and Ghostty running tmux shows tmux's share.
 
 **Gate 4, frame pacing.** The pane runs a fire animation, which redraws the
 whole pane as fast as the terminal accepts, or a scroll test, each for 30

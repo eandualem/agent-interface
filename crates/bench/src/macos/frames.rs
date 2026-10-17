@@ -52,9 +52,12 @@ impl<T: Send + 'static> Frames<T> {
         self.received.try_iter().collect()
     }
 
-    /// Stops the capture and returns its counts.
-    pub fn stop(self) -> Result<CaptureStats, String> {
-        self.capture.stop().map_err(|error| error.to_string())
+    /// Stops the capture, waiting for its last frame callback, and returns
+    /// its counts with every frame not taken yet, including those still
+    /// queued when it stopped.
+    pub fn stop(self) -> Result<(CaptureStats, Vec<Seen<T>>), String> {
+        let stats = self.capture.stop().map_err(|error| error.to_string())?;
+        Ok((stats, self.received.try_iter().collect()))
     }
 }
 

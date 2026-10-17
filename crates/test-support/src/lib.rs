@@ -46,7 +46,7 @@ impl TmuxServer {
             .prefix(TMPDIR_PREFIX)
             .tempdir_in("/tmp")?;
         let socket_name = format!(
-            "tw-{}-{}",
+            "{SOCKET_PREFIX}{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         );
@@ -142,9 +142,19 @@ impl ServerRef {
     /// Refers to the server that [`TmuxServer::address`] described.
     ///
     /// `tmpdir` must be a private directory that [`TmuxServer::start`]
-    /// created, so a mistaken address cannot reach the default server or
-    /// anyone else's.
+    /// created, and `socket_name` a name it gave, so a mistaken address
+    /// cannot reach the default server or anyone else's.
     pub fn new(tmpdir: &Path, socket_name: &str) -> io::Result<Self> {
+        // tmux joins the name to its socket directory, so a name with a path
+        // in it could point outside the private directory.
+        let generated = socket_name.strip_prefix(SOCKET_PREFIX).is_some_and(|rest| {
+            !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit() || b == b'-')
+        });
+        if !generated {
+            return Err(io::Error::other(format!(
+                "{socket_name:?} is not a socket name made by TmuxServer"
+            )));
+        }
         let canonical = tmpdir.canonicalize()?;
         let private = canonical
             .parent()
@@ -180,6 +190,10 @@ impl ServerRef {
 /// The start of the name of every private directory [`TmuxServer::start`]
 /// creates.
 const TMPDIR_PREFIX: &str = "tw-tmux-";
+
+/// The start of every socket name [`TmuxServer::start`] gives; the rest is
+/// two numbers joined by a hyphen.
+const SOCKET_PREFIX: &str = "tw-";
 
 /// Returns a `tmux` command bound to one private server, before any command
 /// arguments. It stays private so that no caller can add `-L` or `-S` and
@@ -327,12 +341,27 @@ mod tests {
             .prefix("not-tw-")
             .tempdir_in("/tmp")
             .unwrap();
-        assert!(ServerRef::new(other.path(), "default").is_err());
+        assert!(ServerRef::new(other.path(), "tw-1-0").is_err());
         let nested = tempfile::Builder::new()
             .prefix(TMPDIR_PREFIX)
             .tempdir_in(other.path())
             .unwrap();
-        assert!(ServerRef::new(nested.path(), "default").is_err());
+        assert!(ServerRef::new(nested.path(), "tw-1-0").is_err());
+    }
+
+    #[test]
+    fn a_server_ref_refuses_names_it_did_not_make() {
+        let server = TmuxServer::start().unwrap();
+        let (tmpdir, _) = server.address();
+        for name in [
+            "default",
+            "../../tmux-501/default",
+            "tw-1/../x",
+            "tw-",
+            "tw-1-0 ",
+        ] {
+            assert!(ServerRef::new(tmpdir, name).is_err(), "{name:?}");
+        }
     }
 
     fn process_exists(pid: &str) -> bool {

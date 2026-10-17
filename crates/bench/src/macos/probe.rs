@@ -30,7 +30,8 @@ struct Seen {
 /// The window is `--window`, which must belong to `--pid`, or else the
 /// process's first ordinary window that is on screen. `--type TEXT` types
 /// TEXT and Return into `--pid`, and only `--pid`, one second into the
-/// capture, and reports when the window first changed after that.
+/// capture, if the window is then frontmost, and reports when the window
+/// first changed after that.
 /// `--color RRGGBB` reports the largest share of a frame showing that colour.
 pub fn run(options: &Options) -> Result<(), String> {
     let pid: i32 = options
@@ -103,8 +104,8 @@ pub fn run(options: &Options) -> Result<(), String> {
     let mut typed = None;
     if !text.is_empty() {
         std::thread::sleep(Duration::from_secs(1));
-        typed = Some(keys::post_text(pid, &text).map_err(|error| error.to_string())?);
-        keys::post_key(pid, keycode::RETURN, Modifiers::default())
+        typed = Some(keys::post_text(pid, window, &text).map_err(|error| error.to_string())?);
+        keys::post_key(pid, window, keycode::RETURN, Modifiers::default())
             .map_err(|error| error.to_string())?;
     }
     std::thread::sleep(Duration::from_secs_f64(seconds));

@@ -70,8 +70,14 @@ struct State {
     update: Option<Update>,
     /// Screens the user interface no longer needs, for the worker to reuse.
     spare: Vec<Screen>,
-    /// Whether the client has exited or the panes are being dropped.
+    /// Whether the client has exited: the reader has queued everything it
+    /// will.
     closed: bool,
+    /// Whether the panes are being dropped, so pending work is abandoned.
+    cancelled: bool,
+    /// Whether the worker has stopped, after handing over every change, or
+    /// because the panes are being dropped.
+    finished: bool,
 }
 
 impl Panes {
@@ -81,7 +87,7 @@ impl Panes {
     /// lines of history.
     ///
     /// `wake` is called on the worker thread whenever an update is ready, and
-    /// once more when the client has exited and all its output is applied.
+    /// once more when the worker has finished.
     pub fn start(
         mut client: Child,
         layout: &[PaneLayout],
@@ -142,9 +148,10 @@ impl Panes {
         stdin.flush()
     }
 
-    /// Returns whether the client has exited.
-    pub fn is_closed(&self) -> bool {
-        self.shared.lock().closed
+    /// Returns whether the client has exited and the worker has handed over
+    /// every change its output made. The last update may still be waiting.
+    pub fn is_finished(&self) -> bool {
+        self.shared.lock().finished
     }
 }
 
@@ -153,7 +160,7 @@ impl Drop for Panes {
         // Closing standard input detaches the client, which then exits and
         // ends the reader with end of file.
         drop(self.stdin.lock().unwrap_or_else(|e| e.into_inner()).take());
-        self.shared.lock().closed = true;
+        self.shared.lock().cancelled = true;
         self.shared.changed.notify_all();
         let _ = self.client.wait();
         for thread in self.threads.drain(..) {
@@ -208,11 +215,11 @@ fn read(shared: &Shared, mut stdout: ChildStdout) {
         }
         let size: usize = batch.iter().map(|(_, bytes)| bytes.len()).sum();
         let mut state = shared.lock();
-        while state.queued > QUEUE_LIMIT && !state.closed {
+        while state.queued > QUEUE_LIMIT && !state.cancelled {
             state = shared.wait(state);
         }
-        if state.closed {
-            return;
+        if state.cancelled {
+            break;
         }
         state.queued += size;
         state.queue.extend(batch);
@@ -234,13 +241,15 @@ fn work(shared: &Shared, layout: &[PaneLayout], scrollback: usize, wake: &dyn Fn
         .map(|pane| Terminal::new(pane.cols, pane.rows, scrollback).map(|t| (pane.id, t)))
         .collect();
     let Ok(mut terminals) = terminals else {
-        shared.close();
+        shared.lock().finished = true;
+        shared.changed.notify_all();
+        wake();
         return;
     };
     let mut changed: Vec<PaneId> = Vec::new();
     let mut state = shared.lock();
     loop {
-        if !changed.is_empty() && state.update.is_none() {
+        if !changed.is_empty() && state.update.is_none() && !state.cancelled {
             let mut spare = std::mem::take(&mut state.spare);
             drop(state);
             let mut update = Vec::with_capacity(changed.len());
@@ -271,9 +280,11 @@ fn work(shared: &Shared, layout: &[PaneLayout], scrollback: usize, wake: &dyn Fn
                 }
             }
             state = shared.lock();
-        } else if state.closed {
+        } else if state.cancelled || (state.closed && changed.is_empty()) {
+            // Once the client has exited, the last changes still wait for the
+            // user interface to take the update before them.
+            state.finished = true;
             drop(state);
-            // Let the user interface see that the client has gone.
             wake();
             return;
         } else {
@@ -315,6 +326,47 @@ mod tests {
     }
 
     #[test]
+    fn changes_made_while_an_update_waits_arrive_after_the_client_exits() {
+        let server = TmuxServer::start().unwrap();
+        let session = TmuxServer::SESSION;
+        server
+            .run(&["respawn-pane", "-k", "-t", session, "exec cat"])
+            .unwrap();
+        let id = server
+            .run(&["display-message", "-p", "-t", session, "#{pane_id}"])
+            .unwrap();
+        let pane = PaneId(id.trim().trim_start_matches('%').parse().unwrap());
+        let layout = [PaneLayout {
+            id: pane,
+            left: 0,
+            top: 0,
+            cols: 200,
+            rows: 50,
+        }];
+        let client = server.control(&["attach-session", "-t", session]).unwrap();
+        let (wake, woken) = mpsc::channel();
+        let panes = Panes::start(client, &layout, 100, move || {
+            let _ = wake.send(());
+        })
+        .unwrap();
+
+        // The first update waits, untaken, while more output arrives and the
+        // client exits.
+        panes.send_input(pane, b"first").unwrap();
+        woken.recv_timeout(Duration::from_secs(10)).unwrap();
+        panes.send_input(pane, b" second").unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        server.run(&["kill-server"]).unwrap();
+        assert!(panes.take_update().is_some());
+        wait_for_row(&panes, &woken, pane, "first second");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !panes.is_finished() {
+            assert!(Instant::now() < deadline, "the worker did not finish");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
     fn input_reaches_the_pane_and_its_echo_comes_back_as_an_update() {
         let server = TmuxServer::start().unwrap();
         let session = TmuxServer::SESSION;
@@ -341,7 +393,7 @@ mod tests {
 
         panes.send_input(pane, b"hello").unwrap();
         wait_for_row(&panes, &woken, pane, "hello");
-        assert!(!panes.is_closed());
+        assert!(!panes.is_finished());
         drop(panes);
         assert!(server.run(&["has-session", "-t", session]).is_ok());
     }

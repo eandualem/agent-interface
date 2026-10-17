@@ -1,5 +1,6 @@
 //! What the display gates' reports share: the environment table, a line per
-//! measured window, and writing `summary.md` and `raw.tsv`.
+//! measured window, how results are judged against the gates' limits, and
+//! writing `summary.md` and `raw.tsv`.
 
 use std::fmt::Write;
 use std::fs;
@@ -9,10 +10,10 @@ use std::time::Duration;
 use tmux_workspaces_test_support::TmuxServer;
 
 use super::capture::CaptureStats;
-use super::displays;
-use super::targets::{Programs, Target};
-use super::windows::WindowInfo;
+use super::displays::{self, DisplayState};
+use super::targets::{Build, Programs, Running, Target};
 use crate::environment;
+use crate::options::Options;
 
 /// Returns the environment as named values, in report order: what gate 1
 /// reports, with Ghostty's version and the load average before the runs.
@@ -31,7 +32,7 @@ pub fn environment(programs: &Programs) -> Vec<(&'static str, String)> {
 /// the environment, with the load and builds measured after the runs.
 pub fn opening(
     title: &str,
-    verdict: &(&str, Vec<String>),
+    verdict: &(String, Vec<String>),
     environment: &[(&str, String)],
 ) -> String {
     let mut out = format!("# {title}\n\n**{}**\n\n", verdict.0);
@@ -54,48 +55,173 @@ pub fn opening(
 pub struct Window {
     /// The target that drew it.
     pub target: Target,
+    /// Its top left corner in points, from the top left of the main display.
+    pub origin: (f64, f64),
     /// Its size in points, title bar included.
     pub size: (f64, f64),
     /// The refresh rate of its display, if known.
     pub refresh: Option<f64>,
+    /// The state of its display when the run started and when it ended.
+    pub display: [DisplayState; 2],
+    /// How the program was built, if it is the benchmark window.
+    pub build: Option<Build>,
     /// The capture's counts.
     pub stats: CaptureStats,
 }
 
 impl Window {
-    /// Describes `window`, drawn by `target`, captured with `stats`.
-    pub fn new(target: Target, window: &WindowInfo, stats: CaptureStats) -> Self {
+    /// Describes the window of `running`, drawn by `target` and captured
+    /// with `stats`, whose display was in state `after` when the run ended.
+    pub fn new(
+        target: Target,
+        running: &Running,
+        stats: CaptureStats,
+        after: DisplayState,
+    ) -> Self {
+        let bounds = running.window().bounds;
         Self {
             target,
-            size: (window.bounds.width, window.bounds.height),
-            refresh: displays::refresh_rate(window.bounds),
+            origin: (bounds.x, bounds.y),
+            size: (bounds.width, bounds.height),
+            refresh: displays::refresh_rate(bounds),
+            display: [running.display_before(), after],
+            build: running.build().cloned(),
             stats,
         }
     }
 }
 
-/// Returns a table of the windows measured.
+/// Returns a table of the windows measured, and of how the benchmark window
+/// was built.
 pub fn windows_table(windows: &[(String, Window)]) -> String {
     let mut out = String::from(
-        "\n## Windows\n\n| Run | Target | Size (points) | Refresh | Complete frames | Idle | Other |\n\
-         | --- | --- | --- | --- | --- | --- | --- |\n",
+        "\n## Windows\n\n| Run | Target | Origin (points) | Size (points) | Refresh | \
+         Display asleep (start, end) | Screen locked (start, end) | Complete frames | Idle | \
+         Other |\n\
+         | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n",
     );
+    let yes_no = |value: Option<bool>| match value {
+        Some(true) => "yes",
+        Some(false) => "no",
+        None => "unknown",
+    };
     for (run, window) in windows {
         let refresh = window
             .refresh
             .map_or("unknown".to_owned(), |hz| format!("{hz:.0} Hz"));
+        let [start, end] = window.display;
         let _ = writeln!(
             out,
-            "| {run} | {} | {}×{} | {refresh} | {} | {} | {} |",
+            "| {run} | {} | {},{} | {}×{} | {refresh} | {}, {} | {}, {} | {} | {} | {} |",
             window.target.name(),
+            window.origin.0,
+            window.origin.1,
             window.size.0,
             window.size.1,
+            yes_no(start.asleep),
+            yes_no(end.asleep),
+            yes_no(start.locked),
+            yes_no(end.locked),
             window.stats.complete,
             window.stats.idle,
             window.stats.other,
         );
     }
+    let mut builds: Vec<&Build> = windows
+        .iter()
+        .filter_map(|(_, window)| window.build.as_ref())
+        .collect();
+    builds.dedup();
+    if !builds.is_empty() {
+        out.push_str(
+            "\n## Benchmark window build\n\n| Revision | Profile | Terminal engine |\n\
+             | --- | --- | --- |\n",
+        );
+        for build in builds {
+            let _ = writeln!(
+                out,
+                "| {} | {} | {} |",
+                build.revision, build.profile, build.engine
+            );
+        }
+    }
     out
+}
+
+/// Reads `--refresh HZ`, the refresh rate to use when the display reports
+/// none.
+pub fn refresh_option(options: &Options) -> Result<Option<f64>, String> {
+    if options.required("refresh").is_err() {
+        return Ok(None);
+    }
+    let hz: f64 = options.get("refresh", 0.0)?;
+    if hz > 0.0 && hz.is_finite() {
+        Ok(Some(hz))
+    } else {
+        Err(format!("--refresh: cannot use {hz}"))
+    }
+}
+
+/// Where a result lies against a limit it must not exceed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Judged {
+    /// Below the limit by more than the margin.
+    Passes,
+    /// Within the margin of the limit, on either side: the capture leaves
+    /// out the display's scan-out, so decision record 0018 has a camera
+    /// confirm such a result before the gate is decided.
+    Near,
+    /// Above the limit by more than the margin.
+    Fails,
+}
+
+impl Judged {
+    /// Judges `value` against `limit`, with results within `margin` of it,
+    /// one refresh interval, left to a camera.
+    pub fn of(value: Duration, limit: Duration, margin: Duration) -> Self {
+        if value.abs_diff(limit) <= margin {
+            Judged::Near
+        } else if value < limit {
+            Judged::Passes
+        } else {
+            Judged::Fails
+        }
+    }
+
+    /// Describes the outcome for a report line.
+    pub fn describe(self) -> &'static str {
+        match self {
+            Judged::Passes => "passes",
+            Judged::Near => {
+                "not decided: within one refresh interval of the limit, needs camera \
+                 confirmation (0018)"
+            }
+            Judged::Fails => "fails",
+        }
+    }
+}
+
+/// Returns a gate's verdict, `Gate N passed`, `failed` or `not decided`.
+///
+/// `missing` lists what the run left out of the gate's required coverage.
+/// Without it the gate cannot pass: the verdict is at most not decided, and
+/// says what is missing.
+pub fn verdict(gate: u8, failed: bool, undecided: bool, missing: &[String]) -> String {
+    let outcome = if failed {
+        "failed"
+    } else if undecided || !missing.is_empty() {
+        "not decided"
+    } else {
+        "passed"
+    };
+    if missing.is_empty() {
+        format!("Gate {gate} {outcome}")
+    } else {
+        format!(
+            "Gate {gate} {outcome} (exploratory subset: {})",
+            missing.join("; ")
+        )
+    }
 }
 
 /// Writes `summary.md` and `raw.tsv` to `out` and prints the summary.
@@ -121,4 +247,52 @@ pub fn order(targets: &[Target], run: usize) -> Vec<Target> {
 /// Returns `time` in milliseconds.
 pub fn ms(time: Duration) -> f64 {
     time.as_secs_f64() * 1e3
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn results_within_one_refresh_of_a_limit_need_a_camera() {
+        let ms = Duration::from_millis;
+        let interval = Duration::from_micros(16_667);
+        assert_eq!(Judged::of(ms(10), ms(30), interval), Judged::Passes);
+        assert_eq!(Judged::of(ms(20), ms(30), interval), Judged::Near);
+        assert_eq!(Judged::of(ms(40), ms(30), interval), Judged::Near);
+        assert_eq!(Judged::of(ms(50), ms(30), interval), Judged::Fails);
+        // The worst of several results decides.
+        assert_eq!(Judged::Passes.max(Judged::Near), Judged::Near);
+        assert_eq!(Judged::Near.max(Judged::Fails), Judged::Fails);
+    }
+
+    #[test]
+    fn a_subset_never_passes_the_gate() {
+        let missing = ["busy not run".to_owned()];
+        assert_eq!(verdict(3, false, false, &[]), "Gate 3 passed");
+        assert_eq!(verdict(3, false, true, &[]), "Gate 3 not decided");
+        assert_eq!(verdict(3, true, false, &[]), "Gate 3 failed");
+        assert_eq!(
+            verdict(3, false, false, &missing),
+            "Gate 3 not decided (exploratory subset: busy not run)"
+        );
+        assert_eq!(
+            verdict(3, true, false, &missing),
+            "Gate 3 failed (exploratory subset: busy not run)"
+        );
+    }
+
+    #[test]
+    fn the_refresh_option_takes_a_positive_rate() {
+        let options = |args: &[&str]| {
+            Options::parse(&args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>()).unwrap()
+        };
+        assert_eq!(refresh_option(&options(&[])), Ok(None));
+        assert_eq!(
+            refresh_option(&options(&["--refresh", "120"])),
+            Ok(Some(120.0))
+        );
+        assert!(refresh_option(&options(&["--refresh", "-60"])).is_err());
+        assert!(refresh_option(&options(&["--refresh", "fast"])).is_err());
+    }
 }

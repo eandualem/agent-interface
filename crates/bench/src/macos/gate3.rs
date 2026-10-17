@@ -5,6 +5,9 @@
 //! measured program's process, at random gaps. A key's latency runs from just
 //! before it is posted to the display time of the first frame in which the
 //! typing pane's region differs from the frame shown before the key.
+//!
+//! Every key, measured or not, is posted only while the measured window is
+//! frontmost, and the window is checked to be shown between keys.
 
 use std::fmt::Write;
 use std::path::Path;
@@ -14,9 +17,9 @@ use std::time::{Duration, Instant};
 use super::capture::CaptureStats;
 use super::clock::{self, HostTime};
 use super::frames::{Frames, Region, Seen};
-use super::keys::{self, Modifiers, keycode};
+use super::keys::{Modifiers, keycode};
 use super::pixels::region_digest;
-use super::report::{self, Window, ms};
+use super::report::{self, Judged, Window, ms};
 use super::targets::{self, Programs, SESSION, Target};
 use crate::options::Options;
 use crate::payload::Rng;
@@ -32,6 +35,10 @@ const LINE_KEYS: usize = 60;
 /// Ghostty's by at most these.
 const MEDIAN_LIMIT: Duration = Duration::from_millis(4);
 const P95_LIMIT: Duration = Duration::from_millis(8);
+/// The coverage a whole-gate result needs: both conditions, each with at
+/// least this many measured keys of the app and of plain Ghostty.
+const REQUIRED_CONDITIONS: [Condition; 2] = [Condition::Idle, Condition::Busy];
+const REQUIRED_KEYS: usize = 40;
 
 /// What else the window is doing while keys are typed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -75,6 +82,8 @@ struct Settings {
     seed: u64,
     conditions: Vec<Condition>,
     targets: Vec<Target>,
+    /// The refresh rate to use when the display does not report one.
+    refresh: Option<f64>,
 }
 
 /// One run of one target in one condition.
@@ -106,6 +115,7 @@ pub fn run(options: &Options) -> Result<(), String> {
             options,
             &[Target::App, Target::Ghostty, Target::GhosttyTmux],
         )?,
+        refresh: report::refresh_option(options)?,
     };
     if settings.keys == 0 || settings.runs == 0 || settings.targets.is_empty() {
         return Err("--keys, --runs and --targets must not be empty".to_owned());
@@ -165,15 +175,18 @@ fn measure(
     // Plain Ghostty runs this in its first split, and again in the split
     // opened below it, which streams instead.
     let marker = work.join(format!("{}-{run}.split", target.name()));
+    // The second split leaves its own file, so its existence shows the
+    // streaming split really started.
+    let streaming = work.join(format!("{}-{run}.streaming", target.name()));
     let plain = match condition {
         Condition::Idle => "exec cat".to_owned(),
         Condition::Busy => format!(
-            "if [ -e '{0}' ]; then {stream}; fi; : > '{0}'; exec cat",
-            marker.display()
+            "if [ -e '{0}' ]; then : > '{1}'; {stream}; fi; : > '{0}'; exec cat",
+            marker.display(),
+            streaming.display()
         ),
     };
     let running = targets::start(target, programs, server.as_ref(), &plain, work)?;
-    let pid = running.pid();
     if condition == Condition::Busy && target == Target::Ghostty {
         // Ghostty's default keys: Command-Shift-D splits downwards, and
         // Command-Option-Up returns to the split above.
@@ -187,13 +200,14 @@ fn measure(
             option: true,
             ..Modifiers::default()
         };
-        keys::post_key(pid, keycode::D, split).map_err(|error| error.to_string())?;
+        running.post_key(keycode::D, split)?;
         thread::sleep(Duration::from_secs(1));
-        keys::post_key(pid, keycode::UP, up).map_err(|error| error.to_string())?;
+        running.post_key(keycode::UP, up)?;
         thread::sleep(Duration::from_millis(500));
-        if !marker.exists() {
+        if !streaming.exists() {
             // Not measured rather than measured without its neighbour.
-            let window = Window::new(target, running.window(), CaptureStats::default());
+            let after = running.check_visible()?;
+            let window = Window::new(target, &running, CaptureStats::default(), after);
             return Ok(Measured {
                 condition,
                 target,
@@ -215,27 +229,28 @@ fn measure(
     let mut latencies = Vec::with_capacity(settings.keys);
     for index in 0..settings.warmup_keys + settings.keys {
         if index > 0 && index % LINE_KEYS == 0 {
-            keys::post_key(pid, keycode::RETURN, Modifiers::default())
-                .map_err(|error| error.to_string())?;
+            running.post_key(keycode::RETURN, Modifiers::default())?;
             thread::sleep(Duration::from_millis(300));
         }
         for seen in frames.drain() {
             watch.before(seen);
         }
         let letter = char::from(LETTERS[index % LETTERS.len()]);
-        let posted =
-            keys::post_text(pid, &letter.to_string()).map_err(|error| error.to_string())?;
+        let posted = running.post_text(&letter.to_string())?;
         let shown = wait_for_change(&frames, &mut watch, posted);
         if index >= settings.warmup_keys {
             latencies.push(shown.map(|time| time.since(posted)));
         }
+        // A window that stopped being visible stopped drawing: the run is
+        // void. Checking here, after the key showed, keeps the check out of
+        // the measured time.
+        running.check_visible()?;
         let gap = Duration::from_millis(rng.range(150, 350) as u64);
         thread::sleep(gap.saturating_sub(clock::now().since(posted)));
     }
-    // A window that stopped being visible stopped drawing: the run is void.
-    running.check_visible()?;
-    let stats = frames.stop()?;
-    let window = Window::new(target, running.window(), stats);
+    let after = running.check_visible()?;
+    let (stats, _) = frames.stop()?;
+    let window = Window::new(target, &running, stats, after);
     running.stop();
     drop(server);
     Ok(Measured {
@@ -391,7 +406,7 @@ fn summarize(times: &[Duration]) -> Option<Summary> {
     (!times.is_empty()).then(|| stats::summarize(times))
 }
 
-fn verdict(settings: &Settings, results: &[Measured]) -> (&'static str, Vec<String>) {
+fn verdict(settings: &Settings, results: &[Measured]) -> (String, Vec<String>) {
     let mut reasons = Vec::new();
     let mut failed = false;
     let mut undecided = false;
@@ -406,19 +421,49 @@ fn verdict(settings: &Settings, results: &[Measured]) -> (&'static str, Vec<Stri
             ));
             continue;
         };
+        // A missed key's latency is unknown and over a second, so the
+        // percentiles of the keys shown cannot decide the gate.
+        let missed = |target| pooled(results, condition, target).map_or(0, |pooled| pooled.missed);
+        let (app_missed, ghostty_missed) = (missed(Target::App), missed(Target::Ghostty));
+        if app_missed + ghostty_missed > 0 {
+            undecided = true;
+            reasons.push(format!(
+                "{}: not decided, {app_missed} key(s) of the app and {ghostty_missed} of plain \
+                 Ghostty were missed",
+                condition.name()
+            ));
+            continue;
+        }
+        let Some(refresh) = results
+            .iter()
+            .find(|result| result.condition == condition && result.target == Target::App)
+            .and_then(|result| result.window.refresh)
+            .or(settings.refresh)
+        else {
+            undecided = true;
+            reasons.push(format!(
+                "{}: not decided, the display reports no refresh rate: give --refresh HZ",
+                condition.name()
+            ));
+            continue;
+        };
+        let interval = Duration::from_secs_f64(1.0 / refresh);
         let over = |app: Duration, ghostty: Duration| ms(app) - ms(ghostty);
-        let passes =
-            app.median <= ghostty.median + MEDIAN_LIMIT && app.p95 <= ghostty.p95 + P95_LIMIT;
-        failed |= !passes;
+        // A clear failure of either limit fails, whatever the other shows.
+        let judged = Judged::of(app.median, ghostty.median + MEDIAN_LIMIT, interval)
+            .max(Judged::of(app.p95, ghostty.p95 + P95_LIMIT, interval));
+        failed |= judged == Judged::Fails;
+        undecided |= judged == Judged::Near;
         reasons.push(format!(
             "{}: the app's median is {:+.2} ms and its p95 {:+.2} ms from plain Ghostty's \
-             (limits +{} and +{} ms): {}",
+             (limits +{} and +{} ms, one refresh interval {:.2} ms): {}",
             condition.name(),
             over(app.median, ghostty.median),
             over(app.p95, ghostty.p95),
             MEDIAN_LIMIT.as_millis(),
             P95_LIMIT.as_millis(),
-            if passes { "passes" } else { "fails" },
+            ms(interval),
+            judged.describe(),
         ));
         if let Some(tmux) = summary(Target::GhosttyTmux) {
             reasons.push(format!(
@@ -452,14 +497,33 @@ fn verdict(settings: &Settings, results: &[Measured]) -> (&'static str, Vec<Stri
          machine (decision record 0018); this report alone does not make one."
             .to_owned(),
     );
-    let verdict = if failed {
-        "Gate 3 failed"
-    } else if undecided {
-        "Gate 3 not decided"
-    } else {
-        "Gate 3 passed"
-    };
-    (verdict, reasons)
+    (
+        report::verdict(3, failed, undecided, &missing(settings, results)),
+        reasons,
+    )
+}
+
+/// Lists what the run left out of the coverage a whole-gate result needs.
+fn missing(settings: &Settings, results: &[Measured]) -> Vec<String> {
+    let mut missing = Vec::new();
+    for condition in REQUIRED_CONDITIONS {
+        if !settings.conditions.contains(&condition) {
+            missing.push(format!("{} not run", condition.name()));
+            continue;
+        }
+        for target in [Target::App, Target::Ghostty] {
+            let keys = pooled(results, condition, target)
+                .map_or(0, |pooled| pooled.shown.len() + pooled.missed);
+            if keys < REQUIRED_KEYS {
+                missing.push(format!(
+                    "{}: {keys} measured keys of {}, needs {REQUIRED_KEYS}",
+                    condition.name(),
+                    target.name()
+                ));
+            }
+        }
+    }
+    missing
 }
 
 #[cfg(test)]
@@ -484,6 +548,75 @@ mod tests {
         assert_eq!(
             watch.after(seen(120, 3), posted),
             Some(HostTime::from_nanos(120))
+        );
+    }
+
+    fn settings(conditions: &[Condition]) -> Settings {
+        Settings {
+            keys: 40,
+            warmup_keys: 5,
+            runs: 1,
+            seed: 1,
+            conditions: conditions.to_vec(),
+            targets: vec![Target::App, Target::Ghostty],
+            refresh: None,
+        }
+    }
+
+    /// A run of `target` in `condition` whose keys all took `latency` ms.
+    fn measured(condition: Condition, target: Target, keys: usize, latency: f64) -> Measured {
+        Measured {
+            condition,
+            target,
+            run: 1,
+            latencies: vec![Some(Duration::from_secs_f64(latency / 1e3)); keys],
+            window: Window {
+                target,
+                origin: (40.0, 60.0),
+                size: (1600.0, 850.0),
+                refresh: Some(60.0),
+                display: Default::default(),
+                build: None,
+                stats: CaptureStats::default(),
+            },
+            skipped: None,
+        }
+    }
+
+    #[test]
+    fn a_result_within_one_refresh_of_a_limit_is_not_decided() {
+        let all = [Condition::Idle, Condition::Busy];
+        let gate = |app: f64| {
+            let results: Vec<Measured> = all
+                .iter()
+                .flat_map(|&condition| {
+                    [
+                        measured(condition, Target::App, 40, app),
+                        measured(condition, Target::Ghostty, 40, 20.0),
+                    ]
+                })
+                .collect();
+            verdict(&settings(&all), &results).0
+        };
+        // The limits are +4 ms (median) and +8 ms (p95); at 60 Hz one
+        // refresh interval is 16.7 ms.
+        assert_eq!(gate(2.0), "Gate 3 passed");
+        assert_eq!(gate(30.0), "Gate 3 not decided");
+        assert_eq!(gate(20.0), "Gate 3 not decided");
+        assert_eq!(gate(60.0), "Gate 3 failed");
+    }
+
+    #[test]
+    fn a_subset_of_conditions_or_keys_cannot_pass() {
+        let results = [
+            measured(Condition::Idle, Target::App, 8, 2.0),
+            measured(Condition::Idle, Target::Ghostty, 8, 20.0),
+        ];
+        let (verdict, _) = verdict(&settings(&[Condition::Idle]), &results);
+        assert_eq!(
+            verdict,
+            "Gate 3 not decided (exploratory subset: idle: 8 measured keys of app, needs 40; \
+             idle: 8 measured keys of ghostty, needs 40; busy not run)"
         );
     }
 

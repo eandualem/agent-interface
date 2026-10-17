@@ -13,9 +13,9 @@ harness for gates 2 to 4 showed three gaps in it:
 
 - **Gate 3's instruments are not usable here.** 0013 names Typometer or a
   240 fps camera. The benchmark machine has no high-speed camera. Typometer
-  posts system-wide key events, which reach whichever window has focus, and on
-  a machine where people and agents keep live tmux sessions, a focus change
-  during a run would type into one of them.
+  posts system-wide key events, which reach whichever window has focus, so a
+  focus change during a run would type into an unrelated window, possibly a
+  terminal running real work.
 - **Gates 2 and 4 name no instrument** for "the presented frame that shows the
   final marker" and for the frame rate.
 - **The window must be visible.** In GPUI 0.3.9, a window stops drawing when
@@ -69,8 +69,8 @@ How displayed frames are timed for gates 2 to 4:
 - The app is measured through the benchmark window of
   [0019](0019-benchmark-window.md). Ghostty is a separate instance, started
   for the run with its own configuration file and no default configuration
-  files, and stopped afterwards. The maintainer's own terminal windows are
-  never measured, captured or sent input.
+  files, and stopped afterwards. Only windows the harness started are
+  measured, captured or sent input.
 - The benchmark window and Ghostty read their font, font size, colours and
   sixteen-colour palette from the same file. Ghostty also gets no window
   padding, no cursor blinking and no shell integration, and the window has no
@@ -86,9 +86,10 @@ How displayed frames are timed for gates 2 to 4:
   window that is covered, minimised or on another Space is a failed run, not a
   slow one.
 - The harness's macOS code reaches these system interfaces through the
-  `objc2` bindings, at the versions GPUI already uses, so the dependency graph
-  holds one copy of each. They are dependencies of `crates/bench` on macOS
-  only:
+  `objc2` bindings, at the versions GPUI's macOS backend already uses, so they
+  add no second copies. (Other GPUI dependencies keep older copies of `objc2`,
+  `objc2-foundation` and `block2`.) They are dependencies of `crates/bench` on
+  macOS only:
 
   | Dependency | Version | Licence | Reason |
   | --- | --- | --- | --- |
@@ -191,8 +192,7 @@ gate is recorded as failed, with the follow-up decision linked.
   threshold need the camera check above.
 - Gates 2 to 4 need a quiet machine with one display showing a normal desktop
   where the measured window stays fully visible, and a process allowed to
-  record the screen and post events. Acceptance runs are arranged with the
-  maintainer.
+  record the screen and post events.
 - Display gates are measured on macOS only. Linux display measurement needs
   its own instrument and record.
 - The refinements 0013 made to the gate issue's draft stand: gate 1's "tmux's

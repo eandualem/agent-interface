@@ -8,9 +8,17 @@
 //!   client attached to the same kind of session.
 //!
 //! Ghostty instances are started with a configuration file of their own and
-//! found again by that file's path. Only a process found that way is ever
-//! signalled: the user's own Ghostty may be running live sessions.
+//! private configuration, data, state and cache directories, so they never
+//! read or change the user's own Ghostty settings, and are found again by
+//! that file's path. Only a process found that way is ever signalled: the
+//! user's own Ghostty may be running live sessions.
+//!
+//! A window counts as shown only while it is entirely on the main display,
+//! uncovered, with that display awake and the screen unlocked. The benchmark
+//! window must also have been built from the same revision as this program,
+//! and not as a debug build when this program is a release build.
 
+use std::ffi::OsString;
 use std::fs;
 use std::io::{self, BufRead, BufReader};
 use std::os::unix::fs::PermissionsExt;
@@ -23,7 +31,10 @@ use std::time::{Duration, Instant};
 
 use tmux_workspaces_test_support::TmuxServer;
 
-use super::windows::{WindowInfo, windows_of};
+use super::clock::HostTime;
+use super::displays::{self, DisplayState};
+use super::keys::{self, Modifiers};
+use super::windows::{self, WindowInfo, windows_of};
 use crate::options::Options;
 
 /// The session every run measures.
@@ -58,6 +69,8 @@ palette = 15=#ffffff
 
 /// How long a program may take to show its window.
 const START_TIMEOUT: Duration = Duration::from_secs(30);
+/// How often a run that is waiting checks that its window is still shown.
+pub const CHECK_EVERY: Duration = Duration::from_secs(1);
 
 /// A program a display gate measures.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -178,6 +191,20 @@ pub struct Running {
     pid: i32,
     process: Process,
     window: WindowInfo,
+    build: Option<Build>,
+    display: DisplayState,
+}
+
+/// How the benchmark window was built, as its `ready` line states it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Build {
+    /// The revision it was built from, in the form this program's own
+    /// revision takes.
+    pub revision: String,
+    /// `debug` or `release`: whether it was built with debug assertions.
+    pub profile: String,
+    /// The terminal engine's version, optimisation mode and SIMD support.
+    pub engine: String,
 }
 
 enum Process {
@@ -203,7 +230,7 @@ pub fn start(
     let id = NEXT.fetch_add(1, Ordering::Relaxed);
     let config = work.join(format!("terminal-{id}.conf"));
     let session = || server.ok_or_else(|| format!("{} needs a tmux session", target.name()));
-    let mut process = match target {
+    let (mut process, build) = match target {
         Target::App => {
             fs::write(&config, APPEARANCE).map_err(|error| error.to_string())?;
             let (tmpdir, socket) = session()?.address();
@@ -218,8 +245,8 @@ pub fn start(
                 .stdout(Stdio::piped())
                 .spawn()
                 .map_err(|error| format!("{}: {error}", programs.window.display()))?;
-            wait_until_ready(&mut child)?;
-            Process::Child(child)
+            let build = wait_until_ready(&mut child)?;
+            (Process::Child(child), Some(build))
         }
         Target::Ghostty | Target::GhosttyTmux => {
             let command = match target {
@@ -232,8 +259,9 @@ pub fn start(
                 .map_err(|error| error.to_string())?;
             fs::write(&config, ghostty_config(programs.origin, &script))
                 .map_err(|error| error.to_string())?;
-            launch_ghostty(&programs.ghostty, &config)?;
-            Process::Ghostty { config }
+            let home = work.join(format!("ghostty-{id}"));
+            launch_ghostty(&programs.ghostty, &config, &home)?;
+            (Process::Ghostty { config }, None)
         }
     };
     let pid = match &process {
@@ -242,12 +270,19 @@ pub fn start(
     };
     let deadline = Instant::now() + START_TIMEOUT;
     loop {
-        match visible_window(pid) {
-            Ok(window) => {
+        // A window may appear before it reaches its place, so the display is
+        // checked until the deadline too.
+        let shown = visible_window(pid).and_then(|(window, display)| {
+            on_main_display(pid, &window).map(|()| (window, display))
+        });
+        match shown {
+            Ok((window, display)) => {
                 return Ok(Running {
                     pid,
                     process,
                     window,
+                    build,
+                    display,
                 });
             }
             Err(error) if Instant::now() >= deadline => {
@@ -260,21 +295,55 @@ pub fn start(
 }
 
 impl Running {
-    /// The program's process ID.
-    pub fn pid(&self) -> i32 {
-        self.pid
-    }
-
     /// The window being measured, as it was when the program started.
     pub fn window(&self) -> &WindowInfo {
         &self.window
     }
 
-    /// Checks that the program's window is still on screen. A window that is
-    /// covered, minimised or on another Space does not draw, so a run with
-    /// one is a failed run, not a slow one.
-    pub fn check_visible(&self) -> Result<(), String> {
-        visible_window(self.pid).map(|_| ())
+    /// How the program was built, if it is the benchmark window.
+    pub fn build(&self) -> Option<&Build> {
+        self.build.as_ref()
+    }
+
+    /// The state of the window's display when the program started.
+    pub fn display_before(&self) -> DisplayState {
+        self.display
+    }
+
+    /// Checks that the program's window is still on screen and uncovered, on
+    /// an awake display with the screen unlocked, and returns the display's
+    /// state. A window that is covered, minimised or on another Space, or on
+    /// a display that is asleep or locked, does not draw, so a run with one
+    /// is a failed run, not a slow one.
+    pub fn check_visible(&self) -> Result<DisplayState, String> {
+        visible_window(self.pid).map(|(_, display)| display)
+    }
+
+    /// Waits for `span`, checking every [`CHECK_EVERY`] and at the end that
+    /// the window is still shown, and returns the display's state at the
+    /// end.
+    pub fn wait_visible(&self, span: Duration) -> Result<DisplayState, String> {
+        let deadline = Instant::now() + span;
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            thread::sleep(left.min(CHECK_EVERY));
+            let display = self.check_visible()?;
+            if left <= CHECK_EVERY {
+                return Ok(display);
+            }
+        }
+    }
+
+    /// Types `text` into the program, if its window is frontmost, and
+    /// returns the host time just before the first key was posted.
+    pub fn post_text(&self, text: &str) -> Result<HostTime, String> {
+        keys::post_text(self.pid, &self.window, text).map_err(|error| error.to_string())
+    }
+
+    /// Presses one key with `modifiers` in the program, if its window is
+    /// frontmost, and returns the host time just before it was posted.
+    pub fn post_key(&self, code: u16, modifiers: Modifiers) -> Result<HostTime, String> {
+        keys::post_key(self.pid, &self.window, code, modifiers).map_err(|error| error.to_string())
     }
 
     /// Stops the program and waits for it to exit.
@@ -289,10 +358,11 @@ impl Drop for Running {
     }
 }
 
-/// Returns the ordinary window of `pid` that is on screen.
-fn visible_window(pid: i32) -> Result<WindowInfo, String> {
+/// Returns the ordinary window of `pid` that is on screen and uncovered, on
+/// an awake display with the screen unlocked, with the display's state.
+fn visible_window(pid: i32) -> Result<(WindowInfo, DisplayState), String> {
     let windows = windows_of(pid).map_err(|error| error.to_string())?;
-    windows
+    let window = windows
         .into_iter()
         .find(|window| window.layer == 0 && window.on_screen)
         .ok_or_else(|| {
@@ -300,7 +370,35 @@ fn visible_window(pid: i32) -> Result<WindowInfo, String> {
                 "window not visible: process {pid} has no ordinary window on screen; \
                  leave a normal desktop Space showing where the window opens"
             )
-        })
+        })?;
+    let display = DisplayState::read(window.bounds);
+    display.check()?;
+    // A window ordered on screen can still be covered by another one, and a
+    // covered window stops drawing.
+    if windows::is_covered(pid, &window).map_err(|error| error.to_string())? {
+        return Err(format!(
+            "window not visible: another window covers part of process {pid}'s window"
+        ));
+    }
+    Ok((window, display))
+}
+
+/// Checks that `window`, of process `pid`, lies entirely on the main
+/// display. Programs place a window's origin on different displays, so this
+/// keeps every target on the same one.
+fn on_main_display(pid: i32, window: &WindowInfo) -> Result<(), String> {
+    let main = displays::main_bounds();
+    let at = window.bounds;
+    if main.contains(at) {
+        Ok(())
+    } else {
+        Err(format!(
+            "window not on the main display: process {pid}'s window at {},{} sized {}×{} \
+             does not lie within the main display's {}×{} points at {},{}; \
+             choose another --origin",
+            at.x, at.y, at.width, at.height, main.width, main.height, main.x, main.y
+        ))
+    }
 }
 
 /// Stops a measured program and waits for it to exit.
@@ -340,8 +438,9 @@ command = {}
     )
 }
 
-/// Waits for the benchmark window's `ready` line.
-fn wait_until_ready(child: &mut Child) -> Result<(), String> {
+/// Waits for the benchmark window's `ready` line, and returns how the window
+/// was built once that is checked against this program's own build.
+fn wait_until_ready(child: &mut Child) -> Result<Build, String> {
     let stdout = child
         .stdout
         .take()
@@ -356,28 +455,90 @@ fn wait_until_ready(child: &mut Child) -> Result<(), String> {
         }
     });
     let deadline = Instant::now() + START_TIMEOUT;
-    loop {
+    let result = loop {
         let left = deadline.saturating_duration_since(Instant::now());
         match received.recv_timeout(left) {
-            Ok(line) if line.starts_with("ready") => return Ok(()),
-            Ok(_) => {}
-            Err(_) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err("the benchmark window did not become ready".to_owned());
+            Ok(line) if line.starts_with("ready") => {
+                let build = build_of(&line);
+                break check_build(&build, env!("BENCH_REVISION"), cfg!(debug_assertions))
+                    .map(|()| build);
             }
+            Ok(_) => {}
+            Err(_) => break Err("the benchmark window did not become ready".to_owned()),
         }
+    };
+    if result.is_err() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    result
+}
+
+/// Reads how the benchmark window was built from its `ready` line: after
+/// the window's size, tab-separated fields, each a name, a space and a
+/// value. A field the line lacks is left empty.
+fn build_of(ready: &str) -> Build {
+    let field = |name: &str| {
+        ready
+            .split('\t')
+            .skip(1)
+            .find_map(|field| field.strip_prefix(name)?.strip_prefix(' '))
+            .unwrap_or_default()
+            .to_owned()
+    };
+    Build {
+        revision: field("revision"),
+        profile: field("profile"),
+        engine: field("engine"),
     }
 }
 
+/// Refuses a benchmark window built from another revision than `revision`,
+/// this program's, or as a debug build when this program is not one
+/// (`debug` false): it would measure other code, or unoptimised code.
+fn check_build(build: &Build, revision: &str, debug: bool) -> Result<(), String> {
+    if build.revision.is_empty() || build.profile.is_empty() {
+        return Err(
+            "the benchmark window does not say what it was built from; build both programs \
+             together"
+                .to_owned(),
+        );
+    }
+    if build.revision != revision {
+        return Err(format!(
+            "the benchmark window was built from {}, but this program from {revision}; \
+             build both programs together",
+            build.revision
+        ));
+    }
+    if build.profile == "debug" && !debug {
+        return Err(
+            "the benchmark window is a debug build, but this program a release build; \
+             build the window with --release too"
+                .to_owned(),
+        );
+    }
+    Ok(())
+}
+
+/// The private directories a Ghostty instance gets in place of the user's
+/// own, by environment variable and directory name.
+const GHOSTTY_DIRECTORIES: [(&str, &str); 4] = [
+    ("XDG_CONFIG_HOME", "config"),
+    ("XDG_DATA_HOME", "data"),
+    ("XDG_STATE_HOME", "state"),
+    ("XDG_CACHE_HOME", "cache"),
+];
+
 /// Starts a new Ghostty instance in the background, without bringing it to
-/// the front.
-fn launch_ghostty(app: &Path, config: &Path) -> Result<(), String> {
+/// the front, with `config` as its only configuration file and private
+/// directories in `home`.
+fn launch_ghostty(app: &Path, config: &Path, home: &Path) -> Result<(), String> {
+    for (_, directory) in GHOSTTY_DIRECTORIES {
+        fs::create_dir_all(home.join(directory)).map_err(|error| error.to_string())?;
+    }
     let status = Command::new("open")
-        .args(["-g", "-n", "-a"])
-        .arg(app)
-        .args(["--args", "--config-default-files=false"])
-        .arg(format!("--config-file={}", config.display()))
+        .args(ghostty_arguments(app, config, home))
         .status()
         .map_err(|error| format!("open: {error}"))?;
     if status.success() {
@@ -385,6 +546,26 @@ fn launch_ghostty(app: &Path, config: &Path) -> Result<(), String> {
     } else {
         Err(format!("open could not start {}", app.display()))
     }
+}
+
+/// Returns the arguments of `open` that start a new Ghostty instance in the
+/// background, with `config` as its only configuration file and its
+/// configuration, data, state and cache directories inside `home`.
+fn ghostty_arguments(app: &Path, config: &Path, home: &Path) -> Vec<OsString> {
+    let mut arguments: Vec<OsString> = vec!["-g".into(), "-n".into(), "-a".into(), app.into()];
+    for (variable, directory) in GHOSTTY_DIRECTORIES {
+        let mut value = OsString::from(format!("{variable}="));
+        value.push(home.join(directory));
+        arguments.extend(["--env".into(), value]);
+    }
+    let mut config_file = OsString::from("--config-file=");
+    config_file.push(config);
+    arguments.extend([
+        "--args".into(),
+        "--config-default-files=false".into(),
+        config_file,
+    ]);
+    arguments
 }
 
 /// Finds the Ghostty instance started with `config`.
@@ -484,6 +665,78 @@ mod tests {
             assert!(config.lines().any(|l| l == line), "{line}");
         }
         assert!(APPEARANCE.contains("palette = 13=#ff00ff\n"));
+    }
+
+    #[test]
+    fn ghostty_starts_with_only_private_settings_and_directories() {
+        let arguments = ghostty_arguments(
+            Path::new("/Applications/Ghostty.app"),
+            Path::new("/tmp/w/terminal-1.conf"),
+            Path::new("/tmp/w/ghostty-1"),
+        );
+        let expected = [
+            "-g",
+            "-n",
+            "-a",
+            "/Applications/Ghostty.app",
+            "--env",
+            "XDG_CONFIG_HOME=/tmp/w/ghostty-1/config",
+            "--env",
+            "XDG_DATA_HOME=/tmp/w/ghostty-1/data",
+            "--env",
+            "XDG_STATE_HOME=/tmp/w/ghostty-1/state",
+            "--env",
+            "XDG_CACHE_HOME=/tmp/w/ghostty-1/cache",
+            "--args",
+            "--config-default-files=false",
+            "--config-file=/tmp/w/terminal-1.conf",
+        ];
+        assert_eq!(arguments, expected.map(OsString::from));
+        // The instance is found again by the same argument.
+        let ps = "  202 /Applications/Ghostty.app/Contents/MacOS/ghostty \
+                  --config-default-files=false --config-file=/tmp/w/terminal-1.conf\n";
+        assert_eq!(
+            pid_with_config(ps, Path::new("/tmp/w/terminal-1.conf")),
+            Some(202)
+        );
+    }
+
+    #[test]
+    fn the_ready_line_states_how_the_window_was_built() {
+        let ready = "ready 200x50 cell 7.8x16\trevision 0123abc with uncommitted changes\t\
+                     profile release\tengine libghostty-vt 1.2.0, ReleaseFast, SIMD true";
+        assert_eq!(
+            build_of(ready),
+            Build {
+                revision: "0123abc with uncommitted changes".to_owned(),
+                profile: "release".to_owned(),
+                engine: "libghostty-vt 1.2.0, ReleaseFast, SIMD true".to_owned(),
+            }
+        );
+        assert_eq!(
+            build_of("ready 200x50 cell 7.8x16"),
+            Build {
+                revision: String::new(),
+                profile: String::new(),
+                engine: String::new(),
+            }
+        );
+    }
+
+    #[test]
+    fn only_a_window_built_like_this_program_is_measured() {
+        let build = |revision: &str, profile: &str| Build {
+            revision: revision.to_owned(),
+            profile: profile.to_owned(),
+            engine: "libghostty-vt 1.2.0, ReleaseFast, SIMD true".to_owned(),
+        };
+        assert_eq!(check_build(&build("abc", "release"), "abc", false), Ok(()));
+        assert_eq!(check_build(&build("abc", "debug"), "abc", true), Ok(()));
+        assert_eq!(check_build(&build("abc", "release"), "abc", true), Ok(()));
+        // Other code, unoptimised code, or a window that does not say.
+        assert!(check_build(&build("def", "release"), "abc", false).is_err());
+        assert!(check_build(&build("abc", "debug"), "abc", false).is_err());
+        assert!(check_build(&build("", ""), "abc", false).is_err());
     }
 
     #[test]

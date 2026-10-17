@@ -1,6 +1,7 @@
 //! Records how the benchmark was built, for its reports.
 //!
-//! `tmux-workspaces-bench-rio` uses this build script too.
+//! `tmux-workspaces-bench-rio` uses this build script too, and so does the app
+//! package, whose benchmark window states the revision it was built from.
 
 use std::env;
 use std::path::Path;

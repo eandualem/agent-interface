@@ -4,12 +4,17 @@
 //! whichever window has focus: other people's sessions may be open on the
 //! same machine. Posting needs the host's permission to post events, which
 //! this module checks but never requests.
+//!
+//! Before every key, the process's window must also be frontmost, with no
+//! ordinary window of another process in front of it; otherwise nothing is
+//! posted.
 
 use std::io;
 
 use objc2_core_graphics::{CGEvent, CGEventFlags, CGKeyCode, CGPreflightPostEventAccess};
 
 use super::clock::{self, HostTime};
+use super::windows::{self, WindowInfo};
 
 /// Virtual key codes of the ANSI keyboard layout, for [`post_key`].
 pub mod keycode {
@@ -51,16 +56,17 @@ impl Modifiers {
     }
 }
 
-/// Types `text` into process `pid`: a key press and release for each
-/// character, carrying the character itself. Returns the host time read just
-/// before the first event was posted.
+/// Types `text` into process `pid`, whose window `window` must be frontmost:
+/// a key press and release for each character, carrying the character
+/// itself. Returns the host time read just before the first event was posted.
 ///
 /// Letters, digits, space and common punctuation also carry their key code
 /// on the ANSI layout, with Shift for capitals and shifted symbols, because
 /// some programs read key codes rather than characters. Any other character
 /// is sent with key code 0 and its text only.
-pub fn post_text(pid: i32, text: &str) -> io::Result<HostTime> {
+pub fn post_text(pid: i32, window: &WindowInfo, text: &str) -> io::Result<HostTime> {
     check_access()?;
+    check_frontmost(pid, window)?;
     let mut started = None;
     for character in text.chars() {
         let (code, shift) = ansi_key(character).unwrap_or((0, false));
@@ -80,9 +86,16 @@ pub fn post_text(pid: i32, text: &str) -> io::Result<HostTime> {
 }
 
 /// Presses and releases one key, `code` from [`keycode`], with `modifiers`
-/// held, in process `pid`. Returns the host time read just before posting.
-pub fn post_key(pid: i32, code: u16, modifiers: Modifiers) -> io::Result<HostTime> {
+/// held, in process `pid`, whose window `window` must be frontmost. Returns
+/// the host time read just before posting.
+pub fn post_key(
+    pid: i32,
+    window: &WindowInfo,
+    code: u16,
+    modifiers: Modifiers,
+) -> io::Result<HostTime> {
     check_access()?;
+    check_frontmost(pid, window)?;
     let down = key_event(code, true, modifiers, &[])?;
     let up = key_event(code, false, modifiers, &[])?;
     let started = clock::now();
@@ -100,6 +113,18 @@ fn check_access() -> io::Result<()> {
             "this process may not post key events: grant the program that runs it \
              Accessibility access in System Settings",
         ))
+    }
+}
+
+/// Refuses to post unless `window`, of process `pid`, is frontmost.
+fn check_frontmost(pid: i32, window: &WindowInfo) -> io::Result<()> {
+    if windows::is_frontmost(pid, window)? {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!(
+            "window not frontmost: another program's window is in front of process {pid}'s \
+             window; no keys sent"
+        )))
     }
 }
 

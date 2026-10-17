@@ -2,9 +2,9 @@
 //! (`docs/decisions/0005-ui-framework-and-terminal-renderer.md`).
 //!
 //! Terminal columns come from the display data, never from text layout: each
-//! run of plain ASCII text with one style is shaped as one line and placed at
-//! its first column, and every other character is shaped on its own and
-//! placed at its own column.
+//! run of plain ASCII text with one style is shaped as one line, with every
+//! character's advance forced to one cell, and placed at its first column;
+//! every other character is shaped on its own and placed at its own column.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -94,7 +94,7 @@ impl TerminalView {
         cx.spawn(async move |this, cx| {
             while woken.next().await.is_some() {
                 let closed = this.update(cx, |view, cx| {
-                    let closed = view.panes.is_closed();
+                    let closed = view.panes.is_finished();
                     if closed {
                         cx.quit();
                     } else {
@@ -193,10 +193,17 @@ impl Grid {
         window: &mut Window,
     ) {
         let cursor = screen.cursor();
+        // A block cursor on a wide character covers both of its columns.
+        let cursor_cols = match screen.cell(cursor.row, cursor.col) {
+            Some((_, cell)) if cell.width == Width::Wide => 2,
+            _ => 1,
+        };
         let mut run: Option<(u16, Hsla)> = None;
         for col in 0..=screen.cols() {
             let background = screen.cell(row, col).and_then(|(_, cell)| {
-                let is_cursor = cursor.visible && cursor.row == row && cursor.col == col;
+                let is_cursor = cursor.visible
+                    && cursor.row == row
+                    && (cursor.col..cursor.col + cursor_cols).contains(&col);
                 if is_cursor {
                     Some(self.appearance.cursor.into())
                 } else {
@@ -289,11 +296,13 @@ impl Grid {
             return;
         }
         style.len = text.len();
+        // Every character advances exactly one cell, whatever the font's own
+        // advances are.
         let line = window.text_system().shape_line(
             SharedString::from(std::mem::take(text)),
             px(self.appearance.font_size),
             &[style],
-            None,
+            Some(self.cell.width),
         );
         let origin = point(x + self.cell.width * f32::from(col), y);
         let _ = line.paint(origin, self.cell.height, TextAlign::Left, None, window, cx);

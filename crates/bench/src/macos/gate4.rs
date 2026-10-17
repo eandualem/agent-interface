@@ -8,7 +8,6 @@
 
 use std::fmt::Write;
 use std::path::Path;
-use std::thread;
 use std::time::Duration;
 
 use super::clock::{self, HostTime};
@@ -59,6 +58,13 @@ const RATE_LIMIT: f64 = 0.95;
 const ON_TIME_LIMIT: f64 = 0.99;
 /// The capture's first second is left out.
 const SETTLE: Duration = Duration::from_secs(1);
+/// The capture runs this much longer than the measured span, so that frames
+/// displayed at its very end have arrived when it stops.
+const TAIL: Duration = Duration::from_millis(250);
+/// The coverage a whole-gate result needs: both scenarios, each measured for
+/// at least this long.
+const REQUIRED_SCENARIOS: [Scenario; 2] = [Scenario::Fire, Scenario::Scroll];
+const REQUIRED_SECONDS: f64 = 30.0;
 
 struct Settings {
     seconds: f64,
@@ -94,10 +100,7 @@ pub fn run(options: &Options) -> Result<(), String> {
             .map(Scenario::from_name)
             .collect::<Result<_, _>>()?,
         targets: Target::list(options, &[Target::App, Target::Ghostty])?,
-        refresh: options
-            .required("refresh")
-            .ok()
-            .and_then(|hz| hz.parse().ok()),
+        refresh: report::refresh_option(options)?,
     };
     if settings.seconds <= 0.0 || settings.runs == 0 || settings.targets.is_empty() {
         return Err("--seconds, --runs and --targets must not be empty".to_owned());
@@ -155,11 +158,12 @@ fn measure(
     })?;
     let started = clock::now();
     let span = Duration::from_secs_f64(settings.seconds);
-    thread::sleep(SETTLE + span);
-    running.check_visible()?;
-    let seen = frames.drain();
-    let stats = frames.stop()?;
-    let window = Window::new(target, running.window(), stats);
+    // A window that stopped being visible stopped drawing: the run is void.
+    let after = running.wait_visible(SETTLE + span + TAIL)?;
+    // Stopping first lets the frames still queued arrive; the measured span
+    // is cut out of all of them below.
+    let (stats, seen) = frames.stop()?;
+    let window = Window::new(target, &running, stats, after);
     running.stop();
     drop(server);
     let refresh = window
@@ -305,7 +309,7 @@ fn summary(settings: &Settings, environment: &[(&str, String)], results: &[Measu
     out
 }
 
-fn verdict(settings: &Settings, results: &[Measured]) -> (&'static str, Vec<String>) {
+fn verdict(settings: &Settings, results: &[Measured]) -> (String, Vec<String>) {
     let mut reasons = Vec::new();
     let (mut failed, mut undecided) = (false, false);
     for &scenario in &settings.scenarios {
@@ -342,14 +346,26 @@ fn verdict(settings: &Settings, results: &[Measured]) -> (&'static str, Vec<Stri
          machine (decision record 0018); this report alone does not make one."
             .to_owned(),
     );
-    let verdict = if failed {
-        "Gate 4 failed"
-    } else if undecided {
-        "Gate 4 not decided"
-    } else {
-        "Gate 4 passed"
-    };
-    (verdict, reasons)
+    (
+        report::verdict(4, failed, undecided, &missing(settings)),
+        reasons,
+    )
+}
+
+/// Lists what the run left out of the coverage a whole-gate result needs.
+fn missing(settings: &Settings) -> Vec<String> {
+    let mut missing: Vec<String> = REQUIRED_SCENARIOS
+        .iter()
+        .filter(|scenario| !settings.scenarios.contains(scenario))
+        .map(|scenario| format!("{} not run", scenario.name()))
+        .collect();
+    if settings.seconds < REQUIRED_SECONDS {
+        missing.push(format!(
+            "{} s measured per run, needs {REQUIRED_SECONDS} s",
+            settings.seconds
+        ));
+    }
+    missing
 }
 
 #[cfg(test)]
@@ -384,6 +400,25 @@ mod tests {
     }
 
     #[test]
+    fn only_both_scenarios_over_thirty_seconds_can_pass() {
+        let settings = |scenarios: &[Scenario], seconds| Settings {
+            seconds,
+            runs: 1,
+            scenarios: scenarios.to_vec(),
+            targets: vec![Target::App, Target::Ghostty],
+            refresh: None,
+        };
+        assert!(missing(&settings(&REQUIRED_SCENARIOS, 30.0)).is_empty());
+        assert_eq!(
+            missing(&settings(&[Scenario::Fire], 5.0)),
+            vec![
+                "scroll not run".to_owned(),
+                "5 s measured per run, needs 30 s".to_owned()
+            ]
+        );
+    }
+
+    #[test]
     fn pacing_counts_intervals_within_one_and_a_half_refreshes() {
         let measured = |frames: &[u64]| Measured {
             scenario: Scenario::Fire,
@@ -393,8 +428,11 @@ mod tests {
             refresh: 60.0,
             window: Window {
                 target: Target::App,
+                origin: (0.0, 0.0),
                 size: (0.0, 0.0),
                 refresh: Some(60.0),
+                display: Default::default(),
+                build: None,
                 stats: Default::default(),
             },
         };

@@ -48,8 +48,9 @@ used by the benchmark window now and by the app later:
   most one update per frame and the update holds every change since the last.
 - `view`: a GPUI view that draws the panes. Backgrounds are filled rectangles.
   Each run of plain ASCII text with one style is shaped as one line at its
-  first column, and any other character is shaped alone at its own column, so
-  text layout never moves terminal columns. Typed keys go to one pane as
+  first column, with every character's advance forced to one cell, and any
+  other character is shaped alone at its own column, so text layout never
+  moves terminal columns. Typed keys go to one pane as
   literal bytes with `send-keys -H`
   ([0015](0015-input-routing.md)).
 
@@ -58,7 +59,11 @@ a private server that the harness started, through the test fixtures'
 `ServerRef`, which refuses any directory the fixtures did not create. It reads
 its font and colours from the configuration file the harness gives Ghostty,
 turns off GPUI's inactive-window frame limit, and is not resizable. The harness
-starts it as a separate process.
+starts it as a separate process. The window runs as an accessory app, which
+never takes focus, so it opens in front of the current Space without changing
+which app is active, and keys reach it only when posted to its process. To
+show which code was measured, `app` uses the benchmark's build script, and the
+window prints its revision and build when it starts.
 
 **Dependencies of `app`:**
 
@@ -104,6 +109,8 @@ RUSTSEC-2024-0436 (`paste`, through `metal` and `image`), RUSTSEC-2026-0206
 
 - Workspace builds compile GPUI and about 300 more crates. Linux builds need
   the system libraries of its Wayland and X11 backends.
+- The shared build script reads the Git state, so `app` reruns it, and
+  relinks, whenever a commit or the working tree changes.
 - `cargo build` warns that `block` 0.1.6, from GPUI's macOS graph, has code a
   future Rust version will reject.
 - The window's terminal path is the app's, so its measurements carry over to

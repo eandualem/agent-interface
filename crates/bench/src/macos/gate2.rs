@@ -19,8 +19,8 @@ use std::time::{Duration, Instant};
 use super::clock;
 use super::frames::{Frames, Region};
 use super::pixels::{Color, fraction_matching};
-use super::report::{self, Window, ms};
-use super::targets::{self, Programs, Target};
+use super::report::{self, Judged, Window, ms};
+use super::targets::{self, CHECK_EVERY, Programs, Target};
 use crate::options::Options;
 use crate::payload::{self, Kind};
 use crate::record;
@@ -41,6 +41,9 @@ const FILLED: f64 = 0.9;
 const TIMEOUT: Duration = Duration::from_secs(300);
 /// The gate's limit: the app's rate against Ghostty with tmux.
 const RATE_LIMIT: f64 = 0.95;
+/// The coverage a whole-gate result needs: every payload, each at least this
+/// many bytes.
+const REQUIRED_BYTES: usize = 20_000_000;
 
 /// The producer: waits on the FIFO, prints the payload, then fills the screen
 /// with palette entry 13 (bright magenta) as its background.
@@ -57,6 +60,8 @@ struct Settings {
     warmup: usize,
     runs: usize,
     targets: Vec<Target>,
+    /// The refresh rate to use when the display does not report one.
+    refresh: Option<f64>,
 }
 
 /// One timed run.
@@ -83,6 +88,7 @@ pub fn run(options: &Options) -> Result<(), String> {
         warmup: options.get("warmup", 1)?,
         runs: options.get("runs", 5)?,
         targets: Target::list(options, &[Target::App, Target::GhosttyTmux])?,
+        refresh: report::refresh_option(options)?,
     };
     if settings.runs == 0 || settings.targets.is_empty() {
         return Err("--runs and --targets must not be empty".to_owned());
@@ -170,22 +176,32 @@ fn measure(
     let released = clock::now();
     record::release(&fifo).map_err(|error| error.to_string())?;
     let deadline = Instant::now() + TIMEOUT;
+    let mut next_check = Instant::now() + CHECK_EVERY;
     let shown = loop {
-        let left = deadline.saturating_duration_since(Instant::now());
-        let Some(seen) = frames.next(left) else {
+        // A window that stops being visible stops drawing, so it is checked
+        // while the output runs too: the run is then void, not slow.
+        if Instant::now() >= next_check {
+            running.check_visible()?;
+            next_check = Instant::now() + CHECK_EVERY;
+        }
+        let now = Instant::now();
+        if now >= deadline {
             return Err(format!(
                 "{}: the marker did not fill the window within {} s",
                 target.name(),
                 TIMEOUT.as_secs()
             ));
+        }
+        let Some(seen) = frames.next(deadline.min(next_check) - now) else {
+            continue;
         };
         if seen.time > released && seen.value >= FILLED {
             break seen.time;
         }
     };
-    running.check_visible()?;
-    let stats = frames.stop()?;
-    let window = Window::new(target, running.window(), stats);
+    let after = running.check_visible()?;
+    let (stats, _) = frames.stop()?;
+    let window = Window::new(target, &running, stats, after);
     running.stop();
     drop(server);
     Ok((shown.since(released), window))
@@ -288,7 +304,7 @@ fn verdict(
     settings: &Settings,
     results: &[Measured],
     payload_bytes: &[(Kind, usize)],
-) -> (&'static str, Vec<String>) {
+) -> (String, Vec<String>) {
     let mut reasons = Vec::new();
     let mut failed = false;
     for &kind in &settings.payloads {
@@ -302,25 +318,36 @@ fn verdict(
             ));
             continue;
         };
-        let refresh = results
+        let Some(refresh) = results
             .iter()
             .find(|result| result.kind == kind && result.target == Target::App)
             .and_then(|result| result.window.refresh)
-            .unwrap_or(60.0);
+            .or(settings.refresh)
+        else {
+            reasons.push(format!(
+                "{}: not decided, the display reports no refresh rate: give --refresh HZ",
+                kind.name()
+            ));
+            continue;
+        };
         let bytes = bytes_of(payload_bytes, kind);
         let ratio = stats::rate(bytes, app.median) / stats::rate(bytes, ghostty.median);
         let later = app.median.saturating_sub(ghostty.median);
         let interval = Duration::from_secs_f64(1.0 / refresh);
-        let passes = ratio >= RATE_LIMIT && later <= interval;
-        failed |= !passes;
+        // Both limits as times: the rate's is Ghostty's time divided by the
+        // ratio needed. A clear failure of either fails, whatever the other
+        // shows.
+        let judged = Judged::of(app.median, ghostty.median.div_f64(RATE_LIMIT), interval)
+            .max(Judged::of(app.median, ghostty.median + interval, interval));
+        failed |= judged == Judged::Fails;
         reasons.push(format!(
             "{}: the app's median rate is {:.2} times Ghostty with tmux's (needs {RATE_LIMIT}), \
-             and its final frame {:.1} ms later (allowed {:.1} ms): {}",
+             and its final frame {:.1} ms later (allowed {:.1} ms, one refresh interval): {}",
             kind.name(),
             ratio,
             ms(later),
             ms(interval),
-            if passes { "passes" } else { "fails" },
+            judged.describe(),
         ));
     }
     reasons.push("vtebench is not run yet, so the gate cannot pass on this report.".to_owned());
@@ -330,17 +357,119 @@ fn verdict(
             .to_owned(),
     );
     // Without vtebench, the gate can fail here but never pass.
-    let verdict = if failed {
-        "Gate 2 failed"
-    } else {
-        "Gate 2 not decided"
-    };
-    (verdict, reasons)
+    (
+        report::verdict(2, failed, true, &missing(settings, payload_bytes)),
+        reasons,
+    )
+}
+
+/// Lists what the run left out of the coverage a whole-gate result needs.
+fn missing(settings: &Settings, payload_bytes: &[(Kind, usize)]) -> Vec<String> {
+    Kind::ALL
+        .iter()
+        .filter_map(|&kind| {
+            if !settings.payloads.contains(&kind) {
+                Some(format!("{} not run", kind.name()))
+            } else {
+                let bytes = bytes_of(payload_bytes, kind);
+                (bytes < REQUIRED_BYTES)
+                    .then(|| format!("{}: {bytes} bytes, needs {REQUIRED_BYTES}", kind.name()))
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn settings(payloads: &[Kind]) -> Settings {
+        Settings {
+            size: REQUIRED_BYTES,
+            seed: 1,
+            payloads: payloads.to_vec(),
+            warmup: 1,
+            runs: 1,
+            targets: vec![Target::App, Target::GhosttyTmux],
+            refresh: None,
+        }
+    }
+
+    /// A run of `target` on the ASCII payload that took `elapsed` ms, on a
+    /// display of `refresh` hertz.
+    fn measured(target: Target, elapsed: u64, refresh: Option<f64>) -> Measured {
+        Measured {
+            kind: Kind::Ascii,
+            target,
+            run: 1,
+            elapsed: Duration::from_millis(elapsed),
+            window: Window {
+                target,
+                origin: (40.0, 60.0),
+                size: (1600.0, 850.0),
+                refresh,
+                display: Default::default(),
+                build: None,
+                stats: Default::default(),
+            },
+        }
+    }
+
+    #[test]
+    fn final_frames_within_one_refresh_of_a_limit_are_not_decided() {
+        let bytes = [(Kind::Ascii, REQUIRED_BYTES)];
+        let judge = |app: u64, refresh: Option<f64>, settings: &Settings| {
+            let results = [
+                measured(Target::App, app, refresh),
+                measured(Target::GhosttyTmux, 1000, refresh),
+            ];
+            verdict(settings, &results, &bytes)
+        };
+        let ascii = settings(&[Kind::Ascii]);
+        // At 60 Hz, the final frame may come 16.7 ms after Ghostty's, and
+        // results within another 16.7 ms of that need a camera.
+        let (_, reasons) = judge(1005, Some(60.0), &ascii);
+        assert!(
+            reasons[0].ends_with("needs camera confirmation (0018)"),
+            "{reasons:?}"
+        );
+        let (verdict, reasons) = judge(980, Some(60.0), &ascii);
+        assert!(reasons[0].ends_with(": passes"), "{reasons:?}");
+        assert!(verdict.starts_with("Gate 2 not decided"), "{verdict}");
+        // 1100 ms is over both limits, Ghostty's time / 0.95 (1052.6 ms)
+        // and one refresh interval later (1016.7 ms).
+        let (verdict, reasons) = judge(1100, Some(60.0), &ascii);
+        assert!(reasons[0].ends_with(": fails"), "{reasons:?}");
+        assert!(verdict.starts_with("Gate 2 failed"), "{verdict}");
+        // Without a refresh rate, nothing is decided, unless one is given.
+        let (verdict, reasons) = judge(1100, None, &ascii);
+        assert!(reasons[0].contains("give --refresh HZ"), "{reasons:?}");
+        assert!(verdict.starts_with("Gate 2 not decided"), "{verdict}");
+        let given = Settings {
+            refresh: Some(60.0),
+            ..settings(&[Kind::Ascii])
+        };
+        assert!(judge(1100, None, &given).0.starts_with("Gate 2 failed"));
+    }
+
+    #[test]
+    fn a_subset_of_payloads_is_exploratory() {
+        let small = [(Kind::Ascii, 1_000_000)];
+        assert_eq!(
+            missing(&settings(&[Kind::Ascii]), &small),
+            vec![
+                "ascii: 1000000 bytes, needs 20000000".to_owned(),
+                "unicode not run".to_owned(),
+                "color not run".to_owned(),
+                "scroll not run".to_owned(),
+            ]
+        );
+        let full: Vec<(Kind, usize)> = Kind::ALL
+            .iter()
+            .map(|&kind| (kind, REQUIRED_BYTES))
+            .collect();
+        assert!(missing(&settings(&Kind::ALL), &full).is_empty());
+    }
 
     #[test]
     fn the_producer_prints_the_payload_then_the_marker() {
