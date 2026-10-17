@@ -138,4 +138,6 @@ sizing. Tests, benchmarks and scripts must never touch those sessions:
   version. The project is MIT-licensed: GPL code, such as Zed's terminal
   crates, may be read for ideas but never copied.
 - **Speed claims** cite a result measured with the method in
-  [0013](docs/decisions/0013-milestone-0-benchmark-method.md).
+  [0013](docs/decisions/0013-milestone-0-benchmark-method.md). The
+  [benchmark guide](docs/benchmarks/README.md) explains how to run the
+  harness.

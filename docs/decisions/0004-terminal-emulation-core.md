@@ -25,7 +25,7 @@ CPU targeting.
 | Engine and licence | Strengths observed | Costs observed |
 | --- | --- | --- |
 | **`libghostty-vt` / `libghostty-vt-sys`**, MIT OR Apache-2.0, over Ghostty's core, MIT | Scrollback, reflow on resize, grapheme-aware cells, key and mouse encoders, selection, incremental render state. Highest rate in the exploratory probe. | Zig and C build; the C API is explicitly unstable; the published crate and the current Git source expose different APIs; handles are not `Send`. |
-| `rio-vt` 0.5.28, MIT, with files that keep Apache-2.0 attribution | Separate core with reflow, selection, regex search, grapheme handling and damage tracking. | Recently split out of Rio; its default feature enables a pseudo-terminal driver that must be turned off. Not yet measured here. |
+| `rio-vt` 0.5.28, MIT, with files that keep Apache-2.0 attribution | Separate core with reflow, selection, regex search, grapheme handling and damage tracking. | Recently split out of Rio; its default feature enables a pseudo-terminal driver that must be turned off. Contains the simdutf C++ library, so it cannot share a program with `libghostty-vt` ([0017](0017-benchmark-harness.md)). Measured in [gate 1](../benchmarks/gate-1.md). |
 | `alacritty_terminal` 0.26.0, Apache-2.0 | Mature pure-Rust grid, scrollback, reflow, selection, regex search, damage tracking. | Width is computed per character, so it lacks general grapheme clustering; no complete key encoder in the crate. |
 | `wezterm-term` (Git only), MIT, with `termwiz` 0.23.3, MIT | Grapheme handling, reflow, rich escape support, keyboard encoding. | Depends on many sibling crates from the WezTerm workspace and is not published to crates.io. |
 | `vt100` 0.16.2, MIT | Small and simple. | No reflow, no hyperlinks, no modern keyboard or selection support. |
@@ -73,6 +73,14 @@ CPU targeting.
 - Capabilities must be verified through tmux, not only by writing bytes to the
   engine: tmux and the engine can disagree about character widths, modes and
   supported input protocols.
+- The `term` crate turns on the engine's grapheme clustering (mode 2027).
+  tmux 3.4 and 3.7c each draw an emoji ZWJ sequence, a flag, a skin-tone
+  sequence and a VS16 sequence as one cluster two columns wide; without the
+  mode, `libghostty-vt` gives these one or four columns, and its screen drifts
+  from tmux's ([gate 1](../benchmarks/gate-1.md)).
+- The benchmark harness depends on `rio-vt` and `alacritty_terminal`, pinned
+  exactly, for decisions 3 and 4; they are never product dependencies
+  ([0017](0017-benchmark-harness.md)).
 
 ## Accept when
 
