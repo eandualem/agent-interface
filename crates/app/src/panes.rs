@@ -6,7 +6,8 @@
 //! output goes, in order, to the terminal worker, which owns every
 //! [`Terminal`] and copies the panes that changed into owned [`Screen`]s. At
 //! most one update waits for the user interface. While it waits, the worker
-//! keeps applying output, and its next update holds every pane that changed
+//! keeps applying output. A pane that changes and is not in the waiting update
+//! joins it at once; the next update holds every other pane that changed
 //! meanwhile, so the user interface copies at most one update per frame.
 
 use std::collections::VecDeque;
@@ -269,6 +270,32 @@ fn work(shared: &Shared, layout: &[PaneLayout], scrollback: usize, wake: &dyn Fn
             drop(state);
             wake();
             state = shared.lock();
+        } else if let Some(joining) = joining(&state, &changed) {
+            // A pane that changed after the waiting update was made, and is
+            // not in it, joins it now, so that a quiet pane's change, such as
+            // a key's echo, does not wait a frame behind a busy neighbour.
+            let mut spare = std::mem::take(&mut state.spare);
+            drop(state);
+            let mut copies = Vec::with_capacity(joining.len());
+            for &pane in &joining {
+                let Some((_, terminal)) = terminals.iter_mut().find(|(id, _)| *id == pane) else {
+                    continue;
+                };
+                let mut screen = spare.pop().unwrap_or_default();
+                if terminal.read_screen(&mut screen).is_ok() {
+                    copies.push((pane, screen));
+                }
+            }
+            state = shared.lock();
+            if let Some(waiting) = state.update.as_mut() {
+                changed.retain(|pane| !joining.contains(pane));
+                waiting.extend(copies);
+            } else {
+                // Taken meanwhile: the panes stay changed, and the next
+                // update carries them.
+                spare.extend(copies.into_iter().map(|(_, screen)| screen));
+            }
+            state.spare.extend(spare);
         } else if let Some((pane, bytes)) = state.queue.pop_front() {
             state.queued -= bytes.len();
             drop(state);
@@ -292,6 +319,18 @@ fn work(shared: &Shared, layout: &[PaneLayout], scrollback: usize, wake: &dyn Fn
             state = shared.wait(state);
         }
     }
+}
+
+/// Returns the panes in `changed` that the waiting update does not hold, or
+/// `None` when there are none, no update waits or the panes are being dropped.
+fn joining(state: &State, changed: &[PaneId]) -> Option<Vec<PaneId>> {
+    let waiting = state.update.as_ref().filter(|_| !state.cancelled)?;
+    let absent: Vec<PaneId> = changed
+        .iter()
+        .copied()
+        .filter(|pane| !waiting.iter().any(|(id, _)| id == pane))
+        .collect();
+    (!absent.is_empty()).then_some(absent)
 }
 
 #[cfg(test)]
@@ -365,6 +404,62 @@ mod tests {
             assert!(Instant::now() < deadline, "the worker did not finish");
             std::thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    /// Returns the panes of the server's session.
+    fn layout(server: &TmuxServer) -> Vec<PaneLayout> {
+        let format = "#{pane_id} #{pane_left} #{pane_top} #{pane_width} #{pane_height}";
+        let listed = server
+            .run(&["list-panes", "-t", TmuxServer::SESSION, "-F", format])
+            .unwrap();
+        listed
+            .lines()
+            .map(|line| {
+                let mut fields = line.split(' ');
+                let id = fields.next().unwrap().trim_start_matches('%');
+                let mut number = || fields.next().unwrap().parse().unwrap();
+                PaneLayout {
+                    id: PaneId(id.parse().unwrap()),
+                    left: number(),
+                    top: number(),
+                    cols: number(),
+                    rows: number(),
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_quiet_panes_change_joins_the_waiting_update() {
+        let server = TmuxServer::start().unwrap();
+        let session = TmuxServer::SESSION;
+        server
+            .run(&["respawn-pane", "-k", "-t", session, "exec cat"])
+            .unwrap();
+        // Paced, so the echo does not queue behind a flood in a slow build.
+        let stream = "while :; do echo streaming; sleep 0.02; done";
+        server
+            .run(&["split-window", "-v", "-t", session, "sh", "-c", stream])
+            .unwrap();
+        let layout = layout(&server);
+        let quiet = layout[0].id;
+        let client = server.control(&["attach-session", "-t", session]).unwrap();
+        let (wake, woken) = mpsc::channel();
+        let panes = Panes::start(client, &layout, 100, move || {
+            let _ = wake.send(());
+        })
+        .unwrap();
+
+        // An update holding the streaming pane waits, untaken, when the quiet
+        // pane echoes a key.
+        woken.recv_timeout(Duration::from_secs(10)).unwrap();
+        panes.send_input(quiet, b"x").unwrap();
+        std::thread::sleep(Duration::from_millis(500));
+        let update = panes.take_update().unwrap();
+        let echoed = update
+            .iter()
+            .any(|(id, screen)| *id == quiet && screen.cell(0, 0).is_some_and(|(t, _)| t == "x"));
+        assert!(echoed, "the echo waited for the next update");
     }
 
     #[test]
