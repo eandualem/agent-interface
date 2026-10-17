@@ -67,6 +67,9 @@ const REQUIRED_SCENARIOS: [Scenario; 2] = [Scenario::Fire, Scenario::Scroll];
 const REQUIRED_SECONDS: f64 = 30.0;
 
 struct Settings {
+    /// How this program's build differs from the distributable one; any
+    /// difference keeps the gate undecided (0018).
+    build_issues: Vec<String>,
     seconds: f64,
     runs: usize,
     scenarios: Vec<Scenario>,
@@ -92,6 +95,7 @@ struct Measured {
 pub fn run(options: &Options) -> Result<(), String> {
     let out = Path::new(options.required("out")?);
     let settings = Settings {
+        build_issues: report::build_issues(&targets::Build::own()),
         seconds: options.get("seconds", 30.0)?,
         runs: options.get("runs", 1)?,
         scenarios: options
@@ -347,7 +351,12 @@ fn verdict(settings: &Settings, results: &[Measured]) -> (String, Vec<String>) {
             .to_owned(),
     );
     (
-        report::verdict(4, failed, undecided, &missing(settings)),
+        report::verdict(
+            4,
+            failed,
+            undecided,
+            &[missing(settings), settings.build_issues.clone()].concat(),
+        ),
         reasons,
     )
 }
@@ -402,6 +411,7 @@ mod tests {
     #[test]
     fn only_both_scenarios_over_thirty_seconds_can_pass() {
         let settings = |scenarios: &[Scenario], seconds| Settings {
+            build_issues: Vec::new(),
             seconds,
             runs: 1,
             scenarios: scenarios.to_vec(),

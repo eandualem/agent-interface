@@ -225,6 +225,27 @@ pub fn verdict(gate: u8, failed: bool, undecided: bool, missing: &[String]) -> S
     }
 }
 
+/// Returns how `build` differs from the distributable configuration: a
+/// release build of the engine in `ReleaseFast` mode for the `baseline` CPU.
+/// Only that configuration decides a gate (0018); `check_build` has made
+/// sure the window matches the harness.
+pub fn build_issues(build: &super::targets::Build) -> Vec<String> {
+    let mut issues = Vec::new();
+    if build.profile != "release" {
+        issues.push(format!("a {} build, not release", build.profile));
+    }
+    if build.cpu != "baseline" {
+        issues.push(format!("engine CPU target {}, not baseline", build.cpu));
+    }
+    if build.optimize != "ReleaseFast" {
+        issues.push(format!(
+            "engine optimisation {}, not ReleaseFast",
+            build.optimize
+        ));
+    }
+    issues
+}
+
 /// Writes `summary.md` and `raw.tsv` to `out` and prints the summary.
 pub fn write(out: &Path, summary: &str, raw: &str) -> Result<(), String> {
     fs::create_dir_all(out).map_err(|error| format!("{}: {error}", out.display()))?;
@@ -265,6 +286,19 @@ mod tests {
         // The worst of several results decides.
         assert_eq!(Judged::Passes.max(Judged::Near), Judged::Near);
         assert_eq!(Judged::Near.max(Judged::Fails), Judged::Fails);
+    }
+
+    #[test]
+    fn only_the_distributable_build_decides() {
+        let build = |profile: &str, cpu: &str, optimize: &str| super::super::targets::Build {
+            revision: "abc".to_owned(),
+            profile: profile.to_owned(),
+            cpu: cpu.to_owned(),
+            optimize: optimize.to_owned(),
+            engine: String::new(),
+        };
+        assert!(build_issues(&build("release", "baseline", "ReleaseFast")).is_empty());
+        assert_eq!(build_issues(&build("debug", "native", "Debug")).len(), 3);
     }
 
     #[test]

@@ -308,12 +308,19 @@ pub fn start(
         Process::Ghostty { config } => find_ghostty(config)?,
     };
     let deadline = Instant::now() + START_TIMEOUT;
+    // The bounds the window had at the previous look.
+    let mut settling: Option<windows::Bounds> = None;
     loop {
-        // A window may appear before it reaches its place, so the display is
-        // checked until the deadline too.
+        // A window may appear before it reaches its place, and may still
+        // adjust its frame by a point or two, so it is accepted only once it
+        // is where it was at the previous look, 200 ms earlier.
         let shown = first_window(pid)
             .and_then(|window| check_shown(pid, &window).map(|display| (window, display)));
         match shown {
+            Ok((window, _)) if settling != Some(window.bounds) => {
+                settling = Some(window.bounds);
+                thread::sleep(Duration::from_millis(200));
+            }
             Ok((window, display)) => {
                 return Ok(Running {
                     pid,

@@ -54,6 +54,9 @@ exec sleep 86400
 "#;
 
 struct Settings {
+    /// How this program's build differs from the distributable one; any
+    /// difference keeps the gate undecided (0018).
+    build_issues: Vec<String>,
     size: usize,
     seed: u64,
     payloads: Vec<Kind>,
@@ -78,6 +81,7 @@ struct Measured {
 pub fn run(options: &Options) -> Result<(), String> {
     let out = Path::new(options.required("out")?);
     let settings = Settings {
+        build_issues: report::build_issues(&targets::Build::own()),
         size: options.get("size", 20_000_000)?,
         seed: options.get("seed", 1)?,
         payloads: options
@@ -358,7 +362,16 @@ fn verdict(
     );
     // Without vtebench, the gate can fail here but never pass.
     (
-        report::verdict(2, failed, true, &missing(settings, payload_bytes)),
+        report::verdict(
+            2,
+            failed,
+            true,
+            &[
+                missing(settings, payload_bytes),
+                settings.build_issues.clone(),
+            ]
+            .concat(),
+        ),
         reasons,
     )
 }
@@ -385,6 +398,7 @@ mod tests {
 
     fn settings(payloads: &[Kind]) -> Settings {
         Settings {
+            build_issues: Vec::new(),
             size: REQUIRED_BYTES,
             seed: 1,
             payloads: payloads.to_vec(),

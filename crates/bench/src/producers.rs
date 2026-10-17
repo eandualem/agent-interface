@@ -93,20 +93,50 @@ fn scroll(
 }
 
 /// The file a producer creates once its first output is written: `--ready`.
-struct Ready(Option<PathBuf>);
+struct Ready {
+    path: Option<PathBuf>,
+    /// When the file was created or last touched, once it exists.
+    touched: Option<Instant>,
+}
+
+/// How often a producer touches its ready file while it keeps writing, so
+/// the harness can tell it is still running.
+pub const HEARTBEAT: Duration = Duration::from_millis(250);
 
 impl Ready {
+    fn new(path: Option<PathBuf>) -> Self {
+        Self {
+            path,
+            touched: None,
+        }
+    }
+
     fn from_options(options: &Options) -> Self {
-        Self(options.required("ready").ok().map(PathBuf::from))
+        Self::new(options.required("ready").ok().map(PathBuf::from))
     }
 
     /// Notes that output was written to `out`: the first time, flushes it and
-    /// then creates the file.
+    /// then creates the file; after that, touches the file every
+    /// [`HEARTBEAT`].
     fn written(&mut self, out: &mut impl Write) -> Result<(), String> {
-        if let Some(path) = self.0.take() {
-            out.flush().map_err(|error| error.to_string())?;
-            create(&path)?;
+        let Some(path) = &self.path else {
+            return Ok(());
+        };
+        match self.touched {
+            None => {
+                out.flush().map_err(|error| error.to_string())?;
+                create(path)?;
+            }
+            Some(touched) if touched.elapsed() >= HEARTBEAT => {
+                fs::File::options()
+                    .write(true)
+                    .open(path)
+                    .and_then(|file| file.set_modified(std::time::SystemTime::now()))
+                    .map_err(|error| format!("{}: {error}", path.display()))?;
+            }
+            Some(_) => return Ok(()),
         }
+        self.touched = Some(Instant::now());
         Ok(())
     }
 }
@@ -236,12 +266,12 @@ mod tests {
 
         let ready = work.path().join("written");
         let mut out = Vec::new();
-        scroll(&mut out, &lines, soon(), Ready(Some(ready.clone()))).unwrap();
+        scroll(&mut out, &lines, soon(), Ready::new(Some(ready.clone()))).unwrap();
         assert!(out.starts_with(b"line\n"));
         assert!(ready.exists());
 
         let never = work.path().join("never");
-        assert!(scroll(&mut Broken, &lines, soon(), Ready(Some(never.clone()))).is_err());
+        assert!(scroll(&mut Broken, &lines, soon(), Ready::new(Some(never.clone()))).is_err());
         assert!(!never.exists());
     }
 

@@ -82,6 +82,9 @@ impl Condition {
 }
 
 struct Settings {
+    /// How this program's build differs from the distributable one; any
+    /// difference keeps the gate undecided (0018).
+    build_issues: Vec<String>,
     keys: usize,
     warmup_keys: usize,
     runs: usize,
@@ -108,6 +111,7 @@ struct Measured {
 pub fn run(options: &Options) -> Result<(), String> {
     let out = Path::new(options.required("out")?);
     let settings = Settings {
+        build_issues: report::build_issues(&targets::Build::own()),
         keys: options.get("keys", 40)?,
         warmup_keys: options.get("warmup-keys", 5)?,
         runs: options.get("runs", 1)?,
@@ -249,6 +253,12 @@ fn measure(
         for seen in frames.drain() {
             watch.before(seen);
         }
+        if condition == Condition::Busy && !fresh(&streaming) {
+            return Err(format!(
+                "the streaming pane stopped writing before key {}",
+                index + 1
+            ));
+        }
         let letter = char::from(LETTERS[index % LETTERS.len()]);
         // A window that stopped being visible stopped drawing, so posting
         // checks it first and the run is then void; the key's time is read
@@ -277,6 +287,16 @@ fn measure(
 }
 
 /// Waits up to `timeout` for `path` to exist, and returns whether it does.
+/// Returns whether the streaming producer touched `path` within the last
+/// four heartbeats, so it is still writing.
+fn fresh(path: &Path) -> bool {
+    std::fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .and_then(|modified| modified.elapsed().ok())
+        .is_some_and(|age| age <= crate::producers::HEARTBEAT * 4)
+}
+
 fn appears(path: &Path, timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
     while !path.exists() {
@@ -524,7 +544,12 @@ fn verdict(settings: &Settings, results: &[Measured]) -> (String, Vec<String>) {
             .to_owned(),
     );
     (
-        report::verdict(3, failed, undecided, &missing(settings, results)),
+        report::verdict(
+            3,
+            failed,
+            undecided,
+            &[missing(settings, results), settings.build_issues.clone()].concat(),
+        ),
         reasons,
     )
 }
@@ -579,6 +604,7 @@ mod tests {
 
     fn settings(conditions: &[Condition]) -> Settings {
         Settings {
+            build_issues: Vec::new(),
             keys: 40,
             warmup_keys: 5,
             runs: 1,
