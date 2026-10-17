@@ -9,7 +9,7 @@ This page describes the design decided so far, with the decision record behind
 each part, and then the code that exists today. So far the code is the Cargo
 workspace, its build, its test fixtures, the first parts of the terminal path
 and the benchmark harness. Features come after the milestone-0
-measurements ([0013](decisions/0013-milestone-0-benchmark-method.md)).
+measurements ([0018](decisions/0018-milestone-0-benchmark-method-revised.md)).
 
 ## The design at a glance
 
@@ -75,7 +75,7 @@ The repository is a Cargo workspace. Each crate above is a package under
 | `crates/core`, `crates/store`, `crates/roster` | Crate documentation stating each crate's responsibility; no code yet. |
 | `crates/tmux` | `control`, the decoder for a control-mode client's output: pane output with tmux's escaping removed, command replies and notifications. |
 | `crates/term` | `Terminal`, the wrapper around the terminal engine: it creates a terminal with grapheme clustering on, feeds it bytes, and copies the visible screen into a `Screen`, owned display data that any thread can hold. |
-| `crates/app` | The `tmux-workspaces` binary. It only prints its version: there is no window yet. |
+| `crates/app` | The `tmux-workspaces` binary, which only prints its version, and a library with the terminal path: `panes` keeps each pane's terminal state on a worker thread and hands over owned display data, and `view` draws it with GPUI. The `bench-window` example draws one tmux window with them for the benchmarks ([0019](decisions/0019-benchmark-window.md)); there is no app window yet. |
 | `crates/test-support` | Development-only fixtures. `TmuxServer` starts the private tmux servers that tests use, and control-mode clients on them ([0012](decisions/0012-testing-strategy-and-tmux-isolation.md)). |
 | `crates/bench`, `crates/bench-rio` | The development-only milestone-0 benchmark harness and its separate `rio-vt` program ([0017](decisions/0017-benchmark-harness.md)). |
 | `docs/` | This page, the decision records, the research, the parity checklist and the [benchmark results](benchmarks/README.md). |
@@ -121,11 +121,13 @@ described in [0001](decisions/0001-record-architecture-decisions.md).
 | [0010. Agents roster adapter](decisions/0010-agents-roster-adapter.md) | Accepted |
 | [0011. Toolchain and dependency policy](decisions/0011-toolchain-and-dependency-policy.md) | Accepted |
 | [0012. Testing strategy and tmux isolation](decisions/0012-testing-strategy-and-tmux-isolation.md) | Accepted |
-| [0013. Milestone-0 benchmark method](decisions/0013-milestone-0-benchmark-method.md) | Accepted |
+| [0013. Milestone-0 benchmark method](decisions/0013-milestone-0-benchmark-method.md) | Superseded by 0018 |
 | [0014. Supported tmux versions](decisions/0014-supported-tmux-versions.md) | Proposed |
 | [0015. Input routing](decisions/0015-input-routing.md) | Proposed |
 | [0016. Shell environment and launch context](decisions/0016-shell-environment-and-launch-context.md) | Proposed |
 | [0017. Benchmark harness](decisions/0017-benchmark-harness.md) | Accepted |
+| [0018. Milestone-0 benchmark method, revised](decisions/0018-milestone-0-benchmark-method-revised.md) | Accepted |
+| [0019. Benchmark window](decisions/0019-benchmark-window.md) | Accepted |
 
 ## Further reading
 

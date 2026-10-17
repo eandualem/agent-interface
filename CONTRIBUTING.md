@@ -28,6 +28,10 @@ You need:
   dependencies. To build without a network, see
   [Building offline](#building-offline).
 - **tmux 3.3 or newer** for the tests that start tmux.
+- **On Linux, the libraries the UI framework builds against**, for its
+  Wayland and X11 backends. On Debian and Ubuntu:
+  `sudo apt install pkg-config libfontconfig-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libx11-xcb-dev`.
+  On macOS the Command Line Tools are enough; Xcode is not needed.
 
 Check the versions with `zig version` and `tmux -V`.
 
@@ -138,6 +142,6 @@ sizing. Tests, benchmarks and scripts must never touch those sessions:
   version. The project is MIT-licensed: GPL code, such as Zed's terminal
   crates, may be read for ideas but never copied.
 - **Speed claims** cite a result measured with the method in
-  [0013](docs/decisions/0013-milestone-0-benchmark-method.md). The
+  [0018](docs/decisions/0018-milestone-0-benchmark-method-revised.md). The
   [benchmark guide](docs/benchmarks/README.md) explains how to run the
   harness.

@@ -13,3 +13,18 @@ path = "src/main.rs"
 
 [lints]
 workspace = true
+
+[dependencies]
+futures.workspace = true
+gpui.workspace = true
+gpui_platform.workspace = true
+tmux-workspaces-term = { path = "../term" }
+tmux-workspaces-tmux = { path = "../tmux" }
+
+[dev-dependencies]
+tmux-workspaces-test-support = { path = "../test-support" }
+
+# Benchmark scaffolding, not product UI (decision record 0018).
+[[example]]
+name = "bench-window"
+path = "examples/bench-window.rs"

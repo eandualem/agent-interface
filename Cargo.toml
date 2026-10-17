@@ -27,6 +27,12 @@ publish = false
 # compared with (decision record 0004). rio-vt's default feature adds a
 # pseudo-terminal driver the benchmark does not use.
 alacritty_terminal = "=0.26.0"
+futures = "0.3.34"
+# The UI framework, one package family pinned exactly (decision records 0005
+# and 0019). Its Metal shaders are compiled when the window opens, so building
+# on macOS needs only the Command Line Tools, not Xcode.
+gpui = { package = "gpui-pre", version = "=0.3.9" }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.9", features = ["font-kit", "runtime_shaders", "wayland", "x11"] }
 rio-vt = { version = "=0.5.28", default-features = false }
 libc = "0.2.191"
 memchr = "2.8.3"
@@ -34,6 +40,19 @@ memchr = "2.8.3"
 # crate fixes the Ghostty source commit and the Zig version (decision record 0004).
 libghostty-vt = "=0.2.2"
 libghostty-vt-sys = "=0.2.2"
+# macOS bindings for the display measurements of gates 2 to 4: ScreenCaptureKit,
+# Core Graphics window lists and key events, Core Media and Core Video. They
+# are the versions GPUI already uses, so the graph holds one copy of each
+# (decision record 0018).
+block2 = "0.6.2"
+dispatch2 = { version = "0.3.1", default-features = false, features = ["std", "block2", "objc2"] }
+objc2 = "0.6.5"
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFArray", "CFCGTypes", "CFDictionary", "CFString"] }
+objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "libc", "objc2", "CGDirectDisplay", "CGError", "CGEvent", "CGEventTypes", "CGRemoteOperation", "CGWindow"] }
+objc2-core-media = { version = "0.3.2", default-features = false, features = ["std", "objc2", "objc2-core-video", "CMSampleBuffer", "CMTime"] }
+objc2-core-video = { version = "0.3.2", default-features = false, features = ["std", "objc2", "CVBase", "CVBuffer", "CVImageBuffer", "CVPixelBuffer", "CVReturn"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSDictionary", "NSEnumerator", "NSError", "NSObject", "NSString", "NSValue"] }
+objc2-screen-capture-kit = { version = "0.3.2", default-features = false, features = ["std", "block2", "dispatch2", "libc", "objc2-core-foundation", "objc2-core-graphics", "objc2-core-media", "SCShareableContent", "SCStream"] }
 tempfile = "3.27.0"
 thiserror = "2.0.21"
 

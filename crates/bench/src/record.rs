@@ -205,7 +205,7 @@ pub fn record(payload: &Path, grid: Grid, work: &Path) -> io::Result<Recording> 
 /// Opening a FIFO to write blocks until its reader opens it, so it is opened
 /// without blocking, and retried until the producer has, or [`TIMEOUT`]
 /// passes.
-fn release(fifo: &Path) -> io::Result<()> {
+pub fn release(fifo: &Path) -> io::Result<()> {
     let deadline = Instant::now() + TIMEOUT;
     loop {
         match fs::OpenOptions::new()

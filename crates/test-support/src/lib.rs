@@ -8,6 +8,7 @@
 #![forbid(unsafe_code)]
 
 use std::io;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -42,7 +43,7 @@ impl TmuxServer {
         // macOS limits socket paths to 104 bytes and its default temporary
         // directory is long, so the private directory goes in /tmp.
         let tmpdir = tempfile::Builder::new()
-            .prefix("tw-tmux-")
+            .prefix(TMPDIR_PREFIX)
             .tempdir_in("/tmp")?;
         let socket_name = format!(
             "tw-{}-{}",
@@ -67,17 +68,32 @@ impl TmuxServer {
         Ok(server)
     }
 
-    /// Returns a `tmux` command bound to this server, before any command
-    /// arguments. It stays private so that no caller can add `-L` or `-S`
-    /// and point it at another server.
-    fn command(&self) -> Command {
-        let mut command = Command::new("tmux");
-        command
-            .env_remove("TMUX")
-            .env_remove("TMUX_PANE")
-            .env("TMUX_TMPDIR", self.tmpdir.path())
-            .args(["-L", &self.socket_name, "-f", "/dev/null"]);
-        command
+    /// Returns what another process needs to reach this server with
+    /// [`ServerRef::new`]: its private `TMUX_TMPDIR` and its socket name.
+    pub fn address(&self) -> (&Path, &str) {
+        (self.tmpdir.path(), &self.socket_name)
+    }
+
+    /// Returns a shell command line that runs one tmux command on this
+    /// server, with the same isolation as [`Self::run`], for a program the
+    /// harness starts that runs the command itself: a terminal attaching an
+    /// ordinary client, for example.
+    pub fn shell_command(&self, args: &[&str]) -> String {
+        let tmpdir = format!("TMUX_TMPDIR={}", self.tmpdir.path().display());
+        let words = [
+            "env",
+            "-u",
+            "TMUX",
+            "-u",
+            "TMUX_PANE",
+            &tmpdir,
+            "tmux",
+            "-L",
+        ]
+        .into_iter()
+        .chain([self.socket_name.as_str(), "-f", "/dev/null", "--"])
+        .chain(args.iter().copied());
+        words.map(quote).collect::<Vec<_>>().join(" ")
     }
 
     /// Runs one tmux command on this server and returns its standard output.
@@ -86,15 +102,7 @@ impl TmuxServer {
     /// `args` can only be a tmux command: `--` ends tmux's own options, so a
     /// socket option in `args` cannot point the command at another server.
     pub fn run(&self, args: &[&str]) -> io::Result<String> {
-        let output = self.command().arg("--").args(args).output()?;
-        if !output.status.success() {
-            return Err(io::Error::other(format!(
-                "tmux {} failed: {}",
-                args.join(" "),
-                String::from_utf8_lossy(&output.stderr).trim()
-            )));
-        }
-        String::from_utf8(output.stdout).map_err(io::Error::other)
+        run(self.tmpdir.path(), &self.socket_name, args)
     }
 
     /// Starts a control-mode client (`tmux -C`) on this server that runs one
@@ -104,14 +112,7 @@ impl TmuxServer {
     /// The caller owns the client: closing its standard input detaches it.
     /// As with [`Self::run`], `args` can only be a tmux command.
     pub fn control(&self, args: &[&str]) -> io::Result<Child> {
-        self.command()
-            .arg("-C")
-            .arg("--")
-            .args(args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
+        control(self.tmpdir.path(), &self.socket_name, args)
     }
 }
 
@@ -120,8 +121,105 @@ impl Drop for TmuxServer {
         // The command carries this server's private TMUX_TMPDIR and socket
         // name, so it cannot reach any other server. The result is ignored
         // because the server may already have exited.
-        let _ = self.command().arg("kill-server").output();
+        let _ = command(self.tmpdir.path(), &self.socket_name)
+            .arg("kill-server")
+            .output();
     }
+}
+
+/// A private server that a [`TmuxServer`] started in another process, such
+/// as the benchmark harness, for a benchmark program that runs in its own
+/// process.
+///
+/// It runs commands exactly as [`TmuxServer`] does. Dropping it leaves the
+/// server running: the process that started the server stops it.
+pub struct ServerRef {
+    socket_name: String,
+    tmpdir: PathBuf,
+}
+
+impl ServerRef {
+    /// Refers to the server that [`TmuxServer::address`] described.
+    ///
+    /// `tmpdir` must be a private directory that [`TmuxServer::start`]
+    /// created, so a mistaken address cannot reach the default server or
+    /// anyone else's.
+    pub fn new(tmpdir: &Path, socket_name: &str) -> io::Result<Self> {
+        let canonical = tmpdir.canonicalize()?;
+        let private = canonical
+            .parent()
+            .zip(canonical.file_name().and_then(|name| name.to_str()))
+            .is_some_and(|(parent, name)| {
+                name.starts_with(TMPDIR_PREFIX)
+                    && Path::new("/tmp").canonicalize().ok().as_deref() == Some(parent)
+            });
+        if !private {
+            return Err(io::Error::other(format!(
+                "{} is not a private tmux directory made by TmuxServer",
+                tmpdir.display()
+            )));
+        }
+        Ok(Self {
+            socket_name: socket_name.to_owned(),
+            tmpdir: canonical,
+        })
+    }
+
+    /// Runs one tmux command on the server, as [`TmuxServer::run`] does.
+    pub fn run(&self, args: &[&str]) -> io::Result<String> {
+        run(&self.tmpdir, &self.socket_name, args)
+    }
+
+    /// Starts a control-mode client on the server, as
+    /// [`TmuxServer::control`] does.
+    pub fn control(&self, args: &[&str]) -> io::Result<Child> {
+        control(&self.tmpdir, &self.socket_name, args)
+    }
+}
+
+/// The start of the name of every private directory [`TmuxServer::start`]
+/// creates.
+const TMPDIR_PREFIX: &str = "tw-tmux-";
+
+/// Returns a `tmux` command bound to one private server, before any command
+/// arguments. It stays private so that no caller can add `-L` or `-S` and
+/// point it at another server.
+fn command(tmpdir: &Path, socket_name: &str) -> Command {
+    let mut command = Command::new("tmux");
+    command
+        .env_remove("TMUX")
+        .env_remove("TMUX_PANE")
+        .env("TMUX_TMPDIR", tmpdir)
+        .args(["-L", socket_name, "-f", "/dev/null"]);
+    command
+}
+
+/// Quotes `word` for a POSIX shell.
+fn quote(word: &str) -> String {
+    format!("'{}'", word.replace('\'', r"'\''"))
+}
+
+fn run(tmpdir: &Path, socket_name: &str, args: &[&str]) -> io::Result<String> {
+    let output = command(tmpdir, socket_name).arg("--").args(args).output()?;
+    if !output.status.success() {
+        return Err(io::Error::other(format!(
+            "tmux {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    String::from_utf8(output.stdout).map_err(io::Error::other)
+}
+
+fn control(tmpdir: &Path, socket_name: &str, args: &[&str]) -> io::Result<Child> {
+    command(tmpdir, socket_name)
+        .arg("-C")
+        .arg("--")
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
 }
 
 #[cfg(test)]
@@ -187,6 +285,54 @@ mod tests {
         }
         drop(stdin);
         assert!(client.wait().unwrap().success());
+    }
+
+    #[test]
+    fn a_shell_command_runs_on_this_server_only() {
+        let server = TmuxServer::start().unwrap();
+        server
+            .run(&["new-session", "-d", "-s", "it's quoted", "sh"])
+            .unwrap();
+        let line = server.shell_command(&["list-sessions", "-F", "#{session_name}"]);
+        let output = Command::new("sh")
+            .args(["-c", &line])
+            .env("TMUX", "/tmp/not-this-one,1,0")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            "fixture\nit's quoted\n"
+        );
+    }
+
+    #[test]
+    fn a_server_ref_reaches_the_server_and_leaves_it_running() {
+        let server = TmuxServer::start().unwrap();
+        let (tmpdir, socket_name) = server.address();
+        let shared = ServerRef::new(tmpdir, socket_name).unwrap();
+        assert_eq!(
+            shared
+                .run(&["list-sessions", "-F", "#{session_name}"])
+                .unwrap(),
+            "fixture\n"
+        );
+        drop(shared);
+        assert!(server.run(&["list-sessions"]).is_ok());
+    }
+
+    #[test]
+    fn a_server_ref_refuses_other_directories() {
+        let other = tempfile::Builder::new()
+            .prefix("not-tw-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        assert!(ServerRef::new(other.path(), "default").is_err());
+        let nested = tempfile::Builder::new()
+            .prefix(TMPDIR_PREFIX)
+            .tempdir_in(other.path())
+            .unwrap();
+        assert!(ServerRef::new(nested.path(), "default").is_err());
     }
 
     fn process_exists(pid: &str) -> bool {

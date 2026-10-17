@@ -43,9 +43,14 @@ jobs:
         with:
           version: ${{ env.ZIG_VERSION }}
 
-      - name: Install tmux (Linux)
+      # tmux, and the libraries GPUI's Wayland and X11 backends build against
+      # (decision record 0019).
+      - name: Install tmux and GPUI's libraries (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y tmux
+        run: >-
+          sudo apt-get update && sudo apt-get install -y tmux pkg-config
+          libfontconfig-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev
+          libx11-xcb-dev
 
       - name: Install tmux (macOS)
         if: runner.os == 'macOS'
