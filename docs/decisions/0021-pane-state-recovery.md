@@ -119,13 +119,22 @@ connection's output follows the rebuilt state. A pause that tmux makes itself
 (`pause-after`) is recovered with step 2 onwards, taking the pane's output from
 its `%pause` notification on.
 
+If a command in the line fails (`%error`), for example because the pane
+exited after the pause, tmux skips the rest of the line, including the
+continue. The replies are then not a snapshot, and the pane is left paused
+(or, on a first attach, the connection without output). The app discards
+them and starts that pane's recovery again from step 1, or drops the pane if
+tmux reports it gone.
+
 When several panes need rebuilding, they are rebuilt one at a time: the next
 pause is sent after the previous line's replies, so tmux serves the other
 panes' output between captures.
 
-A hook that waits, attached to one of these commands, would run between them
-and break the guarantee. The app reads `show-hooks` and reports such a
-session as one it cannot recover exactly.
+tmux runs a command's after-hooks before the next command in the line. A
+hook that waits lets pane output in between, and any hook can change the
+pane, so the guarantee holds only without such hooks. The app reads
+`show-hooks` and reports a session with a hook on `capture-pane`,
+`display-message` or `refresh-client` as one it cannot recover exactly.
 
 **Installation.** The `tmux` crate owns the protocol, so it parses the capture
 format into rows of cells with their style, hyperlink and line-drawing
@@ -167,17 +176,30 @@ rebuild they can differ until the program sets them again:
 
 - The current text style (output after the rebuild that relies on it is
   drawn in the default style), the general saved cursor (DECSC) and its
-  style, a partly received UTF-8 character, character-set designations other
-  than line drawing, colour-palette changes (OSC 4), and which rows were
-  soft-wrapped, which matters for selection and copy, not for what is shown.
-- Keyboard modes, which the app's key encoder reads
-  ([0015](0015-input-routing.md)): the extended-keys mode has no format
-  before tmux 3.5, focus reporting none before 3.8, and no release up to 3.8
-  tracks the kitty keyboard protocol's flags.
+  style, a partly received UTF-8 character, which character sets are
+  designated and which is in use (cells already drawn in line drawing are
+  restored, but a program still in line-drawing mode has its next characters
+  drawn as plain text), and colour-palette changes (OSC 4).
+- Some modes have no format on older versions: bracketed paste before tmux
+  3.7, the extended-keys mode before 3.5 and focus reporting before 3.8. No
+  release up to 3.8 tracks the kitty keyboard protocol's flags. The app's key
+  encoder and paste read these modes ([0015](0015-input-routing.md)), so
+  until the program sets them again, keys and pastes go to it as to a
+  program that has not asked for them.
+- If the pane changed size while the alternate screen was on, tmux keeps the
+  primary screen saved on entry at its old size and reflows it when the
+  program leaves, but a capture returns it at the current width. Cells
+  beyond that width are lost, so after the program leaves the alternate
+  screen, the primary screen can differ.
 - On tmux 3.3, a capture stops at the last cell written in each row, so the
   tail of a line erased with a background colour comes back with the default
   background. tmux 3.4 captures the full width.
 - Before tmux 3.4, tmux keeps no hyperlinks, so a rebuild drops them.
+
+The sequence also leaves out which rows were soft-wrapped. That does not
+change what is shown, and a resize rebuilds the pane anyway, but selection
+and copy then treat a wrapped line as several. tmux 3.8 reports it with
+`capture-pane -F`; the change that needs it adds it.
 
 **Harness for gate 5.** The harness runs each scenario on a disposable
 session on a private server
@@ -187,35 +209,44 @@ session on a private server
   `TERM=xterm-256color`, `status off`, one window, and `terminal-features`
   for true colour, underline styles and colours, overline, strikethrough,
   hyperlinks and synchronised output. It attaches before the fixture draws
-  anything and is never asked to redraw. Its bytes go into the same engine
-  and version as the app's.
+  anything and is not asked to redraw; only a resize makes tmux redraw it.
+  Its bytes go into the same engine and version as the app's.
 - The candidate is the app's recovery code on a control connection.
 - After each scenario, and again after the fixture has written more output
   and received input sent through the app, the harness compares every cell
-  of the pane: text, width, colours, underline
-  style and colour, attributes and hyperlink, with blank cells equal when
-  their background, underline and attributes match. In a window with several
+  of the pane: text, width, colours, underline style and colour, attributes
+  and hyperlink. Blank cells (empty or a space) are equal when they look the
+  same: the same background, attributes, underline style and colour and
+  hyperlink, and the same foreground when reverse video, an underline or a
+  strikethrough makes it visible. In a window with several
   panes, the reference's screen is cropped to the pane's position and size.
   The cursor position comes from the reference. Cursor visibility and modes
   come from tmux's formats, because the reference terminal's modes are the
-  ones tmux sets for itself, not the pane's.
+  ones tmux sets for itself, not the pane's. A mode a version does not
+  export is reported as not compared, not as a match.
 - Scenarios: attach; a pause forced under backlog; tmux's own pause, reporting
   how often a stall ended in a pause; a resize by another client, also
   checking that the app's pane size equals tmux's `pane_width` and
-  `pane_height`; a window with several panes.
+  `pane_height`; a window with several panes; the pane exiting between the
+  pause and the capture; a session with a hook on a recovery command, which
+  the app must report.
 - Fixtures: text styles and colours, background-coloured erases, wide and
   combining characters and emoji sequences, line drawing, history, the
   alternate screen with a scrolling region, tab stops and modes, pending
   escape, control and string sequences, a cursor waiting to wrap after a
   narrow and a wide character, origin mode with wrapping off, hyperlinks,
   underline colours, and the unexportable state above (current style,
-  partial UTF-8, DECSC). Fixtures whose characters grow after they are
-  drawn run only in windows with one pane.
+  partial UTF-8, DECSC, a program still in line-drawing mode, a resize while
+  the alternate screen is on followed by leaving it). Fixtures whose
+  characters grow after they are drawn run only in windows with one pane.
+  Neither those nor neighbouring cells with different underline colours are
+  used in the resize scenario, where tmux redraws the reference.
 
 Three behaviours of tmux affect the reference, not the app, and the harness
 allows for them: tmux 3.7 and 3.8 merge underline colours across a run of
-cells when they redraw a whole screen (the reference attaches first and never
-redraws, so it draws through tmux's ordinary path); tmux 3.3 sends a palette
+cells when they redraw a whole screen (the reference attaches first and is
+redrawn only by a resize, so otherwise it draws through tmux's ordinary
+path); tmux 3.3 sends a palette
 underline colour as RGB (compared by value); and tmux hides the client's
 cursor while the pane's cursor waits to wrap (visibility is taken from
 `cursor_flag`).
@@ -255,7 +286,9 @@ explained by a limit listed above. Then follow-up 1 of 0003 is settled.
 ## Evidence
 
 Observed on disposable fixtures on private servers, with a prototype of the
-installation feeding `libghostty-vt` 0.2.2. A dash means not run.
+installation feeding `libghostty-vt` 0.2.2 (MIT OR Apache-2.0, over
+Ghostty's core, MIT; see [0004](0004-terminal-emulation-core.md)). A dash
+means not run.
 
 | Check | 3.3a | 3.4 | 3.5a | 3.6b | 3.7c | 3.8 |
 | --- | --- | --- | --- | --- | --- | --- |
