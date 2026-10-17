@@ -538,10 +538,19 @@ mod tests {
             .stderr(Stdio::null())
             .spawn()
             .unwrap();
-        let pid = BufReader::new(process.stdout.take().unwrap())
-            .lines()
-            .find_map(|line| Some(line.ok()?.split_once("tmux server ")?.1.to_owned()))
-            .expect("the process started no server");
+        let stdout = BufReader::new(process.stdout.take().unwrap());
+        let (ready, started) = mpsc::channel();
+        std::thread::spawn(move || {
+            let pid = stdout
+                .lines()
+                .find_map(|line| Some(line.ok()?.split_once("tmux server ")?.1.to_owned()));
+            let _ = ready.send(pid);
+        });
+        let Ok(Some(pid)) = started.recv_timeout(Duration::from_secs(10)) else {
+            let _ = process.kill();
+            let _ = process.wait();
+            panic!("the process started no server");
+        };
         Command::new("kill")
             .args(["-INT", &process.id().to_string()])
             .status()
