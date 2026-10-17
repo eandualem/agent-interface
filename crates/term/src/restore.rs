@@ -158,8 +158,9 @@ impl Terminal {
                 out.rows(restore.rows[..history].iter().chain(&alternate.saved_rows))?;
                 // Entering the alternate screen saves the cursor with the
                 // style and character sets, which are not known: the
-                // defaults.
-                out.place_cursor(alternate.saved_cursor, &alternate.saved_rows)?;
+                // defaults. tmux moves a saved cursor past the last column
+                // back onto it on leaving, as the engine does here.
+                out.move_to(alternate.saved_cursor);
                 out.put(b"\x1b[?1049h\x1b[H");
                 out.rows(screen)?;
             }
@@ -596,9 +597,9 @@ mod tests {
         restore.alternate = Some(Alternate {
             saved_rows: vec![
                 row(vec![text("p1")]),
+                row(vec![]),
+                row(vec![]),
                 row(vec![red]),
-                row(vec![]),
-                row(vec![]),
             ],
             saved_cursor: (0, 3),
         });
@@ -613,9 +614,22 @@ mod tests {
         // Origin mode stays on, as tmux keeps it.
         terminal.write(b"\x1b[Hy");
 
-        assert_eq!(lines(&mut terminal), ["p1", "y\u{2500}", "", "xq"]);
+        assert_eq!(lines(&mut terminal), ["p1", "y", "", "xq"]);
         let screen = read(&mut terminal);
         assert_eq!(screen.cell(3, 0).unwrap().1.style, Style::default());
+    }
+
+    #[test]
+    fn leaving_the_alternate_screen_puts_a_cursor_past_the_last_column_on_it() {
+        let mut restore = pane(4, 1, &[""]);
+        restore.alternate = Some(Alternate {
+            saved_rows: vec![row(vec![text("abcd")])],
+            saved_cursor: (4, 0),
+        });
+        let mut terminal = Terminal::restored(&restore, 0).unwrap();
+        terminal.write(b"\x1b[?1049lX");
+
+        assert_eq!(lines(&mut terminal), ["abcX"]);
     }
 
     #[test]
