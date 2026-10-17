@@ -118,6 +118,8 @@ fn main() -> ExitCode {
         }
         _ => Err(String::new()),
     };
+    // An interrupt may still be stopping what a gate started.
+    tmux_workspaces_test_support::wait_if_interrupted();
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(message) => {

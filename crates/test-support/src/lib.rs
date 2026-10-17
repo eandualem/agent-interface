@@ -161,6 +161,17 @@ impl Drop for TmuxServer {
     }
 }
 
+/// Waits, if an interrupt is stopping this process's servers, until it ends
+/// the process, so that the process does not end first.
+pub fn wait_if_interrupted() {
+    let mut started = started();
+    while started.interrupted {
+        started = STOPPED
+            .wait(started)
+            .unwrap_or_else(PoisonError::into_inner);
+    }
+}
+
 /// Makes an interrupt stop the servers this process started before the
 /// process ends.
 ///
@@ -171,9 +182,11 @@ impl Drop for TmuxServer {
 /// would have. No server starts after that. A second signal ends the
 /// process at once.
 ///
-/// `first` runs before the servers are stopped, so that the process can
-/// stop what it started that is not its child, such as a program attached
-/// to one of the servers.
+/// `first` runs once the interrupt has begun, before the servers are
+/// stopped, so that the process can stop what it started that is not its
+/// child, such as a program attached to one of the servers. A process that
+/// can end on its own meanwhile calls [`wait_if_interrupted`] before it
+/// ends.
 pub fn stop_servers_when_interrupted(first: fn()) -> io::Result<()> {
     let mut signals = Signals::new([SIGINT, SIGTERM, SIGHUP])?;
     std::thread::Builder::new()
@@ -185,10 +198,7 @@ pub fn stop_servers_when_interrupted(first: fn()) -> io::Result<()> {
             };
             let stopping = std::thread::Builder::new()
                 .name("stopping-tmux-servers".to_owned())
-                .spawn(move || {
-                    first();
-                    stop_all_and_end(signal);
-                });
+                .spawn(move || stop_all_and_end(signal, first));
             match stopping {
                 Ok(_) => {
                     if let Some(again) = signals.next() {
@@ -205,12 +215,13 @@ pub fn stop_servers_when_interrupted(first: fn()) -> io::Result<()> {
 
 /// Stops every server this process holds, waits for those being dropped,
 /// and ends the process as `signal` would have.
-fn stop_all_and_end(signal: c_int) {
+fn stop_all_and_end(signal: c_int, first: fn()) {
     let servers = {
         let mut started = started();
         started.interrupted = true;
         std::mem::take(&mut started.servers)
     };
+    first();
     for (tmpdir, socket_name) in &servers {
         stop(tmpdir, socket_name);
     }
@@ -487,6 +498,7 @@ fn control(tmpdir: &Path, socket_name: &str, args: &[&str]) -> io::Result<Child>
 mod tests {
     use std::io::{BufRead, BufReader, Write};
     use std::os::unix::process::ExitStatusExt;
+    use std::sync::atomic::AtomicBool;
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
 
@@ -669,7 +681,11 @@ mod tests {
         if std::env::var_os(INTERRUPTED).is_none() {
             return;
         }
+        static BEGUN: AtomicBool = AtomicBool::new(false);
         stop_servers_when_interrupted(|| {
+            BEGUN.store(true, Ordering::Relaxed);
+            // Long enough for the process to end first, if it did not wait.
+            std::thread::sleep(Duration::from_millis(300));
             if let Some(path) = std::env::var_os(INTERRUPTED) {
                 let _ = std::fs::write(path, "");
             }
@@ -678,8 +694,14 @@ mod tests {
         let server = TmuxServer::start().unwrap();
         let pid = server.run(&["display-message", "-p", "#{pid}"]).unwrap();
         println!("tmux server {}", pid.trim());
-        // The interrupt ends the process long before this.
-        std::thread::sleep(Duration::from_secs(30));
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !BEGUN.load(Ordering::Relaxed) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        // Dropping the server would wait for the interrupt too. The process
+        // ends here without it, as one whose program failed to start does.
+        std::mem::forget(server);
+        wait_if_interrupted();
     }
 
     #[test]
