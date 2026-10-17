@@ -753,29 +753,49 @@ fn start_in_background(line: &str, work: &Path) -> io::Result<()> {
     let app = work.join("tmux-start.app");
     let executable = bundle(&app, "tmux-start", "LSBackgroundOnly")?;
     if !executable.exists() {
-        fs::write(&executable, "#!/bin/sh\nexec \"$@\"\n")?;
+        // `open -W` cannot always wait for a program that ends as soon as
+        // this one, so the program writes its command's exit status to the
+        // file its first argument names, all at once, and that is waited for.
+        fs::write(
+            &executable,
+            "#!/bin/sh\nfinished=$1\nshift\n\"$@\"\n\
+             echo $? > \"$finished.part\" && mv \"$finished.part\" \"$finished\"\n",
+        )?;
         fs::set_permissions(&executable, fs::Permissions::from_mode(0o755))?;
     }
-    let errors = work.join(format!(
-        "tmux-start-{}.err",
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    ));
+    let start = NEXT.fetch_add(1, Ordering::Relaxed);
+    let errors = work.join(format!("tmux-start-{start}.err"));
+    let finished = work.join(format!("tmux-start-{start}.status"));
     let mut arguments = launch_environment();
-    arguments.extend(["-g".into(), "-n".into(), "-W".into(), "--stderr".into()]);
+    arguments.extend(["-g".into(), "-n".into(), "--stderr".into()]);
     arguments.extend([
         errors.as_os_str().into(),
         "-a".into(),
         app.as_os_str().into(),
+        "--args".into(),
+        finished.as_os_str().into(),
     ]);
-    arguments.extend(["--args", "/bin/sh", "-c", line].map(OsString::from));
+    arguments.extend(["/bin/sh", "-c", line].map(OsString::from));
     open(&arguments, &app).map_err(io::Error::other)?;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let status = loop {
+        match fs::read_to_string(&finished) {
+            Ok(status) => break status,
+            Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
+            Err(_) if Instant::now() >= deadline => {
+                return Err(io::Error::other("tmux did not finish starting in 10 s"));
+            }
+            Err(_) => thread::sleep(Duration::from_millis(10)),
+        }
+    };
     // tmux says nothing when it starts a server.
     let said = fs::read_to_string(&errors).unwrap_or_default();
-    if said.trim().is_empty() {
+    if status.trim() == "0" && said.trim().is_empty() {
         Ok(())
     } else {
         Err(io::Error::other(format!(
-            "tmux did not start: {}",
+            "tmux did not start (exit status {}): {}",
+            status.trim(),
             said.trim()
         )))
     }

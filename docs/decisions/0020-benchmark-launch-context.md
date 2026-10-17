@@ -41,8 +41,10 @@ tmux server through LaunchServices.
   its `ready` line. It is found and stopped by its exact process, as Ghostty
   is.
 - **Each private tmux server** is started by a temporary background-only
-  application (`LSBackgroundOnly`), which `open -W` runs until it has run the
-  server's start command and exited. The server, and the programs its panes
+  application (`LSBackgroundOnly`), which runs the server's start command and
+  then writes its exit status to a file the harness waits for. `open -W`
+  cannot always wait for a program that ends this soon. The server, and the
+  programs its panes
   run, then have the scheduling of an ordinary process, as the programs that
   Ghostty starts do. The isolation helper still builds that command
   (`TmuxServer::start_with`), so tmux isolation stays reviewable in one file
