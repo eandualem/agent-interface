@@ -190,10 +190,13 @@ pub fn wait_if_interrupted() {
 /// can end on its own meanwhile calls [`wait_if_interrupted`] before it
 /// ends.
 pub fn stop_servers_when_interrupted(first: fn()) -> io::Result<()> {
+    let mut signals = Signals::new([SIGINT, SIGTERM, SIGHUP])?;
+    // After the iterator, so that a signal that sets the flag also reaches
+    // the iterator. One that arrives in between is stopped as usual, before
+    // the process has started anything.
     for signal in [SIGINT, SIGTERM, SIGHUP] {
         signal_hook::flag::register(signal, Arc::clone(&RECEIVED))?;
     }
-    let mut signals = Signals::new([SIGINT, SIGTERM, SIGHUP])?;
     std::thread::Builder::new()
         .name("stop-tmux-servers".to_owned())
         .spawn(move || {
