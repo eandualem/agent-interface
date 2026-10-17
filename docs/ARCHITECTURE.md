@@ -6,7 +6,8 @@ terminal panes that the app draws itself. tmux runs every shell, and the app is
 a tmux client.
 
 This page describes the process model, crate boundaries and data flow. So far the code is the Cargo
-workspace, its build and its test fixtures. Features come after the milestone-0
+workspace, its build, its test fixtures, the first parts of the terminal path
+and the benchmark harness. Features come after the milestone-0
 measurements.
 
 ## The design at a glance
@@ -62,15 +63,14 @@ The repository is a Cargo workspace. Each crate above is a package under
 | `Cargo.toml` | The workspace: its members, and the metadata, lints and dependency versions they share. Every public item must be documented. |
 | `rust-toolchain.toml` | The pinned Rust toolchain. |
 | `deny.toml` | The allowed licences, the advisory and source checks, and the dependency direction between the crates. |
-| `crates/core`, `crates/store`, `crates/tmux`, `crates/roster` | Crate documentation stating each crate's responsibility; no code yet. |
-| `crates/term` | `Terminal`, a minimal wrapper around the terminal engine that creates a terminal, feeds it bytes and reads the cursor. It proves the engine builds and runs on each platform. |
+| `crates/core`, `crates/store`, `crates/roster` | Crate documentation stating each crate's responsibility; no code yet. |
+| `crates/tmux` | `control`, the decoder for a control-mode client's output: pane output with tmux's escaping removed, command replies and notifications. |
+| `crates/term` | `Terminal`, the wrapper around the terminal engine: it creates a terminal with grapheme clustering on, feeds it bytes, and copies the visible screen into a `Screen`, owned display data that any thread can hold. |
 | `crates/app` | The `tmux-workspaces` binary. It only prints its version: there is no window yet. |
-| `crates/test-support` | Development-only fixtures. `TmuxServer` starts the private tmux servers that tests use. |
+| `crates/test-support` | Development-only fixtures. `TmuxServer` starts the private tmux servers that tests use, and control-mode clients on them. |
+| `crates/bench`, `crates/bench-rio` | The development-only benchmark harness and its separate `rio-vt` program. |
 | `docs/` | Architecture, design and contributor documentation. |
 | `.github/workflows/ci.yml` | Continuous integration on macOS and Linux. |
-
-The benchmark harness will be a development-only crate,
-`crates/bench`.
 
 **Dependency direction.** A crate can use only the crates its manifest lists,
 and `cargo deny check` fails when a project crate depends on one that `deny.toml` does not allow. The

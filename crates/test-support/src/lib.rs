@@ -8,7 +8,7 @@
 #![forbid(unsafe_code)]
 
 use std::io;
-use std::process::Command;
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use tempfile::TempDir;
@@ -96,6 +96,23 @@ impl TmuxServer {
         }
         String::from_utf8(output.stdout).map_err(io::Error::other)
     }
+
+    /// Starts a control-mode client (`tmux -C`) on this server that runs one
+    /// tmux command, such as `attach-session -t fixture`, with its standard
+    /// input and output piped and its standard error discarded.
+    ///
+    /// The caller owns the client: closing its standard input detaches it.
+    /// As with [`Self::run`], `args` can only be a tmux command.
+    pub fn control(&self, args: &[&str]) -> io::Result<Child> {
+        self.command()
+            .arg("-C")
+            .arg("--")
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+    }
 }
 
 impl Drop for TmuxServer {
@@ -109,6 +126,8 @@ impl Drop for TmuxServer {
 
 #[cfg(test)]
 mod tests {
+    use std::io::{BufRead, BufReader, Write};
+    use std::sync::mpsc;
     use std::time::{Duration, Instant};
 
     use super::*;
@@ -141,6 +160,33 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         assert!(kept.run(&["list-sessions"]).is_ok());
+    }
+
+    #[test]
+    fn a_control_client_runs_commands_on_its_server() {
+        let server = TmuxServer::start().unwrap();
+        let mut client = server
+            .control(&["attach-session", "-t", TmuxServer::SESSION])
+            .unwrap();
+        let mut stdin = client.stdin.take().unwrap();
+        let stdout = BufReader::new(client.stdout.take().unwrap());
+        let (lines, received) = mpsc::channel();
+        std::thread::spawn(move || {
+            for line in stdout.lines() {
+                if lines.send(line.unwrap()).is_err() {
+                    break;
+                }
+            }
+        });
+        writeln!(stdin, "display-message -p '#{{session_name}} via control'").unwrap();
+        loop {
+            let line = received.recv_timeout(Duration::from_secs(10)).unwrap();
+            if line == "fixture via control" {
+                break;
+            }
+        }
+        drop(stdin);
+        assert!(client.wait().unwrap().success());
     }
 
     fn process_exists(pid: &str) -> bool {
