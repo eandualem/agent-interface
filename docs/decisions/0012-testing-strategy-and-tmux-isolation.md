@@ -60,9 +60,8 @@ started through one fixture helper, which:
 - starts tmux with no user configuration (`-f /dev/null`);
 - creates only disposable sessions, and never attaches to a session it did not
   create;
-- on success or failure, stops only the server it created, with any of its
-  clients that would keep it running, and never runs a default-server command
-  while cleaning up; the benchmark harness does this when interrupted too.
+- on success or failure, stops only the server it created, and never runs a
+  default-server command while cleaning up.
 
 A check against a live session is read-only (`-f read-only,ignore-size`) and is
 reported to the maintainer before it runs. Tests never run `kill-server` on, or

@@ -7,12 +7,13 @@
 
 #![forbid(unsafe_code)]
 
+use std::ffi::c_int;
 use std::io;
 use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
@@ -50,11 +51,11 @@ impl TmuxServer {
         // The list stays locked until the server runs, so an interrupt
         // either finds the server in it or stops it from starting.
         let mut started = started();
-        let Some(servers) = started.as_mut() else {
+        if started.interrupted {
             return Err(io::Error::other(
                 "an interrupt is stopping this process's tmux servers",
             ));
-        };
+        }
         // macOS limits socket paths to 104 bytes and its default temporary
         // directory is long, so the private directory goes in /tmp.
         let tmpdir = tempfile::Builder::new()
@@ -65,22 +66,28 @@ impl TmuxServer {
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         );
-        servers.push((tmpdir.path().to_owned(), socket_name.clone()));
+        started
+            .servers
+            .push((tmpdir.path().to_owned(), socket_name.clone()));
         let server = Self {
             socket_name,
             tmpdir,
         };
-        let result = server.run(&[
-            "new-session",
-            "-d",
-            "-s",
-            Self::SESSION,
-            "-x",
-            "200",
-            "-y",
-            "50",
-            "sh",
-        ]);
+        // The only command that may start the server.
+        let result = output(
+            command(server.tmpdir.path(), &server.socket_name),
+            &[
+                "new-session",
+                "-d",
+                "-s",
+                Self::SESSION,
+                "-x",
+                "200",
+                "-y",
+                "50",
+                "sh",
+            ],
+        );
         // Dropping a server takes the lock too.
         drop(started);
         result?;
@@ -110,7 +117,7 @@ impl TmuxServer {
             "-L",
         ]
         .into_iter()
-        .chain([self.socket_name.as_str(), "-f", "/dev/null", "--"])
+        .chain([self.socket_name.as_str(), "-f", "/dev/null", "-N", "--"])
         .chain(args.iter().copied());
         words.map(quote).collect::<Vec<_>>().join(" ")
     }
@@ -137,10 +144,22 @@ impl TmuxServer {
 
 impl Drop for TmuxServer {
     fn drop(&mut self) {
+        let mut state = started();
+        let ours = |(_, socket_name): &(PathBuf, String)| *socket_name == self.socket_name;
+        let Some(position) = state.servers.iter().position(ours) else {
+            // Only an interrupt takes a server from the list. It stops the
+            // server and then ends the process, which must not end first.
+            while state.interrupted {
+                state = STOPPED.wait(state).unwrap_or_else(PoisonError::into_inner);
+            }
+            return;
+        };
+        state.servers.swap_remove(position);
+        state.stopping += 1;
+        drop(state);
         stop(self.tmpdir.path(), &self.socket_name);
-        if let Some(started) = started().as_mut() {
-            started.retain(|(_, socket_name)| *socket_name != self.socket_name);
-        }
+        started().stopping -= 1;
+        STOPPED.notify_all();
     }
 }
 
@@ -149,22 +168,54 @@ impl Drop for TmuxServer {
 ///
 /// A process ended by a signal runs no `Drop`, so its servers would keep
 /// running. After this call, `SIGINT`, `SIGTERM` or `SIGHUP` stops every
-/// [`TmuxServer`] the process still holds, as dropping it does, and then
-/// ends the process as the signal would have. No server starts after that.
+/// [`TmuxServer`] the process still holds, as dropping it does, waits for
+/// any that are being dropped, and then ends the process as the signal
+/// would have. No server starts after that. A second signal ends the
+/// process at once.
 pub fn stop_servers_when_interrupted() -> io::Result<()> {
     let mut signals = Signals::new([SIGINT, SIGTERM, SIGHUP])?;
     std::thread::Builder::new()
         .name("stop-tmux-servers".to_owned())
         .spawn(move || {
-            if let Some(signal) = signals.forever().next() {
-                let servers = started().take().unwrap_or_default();
-                for (tmpdir, socket_name) in &servers {
-                    stop(tmpdir, socket_name);
+            let mut signals = signals.forever();
+            let Some(signal) = signals.next() else {
+                return;
+            };
+            let stopping = std::thread::Builder::new()
+                .name("stopping-tmux-servers".to_owned())
+                .spawn(move || stop_all_and_end(signal));
+            match stopping {
+                Ok(_) => {
+                    if let Some(again) = signals.next() {
+                        let _ = emulate_default_handler(again);
+                    }
                 }
-                let _ = emulate_default_handler(signal);
+                Err(_) => {
+                    let _ = emulate_default_handler(signal);
+                }
             }
         })?;
     Ok(())
+}
+
+/// Stops every server this process holds, waits for those being dropped,
+/// and ends the process as `signal` would have.
+fn stop_all_and_end(signal: c_int) {
+    let servers = {
+        let mut started = started();
+        started.interrupted = true;
+        std::mem::take(&mut started.servers)
+    };
+    for (tmpdir, socket_name) in &servers {
+        stop(tmpdir, socket_name);
+    }
+    let mut started = started();
+    while started.stopping > 0 {
+        started = STOPPED
+            .wait(started)
+            .unwrap_or_else(PoisonError::into_inner);
+    }
+    let _ = emulate_default_handler(signal);
 }
 
 /// Stops one private server and waits for it and its clients to exit.
@@ -234,11 +285,28 @@ fn running(pids: &[&str], socket_name: &str) -> Vec<String> {
         .collect()
 }
 
-/// The servers this process has started and not stopped, by private
-/// directory and socket name, or `None` once an interrupt has stopped them.
-static STARTED: Mutex<Option<Vec<(PathBuf, String)>>> = Mutex::new(Some(Vec::new()));
+/// The servers this process has started, so that an interrupt can stop
+/// them.
+struct Started {
+    /// The servers nothing is stopping yet, by private directory and socket
+    /// name.
+    servers: Vec<(PathBuf, String)>,
+    /// How many servers are being dropped.
+    stopping: usize,
+    /// Whether an interrupt has taken the servers to stop them.
+    interrupted: bool,
+}
 
-fn started() -> MutexGuard<'static, Option<Vec<(PathBuf, String)>>> {
+static STARTED: Mutex<Started> = Mutex::new(Started {
+    servers: Vec::new(),
+    stopping: 0,
+    interrupted: false,
+});
+
+/// Notified whenever a server being dropped has stopped.
+static STOPPED: Condvar = Condvar::new();
+
+fn started() -> MutexGuard<'static, Started> {
     STARTED.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
@@ -341,8 +409,19 @@ fn quote(word: &str) -> String {
     format!("'{}'", word.replace('\'', r"'\''"))
 }
 
+/// Runs one tmux command with `-N`, so that it cannot start the server:
+/// only [`TmuxServer::start`] does, and nothing starts it again once it has
+/// been stopped.
 fn run(tmpdir: &Path, socket_name: &str, args: &[&str]) -> io::Result<String> {
-    let output = command(tmpdir, socket_name).arg("--").args(args).output()?;
+    let mut command = command(tmpdir, socket_name);
+    command.arg("-N");
+    output(command, args)
+}
+
+/// Runs `command` with `args` as its tmux command and returns its standard
+/// output, or an error carrying its standard error.
+fn output(mut command: Command, args: &[&str]) -> io::Result<String> {
+    let output = command.arg("--").args(args).output()?;
     if !output.status.success() {
         return Err(io::Error::other(format!(
             "tmux {} failed: {}",
@@ -355,8 +434,7 @@ fn run(tmpdir: &Path, socket_name: &str, args: &[&str]) -> io::Result<String> {
 
 fn control(tmpdir: &Path, socket_name: &str, args: &[&str]) -> io::Result<Child> {
     command(tmpdir, socket_name)
-        .arg("-C")
-        .arg("--")
+        .args(["-N", "-C", "--"])
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -366,7 +444,7 @@ fn control(tmpdir: &Path, socket_name: &str, args: &[&str]) -> io::Result<Child>
 
 #[cfg(test)]
 mod tests {
-    use std::io::{BufRead, BufReader, Read, Write};
+    use std::io::{BufRead, BufReader, Write};
     use std::os::unix::process::ExitStatusExt;
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
@@ -413,8 +491,12 @@ mod tests {
             .run(&["new-session", "-d", "-s", "busy", "sh", "-c", "exec yes"])
             .unwrap();
         let mut client = server.control(&["attach-session", "-t", "busy"]).unwrap();
-        let mut stdout = client.stdout.take().unwrap();
-        stdout.read_exact(&mut [0; 1]).unwrap();
+        let mut stdout = BufReader::new(client.stdout.take().unwrap());
+        let mut line = String::new();
+        while !line.starts_with("%output") {
+            line.clear();
+            assert_ne!(stdout.read_line(&mut line).unwrap(), 0);
+        }
         // The pipe fills while nothing reads it.
         std::thread::sleep(Duration::from_millis(200));
         drop(client.stdin.take());
@@ -464,13 +546,22 @@ mod tests {
             .args(["-INT", &process.id().to_string()])
             .status()
             .unwrap();
-        let status = process.wait().unwrap();
 
         let deadline = Instant::now() + Duration::from_secs(10);
-        while process_exists(&pid) {
-            assert!(Instant::now() < deadline, "tmux server {pid} still running");
+        let mut status = None;
+        while (status.is_none() || process_exists(&pid)) && Instant::now() < deadline {
+            status = status.or(process.try_wait().unwrap());
             std::thread::sleep(Duration::from_millis(20));
         }
+        // A failed run must not leave the process or its server behind.
+        let _ = process.kill();
+        let _ = process.wait();
+        let stopped = !process_exists(&pid);
+        if !stopped {
+            let _ = Command::new("kill").args(["-KILL", &pid]).status();
+        }
+        assert!(stopped, "tmux server {pid} still running");
+        let status = status.expect("the process did not end");
         assert_eq!(status.signal(), Some(SIGINT), "{status}");
     }
 
