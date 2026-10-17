@@ -162,10 +162,10 @@ fn measure(
         return Err("mkfifo failed".to_owned());
     }
     let command = format!(
-        "exec sh '{}' '{}' '{}'",
-        producer.display(),
-        fifo.display(),
-        payload.display()
+        "exec sh {} {} {}",
+        targets::shell_word(producer),
+        targets::shell_word(&fifo),
+        targets::shell_word(payload)
     );
     let server = targets::session(&command, work).map_err(|error| error.to_string())?;
     let running = targets::start(target, programs, Some(&server), "", work)?;

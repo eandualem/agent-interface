@@ -146,8 +146,8 @@ fn measure(
     // The producer outlasts the capture, whatever the program's start-up
     // takes.
     let command = format!(
-        "exec '{}' {} --seconds {}",
-        bench.display(),
+        "exec {} {} --seconds {}",
+        targets::shell_word(&bench),
         scenario.producer(),
         settings.seconds + 60.0
     );

@@ -192,9 +192,9 @@ fn measure(
         let _ = fs::remove_file(stale);
     }
     let stream = format!(
-        "exec '{}' scroll-test --seconds 3600 --ready '{}'",
-        bench.display(),
-        streaming.display()
+        "exec {} scroll-test --seconds 3600 --ready {}",
+        targets::shell_word(&bench),
+        targets::shell_word(&streaming)
     );
     let server = if target.uses_tmux() {
         let server = targets::session("exec cat", work).map_err(|error| error.to_string())?;
@@ -212,8 +212,8 @@ fn measure(
     let plain = match condition {
         Condition::Idle => "exec cat".to_owned(),
         Condition::Busy => format!(
-            "if [ -e '{0}' ]; then {stream}; fi; : > '{0}'; exec cat",
-            marker.display(),
+            "if [ -e {0} ]; then {stream}; fi; : > {0}; exec cat",
+            targets::shell_word(&marker),
         ),
     };
     let running = targets::start(target, programs, server.as_ref(), &plain, work)?;

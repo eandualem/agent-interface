@@ -205,8 +205,8 @@ pub fn session(command: &str, work: &Path) -> io::Result<TmuxServer> {
 /// A measured program, running with its window on screen.
 pub struct Running {
     pid: i32,
-    /// The argument the program was started with that finds it again.
-    argument: String,
+    /// What finds the program again.
+    program: Program,
     window: WindowInfo,
     build: Option<Build>,
     display: DisplayState,
@@ -274,10 +274,27 @@ pub fn start(
     let id = NEXT.fetch_add(1, Ordering::Relaxed);
     let config = work.join(format!("terminal-{id}.conf"));
     let session = || server.ok_or_else(|| format!("{} needs a tmux session", target.name()));
-    // The argument that finds the program again.
-    let argument = match target {
-        Target::App => config.display().to_string(),
-        Target::Ghostty | Target::GhosttyTmux => format!("--config-file={}", config.display()),
+    let (app, executable, argument) = match target {
+        Target::App => (
+            window_app(&programs.window, work).map_err(|error| error.to_string())?,
+            "bench-window",
+            config.display().to_string(),
+        ),
+        Target::Ghostty | Target::GhosttyTmux => (
+            programs.ghostty.clone(),
+            "ghostty",
+            format!("--config-file={}", config.display()),
+        ),
+    };
+    // The system names a program's executable by its path without symbolic
+    // links: /private/var for /var.
+    let executable = app.join("Contents/MacOS").join(executable);
+    let program = Program {
+        executable: fs::canonicalize(&executable)
+            .map_err(|error| format!("{}: {error}", executable.display()))?
+            .display()
+            .to_string(),
+        argument,
     };
     // The list stays locked until the program is found, so an interrupt
     // either finds the program or stops it from starting.
@@ -285,14 +302,13 @@ pub fn start(
     if opened.interrupted {
         return Err("an interrupt is stopping the programs this harness started".to_owned());
     }
-    opened.arguments.push(argument.clone());
+    opened.programs.push(program.clone());
     // For the benchmark window, the files its standard output and error go
     // to.
     let window_output = match target {
         Target::App => {
             fs::write(&config, APPEARANCE).map_err(|error| error.to_string())?;
             let (tmpdir, socket) = session()?.address();
-            let app = window_app(&programs.window, work).map_err(|error| error.to_string())?;
             let output = work.join(format!("terminal-{id}.out"));
             let errors = work.join(format!("terminal-{id}.err"));
             let mut arguments = launch_environment();
@@ -320,19 +336,19 @@ pub fn start(
             fs::write(&config, ghostty_config(programs.origin, &script))
                 .map_err(|error| error.to_string())?;
             let home = work.join(format!("ghostty-{id}"));
-            launch_ghostty(&programs.ghostty, &config, &home)?;
+            launch_ghostty(&app, &config, &home)?;
             None
         }
     };
-    let pid = find_opened(&argument)?;
+    let pid = find_opened(&program)?;
     drop(opened);
     let build = match window_output {
         Some((output, errors)) => {
-            let running = || pid_with_argument(&processes(), &argument) == Some(pid);
+            let running = || runs(&processes(), pid, &program);
             match wait_until_ready(&output, &errors, running) {
                 Ok(build) => Some(build),
                 Err(error) => {
-                    stop_opened(pid, &argument);
+                    stop_opened(pid, &program);
                     return Err(error);
                 }
             }
@@ -351,7 +367,7 @@ pub fn start(
         match shown {
             Ok((window, _)) if settling != Some(window.bounds) => {
                 if Instant::now() >= deadline {
-                    stop_opened(pid, &argument);
+                    stop_opened(pid, &program);
                     return Err(format!(
                         "window moved: process {pid}'s window kept changing its frame \
                          for {} s after it opened",
@@ -364,14 +380,14 @@ pub fn start(
             Ok((window, display)) => {
                 return Ok(Running {
                     pid,
-                    argument,
+                    program,
                     window,
                     build,
                     display,
                 });
             }
             Err(error) if Instant::now() >= deadline => {
-                stop_opened(pid, &argument);
+                stop_opened(pid, &program);
                 return Err(error);
             }
             Err(_) => thread::sleep(Duration::from_millis(100)),
@@ -446,7 +462,7 @@ impl Running {
 
 impl Drop for Running {
     fn drop(&mut self) {
-        stop_opened(self.pid, &self.argument);
+        stop_opened(self.pid, &self.program);
     }
 }
 
@@ -541,14 +557,15 @@ command = {}
 ",
         origin.0,
         origin.1,
-        shell_word(&script.to_string_lossy())
+        shell_word(script)
     )
 }
 
-/// Quotes `text` as one word for a POSIX shell, as Ghostty runs its
-/// `command` setting with `/bin/sh -c`.
-fn shell_word(text: &str) -> String {
-    format!("'{}'", text.replace('\'', r"'\''"))
+/// Quotes `path` as one word for a POSIX shell, such as the shell that runs
+/// a workload's command, or the `/bin/sh -c` that runs Ghostty's `command`
+/// setting.
+pub fn shell_word(path: &Path) -> String {
+    format!("'{}'", path.to_string_lossy().replace('\'', r"'\''"))
 }
 
 /// Waits for the benchmark window's `ready` line in `output`, the file its
@@ -830,16 +847,24 @@ fn bundle(app: &Path, executable: &str, kind: &str) -> io::Result<PathBuf> {
     Ok(programs.join(executable))
 }
 
+/// A program started through LaunchServices: its executable, as the system
+/// names it, and the argument that tells it apart from other instances.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Program {
+    executable: String,
+    argument: String,
+}
+
 /// The programs started through LaunchServices that have not been stopped
-/// yet, by the argument that finds each.
+/// yet.
 struct Opened {
-    arguments: Vec<String>,
+    programs: Vec<Program>,
     /// Whether an interrupt is stopping them, after which none starts.
     interrupted: bool,
 }
 
 static OPENED: Mutex<Opened> = Mutex::new(Opened {
-    arguments: Vec::new(),
+    programs: Vec::new(),
     interrupted: false,
 });
 
@@ -848,49 +873,52 @@ static OPENED: Mutex<Opened> = Mutex::new(Opened {
 /// child of this process, so a signal to this process or its process group
 /// does not reach it, and an interrupt calls this.
 pub fn stop_all_opened() {
-    let arguments = {
+    let programs = {
         let mut opened = OPENED.lock().unwrap_or_else(PoisonError::into_inner);
         opened.interrupted = true;
-        std::mem::take(&mut opened.arguments)
+        std::mem::take(&mut opened.programs)
     };
     let processes = processes();
-    for argument in arguments {
-        if let Some(pid) = pid_with_argument(&processes, &argument) {
-            stop_opened(pid, &argument);
+    for program in programs {
+        if let Some(pid) = pid_of(&processes, &program) {
+            stop_opened(pid, &program);
         }
     }
 }
 
-/// Finds the process started with `argument`.
-fn find_opened(argument: &str) -> Result<i32, String> {
+/// Finds the process of `program`.
+fn find_opened(program: &Program) -> Result<i32, String> {
     let deadline = Instant::now() + START_TIMEOUT;
     loop {
-        if let Some(pid) = pid_with_argument(&processes(), argument) {
+        if let Some(pid) = pid_of(&processes(), program) {
             return Ok(pid);
         }
         if Instant::now() >= deadline {
-            return Err(format!("no process started with {argument} appeared"));
+            return Err(format!(
+                "no process of {} started with {} appeared",
+                program.executable, program.argument
+            ));
         }
         thread::sleep(Duration::from_millis(100));
     }
 }
 
-/// Stops the program `pid` started with `argument`, as [`stop_process`]
-/// does, and then takes it off the list of programs an interrupt stops.
-fn stop_opened(pid: i32, argument: &str) {
-    stop_process(pid, argument);
+/// Stops `pid`, the process of `program`, as [`stop_process`] does, and then
+/// takes the program off the list of programs an interrupt stops.
+fn stop_opened(pid: i32, program: &Program) {
+    stop_process(pid, program);
     // Listed until now, so that an interrupt meanwhile stops it too.
     OPENED
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
-        .arguments
-        .retain(|opened| opened != argument);
+        .programs
+        .retain(|opened| opened != program);
 }
 
-/// Stops the process `pid` if it is still the one started with `argument`,
-/// and waits for it to exit.
-fn stop_process(pid: i32, argument: &str) {
-    let ours = || pid_with_argument(&processes(), argument) == Some(pid);
+/// Stops the process `pid` if it is still the process of `program`, and
+/// waits for it to exit.
+fn stop_process(pid: i32, program: &Program) {
+    let ours = || runs(&processes(), pid, program);
     if !ours() {
         return;
     }
@@ -920,18 +948,32 @@ fn processes() -> String {
         .unwrap_or_default()
 }
 
-/// Returns the process in `ps` output that has `argument` among its
-/// arguments.
-fn pid_with_argument(processes: &str, argument: &str) -> Option<i32> {
-    // `ps` separates arguments with spaces, and a path in one can hold
-    // spaces too, so the argument is matched with the spaces around it.
-    let argument = format!(" {argument} ");
+/// Returns the process of `program` in `ps` output.
+fn pid_of(processes: &str, program: &Program) -> Option<i32> {
     processes.lines().find_map(|line| {
         let (pid, args) = line.trim_start().split_once(' ')?;
-        format!(" {args} ")
-            .contains(&argument)
-            .then(|| pid.parse().ok())?
+        is_program(args, program).then(|| pid.parse().ok())?
     })
+}
+
+/// Returns whether `pid` in `ps` output is the process of `program`.
+fn runs(processes: &str, pid: i32, program: &Program) -> bool {
+    processes.lines().any(|line| {
+        line.trim_start()
+            .split_once(' ')
+            .is_some_and(|(id, args)| id.parse() == Ok(pid) && is_program(args, program))
+    })
+}
+
+/// Returns whether `args`, a process's arguments as `ps` shows them, are
+/// those of `program`: its executable, and its argument among the rest.
+fn is_program(args: &str, program: &Program) -> bool {
+    // `ps` separates arguments with spaces, and a path in one can hold
+    // spaces too, so the executable is matched as the start and the argument
+    // with the spaces around it.
+    args.strip_prefix(program.executable.as_str())
+        .and_then(|rest| rest.strip_prefix(' '))
+        .is_some_and(|rest| format!(" {rest} ").contains(&format!(" {} ", program.argument)))
 }
 
 #[cfg(test)]
@@ -945,19 +987,28 @@ mod tests {
                   --config-default-files=false --config-file=/tmp/w/terminal-1.conf\n\
                   303 /Applications/Ghostty.app/Contents/MacOS/ghostty \
                   --config-default-files=false --config-file=/tmp/w/terminal-10.conf\n";
-        let config = |path: &str| format!("--config-file={path}");
-        assert_eq!(
-            pid_with_argument(ps, &config("/tmp/w/terminal-1.conf")),
-            Some(202)
-        );
-        assert_eq!(
-            pid_with_argument(ps, &config("/tmp/w/terminal-10.conf")),
-            Some(303)
-        );
-        assert_eq!(
-            pid_with_argument(ps, &config("/tmp/w/terminal-2.conf")),
-            None
-        );
+        let ghostty = |path: &str| Program {
+            executable: "/Applications/Ghostty.app/Contents/MacOS/ghostty".to_owned(),
+            argument: format!("--config-file={path}"),
+        };
+        assert_eq!(pid_of(ps, &ghostty("/tmp/w/terminal-1.conf")), Some(202));
+        assert_eq!(pid_of(ps, &ghostty("/tmp/w/terminal-10.conf")), Some(303));
+        assert_eq!(pid_of(ps, &ghostty("/tmp/w/terminal-2.conf")), None);
+        assert!(runs(ps, 202, &ghostty("/tmp/w/terminal-1.conf")));
+        assert!(!runs(ps, 303, &ghostty("/tmp/w/terminal-1.conf")));
+    }
+
+    #[test]
+    fn another_program_naming_the_config_is_not_taken_for_the_window() {
+        let ps = "  101 less /tmp/w/terminal-1.conf\n\
+                  202 /tmp/w/bench-window.app/Contents/MacOS/bench-window \
+                  --config /tmp/w/terminal-1.conf\n";
+        let window = Program {
+            executable: "/tmp/w/bench-window.app/Contents/MacOS/bench-window".to_owned(),
+            argument: "/tmp/w/terminal-1.conf".to_owned(),
+        };
+        assert_eq!(pid_of(ps, &window), Some(202));
+        assert!(!runs(ps, 101, &window));
     }
 
     #[test]
@@ -981,6 +1032,16 @@ mod tests {
                 .lines()
                 .any(|l| l == r"command = '/tmp/a b/it'\''s.sh'")
         );
+    }
+
+    #[test]
+    fn a_shell_word_reaches_the_shell_whole() {
+        let path = "/tmp/John's work/a b";
+        let output = Command::new("/bin/sh")
+            .args(["-c", &format!("printf %s {}", shell_word(Path::new(path)))])
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8(output.stdout).unwrap(), path);
     }
 
     #[test]
@@ -1011,10 +1072,11 @@ mod tests {
         // The instance is found again by the same argument.
         let ps = "  202 /Applications/Ghostty.app/Contents/MacOS/ghostty \
                   --config-default-files=false --config-file=/tmp/w/terminal-1.conf\n";
-        assert_eq!(
-            pid_with_argument(ps, "--config-file=/tmp/w/terminal-1.conf"),
-            Some(202)
-        );
+        let ghostty = Program {
+            executable: "/Applications/Ghostty.app/Contents/MacOS/ghostty".to_owned(),
+            argument: "--config-file=/tmp/w/terminal-1.conf".to_owned(),
+        };
+        assert_eq!(pid_of(ps, &ghostty), Some(202));
     }
 
     #[test]
@@ -1056,9 +1118,16 @@ mod tests {
                   --tmux-tmpdir /tmp/tw-tmux-1 --config /tmp/w/terminal-1.conf --origin 40,60\n\
                   303 /tmp/a b/bench-window.app/Contents/MacOS/bench-window \
                   --tmux-tmpdir /tmp/tw-tmux-2 --config /tmp/a b/terminal-1.conf --origin 40,60\n";
-        assert_eq!(pid_with_argument(ps, "/tmp/w/terminal-1.conf"), Some(202));
-        assert_eq!(pid_with_argument(ps, "/tmp/a b/terminal-1.conf"), Some(303));
-        assert_eq!(pid_with_argument(ps, "/tmp/a b/terminal-2.conf"), None);
+        let window = |directory: &str, config: &str| Program {
+            executable: format!("{directory}/bench-window.app/Contents/MacOS/bench-window"),
+            argument: format!("{directory}/{config}"),
+        };
+        assert_eq!(pid_of(ps, &window("/tmp/w", "terminal-1.conf")), Some(202));
+        assert_eq!(
+            pid_of(ps, &window("/tmp/a b", "terminal-1.conf")),
+            Some(303)
+        );
+        assert_eq!(pid_of(ps, &window("/tmp/a b", "terminal-2.conf")), None);
     }
 
     #[test]
