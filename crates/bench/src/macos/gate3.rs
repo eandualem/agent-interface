@@ -197,7 +197,7 @@ fn measure(
         streaming.display()
     );
     let server = if target.uses_tmux() {
-        let server = targets::session("exec cat").map_err(|error| error.to_string())?;
+        let server = targets::session("exec cat", work).map_err(|error| error.to_string())?;
         if condition == Condition::Busy {
             let split = ["split-window", "-v", "-t", SESSION, "sh", "-c", &stream];
             let top = format!("{SESSION}:0.0");

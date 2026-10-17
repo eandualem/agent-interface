@@ -152,7 +152,7 @@ fn measure(
         settings.seconds + 60.0
     );
     let server = if target.uses_tmux() {
-        Some(targets::session(&command).map_err(|error| error.to_string())?)
+        Some(targets::session(&command, work).map_err(|error| error.to_string())?)
     } else {
         None
     };

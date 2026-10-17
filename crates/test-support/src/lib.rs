@@ -47,6 +47,28 @@ impl TmuxServer {
     /// Starts a private server holding one detached 200×50 session,
     /// [`Self::SESSION`], that runs `sh`.
     pub fn start() -> io::Result<Self> {
+        Self::start_by(|tmpdir, socket_name| output(command(tmpdir, socket_name), &START).map(drop))
+    }
+
+    /// Starts a private server as [`Self::start`] does, but has `launch` run
+    /// the command that starts it: a shell command line with the same
+    /// isolation as [`Self::shell_command`]. `launch` returns once the
+    /// command has finished, or an error if it failed.
+    ///
+    /// A server keeps the scheduling of the process that started it, and so
+    /// do the programs its panes run. This lets a benchmark have the system
+    /// start the server as it starts the programs compared with it.
+    pub fn start_with(launch: impl FnOnce(&str) -> io::Result<()>) -> io::Result<Self> {
+        Self::start_by(|tmpdir, socket_name| {
+            launch(&shell_command(tmpdir, socket_name, &[], &START))?;
+            run(tmpdir, socket_name, &["has-session", "-t", Self::SESSION]).map(drop)
+        })
+    }
+
+    /// Starts a private server with `start`, which runs the one command that
+    /// may start it, [`START`], on the private directory and socket name it
+    /// is given.
+    fn start_by(start: impl FnOnce(&Path, &str) -> io::Result<()>) -> io::Result<Self> {
         static NEXT: AtomicUsize = AtomicUsize::new(0);
         // The list stays locked until the server runs, so an interrupt
         // either finds the server in it or stops it from starting.
@@ -73,21 +95,7 @@ impl TmuxServer {
             socket_name,
             tmpdir,
         };
-        // The only command that may start the server.
-        let result = output(
-            command(server.tmpdir.path(), &server.socket_name),
-            &[
-                "new-session",
-                "-d",
-                "-s",
-                Self::SESSION,
-                "-x",
-                "200",
-                "-y",
-                "50",
-                "sh",
-            ],
-        );
+        let result = start(server.tmpdir.path(), &server.socket_name);
         // Dropping a server takes the lock too.
         drop(started);
         result?;
@@ -105,21 +113,7 @@ impl TmuxServer {
     /// harness starts that runs the command itself: a terminal attaching an
     /// ordinary client, for example.
     pub fn shell_command(&self, args: &[&str]) -> String {
-        let tmpdir = format!("TMUX_TMPDIR={}", self.tmpdir.path().display());
-        let words = [
-            "env",
-            "-u",
-            "TMUX",
-            "-u",
-            "TMUX_PANE",
-            &tmpdir,
-            "tmux",
-            "-L",
-        ]
-        .into_iter()
-        .chain([self.socket_name.as_str(), "-f", "/dev/null", "-N", "--"])
-        .chain(args.iter().copied());
-        words.map(quote).collect::<Vec<_>>().join(" ")
+        shell_command(self.tmpdir.path(), &self.socket_name, &["-N"], args)
     }
 
     /// Runs one tmux command on this server and returns its standard output.
@@ -404,6 +398,42 @@ fn command(tmpdir: &Path, socket_name: &str) -> Command {
     command
 }
 
+/// The only command that may start a server: it creates the session
+/// [`TmuxServer::SESSION`].
+const START: [&str; 9] = [
+    "new-session",
+    "-d",
+    "-s",
+    TmuxServer::SESSION,
+    "-x",
+    "200",
+    "-y",
+    "50",
+    "sh",
+];
+
+/// Returns a shell command line that runs one tmux command, `args`, on one
+/// private server, with tmux's `flags` before them.
+fn shell_command(tmpdir: &Path, socket_name: &str, flags: &[&str], args: &[&str]) -> String {
+    let tmpdir = format!("TMUX_TMPDIR={}", tmpdir.display());
+    let words = [
+        "env",
+        "-u",
+        "TMUX",
+        "-u",
+        "TMUX_PANE",
+        &tmpdir,
+        "tmux",
+        "-L",
+    ]
+    .into_iter()
+    .chain([socket_name, "-f", "/dev/null"])
+    .chain(flags.iter().copied())
+    .chain(["--"])
+    .chain(args.iter().copied());
+    words.map(quote).collect::<Vec<_>>().join(" ")
+}
+
 /// Quotes `word` for a POSIX shell.
 fn quote(word: &str) -> String {
     format!("'{}'", word.replace('\'', r"'\''"))
@@ -464,6 +494,28 @@ mod tests {
             .unwrap();
         assert_eq!(sessions, "fixture\n");
         assert!(server.run(&["-L", "other", "list-sessions"]).is_err());
+    }
+
+    #[test]
+    fn another_program_can_start_the_server() {
+        let server = TmuxServer::start_with(|line| {
+            let status = Command::new("sh").args(["-c", line]).status()?;
+            if status.success() {
+                Ok(())
+            } else {
+                Err(io::Error::other(format!("{line} failed")))
+            }
+        })
+        .unwrap();
+        let socket_path = server
+            .run(&["display-message", "-p", "#{socket_path}"])
+            .unwrap();
+        let private_dir = server.tmpdir.path().canonicalize().unwrap();
+        assert!(socket_path.starts_with(private_dir.to_str().unwrap()));
+        let sessions = server
+            .run(&["list-sessions", "-F", "#{session_name}"])
+            .unwrap();
+        assert_eq!(sessions, "fixture\n");
     }
 
     #[test]

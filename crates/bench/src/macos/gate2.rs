@@ -167,7 +167,7 @@ fn measure(
         fifo.display(),
         payload.display()
     );
-    let server = targets::session(&command).map_err(|error| error.to_string())?;
+    let server = targets::session(&command, work).map_err(|error| error.to_string())?;
     let running = targets::start(target, programs, Some(&server), "", work)?;
     let frames = Frames::start(running.window().id, |image| {
         fraction_matching(image, Region::Content.rect(image), |pixel| {

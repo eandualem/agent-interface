@@ -7,11 +7,18 @@
 //! - `ghostty-tmux`: a separate Ghostty instance running an ordinary tmux
 //!   client attached to the same kind of session.
 //!
+//! The benchmark window, Ghostty and the private tmux servers are all started
+//! through LaunchServices, as the system starts an application. A program
+//! keeps the scheduling of the process that starts it, which depends on how
+//! the harness itself was started, so a program the harness started directly
+//! would not be scheduled as Ghostty is.
+//!
 //! Ghostty instances are started with a configuration file of their own and
 //! private configuration, data, state and cache directories, so they never
-//! read or change the user's own Ghostty settings, and are found again by
-//! that file's path. Only a process found that way is ever signalled: the
-//! user's own Ghostty may be running live sessions.
+//! read or change the user's own Ghostty settings. A measured program is
+//! found again by its configuration file's path. Only a process found that
+//! way is ever signalled: the user's own Ghostty may be running live
+//! sessions.
 //!
 //! A window counts as shown only while the very window found at the start is
 //! on screen where it was, entirely on the main display and uncovered, with
@@ -22,12 +29,11 @@
 
 use std::ffi::OsString;
 use std::fs;
-use std::io::{self, BufRead, BufReader};
+use std::io;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -170,8 +176,12 @@ impl Programs {
 
 /// Starts a private tmux server whose session [`SESSION`] is 200×50, has no
 /// status line and runs `command` with `sh`.
-pub fn session(command: &str) -> io::Result<TmuxServer> {
-    let server = TmuxServer::start()?;
+///
+/// The server is started through LaunchServices, so it and the programs its
+/// panes run are scheduled as programs Ghostty starts are. `work` is a
+/// private directory for the application that starts it.
+pub fn session(command: &str, work: &Path) -> io::Result<TmuxServer> {
+    let server = TmuxServer::start_with(|line| start_in_background(line, work))?;
     server.run(&[
         "new-session",
         "-d",
@@ -194,7 +204,8 @@ pub fn session(command: &str) -> io::Result<TmuxServer> {
 /// A measured program, running with its window on screen.
 pub struct Running {
     pid: i32,
-    process: Process,
+    /// The argument the program was started with that finds it again.
+    argument: String,
     window: WindowInfo,
     build: Option<Build>,
     display: DisplayState,
@@ -246,13 +257,6 @@ impl Build {
     }
 }
 
-enum Process {
-    /// The benchmark window, a child of this process.
-    Child(Child),
-    /// A Ghostty instance, found by the path of its own configuration file.
-    Ghostty { config: PathBuf },
-}
-
 /// Starts `target` and waits for its window to be on screen.
 ///
 /// `server` holds the session the `app` and `ghostty-tmux` targets attach
@@ -269,23 +273,27 @@ pub fn start(
     let id = NEXT.fetch_add(1, Ordering::Relaxed);
     let config = work.join(format!("terminal-{id}.conf"));
     let session = || server.ok_or_else(|| format!("{} needs a tmux session", target.name()));
-    let (mut process, build) = match target {
+    // The argument that finds the program again, and for the benchmark
+    // window the files its standard output and error go to.
+    let (argument, window_output) = match target {
         Target::App => {
             fs::write(&config, APPEARANCE).map_err(|error| error.to_string())?;
             let (tmpdir, socket) = session()?.address();
-            let mut child = Command::new(&programs.window)
-                .arg("--tmux-tmpdir")
-                .arg(tmpdir)
-                .args(["--tmux-socket", socket, "--session", SESSION, "--config"])
-                .arg(&config)
-                .arg("--origin")
-                .arg(format!("{},{}", programs.origin.0, programs.origin.1))
-                .stdin(Stdio::null())
-                .stdout(Stdio::piped())
-                .spawn()
-                .map_err(|error| format!("{}: {error}", programs.window.display()))?;
-            let build = wait_until_ready(&mut child)?;
-            (Process::Child(child), Some(build))
+            let app = window_app(&programs.window, work).map_err(|error| error.to_string())?;
+            let output = work.join(format!("terminal-{id}.out"));
+            let errors = work.join(format!("terminal-{id}.err"));
+            let mut arguments = launch_environment();
+            arguments.extend(window_arguments(
+                &app,
+                &output,
+                &errors,
+                tmpdir,
+                socket,
+                &config,
+                programs.origin,
+            ));
+            open(&arguments, &app)?;
+            (config.display().to_string(), Some((output, errors)))
         }
         Target::Ghostty | Target::GhosttyTmux => {
             let command = match target {
@@ -300,12 +308,22 @@ pub fn start(
                 .map_err(|error| error.to_string())?;
             let home = work.join(format!("ghostty-{id}"));
             launch_ghostty(&programs.ghostty, &config, &home)?;
-            (Process::Ghostty { config }, None)
+            (format!("--config-file={}", config.display()), None)
         }
     };
-    let pid = match &process {
-        Process::Child(child) => child.id() as i32,
-        Process::Ghostty { config } => find_ghostty(config)?,
+    let pid = find_opened(&argument)?;
+    let build = match window_output {
+        Some((output, errors)) => {
+            let running = || pid_with_argument(&processes(), &argument) == Some(pid);
+            match wait_until_ready(&output, &errors, running) {
+                Ok(build) => Some(build),
+                Err(error) => {
+                    stop_opened(pid, &argument);
+                    return Err(error);
+                }
+            }
+        }
+        None => None,
     };
     let deadline = Instant::now() + START_TIMEOUT;
     // The bounds the window had at the previous look.
@@ -319,7 +337,7 @@ pub fn start(
         match shown {
             Ok((window, _)) if settling != Some(window.bounds) => {
                 if Instant::now() >= deadline {
-                    terminate(pid, &mut process);
+                    stop_opened(pid, &argument);
                     return Err(format!(
                         "window moved: process {pid}'s window kept changing its frame \
                          for {} s after it opened",
@@ -332,14 +350,14 @@ pub fn start(
             Ok((window, display)) => {
                 return Ok(Running {
                     pid,
-                    process,
+                    argument,
                     window,
                     build,
                     display,
                 });
             }
             Err(error) if Instant::now() >= deadline => {
-                terminate(pid, &mut process);
+                stop_opened(pid, &argument);
                 return Err(error);
             }
             Err(_) => thread::sleep(Duration::from_millis(100)),
@@ -414,7 +432,7 @@ impl Running {
 
 impl Drop for Running {
     fn drop(&mut self) {
-        terminate(self.pid, &mut self.process);
+        stop_opened(self.pid, &self.argument);
     }
 }
 
@@ -487,17 +505,6 @@ fn on_main_display(pid: i32, window: &WindowInfo) -> Result<(), String> {
     }
 }
 
-/// Stops a measured program and waits for it to exit.
-fn terminate(pid: i32, process: &mut Process) {
-    match process {
-        Process::Child(child) => {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-        Process::Ghostty { config } => stop_ghostty(pid, config),
-    }
-}
-
 /// Returns Ghostty's configuration: the shared appearance, settings that keep
 /// the screen still apart from the output measured, the window's size and
 /// place, and the script to run.
@@ -524,39 +531,33 @@ command = {}
     )
 }
 
-/// Waits for the benchmark window's `ready` line, and returns how the window
-/// was built once that is checked against this program's own build.
-fn wait_until_ready(child: &mut Child) -> Result<Build, String> {
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or("the window's output is not piped")?;
-    let (lines, received) = mpsc::channel();
-    thread::spawn(move || {
-        for line in BufReader::new(stdout).lines() {
-            let Ok(line) = line else { break };
-            if lines.send(line).is_err() {
-                break;
-            }
-        }
-    });
+/// Waits for the benchmark window's `ready` line in `output`, the file its
+/// standard output goes to, and returns how the window was built once that
+/// is checked against this program's own build. `errors` is the file its
+/// standard error goes to, and `running` says whether it still runs.
+fn wait_until_ready(
+    output: &Path,
+    errors: &Path,
+    running: impl Fn() -> bool,
+) -> Result<Build, String> {
     let deadline = Instant::now() + START_TIMEOUT;
-    let result = loop {
-        let left = deadline.saturating_duration_since(Instant::now());
-        match received.recv_timeout(left) {
-            Ok(line) if line.starts_with("ready") => {
-                let build = build_of(&line);
-                break check_build(&build, &Build::own()).map(|()| build);
-            }
-            Ok(_) => {}
-            Err(_) => break Err("the benchmark window did not become ready".to_owned()),
+    loop {
+        let text = fs::read_to_string(output).unwrap_or_default();
+        // Only whole lines: the window may be writing the last one.
+        let mut lines = text.rfind('\n').map_or("", |end| &text[..end]).lines();
+        if let Some(line) = lines.find(|line| line.starts_with("ready")) {
+            let build = build_of(line);
+            return check_build(&build, &Build::own()).map(|()| build);
         }
-    };
-    if result.is_err() {
-        let _ = child.kill();
-        let _ = child.wait();
+        if !running() || Instant::now() >= deadline {
+            let said = fs::read_to_string(errors).unwrap_or_default();
+            return Err(match said.trim() {
+                "" => "the benchmark window did not become ready".to_owned(),
+                said => format!("the benchmark window did not become ready: {said}"),
+            });
+        }
+        thread::sleep(Duration::from_millis(100));
     }
-    result
 }
 
 /// Reads how the benchmark window was built from its `ready` line: after
@@ -641,8 +642,13 @@ fn launch_ghostty(app: &Path, config: &Path, home: &Path) -> Result<(), String> 
     for (_, directory) in GHOSTTY_DIRECTORIES {
         fs::create_dir_all(home.join(directory)).map_err(|error| error.to_string())?;
     }
+    open(&ghostty_arguments(app, config, home), app)
+}
+
+/// Runs `open` with `arguments`, which start `app`.
+fn open(arguments: &[OsString], app: &Path) -> Result<(), String> {
     let status = Command::new("open")
-        .args(ghostty_arguments(app, config, home))
+        .args(arguments)
         .status()
         .map_err(|error| format!("open: {error}"))?;
     if status.success() {
@@ -672,24 +678,134 @@ fn ghostty_arguments(app: &Path, config: &Path, home: &Path) -> Vec<OsString> {
     arguments
 }
 
-/// Finds the Ghostty instance started with `config`.
-fn find_ghostty(config: &Path) -> Result<i32, String> {
+/// The variables of this program's environment that the benchmark window and
+/// the tmux servers also get, as arguments of `open`: where programs such as
+/// tmux are, and the locale. The rest of their environment is the user
+/// session's, as Ghostty's is.
+fn launch_environment() -> Vec<OsString> {
+    let mut arguments = Vec::new();
+    for variable in ["PATH", "LANG", "LC_ALL", "LC_CTYPE"] {
+        if let Some(value) = std::env::var_os(variable) {
+            let mut pair = OsString::from(format!("{variable}="));
+            pair.push(value);
+            arguments.extend(["--env".into(), pair]);
+        }
+    }
+    arguments
+}
+
+/// Returns the benchmark window `window` as an application LaunchServices
+/// can start, in `work`, making it the first time: a copy, as the system
+/// knows an application by its executable's path.
+fn window_app(window: &Path, work: &Path) -> io::Result<PathBuf> {
+    let app = work.join("bench-window.app");
+    let executable = bundle(&app, "bench-window", "LSUIElement")?;
+    if !executable.exists() {
+        fs::copy(window, &executable)?;
+    }
+    Ok(app)
+}
+
+/// Returns the arguments of `open`, after [`launch_environment`], that start
+/// a new instance of the benchmark window `app` in the background, with its
+/// standard output and error going to `output` and `errors`. It attaches to
+/// [`SESSION`] on the server at `tmpdir` and `socket`, and reads `config`.
+fn window_arguments(
+    app: &Path,
+    output: &Path,
+    errors: &Path,
+    tmpdir: &Path,
+    socket: &str,
+    config: &Path,
+    origin: (i32, i32),
+) -> Vec<OsString> {
+    let mut arguments: Vec<OsString> = vec!["-g".into(), "-n".into(), "--stdout".into()];
+    arguments.extend([output.into(), "--stderr".into(), errors.into()]);
+    arguments.extend(["-a".into(), app.into(), "--args".into()]);
+    arguments.extend(["--tmux-tmpdir".into(), tmpdir.into()]);
+    for word in ["--tmux-socket", socket, "--session", SESSION, "--config"] {
+        arguments.push(word.into());
+    }
+    arguments.extend([config.into(), "--origin".into()]);
+    arguments.push(format!("{},{}", origin.0, origin.1).into());
+    arguments
+}
+
+/// Runs the shell command line `line` in a background application that
+/// LaunchServices starts, made in `work` the first time, and waits for it to
+/// finish.
+fn start_in_background(line: &str, work: &Path) -> io::Result<()> {
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    let app = work.join("tmux-start.app");
+    let executable = bundle(&app, "tmux-start", "LSBackgroundOnly")?;
+    if !executable.exists() {
+        fs::write(&executable, "#!/bin/sh\nexec \"$@\"\n")?;
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o755))?;
+    }
+    let errors = work.join(format!(
+        "tmux-start-{}.err",
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    let mut arguments = launch_environment();
+    arguments.extend(["-g".into(), "-n".into(), "-W".into(), "--stderr".into()]);
+    arguments.extend([
+        errors.as_os_str().into(),
+        "-a".into(),
+        app.as_os_str().into(),
+    ]);
+    arguments.extend(["--args", "/bin/sh", "-c", line].map(OsString::from));
+    open(&arguments, &app).map_err(io::Error::other)?;
+    // tmux says nothing when it starts a server.
+    let said = fs::read_to_string(&errors).unwrap_or_default();
+    if said.trim().is_empty() {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!(
+            "tmux did not start: {}",
+            said.trim()
+        )))
+    }
+}
+
+/// Writes the `Info.plist` of the application bundle `app`, naming
+/// `executable` as its program and setting `kind`, a key such as
+/// `LSUIElement`, and returns the program's path for the caller to write.
+fn bundle(app: &Path, executable: &str, kind: &str) -> io::Result<PathBuf> {
+    let programs = app.join("Contents/MacOS");
+    fs::create_dir_all(&programs)?;
+    let info = format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+         <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \
+         \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
+         <plist version=\"1.0\"><dict>\n\
+         <key>CFBundleExecutable</key><string>{executable}</string>\n\
+         <key>CFBundleIdentifier</key><string>local.tmux-workspaces.{executable}</string>\n\
+         <key>CFBundlePackageType</key><string>APPL</string>\n\
+         <key>{kind}</key><true/>\n\
+         </dict></plist>\n"
+    );
+    fs::write(app.join("Contents/Info.plist"), info)?;
+    Ok(programs.join(executable))
+}
+
+/// Finds the process started with `argument`.
+fn find_opened(argument: &str) -> Result<i32, String> {
     let deadline = Instant::now() + START_TIMEOUT;
     loop {
-        if let Some(pid) = pid_with_config(&processes(), config) {
+        if let Some(pid) = pid_with_argument(&processes(), argument) {
             return Ok(pid);
         }
         if Instant::now() >= deadline {
-            return Err("the Ghostty instance did not start".to_owned());
+            return Err(format!("no process started with {argument} appeared"));
         }
         thread::sleep(Duration::from_millis(100));
     }
 }
 
-/// Stops the Ghostty instance `pid`, after checking it is still the one
-/// started with `config`.
-fn stop_ghostty(pid: i32, config: &Path) {
-    let ours = || pid_with_config(&processes(), config) == Some(pid);
+/// Stops the process `pid`, after checking it is still the one started with
+/// `argument`.
+fn stop_opened(pid: i32, argument: &str) {
+    let ours = || pid_with_argument(&processes(), argument) == Some(pid);
     if !ours() {
         return;
     }
@@ -719,10 +835,9 @@ fn processes() -> String {
         .unwrap_or_default()
 }
 
-/// Returns the process in `ps` output whose arguments name `config` as its
-/// configuration file.
-fn pid_with_config(processes: &str, config: &Path) -> Option<i32> {
-    let argument = format!("--config-file={}", config.display());
+/// Returns the process in `ps` output that has `argument` among its
+/// arguments.
+fn pid_with_argument(processes: &str, argument: &str) -> Option<i32> {
     processes.lines().find_map(|line| {
         let (pid, args) = line.trim_start().split_once(' ')?;
         args.split(' ')
@@ -742,16 +857,19 @@ mod tests {
                   --config-default-files=false --config-file=/tmp/w/terminal-1.conf\n\
                   303 /Applications/Ghostty.app/Contents/MacOS/ghostty \
                   --config-default-files=false --config-file=/tmp/w/terminal-10.conf\n";
-        let config = |path: &str| PathBuf::from(path);
+        let config = |path: &str| format!("--config-file={path}");
         assert_eq!(
-            pid_with_config(ps, &config("/tmp/w/terminal-1.conf")),
+            pid_with_argument(ps, &config("/tmp/w/terminal-1.conf")),
             Some(202)
         );
         assert_eq!(
-            pid_with_config(ps, &config("/tmp/w/terminal-10.conf")),
+            pid_with_argument(ps, &config("/tmp/w/terminal-10.conf")),
             Some(303)
         );
-        assert_eq!(pid_with_config(ps, &config("/tmp/w/terminal-2.conf")), None);
+        assert_eq!(
+            pid_with_argument(ps, &config("/tmp/w/terminal-2.conf")),
+            None
+        );
     }
 
     #[test]
@@ -800,9 +918,48 @@ mod tests {
         let ps = "  202 /Applications/Ghostty.app/Contents/MacOS/ghostty \
                   --config-default-files=false --config-file=/tmp/w/terminal-1.conf\n";
         assert_eq!(
-            pid_with_config(ps, Path::new("/tmp/w/terminal-1.conf")),
+            pid_with_argument(ps, "--config-file=/tmp/w/terminal-1.conf"),
             Some(202)
         );
+    }
+
+    #[test]
+    fn the_window_starts_attached_to_the_session_with_its_output_kept() {
+        let arguments = window_arguments(
+            Path::new("/tmp/w/bench-window.app"),
+            Path::new("/tmp/w/terminal-1.out"),
+            Path::new("/tmp/w/terminal-1.err"),
+            Path::new("/tmp/tw-tmux-1"),
+            "tw-1-0",
+            Path::new("/tmp/w/terminal-1.conf"),
+            (40, 60),
+        );
+        let expected = [
+            "-g",
+            "-n",
+            "--stdout",
+            "/tmp/w/terminal-1.out",
+            "--stderr",
+            "/tmp/w/terminal-1.err",
+            "-a",
+            "/tmp/w/bench-window.app",
+            "--args",
+            "--tmux-tmpdir",
+            "/tmp/tw-tmux-1",
+            "--tmux-socket",
+            "tw-1-0",
+            "--session",
+            "bench",
+            "--config",
+            "/tmp/w/terminal-1.conf",
+            "--origin",
+            "40,60",
+        ];
+        assert_eq!(arguments, expected.map(OsString::from));
+        // The window is found again by its configuration file.
+        let ps = "  202 /tmp/w/bench-window.app/Contents/MacOS/bench-window \
+                  --tmux-tmpdir /tmp/tw-tmux-1 --config /tmp/w/terminal-1.conf\n";
+        assert_eq!(pid_with_argument(ps, "/tmp/w/terminal-1.conf"), Some(202));
     }
 
     #[test]
@@ -886,7 +1043,8 @@ mod tests {
 
     #[test]
     fn a_session_is_200_by_50_without_a_status_line() {
-        let server = session("exec cat").unwrap();
+        let work = tempfile::tempdir().unwrap();
+        let server = session("exec cat", work.path()).unwrap();
         let shown = server
             .run(&[
                 "display-message",

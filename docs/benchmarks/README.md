@@ -189,8 +189,11 @@ one configuration file written by the harness: Menlo 13, the same colours and
 16-colour palette, no padding and no blinking cursor. Ghostty starts without
 its default configuration files and with private XDG configuration, data,
 state and cache directories, so it never reads or changes the user's own
-configuration; it is stopped by the exact process it started. Targets
-alternate run by run.
+configuration; it is stopped by the exact process it started. The window,
+Ghostty and the tmux servers are all started through LaunchServices, so they
+are scheduled alike wherever the harness runs
+([0020](../decisions/0020-benchmark-launch-context.md)). Targets alternate run
+by run.
 
 **Timing.** ScreenCaptureKit captures the measured window, and each frame
 carries the time the window server displayed it. Times the harness takes, such

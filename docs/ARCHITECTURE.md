@@ -128,6 +128,7 @@ described in [0001](decisions/0001-record-architecture-decisions.md).
 | [0017. Benchmark harness](decisions/0017-benchmark-harness.md) | Accepted |
 | [0018. Milestone-0 benchmark method, revised](decisions/0018-milestone-0-benchmark-method-revised.md) | Accepted |
 | [0019. Benchmark window](decisions/0019-benchmark-window.md) | Accepted |
+| [0020. Benchmark launch context](decisions/0020-benchmark-launch-context.md) | Accepted |
 
 ## Further reading
 
