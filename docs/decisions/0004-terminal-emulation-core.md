@@ -1,8 +1,10 @@
 # 0004. Terminal emulation core
 
-- **Status:** Proposed. Waits on the milestone-0 engine benchmark and fidelity
-  checks ([0013](0013-milestone-0-benchmark-method.md)) and a clean build on
-  macOS and Linux.
+- **Status:** Proposed. Milestone-0 gate 1 failed on escape-heavy coloured
+  output and waits on a follow-up decision
+  ([gate 1 results](../benchmarks/gate-1.md)). The fidelity checks
+  ([0013](0013-milestone-0-benchmark-method.md)) and a clean build on macOS
+  and Linux are still to come.
 - **Date:** 2026-10-17
 
 ## Context

@@ -7,7 +7,7 @@ described in [0017](../decisions/0017-benchmark-harness.md).
 
 | Gate | Results |
 | --- | --- |
-| 1. Headless headroom | [gate-1.md](gate-1.md) |
+| 1. Headless headroom | Failed on escape-heavy coloured output: [gate-1.md](gate-1.md) |
 | 2. End-to-end bulk output | Not measured yet |
 | 3. Typing latency | Not measured yet |
 | 4. Frame pacing | Not measured yet |
