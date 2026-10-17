@@ -53,6 +53,9 @@ objc2-core-media = { version = "0.3.2", default-features = false, features = ["s
 objc2-core-video = { version = "0.3.2", default-features = false, features = ["std", "objc2", "CVBase", "CVBuffer", "CVImageBuffer", "CVPixelBuffer", "CVReturn"] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSDictionary", "NSEnumerator", "NSError", "NSObject", "NSString", "NSValue"] }
 objc2-screen-capture-kit = { version = "0.3.2", default-features = false, features = ["std", "block2", "dispatch2", "libc", "objc2-core-foundation", "objc2-core-graphics", "objc2-core-media", "SCShareableContent", "SCStream"] }
+# Lets the private tmux servers of tests and benchmarks be stopped on an
+# interrupt (decision record 0012). alacritty_terminal already uses it.
+signal-hook = "0.4.5"
 tempfile = "3.27.0"
 thiserror = "2.0.21"
 

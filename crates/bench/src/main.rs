@@ -80,6 +80,15 @@ usage: tmux-workspaces-bench probe-display --pid PID [options]   (macOS)
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // The gates start private tmux servers, which an interrupt must stop too.
+    if args
+        .first()
+        .is_some_and(|command| command.starts_with("gate"))
+        && let Err(error) = tmux_workspaces_test_support::stop_servers_when_interrupted()
+    {
+        eprintln!("cannot handle interrupts: {error}");
+        return ExitCode::FAILURE;
+    }
     let result = match args.first().map(String::as_str) {
         Some("gate1") => Options::parse(&args[1..]).and_then(|options| gate1::run(&options)),
         Some("replay") => {

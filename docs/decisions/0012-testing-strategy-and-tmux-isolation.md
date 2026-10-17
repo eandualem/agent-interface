@@ -46,6 +46,7 @@ Python.
 | `proptest` | 1.12.0 | MIT OR Apache-2.0 | Property tests for trees, edit sequences and protocol chunking, with failing seeds kept |
 | `insta` | 1.49.0 | Apache-2.0 | Reviewable snapshots of decoded output or display data, where a snapshot is clearer than an assertion; updates disabled in CI |
 | `tempfile` | 3.27.0 | MIT OR Apache-2.0 | Isolated fixture directories |
+| `signal-hook` | 0.4.5 | MIT OR Apache-2.0 | Stopping the benchmark harness's private servers when it is interrupted; `alacritty_terminal` already depends on it |
 
 **tmux isolation.** Every tmux process in tests, benchmarks and spikes is
 started through one fixture helper, which:
@@ -59,8 +60,9 @@ started through one fixture helper, which:
 - starts tmux with no user configuration (`-f /dev/null`);
 - creates only disposable sessions, and never attaches to a session it did not
   create;
-- on success or failure, stops only the server it created, and never runs a
-  default-server command while cleaning up.
+- on success or failure, stops only the server it created, with any of its
+  clients that would keep it running, and never runs a default-server command
+  while cleaning up; the benchmark harness does this when interrupted too.
 
 A check against a live session is read-only (`-f read-only,ignore-size`) and is
 reported to the maintainer before it runs. Tests never run `kill-server` on, or

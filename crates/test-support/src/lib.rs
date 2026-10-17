@@ -12,7 +12,12 @@ use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::time::{Duration, Instant};
 
+use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
+use signal_hook::iterator::Signals;
+use signal_hook::low_level::emulate_default_handler;
 use tempfile::TempDir;
 
 /// A tmux server started for one test and stopped when dropped.
@@ -27,7 +32,8 @@ use tempfile::TempDir;
 ///   because an unset `TMUX` alone falls back to the default server;
 /// - it starts with no user configuration (`-f /dev/null`).
 ///
-/// Dropping it runs `kill-server` against this server only.
+/// Dropping it stops this server only, together with any of its clients
+/// that would keep it running, and waits for them to exit.
 pub struct TmuxServer {
     socket_name: String,
     tmpdir: TempDir,
@@ -41,6 +47,14 @@ impl TmuxServer {
     /// [`Self::SESSION`], that runs `sh`.
     pub fn start() -> io::Result<Self> {
         static NEXT: AtomicUsize = AtomicUsize::new(0);
+        // The list stays locked until the server runs, so an interrupt
+        // either finds the server in it or stops it from starting.
+        let mut started = started();
+        let Some(servers) = started.as_mut() else {
+            return Err(io::Error::other(
+                "an interrupt is stopping this process's tmux servers",
+            ));
+        };
         // macOS limits socket paths to 104 bytes and its default temporary
         // directory is long, so the private directory goes in /tmp.
         let tmpdir = tempfile::Builder::new()
@@ -51,11 +65,12 @@ impl TmuxServer {
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         );
+        servers.push((tmpdir.path().to_owned(), socket_name.clone()));
         let server = Self {
             socket_name,
             tmpdir,
         };
-        server.run(&[
+        let result = server.run(&[
             "new-session",
             "-d",
             "-s",
@@ -65,7 +80,10 @@ impl TmuxServer {
             "-y",
             "50",
             "sh",
-        ])?;
+        ]);
+        // Dropping a server takes the lock too.
+        drop(started);
+        result?;
         Ok(server)
     }
 
@@ -119,13 +137,109 @@ impl TmuxServer {
 
 impl Drop for TmuxServer {
     fn drop(&mut self) {
-        // The command carries this server's private TMUX_TMPDIR and socket
-        // name, so it cannot reach any other server. The result is ignored
-        // because the server may already have exited.
-        let _ = command(self.tmpdir.path(), &self.socket_name)
-            .arg("kill-server")
-            .output();
+        stop(self.tmpdir.path(), &self.socket_name);
+        if let Some(started) = started().as_mut() {
+            started.retain(|(_, socket_name)| *socket_name != self.socket_name);
+        }
     }
+}
+
+/// Makes an interrupt stop the servers this process started before the
+/// process ends.
+///
+/// A process ended by a signal runs no `Drop`, so its servers would keep
+/// running. After this call, `SIGINT`, `SIGTERM` or `SIGHUP` stops every
+/// [`TmuxServer`] the process still holds, as dropping it does, and then
+/// ends the process as the signal would have. No server starts after that.
+pub fn stop_servers_when_interrupted() -> io::Result<()> {
+    let mut signals = Signals::new([SIGINT, SIGTERM, SIGHUP])?;
+    std::thread::Builder::new()
+        .name("stop-tmux-servers".to_owned())
+        .spawn(move || {
+            if let Some(signal) = signals.forever().next() {
+                let servers = started().take().unwrap_or_default();
+                for (tmpdir, socket_name) in &servers {
+                    stop(tmpdir, socket_name);
+                }
+                let _ = emulate_default_handler(signal);
+            }
+        })?;
+    Ok(())
+}
+
+/// Stops one private server and waits for it and its clients to exit.
+///
+/// `kill-server` alone is not enough: a server exits only once its clients
+/// have, and tmux 3.7c leaves a client running when its standard output
+/// closes while a pane is still writing to it, as when the program reading
+/// a control client is killed. So whatever still runs a second later is
+/// sent `SIGTERM`, then `SIGKILL`. Only processes that named this server
+/// when asked, and still name its socket, are signalled.
+fn stop(tmpdir: &Path, socket_name: &str) {
+    let pids = [
+        &["display-message", "-p", "#{pid}"][..],
+        &["list-clients", "-F", "#{client_pid}"],
+    ]
+    .iter()
+    .filter_map(|args| run(tmpdir, socket_name, args).ok())
+    .collect::<String>();
+    let pids: Vec<&str> = pids.split_whitespace().collect();
+    // The result is ignored because the server may already have exited.
+    let _ = run(tmpdir, socket_name, &["kill-server"]);
+    for signal in [None, Some("TERM"), Some("KILL")] {
+        let mut left = running(&pids, socket_name);
+        if let Some(signal) = signal {
+            for pid in &left {
+                let _ = Command::new("kill")
+                    .args([&format!("-{signal}"), pid.as_str()])
+                    .stderr(Stdio::null())
+                    .status();
+            }
+        }
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while !left.is_empty() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+            left = running(&pids, socket_name);
+        }
+        if left.is_empty() {
+            return;
+        }
+    }
+}
+
+/// Returns those of `pids` that are still running a tmux command on the
+/// server named `socket_name`.
+fn running(pids: &[&str], socket_name: &str) -> Vec<String> {
+    if pids.is_empty() {
+        return Vec::new();
+    }
+    let Ok(output) = Command::new("ps")
+        .args(["-o", "pid=,args=", "-p", &pids.join(",")])
+        .stderr(Stdio::null())
+        .output()
+    else {
+        return Vec::new();
+    };
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| {
+            let mut words = line.split_whitespace();
+            let pid = words.next()?;
+            let words: Vec<&str> = words.collect();
+            words
+                .windows(2)
+                .any(|pair| pair == ["-L", socket_name])
+                .then(|| pid.to_owned())
+        })
+        .collect()
+}
+
+/// The servers this process has started and not stopped, by private
+/// directory and socket name, or `None` once an interrupt has stopped them.
+static STARTED: Mutex<Option<Vec<(PathBuf, String)>>> = Mutex::new(Some(Vec::new()));
+
+fn started() -> MutexGuard<'static, Option<Vec<(PathBuf, String)>>> {
+    STARTED.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// A private server that a [`TmuxServer`] started in another process, such
@@ -252,7 +366,8 @@ fn control(tmpdir: &Path, socket_name: &str, args: &[&str]) -> io::Result<Child>
 
 #[cfg(test)]
 mod tests {
-    use std::io::{BufRead, BufReader, Write};
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::os::unix::process::ExitStatusExt;
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
 
@@ -286,6 +401,92 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         assert!(kept.run(&["list-sessions"]).is_ok());
+    }
+
+    #[test]
+    fn dropping_a_server_stops_a_client_that_lost_its_reader() {
+        // A control client whose standard output closes while a pane is
+        // writing, as when the program reading it is killed: tmux 3.7c then
+        // leaves the client running, and a server waits for its clients.
+        let server = TmuxServer::start().unwrap();
+        server
+            .run(&["new-session", "-d", "-s", "busy", "sh", "-c", "exec yes"])
+            .unwrap();
+        let mut client = server.control(&["attach-session", "-t", "busy"]).unwrap();
+        let mut stdout = client.stdout.take().unwrap();
+        stdout.read_exact(&mut [0; 1]).unwrap();
+        // The pipe fills while nothing reads it.
+        std::thread::sleep(Duration::from_millis(200));
+        drop(client.stdin.take());
+        drop(stdout);
+        let pid = server.run(&["display-message", "-p", "#{pid}"]).unwrap();
+        drop(server);
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let stopped = loop {
+            if client.try_wait().unwrap().is_some() && !process_exists(pid.trim()) {
+                break true;
+            }
+            if Instant::now() >= deadline {
+                break false;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        // A failed run must not leave the client behind either.
+        let _ = client.kill();
+        let _ = client.wait();
+        assert!(stopped, "tmux server {pid} or its client still running");
+    }
+
+    /// Set for the process that
+    /// `an_interrupt_stops_the_servers_the_process_started` interrupts.
+    const INTERRUPTED: &str = "TMUX_WORKSPACES_TEST_INTERRUPTED";
+
+    #[test]
+    fn an_interrupt_stops_the_servers_the_process_started() {
+        let mut process = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "tests::a_process_waiting_for_an_interrupt",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(INTERRUPTED, "1")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let pid = BufReader::new(process.stdout.take().unwrap())
+            .lines()
+            .find_map(|line| Some(line.ok()?.split_once("tmux server ")?.1.to_owned()))
+            .expect("the process started no server");
+        Command::new("kill")
+            .args(["-INT", &process.id().to_string()])
+            .status()
+            .unwrap();
+        let status = process.wait().unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while process_exists(&pid) {
+            assert!(Instant::now() < deadline, "tmux server {pid} still running");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(status.signal(), Some(SIGINT), "{status}");
+    }
+
+    /// Run by `an_interrupt_stops_the_servers_the_process_started` in a
+    /// process of its own; does nothing otherwise.
+    #[test]
+    fn a_process_waiting_for_an_interrupt() {
+        if std::env::var_os(INTERRUPTED).is_none() {
+            return;
+        }
+        stop_servers_when_interrupted().unwrap();
+        let server = TmuxServer::start().unwrap();
+        let pid = server.run(&["display-message", "-p", "#{pid}"]).unwrap();
+        println!("tmux server {}", pid.trim());
+        // The interrupt ends the process long before this.
+        std::thread::sleep(Duration::from_secs(30));
     }
 
     #[test]
