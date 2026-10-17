@@ -547,6 +547,14 @@ mod tests {
             let _ = ready.send(pid);
         });
         let Ok(Some(pid)) = started.recv_timeout(Duration::from_secs(10)) else {
+            // An interrupt lets the process stop any server it did start.
+            let _ = Command::new("kill")
+                .args(["-INT", &process.id().to_string()])
+                .status();
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while process.try_wait().unwrap().is_none() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(20));
+            }
             let _ = process.kill();
             let _ = process.wait();
             panic!("the process started no server");
