@@ -121,10 +121,11 @@ its `%pause` notification on.
 
 If a command in the line fails (`%error`), for example because the pane
 exited after the pause, tmux skips the rest of the line, including the
-continue. The replies are then not a snapshot, and the pane is left paused
-(or, on a first attach, the connection without output). The app discards
-them and starts that pane's recovery again from step 1, or drops the pane if
-tmux reports it gone.
+continue. The replies are then not a snapshot, and the app discards them.
+On a first attach, the connection is left without output for every pane, so
+the app closes it and attaches again for the panes that remain. Otherwise
+the pane is left paused, and the app starts its recovery again from step 1,
+or drops the pane if tmux reports it gone.
 
 When several panes need rebuilding, they are rebuilt one at a time: the next
 pause is sent after the previous line's replies, so tmux serves the other
@@ -209,7 +210,8 @@ session on a private server
   `TERM=xterm-256color`, `status off`, one window, and `terminal-features`
   for true colour, underline styles and colours, overline, strikethrough,
   hyperlinks and synchronised output. It attaches before the fixture draws
-  anything and is not asked to redraw; only a resize makes tmux redraw it.
+  anything and is not asked to redraw. tmux still redraws it when the pane
+  is resized and when the program enters or leaves the alternate screen.
   Its bytes go into the same engine and version as the app's.
 - The candidate is the app's recovery code on a control connection.
 - After each scenario, and again after the fixture has written more output
@@ -217,8 +219,8 @@ session on a private server
   of the pane: text, width, colours, underline style and colour, attributes
   and hyperlink. Blank cells (empty or a space) are equal when they look the
   same: the same background, attributes, underline style and colour and
-  hyperlink, and the same foreground when reverse video, an underline or a
-  strikethrough makes it visible. In a window with several
+  hyperlink, and the same foreground when reverse video, an underline, an
+  overline or a strikethrough makes it visible. In a window with several
   panes, the reference's screen is cropped to the pane's position and size.
   The cursor position comes from the reference. Cursor visibility and modes
   come from tmux's formats, because the reference terminal's modes are the
@@ -228,7 +230,8 @@ session on a private server
   how often a stall ended in a pause; a resize by another client, also
   checking that the app's pane size equals tmux's `pane_width` and
   `pane_height`; a window with several panes; the pane exiting between the
-  pause and the capture; a session with a hook on a recovery command, which
+  pause and the capture, and during a first attach while another pane
+  remains; a session with a hook on a recovery command, which
   the app must report.
 - Fixtures: text styles and colours, background-coloured erases, wide and
   combining characters and emoji sequences, line drawing, history, the
@@ -240,14 +243,14 @@ session on a private server
   the alternate screen is on followed by leaving it). Fixtures whose
   characters grow after they are drawn run only in windows with one pane.
   Neither those nor neighbouring cells with different underline colours are
-  used in the resize scenario, where tmux redraws the reference.
+  used where tmux redraws the reference: in the resize scenario, or in
+  fixtures that enter or leave the alternate screen.
 
 Three behaviours of tmux affect the reference, not the app, and the harness
 allows for them: tmux 3.7 and 3.8 merge underline colours across a run of
-cells when they redraw a whole screen (the reference attaches first and is
-redrawn only by a resize, so otherwise it draws through tmux's ordinary
-path); tmux 3.3 sends a palette
-underline colour as RGB (compared by value); and tmux hides the client's
+cells when they redraw a pane or a whole screen (the reference attaches
+first, so apart from the redraws above it draws through tmux's ordinary
+path); tmux 3.3 sends a palette underline colour as RGB (compared by value); and tmux hides the client's
 cursor while the pane's cursor waits to wrap (visibility is taken from
 `cursor_flag`).
 
