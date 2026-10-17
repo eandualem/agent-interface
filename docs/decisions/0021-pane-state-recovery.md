@@ -123,7 +123,10 @@ If a command in the line fails (`%error`), for example because the pane
 exited after the pause, tmux skips the rest of the line, including the
 continue. The replies are then not a snapshot, and the app discards them.
 On a first attach, the connection is left without output for every pane, so
-the app closes it and attaches again for the panes that remain. Otherwise
+the app sends the line again on the same connection for the panes that
+remain, still ending with `refresh-client -f '!no-output'`. It does not
+close that connection first: it may be the session's only client, and a
+session with `destroy-unattached` on would be destroyed. Otherwise
 the pane is left paused, and the app starts its recovery again from step 1,
 or drops the pane if tmux reports it gone.
 
