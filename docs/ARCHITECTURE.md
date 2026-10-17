@@ -7,7 +7,8 @@ a tmux client.
 
 This page describes the design decided so far, with the decision record behind
 each part, and then the code that exists today. So far the code is the Cargo
-workspace, its build and its test fixtures. Features come after the milestone-0
+workspace, its build, its test fixtures, the first parts of the terminal path
+and the benchmark harness. Features come after the milestone-0
 measurements ([0013](decisions/0013-milestone-0-benchmark-method.md)).
 
 ## The design at a glance
@@ -71,16 +72,17 @@ The repository is a Cargo workspace. Each crate above is a package under
 | `Cargo.toml` | The workspace: its members, and the metadata, lints and dependency versions they share. Every public item must be documented. |
 | `rust-toolchain.toml` | The pinned Rust toolchain ([0011](decisions/0011-toolchain-and-dependency-policy.md)). |
 | `deny.toml` | The allowed licences, the advisory and source checks, and the dependency direction between the crates. |
-| `crates/core`, `crates/store`, `crates/tmux`, `crates/roster` | Crate documentation stating each crate's responsibility; no code yet. |
-| `crates/term` | `Terminal`, a minimal wrapper around the terminal engine that creates a terminal, feeds it bytes and reads the cursor. It proves the engine builds and runs on each platform. |
+| `crates/core`, `crates/store`, `crates/roster` | Crate documentation stating each crate's responsibility; no code yet. |
+| `crates/tmux` | `control`, the decoder for a control-mode client's output: pane output with tmux's escaping removed, command replies and notifications. |
+| `crates/term` | `Terminal`, the wrapper around the terminal engine: it creates a terminal with grapheme clustering on, feeds it bytes, and copies the visible screen into a `Screen`, owned display data that any thread can hold. |
 | `crates/app` | The `tmux-workspaces` binary. It only prints its version: there is no window yet. |
-| `crates/test-support` | Development-only fixtures. `TmuxServer` starts the private tmux servers that tests use ([0012](decisions/0012-testing-strategy-and-tmux-isolation.md)). |
-| `docs/` | This page, the decision records, the research and the parity checklist. |
+| `crates/test-support` | Development-only fixtures. `TmuxServer` starts the private tmux servers that tests use, and control-mode clients on them ([0012](decisions/0012-testing-strategy-and-tmux-isolation.md)). |
+| `crates/bench`, `crates/bench-rio` | The development-only milestone-0 benchmark harness and its separate `rio-vt` program ([0017](decisions/0017-benchmark-harness.md)). |
+| `docs/` | This page, the decision records, the research, the parity checklist and the [benchmark results](benchmarks/README.md). |
 | `.github/workflows/ci.yml` | Continuous integration on macOS and Linux. |
 
-The milestone-0 benchmark harness will be a development-only crate,
-`crates/bench`, with its results in `docs/benchmarks/`
-([0013](decisions/0013-milestone-0-benchmark-method.md)).
+The milestone-0 benchmark harness and how to run it are described in the
+[benchmark guide](benchmarks/README.md).
 
 **Dependency direction.** A crate can use only the crates its manifest lists,
 and `cargo deny check` fails when a project crate depends on one that
@@ -123,6 +125,7 @@ described in [0001](decisions/0001-record-architecture-decisions.md).
 | [0014. Supported tmux versions](decisions/0014-supported-tmux-versions.md) | Proposed |
 | [0015. Input routing](decisions/0015-input-routing.md) | Proposed |
 | [0016. Shell environment and launch context](decisions/0016-shell-environment-and-launch-context.md) | Proposed |
+| [0017. Benchmark harness](decisions/0017-benchmark-harness.md) | Accepted |
 
 ## Further reading
 

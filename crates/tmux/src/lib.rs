@@ -6,3 +6,5 @@
 //! `docs/decisions/0003-control-mode-connection-and-attachment-model.md`.
 
 #![forbid(unsafe_code)]
+
+pub mod control;

@@ -11,6 +11,8 @@ members = [
     "crates/roster",
     "crates/app",
     "crates/test-support",
+    "crates/bench",
+    "crates/bench-rio",
 ]
 
 [workspace.package]
@@ -21,6 +23,12 @@ repository = "https://github.com/eandualem/tmux-workspaces-rs"
 publish = false
 
 [workspace.dependencies]
+# The benchmark's comparison engines, pinned exactly like the engine they are
+# compared with (decision record 0004). rio-vt's default feature adds a
+# pseudo-terminal driver the benchmark does not use.
+alacritty_terminal = "=0.26.0"
+rio-vt = { version = "=0.5.28", default-features = false }
+libc = "0.2.191"
 # Exact pins: the terminal engine's API is explicitly unstable, and the -sys
 # crate fixes the Ghostty source commit and the Zig version (decision record 0004).
 libghostty-vt = "=0.2.2"
