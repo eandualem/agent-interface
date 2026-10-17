@@ -81,6 +81,10 @@ impl Engine for Rio {
             visible: self.term.mode().contains(Mode::SHOW_CURSOR),
         });
     }
+
+    fn history(&self) -> usize {
+        self.term.history_size()
+    }
 }
 
 fn style(style: rio_vt::crosswords::style::Style) -> Style {

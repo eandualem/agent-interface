@@ -31,6 +31,8 @@ pub struct Replay {
     pub copied: usize,
     /// The pane bytes fed to the engine.
     pub pane_bytes: usize,
+    /// The lines of history the engine held at the end.
+    pub history: usize,
 }
 
 /// Replays `wire` into a new `E` engine, reading the screen out on
@@ -71,6 +73,7 @@ pub fn replay<E: Engine>(
     reads += 1;
     copied += screen.size_in_bytes();
     let elapsed = start.elapsed();
+    let history = engine.history();
     // Freeing the engine is not part of the measured path.
     drop(engine);
     Ok(Replay {
@@ -78,5 +81,6 @@ pub fn replay<E: Engine>(
         reads,
         copied,
         pane_bytes,
+        history,
     })
 }

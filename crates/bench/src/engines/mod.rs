@@ -33,6 +33,10 @@ impl Engine for Ghostty {
             .read_screen(screen)
             .expect("read the libghostty-vt screen");
     }
+
+    fn history(&self) -> usize {
+        self.0.history().expect("read the libghostty-vt history")
+    }
 }
 
 #[cfg(test)]

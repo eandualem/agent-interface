@@ -64,7 +64,7 @@ Against the gate, for `libghostty-vt` at the slow end of its runs:
 | --- | --- | --- |
 | ascii at least 200 MB/s | 445.4 / 528.3 / 525.2 MB/s | Met |
 | ascii at least 5 × tmux | 9.6 / 11.3 / 10.1 | Met |
-| unicode at least 5 × tmux | 8.7 / 7.6 / 8.3 | Met |
+| unicode at least 5 × tmux | 8.7 / 7.6 / 8.3 | Met, if the final-screen differences below are accepted |
 | color at least 5 × tmux | 2.8 / 2.1 / 2.5 | **Not met** |
 | scroll at least 5 × tmux | 8.0 / 8.0 / 6.3 | Met |
 
@@ -103,8 +103,15 @@ the other engines'. The comparisons were identical in all three runs.
     state lacks that background or only `capture-pane` omits it is left for
     gate 5, which compares a pane's full state.
 
-None of these differences is in the work an engine does, so `libghostty-vt`'s
-timings count on every payload.
+Read strictly, 0013's condition holds only for ascii and scroll: on unicode
+`libghostty-vt`'s screen differs from `alacritty_terminal`'s, and on color
+from both other engines'. Every one of those differences comes from what an
+engine stores, a capability `alacritty_terminal` lacks or a different choice
+about erased cells, not from bytes an engine skipped or processed twice.
+Whether such differences still disqualify a timing is part of the follow-up
+decision. The gate fails either way: the color timing does not meet the bar,
+and without the unicode timing the gate has no qualifying result for that
+payload.
 
 **Grapheme clustering.** tmux 3.4 and 3.7c each draw an emoji ZWJ sequence,
 a flag, a skin-tone sequence and a VS16 sequence as one cluster two columns

@@ -39,8 +39,9 @@ another tmux server.
 
 An acceptance result needs three runs of a clean build of a committed
 revision, under comparable load, with no other builds on the machine. The
-report records the revision, load averages before and after, and any
-compilers that were running.
+report records the revision both programs were built from, load averages
+before and after, and any compilers that were running. The gate refuses to
+run a `rio-vt` program built from a different revision.
 
 ## How gate 1 measures
 
@@ -67,9 +68,15 @@ at a time, keeps the bytes and decodes them, as any client must. tmux's rate is
 the payload's size divided by the time between the two markers reaching the
 client. There is one warm-up run and ten timed runs, each on a new server.
 
-Every run must deliver the same pane output. The macOS terminal driver
-sometimes writes the CR of a line end twice; since the payload holds no CR and
-a repeated CR changes nothing on the screen, runs are compared without CRs.
+Every run must deliver exactly what the script printed: the start marker,
+the payload with each LF turned into CR LF, and the end marker. The macOS
+terminal driver sometimes writes the CR of a line end twice; a repeated CR
+before an LF changes nothing on the screen, so it is taken as one.
+
+**History.** tmux and every engine keep up to 10,000 lines of history.
+`libghostty-vt` limits history by memory rather than lines, so the `term`
+crate gives it enough memory for at least 10,000 lines of every payload, and
+it can keep more. The report shows the lines each one kept.
 
 **The engines' rate.** The last tmux run's recording is replayed in one child
 process per engine: two warm-up replays and ten timed ones. A replay feeds
@@ -88,7 +95,9 @@ the final read-out.
 **Pass or fail.** Rates divide the payload's bytes, as generated, by the time.
 The gate decides on `libghostty-vt`, at the slow end of its runs: the rate of
 its nearest-rank 95th-percentile time must be at least 200 MB/s for `ascii`,
-and at least five times tmux's median rate for every payload.
+and at least five times tmux's median rate for every payload. As 0013
+requires, a timing counts only when `libghostty-vt`'s final screen matches
+every other engine's.
 
 **Final screens.** Each engine's last screen is written one line per cell.
 The report compares it with `libghostty-vt`'s, and with tmux's own view of the

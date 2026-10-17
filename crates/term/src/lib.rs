@@ -40,13 +40,16 @@ pub struct Terminal {
 }
 
 impl Terminal {
-    /// Creates a terminal of `cols` by `rows` cells that keeps up to
+    /// Creates a terminal of `cols` by `rows` cells that keeps at least
     /// `scrollback` lines of history.
+    ///
+    /// The engine limits history by memory rather than by lines, so it can
+    /// keep somewhat more; [`Terminal::history`] says how much it holds.
     pub fn new(cols: u16, rows: u16, scrollback: usize) -> Result<Self, Error> {
         let mut engine = Engine::new(Options {
             cols,
             rows,
-            max_scrollback: scrollback,
+            max_scrollback: history_bytes(cols, scrollback),
         })
         .map_err(Error)?;
         // tmux treats a grapheme cluster, such as an emoji sequence, as one
@@ -67,6 +70,11 @@ impl Terminal {
     /// Feeds pane output to the terminal, in the order the pane produced it.
     pub fn write(&mut self, bytes: &[u8]) {
         self.engine.vt_write(bytes);
+    }
+
+    /// Returns the number of lines of history the terminal holds.
+    pub fn history(&self) -> Result<usize, Error> {
+        self.engine.scrollback_rows().map_err(Error)
     }
 
     /// Returns the cursor's column and row, counted from zero at the top left
@@ -134,6 +142,21 @@ impl Terminal {
         screen.set_cursor(cursor);
         Ok(())
     }
+}
+
+/// Returns the engine's history limit, in bytes, for `lines` lines of
+/// history at `cols` columns.
+///
+/// The engine keeps history in pages of 8-byte cells, each page at least 215
+/// columns wide, and frees whole pages when the limit is reached. A page
+/// grows when it holds many styles, so the limit allows half as much again as
+/// plain rows need: measured at 200 columns, that keeps 10,000 lines of the
+/// benchmark's most heavily styled output (`docs/benchmarks/gate-1.md`).
+fn history_bytes(cols: u16, lines: usize) -> usize {
+    const CELL_BYTES: usize = 8;
+    const PAGE_COLS: usize = 215;
+    let row_bytes = CELL_BYTES * usize::from(cols).max(PAGE_COLS);
+    lines.saturating_mul(row_bytes) / 2 * 3
 }
 
 fn style_from_engine(style: engine_style::Style) -> Style {
@@ -244,6 +267,24 @@ mod tests {
             }
         );
         assert_eq!(screen.cell(3, 0), None);
+    }
+
+    #[test]
+    fn keeps_at_least_the_history_asked_for() {
+        for cols in [80, 200, 300] {
+            let mut terminal = Terminal::new(cols, 24, 1_000).unwrap();
+            for line in 0..5_000 {
+                terminal.write(format!("line {line}\r\n").as_bytes());
+            }
+            let history = terminal.history().unwrap();
+            assert!(
+                (1_000..5_000).contains(&history),
+                "{cols} columns: {history} lines"
+            );
+        }
+        let mut terminal = Terminal::new(80, 24, 0).unwrap();
+        terminal.write("line\r\n".repeat(100).as_bytes());
+        assert_eq!(terminal.history().unwrap(), 0);
     }
 
     #[test]

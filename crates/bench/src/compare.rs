@@ -231,6 +231,7 @@ mod tests {
             text: "\x1b[1mab\x1b[0m\nc\n".to_owned(),
             cursor: (1, 1),
             cursor_visible: true,
+            history: 0,
         };
         let grid = Grid {
             cols: 3,

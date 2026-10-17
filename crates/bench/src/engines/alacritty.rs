@@ -101,6 +101,10 @@ impl Engine for Alacritty {
             visible: self.term.mode().contains(TermMode::SHOW_CURSOR),
         });
     }
+
+    fn history(&self) -> usize {
+        self.term.grid().history_size()
+    }
 }
 
 fn style(fg: EngineColor, bg: EngineColor, flags: Flags) -> Style {

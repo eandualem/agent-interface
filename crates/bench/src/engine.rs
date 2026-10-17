@@ -37,4 +37,7 @@ pub trait Engine {
 
     /// Copies the visible screen into `screen`, replacing what it held.
     fn read_screen(&mut self, screen: &mut Screen);
+
+    /// Returns the number of lines of history the terminal holds.
+    fn history(&self) -> usize;
 }

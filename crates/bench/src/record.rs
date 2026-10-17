@@ -9,6 +9,7 @@
 
 use std::fs;
 use std::io::{self, Read, Write};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::process::Command;
 use std::sync::mpsc;
@@ -54,7 +55,8 @@ pub struct Recording {
     pub capture: Capture,
 }
 
-/// The pane as tmux holds it: `capture-pane -p -e -N` output and the cursor.
+/// The pane as tmux holds it: `capture-pane -p -e -N` output, the cursor and
+/// the history.
 pub struct Capture {
     /// The visible screen, one line per row, with escape sequences for the
     /// text's style.
@@ -63,6 +65,8 @@ pub struct Capture {
     pub cursor: (u16, u16),
     /// Whether the cursor is shown.
     pub cursor_visible: bool,
+    /// The lines of history the pane holds.
+    pub history: usize,
 }
 
 /// What the reader thread reports.
@@ -87,6 +91,14 @@ pub fn record(payload: &Path, grid: Grid, work: &Path) -> io::Result<Recording> 
     }
 
     let server = TmuxServer::start()?;
+    // The pane keeps as much history as the engines, so tmux does the same
+    // work. The option applies to panes created after it.
+    server.run(&[
+        "set-option",
+        "-g",
+        "history-limit",
+        &grid.scrollback.to_string(),
+    ])?;
     let (cols, rows) = (grid.cols.to_string(), grid.rows.to_string());
     server.run(&[
         "new-session",
@@ -146,11 +158,7 @@ pub fn record(payload: &Path, grid: Grid, work: &Path) -> io::Result<Recording> 
         )));
     }
 
-    // Opening the FIFO releases the producer.
-    fs::OpenOptions::new()
-        .write(true)
-        .open(&fifo)?
-        .write_all(b"\n")?;
+    release(&fifo)?;
     let received = done_rx
         .recv_timeout(TIMEOUT)
         .map_err(|_| io::Error::other("the end marker did not arrive in time"))??;
@@ -161,12 +169,17 @@ pub fn record(payload: &Path, grid: Grid, work: &Path) -> io::Result<Recording> 
         "-p",
         "-t",
         SESSION,
-        "#{cursor_x} #{cursor_y} #{cursor_flag}",
+        "#{cursor_x} #{cursor_y} #{cursor_flag} #{history_size}",
     ])?;
-    let mut fields = cursor.split_whitespace().map(str::parse::<u16>);
-    let (Some(Ok(col)), Some(Ok(row)), Some(Ok(flag))) =
-        (fields.next(), fields.next(), fields.next())
-    else {
+    let fields: Vec<usize> = cursor
+        .split_whitespace()
+        .map(str::parse)
+        .collect::<Result<_, _>>()
+        .map_err(|_| io::Error::other(format!("unexpected cursor {cursor:?}")))?;
+    let &[col, row, flag, history] = fields.as_slice() else {
+        return Err(io::Error::other(format!("unexpected cursor {cursor:?}")));
+    };
+    let (Ok(col), Ok(row)) = (u16::try_from(col), u16::try_from(row)) else {
         return Err(io::Error::other(format!("unexpected cursor {cursor:?}")));
     };
 
@@ -182,8 +195,34 @@ pub fn record(payload: &Path, grid: Grid, work: &Path) -> io::Result<Recording> 
             text,
             cursor: (col, row),
             cursor_visible: flag == 1,
+            history,
         },
     })
+}
+
+/// Releases the producer, which waits on `fifo`.
+///
+/// Opening a FIFO to write blocks until its reader opens it, so it is opened
+/// without blocking, and retried until the producer has, or [`TIMEOUT`]
+/// passes.
+fn release(fifo: &Path) -> io::Result<()> {
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+        match fs::OpenOptions::new()
+            .write(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(fifo)
+        {
+            Ok(mut gate) => return gate.write_all(b"\n"),
+            // ENXIO: nobody has the FIFO open to read yet.
+            Err(error)
+                if error.raw_os_error() == Some(libc::ENXIO) && Instant::now() < deadline =>
+            {
+                thread::sleep(Duration::from_millis(5));
+            }
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 /// Reads and decodes the client's output until the end marker arrives.
@@ -192,7 +231,7 @@ pub fn record(payload: &Path, grid: Grid, work: &Path) -> io::Result<Recording> 
 /// only what any client must: read, keep the bytes and decode them. The
 /// payload holds no `~`, so the markers are found by counting the `~` in the
 /// pane's output: two end the start marker and four end the end marker.
-/// [`check_markers`] confirms afterwards that they were the markers.
+/// [`check_output`] confirms afterwards that they were the markers.
 fn read_client(
     stdout: &mut impl Read,
     pane: PaneId,
@@ -256,24 +295,51 @@ pub fn pane_output(wire: &[u8], pane: PaneId) -> io::Result<Vec<u8>> {
     Ok(output)
 }
 
-/// Checks that the only `~` in the pane's output are the two markers, in
-/// order, with the payload between them.
-pub fn check_markers(output: &[u8]) -> io::Result<()> {
-    let tildes = output.iter().filter(|&&byte| byte == b'~').count();
-    let start = find(output, START_MARKER);
-    let end = find(output, END_MARKER);
-    match (tildes, start, end) {
-        (4, Some(start), Some(end)) if start < end => Ok(()),
-        _ => Err(io::Error::other(
-            "the pane output does not hold exactly the two markers",
-        )),
+/// Checks that the pane's output is exactly what the producer printed: the
+/// start marker, `payload` and the end marker, with each LF turned into CR LF
+/// by the terminal driver.
+///
+/// The macOS terminal driver sometimes writes that CR twice. A repeated CR
+/// changes nothing on the screen, so CRs repeated before an LF are taken as
+/// one.
+pub fn check_output(output: &[u8], payload: &[u8]) -> io::Result<()> {
+    let mut expected = Vec::with_capacity(payload.len() * 11 / 10);
+    expected.extend_from_slice(START_MARKER);
+    expected.extend_from_slice(b"\r\n");
+    for &byte in payload {
+        if byte == b'\n' {
+            expected.push(b'\r');
+        }
+        expected.push(byte);
     }
-}
+    expected.extend_from_slice(END_MARKER);
 
-fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack
-        .windows(needle.len())
-        .position(|window| window == needle)
+    let mut actual = Vec::with_capacity(output.len());
+    let mut rest = output;
+    while let Some((&byte, tail)) = rest.split_first() {
+        // Of a run of CRs that ends in an LF, keep the last.
+        if byte == b'\r' && tail.first() == Some(&b'\r') {
+            let run = rest.iter().take_while(|&&byte| byte == b'\r').count();
+            if rest.get(run) == Some(&b'\n') {
+                rest = &rest[run - 1..];
+                continue;
+            }
+        }
+        actual.push(byte);
+        rest = tail;
+    }
+    if actual == expected {
+        return Ok(());
+    }
+    let at = actual
+        .iter()
+        .zip(&expected)
+        .take_while(|(a, b)| a == b)
+        .count();
+    Err(io::Error::other(format!(
+        "the pane output differs from the payload at byte {at} of {}",
+        expected.len()
+    )))
 }
 
 fn path_str(path: &Path) -> io::Result<&str> {
@@ -291,6 +357,16 @@ mod tests {
     use crate::replay::{Schedule, replay};
 
     #[test]
+    fn output_must_be_the_payload_with_crs_added() {
+        let output = |text: &str| format!("~tw-bench:start~\r\n{text}~tw-bench:end~").into_bytes();
+        assert!(check_output(&output("a\r\nb\r\n"), b"a\nb\n").is_ok());
+        assert!(check_output(&output("a\r\r\nb\r\n"), b"a\nb\n").is_ok());
+        assert!(check_output(&output("a\nb\r\n"), b"a\nb\n").is_err());
+        assert!(check_output(&output("a\r\rb\r\n"), b"a\nb\n").is_err());
+        assert!(check_output(&output("a\r\nc\r\n"), b"a\nb\n").is_err());
+    }
+
+    #[test]
     fn a_recording_replays_to_the_screen_tmux_shows() {
         let work = tempfile::tempdir().unwrap();
         let payload = work.path().join("payload");
@@ -302,7 +378,7 @@ mod tests {
         };
         let recording = record(&payload, grid, work.path()).unwrap();
         let output = pane_output(&recording.wire, recording.pane).unwrap();
-        check_markers(&output).unwrap();
+        check_output(&output, &fs::read(&payload).unwrap()).unwrap();
 
         let schedule = Schedule {
             chunk: 7,

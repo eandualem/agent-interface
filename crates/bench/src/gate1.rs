@@ -52,6 +52,7 @@ struct EngineResult {
     pane_bytes: usize,
     reads: usize,
     copied: usize,
+    history: usize,
     peak_rss: u64,
     screen: String,
 }
@@ -66,6 +67,7 @@ struct PayloadResult {
     tmux_screen: String,
     tmux_rows: Vec<String>,
     tmux_cursor: (u16, u16),
+    tmux_history: usize,
     engines: Vec<EngineResult>,
 }
 
@@ -172,7 +174,6 @@ fn measure(kind: Kind, settings: &Settings, work: &Path) -> Result<PayloadResult
     fs::write(&payload_path, &payload).map_err(|error| error.to_string())?;
 
     let mut times = Vec::new();
-    let mut reference: Option<Vec<u8>> = None;
     let mut last: Option<Recording> = None;
     for run in 0..settings.tmux_warmup + settings.tmux_runs {
         eprintln!("{name}: tmux run {}", run + 1);
@@ -182,28 +183,9 @@ fn measure(kind: Kind, settings: &Settings, work: &Path) -> Result<PayloadResult
             .map_err(|error| format!("{name}: tmux run {}: {error}", run + 1))?;
         let output = record::pane_output(&recording.wire, recording.pane)
             .map_err(|error| error.to_string())?;
-        record::check_markers(&output).map_err(|error| format!("{name}: {error}"))?;
-        // Every run must deliver the same output. The payload holds no CR,
-        // so every CR comes from the terminal driver turning LF into CR LF,
-        // and the macOS driver sometimes writes that CR twice. A repeated CR
-        // changes nothing on the screen, so runs are compared without CRs.
-        let output: Vec<u8> = output.into_iter().filter(|&byte| byte != b'\r').collect();
-        match &reference {
-            None => reference = Some(output),
-            Some(first) if *first != output => {
-                let at = first
-                    .iter()
-                    .zip(&output)
-                    .take_while(|(a, b)| a == b)
-                    .count();
-                return Err(format!(
-                    "{name}: tmux run {} delivered different pane output from run 1, \
-                     from byte {at} of the output without CRs",
-                    run + 1,
-                ));
-            }
-            Some(_) => {}
-        }
+        // Every run must deliver exactly the payload.
+        record::check_output(&output, &payload)
+            .map_err(|error| format!("{name}: tmux run {}: {error}", run + 1))?;
         if run >= settings.tmux_warmup {
             times.push(recording.elapsed);
         }
@@ -254,6 +236,7 @@ fn measure(kind: Kind, settings: &Settings, work: &Path) -> Result<PayloadResult
         tmux_screen,
         tmux_rows,
         tmux_cursor: recording.capture.cursor,
+        tmux_history: recording.capture.history,
         engines,
     })
 }
@@ -311,6 +294,7 @@ fn replay(
         pane_bytes: 0,
         reads: 0,
         copied: 0,
+        history: 0,
         peak_rss: 0,
         screen: fs::read_to_string(screen).map_err(|error| error.to_string())?,
     };
@@ -323,6 +307,16 @@ fn replay(
         };
         match key {
             "engine" => {}
+            // A replay program built from other code would measure that code.
+            "revision" if value != env!("BENCH_REVISION") => {
+                return Err(format!(
+                    "{engine}: built from {value}, but this program from {}; \
+                     build both programs together",
+                    env!("BENCH_REVISION")
+                ));
+            }
+            "revision" => {}
+            "history" => result.history = number()? as usize,
             "run" => result.times.push(Duration::from_nanos(number()?)),
             "pane_bytes" => result.pane_bytes = number()? as usize,
             "reads" => result.reads = number()? as usize,
@@ -386,7 +380,7 @@ fn summary(
     let _ = write!(
         out,
         "\n## Settings\n\n\
-         - Grid {}×{}, {} lines of engine history; tmux keeps its default history.\n\
+         - Grid {}×{} and a history limit of {} lines, for tmux and every engine.\n\
          - Payloads from seed {}, at least {} bytes each.\n\
          - tmux: {} warm-up and {} timed runs per payload, each on a new private server.\n\
          - Engines: {} warm-up and {} timed replays each, in a child process per engine and payload.\n\
@@ -414,8 +408,8 @@ fn summary(
             out,
             "\n## {}\n\nPayload {} bytes; pane output {} bytes; control wire {} bytes. \
              A read-out every {} pane bytes.\n\n\
-             | Path | Median MB/s | p95 MB/s (slow end) | Fastest MB/s | Slowest MB/s | p95 × tmux median | Read-outs | Copied per replay | Peak memory |\n\
-             | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n",
+             | Path | Median MB/s | p95 MB/s (slow end) | Fastest MB/s | Slowest MB/s | p95 × tmux median | Read-outs | Copied per replay | History lines kept | Peak memory |\n\
+             | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n",
             result.kind.name(),
             result.payload_bytes,
             result.pane_bytes,
@@ -428,7 +422,7 @@ fn summary(
             result.payload_bytes,
             &tmux,
             tmux_rate,
-            None,
+            Err(result.tmux_history),
         );
         for engine in &result.engines {
             let times = stats::summarize(&engine.times);
@@ -438,7 +432,7 @@ fn summary(
                 result.payload_bytes,
                 &times,
                 tmux_rate,
-                Some(engine),
+                Ok(engine),
             );
         }
 
@@ -490,7 +484,7 @@ fn rate_row(
     bytes: usize,
     times: &Summary,
     tmux_rate: f64,
-    engine: Option<&EngineResult>,
+    engine: Result<&EngineResult, usize>,
 ) {
     let _ = write!(
         out,
@@ -501,17 +495,20 @@ fn rate_row(
         stats::rate(bytes, times.max),
     );
     match engine {
-        Some(engine) => {
+        Ok(engine) => {
             let _ = writeln!(
                 out,
-                "{:.1} | {} | {:.1} MB | {:.1} MB |",
+                "{:.1} | {} | {:.1} MB | {} | {:.1} MB |",
                 stats::rate(bytes, times.p95) / tmux_rate,
                 engine.reads,
                 engine.copied as f64 / 1e6,
+                engine.history,
                 engine.peak_rss as f64 / 1e6,
             );
         }
-        None => out.push_str("- | - | - | - |\n"),
+        Err(tmux_history) => {
+            let _ = writeln!(out, "- | - | - | {tmux_history} | - |");
+        }
     }
 }
 
@@ -538,24 +535,42 @@ fn describe(difference: &compare::Difference, label: &str, examples: &mut String
     parts.join(", ")
 }
 
-/// The gate's decision on the leading engine's rates, and the reasons. The
-/// final-screen comparisons are reported beside it, for review.
+/// The gate's decision on the leading engine, and the reasons. Its timing
+/// on a payload counts only if its final screen matches every other
+/// engine's, as decision record 0013 requires.
 fn verdict(results: &[PayloadResult]) -> (&'static str, Vec<String>) {
     let mut reasons = Vec::new();
     let mut pass = true;
     let mut ascii_measured = false;
     for result in results {
+        let name = result.kind.name();
         let Some(engine) = result.engines.iter().find(|engine| engine.name == LEADING) else {
             continue;
         };
+        let others = result.engines.iter().filter(|other| other.name != LEADING);
+        let mut disqualified = Vec::new();
+        for other in others {
+            if !compare::compare(&engine.screen, &other.screen).is_none() {
+                disqualified.push(format!("its final screen differs from {}'s", other.name));
+            }
+        }
+        if disqualified.is_empty() {
+            reasons.push(format!("{name}: {LEADING}'s timing counts"));
+        } else {
+            pass = false;
+            reasons.push(format!(
+                "{name}: {LEADING}'s timing does not count: {}",
+                disqualified.join("; ")
+            ));
+        }
+
         let tmux_rate = stats::rate(result.payload_bytes, stats::summarize(&result.tmux).median);
         let rate = stats::rate(result.payload_bytes, stats::summarize(&engine.times).p95);
         let ratio = rate / tmux_rate;
         let headroom_ok = ratio >= HEADROOM;
         pass &= headroom_ok;
         reasons.push(format!(
-            "{}: {LEADING} {rate:.1} MB/s at its slow end, {ratio:.1} times tmux's median {tmux_rate:.1} MB/s (needs {HEADROOM}): {}",
-            result.kind.name(),
+            "{name}: {LEADING} {rate:.1} MB/s at its slow end, {ratio:.1} times tmux's median {tmux_rate:.1} MB/s (needs {HEADROOM}): {}",
             if headroom_ok { "met" } else { "not met" }
         ));
         if result.kind == Kind::Ascii {
@@ -572,5 +587,5 @@ fn verdict(results: &[PayloadResult]) -> (&'static str, Vec<String>) {
         pass = false;
         reasons.push(format!("ascii was not measured with {LEADING}"));
     }
-    (if pass { "Rates: PASS" } else { "Rates: FAIL" }, reasons)
+    (if pass { "Gate 1: PASS" } else { "Gate 1: FAIL" }, reasons)
 }

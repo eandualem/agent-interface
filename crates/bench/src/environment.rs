@@ -9,7 +9,7 @@ use std::process::Command;
 pub fn describe(tmux_version: &str) -> Vec<(&'static str, String)> {
     let engine = tmux_workspaces_term::engine_build();
     let mut values = vec![
-        ("revision", revision()),
+        ("revision", env!("BENCH_REVISION").to_owned()),
         ("os", os()),
         ("cpu", cpu()),
         ("memory", memory()),
@@ -82,16 +82,6 @@ pub fn builds() -> String {
         "none".to_owned()
     } else {
         found.join(", ")
-    }
-}
-
-fn revision() -> String {
-    let commit = run("git", &["rev-parse", "HEAD"]);
-    let changes = run("git", &["status", "--porcelain"]);
-    if changes.is_empty() {
-        commit
-    } else {
-        format!("{commit} with uncommitted changes")
     }
 }
 

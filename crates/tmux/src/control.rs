@@ -60,8 +60,9 @@ pub struct Decoder {
     partial: Vec<u8>,
     /// The unescaped data of the current `%output` line.
     output: Vec<u8>,
-    /// The number of the command whose reply is being read.
-    reply: Option<u64>,
+    /// The reply being read: its command number and the rest of its
+    /// `%begin` line, which the closing guard line repeats.
+    reply: Option<(u64, Vec<u8>)>,
 }
 
 impl Decoder {
@@ -100,17 +101,19 @@ impl Decoder {
     }
 
     fn line(&mut self, line: &[u8], on_message: &mut impl FnMut(Message<'_>)) -> Result<(), Error> {
-        if let Some(number) = self.reply {
-            // A reply ends only at a guard line for the same command: the
-            // reply's own lines can start with anything, `%end` included.
-            let guard = match line.strip_prefix(b"%end ") {
+        if let Some((number, guard)) = &self.reply {
+            // A reply ends only at a guard line with the same time, number
+            // and flags as its `%begin`: the reply's own lines can start with
+            // anything, `%end` included.
+            let number = *number;
+            let end = match line.strip_prefix(b"%end ") {
                 Some(rest) => Some((rest, Message::End { number })),
                 None => line
                     .strip_prefix(b"%error ")
                     .map(|rest| (rest, Message::Error { number })),
             };
-            match guard {
-                Some((rest, end)) if guard_number(rest) == Some(number) => {
+            match end {
+                Some((rest, end)) if rest == guard.as_slice() => {
                     self.reply = None;
                     on_message(end);
                 }
@@ -131,8 +134,10 @@ impl Decoder {
                 data: &self.output,
             });
         } else if let Some(rest) = line.strip_prefix(b"%begin ") {
-            let number = guard_number(rest).ok_or(Error::Malformed("%begin without a number"))?;
-            self.reply = Some(number);
+            let number = guard_number(rest).ok_or(Error::Malformed(
+                "%begin without a time, a number and flags",
+            ))?;
+            self.reply = Some((number, rest.to_vec()));
             on_message(Message::Begin { number });
         } else if line.starts_with(b"%") {
             on_message(Message::Notification(line));
@@ -145,11 +150,17 @@ impl Decoder {
     }
 }
 
-/// Returns the command number from the rest of a guard line, `time number
-/// flags`.
+/// Returns the command number from the rest of a guard line, which is three
+/// numbers: the time, the command number and the flags.
 fn guard_number(rest: &[u8]) -> Option<u64> {
-    let (_time, rest) = split_word(rest);
-    let (number, _flags) = split_word(rest);
+    let mut fields = rest.split(|&byte| byte == b' ');
+    let (Some(time), Some(number), Some(flags), None) =
+        (fields.next(), fields.next(), fields.next(), fields.next())
+    else {
+        return None;
+    };
+    parse_number(time)?;
+    parse_number(flags)?;
     parse_number(number)
 }
 
@@ -229,6 +240,8 @@ mod tests {
         %begin 1700000001 13 1\n\
         %output %3 not output\n\
         %end 1700000001 99 1\n\
+        %end nonsense 13 trailing text\n\
+        %end 1700000001 13 1 extra\n\
         %end 1700000001 13 1\n\
         %begin 1700000002 14 1\n\
         parse error\n\
@@ -244,6 +257,8 @@ mod tests {
             Owned::Begin(13),
             Owned::ReplyLine(b"%output %3 not output".to_vec()),
             Owned::ReplyLine(b"%end 1700000001 99 1".to_vec()),
+            Owned::ReplyLine(b"%end nonsense 13 trailing text".to_vec()),
+            Owned::ReplyLine(b"%end 1700000001 13 1 extra".to_vec()),
             Owned::End(13),
             Owned::Begin(14),
             Owned::ReplyLine(b"parse error".to_vec()),
@@ -279,6 +294,7 @@ mod tests {
             b"%output %3 bad\\777\n",
             b"%output 3 no percent\n",
             b"%begin 1700000000 x 0\n",
+            b"%begin 1700000000 12\n",
             b"stray text\n",
         ] {
             assert!(decode_in_pieces(line, line.len()).is_err(), "{line:?}");
