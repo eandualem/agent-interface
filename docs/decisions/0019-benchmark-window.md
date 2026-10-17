@@ -25,7 +25,7 @@ Facts observed while building it, with `gpui-pre` 0.3.9 on macOS 27.0.1:
   without it, the build needs Xcode's Metal compiler.
 - A window stops drawing while it is covered, minimised or on another Space,
   and by default draws at most once every 33.3 ms while inactive.
-- The packages bring licences that `deny.toml` did not allow, and three crates
+- The packages bring licences that `deny.toml` did not allow, and six crates
   that the advisory database lists as unmaintained.
 
 ## Options considered
@@ -100,11 +100,14 @@ MPL-2.0 applies file by file. Using the unmodified crates in an MIT program is
 allowed; a distributed binary must say where their source is, which the
 release's licence notices will do ([0011](0011-toolchain-and-dependency-policy.md)).
 
-**Advisories.** Three crates in GPUI's graph are unmaintained, with no known
+**Advisories.** Six crates in GPUI's graph are unmaintained, with no known
 vulnerability, and `deny.toml` ignores exactly these advisories:
 RUSTSEC-2024-0436 (`paste`, through `metal` and `image`), RUSTSEC-2026-0206
-(`rustybuzz`, through `usvg`) and RUSTSEC-2026-0192 (`ttf-parser`, through
-`gpui-pre` and `usvg`).
+(`rustybuzz`, through `usvg`), RUSTSEC-2026-0192 (`ttf-parser`, through
+`gpui-pre` and `usvg`), and RUSTSEC-2026-0370, RUSTSEC-2026-0371 and
+RUSTSEC-2026-0372 (`zvariant`, `zbus_names` and `zvariant_derive`, which
+`zbus` 6 absorbed; GPUI's Linux backend uses them through `accesskit_unix` and
+`zbus` 5).
 
 ## Consequences
 
@@ -131,5 +134,8 @@ advisories gains a vulnerability, or GPUI stops depending on those crates.
   in the UI framework research.
 - [MPL-2.0](https://www.mozilla.org/en-US/MPL/2.0/), sections 3.2 and 3.3.
 - Advisories [RUSTSEC-2024-0436](https://rustsec.org/advisories/RUSTSEC-2024-0436),
-  [RUSTSEC-2026-0206](https://rustsec.org/advisories/RUSTSEC-2026-0206) and
-  [RUSTSEC-2026-0192](https://rustsec.org/advisories/RUSTSEC-2026-0192).
+  [RUSTSEC-2026-0206](https://rustsec.org/advisories/RUSTSEC-2026-0206),
+  [RUSTSEC-2026-0192](https://rustsec.org/advisories/RUSTSEC-2026-0192),
+  [RUSTSEC-2026-0370](https://rustsec.org/advisories/RUSTSEC-2026-0370),
+  [RUSTSEC-2026-0371](https://rustsec.org/advisories/RUSTSEC-2026-0371) and
+  [RUSTSEC-2026-0372](https://rustsec.org/advisories/RUSTSEC-2026-0372).
