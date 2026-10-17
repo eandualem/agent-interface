@@ -152,6 +152,9 @@ character set. The `term` crate writes them into a fresh terminal:
 - Overline, written by tmux as `5:3`, is written as `53`. A cell tmux marks
   with shift-out is written with G1 set to DEC line drawing, restored after.
   Hyperlinks are written with OSC 8 when they change.
+- From tmux 3.6, a tab over blank cells is kept as one cell and captured as
+  a tab character. It is written as blank cells in its style up to the next
+  tab stop.
 - With the alternate screen on, the primary rows go in first, then the cursor
   tmux saved on entry (`alternate_saved_x/y`), then the switch and the
   alternate rows. The history rows come from the current capture.
@@ -198,7 +201,12 @@ rebuild they can differ until the program sets them again:
 - On tmux 3.3, a capture stops at the last cell written in each row, so the
   tail of a line erased with a background colour comes back with the default
   background. tmux 3.4 captures the full width.
-- Before tmux 3.4, tmux keeps no hyperlinks, so a rebuild drops them.
+- Before tmux 3.4, tmux keeps no hyperlinks, so a rebuild drops them. From
+  3.4, a capture closes a hyperlink at the end of each row and does not open
+  it again where it continues, so a link that wraps onto the next row keeps
+  its link only on its first row.
+- A tab cell is placed by the pane's current tab stops, so one written before
+  the program changed them can end in a different column.
 
 The sequence also leaves out which rows were soft-wrapped. That does not
 change what is shown, and a resize rebuilds the pane anyway, but selection
@@ -240,10 +248,11 @@ session on a private server
   combining characters and emoji sequences, line drawing, history, the
   alternate screen with a scrolling region, tab stops and modes, pending
   escape, control and string sequences, a cursor waiting to wrap after a
-  narrow and a wide character, origin mode with wrapping off, hyperlinks,
-  underline colours, and the unexportable state above (current style,
-  partial UTF-8, DECSC, a program still in line-drawing mode, a resize while
-  the alternate screen is on followed by leaving it). Fixtures whose
+  narrow and a wide character, origin mode with wrapping off, hyperlinks
+  including one that wraps, tabs over coloured blank cells, underline
+  colours, and the unexportable state above (current style, partial UTF-8,
+  DECSC, a program still in line-drawing mode, a resize while the alternate
+  screen is on followed by leaving it). Fixtures whose
   characters grow after they are drawn run only in windows with one pane.
   Neither those nor neighbouring cells with different underline colours are
   used where tmux redraws the reference: in the resize scenario, or in
