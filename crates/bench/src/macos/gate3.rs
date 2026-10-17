@@ -134,7 +134,11 @@ pub fn run(options: &Options) -> Result<(), String> {
     if settings.keys == 0 || settings.runs == 0 || settings.targets.is_empty() {
         return Err("--keys, --runs and --targets must not be empty".to_owned());
     }
-    if settings.keys + settings.warmup_keys > MAX_KEYS {
+    if settings
+        .keys
+        .checked_add(settings.warmup_keys)
+        .is_none_or(|total| total > MAX_KEYS)
+    {
         return Err(format!(
             "--keys and --warmup-keys may add up to at most {MAX_KEYS}, \
              so that typing stays inside the measured region"
