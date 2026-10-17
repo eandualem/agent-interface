@@ -8,13 +8,14 @@
 //! names.
 //!
 //! The filter follows tmux's input parser, which is the same in tmux 3.3a to
-//! 3.8 (`input.c`). An escape starts a rename when the next byte is `k`. C0
+//! 3.8 (`input.c`). An escape starts a rename when its next byte is `k`; C0
 //! controls between the two still run, and DEL or bytes with the top bit set
-//! between them are ignored. Everything after the `k` is dropped up to the
-//! next escape, CAN or SUB. BEL does not end a rename. A CAN or SUB that
-//! ends it is a cancel with no effect, so it is dropped too. The escape that
-//! ends it is read afresh, so an escape sequence right after the name still
-//! applies.
+//! between them are ignored, so the filter drops those. Every escape reaches
+//! the engine, so it still ends whatever sequence it interrupts, as in tmux;
+//! only the `k` and the name after it are dropped. The name ends at the next
+//! escape, CAN or SUB, which reaches the engine too: the engine reads an
+//! escape as the start of the next sequence, and a CAN or SUB as cancelling
+//! the escape before the name, which draws nothing. BEL does not end a name.
 //!
 //! Two differences from tmux remain. tmux reads `ESC k` inside a DCS
 //! string's data as data, while the filter starts a rename there; the engine
@@ -32,8 +33,8 @@ enum State {
     /// Bytes pass through.
     #[default]
     Pass,
-    /// An escape is held back until its next byte says whether it starts a
-    /// rename.
+    /// The last bytes passed were an escape and any C0 controls after it, so
+    /// a `k` starts a rename.
     Escape,
     /// Bytes are a name and are dropped.
     Name,
@@ -53,60 +54,52 @@ impl Rename {
         let mut start = 0;
         let mut index = 0;
         while index < bytes.len() {
-            let byte = bytes[index];
             match self.state {
                 State::Pass => {
-                    let Some(offset) = memchr::memchr(ESC, &bytes[index..]) else {
+                    // Most escapes start an ordinary sequence: look past
+                    // those, in one scan, to the first that might not.
+                    let Some(after) = memchr::memchr_iter(ESC, &bytes[index..])
+                        .map(|offset| index + offset + 1)
+                        .find(|&after| !bytes.get(after).is_some_and(|&next| ordinary(next)))
+                    else {
+                        break;
+                    };
+                    index = after;
+                    self.state = State::Escape;
+                }
+                State::Escape => {
+                    match bytes[index] {
+                        b'k' => {
+                            flush(&mut write, &bytes[start..index]);
+                            start = index + 1;
+                            self.state = State::Name;
+                        }
+                        ESC | 0x00..=0x17 | 0x19 | 0x1c..=0x1f => {}
+                        0x7f..=0xff => {
+                            flush(&mut write, &bytes[start..index]);
+                            start = index + 1;
+                        }
+                        _ => self.state = State::Pass,
+                    }
+                    index += 1;
+                }
+                State::Name => {
+                    let Some(offset) = memchr::memchr3(ESC, CAN, SUB, &bytes[index..]) else {
+                        start = bytes.len();
                         break;
                     };
                     index += offset;
-                    // Most escapes start an ordinary sequence: pass them on
-                    // without splitting the write.
-                    if bytes.get(index + 1).is_some_and(|&next| ordinary(next)) {
-                        index += 2;
-                        continue;
-                    }
-                    flush(&mut write, &bytes[start..index]);
-                    start = index + 1;
-                    self.state = State::Escape;
+                    start = index;
+                    self.state = if bytes[index] == ESC {
+                        State::Escape
+                    } else {
+                        State::Pass
+                    };
+                    index += 1;
                 }
-                State::Escape => match byte {
-                    b'k' => {
-                        start = index + 1;
-                        self.state = State::Name;
-                    }
-                    ESC => {
-                        write(&[ESC]);
-                        start = index + 1;
-                    }
-                    0x00..=0x17 | 0x19 | 0x1c..=0x1f => {
-                        write(&[byte]);
-                        start = index + 1;
-                    }
-                    0x7f..=0xff => start = index + 1,
-                    _ => {
-                        write(&[ESC]);
-                        start = index;
-                        self.state = State::Pass;
-                    }
-                },
-                State::Name => match byte {
-                    ESC => {
-                        start = index + 1;
-                        self.state = State::Escape;
-                    }
-                    CAN | SUB => {
-                        start = index + 1;
-                        self.state = State::Pass;
-                    }
-                    _ => start = index + 1,
-                },
             }
-            index += 1;
         }
-        if self.state == State::Pass {
-            flush(&mut write, &bytes[start..]);
-        }
+        flush(&mut write, &bytes[start..]);
     }
 }
 
@@ -158,8 +151,8 @@ mod tests {
 
     #[test]
     fn a_rename_ends_at_the_next_escape_cancel_or_substitute() {
-        let screen = drawn(b"a\x1bkn\x07a\nme\x1b[31mb\x1bkname\x18c");
-        assert_eq!(text(&screen, 0), "abc");
+        let screen = drawn(b"a\x1bkn\x07a\nme\x1b[31mb\x1bkname\x18c\x1bkname\x1ad");
+        assert_eq!(text(&screen, 0), "abcd");
         assert_eq!(
             screen.cell(0, 1).unwrap().1.style.foreground,
             Color::Palette(1)
@@ -167,8 +160,18 @@ mod tests {
     }
 
     #[test]
+    fn the_escape_before_k_still_ends_the_sequence_it_interrupts() {
+        let screen = drawn(b"a\x1b]0;t\x1bkname\x18b\x1b[31\x1bkname\x1amc");
+        assert_eq!(text(&screen, 0), "abmc");
+        assert_eq!(
+            screen.cell(0, 2).unwrap().1.style.foreground,
+            Color::Default
+        );
+    }
+
+    #[test]
     fn controls_between_the_escape_and_k_still_run() {
-        let screen = drawn(b"a\x1b\n\x7fkname\x1b\\b");
+        let screen = drawn(b"a\x1b]0;t\x1b\n\x7fkname\x1b\\b");
         assert_eq!(text(&screen, 0), "a");
         assert_eq!(screen.cell(1, 1).unwrap().0, "b");
     }
