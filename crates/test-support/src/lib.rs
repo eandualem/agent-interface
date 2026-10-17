@@ -165,8 +165,8 @@ impl Drop for TmuxServer {
 /// the process, so that the process does not end first.
 pub fn wait_if_interrupted() {
     let mut started = started();
-    // A signal sets `RECEIVED` as it arrives, before the thread that stops
-    // the servers has marked the list.
+    // A signal sets `RECEIVED` as it arrives, possibly before the thread
+    // that stops the servers has marked the list.
     while started.interrupted || RECEIVED.load(Ordering::SeqCst) {
         started = STOPPED
             .wait(started)
