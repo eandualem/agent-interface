@@ -131,9 +131,13 @@ impl Terminal {
     /// Builds a terminal holding `restore`, keeping about `scrollback` lines
     /// of history ([`Terminal::new`]).
     ///
-    /// The state is written as terminal output: the rows, the scrolling
-    /// region, tab stops, modes, origin mode, the cursor and the pending
-    /// bytes, in that order.
+    /// The state is written as terminal output: the rows, the tab stops, the
+    /// cursor, the scrolling region, the modes and the pending bytes, in that
+    /// order. Origin mode is set first, while the region is still the whole
+    /// screen, so that entering the alternate screen saves it with the
+    /// primary screen's cursor, as tmux keeps it on leaving. The other modes
+    /// come last: with wrapping off, writing the row of a cursor waiting to
+    /// wrap again would join a combining character to the wrong cell.
     pub fn restored(restore: &Restore, scrollback: usize) -> Result<Self, Error> {
         let mut terminal = Self::new(restore.width, restore.height, scrollback)?;
         let mut out = Writer {
@@ -142,32 +146,38 @@ impl Terminal {
             width: restore.width,
             tab_stops: &restore.tab_stops,
         };
+        let modes = &restore.modes;
+        if modes.origin {
+            out.put(b"\x1b[?6h");
+        }
         let history = restore.history.min(restore.rows.len());
         let screen = &restore.rows[history..];
-        // Cells drawn in line drawing are written as plain characters after
-        // a shift-out, so G1 holds the line-drawing set while rows go in.
-        out.put(b"\x1b)0");
         match &restore.alternate {
             None => out.rows(&restore.rows)?,
             Some(alternate) => {
                 out.rows(restore.rows[..history].iter().chain(&alternate.saved_rows))?;
-                out.move_to(alternate.saved_cursor);
+                // Entering the alternate screen saves the cursor with the
+                // style and character sets, which are not known: the
+                // defaults.
+                out.place_cursor(alternate.saved_cursor, &alternate.saved_rows)?;
                 out.put(b"\x1b[?1049h\x1b[H");
                 out.rows(screen)?;
             }
-        }
-        out.put(b"\x1b[0m\x1b)B");
-
-        let (top, bottom) = restore.scroll_region;
-        if (top, bottom) != (0, restore.height.saturating_sub(1)) {
-            out.put(format!("\x1b[{};{}r", top + 1, bottom + 1).as_bytes());
         }
         out.put(b"\x1b[3g");
         for &stop in &restore.tab_stops {
             out.move_to((stop, 0));
             out.put(b"\x1bH");
         }
-        let modes = &restore.modes;
+        out.place_cursor(restore.cursor, screen)?;
+        // Setting the region moves the cursor, and the cursor can be outside
+        // the region even in origin mode: tmux moves it to the top left of
+        // the screen when the region is set. Saving and restoring it keeps
+        // its place, and whether it is waiting to wrap.
+        let (top, bottom) = restore.scroll_region;
+        if (top, bottom) != (0, restore.height.saturating_sub(1)) {
+            out.put(format!("\x1b7\x1b[{};{}r\x1b8", top + 1, bottom + 1).as_bytes());
+        }
         for (on, set) in [
             (modes.cursor_keys, &b"\x1b[?1h"[..]),
             (modes.keypad, b"\x1b="),
@@ -193,28 +203,6 @@ impl Terminal {
             if on {
                 out.put(set);
             }
-        }
-        let (col, row) = restore.cursor;
-        // Setting origin mode moves the cursor to the region's top left, and
-        // rows count from there.
-        let row_from_top = if modes.origin {
-            out.put(b"\x1b[?6h");
-            row.saturating_sub(top)
-        } else {
-            row
-        };
-        if col >= restore.width {
-            // Writing the cursor's row again from its first column leaves
-            // the cursor waiting to wrap, whatever the last cell's width.
-            out.move_to((0, row_from_top));
-            out.put(b"\x1b)0");
-            if let Some(cells) = screen.get(usize::from(row)) {
-                out.row(cells)?;
-            }
-            out.put(b"\x1b[0m\x1b)B");
-            out.fill_row()?;
-        } else {
-            out.move_to((col, row_from_top));
         }
         out.put(&restore.pending);
         out.flush();
@@ -262,21 +250,44 @@ impl Writer<'_> {
         self.bytes.clear();
     }
 
-    /// Moves the cursor to a column and row, from zero.
+    /// Moves the cursor to a column and row, from zero. Positions count
+    /// from the top of the screen while the region is the whole screen,
+    /// origin mode or not.
     fn move_to(&mut self, (col, row): (u16, u16)) {
         self.put(format!("\x1b[{};{}H", u32::from(row) + 1, u32::from(col) + 1).as_bytes());
     }
 
     /// Writes rows from the cursor's row down. Each row starts in the
-    /// default style, and a row scrolled in later fills with it.
+    /// default style, and a row scrolled in later fills with it. The style
+    /// and character sets are the defaults again afterwards.
     fn rows<'r>(&mut self, rows: impl IntoIterator<Item = &'r Row>) -> Result<(), Error> {
+        // Cells drawn in line drawing are written as plain characters after
+        // a shift-out, so G1 holds the line-drawing set while rows go in.
+        self.put(b"\x1b)0");
         for (index, row) in rows.into_iter().enumerate() {
             if index > 0 {
                 self.put(b"\x1b[0m\r\n");
             }
             self.row(row)?;
         }
+        self.put(b"\x1b[0m\x1b)B");
         Ok(())
+    }
+
+    /// Moves the cursor to a column and row of the screen whose rows are
+    /// `rows`. A column equal to the width is a cursor waiting to wrap:
+    /// writing its row again from the first column leaves the cursor
+    /// waiting to wrap, whatever the last cell's width.
+    fn place_cursor(&mut self, (col, row): (u16, u16), rows: &[Row]) -> Result<(), Error> {
+        if col < self.width {
+            self.move_to((col, row));
+            return Ok(());
+        }
+        self.move_to((0, row));
+        if let Some(cells) = rows.get(usize::from(row)) {
+            self.rows([cells])?;
+        }
+        self.fill_row()
     }
 
     /// Writes one row from the cursor, with G1 holding the line-drawing set.
@@ -355,7 +366,9 @@ impl Writer<'_> {
     }
 }
 
-/// Returns the SGR sequence that sets exactly `style` and `underline_color`.
+/// Returns the SGR sequences that set exactly `style` and
+/// `underline_color`. The colours go in sequences of their own, as the
+/// engine reads at most 24 parameters in one.
 fn sgr(style: &Style, underline_color: Color) -> Vec<u8> {
     let mut sgr = String::from("\x1b[0");
     for (attribute, code) in [
@@ -381,6 +394,7 @@ fn sgr(style: &Style, underline_color: Color) -> Vec<u8> {
         Underline::Dotted => sgr.push_str(";4:4"),
         Underline::Dashed => sgr.push_str(";4:5"),
     }
+    sgr.push('m');
     for (color, code) in [
         (style.foreground, 38),
         (style.background, 48),
@@ -388,11 +402,10 @@ fn sgr(style: &Style, underline_color: Color) -> Vec<u8> {
     ] {
         match color {
             Color::Default => {}
-            Color::Palette(index) => sgr.push_str(&format!(";{code};5;{index}")),
-            Color::Rgb(r, g, b) => sgr.push_str(&format!(";{code};2;{r};{g};{b}")),
+            Color::Palette(index) => sgr.push_str(&format!("\x1b[{code};5;{index}m")),
+            Color::Rgb(r, g, b) => sgr.push_str(&format!("\x1b[{code};2;{r};{g};{b}m")),
         }
     }
-    sgr.push('m');
     sgr.into_bytes()
 }
 
@@ -575,6 +588,82 @@ mod tests {
     }
 
     #[test]
+    fn leaving_the_alternate_screen_keeps_the_default_style_and_origin_mode() {
+        let mut red = text("qq");
+        red.style.foreground = Color::Palette(1);
+        red.line_drawing = true;
+        let mut restore = pane(4, 4, &["a1", "", "", ""]);
+        restore.alternate = Some(Alternate {
+            saved_rows: vec![
+                row(vec![text("p1")]),
+                row(vec![red]),
+                row(vec![]),
+                row(vec![]),
+            ],
+            saved_cursor: (0, 3),
+        });
+        restore.scroll_region = (1, 2);
+        restore.modes.origin = true;
+        restore.cursor = (2, 0);
+        let mut terminal = Terminal::restored(&restore, 0).unwrap();
+        terminal.write(b"\x1b[?1049l");
+        assert_eq!(terminal.cursor().unwrap(), (0, 3));
+        // The program's style and character sets are not known: plain.
+        terminal.write(b"x\x0eq\x0f");
+        // Origin mode stays on, as tmux keeps it.
+        terminal.write(b"\x1b[Hy");
+
+        assert_eq!(lines(&mut terminal), ["p1", "y\u{2500}", "", "xq"]);
+        let screen = read(&mut terminal);
+        assert_eq!(screen.cell(3, 0).unwrap().1.style, Style::default());
+    }
+
+    #[test]
+    fn origin_mode_keeps_a_cursor_outside_the_region() {
+        // tmux's DECSTBM homes the cursor to the top left of the screen,
+        // even in origin mode.
+        let mut restore = pane(10, 4, &["", "", "", ""]);
+        restore.scroll_region = (1, 2);
+        restore.modes.origin = true;
+        restore.cursor = (4, 0);
+        let mut terminal = Terminal::restored(&restore, 0).unwrap();
+
+        assert_eq!(terminal.cursor().unwrap(), (4, 0));
+        terminal.write(b"\x1b[H");
+        assert_eq!(terminal.cursor().unwrap(), (0, 1));
+    }
+
+    #[test]
+    fn every_attribute_and_colour_together_is_kept() {
+        let mut all = text("a");
+        for attribute in [
+            Attributes::BOLD,
+            Attributes::FAINT,
+            Attributes::ITALIC,
+            Attributes::BLINK,
+            Attributes::INVERSE,
+            Attributes::INVISIBLE,
+            Attributes::STRIKETHROUGH,
+            Attributes::OVERLINE,
+        ] {
+            all.style.attributes.insert(attribute);
+        }
+        all.style.underline = Underline::Curly;
+        all.style.foreground = Color::Rgb(1, 2, 3);
+        all.style.background = Color::Rgb(4, 5, 6);
+        all.underline_color = Color::Rgb(7, 8, 9);
+        let mut restore = pane(4, 1, &[]);
+        restore.rows = vec![row(vec![all.clone()])];
+        let mut terminal = Terminal::restored(&restore, 0).unwrap();
+
+        assert_eq!(read(&mut terminal).cell(0, 0).unwrap().1.style, all.style);
+        assert_eq!(
+            terminal.cell_details(0, 0).unwrap().underline_color,
+            Color::Rgb(7, 8, 9)
+        );
+    }
+
+    #[test]
     fn the_region_tab_stops_and_origin_mode_hold() {
         let mut restore = pane(10, 4, &["", "", "", ""]);
         restore.scroll_region = (1, 2);
@@ -727,6 +816,17 @@ mod tests {
                 assert_eq!(terminal.cursor().unwrap(), (1, 1));
             }
         }
+    }
+
+    #[test]
+    fn a_cursor_waiting_to_wrap_with_wrapping_off_keeps_combining_characters() {
+        let mut restore = pane(4, 1, &["abe\u{301}x"]);
+        restore.cursor = (4, 0);
+        restore.modes.wrap = false;
+        let mut terminal = Terminal::restored(&restore, 0).unwrap();
+
+        assert_eq!(lines(&mut terminal), ["abe\u{301}x"]);
+        assert!(terminal.engine.is_cursor_pending_wrap().unwrap());
     }
 
     #[test]
