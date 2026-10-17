@@ -78,13 +78,21 @@ usage: tmux-workspaces-bench probe-display --pid PID [options]   (macOS)
   --seconds N         how long to capture (5)
   --window ID         the window of PID to capture (its first one on screen)";
 
+/// Stops the programs the display gates started that are not children of
+/// this process, before an interrupt stops the tmux servers.
+fn stop_started_programs() {
+    #[cfg(target_os = "macos")]
+    macos::targets::stop_all_opened();
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     // The gates start private tmux servers, which an interrupt must stop too.
     if args
         .first()
         .is_some_and(|command| command.starts_with("gate"))
-        && let Err(error) = tmux_workspaces_test_support::stop_servers_when_interrupted()
+        && let Err(error) =
+            tmux_workspaces_test_support::stop_servers_when_interrupted(stop_started_programs)
     {
         eprintln!("cannot handle interrupts: {error}");
         return ExitCode::FAILURE;

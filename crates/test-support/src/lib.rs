@@ -10,6 +10,7 @@
 use std::ffi::c_int;
 use std::io;
 use std::os::unix::fs::{FileTypeExt, MetadataExt};
+use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -95,10 +96,13 @@ impl TmuxServer {
             socket_name,
             tmpdir,
         };
-        let result = start(server.tmpdir.path(), &server.socket_name);
-        // Dropping a server takes the lock too.
+        // Dropping a server takes the lock too, so a `start` that panics
+        // must not drop the server while the lock is held.
+        let result = panic::catch_unwind(AssertUnwindSafe(|| {
+            start(server.tmpdir.path(), &server.socket_name)
+        }));
         drop(started);
-        result?;
+        result.unwrap_or_else(|panic| panic::resume_unwind(panic))?;
         Ok(server)
     }
 
@@ -166,7 +170,11 @@ impl Drop for TmuxServer {
 /// any that are being dropped, and then ends the process as the signal
 /// would have. No server starts after that. A second signal ends the
 /// process at once.
-pub fn stop_servers_when_interrupted() -> io::Result<()> {
+///
+/// `first` runs before the servers are stopped, so that the process can
+/// stop what it started that is not its child, such as a program attached
+/// to one of the servers.
+pub fn stop_servers_when_interrupted(first: fn()) -> io::Result<()> {
     let mut signals = Signals::new([SIGINT, SIGTERM, SIGHUP])?;
     std::thread::Builder::new()
         .name("stop-tmux-servers".to_owned())
@@ -177,7 +185,10 @@ pub fn stop_servers_when_interrupted() -> io::Result<()> {
             };
             let stopping = std::thread::Builder::new()
                 .name("stopping-tmux-servers".to_owned())
-                .spawn(move || stop_all_and_end(signal));
+                .spawn(move || {
+                    first();
+                    stop_all_and_end(signal);
+                });
             match stopping {
                 Ok(_) => {
                     if let Some(again) = signals.next() {
@@ -519,6 +530,19 @@ mod tests {
     }
 
     #[test]
+    fn a_launch_that_panics_leaves_the_servers_usable() {
+        let (done, finished) = mpsc::channel();
+        std::thread::spawn(move || {
+            let started =
+                panic::catch_unwind(|| TmuxServer::start_with(|_| panic!("the launch failed")));
+            let _ = done.send(started.is_err());
+        });
+        // A server dropped while the list is locked would wait forever.
+        assert_eq!(finished.recv_timeout(Duration::from_secs(10)), Ok(true));
+        assert!(TmuxServer::start().is_ok());
+    }
+
+    #[test]
     fn dropping_a_server_stops_only_that_server() {
         let kept = TmuxServer::start().unwrap();
         let dropped = TmuxServer::start().unwrap();
@@ -573,11 +597,14 @@ mod tests {
     }
 
     /// Set for the process that
-    /// `an_interrupt_stops_the_servers_the_process_started` interrupts.
+    /// `an_interrupt_stops_the_servers_the_process_started` interrupts, to
+    /// the file that its interrupt handler's `first` creates.
     const INTERRUPTED: &str = "TMUX_WORKSPACES_TEST_INTERRUPTED";
 
     #[test]
     fn an_interrupt_stops_the_servers_the_process_started() {
+        let work = tempfile::tempdir().unwrap();
+        let first = work.path().join("first");
         let mut process = Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
@@ -585,7 +612,7 @@ mod tests {
                 "--nocapture",
                 "--test-threads=1",
             ])
-            .env(INTERRUPTED, "1")
+            .env(INTERRUPTED, &first)
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
@@ -632,6 +659,7 @@ mod tests {
         assert!(stopped, "tmux server {pid} still running");
         let status = status.expect("the process did not end");
         assert_eq!(status.signal(), Some(SIGINT), "{status}");
+        assert!(first.exists(), "the interrupt did not run `first`");
     }
 
     /// Run by `an_interrupt_stops_the_servers_the_process_started` in a
@@ -641,7 +669,12 @@ mod tests {
         if std::env::var_os(INTERRUPTED).is_none() {
             return;
         }
-        stop_servers_when_interrupted().unwrap();
+        stop_servers_when_interrupted(|| {
+            if let Some(path) = std::env::var_os(INTERRUPTED) {
+                let _ = std::fs::write(path, "");
+            }
+        })
+        .unwrap();
         let server = TmuxServer::start().unwrap();
         let pid = server.run(&["display-message", "-p", "#{pid}"]).unwrap();
         println!("tmux server {}", pid.trim());

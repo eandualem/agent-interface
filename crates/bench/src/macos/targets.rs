@@ -34,6 +34,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -273,9 +274,19 @@ pub fn start(
     let id = NEXT.fetch_add(1, Ordering::Relaxed);
     let config = work.join(format!("terminal-{id}.conf"));
     let session = || server.ok_or_else(|| format!("{} needs a tmux session", target.name()));
-    // The argument that finds the program again, and for the benchmark
-    // window the files its standard output and error go to.
-    let (argument, window_output) = match target {
+    // The argument that finds the program again. It is listed before the
+    // program starts, so that an interrupt while it starts stops it too.
+    let argument = match target {
+        Target::App => config.display().to_string(),
+        Target::Ghostty | Target::GhosttyTmux => format!("--config-file={}", config.display()),
+    };
+    OPENED
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .push(argument.clone());
+    // For the benchmark window, the files its standard output and error go
+    // to.
+    let window_output = match target {
         Target::App => {
             fs::write(&config, APPEARANCE).map_err(|error| error.to_string())?;
             let (tmpdir, socket) = session()?.address();
@@ -293,7 +304,7 @@ pub fn start(
                 programs.origin,
             ));
             open(&arguments, &app)?;
-            (config.display().to_string(), Some((output, errors)))
+            Some((output, errors))
         }
         Target::Ghostty | Target::GhosttyTmux => {
             let command = match target {
@@ -308,7 +319,7 @@ pub fn start(
                 .map_err(|error| error.to_string())?;
             let home = work.join(format!("ghostty-{id}"));
             launch_ghostty(&programs.ghostty, &config, &home)?;
-            (format!("--config-file={}", config.display()), None)
+            None
         }
     };
     let pid = find_opened(&argument)?;
@@ -788,6 +799,23 @@ fn bundle(app: &Path, executable: &str, kind: &str) -> io::Result<PathBuf> {
     Ok(programs.join(executable))
 }
 
+/// The arguments that find the programs started through LaunchServices that
+/// have not been stopped yet.
+static OPENED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// Stops every program started through LaunchServices that still runs. Such
+/// a program is not a child of this process, so a signal to this process or
+/// its process group does not reach it, and an interrupt calls this.
+pub fn stop_all_opened() {
+    let arguments = std::mem::take(&mut *OPENED.lock().unwrap_or_else(PoisonError::into_inner));
+    let processes = processes();
+    for argument in arguments {
+        if let Some(pid) = pid_with_argument(&processes, &argument) {
+            stop_opened(pid, &argument);
+        }
+    }
+}
+
 /// Finds the process started with `argument`.
 fn find_opened(argument: &str) -> Result<i32, String> {
     let deadline = Instant::now() + START_TIMEOUT;
@@ -805,6 +833,10 @@ fn find_opened(argument: &str) -> Result<i32, String> {
 /// Stops the process `pid`, after checking it is still the one started with
 /// `argument`.
 fn stop_opened(pid: i32, argument: &str) {
+    OPENED
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .retain(|opened| opened != argument);
     let ours = || pid_with_argument(&processes(), argument) == Some(pid);
     if !ours() {
         return;
@@ -838,10 +870,13 @@ fn processes() -> String {
 /// Returns the process in `ps` output that has `argument` among its
 /// arguments.
 fn pid_with_argument(processes: &str, argument: &str) -> Option<i32> {
+    // `ps` separates arguments with spaces, and a path in one can hold
+    // spaces too, so the argument is matched with the spaces around it.
+    let argument = format!(" {argument} ");
     processes.lines().find_map(|line| {
         let (pid, args) = line.trim_start().split_once(' ')?;
-        args.split(' ')
-            .any(|word| word == argument)
+        format!(" {args} ")
+            .contains(&argument)
             .then(|| pid.parse().ok())?
     })
 }
@@ -956,10 +991,15 @@ mod tests {
             "40,60",
         ];
         assert_eq!(arguments, expected.map(OsString::from));
-        // The window is found again by its configuration file.
+        // The window is found again by its configuration file, even in a
+        // directory whose name holds a space.
         let ps = "  202 /tmp/w/bench-window.app/Contents/MacOS/bench-window \
-                  --tmux-tmpdir /tmp/tw-tmux-1 --config /tmp/w/terminal-1.conf\n";
+                  --tmux-tmpdir /tmp/tw-tmux-1 --config /tmp/w/terminal-1.conf --origin 40,60\n\
+                  303 /tmp/a b/bench-window.app/Contents/MacOS/bench-window \
+                  --tmux-tmpdir /tmp/tw-tmux-2 --config /tmp/a b/terminal-1.conf --origin 40,60\n";
         assert_eq!(pid_with_argument(ps, "/tmp/w/terminal-1.conf"), Some(202));
+        assert_eq!(pid_with_argument(ps, "/tmp/a b/terminal-1.conf"), Some(303));
+        assert_eq!(pid_with_argument(ps, "/tmp/a b/terminal-2.conf"), None);
     }
 
     #[test]
