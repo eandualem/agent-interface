@@ -153,8 +153,9 @@ character set. The `term` crate writes them into a fresh terminal:
   with shift-out is written with G1 set to DEC line drawing, restored after.
   Hyperlinks are written with OSC 8 when they change.
 - From tmux 3.6, a tab over blank cells is kept as one cell and captured as
-  a tab character. It is written as blank cells in its style up to the next
-  tab stop.
+  a tab character, without its width. It is written as blank cells in its
+  style from its column up to, not including, the next of the pane's tab
+  stops, or the last column if no stop follows, as a tab moves the cursor.
 - With the alternate screen on, the primary rows go in first, then the cursor
   tmux saved on entry (`alternate_saved_x/y`), then the switch and the
   alternate rows. The history rows come from the current capture.
@@ -205,8 +206,11 @@ rebuild they can differ until the program sets them again:
   3.4, a capture closes a hyperlink at the end of each row and does not open
   it again where it continues, so a link that wraps onto the next row keeps
   its link only on its first row.
-- A tab cell is placed by the pane's current tab stops, so one written before
-  the program changed them can end in a different column.
+- tmux keeps a tab cell's width, but a capture leaves it out, so a rebuild
+  measures the cell against the pane's current tab stops. A tab cell that
+  has moved since it was written, by inserted or deleted characters or a
+  reflow, or that was written before the program changed the tab stops, can
+  end in a different column.
 
 The sequence also leaves out which rows were soft-wrapped. That does not
 change what is shown, and a resize rebuilds the pane anyway, but selection
@@ -249,8 +253,8 @@ session on a private server
   alternate screen with a scrolling region, tab stops and modes, pending
   escape, control and string sequences, a cursor waiting to wrap after a
   narrow and a wide character, origin mode with wrapping off, hyperlinks
-  including one that wraps, tabs over coloured blank cells, underline
-  colours, and the unexportable state above (current style, partial UTF-8,
+  including one that wraps, tabs over coloured blank cells and a tab cell
+  moved by inserted characters, underline colours, and the unexportable state above (current style, partial UTF-8,
   DECSC, a program still in line-drawing mode, a resize while the alternate
   screen is on followed by leaving it). Fixtures whose
   characters grow after they are drawn run only in windows with one pane.
