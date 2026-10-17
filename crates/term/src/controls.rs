@@ -1,42 +1,45 @@
-//! Keeps the engine from drawing control bytes that tmux ignores.
+//! Keeps the engine from drawing C0 controls that tmux ignores.
 //!
 //! Outside a sequence, tmux runs the C0 controls 0x10 to 0x1f, other than
-//! escape, as controls that do nothing, and ignores DEL (`input.c`, the same
-//! in tmux 3.3a to 3.8). The engine draws each of them as a cell, so without
-//! the filter a pane that receives one shows a character an ordinary tmux
-//! client does not.
+//! escape, as controls that do nothing (`input.c`, the same in tmux 3.3a to
+//! 3.8). The engine draws each of them as a cell, so without the filter a
+//! pane that receives one shows a character an ordinary tmux client does
+//! not.
 //!
-//! Inside a sequence, tmux and the engine both run or ignore these bytes, so
-//! the filter drops them wherever they are. CAN and SUB are the exception:
-//! they also cancel a sequence they interrupt, so the filter hands the engine
-//! an escape before each instead. The engine reads that escape as the start
-//! of a new sequence, which ends the interrupted one as CAN or SUB would, and
-//! the CAN or SUB then cancels the escape without drawing anything.
+//! The filter hands the engine NUL in place of each. The engine's parser
+//! treats NUL as it treats these controls in every state, but never draws
+//! it. Like the control it replaces, NUL ends a partly received UTF-8
+//! character, which the engine then draws as U+FFFD, as tmux does from 3.6;
+//! earlier versions draw nothing for it. CAN and SUB also cancel a sequence
+//! they interrupt, so the filter hands the engine an escape before each
+//! instead. The engine reads that escape as the start of a new sequence,
+//! which ends the interrupted one as CAN or SUB would, and the CAN or SUB
+//! then cancels the escape without drawing anything.
 //!
-//! The filter needs no state between writes. Some differences from tmux
-//! remain, in bytes programs have no reason to send. Inside a DCS string tmux
-//! keeps all of these bytes as data, and inside an OSC or APC string it keeps
-//! DEL; the filter drops them there, and a CAN or SUB cancels a DCS string,
-//! as it would in the engine without the filter. And at each of these C0
-//! controls tmux discards a partly received UTF-8 character and forgets the
-//! character `REP` repeats. The engine keeps the character `REP` repeats,
-//! joins a partly received character across a control it never sees, and
-//! draws U+FFFD for one that a CAN or SUB cuts short.
+//! The filter needs no state between writes. Two differences from tmux
+//! remain, in bytes programs have no reason to send. Inside a DCS string
+//! tmux keeps these controls as data, CAN and SUB included, while the engine
+//! gets NUL in their place and ends the string at a CAN or SUB. And at each
+//! of them tmux forgets the character `REP` repeats, while the engine keeps
+//! it. DEL, which the engine also draws and tmux ignores outside strings, is
+//! left alone: it is part of an OSC or APC string for both, so only a filter
+//! that follows their parsers' state could drop it.
 
+const NUL: u8 = 0x00;
 const CAN: u8 = 0x18;
 const SUB: u8 = 0x1a;
 const ESC: u8 = 0x1b;
-const DEL: u8 = 0x7f;
 
-/// Hands `bytes` to `write` in order, without the controls tmux ignores, and
-/// with an escape before each CAN or SUB.
+/// Hands `bytes` to `write` in order, with NUL in place of each control tmux
+/// ignores, and an escape before each CAN or SUB.
 pub(crate) fn filter(mut bytes: &[u8], mut write: impl FnMut(&[u8])) {
     while let Some(index) = find(bytes) {
         if index > 0 {
             write(&bytes[..index]);
         }
-        if matches!(bytes[index], CAN | SUB) {
-            write(&[ESC, bytes[index]]);
+        match bytes[index] {
+            CAN | SUB => write(&[ESC, bytes[index]]),
+            _ => write(&[NUL]),
         }
         bytes = &bytes[index + 1..];
     }
@@ -46,7 +49,7 @@ pub(crate) fn filter(mut bytes: &[u8], mut write: impl FnMut(&[u8])) {
 }
 
 /// Returns the position of the first control in `bytes` that the filter
-/// drops or changes.
+/// replaces or changes.
 fn find(bytes: &[u8]) -> Option<usize> {
     // Testing whole chunks first, without branches or an early exit, lets the
     // compiler test many bytes at once.
@@ -68,9 +71,9 @@ fn find(bytes: &[u8]) -> Option<usize> {
         .map(|index| offset + index)
 }
 
-/// Returns whether `byte` is 0x10 to 0x1f other than escape, or DEL.
+/// Returns whether `byte` is 0x10 to 0x1f other than escape.
 fn control(byte: u8) -> bool {
-    ((byte & 0xf0) == 0x10) & (byte != ESC) | (byte == DEL)
+    ((byte & 0xf0) == 0x10) & (byte != ESC)
 }
 
 #[cfg(test)]
@@ -102,7 +105,7 @@ mod tests {
 
     #[test]
     fn controls_tmux_ignores_are_not_drawn() {
-        for control in (0x10..=0x1a).chain(0x1c..=0x1f).chain([0x7f]) {
+        for control in (0x10..=0x1a).chain(0x1c..=0x1f) {
             let screen = drawn(&[b'a', control, b'b']);
             assert_eq!(text(&screen, 0), "ab", "{control:#04x}");
             assert_eq!((screen.cursor().col, screen.cursor().row), (2, 0));
@@ -131,8 +134,14 @@ mod tests {
 
     #[test]
     fn a_control_keeps_a_pending_wrap() {
-        let screen = drawn(b"abcdefghij\x18\x7fk");
+        let screen = drawn(b"abcdefghij\x18\x10k");
         assert_eq!(text(&screen, 1), "k");
         assert_eq!((screen.cursor().col, screen.cursor().row), (1, 1));
+    }
+
+    #[test]
+    fn a_control_ends_a_partly_received_character() {
+        let screen = drawn(b"a\xe2\x82\x10\xacb\xe2\x82\x18c");
+        assert_eq!(text(&screen, 0), "a\u{fffd}\u{fffd}b\u{fffd}c");
     }
 }
