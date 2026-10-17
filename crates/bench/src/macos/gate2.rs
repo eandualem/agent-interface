@@ -366,11 +366,8 @@ fn verdict(
             2,
             failed,
             true,
-            &[
-                missing(settings, payload_bytes),
-                settings.build_issues.clone(),
-            ]
-            .concat(),
+            &missing(settings, payload_bytes),
+            &settings.build_issues,
         ),
         reasons,
     )

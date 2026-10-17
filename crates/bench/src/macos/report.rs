@@ -207,21 +207,37 @@ impl Judged {
 /// `missing` lists what the run left out of the gate's required coverage.
 /// Without it the gate cannot pass: the verdict is at most not decided, and
 /// says what is missing.
-pub fn verdict(gate: u8, failed: bool, undecided: bool, missing: &[String]) -> String {
-    let outcome = if failed {
+pub fn verdict(
+    gate: u8,
+    failed: bool,
+    undecided: bool,
+    missing: &[String],
+    build_issues: &[String],
+) -> String {
+    // Only the distributable build decides a gate, either way (0018).
+    let outcome = if !build_issues.is_empty() {
+        "not decided"
+    } else if failed {
         "failed"
     } else if undecided || !missing.is_empty() {
         "not decided"
     } else {
         "passed"
     };
-    if missing.is_empty() {
+    let mut notes = Vec::new();
+    if !missing.is_empty() {
+        notes.push(format!("exploratory subset: {}", missing.join("; ")));
+    }
+    if !build_issues.is_empty() {
+        notes.push(format!(
+            "not a distributable build: {}",
+            build_issues.join("; ")
+        ));
+    }
+    if notes.is_empty() {
         format!("Gate {gate} {outcome}")
     } else {
-        format!(
-            "Gate {gate} {outcome} (exploratory subset: {})",
-            missing.join("; ")
-        )
+        format!("Gate {gate} {outcome} ({})", notes.join("; "))
     }
 }
 
@@ -231,8 +247,11 @@ pub fn verdict(gate: u8, failed: bool, undecided: bool, missing: &[String]) -> S
 /// sure the window matches the harness.
 pub fn build_issues(build: &super::targets::Build) -> Vec<String> {
     let mut issues = Vec::new();
-    if build.profile != "release" {
-        issues.push(format!("a {} build, not release", build.profile));
+    if build.profile != "release opt-level 3" {
+        issues.push(format!(
+            "a {} build, not release opt-level 3",
+            build.profile
+        ));
     }
     if build.cpu != "baseline" {
         issues.push(format!("engine CPU target {}, not baseline", build.cpu));
@@ -297,22 +316,29 @@ mod tests {
             optimize: optimize.to_owned(),
             engine: String::new(),
         };
-        assert!(build_issues(&build("release", "baseline", "ReleaseFast")).is_empty());
+        assert!(build_issues(&build("release opt-level 3", "baseline", "ReleaseFast")).is_empty());
+        let debug = build_issues(&build("debug opt-level 0", "baseline", "ReleaseFast"));
+        assert_eq!(debug.len(), 1);
+        assert_eq!(
+            verdict(4, true, false, &[], &debug),
+            "Gate 4 not decided (not a distributable build: a debug opt-level 0 build, \
+             not release opt-level 3)"
+        );
         assert_eq!(build_issues(&build("debug", "native", "Debug")).len(), 3);
     }
 
     #[test]
     fn a_subset_never_passes_the_gate() {
         let missing = ["busy not run".to_owned()];
-        assert_eq!(verdict(3, false, false, &[]), "Gate 3 passed");
-        assert_eq!(verdict(3, false, true, &[]), "Gate 3 not decided");
-        assert_eq!(verdict(3, true, false, &[]), "Gate 3 failed");
+        assert_eq!(verdict(3, false, false, &[], &[]), "Gate 3 passed");
+        assert_eq!(verdict(3, false, true, &[], &[]), "Gate 3 not decided");
+        assert_eq!(verdict(3, true, false, &[], &[]), "Gate 3 failed");
         assert_eq!(
-            verdict(3, false, false, &missing),
+            verdict(3, false, false, &missing, &[]),
             "Gate 3 not decided (exploratory subset: busy not run)"
         );
         assert_eq!(
-            verdict(3, true, false, &missing),
+            verdict(3, true, false, &missing, &[]),
             "Gate 3 failed (exploratory subset: busy not run)"
         );
     }

@@ -10,8 +10,8 @@
 //! Once the window is open it prints one line, which the harness waits for:
 //! `ready COLSxROWS cell WIDTHxHEIGHT`, then tab-separated fields, each a
 //! name, a space and a value, saying how it was built: `revision` (the
-//! revision, as the harness states its own), `profile` (`debug` or
-//! `release`), `cpu` (the CPU the terminal engine was built for),
+//! revision, as the harness states its own), `profile` (Cargo's profile and
+//! optimisation level, such as `release opt-level 3`), `cpu` (the CPU the terminal engine was built for),
 //! `optimize` (the engine's optimisation mode, as the engine reports it) and
 //! `engine` (the engine's build, described). The harness refuses a window
 //! built from another revision or with another engine CPU target or
@@ -152,11 +152,11 @@ fn run() -> Result<(), String> {
             f32::from(cell.width),
             f32::from(cell.height),
             env!("BENCH_REVISION"),
-            if cfg!(debug_assertions) {
-                "debug"
-            } else {
-                "release"
-            },
+            concat!(
+                env!("BENCH_PROFILE"),
+                " opt-level ",
+                env!("BENCH_OPT_LEVEL")
+            ),
             env!("BENCH_GHOSTTY_CPU"),
             engine
                 .as_ref()

@@ -167,12 +167,13 @@ with `--refresh HZ`. An acceptance result needs three runs of each gate, as
 for gate 1.
 
 The benchmark window prints its revision and build when it starts, and the
-harness refuses one built from a different revision, CPU target or engine
-optimisation, or a debug window run by a release harness. The report lists
-both programs' builds. A run with fewer cases than the gate needs (fewer
-payloads, conditions, keys or seconds), or from a build other than the
-distributable one (release, `baseline` CPU target, engine in `ReleaseFast`
-mode), is reported as exploratory: it can fail, but it cannot pass. A latency or end-time comparison (gates 2
+harness refuses one built from a different revision, Cargo profile and
+optimisation level, CPU target or engine optimisation. The report lists both
+programs' builds. A run with fewer cases than the gate needs (fewer
+payloads, conditions, keys or seconds) is reported as an exploratory subset:
+it can fail, but it cannot pass. A run from a build other than the
+distributable one (Cargo's release profile at `opt-level` 3, the `baseline`
+CPU target and the engine in `ReleaseFast` mode) decides nothing. A latency or end-time comparison (gates 2
 and 3) within one refresh interval of its limit is not decided until a
 camera confirms it (0018).
 

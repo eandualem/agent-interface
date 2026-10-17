@@ -355,7 +355,8 @@ fn verdict(settings: &Settings, results: &[Measured]) -> (String, Vec<String>) {
             4,
             failed,
             undecided,
-            &[missing(settings), settings.build_issues.clone()].concat(),
+            &missing(settings),
+            &settings.build_issues,
         ),
         reasons,
     )

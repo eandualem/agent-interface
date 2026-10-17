@@ -225,11 +225,11 @@ impl Build {
         let engine = tmux_workspaces_term::engine_build();
         Self {
             revision: env!("BENCH_REVISION").to_owned(),
-            profile: if cfg!(debug_assertions) {
-                "debug"
-            } else {
-                "release"
-            }
+            profile: concat!(
+                env!("BENCH_PROFILE"),
+                " opt-level ",
+                env!("BENCH_OPT_LEVEL")
+            )
             .to_owned(),
             cpu: env!("BENCH_GHOSTTY_CPU").to_owned(),
             optimize: engine
@@ -318,6 +318,14 @@ pub fn start(
             .and_then(|window| check_shown(pid, &window).map(|display| (window, display)));
         match shown {
             Ok((window, _)) if settling != Some(window.bounds) => {
+                if Instant::now() >= deadline {
+                    terminate(pid, &mut process);
+                    return Err(format!(
+                        "window moved: process {pid}'s window kept changing its frame \
+                         for {} s after it opened",
+                        START_TIMEOUT.as_secs()
+                    ));
+                }
                 settling = Some(window.bounds);
                 thread::sleep(Duration::from_millis(200));
             }
@@ -593,12 +601,12 @@ fn check_build(build: &Build, own: &Build) -> Result<(), String> {
             build.revision, own.revision
         ));
     }
-    if build.profile == "debug" && own.profile != "debug" {
-        return Err(
-            "the benchmark window is a debug build, but this program a release build; \
-             build the window with --release too"
-                .to_owned(),
-        );
+    if build.profile != own.profile {
+        return Err(format!(
+            "the benchmark window is a {} build, but this program a {} build; \
+             build both with the same profile",
+            build.profile, own.profile
+        ));
     }
     if build.cpu != own.cpu {
         return Err(format!(
@@ -837,9 +845,9 @@ mod tests {
             check_build(&debug(build("abc")), &debug(own.clone())),
             Ok(())
         );
-        assert_eq!(check_build(&build("abc"), &debug(own.clone())), Ok(()));
-        // Other code, unoptimised code, or code built for another CPU or
-        // with another engine optimisation.
+        // Other code, another profile either way, or code built for another
+        // CPU or with another engine optimisation.
+        assert!(check_build(&build("abc"), &debug(own.clone())).is_err());
         assert!(check_build(&build("def"), &own).is_err());
         assert!(check_build(&debug(build("abc")), &own).is_err());
         let native = Build {
