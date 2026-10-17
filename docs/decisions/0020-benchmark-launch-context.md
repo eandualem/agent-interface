@@ -59,8 +59,9 @@ tmux server through LaunchServices.
 - The app's window and Ghostty run with the same application priority, and
   their tmux servers and pane programs at the default priority, wherever the
   harness is started.
-- An interrupted run still stops everything it started: an interrupt stops the
-  tmux servers, and the window quits once its control client exits.
+- A signal to the harness or its process group no longer reaches the window
+  or Ghostty, so an interrupt first stops every program the harness started
+  through LaunchServices, and any that is starting, and then the tmux servers.
 - Each run's directory holds a copy of the window program, about 10 MB, and a
   small bundle that starts tmux. LaunchServices registers both, as it does any
   application that runs.

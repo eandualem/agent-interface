@@ -274,16 +274,18 @@ pub fn start(
     let id = NEXT.fetch_add(1, Ordering::Relaxed);
     let config = work.join(format!("terminal-{id}.conf"));
     let session = || server.ok_or_else(|| format!("{} needs a tmux session", target.name()));
-    // The argument that finds the program again. It is listed before the
-    // program starts, so that an interrupt while it starts stops it too.
+    // The argument that finds the program again.
     let argument = match target {
         Target::App => config.display().to_string(),
         Target::Ghostty | Target::GhosttyTmux => format!("--config-file={}", config.display()),
     };
-    OPENED
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .push(argument.clone());
+    // The list stays locked until the program is found, so an interrupt
+    // either finds the program or stops it from starting.
+    let mut opened = OPENED.lock().unwrap_or_else(PoisonError::into_inner);
+    if opened.interrupted {
+        return Err("an interrupt is stopping the programs this harness started".to_owned());
+    }
+    opened.arguments.push(argument.clone());
     // For the benchmark window, the files its standard output and error go
     // to.
     let window_output = match target {
@@ -323,6 +325,7 @@ pub fn start(
         }
     };
     let pid = find_opened(&argument)?;
+    drop(opened);
     let build = match window_output {
         Some((output, errors)) => {
             let running = || pid_with_argument(&processes(), &argument) == Some(pid);
@@ -799,15 +802,29 @@ fn bundle(app: &Path, executable: &str, kind: &str) -> io::Result<PathBuf> {
     Ok(programs.join(executable))
 }
 
-/// The arguments that find the programs started through LaunchServices that
-/// have not been stopped yet.
-static OPENED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+/// The programs started through LaunchServices that have not been stopped
+/// yet, by the argument that finds each.
+struct Opened {
+    arguments: Vec<String>,
+    /// Whether an interrupt is stopping them, after which none starts.
+    interrupted: bool,
+}
 
-/// Stops every program started through LaunchServices that still runs. Such
-/// a program is not a child of this process, so a signal to this process or
-/// its process group does not reach it, and an interrupt calls this.
+static OPENED: Mutex<Opened> = Mutex::new(Opened {
+    arguments: Vec::new(),
+    interrupted: false,
+});
+
+/// Stops every program started through LaunchServices that still runs, and
+/// any that is starting, and lets no other start. Such a program is not a
+/// child of this process, so a signal to this process or its process group
+/// does not reach it, and an interrupt calls this.
 pub fn stop_all_opened() {
-    let arguments = std::mem::take(&mut *OPENED.lock().unwrap_or_else(PoisonError::into_inner));
+    let arguments = {
+        let mut opened = OPENED.lock().unwrap_or_else(PoisonError::into_inner);
+        opened.interrupted = true;
+        std::mem::take(&mut opened.arguments)
+    };
     let processes = processes();
     for argument in arguments {
         if let Some(pid) = pid_with_argument(&processes, &argument) {
@@ -830,13 +847,21 @@ fn find_opened(argument: &str) -> Result<i32, String> {
     }
 }
 
-/// Stops the process `pid`, after checking it is still the one started with
-/// `argument`.
+/// Stops the program `pid` started with `argument`, as [`stop_process`]
+/// does, and then takes it off the list of programs an interrupt stops.
 fn stop_opened(pid: i32, argument: &str) {
+    stop_process(pid, argument);
+    // Listed until now, so that an interrupt meanwhile stops it too.
     OPENED
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
+        .arguments
         .retain(|opened| opened != argument);
+}
+
+/// Stops the process `pid` if it is still the one started with `argument`,
+/// and waits for it to exit.
+fn stop_process(pid: i32, argument: &str) {
     let ours = || pid_with_argument(&processes(), argument) == Some(pid);
     if !ours() {
         return;
