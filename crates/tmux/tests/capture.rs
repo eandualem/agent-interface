@@ -308,6 +308,37 @@ fn pending_bytes_drop_controls_tmux_has_already_acted_on() {
             b"\x1b]0;ti\r\ntle",
             "tmux {version}"
         );
+        // The line end came after `ESC [` interrupted the OSC.
+        assert_eq!(
+            pending("pending-osc-csi"),
+            b"\x1b]0;ti\x1b[12",
+            "tmux {version}"
+        );
+    }
+}
+
+#[test]
+fn pending_bytes_follow_the_parser_from_one_sequence_into_the_next() {
+    let pending = |line: &[u8]| capture::pending([line]).unwrap();
+    // A control sequence that a string sequence interrupts: tmux ignored the
+    // line feed inside the OSC.
+    assert_eq!(pending(b"\\033[1\\033]0;a\\012b"), b"\x1b[1\x1b]0;a\nb");
+    // A DCS's data keeps every byte, escape included, until its terminator.
+    assert_eq!(
+        pending(b"\\033P1$rx\\012\\033y\\012"),
+        b"\x1bP1$rx\n\x1by\n"
+    );
+    // An escape sequence with an intermediate byte executes controls.
+    assert_eq!(pending(b"\\033(\\012"), b"\x1b(");
+    // Nothing pending.
+    assert_eq!(pending(b""), b"");
+}
+
+#[test]
+fn reads_a_backslash_with_a_combining_mark_as_it_is() {
+    for (version, directory) in versions() {
+        let rows = rows(&directory, "backslash-combining");
+        assert_eq!(text(&rows[0]), "\\\u{301}\\x", "tmux {version}");
     }
 }
 

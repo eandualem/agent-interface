@@ -157,10 +157,12 @@ pub fn rows<'a>(lines: impl IntoIterator<Item = &'a [u8]>) -> Result<Vec<Row>, E
 /// Reads the reply of `capture-pane -p -P -C` into the bytes to feed a
 /// terminal so that its parser continues where the pane's stopped.
 ///
-/// tmux has already acted on any control character inside an escape or
+/// tmux has already acted on a control character inside an escape or
 /// control sequence, such as a line feed after `ESC [`, so those are dropped.
-/// Inside a string sequence, such as OSC, tmux keeps them as part of the
-/// string, so they stay.
+/// Inside a string sequence, such as OSC, tmux ignores them, so they stay.
+/// The bytes can pass through several sequences, for example an OSC that an
+/// `ESC [` interrupts, so each byte is judged by the state tmux's parser was
+/// in when it read it.
 pub fn pending<'a>(lines: impl IntoIterator<Item = &'a [u8]>) -> Result<Vec<u8>, Error> {
     let mut bytes = Vec::new();
     let mut line = Vec::new();
@@ -171,12 +173,74 @@ pub fn pending<'a>(lines: impl IntoIterator<Item = &'a [u8]>) -> Result<Vec<u8>,
         unescape(escaped, &mut line)?;
         bytes.extend_from_slice(&line);
     }
-    let in_string = matches!(bytes.get(1), Some(b']' | b'P' | b'_' | b'^' | b'X'));
-    if bytes.first() == Some(&ESC) && !in_string {
-        // Escape, cancel and substitute still change the parser's state.
-        bytes.retain(|&byte| byte >= b' ' || matches!(byte, ESC | CAN | SUB));
-    }
+    let mut state = Parser::Ground;
+    bytes.retain(|&byte| {
+        let executed = state.executes_controls() && is_executed_control(byte);
+        state = state.next(byte);
+        !executed
+    });
     Ok(bytes)
+}
+
+/// The states of tmux's input parser (`input.c`, the same from 3.3 to 3.8)
+/// that decide what it does with a control character.
+#[derive(Clone, Copy)]
+enum Parser {
+    Ground,
+    Escape,
+    EscapeIntermediate,
+    /// Any part of a control sequence.
+    Csi,
+    DcsEntry,
+    DcsParameter,
+    DcsIntermediate,
+    DcsIgnore,
+    DcsPassthrough,
+    DcsEscape,
+    Osc,
+    /// APC, SOS, PM and tmux's `ESC k` window name.
+    OtherString,
+}
+
+/// Returns whether tmux executes `byte` when it arrives in an escape or
+/// control sequence. Cancel, substitute and escape end the sequence instead.
+fn is_executed_control(byte: u8) -> bool {
+    matches!(byte, 0x00..=0x17 | 0x19 | 0x1c..=0x1f)
+}
+
+impl Parser {
+    fn executes_controls(self) -> bool {
+        matches!(self, Self::Escape | Self::EscapeIntermediate | Self::Csi)
+    }
+
+    fn next(self, byte: u8) -> Self {
+        match (self, byte) {
+            // A DCS's data ends only at its string terminator.
+            (Self::DcsPassthrough, ESC) => Self::DcsEscape,
+            (Self::DcsPassthrough, _) => Self::DcsPassthrough,
+            (Self::DcsEscape, b'\\') => Self::Ground,
+            (Self::DcsEscape, _) => Self::DcsPassthrough,
+            (_, CAN | SUB) => Self::Ground,
+            (_, ESC) => Self::Escape,
+            (Self::Ground, _) => Self::Ground,
+            (Self::Escape, 0x20..=0x2f) => Self::EscapeIntermediate,
+            (Self::Escape, b'P') => Self::DcsEntry,
+            (Self::Escape, b'[') => Self::Csi,
+            (Self::Escape, b']') => Self::Osc,
+            (Self::Escape, b'X' | b'^' | b'_' | b'k') => Self::OtherString,
+            (Self::Escape | Self::EscapeIntermediate, 0x30..=0x7e) => Self::Ground,
+            (Self::Csi, 0x40..=0x7e) => Self::Ground,
+            (Self::DcsEntry | Self::DcsParameter | Self::DcsIntermediate, 0x40..=0x7e) => {
+                Self::DcsPassthrough
+            }
+            (Self::DcsEntry | Self::DcsParameter, 0x20..=0x2f) => Self::DcsIntermediate,
+            (Self::DcsEntry, b':') | (Self::DcsParameter, b':' | 0x3c..=0x3f) => Self::DcsIgnore,
+            (Self::DcsEntry, 0x30..=0x3f) => Self::DcsParameter,
+            (Self::DcsIntermediate, 0x30..=0x3f) => Self::DcsIgnore,
+            (Self::Osc, 0x07) => Self::Ground,
+            (state, _) => state,
+        }
+    }
 }
 
 const ESC: u8 = 0x1b;
@@ -377,7 +441,8 @@ fn number(digits: &[u8]) -> Option<u32> {
 }
 
 /// Replaces `out` with `escaped` with `capture-pane -C`'s escapes decoded:
-/// a backslash and three octal digits, or two backslashes.
+/// a backslash and three octal digits, or two backslashes. A backslash
+/// before a byte above ASCII is a backslash.
 fn unescape(escaped: &[u8], out: &mut Vec<u8>) -> Result<(), Error> {
     out.clear();
     let mut rest = escaped;
@@ -393,6 +458,9 @@ fn unescape(escaped: &[u8], out: &mut Vec<u8>) -> Result<(), Error> {
                 out.push((a - b'0') << 6 | (b - b'0') << 3 | (c - b'0'));
                 rest = &rest[3..];
             }
+            // tmux doubles a backslash only in a cell of one byte, so a
+            // backslash with a combining mark is written as it is.
+            [0x80..=0xff, ..] => out.push(b'\\'),
             _ => return Err(Error::Malformed("a backslash that is not an escape")),
         }
     }

@@ -154,6 +154,8 @@ pub struct Recovery {
 enum Waiting {
     Pause,
     Line,
+    /// The rebuild is done; no more replies belong to it.
+    Nothing,
 }
 
 /// What to do after a reply.
@@ -222,11 +224,15 @@ impl Recovery {
 
     /// Takes the reply to the next command this recovery sent.
     pub fn reply(&mut self, reply: Reply) -> Result<Step<Rebuilt>, Error> {
+        if matches!(self.waiting, Waiting::Nothing) {
+            return Err(Error::UnexpectedReply);
+        }
         if !reply.ok {
             // tmux skips the rest of a line after a failed command.
             return Ok(Step::Failed);
         }
         match self.waiting {
+            Waiting::Nothing => Err(Error::UnexpectedReply),
             Waiting::Pause => {
                 self.waiting = Waiting::Line;
                 self.held = Some(Vec::new());
@@ -237,6 +243,7 @@ impl Recovery {
                 if self.replies.len() < replies_per_pane() + 1 {
                     return Ok(Step::Wait);
                 }
+                self.waiting = Waiting::Nothing;
                 let snapshot = snapshot(self.pane, &self.replies[..replies_per_pane()])?;
                 Ok(Step::Done(Rebuilt {
                     snapshot,
@@ -407,11 +414,18 @@ fn snapshot(pane: PaneId, replies: &[Reply]) -> Result<Snapshot, Error> {
                 .unwrap_or_default()
         })
         .collect();
+    let state = pane_state(&values)?;
+    // Without an alternate screen, the saved capture is one empty line.
+    let saved = if state.alternate_saved_cursor.is_some() {
+        capture::rows(lines(&replies[1]))?
+    } else {
+        Vec::new()
+    };
     Ok(Snapshot {
         pane,
         rows: capture::rows(lines(&replies[0]))?,
-        saved: capture::rows(lines(&replies[1]))?,
-        state: pane_state(&values)?,
+        saved,
+        state,
         pending: capture::pending(lines(&replies[2 + FORMATS.len()]))?,
     })
 }
@@ -537,19 +551,29 @@ mod tests {
     }
 
     fn replies(values: &[(&str, &str)]) -> Vec<Reply> {
-        let mut replies = vec![ok(&["\\033[1mhi"]), ok(&[])];
+        // Without an alternate screen, tmux replies to the saved capture
+        // with one empty line.
+        let mut replies = vec![ok(&["\\033[1mhi"]), ok(&[""])];
         replies.extend(values.iter().map(|(_, value)| ok(&[value])));
         replies.push(ok(&["\\033[3"]));
         replies
     }
 
-    fn with(changes: &[(&str, &str)]) -> Result<PaneState, Error> {
-        let values: Vec<String> = values()
+    /// The values of [`values`] with `changes` made.
+    fn with_values<'a>(changes: &[(&'a str, &'a str)]) -> Vec<(&'a str, &'a str)> {
+        values()
             .into_iter()
             .map(|(name, value)| {
                 let changed = changes.iter().find(|(changed, _)| *changed == name);
-                changed.map_or(value, |(_, value)| value).to_owned()
+                (name, changed.map_or(value, |(_, value)| *value))
             })
+            .collect()
+    }
+
+    fn with(changes: &[(&str, &str)]) -> Result<PaneState, Error> {
+        let values: Vec<String> = with_values(changes)
+            .into_iter()
+            .map(|(_, value)| value.to_owned())
             .collect();
         pane_state(&values)
     }
@@ -582,6 +606,7 @@ mod tests {
             panic!("done after the continue's reply");
         };
         assert_eq!(rebuilt.output, b"after");
+        assert_eq!(recovery.reply(ok(&[])), Err(Error::UnexpectedReply));
         let snapshot = rebuilt.snapshot;
         assert_eq!(snapshot.pane, PaneId(7));
         assert_eq!(snapshot.rows.len(), 1);
@@ -589,6 +614,21 @@ mod tests {
         assert_eq!(snapshot.pending, b"\x1b[3");
         assert_eq!((snapshot.state.width, snapshot.state.height), (80, 24));
         assert_eq!(snapshot.state.tab_stops, [8, 16]);
+    }
+
+    #[test]
+    fn reads_the_saved_screen_only_with_the_alternate_screen_on() {
+        let mut replies = replies(&values());
+        replies[1] = ok(&["P1", ""]);
+        assert!(snapshot(PaneId(1), &replies).unwrap().saved.is_empty());
+        let on = with_values(&[
+            ("alternate_on", "1"),
+            ("alternate_saved_x", "0"),
+            ("alternate_saved_y", "1"),
+        ]);
+        let mut replies = self::replies(&on);
+        replies[1] = ok(&["P1", ""]);
+        assert_eq!(snapshot(PaneId(1), &replies).unwrap().saved.len(), 2);
     }
 
     #[test]

@@ -32,6 +32,9 @@ const ROWS: &[(&str, &str)] = &[
         r"\347\225\214e\314\201\360\237\221\251\342\200\215\360\237\222\273\342\232\240\357\270\217x\n",
     ),
     ("tabs", r"\033[44m\033[2K\033[0ma\tb\033[41m\t\033[0mc\n"),
+    // tmux doubles a backslash only in a cell of one byte, so one with a
+    // combining mark is captured as it is.
+    ("backslash-combining", r"\\\314\201\\x\n"),
     (
         "background-erase",
         r"a\033[44m\033[K\033[0m\nb\033[41m   \033[0m\n",
@@ -48,6 +51,8 @@ const PENDING: &[(&str, &str)] = &[
     ("pending-csi", r"pre\033[3"),
     ("pending-csi-line-feed", r"top\n\033[1\n2"),
     ("pending-osc", r"pre\033]0;ti\ntle"),
+    // An OSC interrupted by a control sequence: tmux keeps the bytes of both.
+    ("pending-osc-csi", r"pre\033]0;ti\033[1\n2"),
 ];
 
 fn main() -> std::io::Result<()> {
@@ -59,7 +64,8 @@ fn main() -> std::io::Result<()> {
     std::fs::create_dir_all(&directory)?;
     for &(name, format) in ROWS.iter().chain(PENDING) {
         // The pane signals once printf has finished, then stays open.
-        let program = format!("printf '{format}'; tmux wait-for -S {name}; exec sleep 1000");
+        let signal = server.shell_command(&["wait-for", "-S", name]);
+        let program = format!("printf '{format}'; {signal}; exec sleep 1000");
         server.run(&[
             "new-session",
             "-d",
