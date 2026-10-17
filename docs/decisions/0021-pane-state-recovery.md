@@ -158,16 +158,26 @@ character set. The `term` crate writes them into a fresh terminal:
   stops, or the last column if no stop follows, as a tab moves the cursor.
 - With the alternate screen on, the primary rows go in first, then the cursor
   tmux saved on entry (`alternate_saved_x/y`), then the switch and the
-  alternate rows. The history rows come from the current capture.
-- Then the scrolling region, tab stops (cleared, then set from `pane_tabs`),
-  modes (cursor and keypad application modes, insert, wrap, mouse modes,
-  bracketed paste, cursor visibility, the extended-keys mode from
-  `pane_key_mode` and focus reporting from `pane_private_modes` where tmux
-  has them), origin mode and the cursor, relative to the region when origin
-  mode is on.
+  alternate rows. The history rows come from the current capture. The
+  switch saves the style, character sets and origin mode with the cursor
+  and restores them when the program leaves, so the primary rows end in
+  the default style and character sets, and origin mode is set before
+  them, as tmux keeps it.
+- Then tab stops (cleared, then set from `pane_tabs`), the cursor at its
+  position on the screen, and the scrolling region, set without moving the
+  cursor: tmux moves the cursor to the top left of the screen when a region
+  is set, even in origin mode, so the cursor can be outside the region.
+  Then the other modes (cursor and keypad application modes, insert, wrap,
+  mouse modes, bracketed paste, cursor visibility, the extended-keys mode
+  from `pane_key_mode` and focus reporting from `pane_private_modes` where
+  tmux has them). They come after the cursor because with wrapping off, the
+  engine can join a combining character to the wrong cell when the
+  cursor's row is written again.
 - A cursor waiting to wrap (`cursor_x` equal to the width) is restored by
   writing the cursor's whole row again from its first column, which leaves
-  the engine waiting to wrap whatever the last cell's width.
+  the engine waiting to wrap whatever the last cell's width. If the row's
+  last cells were never written, as after the row is erased, blank cells
+  fill it.
 - Pending bytes from `-P -C` are decoded once. Inside an escape or control
   sequence, tmux has already acted on the control characters in them, so
   those are dropped; inside a string sequence such as OSC they are kept.
