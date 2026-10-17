@@ -80,6 +80,11 @@ CPU targeting.
   sequence and a VS16 sequence as one cluster two columns wide; without the
   mode, `libghostty-vt` gives these one or four columns, and its screen drifts
   from tmux's ([gate 1](../benchmarks/gate-1.md)).
+- The `term` crate drops GNU screen's window-rename sequence,
+  `ESC k name ESC \`, before the engine sees it: tmux 3.3a to 3.8 take it as a
+  window name and never draw it, while `libghostty-vt` prints the name as
+  text. The filter finds escapes with `memchr` 2.8.3 (Unlicense OR MIT), so
+  plain text is written as fast as without it.
 - The benchmark harness depends on `rio-vt` and `alacritty_terminal`, pinned
   exactly, for decisions 3 and 4; they are never product dependencies
   ([0017](0017-benchmark-harness.md)).

@@ -13,6 +13,7 @@
 
 #![forbid(unsafe_code)]
 
+mod rename;
 mod screen;
 
 use libghostty_vt::build_info;
@@ -37,6 +38,7 @@ pub struct Terminal {
     /// The text of the cell being copied: the engine overwrites the buffer it
     /// is given.
     grapheme: String,
+    rename: rename::Rename,
 }
 
 impl Terminal {
@@ -66,12 +68,17 @@ impl Terminal {
             rows: RowIterator::new().map_err(Error)?,
             cells: CellIterator::new().map_err(Error)?,
             grapheme: String::new(),
+            rename: rename::Rename::default(),
         })
     }
 
     /// Feeds pane output to the terminal, in the order the pane produced it.
+    ///
+    /// A window-rename sequence, `ESC k name ESC \`, is dropped as tmux
+    /// drops it, also when it arrives split across writes.
     pub fn write(&mut self, bytes: &[u8]) {
-        self.engine.vt_write(bytes);
+        let engine = &mut self.engine;
+        self.rename.filter(bytes, |part| engine.vt_write(part));
     }
 
     /// Returns the number of lines of history the terminal holds.

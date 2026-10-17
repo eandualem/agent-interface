@@ -29,6 +29,7 @@ publish = false
 alacritty_terminal = "=0.26.0"
 rio-vt = { version = "=0.5.28", default-features = false }
 libc = "0.2.191"
+memchr = "2.8.3"
 # Exact pins: the terminal engine's API is explicitly unstable, and the -sys
 # crate fixes the Ghostty source commit and the Zig version (decision record 0004).
 libghostty-vt = "=0.2.2"

@@ -14,4 +14,5 @@ workspace = true
 libghostty-vt.workspace = true
 # Not used directly: listed only to hold the native library to its exact pin.
 libghostty-vt-sys.workspace = true
+memchr.workspace = true
 thiserror.workspace = true
