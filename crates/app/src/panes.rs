@@ -105,22 +105,30 @@ impl Panes {
             changed: Condvar::new(),
         });
         let layout = layout.to_vec();
-        let threads = vec![
-            spawn("tmux reader", {
-                let shared = Arc::clone(&shared);
-                move || read(&shared, stdout)
-            })?,
-            spawn("terminal worker", {
-                let shared = Arc::clone(&shared);
-                move || work(&shared, &layout, scrollback, &wake)
-            })?,
-        ];
-        Ok(Self {
+        // Should a thread fail to start, dropping `panes` stops what did.
+        let mut panes = Self {
             shared,
             stdin: Mutex::new(stdin),
             client,
-            threads,
-        })
+            threads: Vec::new(),
+        };
+        let reader = spawn("tmux reader", {
+            let shared = Arc::clone(&panes.shared);
+            move || read(&shared, stdout)
+        });
+        match reader {
+            Ok(reader) => panes.threads.push(reader),
+            Err(error) => {
+                // Its output is closed unread, so the client might never exit.
+                let _ = panes.client.kill();
+                return Err(error);
+            }
+        }
+        panes.threads.push(spawn("terminal worker", {
+            let shared = Arc::clone(&panes.shared);
+            move || work(&shared, &layout, scrollback, &wake)
+        })?);
+        Ok(panes)
     }
 
     /// Takes the waiting update, if there is one.

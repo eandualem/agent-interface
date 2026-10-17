@@ -541,8 +541,14 @@ command = {}
 ",
         origin.0,
         origin.1,
-        script.display()
+        shell_word(&script.to_string_lossy())
     )
+}
+
+/// Quotes `text` as one word for a POSIX shell, as Ghostty runs its
+/// `command` setting with `/bin/sh -c`.
+fn shell_word(text: &str) -> String {
+    format!("'{}'", text.replace('\'', r"'\''"))
 }
 
 /// Waits for the benchmark window's `ready` line in `output`, the file its
@@ -693,9 +699,9 @@ fn ghostty_arguments(app: &Path, config: &Path, home: &Path) -> Vec<OsString> {
 }
 
 /// The variables of this program's environment that the benchmark window and
-/// the tmux servers also get, as arguments of `open`: where programs such as
-/// tmux are, and the locale. The rest of their environment is the user
-/// session's, as Ghostty's is.
+/// the tmux servers are also given explicitly, as arguments of `open`: where
+/// programs such as tmux are, and the locale. `open` passes on the rest of
+/// this program's environment too, as it does to Ghostty (`open(1)`).
 fn launch_environment() -> Vec<OsString> {
     let mut arguments = Vec::new();
     for variable in ["PATH", "LANG", "LC_ALL", "LC_CTYPE"] {
@@ -777,15 +783,17 @@ fn start_in_background(line: &str, work: &Path) -> io::Result<()> {
     ]);
     arguments.extend(["/bin/sh", "-c", line].map(OsString::from));
     open(&arguments, &app).map_err(io::Error::other)?;
-    let deadline = Instant::now() + Duration::from_secs(10);
+    // No time limit, as for a tmux command run directly: giving up sooner
+    // would let cleanup remove the private directory while the command may
+    // still start a server, which tmux would then put in its ordinary
+    // directory. A second interrupt ends a wait that hangs.
     let status = loop {
         match fs::read_to_string(&finished) {
             Ok(status) => break status,
-            Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
-            Err(_) if Instant::now() >= deadline => {
-                return Err(io::Error::other("tmux did not finish starting in 10 s"));
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                thread::sleep(Duration::from_millis(10));
             }
-            Err(_) => thread::sleep(Duration::from_millis(10)),
+            Err(error) => return Err(error),
         }
     };
     // tmux says nothing when it starts a server.
@@ -962,11 +970,17 @@ mod tests {
             "window-position-x = 40",
             "window-position-y = 60",
             "cursor-style-blink = false",
-            "command = /tmp/w/terminal-1.sh",
+            "command = '/tmp/w/terminal-1.sh'",
         ] {
             assert!(config.lines().any(|l| l == line), "{line}");
         }
         assert!(APPEARANCE.contains("palette = 13=#ff00ff\n"));
+        let config = ghostty_config((0, 0), Path::new("/tmp/a b/it's.sh"));
+        assert!(
+            config
+                .lines()
+                .any(|l| l == r"command = '/tmp/a b/it'\''s.sh'")
+        );
     }
 
     #[test]

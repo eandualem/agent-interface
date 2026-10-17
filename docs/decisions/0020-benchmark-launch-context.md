@@ -44,15 +44,15 @@ tmux server through LaunchServices.
   application (`LSBackgroundOnly`), which runs the server's start command and
   then writes its exit status to a file the harness waits for. `open -W`
   cannot always wait for a program that ends this soon. The server, and the
-  programs its panes
-  run, then have the scheduling of an ordinary process, as the programs that
-  Ghostty starts do. The isolation helper still builds that command
-  (`TmuxServer::start_with`), so tmux isolation stays reviewable in one file
-  ([0012](0012-testing-strategy-and-tmux-isolation.md)).
-- **Their environment** is the user session's, as Ghostty's is, plus the
-  harness's `PATH` and locale (`LANG`, `LC_ALL` and `LC_CTYPE`). The harness
-  does not pass its whole environment, because `open` would show every
-  variable on its command line.
+  programs its panes run, then have the scheduling of an ordinary process,
+  as the programs that Ghostty starts do. The isolation helper still builds
+  that command (`TmuxServer::start_with`), so tmux isolation stays
+  reviewable in one file ([0012](0012-testing-strategy-and-tmux-isolation.md)).
+- **Their environment** is the harness's own. `open` passes its caller's
+  environment on to the program it starts (`open(1)`), so the window, the
+  tmux servers and Ghostty get the same variables. The window and the tmux
+  servers are also given the harness's `PATH` and locale (`LANG`, `LC_ALL`
+  and `LC_CTYPE`) explicitly, with `open --env`.
 - **The harness itself**, which captures the window and posts the keys, keeps
   its own scheduling. It is the same for every target.
 
