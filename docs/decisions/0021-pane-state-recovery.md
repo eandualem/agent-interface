@@ -254,10 +254,11 @@ session on a private server
   escape, control and string sequences, a cursor waiting to wrap after a
   narrow and a wide character, origin mode with wrapping off, hyperlinks
   including one that wraps, tabs over coloured blank cells and a tab cell
-  moved by inserted characters, underline colours, and the unexportable state above (current style, partial UTF-8,
-  DECSC, a program still in line-drawing mode, a resize while the alternate
-  screen is on followed by leaving it). Fixtures whose
-  characters grow after they are drawn run only in windows with one pane.
+  moved by inserted characters, underline colours, and the unexportable
+  state above (current style, partial UTF-8, DECSC, a program still in
+  line-drawing mode, a resize while the alternate screen is on followed by
+  leaving it). Fixtures whose characters grow after they are drawn run only
+  in windows with one pane.
   Neither those nor neighbouring cells with different underline colours are
   used where tmux redraws the reference: in the resize scenario, or in
   fixtures that enter or leave the alternate screen.
