@@ -73,10 +73,13 @@ the payload with each LF turned into CR LF, and the end marker. The macOS
 terminal driver sometimes writes the CR of a line end twice; a repeated CR
 before an LF changes nothing on the screen, so it is taken as one.
 
-**History.** tmux and every engine keep up to 10,000 lines of history.
-`libghostty-vt` limits history by memory rather than lines, so the `term`
-crate gives it enough memory for at least 10,000 lines of every payload, and
-it can keep more. The report shows the lines each one kept.
+**History.** tmux, `rio-vt` and `alacritty_terminal` keep up to 10,000 lines
+of history. 0013 asks every engine for the same history limit, but
+`libghostty-vt` limits history by memory, not lines, so that can only be
+approximated: the `term` crate gives it room for about 10,000 lines, which
+held 10,914 to 14,513 lines of the payloads that fill it. Engines also differ
+in which lines enter history at all. The report shows the lines each kept,
+and the gate does not decide on them.
 
 **The engines' rate.** The last tmux run's recording is replayed in one child
 process per engine: two warm-up replays and ten timed ones. A replay feeds

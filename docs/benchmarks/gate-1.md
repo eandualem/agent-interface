@@ -2,8 +2,10 @@
 
 **Result: failed.** `libghostty-vt` has the headroom the gate asks for on plain
 text, mixed Unicode and scrolling, but not on escape-heavy coloured output,
-where it runs at 2.1 to 2.8 times tmux's own rate against the five times the
-gate requires. No engine measured passes on all four payloads.
+where it runs at 2.3 to 2.8 times tmux's own rate against the five times the
+gate requires. Its unicode and color timings also do not count under 0013,
+because the comparison engines' final screens differ from its own. No engine
+measured passes on all four payloads.
 
 The method is in [0013](../decisions/0013-milestone-0-benchmark-method.md) and
 the [benchmark guide](README.md). The decision this failure needs is
@@ -12,10 +14,11 @@ described under [What happens next](#what-happens-next).
 ## The runs
 
 Three runs of `tmux-workspaces-bench gate1` with its default settings, on
-17 October 2026 from 00:15 to 00:19 UTC, from a clean release build of
-revision `2cc1d83` in a new target directory. No compiler or build tool was
+17 October 2026 from 00:38 to 00:42 UTC, from a clean release build of
+revision `6c320bb` in a new target directory. No compiler or build tool was
 running before or after any run. The machine was not idle: other work kept
-the load average between 1.9 and 3.4, about the same in every run.
+the load average between 2.5 and 3.4, after 4.8 at the start of the first
+run, just after the build.
 
 | Item | Value |
 | --- | --- |
@@ -27,6 +30,11 @@ the load average between 1.9 and 3.4, about the same in every run.
 | `libghostty-vt` | 0.2.2 over Ghostty `a887df4`, `ReleaseFast`, SIMD on, `baseline` CPU target, grapheme clustering on |
 | `rio-vt` | 0.5.28, default features off, in its own program |
 | `alacritty_terminal` | 0.26.0 |
+
+The commit after `6c320bb` changes no measured behaviour: it corrects
+documentation and a test, makes the replay protocol require a build
+revision, and makes the history limit's arithmetic saturate, which gives the
+same limit for these settings.
 
 Each run's report and every timing are in [gate-1/](gate-1/): `summary.md`
 and `raw.tsv` for runs [1](gate-1/run-1/summary.md),
@@ -41,45 +49,69 @@ reading the screen out as a 120 Hz display would.
 
 | Payload | Path | Median MB/s, runs 1 / 2 / 3 | p95 MB/s (slow end), runs 1 / 2 / 3 | p95 × tmux median, runs 1 / 2 / 3 |
 | --- | --- | --- | --- | --- |
-| ascii | tmux, drained client | 46.6 / 46.6 / 52.2 | 44.3 / 45.7 / 45.8 | - |
-| ascii | libghostty-vt | 537.2 / 536.5 / 528.3 | 445.4 / 528.3 / 525.2 | 9.6 / 11.3 / 10.1 |
-| ascii | rio-vt | 693.0 / 693.9 / 672.3 | 665.1 / 689.0 / 649.7 | 14.3 / 14.8 / 12.4 |
-| ascii | alacritty_terminal | 216.3 / 210.6 / 188.8 | 210.4 / 204.3 / 181.7 | 4.5 / 4.4 / 3.5 |
-| unicode | tmux, drained client | 10.4 / 10.3 / 10.0 | 10.1 / 10.2 / 9.9 | - |
-| unicode | libghostty-vt | 91.8 / 88.6 / 83.6 | 90.8 / 77.8 / 82.9 | 8.7 / 7.6 / 8.3 |
-| unicode | rio-vt | 124.1 / 120.0 / 114.6 | 120.0 / 113.3 / 100.1 | 11.5 / 11.0 / 10.0 |
-| unicode | alacritty_terminal | 135.5 / 131.9 / 130.9 | 115.4 / 125.2 / 128.1 | 11.1 / 12.2 / 12.8 |
-| color | tmux, drained client | 25.0 / 26.9 / 26.4 | 22.8 / 26.1 / 24.7 | - |
-| color | libghostty-vt | 71.7 / 71.0 / 66.6 | 70.9 / 56.6 / 64.9 | **2.8 / 2.1 / 2.5** |
-| color | rio-vt | 52.5 / 52.6 / 52.6 | 47.9 / 51.9 / 49.1 | 1.9 / 1.9 / 1.9 |
-| color | alacritty_terminal | 161.0 / 163.1 / 166.7 | 158.8 / 152.5 / 164.9 | 6.3 / 5.7 / 6.3 |
-| scroll | tmux, drained client | 42.8 / 42.6 / 46.9 | 41.5 / 40.5 / 42.4 | - |
-| scroll | libghostty-vt | 344.1 / 343.6 / 320.5 | 340.6 / 340.9 / 297.6 | 8.0 / 8.0 / 6.3 |
-| scroll | rio-vt | 413.8 / 419.4 / 394.1 | 291.6 / 416.4 / 385.2 | 6.8 / 9.8 / 8.2 |
-| scroll | alacritty_terminal | 196.2 / 189.6 / 186.7 | 188.4 / 189.0 / 153.9 | 4.4 / 4.4 / 3.3 |
+| ascii | tmux, drained client | 46.6 / 46.1 / 46.4 | 45.9 / 42.7 / 45.2 | - |
+| ascii | libghostty-vt | 517.3 / 515.0 / 518.6 | 511.6 / 501.6 / 516.3 | 11.0 / 10.9 / 11.1 |
+| ascii | rio-vt | 691.9 / 695.4 / 694.0 | 673.3 / 664.8 / 689.1 | 14.4 / 14.4 / 14.8 |
+| ascii | alacritty_terminal | 217.6 / 218.3 / 215.1 | 213.5 / 216.6 / 204.3 | 4.6 / 4.7 / 4.4 |
+| unicode | tmux, drained client | 10.4 / 10.4 / 10.3 | 10.2 / 10.2 / 10.1 | - |
+| unicode | libghostty-vt | 92.7 / 91.4 / 89.0 | 91.6 / 89.8 / 85.5 | 8.8 / 8.7 / 8.3 |
+| unicode | rio-vt | 123.8 / 122.8 / 118.1 | 104.9 / 105.2 / 112.4 | 10.1 / 10.2 / 11.0 |
+| unicode | alacritty_terminal | 136.2 / 137.8 / 133.5 | 135.6 / 133.2 / 132.3 | 13.1 / 12.8 / 12.9 |
+| color | tmux, drained client | 24.7 / 24.9 / 26.8 | 21.8 / 24.0 / 24.2 | - |
+| color | libghostty-vt | 71.2 / 72.2 / 69.5 | 62.6 / 69.4 / 60.4 | **2.5 / 2.8 / 2.3** |
+| color | rio-vt | 52.8 / 52.6 / 52.8 | 52.3 / 47.6 / 51.7 | 2.1 / 1.9 / 1.9 |
+| color | alacritty_terminal | 164.9 / 165.5 / 166.1 | 155.5 / 164.2 / 163.6 | 6.3 / 6.6 / 6.1 |
+| scroll | tmux, drained client | 42.2 / 42.2 / 42.3 | 38.0 / 41.9 / 39.3 | - |
+| scroll | libghostty-vt | 323.0 / 343.7 / 344.5 | 318.6 / 341.3 / 341.5 | 7.6 / 8.1 / 8.1 |
+| scroll | rio-vt | 419.0 / 421.1 / 420.3 | 408.4 / 419.7 / 419.2 | 9.7 / 9.9 / 9.9 |
+| scroll | alacritty_terminal | 201.6 / 200.3 / 198.4 | 192.2 / 166.2 / 196.8 | 4.6 / 3.9 / 4.7 |
 
 Against the gate, for `libghostty-vt` at the slow end of its runs:
 
 | Requirement | Runs 1 / 2 / 3 | Result |
 | --- | --- | --- |
-| ascii at least 200 MB/s | 445.4 / 528.3 / 525.2 MB/s | Met |
-| ascii at least 5 × tmux | 9.6 / 11.3 / 10.1 | Met |
-| unicode at least 5 × tmux | 8.7 / 7.6 / 8.3 | Met, if the final-screen differences below are accepted |
-| color at least 5 × tmux | 2.8 / 2.1 / 2.5 | **Not met** |
-| scroll at least 5 × tmux | 8.0 / 8.0 / 6.3 | Met |
+| ascii at least 200 MB/s | 511.6 / 501.6 / 516.3 MB/s | Met |
+| ascii at least 5 × tmux | 11.0 / 10.9 / 11.1 | Met |
+| unicode at least 5 × tmux | 8.8 / 8.7 / 8.3 | Rate met, but the timing does not count: see [Final screens](#final-screens) |
+| color at least 5 × tmux | 2.5 / 2.8 / 2.3 | **Not met**, and the timing does not count |
+| scroll at least 5 × tmux | 7.6 / 8.1 / 8.1 | Met |
 
-`alacritty_terminal` passes on color but not on ascii or scroll, and `rio-vt`
-fails on color.
+`alacritty_terminal` meets the color rate but not the ascii or scroll rate,
+and `rio-vt` fails on color.
 
-Each `libghostty-vt` child process peaked at 26 to 31 MB of resident memory,
-including the 21 to 24 MB recording it replays; `rio-vt` at 43 to 69 MB and
-`alacritty_terminal` at 78 to 80 MB. One replay's read-outs copied 11 MB
-(ascii, scroll) to 48 MB (unicode) of display data.
+One replay's read-outs copied 10.7 MB (ascii) to 49.7 MB (unicode) of display
+data. Each child process's peak resident memory includes the 21 to 24 MB
+recording it replays: `libghostty-vt` 32 to 55 MB, `rio-vt` 43 to 69 MB and
+`alacritty_terminal` 78 to 80 MB.
+
+## History
+
+tmux, `rio-vt` and `alacritty_terminal` keep up to 10,000 lines of history.
+0013 asks for the same history limit for every engine, which can only be
+approximated: `libghostty-vt` limits history by memory, not lines, and the
+`term` crate gives it room for about 10,000 lines. Lines kept at the end of
+every run:
+
+| Payload | tmux | libghostty-vt | rio-vt | alacritty_terminal |
+| --- | ---: | ---: | ---: | ---: |
+| ascii | 9,345 | 14,513 | 10,000 | 10,000 |
+| unicode | 9,900 | 13,055 | 10,000 | 10,000 |
+| color | 9,172 | 10,914 | 10,000 | 10,000 |
+| scroll | 9,085 | 3,262 | 10,000 | 10,000 |
+
+tmux trims its history in steps, so it holds a little under its limit. On
+the scroll payload, `libghostty-vt` keeps 3,262 lines whatever memory it is
+given: the four disagree about which lines scrolled out of a scroll region
+enter history. That is a difference in behaviour, which the
+[fidelity checks](../decisions/0004-terminal-emulation-core.md#accept-when)
+must settle, not a limit; on the other payloads `libghostty-vt` keeps more
+history than the others, which costs it memory rather than saving work.
 
 ## Final screens
 
 0013 counts an engine's timing only when its final screen and cursor match
-the other engines'. The comparisons were identical in all three runs.
+the other engines', and the gate applies that strictly. The comparisons were
+identical in all three runs.
 
 | Payload | `libghostty-vt` against `rio-vt` | `libghostty-vt` against `alacritty_terminal` | `libghostty-vt` against tmux: text and cursor |
 | --- | --- | --- | --- |
@@ -91,7 +123,10 @@ the other engines'. The comparisons were identical in all three runs.
 - **Unicode.** `libghostty-vt`, with grapheme clustering on, and `rio-vt`
   produce identical screens, and both match tmux's text and cursor.
   `alacritty_terminal` measures widths character by character, so emoji
-  sequences take more columns and 7 of its 50 rows hold different text.
+  sequences take more columns and 7 of its 50 rows hold different text. In
+  one exploratory run, whose recording split the pane's output into
+  different pieces, `rio-vt` differed from both `libghostty-vt` and tmux on
+  one row.
 - **Color.** The text is the same everywhere. Every difference is in style:
   - `alacritty_terminal` does not store blinking, so the cells with that
     attribute differ;
@@ -103,15 +138,10 @@ the other engines'. The comparisons were identical in all three runs.
     state lacks that background or only `capture-pane` omits it is left for
     gate 5, which compares a pane's full state.
 
-Read strictly, 0013's condition holds only for ascii and scroll: on unicode
-`libghostty-vt`'s screen differs from `alacritty_terminal`'s, and on color
-from both other engines'. Every one of those differences comes from what an
-engine stores, a capability `alacritty_terminal` lacks or a different choice
-about erased cells, not from bytes an engine skipped or processed twice.
-Whether such differences still disqualify a timing is part of the follow-up
-decision. The gate fails either way: the color timing does not meet the bar,
-and without the unicode timing the gate has no qualifying result for that
-payload.
+These differences come from what each engine stores, not from bytes an
+engine skipped or processed twice, but 0013 makes no exception for them, so
+the unicode and color timings do not count. Whether such differences should
+disqualify a timing is part of the follow-up decision.
 
 **Grapheme clustering.** tmux 3.4 and 3.7c each draw an emoji ZWJ sequence,
 a flag, a skin-tone sequence and a VS16 sequence as one cluster two columns

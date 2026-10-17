@@ -53,6 +53,8 @@ struct EngineResult {
     reads: usize,
     copied: usize,
     history: usize,
+    /// Whether the child reported the revision it was built from.
+    revision: bool,
     peak_rss: u64,
     screen: String,
 }
@@ -295,6 +297,7 @@ fn replay(
         reads: 0,
         copied: 0,
         history: 0,
+        revision: false,
         peak_rss: 0,
         screen: fs::read_to_string(screen).map_err(|error| error.to_string())?,
     };
@@ -315,7 +318,7 @@ fn replay(
                     env!("BENCH_REVISION")
                 ));
             }
-            "revision" => {}
+            "revision" => result.revision = true,
             "history" => result.history = number()? as usize,
             "run" => result.times.push(Duration::from_nanos(number()?)),
             "pane_bytes" => result.pane_bytes = number()? as usize,
@@ -324,6 +327,12 @@ fn replay(
             "peak_rss" => result.peak_rss = number()?,
             _ => return Err(format!("{engine}: unexpected line {line:?}")),
         }
+    }
+    if !result.revision {
+        return Err(format!(
+            "{engine}: the replay program does not say what it was built from; \
+             build both programs together"
+        ));
     }
     Ok(result)
 }

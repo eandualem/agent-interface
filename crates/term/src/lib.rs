@@ -40,11 +40,13 @@ pub struct Terminal {
 }
 
 impl Terminal {
-    /// Creates a terminal of `cols` by `rows` cells that keeps at least
+    /// Creates a terminal of `cols` by `rows` cells that keeps about
     /// `scrollback` lines of history.
     ///
-    /// The engine limits history by memory rather than by lines, so it can
-    /// keep somewhat more; [`Terminal::history`] says how much it holds.
+    /// The engine limits history by memory, not lines. The terminal gives it
+    /// room for `scrollback` lines of plain text with headroom, so it usually
+    /// keeps more, and output with very many styles on every line can keep
+    /// fewer. [`Terminal::history`] says how many lines it holds.
     pub fn new(cols: u16, rows: u16, scrollback: usize) -> Result<Self, Error> {
         let mut engine = Engine::new(Options {
             cols,
@@ -144,19 +146,20 @@ impl Terminal {
     }
 }
 
-/// Returns the engine's history limit, in bytes, for `lines` lines of
+/// Returns the engine's history limit, in bytes, for about `lines` lines of
 /// history at `cols` columns.
 ///
-/// The engine keeps history in pages of 8-byte cells, each page at least 215
-/// columns wide, and frees whole pages when the limit is reached. A page
-/// grows when it holds many styles, so the limit allows half as much again as
-/// plain rows need: measured at 200 columns, that keeps 10,000 lines of the
-/// benchmark's most heavily styled output (`docs/benchmarks/gate-1.md`).
+/// The engine keeps history in pages of 8-byte cells and frees whole pages
+/// when the limit is reached. The limit is room for one and a half times
+/// `lines` rows at the wider of `cols` and 215 columns, the engine's standard
+/// page width. A page grows when it holds many styles, so styled output keeps
+/// fewer lines in the same room: at 200 columns, the benchmark's most heavily
+/// styled payload still keeps 10,000 lines (`docs/benchmarks/gate-1.md`).
 fn history_bytes(cols: u16, lines: usize) -> usize {
     const CELL_BYTES: usize = 8;
     const PAGE_COLS: usize = 215;
     let row_bytes = CELL_BYTES * usize::from(cols).max(PAGE_COLS);
-    lines.saturating_mul(row_bytes) / 2 * 3
+    lines.saturating_mul(row_bytes).saturating_mul(3) / 2
 }
 
 fn style_from_engine(style: engine_style::Style) -> Style {
@@ -270,15 +273,17 @@ mod tests {
     }
 
     #[test]
-    fn keeps_at_least_the_history_asked_for() {
+    fn keeps_about_the_history_asked_for() {
         for cols in [80, 200, 300] {
             let mut terminal = Terminal::new(cols, 24, 1_000).unwrap();
             for line in 0..5_000 {
                 terminal.write(format!("line {line}\r\n").as_bytes());
             }
             let history = terminal.history().unwrap();
+            // Plain lines fit at least as many as asked for, and the limit
+            // holds: an unlimited history would keep 4,977.
             assert!(
-                (1_000..5_000).contains(&history),
+                (1_000..4_000).contains(&history),
                 "{cols} columns: {history} lines"
             );
         }

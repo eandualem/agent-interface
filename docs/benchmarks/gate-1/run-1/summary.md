@@ -1,18 +1,22 @@
 # Gate 1: headless headroom
 
-**Rates: FAIL**
+**Gate 1: FAIL**
 
-- ascii: libghostty-vt 445.4 MB/s at its slow end, 9.6 times tmux's median 46.6 MB/s (needs 5): met
-- ascii: libghostty-vt 445.4 MB/s at its slow end (needs 200): met
-- unicode: libghostty-vt 90.8 MB/s at its slow end, 8.7 times tmux's median 10.4 MB/s (needs 5): met
-- color: libghostty-vt 70.9 MB/s at its slow end, 2.8 times tmux's median 25.0 MB/s (needs 5): not met
-- scroll: libghostty-vt 340.6 MB/s at its slow end, 8.0 times tmux's median 42.8 MB/s (needs 5): met
+- ascii: libghostty-vt's timing counts
+- ascii: libghostty-vt 511.6 MB/s at its slow end, 11.0 times tmux's median 46.6 MB/s (needs 5): met
+- ascii: libghostty-vt 511.6 MB/s at its slow end (needs 200): met
+- unicode: libghostty-vt's timing does not count: its final screen differs from alacritty_terminal's
+- unicode: libghostty-vt 91.6 MB/s at its slow end, 8.8 times tmux's median 10.4 MB/s (needs 5): met
+- color: libghostty-vt's timing does not count: its final screen differs from rio-vt's; its final screen differs from alacritty_terminal's
+- color: libghostty-vt 62.6 MB/s at its slow end, 2.5 times tmux's median 24.7 MB/s (needs 5): not met
+- scroll: libghostty-vt's timing counts
+- scroll: libghostty-vt 318.6 MB/s at its slow end, 7.6 times tmux's median 42.2 MB/s (needs 5): met
 
 ## Environment
 
 | Item | Value |
 | --- | --- |
-| revision | 2cc1d834a68b322d14b51e4bfff5ac52c8bb9ebf |
+| revision | 6c320bbd7414e886e6bf063d8429d7c1d242c307 |
 | os | macOS 27.0.1 (26A434) |
 | cpu | Apple M5, 10 cores (4 performance, 6 efficiency) |
 | memory | 16 GiB |
@@ -28,13 +32,13 @@
 | libghostty-vt CPU target | baseline |
 | rio-vt | 0.5.28, default features off |
 | alacritty_terminal | 0.26.0 |
-| load average before | { 3.36 2.71 2.67 } |
-| load average after | { 2.56 2.59 2.62 } |
+| load average before | { 4.75 3.36 2.96 } |
+| load average after | { 2.77 3.04 2.87 } |
 | other builds running after | none |
 
 ## Settings
 
-- Grid 200×50, 10000 lines of engine history; tmux keeps its default history.
+- Grid 200×50 and a history limit of 10000 lines, for tmux and every engine.
 - Payloads from seed 1, at least 20000000 bytes each.
 - tmux: 1 warm-up and 10 timed runs per payload, each on a new private server.
 - Engines: 2 warm-up and 10 timed replays each, in a child process per engine and payload.
@@ -43,14 +47,14 @@
 
 ## ascii
 
-Payload 20000113 bytes; pane output 20178568 bytes; control wire 21401813 bytes. A read-out every 388080 pane bytes.
+Payload 20000113 bytes; pane output 20178573 bytes; control wire 21402241 bytes. A read-out every 388315 pane bytes.
 
-| Path | Median MB/s | p95 MB/s (slow end) | Fastest MB/s | Slowest MB/s | p95 × tmux median | Read-outs | Copied per replay | Peak memory |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| tmux, drained control-mode client | 46.6 | 44.3 | 48.2 | 44.3 | - | - | - | - |
-| libghostty-vt | 537.2 | 445.4 | 538.2 | 445.4 | 9.6 | 52 | 10.7 MB | 26.5 MB |
-| rio-vt | 693.0 | 665.1 | 696.1 | 665.1 | 14.3 | 52 | 10.7 MB | 43.8 MB |
-| alacritty_terminal | 216.3 | 210.4 | 217.5 | 210.4 | 4.5 | 52 | 10.9 MB | 77.9 MB |
+| Path | Median MB/s | p95 MB/s (slow end) | Fastest MB/s | Slowest MB/s | p95 × tmux median | Read-outs | Copied per replay | History lines kept | Peak memory |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| tmux, drained control-mode client | 46.6 | 45.9 | 47.6 | 45.9 | - | - | - | 9345 | - |
+| libghostty-vt | 517.3 | 511.6 | 519.2 | 511.6 | 11.0 | 52 | 10.7 MB | 14513 | 51.1 MB |
+| rio-vt | 691.9 | 673.3 | 697.4 | 673.3 | 14.4 | 52 | 10.7 MB | 10000 | 43.9 MB |
+| alacritty_terminal | 217.6 | 213.5 | 220.5 | 213.5 | 4.6 | 52 | 10.9 MB | 10000 | 77.8 MB |
 
 | Final screen | Against libghostty-vt | Text and cursor against tmux | Cells against tmux's capture, as libghostty-vt reads it |
 | --- | --- | --- | --- |
@@ -60,14 +64,14 @@ Payload 20000113 bytes; pane output 20178568 bytes; control wire 21401813 bytes.
 
 ## unicode
 
-Payload 20000027 bytes; pane output 20118493 bytes; control wire 20966036 bytes. A read-out every 86754 pane bytes.
+Payload 20000027 bytes; pane output 20118506 bytes; control wire 20967168 bytes. A read-out every 86505 pane bytes.
 
-| Path | Median MB/s | p95 MB/s (slow end) | Fastest MB/s | Slowest MB/s | p95 × tmux median | Read-outs | Copied per replay | Peak memory |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| tmux, drained control-mode client | 10.4 | 10.1 | 10.5 | 10.1 | - | - | - | - |
-| libghostty-vt | 91.8 | 90.8 | 92.4 | 90.8 | 8.7 | 230 | 47.8 MB | 27.3 MB |
-| rio-vt | 124.1 | 120.0 | 124.6 | 120.0 | 11.5 | 230 | 47.8 MB | 44.3 MB |
-| alacritty_terminal | 135.5 | 115.4 | 136.3 | 115.4 | 11.1 | 230 | 48.9 MB | 80.2 MB |
+| Path | Median MB/s | p95 MB/s (slow end) | Fastest MB/s | Slowest MB/s | p95 × tmux median | Read-outs | Copied per replay | History lines kept | Peak memory |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| tmux, drained control-mode client | 10.4 | 10.2 | 10.5 | 10.2 | - | - | - | 9900 | - |
+| libghostty-vt | 92.7 | 91.6 | 93.5 | 91.6 | 8.8 | 230 | 47.7 MB | 13055 | 52.2 MB |
+| rio-vt | 123.8 | 104.9 | 124.5 | 104.9 | 10.1 | 230 | 47.7 MB | 10000 | 44.5 MB |
+| alacritty_terminal | 136.2 | 135.6 | 136.9 | 135.6 | 13.1 | 230 | 48.9 MB | 10000 | 80.2 MB |
 
 | Final screen | Against libghostty-vt | Text and cursor against tmux | Cells against tmux's capture, as libghostty-vt reads it |
 | --- | --- | --- | --- |
@@ -112,14 +116,14 @@ alacritty_terminal against tmux's capture (tmux first):
 
 ## color
 
-Payload 20000655 bytes; pane output 20073373 bytes; control wire 23843675 bytes. A read-out every 208532 pane bytes.
+Payload 20000655 bytes; pane output 20073362 bytes; control wire 23843079 bytes. A read-out every 205946 pane bytes.
 
-| Path | Median MB/s | p95 MB/s (slow end) | Fastest MB/s | Slowest MB/s | p95 × tmux median | Read-outs | Copied per replay | Peak memory |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| tmux, drained control-mode client | 25.0 | 22.8 | 25.3 | 22.8 | - | - | - | - |
-| libghostty-vt | 71.7 | 70.9 | 72.2 | 70.9 | 2.8 | 97 | 19.9 MB | 30.3 MB |
-| rio-vt | 52.5 | 47.9 | 52.8 | 47.9 | 1.9 | 97 | 19.9 MB | 69.0 MB |
-| alacritty_terminal | 161.0 | 158.8 | 162.8 | 158.8 | 6.3 | 97 | 20.4 MB | 80.2 MB |
+| Path | Median MB/s | p95 MB/s (slow end) | Fastest MB/s | Slowest MB/s | p95 × tmux median | Read-outs | Copied per replay | History lines kept | Peak memory |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| tmux, drained control-mode client | 24.7 | 21.8 | 25.1 | 21.8 | - | - | - | 9172 | - |
+| libghostty-vt | 71.2 | 62.6 | 71.8 | 62.6 | 2.5 | 98 | 20.1 MB | 10914 | 54.6 MB |
+| rio-vt | 52.8 | 52.3 | 52.9 | 52.3 | 2.1 | 98 | 20.1 MB | 10000 | 69.1 MB |
+| alacritty_terminal | 164.9 | 155.5 | 166.8 | 155.5 | 6.3 | 98 | 20.6 MB | 10000 | 80.2 MB |
 
 | Final screen | Against libghostty-vt | Text and cursor against tmux | Cells against tmux's capture, as libghostty-vt reads it |
 | --- | --- | --- | --- |
@@ -209,14 +213,14 @@ alacritty_terminal against tmux's capture (tmux first):
 
 ## scroll
 
-Payload 20000068 bytes; pane output 20157599 bytes; control wire 22281297 bytes. A read-out every 356886 pane bytes.
+Payload 20000068 bytes; pane output 20157600 bytes; control wire 22281589 bytes. A read-out every 351583 pane bytes.
 
-| Path | Median MB/s | p95 MB/s (slow end) | Fastest MB/s | Slowest MB/s | p95 × tmux median | Read-outs | Copied per replay | Peak memory |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| tmux, drained control-mode client | 42.8 | 41.5 | 43.3 | 41.5 | - | - | - | - |
-| libghostty-vt | 344.1 | 340.6 | 344.7 | 340.6 | 8.0 | 57 | 11.5 MB | 27.5 MB |
-| rio-vt | 413.8 | 291.6 | 424.2 | 291.6 | 6.8 | 57 | 11.5 MB | 44.5 MB |
-| alacritty_terminal | 196.2 | 188.4 | 197.0 | 188.4 | 4.4 | 57 | 12.0 MB | 78.7 MB |
+| Path | Median MB/s | p95 MB/s (slow end) | Fastest MB/s | Slowest MB/s | p95 × tmux median | Read-outs | Copied per replay | History lines kept | Peak memory |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| tmux, drained control-mode client | 42.2 | 38.0 | 42.7 | 38.0 | - | - | - | 9085 | - |
+| libghostty-vt | 323.0 | 318.6 | 342.1 | 318.6 | 7.6 | 58 | 11.7 MB | 3262 | 32.3 MB |
+| rio-vt | 419.0 | 408.4 | 419.9 | 408.4 | 9.7 | 58 | 11.7 MB | 10000 | 44.2 MB |
+| alacritty_terminal | 201.6 | 192.2 | 203.1 | 192.2 | 4.6 | 58 | 12.2 MB | 10000 | 78.6 MB |
 
 | Final screen | Against libghostty-vt | Text and cursor against tmux | Cells against tmux's capture, as libghostty-vt reads it |
 | --- | --- | --- | --- |
