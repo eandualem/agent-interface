@@ -232,6 +232,10 @@ fn read(shared: &Shared, mut stdout: ChildStdout) {
         }
     }
     shared.close();
+    // A control client exits only once its output has been read: one whose
+    // output is closed while it still has some to write stays attached and
+    // keeps its server running (tmux 3.7c). So read to the end, discarding.
+    while matches!(stdout.read(&mut buffer), Ok(read) if read > 0) {}
 }
 
 /// Applies queued output to each pane's terminal and publishes updates, until
@@ -296,7 +300,9 @@ fn work(shared: &Shared, layout: &[PaneLayout], scrollback: usize, wake: &dyn Fn
                 spare.extend(copies.into_iter().map(|(_, screen)| screen));
             }
             state.spare.extend(spare);
-        } else if let Some((pane, bytes)) = state.queue.pop_front() {
+        } else if !state.cancelled
+            && let Some((pane, bytes)) = state.queue.pop_front()
+        {
             state.queued -= bytes.len();
             drop(state);
             // The reader may be waiting for room in the queue.
@@ -427,6 +433,37 @@ mod tests {
                 }
             })
             .collect()
+    }
+
+    #[test]
+    fn a_cancelled_reader_reads_the_clients_output_to_its_end() {
+        let server = TmuxServer::start().unwrap();
+        let session = TmuxServer::SESSION;
+        server
+            .run(&["respawn-pane", "-k", "-t", session, "exec yes streaming"])
+            .unwrap();
+        let mut client = server.control(&["attach-session", "-t", session]).unwrap();
+        // The client's output fills its pipe while nothing reads it.
+        std::thread::sleep(Duration::from_millis(500));
+        let shared = Shared {
+            state: Mutex::new(State {
+                cancelled: true,
+                ..State::default()
+            }),
+            changed: Condvar::new(),
+        };
+        let stdout = client.stdout.take().unwrap();
+        drop(client.stdin.take());
+        read(&shared, stdout);
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while client.try_wait().unwrap().is_none() {
+            if Instant::now() > deadline {
+                let _ = client.kill();
+                panic!("the client did not exit");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 
     #[test]
