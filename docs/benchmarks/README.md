@@ -17,7 +17,7 @@ harness is part of the pane-state recovery decision,
 | 2. End-to-end bulk output | Harness ready, not measured yet |
 | 3. Typing latency | Harness ready, not measured yet |
 | 4. Frame pacing | Harness ready, not measured yet |
-| 5. Control-mode fidelity | Not measured yet |
+| 5. Control-mode fidelity | Failed on a resize cursor mismatch: [gate-5.md](gate-5.md) |
 
 ## Running gate 1
 
