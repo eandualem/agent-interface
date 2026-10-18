@@ -80,11 +80,12 @@ pub fn generate(kind: Kind, seed: u64, size: usize) -> Vec<u8> {
 }
 
 /// SplitMix64 (Steele, Lea and Flood, 2014): small, fast and fully
-/// specified, so its sequence never changes.
-struct Rng(u64);
+/// specified, so its sequence never changes. The display gates use it too,
+/// for their animations and the gaps between typed keys.
+pub(crate) struct Rng(pub(crate) u64);
 
 impl Rng {
-    fn next_u64(&mut self) -> u64 {
+    pub(crate) fn next_u64(&mut self) -> u64 {
         self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
         let mut z = self.0;
         z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -93,12 +94,12 @@ impl Rng {
     }
 
     /// Returns a number in `0..n`, for `n` below 2³².
-    fn below(&mut self, n: usize) -> usize {
+    pub(crate) fn below(&mut self, n: usize) -> usize {
         (((self.next_u64() >> 32) * n as u64) >> 32) as usize
     }
 
     /// Returns a number in `low..=high`.
-    fn range(&mut self, low: usize, high: usize) -> usize {
+    pub(crate) fn range(&mut self, low: usize, high: usize) -> usize {
         low + self.below(high - low + 1)
     }
 

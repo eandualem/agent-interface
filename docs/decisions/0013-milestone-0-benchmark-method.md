@@ -1,6 +1,6 @@
 # 0013. Milestone-0 benchmark method
 
-- **Status:** Accepted
+- **Status:** Superseded by [0018](0018-milestone-0-benchmark-method-revised.md)
 - **Date:** 2026-10-17
 
 ## Context

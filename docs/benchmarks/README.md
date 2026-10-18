@@ -2,15 +2,19 @@
 
 The milestone-0 gates check, by measurement, that the chosen terminal path is
 fast enough before any user interface is built. The method is decision record
-[0013](../decisions/0013-milestone-0-benchmark-method.md); the harness is
-described in [0017](../decisions/0017-benchmark-harness.md).
+[0018](../decisions/0018-milestone-0-benchmark-method-revised.md), which
+restates [0013](../decisions/0013-milestone-0-benchmark-method.md) with
+instruments for the display gates; gate 1 was measured under 0013, whose
+gate-1 method 0018 keeps unchanged. The harness is described in
+[0017](../decisions/0017-benchmark-harness.md), and the benchmark window of
+gates 2 to 4 in [0019](../decisions/0019-benchmark-window.md).
 
 | Gate | Results |
 | --- | --- |
 | 1. Headless headroom | Failed on escape-heavy coloured output: [gate-1.md](gate-1.md) |
-| 2. End-to-end bulk output | Not measured yet |
-| 3. Typing latency | Not measured yet |
-| 4. Frame pacing | Not measured yet |
+| 2. End-to-end bulk output | Harness ready, not measured yet |
+| 3. Typing latency | Harness ready, not measured yet |
+| 4. Frame pacing | Harness ready, not measured yet |
 | 5. Control-mode fidelity | Not measured yet |
 
 ## Running gate 1
@@ -115,3 +119,110 @@ pane in two ways:
 **Other figures.** "Copied per replay" is the display data all the read-outs
 of one replay produced. "Peak memory" is the child process's peak resident
 memory, which includes the recording it holds.
+
+## Running gates 2 to 4
+
+Gates 2 to 4 measure what appears on screen, so they run on macOS with a
+display, not in CI. Each run opens one measured window at a time: the app's
+benchmark window ([0019](../decisions/0019-benchmark-window.md)) or a separate
+Ghostty instance that the harness starts with its own configuration and stops
+afterwards. The harness never captures, or sends keys to, any other window.
+
+Before running them:
+
+- Give the terminal you run the harness from **Screen Recording** and
+  **Accessibility** access in System Settings, under Privacy & Security. The
+  harness checks both and stops if either is missing; it never asks for them.
+- Install Ghostty, by default at `/Applications/Ghostty.app`, for the
+  baselines.
+- Leave the main display free where the measured windows stay fully visible,
+  awake and unlocked, and keep the machine quiet. The windows open at the top
+  left of the main display (`--origin` moves them) and must lie entirely on
+  it. Once a second, and before every key, the harness checks that the window
+  it started is still on screen, within a point of where it started, not
+  covered by another window, and that the display is awake and the screen
+  unlocked; otherwise it stops the run as failed, not slow. The window's own
+  title-bar buttons, which macOS draws as a separate small window, do not
+  count as covering it.
+- Do not type or click while a run is going: the measured window must keep
+  its place and contents. Keys go only to the measured process, and only
+  while its window is frontmost; otherwise the run stops before any key is
+  sent.
+
+Build the harness and the window in the distributable configuration, as two
+commands, then run each gate:
+
+```sh
+LIBGHOSTTY_VT_SYS_OPTIMIZE=ReleaseFast cargo build --release --locked -p tmux-workspaces-bench
+LIBGHOSTTY_VT_SYS_OPTIMIZE=ReleaseFast cargo build --release --locked -p tmux-workspaces-app --example bench-window
+./target/release/tmux-workspaces-bench gate2 --out results/gate2
+./target/release/tmux-workspaces-bench gate3 --out results/gate3
+./target/release/tmux-workspaces-bench gate4 --out results/gate4
+```
+
+Each writes `summary.md`, with the environment, the windows and a verdict per
+case, and `raw.tsv`, every sample. Running `tmux-workspaces-bench` without
+arguments lists the options. If the display reports no refresh rate, give it
+with `--refresh HZ`. An acceptance result needs three runs of each gate, as
+for gate 1.
+
+The benchmark window prints its revision and build when it starts, and the
+harness refuses one built from a different revision, Cargo profile and
+optimisation level, CPU target or engine optimisation. The report lists both
+programs' builds. A run with fewer cases than the gate needs (fewer
+payloads, conditions, keys or seconds) is reported as an exploratory subset:
+it can fail, but it cannot pass. A run from a build other than the
+distributable one (Cargo's release profile at `opt-level` 3, the `baseline`
+CPU target and the engine in `ReleaseFast` mode) decides nothing. A latency or end-time comparison (gates 2
+and 3) within one refresh interval of its limit is not decided until a
+camera confirms it (0018).
+
+## How gates 2 to 4 measure
+
+The method is [0018](../decisions/0018-milestone-0-benchmark-method-revised.md).
+
+**The windows.** Every run starts a new private tmux server holding one
+200×50 session with its status line off. The app's window attaches to it as a
+control-mode client. Ghostty runs either the workload directly ("plain
+Ghostty") or an ordinary `tmux attach` to the same kind of session. Both read
+one configuration file written by the harness: Menlo 13, the same colours and
+16-colour palette, no padding and no blinking cursor. Ghostty starts without
+its default configuration files and with private XDG configuration, data,
+state and cache directories, so it never reads or changes the user's own
+configuration; it is stopped by the exact process it started. The window,
+Ghostty and the tmux servers are all started through LaunchServices, so they
+are scheduled alike wherever the harness runs
+([0020](../decisions/0020-benchmark-launch-context.md)). Targets alternate run
+by run.
+
+**Timing.** ScreenCaptureKit captures the measured window, and each frame
+carries the time the window server displayed it. Times the harness takes, such
+as posting a key, use the same clock. Keys are posted to the measured
+process only. This leaves out the display's own scan-out and pixel response,
+which are the same for both programs.
+
+**Gate 2, bulk output.** The pane runs a producer that waits on a FIFO, as in
+gate 1, then prints one of gate 1's payloads (20 MB by default) and fills the
+screen with a marker colour. The time runs from releasing the producer to the
+first frame that the marker colour fills, and the rate divides the payload's
+bytes by it. The app is compared with Ghostty running tmux. vtebench, which
+0018 also asks for, is not run yet, so this gate cannot pass until it is.
+
+**Gate 3, typing latency.** The pane runs `cat`. Lowercase letters are posted
+one at a time, at seeded random gaps of 150 to 350 ms, after a few unmeasured
+warm-up keys. A key's latency runs from just before it is posted to the first
+frame in which the typing pane's region changed. In the busy condition a
+second pane below streams output; the keys start only once that producer has
+written its first output, and the run stops if it stops writing. Only the
+top 45% of the window is compared.
+A key with no change within one second is reported as missed, and a
+condition with missed keys is not decided. The app is compared with plain
+Ghostty, and Ghostty running tmux shows tmux's share.
+
+**Gate 4, frame pacing.** The pane runs a fire animation, which redraws the
+whole pane as fast as the terminal accepts, or a scroll test, each for 30
+seconds. ScreenCaptureKit also delivers frames whose pixels did not change, so
+only frames that changed count. Leaving out the first second, the frame rate
+is changed frames per second, and pacing is the share of intervals between
+them no longer than 1.5 times the display's refresh interval. The app is
+compared with plain Ghostty.

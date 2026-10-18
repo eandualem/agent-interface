@@ -46,6 +46,7 @@ Python.
 | `proptest` | 1.12.0 | MIT OR Apache-2.0 | Property tests for trees, edit sequences and protocol chunking, with failing seeds kept |
 | `insta` | 1.49.0 | Apache-2.0 | Reviewable snapshots of decoded output or display data, where a snapshot is clearer than an assertion; updates disabled in CI |
 | `tempfile` | 3.27.0 | MIT OR Apache-2.0 | Isolated fixture directories |
+| `signal-hook` | 0.4.5 | MIT OR Apache-2.0 | Stopping the benchmark harness's private servers when it is interrupted; `alacritty_terminal` already depends on it |
 
 **tmux isolation.** Every tmux process in tests, benchmarks and spikes is
 started through one fixture helper, which:

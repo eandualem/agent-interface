@@ -42,6 +42,10 @@ pub fn describe(tmux_version: &str) -> Vec<(&'static str, String)> {
             "libghostty-vt CPU target",
             env!("BENCH_GHOSTTY_CPU").to_owned(),
         ),
+        (
+            "LIBGHOSTTY_VT_SYS_OPTIMIZE",
+            env!("BENCH_GHOSTTY_OPTIMIZE").to_owned(),
+        ),
         ("rio-vt", "0.5.28, default features off".to_owned()),
         ("alacritty_terminal", "0.26.0".to_owned()),
     ]);
