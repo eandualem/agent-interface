@@ -243,7 +243,9 @@ PATH=/path/to/tmux-3.3a:$PATH ./target/release/tmux-workspaces-bench gate5 --out
 ```
 
 A run takes a few minutes. It writes `summary.md`, the report, and `raw.tsv`,
-one line per comparison. `--scenarios` and `--fixtures` run a subset, which
+one line per comparison. Resize comparisons also retain their snapshots,
+replayed pane output, control events and ordinary-client bytes in `resize/`.
+`--scenarios` and `--fixtures` run a subset, which
 the report marks as incomplete, and `--pauses N` sets how many stalls the own-pause scenario makes (20). As in
 the other gates, every tmux process runs on a new private server and the
 harness never touches another one.
@@ -260,15 +262,18 @@ in a pseudo-terminal attached to the session, and its output goes into a
 terminal engine like the app's. The candidate is the app's recovery code on
 a control-mode connection: a first attach, or a pause and capture on a
 connection that is receiving output. Its rebuilt pane then receives the
-pane's later output as the app would.
+pane's later output as the app would. If a captured cursor is at or beyond
+the right margin, the candidate retains that snapshot and captures again
+after output until the cursor can be streamed correctly.
 
 **Comparison.** After the rebuild, and again after the fixture writes more
 output and receives input sent through the candidate's connection, the
 harness compares every cell of the pane (in the resize scenario, after each
 rebuild at a new size too, once the fixture has stopped drawing): text, width, colours, underline
 style and colour, attributes and hyperlink. Blank cells are equal when they
-look the same. The cursor position comes from the reference, and cursor
-visibility and modes from tmux's own formats; a mode a version does not
+look the same. The logical cursor is checked against tmux's formats, and
+its projection into the client's viewport against the reference cursor.
+Cursor visibility mode and other modes come from tmux's own formats; a mode a version does not
 report is listed as not compared.
 
 **Scenarios.** A first attach, in a window with one pane and in a split
@@ -284,7 +289,8 @@ recovery's commands, which must be reported.
 **Fixtures.** Short shell scripts that draw one kind of state each: styles,
 erases with a background colour, wide characters and emoji, line drawing,
 history, the alternate screen, pending escape and string sequences, a cursor
-waiting to wrap, hyperlinks, tabs, underline colours, and the state 0021
+waiting to wrap, a cursor beyond the width after a resize, their continuation
+through cursor movement and wrap-mode changes, hyperlinks, tabs, underline colours, and the state 0021
 lists as impossible to restore.
 
 **Pass or fail.** Every difference must be one the fixture expects: a limit

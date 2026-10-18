@@ -1,6 +1,7 @@
 //! Gate 5's scenarios (`docs/decisions/0021-pane-state-recovery.md`, harness
 //! for gate 5).
 
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use tmux_workspaces_tmux::capture;
@@ -103,7 +104,7 @@ pub fn fixture(
 /// Runs `fixture` while the reference's terminal is resized four times,
 /// rebuilding the pane once each new size settles, and compares at each
 /// size if the fixture has stopped drawing.
-pub fn resize(version: (u32, u32), fixture: &Fixture) -> Result<Vec<Compared>, String> {
+pub fn resize(version: (u32, u32), fixture: &Fixture, out: &Path) -> Result<Vec<Compared>, String> {
     const STEPS: [(u16, u16); 4] = [(30, 8), (50, 10), (40, 6), (36, 9)];
     let session = Session::start(version)?;
     let script = session.script(fixture.draw, fixture.more)?;
@@ -122,8 +123,10 @@ pub fn resize(version: (u32, u32), fixture: &Fixture) -> Result<Vec<Compared>, S
     let mut size = ONE.window();
     let mut notes = Vec::new();
     let mut compared = Vec::new();
+    let mut last_mark = 0;
     for step in STEPS {
         let mark = connection.mark();
+        last_mark = mark;
         from = reference.len();
         reference
             .resize(step.0, step.1)
@@ -149,6 +152,15 @@ pub fn resize(version: (u32, u32), fixture: &Fixture) -> Result<Vec<Compared>, S
             let mut comparison =
                 session.compare(&reference, from, size, &mut candidate, &connection, rules)?;
             comparison.notes.extend(size_note(rebuilt_size, step));
+            resize_trace(
+                &out.join(format!("{}x{}", step.0, step.1)),
+                &candidate,
+                &reference,
+                from,
+                &connection,
+                mark,
+                &comparison,
+            )?;
             compared.push(Compared::rebuilt(Some(step), comparison));
         } else if let Some(note) = size_note(rebuilt_size, step) {
             notes.push(note);
@@ -161,13 +173,62 @@ pub fn resize(version: (u32, u32), fixture: &Fixture) -> Result<Vec<Compared>, S
         let mut rebuilt =
             session.compare(&reference, from, size, &mut candidate, &connection, rules)?;
         rebuilt.notes.extend(notes);
+        resize_trace(
+            &out.join("rebuilt"),
+            &candidate,
+            &reference,
+            from,
+            &connection,
+            last_mark,
+            &rebuilt,
+        )?;
         compared.push(Compared::rebuilt(Some(size), rebuilt));
     }
     let more = more_and_input(&session, &reference, &connection, pane).and_then(|()| {
         session.compare(&reference, from, size, &mut candidate, &connection, rules)
     })?;
+    resize_trace(
+        &out.join("more"),
+        &candidate,
+        &reference,
+        from,
+        &connection,
+        last_mark,
+        &more,
+    )?;
     compared.push(Compared::more(more));
     Ok(compared)
+}
+
+/// Retains the state and exact byte streams behind a resize comparison.
+/// The reference bytes start just before the latest resize, as the oracle
+/// does; the directory name or comparison's enclosing report gives its size.
+fn resize_trace(
+    out: &Path,
+    candidate: &Candidate,
+    reference: &Reference,
+    from: usize,
+    connection: &Connection,
+    mark: usize,
+    comparison: &Comparison,
+) -> Result<(), String> {
+    std::fs::create_dir_all(out).map_err(|error| error.to_string())?;
+    for (name, bytes) in [
+        (
+            "snapshot.txt",
+            format!("{:#?}", candidate.seed).into_bytes(),
+        ),
+        ("replayed.bin", candidate.replayed.clone()),
+        ("reference.bin", reference.bytes_from(from)),
+        (
+            "events.txt",
+            format!("{:#?}", connection.events_from(mark)).into_bytes(),
+        ),
+        ("comparison.txt", format!("{comparison:#?}").into_bytes()),
+    ] {
+        std::fs::write(out.join(name), bytes).map_err(|error| error.to_string())?;
+    }
+    Ok(())
 }
 
 /// Notes a rebuild whose size differs from the size the window was given.
@@ -208,7 +269,7 @@ pub fn flow(version: (u32, u32), seconds: f64) -> Result<(Vec<Check>, [Compariso
         let (rebuilt, next) = pause_and_rebuild(&connection, pane, Some(STALL))?;
         let mut rebuilt_pane = Candidate::rebuilt(&rebuilt.snapshot, &rebuilt.output, next)?;
         std::thread::sleep(Duration::from_millis(200));
-        rebuilt_pane.catch_up(&connection);
+        rebuilt_pane.catch_up(&connection)?;
         checks.push(Check {
             name: format!("rebuild {} continues the count", checks.len() + 1),
             result: continuity(&rebuilt.snapshot, &rebuilt_pane.applied),
@@ -288,7 +349,7 @@ pub fn own_pause(version: (u32, u32), stalls: usize) -> Result<OwnPause, String>
         since = at + 1;
         continue_panes(&connection, &others)?;
         std::thread::sleep(Duration::from_millis(200));
-        rebuilt.catch_up(&connection);
+        rebuilt.catch_up(&connection)?;
         checks.push(Check {
             name: format!("rebuild after pause {paused} continues the count"),
             result: continuity(&snapshot, &rebuilt.applied),
@@ -804,6 +865,73 @@ mod tests {
     use tmux_workspaces_tmux::recovery::{Modes, PaneState};
 
     use super::*;
+
+    #[test]
+    fn off_grid_cursor_keeps_its_state_until_output_can_be_streamed() {
+        for width in [36, 40] {
+            for name in [
+                "offgrid-print",
+                "offgrid-backspace",
+                "offgrid-left",
+                "offgrid-nowrap",
+            ] {
+                let fixture = super::super::fixtures::FIXTURES
+                    .iter()
+                    .find(|fixture| fixture.name == name)
+                    .unwrap();
+                let mut session = Session::start((0, 0)).unwrap();
+                let version = session
+                    .run(&["display-message", "-p", "#{version}"])
+                    .unwrap();
+                session.version = super::super::fixtures::version(version.trim()).unwrap();
+                let script = session.script(fixture.draw, fixture.more).unwrap();
+                let pane = session.open(Layout::One(40, 6), &script).unwrap();
+                let reference = attach_reference(&session, (40, 6)).unwrap();
+                let rules = session.reference_ready(&reference).unwrap();
+                session.signal("ref").unwrap();
+                session.wait("drawn", DRAW_TIMEOUT).unwrap();
+                quiet(&reference, None).unwrap();
+                let (connection, _) = first_attach(&session, &[pane]).unwrap();
+                let from = reference.len();
+                let mark = connection.mark();
+                reference.resize(width, 9).unwrap();
+                connection
+                    .wait_for(mark, TIMEOUT, is_layout_change)
+                    .unwrap();
+                quiet(&reference, Some(&connection)).unwrap();
+                let (rebuilt, next) = pause_and_rebuild(&connection, pane, None).unwrap();
+                assert_eq!(rebuilt.snapshot.state.cursor, (40, 5));
+                let mut candidate =
+                    Candidate::rebuilt(&rebuilt.snapshot, &rebuilt.output, next).unwrap();
+                for phase in ["rebuilt", "more", "input"] {
+                    match phase {
+                        "more" => {
+                            session.signal("go").unwrap();
+                            session.wait("more", DRAW_TIMEOUT).unwrap();
+                        }
+                        "input" => input(&session, &reference, &connection, pane).unwrap(),
+                        _ => {}
+                    }
+                    quiet(&reference, Some(&connection)).unwrap();
+                    let result = session
+                        .compare(
+                            &reference,
+                            from,
+                            (width, 9),
+                            &mut candidate,
+                            &connection,
+                            rules,
+                        )
+                        .unwrap();
+                    assert!(result.matches(), "{name} {phase}: {result:?}");
+                    if phase == "rebuilt" || (phase == "more" && name == "offgrid-nowrap") {
+                        assert_eq!(candidate.cursor().unwrap(), (40, 5));
+                        assert!(candidate.cursor_enabled().unwrap());
+                    }
+                }
+            }
+        }
+    }
 
     fn snapshot(rows: &[&str], history: usize, cursor: (u16, u16), pending: &[u8]) -> Snapshot {
         Snapshot {

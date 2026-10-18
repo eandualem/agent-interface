@@ -209,7 +209,11 @@ pub fn run(options: &Options) -> Result<(), String> {
                             scenario,
                             fixture: Some(fixture),
                             name: fixture.name,
-                            result: scenarios::resize(version, fixture),
+                            result: scenarios::resize(
+                                version,
+                                fixture,
+                                &out.join("resize").join(fixture.name),
+                            ),
                         });
                     }
                 }

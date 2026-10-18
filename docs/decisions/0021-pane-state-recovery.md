@@ -3,7 +3,7 @@
 - **Status:** Proposed. Settles follow-up 1 of
   [0003](0003-control-mode-connection-and-attachment-model.md) once
   milestone-0 gate 5 passes, as described under **Accept when**.
-- **Date:** 2026-10-17
+- **Date:** 2026-10-17, updated 2026-10-18
 
 ## Context
 
@@ -75,6 +75,26 @@ the server time (see **Consequences**).
 | **An ordinary tmux client in a pseudo-terminal, its bytes fed to the same engine as the app** | Differences come from recovery, not from two engines disagreeing about character widths, which gate 1 found ([gate 1](../benchmarks/gate-1.md)). |
 | The same client fed to a second emulator | Mixes engine differences into the result. Rejected. |
 | tmux's own capture as the expected state | Circular: the candidate is built from it. |
+
+**A cursor at or beyond the right margin.** A resize can leave tmux's
+logical cursor beyond the new width. On all six supported versions, an
+alternate-screen pane at 40×6 with `R` at row 6, column 40 retains logical
+cursor `(40, 5)` after shrinking to 36×9. The ordinary client hides its
+cursor and parks it at `(0, 0)`. Restoring every column at or beyond the
+width as pending wrap loses information: cursor-left-five followed by `X`
+puts X at column 35 in tmux and column 30 in the rebuilt engine. Merely
+moving the engine's cursor home also breaks the next printable character.
+Controls with only a height change expose related pending-wrap differences:
+backspace, cursor-left and disabling wrap do not have the same transitions
+in tmux and the engine. These are retained diagnostic observations, not
+expected-limit allowances.
+
+| Option | Trade-offs |
+| --- | --- |
+| Clamp the cursor or treat every off-grid column as pending wrap | Discards the logical column and fails subsequent output. Rejected. |
+| Add a stateful compatibility interpreter for the off-grid cursor | Must implement every operation that can affect that state, including split sequences, modes and edits. A partial implementation would silently diverge. Not selected. |
+| Import the off-grid cursor into the engine | The pinned engine has no public setter and requires its cursor to be inside the grid. Not available. |
+| **Retain a snapshot while the cursor is at or beyond the right margin; capture again after output** | Uses tmux's state transitions. Adds recovery work and the existing capture limitations until a snapshot's cursor is inside the grid. |
 
 **Fixtures in a window with several panes.** On tmux 3.7c, an ordinary
 client viewing a pane narrower than the window is not redrawn when a
@@ -182,6 +202,28 @@ character set. The `term` crate writes them into a fresh terminal:
   sequence, tmux has already acted on the control characters in them, so
   those are dropped; inside a string sequence such as OSC they are kept.
 
+**Right-margin recovery.** The installation above can represent ordinary
+pending wrap, but cannot express an off-grid column or all of tmux's
+pending-wrap transitions. The caller therefore retains the full snapshot
+when `cursor_x >= pane_width`. It installs only a display copy in the
+engine, with a hidden cursor at home and without pending parser bytes. That
+copy never receives live output; the retained snapshot supplies the logical
+cursor and cursor mode.
+
+When more pane output arrives, the caller coalesces the available output
+and repeats the normal pause/capture/continue recovery. A snapshot whose
+cursor is still at or beyond the margin replaces the displayed snapshot.
+Once a snapshot has `cursor_x < pane_width`, normal engine streaming resumes
+at that capture's boundary, including its pending bytes and subsequent
+output. Already captured output is not replayed. No output means no extra
+capture. Failure to recover is reported; it is not an exact match. The
+harness bounds repeated attempts with its recovery timeout.
+
+This is a recovery rule, demonstrated by the harness's candidate,
+not an extra terminal interpreter. `Terminal::restored` rejects a cursor
+beyond the width instead of silently converting it to pending wrap. No new
+dependency or licence is introduced.
+
 **Resize.** When `%layout-change` reports a new size for a pane, whichever
 client caused it, the app rebuilds that pane with the recovery sequence once
 no further change to its size has arrived for a short settle interval, so
@@ -247,8 +289,13 @@ session on a private server
   hyperlink, and the same foreground when reverse video, an underline, an
   overline or a strikethrough makes it visible. In a window with several
   panes, the reference's screen is cropped to the pane's position and size.
-  The cursor position comes from the reference. Cursor visibility and modes
-  come from tmux's formats, because the reference terminal's modes are the
+  The candidate's logical cursor, including pending wrap and an off-grid
+  column, is compared with fresh tmux cursor formats. Its position projected
+  into the ordinary client's viewport is independently compared with the
+  reference: pane offsets are added, a column at the window's width is
+  clamped to its last column, and a cursor beyond the viewport is parked at
+  `(0, 0)`, as tmux's client does. Both position checks must pass. Cursor
+  visibility mode and other modes come from tmux's formats, because the reference terminal's modes are the
   ones tmux sets for itself, not the pane's. A mode a version does not
   export is reported as not compared, not as a match.
 - Scenarios: attach; a pause forced under backlog; tmux's own pause, reporting
@@ -272,6 +319,11 @@ session on a private server
   Neither those nor neighbouring cells with different underline colours are
   used where tmux redraws the reference: in the resize scenario, or in
   fixtures that enter or leave the alternate screen.
+- Right-margin fixtures also exercise backspace, cursor-left and disabling
+  wrap after recovery. Resize fixtures retain their exact seed snapshots,
+  post-seed replay bytes, control events and ordinary-client bytes under the
+  run's `resize/` directory, including successful comparisons. The reference
+  bytes begin immediately before the latest resize, as the comparison does.
 
 Three behaviours of tmux affect the reference, not the app, and the harness
 allows for them: tmux 3.7 and 3.8 merge underline colours across a run of
@@ -283,7 +335,7 @@ cursor while the pane's cursor waits to wrap (visibility is taken from
 
 ## Consequences
 
-- Every rebuild captures the pane's whole retained history inside tmux's
+- Every rebuild, including a right-margin refresh, captures the pane's whole retained history inside tmux's
   event loop, so every pane on that server waits about as long. On tmux 3.7c,
   for a 120x40 pane of styled 100-character lines, with a neighbouring pane
   printing a line every millisecond (median of 5):
@@ -298,6 +350,11 @@ cursor while the pane's cursor waits to wrap (visibility is taken from
   settled resize visibly pauses the server once per resized pane. If gate 4
   or use shows that matters, the bounded rebuild above needs its own
   measurement and record.
+- A pane that remains at the right margin while producing output needs
+  repeated snapshots. This can add latency and repeats the existing losses
+  of unexported state, such as the current text style. Gate 5 checks the
+  resulting cells and continuation without an additional allowance; it does
+  not establish a latency bound. Gates 2–4 must still measure that cost.
 - The capture parser follows a format tmux can change. It carries recorded
   captures from each supported version, as the reply parser does
   ([0014](0014-supported-tmux-versions.md)).
@@ -339,4 +396,5 @@ Hyperlinks were compared on 3.4 and later, and underline colours with the
 - tmux source, ISC licence, read for behaviour: pausing and continuing
   (`control.c`), reply guards (`cmd-queue.c`), capture (`cmd-capture-pane.c`,
   `grid.c`), region scrolling into history (`grid.c`) and key modes
-  (`input.c`).
+  (`input.c`), logical cursor transitions (`screen.c`, `screen-write.c`)
+  and the ordinary-client cursor projection (`server-client.c`, `tty.c`).

@@ -115,6 +115,20 @@ impl Terminal {
         Ok((column, row))
     }
 
+    /// Returns the logical cursor, including the column just beyond the
+    /// right margin when the next character will wrap.
+    pub fn logical_cursor(&self) -> Result<(u16, u16), Error> {
+        let (column, row) = self.cursor()?;
+        let pending = self.engine.is_cursor_pending_wrap().map_err(Error)?;
+        Ok((column + u16::from(pending), row))
+    }
+
+    /// Whether the pane has enabled its cursor, independently of whether
+    /// that cursor is currently inside the displayed grid.
+    pub fn cursor_enabled(&self) -> Result<bool, Error> {
+        self.engine.is_cursor_visible().map_err(Error)
+    }
+
     /// Copies the visible screen into `screen`, replacing what it held.
     ///
     /// This updates the engine's render state, then copies every cell, so the
