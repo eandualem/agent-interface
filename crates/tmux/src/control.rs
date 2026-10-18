@@ -13,7 +13,9 @@ pub struct PaneId(pub u32);
 /// One message from a control-mode client.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Message<'a> {
-    /// Output from a pane, with tmux's escaping removed.
+    /// Output from a pane, with tmux's escaping removed. It arrives as
+    /// `%output`, or as `%extended-output` when the client has set
+    /// `pause-after`.
     Output {
         /// The pane that wrote the output.
         pane: PaneId,
@@ -121,8 +123,21 @@ impl Decoder {
             }
             return Ok(());
         }
-        if let Some(rest) = line.strip_prefix(b"%output ") {
-            let (pane, data) = split_word(rest);
+        let output = match line.strip_prefix(b"%extended-output ") {
+            // With `pause-after` set, tmux sends output as
+            // `%extended-output %PANE AGE ... : DATA`.
+            Some(rest) => {
+                let (pane, rest) = split_word(rest);
+                let data = rest
+                    .windows(3)
+                    .position(|separator| separator == b" : ")
+                    .map(|start| &rest[start + 3..])
+                    .ok_or(Error::Malformed("%extended-output without its data"))?;
+                Some((pane, data))
+            }
+            None => line.strip_prefix(b"%output ").map(split_word),
+        };
+        if let Some((pane, data)) = output {
             let pane = pane
                 .strip_prefix(b"%")
                 .and_then(parse_number)
@@ -237,6 +252,8 @@ mod tests {
         %end 1700000000 12 0\n\
         %session-changed $0 fixture\n\
         %output %3 a\\134b\\015\\012\xe7\x95\x8c\\033[0m\n\
+        %extended-output %4 120 : x\\040: y\n\
+        %extended-output %4 0 later fields : z\n\
         %begin 1700000001 13 1\n\
         %output %3 not output\n\
         %end 1700000001 99 1\n\
@@ -254,6 +271,8 @@ mod tests {
             Owned::End(12),
             Owned::Notification(b"%session-changed $0 fixture".to_vec()),
             Owned::Output(3, b"a\\b\r\n\xe7\x95\x8c\x1b[0m".to_vec()),
+            Owned::Output(4, b"x : y".to_vec()),
+            Owned::Output(4, b"z".to_vec()),
             Owned::Begin(13),
             Owned::ReplyLine(b"%output %3 not output".to_vec()),
             Owned::ReplyLine(b"%end 1700000001 99 1".to_vec()),
@@ -293,6 +312,7 @@ mod tests {
             b"%output %3 bad\\9999\n",
             b"%output %3 bad\\777\n",
             b"%output 3 no percent\n",
+            b"%extended-output %3 120 no separator\n",
             b"%begin 1700000000 x 0\n",
             b"%begin 1700000000 12\n",
             b"stray text\n",

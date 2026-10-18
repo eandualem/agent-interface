@@ -5316,6 +5316,7 @@ name = "tmux-workspaces-tmux"
 version = "0.0.0"
 dependencies = [
  "thiserror 2.0.21",
+ "tmux-workspaces-test-support",
 ]
 
 [[package]]
