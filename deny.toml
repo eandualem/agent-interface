@@ -12,16 +12,38 @@ all-features = true
 unmaintained = "all"
 unsound = "all"
 yanked = "deny"
+# Unmaintained crates with no known vulnerability, in GPUI's graph
+# (decision record 0019).
+ignore = [
+    { id = "RUSTSEC-2024-0436", reason = "paste is unmaintained; used by GPUI through metal and image" },
+    { id = "RUSTSEC-2026-0206", reason = "rustybuzz is unmaintained; used by GPUI through usvg" },
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser is unmaintained; used by gpui-pre and usvg" },
+    { id = "RUSTSEC-2026-0370", reason = "zvariant is unmaintained; used by GPUI's Linux backend through accesskit_unix and zbus 5" },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names is unmaintained; used by GPUI's Linux backend through accesskit_unix and zbus 5" },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive is unmaintained; used by GPUI's Linux backend through accesskit_unix and zbus 5" },
+]
 
 [licenses]
 # Reviewed licences only. Add one here only with the dependency's decision
 # record, and keep any exception narrow, with its reason.
 allow = [
     "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "CC0-1.0",
+    "ISC",
     "MIT",
     "Unicode-3.0",
+    "Zlib",
 ]
 confidence-threshold = 0.9
+# MPL-2.0 for these crates only, unmodified, as GPUI uses them
+# (decision record 0019).
+exceptions = [
+    { crate = "cbindgen", allow = ["MPL-2.0"] },
+    { crate = "dwrote", allow = ["MPL-2.0"] },
+    { crate = "option-ext", allow = ["MPL-2.0"] },
+]
 
 [bans]
 multiple-versions = "warn"

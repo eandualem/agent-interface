@@ -28,6 +28,10 @@ You need:
   dependencies. To build without a network, see
   [Building offline](#building-offline).
 - **tmux 3.3 or newer** for the tests that start tmux.
+- **On Linux, the libraries the UI framework builds against**, for its
+  Wayland and X11 backends. On Debian and Ubuntu:
+  `sudo apt install pkg-config libfontconfig-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libx11-xcb-dev`.
+  On macOS the Command Line Tools are enough; Xcode is not needed.
 
 Check the versions with `zig version` and `tmux -V`.
 
