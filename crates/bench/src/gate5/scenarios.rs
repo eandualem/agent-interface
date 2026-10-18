@@ -424,8 +424,14 @@ fn rebuild_paused(
     let replies_from = connection.mark();
     connection.send(&line)?;
     // The pane's output after its %pause belongs after the rebuild.
-    let (rebuilt, next) = candidate::recover(connection, at + 1, replies_from, recovery)?
-        .ok_or("a command failed")?;
+    let (rebuilt, next) = candidate::recover(
+        connection,
+        at + 1,
+        replies_from,
+        recovery,
+        Instant::now() + TIMEOUT,
+    )?
+    .ok_or("a command failed")?;
     let candidate = Candidate::rebuilt(&rebuilt.snapshot, &rebuilt.output, next)?;
     Ok((rebuilt.snapshot, candidate))
 }
@@ -661,7 +667,7 @@ fn pause_and_rebuild(
         connection.stall(false);
     }
     sent?;
-    candidate::recover(connection, from, from, recovery)?
+    candidate::recover(connection, from, from, recovery, Instant::now() + TIMEOUT)?
         .ok_or_else(|| "a command of the rebuild failed".to_owned())
 }
 
@@ -867,6 +873,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn recovery_deadline_is_not_renewed_by_each_reply() {
+        let session = Session::start((3, 4)).unwrap();
+        let pane = session.open(ONE, "sleep 1000").unwrap();
+        let (connection, _) = first_attach(&session, &[pane]).unwrap();
+        session
+            .run(&[
+                "set-hook",
+                "-g",
+                "after-refresh-client",
+                "run-shell 'sleep 0.2'",
+            ])
+            .unwrap();
+        let from = connection.mark();
+        let (recovery, pause) = Recovery::start(pane);
+        let deadline = Instant::now() + Duration::from_millis(50);
+        connection.send(&pause).unwrap();
+        let result = candidate::recover(&connection, from, from, recovery, deadline);
+        assert!(result.unwrap_err().contains("timed out"));
+    }
+
+    #[test]
     fn off_grid_cursor_keeps_its_state_until_output_can_be_streamed() {
         for width in [36, 40] {
             for name in [
@@ -874,6 +901,7 @@ mod tests {
                 "offgrid-backspace",
                 "offgrid-left",
                 "offgrid-nowrap",
+                "nowrap-margin",
             ] {
                 let fixture = super::super::fixtures::FIXTURES
                     .iter()
@@ -900,7 +928,8 @@ mod tests {
                     .unwrap();
                 quiet(&reference, Some(&connection)).unwrap();
                 let (rebuilt, next) = pause_and_rebuild(&connection, pane, None).unwrap();
-                assert_eq!(rebuilt.snapshot.state.cursor, (40, 5));
+                let column = if name == "nowrap-margin" { 38 } else { 40 };
+                assert_eq!(rebuilt.snapshot.state.cursor, (column, 5));
                 let mut candidate =
                     Candidate::rebuilt(&rebuilt.snapshot, &rebuilt.output, next).unwrap();
                 for phase in ["rebuilt", "more", "input"] {
@@ -925,7 +954,7 @@ mod tests {
                         .unwrap();
                     assert!(result.matches(), "{name} {phase}: {result:?}");
                     if phase == "rebuilt" || (phase == "more" && name == "offgrid-nowrap") {
-                        assert_eq!(candidate.cursor().unwrap(), (40, 5));
+                        assert_eq!(candidate.cursor().unwrap(), (column, 5));
                         assert!(candidate.cursor_enabled().unwrap());
                     }
                 }

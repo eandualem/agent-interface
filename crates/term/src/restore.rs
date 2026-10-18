@@ -485,7 +485,7 @@ mod tests {
         assert!(Terminal::restored(&restore, 0).is_err());
         restore.cursor = (36, 5);
         let terminal = Terminal::restored(&restore, 0).unwrap();
-        assert_eq!(terminal.logical_cursor().unwrap(), (36, 5));
+        assert!(terminal.cursor_pending_wrap().unwrap());
         assert_eq!(terminal.cursor().unwrap(), (35, 5));
         assert!(terminal.cursor_enabled().unwrap());
     }

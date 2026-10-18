@@ -115,12 +115,11 @@ impl Terminal {
         Ok((column, row))
     }
 
-    /// Returns the logical cursor, including the column just beyond the
-    /// right margin when the next character will wrap.
-    pub fn logical_cursor(&self) -> Result<(u16, u16), Error> {
-        let (column, row) = self.cursor()?;
-        let pending = self.engine.is_cursor_pending_wrap().map_err(Error)?;
-        Ok((column + u16::from(pending), row))
+    /// Whether the engine has reached its right margin. It can set this
+    /// flag even with wrapping disabled, so it does not by itself establish
+    /// tmux's logical cursor column.
+    pub fn cursor_pending_wrap(&self) -> Result<bool, Error> {
+        self.engine.is_cursor_pending_wrap().map_err(Error)
     }
 
     /// Whether the pane has enabled its cursor, independently of whether
