@@ -129,6 +129,7 @@ described in [0001](decisions/0001-record-architecture-decisions.md).
 | [0018. Milestone-0 benchmark method, revised](decisions/0018-milestone-0-benchmark-method-revised.md) | Accepted |
 | [0019. Benchmark window](decisions/0019-benchmark-window.md) | Accepted |
 | [0020. Benchmark launch context](decisions/0020-benchmark-launch-context.md) | Accepted |
+| [0021. Pane state recovery and the control-mode fidelity harness](decisions/0021-pane-state-recovery.md) | Proposed |
 
 ## Further reading
 
