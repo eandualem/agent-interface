@@ -14,6 +14,7 @@
 #![forbid(unsafe_code)]
 
 mod controls;
+mod del;
 mod rename;
 mod screen;
 
@@ -39,6 +40,7 @@ pub struct Terminal {
     /// The text of the cell being copied: the engine overwrites the buffer it
     /// is given.
     grapheme: String,
+    del: del::Del,
     rename: rename::Rename,
 }
 
@@ -69,6 +71,7 @@ impl Terminal {
             rows: RowIterator::new().map_err(Error)?,
             cells: CellIterator::new().map_err(Error)?,
             grapheme: String::new(),
+            del: del::Del::default(),
             rename: rename::Rename::default(),
         })
     }
@@ -80,8 +83,11 @@ impl Terminal {
     /// control bytes tmux ignores.
     pub fn write(&mut self, bytes: &[u8]) {
         let engine = &mut self.engine;
-        self.rename.filter(bytes, |part| {
-            controls::filter(part, |part| engine.vt_write(part));
+        let rename = &mut self.rename;
+        self.del.filter(bytes, |part| {
+            rename.filter(part, |part| {
+                controls::filter(part, |part| engine.vt_write(part));
+            });
         });
     }
 
