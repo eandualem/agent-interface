@@ -14,6 +14,7 @@ mod engine;
 mod engines;
 mod environment;
 mod gate1;
+mod gate5;
 #[cfg(target_os = "macos")]
 mod macos;
 mod memory;
@@ -68,6 +69,17 @@ usage: tmux-workspaces-bench gate2|gate3|gate4 --out DIR [options]   (macOS)
   than the gate needs is an exploratory subset: it can fail the gate but not
   pass it
 
+usage: tmux-workspaces-bench gate5 --out DIR [options]
+  control-mode fidelity of decision record 0021, on the tmux first on PATH
+  --scenarios LIST    attach,pause,split-attach,split-pause,resize,flow,
+                      own-pause,exit,hooks (all)
+  --fixtures LIST     the fixtures to run (all; see crates/bench/src/gate5/fixtures.rs)
+  --flow-seconds S    how long the flow scenario's pane counts (6)
+  --pauses N          stalls in the own-pause scenario (20)
+
+usage: tmux-workspaces-bench count [--seconds S]
+  prints consecutive numbers in colour for gate 5's flow scenarios (5)
+
 usage: tmux-workspaces-bench fire|scroll-test [--seconds S] [--seed N] [--ready FILE]
   output the display gates run in the measured pane; --ready creates FILE
   once the first output is written; fire also takes --cols N --rows N (the
@@ -102,6 +114,8 @@ fn main() -> ExitCode {
         Some("replay") => {
             Options::parse(&args[1..]).and_then(|options| gate1::replay_child(&options))
         }
+        Some("gate5") => Options::parse(&args[1..]).and_then(|options| gate5::run(&options)),
+        Some("count") => Options::parse(&args[1..]).and_then(|options| producers::count(&options)),
         Some("fire") => Options::parse(&args[1..]).and_then(|options| producers::fire(&options)),
         Some("scroll-test") => {
             Options::parse(&args[1..]).and_then(|options| producers::scroll_test(&options))
