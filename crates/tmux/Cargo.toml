@@ -12,3 +12,6 @@ workspace = true
 
 [dependencies]
 thiserror.workspace = true
+
+[dev-dependencies]
+tmux-workspaces-test-support = { path = "../test-support" }

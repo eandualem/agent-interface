@@ -7,5 +7,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod capture;
 pub mod command;
 pub mod control;
+pub mod recovery;

@@ -64,7 +64,7 @@ The repository is a Cargo workspace. Each crate above is a package under
 | `rust-toolchain.toml` | The pinned Rust toolchain. |
 | `deny.toml` | The allowed licences, the advisory and source checks, and the dependency direction between the crates. |
 | `crates/core`, `crates/store`, `crates/roster` | Crate documentation stating each crate's responsibility; no code yet. |
-| `crates/tmux` | `control`, the decoder for a control-mode client's output: pane output with tmux's escaping removed, command replies and notifications. |
+| `crates/tmux` | `control`, the decoder for a control-mode client's output: pane output with tmux's escaping removed, command replies and notifications. `capture`, which reads a pane's rows and pending parser bytes from `capture-pane`, and `recovery`, the commands and reply handling that rebuild a pane's state. |
 | `crates/term` | `Terminal`, the wrapper around the terminal engine: it creates a terminal with grapheme clustering on, feeds it bytes, and copies the visible screen into a `Screen`, owned display data that any thread can hold. |
 | `crates/app` | The `tmux-workspaces` binary, which only prints its version, and a library with the terminal path: `panes` keeps each pane's terminal state on a worker thread and hands over owned display data, and `view` draws it with GPUI. The `bench-window` example draws one tmux window with them for the benchmarks; there is no app window yet. |
 | `crates/test-support` | Development-only fixtures. `TmuxServer` starts the private tmux servers that tests use, and control-mode clients on them. |
