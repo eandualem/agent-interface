@@ -18,7 +18,9 @@ The [benchmark guide](README.md#running-gate-5) gives the build and run commands
 and its explicit allowances for state tmux cannot export.
 
 The binary was built from clean committed revision `1e475fd11247faae4672948f16c0742214864a94`.
-All runs used that same binary. The following changes only record these results.
+All runs used that same binary. A later Linux lint fix passes the window size
+to `openpty` through a raw pointer; it passes the same pointer on macOS and
+does not change the measured behaviour.
 
 | Item | Value |
 | --- | --- |
