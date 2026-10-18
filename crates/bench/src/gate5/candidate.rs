@@ -5,6 +5,8 @@
 //! restore lives here, as the app's will (decision record 0006: neither crate
 //! depends on the other).
 
+use std::time::Instant;
+
 use tmux_workspaces_term::restore::{self, Alternate, Restore};
 use tmux_workspaces_term::{Attributes, Color, Style, Terminal, Underline};
 use tmux_workspaces_tmux::capture;
@@ -25,8 +27,17 @@ pub struct Candidate {
     pane: PaneId,
     /// The index of the connection's next event to apply.
     next: usize,
-    /// Every byte written to the terminal after the rebuild, in order.
+    /// Every delivered byte after the original rebuild, in order.
     pub applied: Vec<u8>,
+    /// The latest snapshot, retained for resize diagnostics.
+    pub seed: Snapshot,
+    /// Bytes fed after that snapshot, retained for exact replay.
+    pub replayed: Vec<u8>,
+    // The engine cannot express an off-grid column, and its pending-wrap
+    // transitions differ from tmux's. Keep a right-margin snapshot as the
+    // authoritative state until a new capture permits streaming again.
+    captured: bool,
+    needs_capture: bool,
 }
 
 impl Candidate {
@@ -34,16 +45,39 @@ impl Candidate {
     /// after the snapshot, and takes later output from the connection's
     /// event `next` on.
     pub fn rebuilt(snapshot: &Snapshot, output: &[u8], next: usize) -> Result<Self, String> {
-        let restore = restore(snapshot);
+        let mut restore = restore(snapshot);
+        let captured = restore.cursor.0 >= restore.width;
+        if captured {
+            restore.cursor = (0, 0);
+            restore.cursor_visible = false;
+            restore.pending.clear();
+        }
         let mut terminal =
             Terminal::restored(&restore, SCROLLBACK).map_err(|error| error.to_string())?;
-        terminal.write(output);
+        if !captured {
+            terminal.write(output);
+        }
+        let needs_capture = if captured {
+            !output.is_empty()
+        } else {
+            terminal
+                .cursor_pending_wrap()
+                .map_err(|error| error.to_string())?
+        };
         Ok(Self {
             terminal,
             size: (restore.width, restore.height),
             pane: snapshot.pane,
             next,
             applied: output.to_vec(),
+            seed: snapshot.clone(),
+            replayed: if captured {
+                Vec::new()
+            } else {
+                output.to_vec()
+            },
+            captured,
+            needs_capture,
         })
     }
 
@@ -53,16 +87,79 @@ impl Candidate {
     }
 
     /// Applies the pane's output that has arrived since the last call.
-    pub fn catch_up(&mut self, connection: &Connection) {
-        let events = connection.events_from(self.next);
-        self.next += events.len();
-        for event in events {
-            if let Event::Output(pane, data) = event
-                && pane == self.pane
-            {
-                self.terminal.write(&data);
-                self.applied.extend_from_slice(&data);
+    pub fn catch_up(&mut self, connection: &Connection) -> Result<(), String> {
+        let deadline = Instant::now() + TIMEOUT;
+        loop {
+            let events = connection.events_from(self.next);
+            self.next += events.len();
+            for event in events {
+                if let Event::Output(pane, data) = event
+                    && pane == self.pane
+                {
+                    if self.captured || self.needs_capture {
+                        self.needs_capture |= !data.is_empty();
+                    } else {
+                        self.terminal.write(&data);
+                        self.replayed.extend_from_slice(&data);
+                        self.needs_capture = self
+                            .terminal
+                            .cursor_pending_wrap()
+                            .map_err(|error| error.to_string())?;
+                    }
+                    self.applied.extend_from_slice(&data);
+                }
             }
+            if !self.needs_capture {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err("output did not settle during margin cursor recovery".to_owned());
+            }
+            let from = connection.mark();
+            let (recovery, pause) = Recovery::start(self.pane);
+            connection.send(&pause)?;
+            let (rebuilt, next) = recover(connection, from, from, recovery, deadline)?
+                .ok_or("margin cursor recovery failed")?;
+            // Keep the delivered-output audit continuous across the new
+            // snapshot. Its boundary decides which bytes the new terminal
+            // receives; this ledger never feeds the engine itself.
+            for event in connection
+                .events_from(self.next)
+                .into_iter()
+                .take(next - self.next)
+            {
+                if let Event::Output(pane, data) = event
+                    && pane == self.pane
+                {
+                    self.applied.extend_from_slice(&data);
+                }
+            }
+            let mut candidate = Self::rebuilt(&rebuilt.snapshot, &rebuilt.output, next)?;
+            candidate.applied = std::mem::take(&mut self.applied);
+            *self = candidate;
+        }
+    }
+
+    /// The pane's logical cursor, not the ordinary client's drawing position.
+    pub fn cursor(&self) -> Result<(u16, u16), String> {
+        if self.needs_capture {
+            return Err("the margin cursor needs a new snapshot".to_owned());
+        }
+        if self.captured {
+            Ok(self.seed.state.cursor)
+        } else {
+            self.terminal.cursor().map_err(|error| error.to_string())
+        }
+    }
+
+    /// The pane's cursor mode, including while its cursor is off-grid.
+    pub fn cursor_enabled(&self) -> Result<bool, String> {
+        if self.captured {
+            Ok(self.seed.state.cursor_visible)
+        } else {
+            self.terminal
+                .cursor_enabled()
+                .map_err(|error| error.to_string())
         }
     }
 }
@@ -76,11 +173,19 @@ pub fn recover(
     output_from: usize,
     replies_from: usize,
     mut recovery: Recovery,
+    deadline: Instant,
 ) -> Result<Option<(Rebuilt, usize)>, String> {
     let pane = recovery.pane();
     let mut index = output_from.min(replies_from);
     loop {
-        let event = connection.next(&mut index, TIMEOUT)?;
+        let wait = deadline
+            .checked_duration_since(Instant::now())
+            .filter(|wait| !wait.is_zero())
+            .ok_or("timed out recovering the pane")?;
+        let event = connection.next(&mut index, wait)?;
+        if Instant::now() >= deadline {
+            return Err("timed out recovering the pane".to_owned());
+        }
         // `index` is now the index of the event after this one.
         match event {
             Event::Output(from, data) if from == pane && index > output_from => {
@@ -90,7 +195,12 @@ pub fn recover(
                 match recovery.reply(reply).map_err(|error| error.to_string())? {
                     Step::Send(line) => connection.send(&line)?,
                     Step::Wait => {}
-                    Step::Done(rebuilt) => return Ok(Some((rebuilt, index))),
+                    Step::Done(rebuilt) => {
+                        if Instant::now() >= deadline {
+                            return Err("timed out recovering the pane".to_owned());
+                        }
+                        return Ok(Some((rebuilt, index)));
+                    }
                     Step::Failed => return Ok(None),
                 }
             }

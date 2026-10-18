@@ -1,0 +1,187 @@
+{
+  "revision": "771fa92e7eeb9e05b4da930e2bbaa904501a8d87",
+  "sha256": "d3208475487905751133603adb2091d3d14bef4480f5cceff0ff3300913e86db",
+  "concurrency": 3,
+  "runs": [
+    {
+      "version": "3.3a",
+      "run": 1,
+      "started": 1792350411.450282,
+      "load_before": "{ 2.11 3.25 3.48 }",
+      "ended": 1792350681.544905,
+      "exit_code": 0,
+      "load_after": "{ 4.71 3.93 3.70 }",
+      "result": "**Passed.** Of 249 comparisons, 216 match, 33 differ as a limit of decision record 0021 explains and 0 differ unexplained. 0 fixture runs failed to complete. 0 of 31 checks failed."
+    },
+    {
+      "version": "3.3a",
+      "run": 2,
+      "started": 1792350681.5484328,
+      "load_before": "{ 4.71 3.93 3.70 }",
+      "ended": 1792350954.797334,
+      "exit_code": 0,
+      "load_after": "{ 5.62 4.55 3.99 }",
+      "result": "**Passed.** Of 249 comparisons, 216 match, 33 differ as a limit of decision record 0021 explains and 0 differ unexplained. 0 fixture runs failed to complete. 0 of 31 checks failed."
+    },
+    {
+      "version": "3.3a",
+      "run": 3,
+      "started": 1792350954.8007271,
+      "load_before": "{ 5.62 4.55 3.99 }",
+      "ended": 1792351228.4169002,
+      "exit_code": 0,
+      "load_after": "{ 4.46 4.43 4.07 }",
+      "result": "**Passed.** Of 249 comparisons, 216 match, 33 differ as a limit of decision record 0021 explains and 0 differ unexplained. 0 fixture runs failed to complete. 0 of 31 checks failed."
+    },
+    {
+      "version": "3.4",
+      "run": 1,
+      "started": 1792350411.450061,
+      "load_before": "{ 2.11 3.25 3.48 }",
+      "ended": 1792350656.6779468,
+      "exit_code": 0,
+      "load_after": "{ 4.67 3.86 3.67 }",
+      "result": "**Passed.** Of 249 comparisons, 224 match, 25 differ as a limit of decision record 0021 explains and 0 differ unexplained. 0 fixture runs failed to complete. 0 of 32 checks failed."
+    },
+    {
+      "version": "3.4",
+      "run": 2,
+      "started": 1792350656.6871161,
+      "load_before": "{ 4.67 3.86 3.67 }",
+      "ended": 1792350899.246378,
+      "exit_code": 0,
+      "load_after": "{ 5.25 4.27 3.86 }",
+      "result": "**Passed.** Of 249 comparisons, 224 match, 25 differ as a limit of decision record 0021 explains and 0 differ unexplained. 0 fixture runs failed to complete. 0 of 32 checks failed."
+    },
+    {
+      "version": "3.4",
+      "run": 3,
+      "started": 1792350899.254957,
+      "load_before": "{ 5.25 4.27 3.86 }",
+      "ended": 1792351147.2613618,
+      "exit_code": 0,
+      "load_after": "{ 4.77 4.45 4.04 }",
+      "result": "**Passed.** Of 249 comparisons, 224 match, 25 differ as a limit of decision record 0021 explains and 0 differ unexplained. 0 fixture runs failed to complete. 0 of 32 checks failed."
+    },
+    {
+      "version": "3.5a",
+      "run": 1,
+      "started": 1792350411.448817,
+      "load_before": "{ 2.11 3.25 3.48 }",
+      "ended": 1792350674.920465,
+      "exit_code": 0,
+      "load_after": "{ 4.59 3.90 3.69 }",
+      "result": "**Passed.** Of 249 comparisons, 224 match, 25 differ as a limit of decision record 0021 explains and 0 differ unexplained. 0 fixture runs failed to complete. 0 of 31 checks failed."
+    },
+    {
+      "version": "3.5a",
+      "run": 2,
+      "started": 1792350674.9243321,
+      "load_before": "{ 4.59 3.90 3.69 }",
+      "ended": 1792350941.321344,
+      "exit_code": 0,
+      "load_after": "{ 5.17 4.41 3.93 }",
+      "result": "**Passed.** Of 249 comparisons, 224 match, 25 differ as a limit of decision record 0021 explains and 0 differ unexplained. 0 fixture runs failed to complete. 0 of 31 checks failed."
+    },
+    {
+      "version": "3.5a",
+      "run": 3,
+      "started": 1792350941.327779,
+      "load_before": "{ 5.17 4.41 3.93 }",
+      "ended": 1792351205.011759,
+      "exit_code": 0,
+      "load_after": "{ 4.29 4.39 4.05 }",
+      "result": "**Passed.** Of 249 comparisons, 224 match, 25 differ as a limit of decision record 0021 explains and 0 differ unexplained. 0 fixture runs failed to complete. 0 of 31 checks failed."
+    },
+    {
+      "version": "3.6b",
+      "run": 1,
+      "started": 1792351147.269712,
+      "load_before": "{ 4.77 4.45 4.04 }",
+      "ended": 1792351409.808106,
+      "exit_code": 0,
+      "load_after": "{ 5.90 5.09 4.40 }",
+      "result": "**Passed.** Of 249 comparisons, 216 match, 33 differ as a limit of decision record 0021 explains and 0 differ unexplained. 0 fixture runs failed to complete. 0 of 33 checks failed."
+    },
+    {
+      "version": "3.6b",
+      "run": 2,
+      "started": 1792351409.816412,
+      "load_before": "{ 5.90 5.09 4.40 }",
+      "ended": 1792351669.0760388,
+      "exit_code": 0,
+      "load_after": "{ 4.84 5.02 4.57 }",
+      "result": "**Passed.** Of 249 comparisons, 216 match, 33 differ as a limit of decision record 0021 explains and 0 differ unexplained. 0 fixture runs failed to complete. 0 of 31 checks failed."
+    },
+    {
+      "version": "3.6b",
+      "run": 3,
+      "started": 1792351669.085023,
+      "load_before": "{ 4.84 5.02 4.57 }",
+      "ended": 1792351928.313153,
+      "exit_code": 0,
+      "load_after": "{ 5.25 4.61 4.46 }",
+      "result": "**Passed.** Of 249 comparisons, 216 match, 33 differ as a limit of decision record 0021 explains and 0 differ unexplained. 0 fixture runs failed to complete. 0 of 31 checks failed."
+    },
+    {
+      "version": "3.7c",
+      "run": 1,
+      "started": 1792351205.0190022,
+      "load_before": "{ 4.29 4.39 4.05 }",
+      "ended": 1792351449.3811939,
+      "exit_code": 0,
+      "load_after": "{ 5.61 5.11 4.44 }",
+      "result": "**Passed.** Of 249 comparisons, 216 match, 33 differ as a limit of decision record 0021 explains and 0 differ unexplained. 0 fixture runs failed to complete. 0 of 33 checks failed."
+    },
+    {
+      "version": "3.7c",
+      "run": 2,
+      "started": 1792351449.389044,
+      "load_before": "{ 5.61 5.11 4.44 }",
+      "ended": 1792351683.5285828,
+      "exit_code": 0,
+      "load_after": "{ 4.50 4.94 4.55 }",
+      "result": "**Passed.** Of 249 comparisons, 216 match, 33 differ as a limit of decision record 0021 explains and 0 differ unexplained. 0 fixture runs failed to complete. 0 of 33 checks failed."
+    },
+    {
+      "version": "3.7c",
+      "run": 3,
+      "started": 1792351683.53291,
+      "load_before": "{ 4.50 4.94 4.55 }",
+      "ended": 1792351924.173703,
+      "exit_code": 0,
+      "load_after": "{ 5.36 4.62 4.46 }",
+      "result": "**Passed.** Of 249 comparisons, 216 match, 33 differ as a limit of decision record 0021 explains and 0 differ unexplained. 0 fixture runs failed to complete. 0 of 33 checks failed."
+    },
+    {
+      "version": "3.8",
+      "run": 1,
+      "started": 1792351228.420365,
+      "load_before": "{ 4.46 4.43 4.07 }",
+      "ended": 1792351481.727755,
+      "exit_code": 0,
+      "load_after": "{ 5.25 5.08 4.45 }",
+      "result": "**Passed.** Of 249 comparisons, 216 match, 33 differ as a limit of decision record 0021 explains and 0 differ unexplained. 0 fixture runs failed to complete. 0 of 33 checks failed."
+    },
+    {
+      "version": "3.8",
+      "run": 2,
+      "started": 1792351481.7324412,
+      "load_before": "{ 5.25 5.08 4.45 }",
+      "ended": 1792351732.849865,
+      "exit_code": 0,
+      "load_after": "{ 4.52 4.86 4.53 }",
+      "result": "**Passed.** Of 249 comparisons, 216 match, 33 differ as a limit of decision record 0021 explains and 0 differ unexplained. 0 fixture runs failed to complete. 0 of 32 checks failed."
+    },
+    {
+      "version": "3.8",
+      "run": 3,
+      "started": 1792351732.8614159,
+      "load_before": "{ 4.52 4.86 4.53 }",
+      "ended": 1792351984.815845,
+      "exit_code": 0,
+      "load_after": "{ 4.13 4.41 4.39 }",
+      "result": "**Passed.** Of 249 comparisons, 216 match, 33 differ as a limit of decision record 0021 explains and 0 differ unexplained. 0 fixture runs failed to complete. 0 of 32 checks failed."
+    }
+  ]
+}

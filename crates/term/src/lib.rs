@@ -115,6 +115,19 @@ impl Terminal {
         Ok((column, row))
     }
 
+    /// Whether the engine has reached its right margin. It can set this
+    /// flag even with wrapping disabled, so it does not by itself establish
+    /// tmux's logical cursor column.
+    pub fn cursor_pending_wrap(&self) -> Result<bool, Error> {
+        self.engine.is_cursor_pending_wrap().map_err(Error)
+    }
+
+    /// Whether the pane has enabled its cursor, independently of whether
+    /// that cursor is currently inside the displayed grid.
+    pub fn cursor_enabled(&self) -> Result<bool, Error> {
+        self.engine.is_cursor_visible().map_err(Error)
+    }
+
     /// Copies the visible screen into `screen`, replacing what it held.
     ///
     /// This updates the engine's render state, then copies every cell, so the

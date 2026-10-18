@@ -126,7 +126,9 @@ tests listed below.
 Follow-up decisions this record leaves open, each to be recorded when its tests
 exist:
 
-1. The recovery command sequence and its fidelity limits.
+1. The recovery command sequence and its fidelity limits: settled by
+   [0021](0021-pane-state-recovery.md), with
+   [gate 5 passing](../benchmarks/gate-5-cursor-recovery.md).
 2. When the app may resize an external session's windows.
 3. Whether hidden windows keep live terminal state or are rebuilt when shown.
 4. How floating panes and tmux 3.8's newer layout format are parsed.

@@ -1,5 +1,8 @@
 # Gate 5: control-mode fidelity
 
+This is the original failed measurement. The [cursor recovery follow-up](gate-5-cursor-recovery.md)
+records the corrected implementation and its passing matrix.
+
 **Result: failed.** Across 3,600 comparisons in 18 full runs, 1
 comparison differed in a way the recovery decision does not explain.
 17 runs passed and 1 failed. The unexplained difference is tracked in
@@ -70,7 +73,7 @@ A separate private-server probe on all six versions entered the alternate
 screen at 40×6, wrote `R` at row 6, column 40, then resized to 36×9 without
 further pane output. Every version kept `cursor_x=40` and `cursor_y=5` after
 the shrink ([probe results](gate-5/resize-cursor-probe.json)). Tmux can therefore
-retain a cursor beyond the new width. Restoration currently treats a column
+retain a cursor beyond the new width. The measured restoration treated a column
 at or beyond the width as pending wrap; tmux's ordinary-client path can move
 its cursor to the origin when the pane cursor is outside the viewport.
 

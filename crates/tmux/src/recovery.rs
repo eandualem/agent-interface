@@ -75,7 +75,9 @@ pub struct PaneState {
     /// saved when the program switched to it; otherwise `None`.
     pub alternate_saved_cursor: Option<(u16, u16)>,
     /// The cursor's column and row, from zero at the top left of the screen.
-    /// A column equal to the width is a cursor waiting to wrap.
+    /// A column equal to the width is a cursor waiting to wrap. Resizing
+    /// the alternate screen can leave it beyond the width; retain that
+    /// value rather than clamping it.
     pub cursor: (u16, u16),
     /// Whether the program shows the cursor.
     pub cursor_visible: bool,

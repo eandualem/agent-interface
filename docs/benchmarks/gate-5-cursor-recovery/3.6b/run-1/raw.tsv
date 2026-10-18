@@ -1,0 +1,283 @@
+scenario	fixture	after	verdict	cells	notes
+attach	styles	rebuild	match	0	
+attach	styles	more	match	0	
+attach	background-erase	rebuild	match	0	
+attach	background-erase	more	match	0	
+attach	wide	rebuild	match	0	
+attach	wide	more	match	0	
+attach	line-drawing	rebuild	match	0	
+attach	line-drawing	more	match	0	
+attach	history	rebuild	match	0	
+attach	history	more	match	0	
+attach	alternate	rebuild	match	0	
+attach	alternate	more	match	0	
+attach	pending-csi	rebuild	match	0	
+attach	pending-csi	more	match	0	
+attach	pending-csi-line-feed	rebuild	match	0	
+attach	pending-csi-line-feed	more	match	0	
+attach	pending-osc	rebuild	match	0	
+attach	pending-osc	more	match	0	
+attach	pending-wrap-backspace	rebuild	match	0	
+attach	pending-wrap-backspace	more	match	0	
+attach	pending-wrap-left	rebuild	match	0	
+attach	pending-wrap-left	more	match	0	
+attach	pending-wrap-nowrap	rebuild	match	0	
+attach	pending-wrap-nowrap	more	match	0	
+attach	pending-wrap	rebuild	match	0	
+attach	pending-wrap	more	match	0	
+attach	wide-pending-wrap	rebuild	match	0	
+attach	wide-pending-wrap	more	match	0	
+attach	origin-no-wrap	rebuild	match	0	
+attach	origin-no-wrap	more	match	0	
+attach	links	rebuild	match	0	
+attach	links	more	match	0	
+attach	link-wrap	rebuild	limit	10	
+attach	link-wrap	more	limit	10	
+attach	tabs	rebuild	match	0	
+attach	tabs	more	match	0	
+attach	tab-moved	rebuild	limit	4	
+attach	tab-moved	more	limit	4	
+attach	underline-colours	rebuild	match	0	
+attach	underline-colours	more	match	0	
+attach	current-style	rebuild	match	0	
+attach	current-style	more	limit	17	
+attach	partial-utf8	rebuild	match	0	
+attach	partial-utf8	more	limit	11	
+attach	saved-cursor	rebuild	match	0	
+attach	saved-cursor	more	limit	21	logical cursor at (7, 1), tmux's at (7, 2); client cursor projected to (7, 1), reference at (7, 2)
+attach	still-line-drawing	rebuild	match	0	
+attach	still-line-drawing	more	limit	2	
+attach	screen-title	rebuild	match	0	
+attach	screen-title	more	match	0	
+attach	screen-title-pending	rebuild	match	0	
+attach	screen-title-pending	more	match	0	
+pause	styles	rebuild	match	0	
+pause	styles	more	match	0	
+pause	background-erase	rebuild	match	0	
+pause	background-erase	more	match	0	
+pause	wide	rebuild	match	0	
+pause	wide	more	match	0	
+pause	line-drawing	rebuild	match	0	
+pause	line-drawing	more	match	0	
+pause	history	rebuild	match	0	
+pause	history	more	match	0	
+pause	alternate	rebuild	match	0	
+pause	alternate	more	match	0	
+pause	pending-csi	rebuild	match	0	
+pause	pending-csi	more	match	0	
+pause	pending-csi-line-feed	rebuild	match	0	
+pause	pending-csi-line-feed	more	match	0	
+pause	pending-osc	rebuild	match	0	
+pause	pending-osc	more	match	0	
+pause	pending-wrap-backspace	rebuild	match	0	
+pause	pending-wrap-backspace	more	match	0	
+pause	pending-wrap-left	rebuild	match	0	
+pause	pending-wrap-left	more	match	0	
+pause	pending-wrap-nowrap	rebuild	match	0	
+pause	pending-wrap-nowrap	more	match	0	
+pause	pending-wrap	rebuild	match	0	
+pause	pending-wrap	more	match	0	
+pause	wide-pending-wrap	rebuild	match	0	
+pause	wide-pending-wrap	more	match	0	
+pause	origin-no-wrap	rebuild	match	0	
+pause	origin-no-wrap	more	match	0	
+pause	links	rebuild	match	0	
+pause	links	more	match	0	
+pause	link-wrap	rebuild	limit	10	
+pause	link-wrap	more	limit	10	
+pause	tabs	rebuild	match	0	
+pause	tabs	more	match	0	
+pause	tab-moved	rebuild	limit	4	
+pause	tab-moved	more	limit	4	
+pause	underline-colours	rebuild	match	0	
+pause	underline-colours	more	match	0	
+pause	current-style	rebuild	match	0	
+pause	current-style	more	limit	17	
+pause	partial-utf8	rebuild	match	0	
+pause	partial-utf8	more	limit	11	
+pause	saved-cursor	rebuild	match	0	
+pause	saved-cursor	more	limit	21	logical cursor at (7, 1), tmux's at (7, 2); client cursor projected to (7, 1), reference at (7, 2)
+pause	still-line-drawing	rebuild	match	0	
+pause	still-line-drawing	more	limit	2	
+pause	screen-title	rebuild	match	0	
+pause	screen-title	more	match	0	
+pause	screen-title-pending	rebuild	match	0	
+pause	screen-title-pending	more	match	0	
+split-attach	styles	rebuild	match	0	
+split-attach	styles	more	match	0	
+split-attach	background-erase	rebuild	match	0	
+split-attach	background-erase	more	match	0	
+split-attach	line-drawing	rebuild	match	0	
+split-attach	line-drawing	more	match	0	
+split-attach	history	rebuild	match	0	
+split-attach	history	more	match	0	
+split-attach	alternate	rebuild	match	0	
+split-attach	alternate	more	match	0	
+split-attach	pending-csi	rebuild	match	0	
+split-attach	pending-csi	more	match	0	
+split-attach	pending-csi-line-feed	rebuild	match	0	
+split-attach	pending-csi-line-feed	more	match	0	
+split-attach	pending-osc	rebuild	match	0	
+split-attach	pending-osc	more	match	0	
+split-attach	pending-wrap-backspace	rebuild	match	0	
+split-attach	pending-wrap-backspace	more	match	0	
+split-attach	pending-wrap-left	rebuild	match	0	
+split-attach	pending-wrap-left	more	match	0	
+split-attach	pending-wrap-nowrap	rebuild	match	0	
+split-attach	pending-wrap-nowrap	more	match	0	
+split-attach	pending-wrap	rebuild	match	0	
+split-attach	pending-wrap	more	match	0	
+split-attach	wide-pending-wrap	rebuild	match	0	
+split-attach	wide-pending-wrap	more	match	0	
+split-attach	origin-no-wrap	rebuild	match	0	
+split-attach	origin-no-wrap	more	match	0	
+split-attach	links	rebuild	match	0	
+split-attach	links	more	match	0	
+split-attach	link-wrap	rebuild	limit	10	
+split-attach	link-wrap	more	limit	10	
+split-attach	tabs	rebuild	match	0	
+split-attach	tabs	more	match	0	
+split-attach	tab-moved	rebuild	limit	4	
+split-attach	tab-moved	more	limit	4	
+split-attach	underline-colours	rebuild	match	0	
+split-attach	underline-colours	more	match	0	
+split-attach	current-style	rebuild	match	0	
+split-attach	current-style	more	limit	17	
+split-attach	partial-utf8	rebuild	match	0	
+split-attach	partial-utf8	more	limit	11	
+split-attach	saved-cursor	rebuild	match	0	
+split-attach	saved-cursor	more	limit	21	logical cursor at (7, 1), tmux's at (7, 2); client cursor projected to (48, 11), reference at (48, 12)
+split-attach	still-line-drawing	rebuild	match	0	
+split-attach	still-line-drawing	more	limit	2	
+split-attach	screen-title	rebuild	match	0	
+split-attach	screen-title	more	match	0	
+split-attach	screen-title-pending	rebuild	match	0	
+split-attach	screen-title-pending	more	match	0	
+split-pause	styles	rebuild	match	0	
+split-pause	styles	more	match	0	
+split-pause	background-erase	rebuild	match	0	
+split-pause	background-erase	more	match	0	
+split-pause	line-drawing	rebuild	match	0	
+split-pause	line-drawing	more	match	0	
+split-pause	history	rebuild	match	0	
+split-pause	history	more	match	0	
+split-pause	alternate	rebuild	match	0	
+split-pause	alternate	more	match	0	
+split-pause	pending-csi	rebuild	match	0	
+split-pause	pending-csi	more	match	0	
+split-pause	pending-csi-line-feed	rebuild	match	0	
+split-pause	pending-csi-line-feed	more	match	0	
+split-pause	pending-osc	rebuild	match	0	
+split-pause	pending-osc	more	match	0	
+split-pause	pending-wrap-backspace	rebuild	match	0	
+split-pause	pending-wrap-backspace	more	match	0	
+split-pause	pending-wrap-left	rebuild	match	0	
+split-pause	pending-wrap-left	more	match	0	
+split-pause	pending-wrap-nowrap	rebuild	match	0	
+split-pause	pending-wrap-nowrap	more	match	0	
+split-pause	pending-wrap	rebuild	match	0	
+split-pause	pending-wrap	more	match	0	
+split-pause	wide-pending-wrap	rebuild	match	0	
+split-pause	wide-pending-wrap	more	match	0	
+split-pause	origin-no-wrap	rebuild	match	0	
+split-pause	origin-no-wrap	more	match	0	
+split-pause	links	rebuild	match	0	
+split-pause	links	more	match	0	
+split-pause	link-wrap	rebuild	limit	10	
+split-pause	link-wrap	more	limit	10	
+split-pause	tabs	rebuild	match	0	
+split-pause	tabs	more	match	0	
+split-pause	tab-moved	rebuild	limit	4	
+split-pause	tab-moved	more	limit	4	
+split-pause	underline-colours	rebuild	match	0	
+split-pause	underline-colours	more	match	0	
+split-pause	current-style	rebuild	match	0	
+split-pause	current-style	more	limit	17	
+split-pause	partial-utf8	rebuild	match	0	
+split-pause	partial-utf8	more	limit	11	
+split-pause	saved-cursor	rebuild	match	0	
+split-pause	saved-cursor	more	limit	21	logical cursor at (7, 1), tmux's at (7, 2); client cursor projected to (48, 11), reference at (48, 12)
+split-pause	still-line-drawing	rebuild	match	0	
+split-pause	still-line-drawing	more	limit	2	
+split-pause	screen-title	rebuild	match	0	
+split-pause	screen-title	more	match	0	
+split-pause	screen-title-pending	rebuild	match	0	
+split-pause	screen-title-pending	more	match	0	
+resize	reflow	rebuild-30x8	match	0	
+resize	reflow	rebuild-50x10	match	0	
+resize	reflow	rebuild-40x6	match	0	
+resize	reflow	rebuild-36x9	match	0	
+resize	reflow	more	match	0	
+resize	alternate-resize	rebuild-30x8	match	0	
+resize	alternate-resize	rebuild-50x10	match	0	
+resize	alternate-resize	rebuild-40x6	match	0	
+resize	alternate-resize	rebuild-36x9	match	0	
+resize	alternate-resize	more	limit	36	
+resize	nowrap-margin	rebuild-30x8	match	0	
+resize	nowrap-margin	rebuild-50x10	match	0	
+resize	nowrap-margin	rebuild-40x6	match	0	
+resize	nowrap-margin	rebuild-36x9	match	0	
+resize	nowrap-margin	more	match	0	
+resize	offgrid-print	rebuild-30x8	match	0	
+resize	offgrid-print	rebuild-50x10	match	0	
+resize	offgrid-print	rebuild-40x6	match	0	
+resize	offgrid-print	rebuild-36x9	match	0	
+resize	offgrid-print	more	match	0	
+resize	offgrid-backspace	rebuild-30x8	match	0	
+resize	offgrid-backspace	rebuild-50x10	match	0	
+resize	offgrid-backspace	rebuild-40x6	match	0	
+resize	offgrid-backspace	rebuild-36x9	match	0	
+resize	offgrid-backspace	more	match	0	
+resize	offgrid-left	rebuild-30x8	match	0	
+resize	offgrid-left	rebuild-50x10	match	0	
+resize	offgrid-left	rebuild-40x6	match	0	
+resize	offgrid-left	rebuild-36x9	match	0	
+resize	offgrid-left	more	match	0	
+resize	offgrid-nowrap	rebuild-30x8	match	0	
+resize	offgrid-nowrap	rebuild-50x10	match	0	
+resize	offgrid-nowrap	rebuild-40x6	match	0	
+resize	offgrid-nowrap	rebuild-36x9	match	0	
+resize	offgrid-nowrap	more	match	0	
+resize	redraw	rebuild-36x9	match	0	
+resize	redraw	more	match	0	
+resize	stream	rebuild-36x9	match	0	
+resize	stream	more	match	0	
+flow	count	rebuild	match	0	
+flow	count	more	match	0	
+own-pause	count	rebuild	match	0	
+own-pause	count	more	match	0	
+exit	remaining pane	rebuild	match	0	
+exit	remaining pane	more	match	0	
+flow	rebuild 1 continues the count	-	pass	-	
+flow	rebuild 2 continues the count	-	pass	-	
+flow	rebuild 3 continues the count	-	pass	-	
+flow	rebuild 4 continues the count	-	pass	-	
+flow	rebuild 5 continues the count	-	pass	-	
+flow	rebuild 6 continues the count	-	pass	-	
+flow	rebuild 7 continues the count	-	pass	-	
+flow	rebuild 8 continues the count	-	pass	-	
+own-pause	rebuild after pause 1 continues the count	-	pass	-	
+own-pause	rebuild after pause 2 continues the count	-	pass	-	
+own-pause	rebuild after pause 3 continues the count	-	pass	-	
+own-pause	rebuild after pause 4 continues the count	-	pass	-	
+own-pause	rebuild after pause 5 continues the count	-	pass	-	
+own-pause	rebuild after pause 6 continues the count	-	pass	-	
+own-pause	rebuild after pause 7 continues the count	-	pass	-	
+own-pause	rebuild after pause 8 continues the count	-	pass	-	
+own-pause	rebuild after pause 9 continues the count	-	pass	-	
+own-pause	rebuild after pause 10 continues the count	-	pass	-	
+own-pause	rebuild after pause 11 continues the count	-	pass	-	
+own-pause	rebuild after pause 12 continues the count	-	pass	-	
+own-pause	rebuild after pause 13 continues the count	-	pass	-	
+own-pause	rebuild after pause 14 continues the count	-	pass	-	
+own-pause	rebuild after pause 15 continues the count	-	pass	-	
+own-pause	rebuild after pause 16 continues the count	-	pass	-	
+own-pause	rebuild after pause 17 continues the count	-	pass	-	
+own-pause	rebuild after pause 18 continues the count	-	pass	-	
+own-pause	rebuild after pause 19 continues the count	-	pass	-	
+own-pause	rebuild after pause 20 continues the count	-	pass	-	
+exit	a pane that exits after its pause fails the rebuild	-	pass	-	
+exit	a pane that exits during a first attach fails the line, and a second line rebuilds the rest	-	pass	-	
+hooks	no hooks: not reported	-	pass	-	
+hooks	a session hook on display-message is reported	-	pass	-	
+hooks	a global hook on capture-pane is reported	-	pass	-	
