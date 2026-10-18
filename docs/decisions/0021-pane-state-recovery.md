@@ -219,6 +219,13 @@ output. Already captured output is not replayed. No output means no extra
 capture. Failure to recover is reported; it is not an exact match. The
 harness bounds repeated attempts with its recovery timeout.
 
+Streaming output can also leave the engine's pending-wrap flag set. That
+flag is ambiguous when wrapping is disabled: tmux may still hold the last
+in-grid column. Before exposing such state, the caller captures again and
+uses tmux's actual cursor instead of inferring an extra column from the
+engine flag. The recovery deadline is shared by all replies and retries;
+receiving another event does not extend it.
+
 This is a recovery rule, demonstrated by the harness's candidate,
 not an extra terminal interpreter. `Terminal::restored` rejects a cursor
 beyond the width instead of silently converting it to pending wrap. No new

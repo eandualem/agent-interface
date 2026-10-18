@@ -409,6 +409,13 @@ pub const FIXTURES: &[Fixture] = &[
         )],
     },
     Fixture {
+        name: "nowrap-margin",
+        draw: r"printf '\033[?1049h\033[?7l\033[6;39H'",
+        more: r"printf 'AB'",
+        runs: Runs::Resize,
+        expected: &[],
+    },
+    Fixture {
         name: "offgrid-print",
         draw: r"printf '\033[?1049h\033[6;40HR'",
         more: r"printf 'x'",
