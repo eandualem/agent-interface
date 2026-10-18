@@ -26,7 +26,9 @@ pub struct Restore {
     /// program switched to it; otherwise `None`.
     pub alternate: Option<Alternate>,
     /// The cursor's column and row, from zero at the top left of the screen.
-    /// A column equal to the width is a cursor waiting to wrap.
+    /// A column equal to the width is a cursor waiting to wrap. A column
+    /// beyond it can survive a tmux resize and cannot be installed in the
+    /// engine; the caller must retain that snapshot until it can rebuild.
     pub cursor: (u16, u16),
     /// Whether the program shows the cursor.
     pub cursor_visible: bool,
@@ -138,7 +140,14 @@ impl Terminal {
     /// primary screen's cursor, as tmux keeps it on leaving. The other modes
     /// come last: with wrapping off, writing the row of a cursor waiting to
     /// wrap again would join a combining character to the wrong cell.
+    ///
+    /// A cursor beyond the width is rejected: it is not ordinary pending
+    /// wrap. Retain that snapshot and capture again after further pane
+    /// output instead of discarding its off-grid column.
     pub fn restored(restore: &Restore, scrollback: usize) -> Result<Self, Error> {
+        if restore.cursor.0 > restore.width {
+            return Err(Error(libghostty_vt::Error::InvalidValue));
+        }
         let mut terminal = Self::new(restore.width, restore.height, scrollback)?;
         let mut out = Writer {
             terminal: &mut terminal,
@@ -467,6 +476,18 @@ mod tests {
                 line.trim_end().to_owned()
             })
             .collect()
+    }
+
+    #[test]
+    fn off_grid_is_not_silently_restored_as_pending_wrap() {
+        let mut restore = pane(36, 9, &[""]);
+        restore.cursor = (40, 5);
+        assert!(Terminal::restored(&restore, 0).is_err());
+        restore.cursor = (36, 5);
+        let terminal = Terminal::restored(&restore, 0).unwrap();
+        assert!(terminal.cursor_pending_wrap().unwrap());
+        assert_eq!(terminal.cursor().unwrap(), (35, 5));
+        assert!(terminal.cursor_enabled().unwrap());
     }
 
     #[test]

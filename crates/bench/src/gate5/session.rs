@@ -56,6 +56,7 @@ impl Layout {
 struct PaneInfo {
     origin: (u16, u16),
     size: (u16, u16),
+    cursor: (u16, u16),
     cursor_visible: bool,
     modes: Modes,
 }
@@ -253,7 +254,7 @@ exec sleep 1000
         connection: &Connection,
         rules: Rules,
     ) -> Result<Comparison, String> {
-        candidate.catch_up(connection);
+        candidate.catch_up(connection)?;
         let info = self.pane(candidate.pane())?;
         let mut terminal = Terminal::new(size.0, size.1, 0).map_err(|error| error.to_string())?;
         terminal.write(&reference.bytes_from(from));
@@ -264,20 +265,29 @@ exec sleep 1000
             cells: compare::cells(&theirs, info.origin, &ours, rules),
             ..Comparison::default()
         };
-        let cursor = (
-            i32::from(theirs.cursor.col) - i32::from(info.origin.0),
-            i32::from(theirs.cursor.row) - i32::from(info.origin.1),
-        );
-        let our_cursor = (i32::from(ours.cursor.col), i32::from(ours.cursor.row));
-        if cursor != our_cursor {
-            comparison.cursor = Some(format!(
-                "cursor at {our_cursor:?}, the reference's at {cursor:?}"
+        let logical = candidate.cursor()?;
+        let enabled = candidate.cursor_enabled()?;
+        let presented = presentation(logical, info.origin, size);
+        let mut cursor_differences = Vec::new();
+        if logical != info.cursor {
+            cursor_differences.push(format!(
+                "logical cursor at {logical:?}, tmux's at {:?}",
+                info.cursor
             ));
         }
-        if ours.cursor.visible != info.cursor_visible {
+        if presented != (theirs.cursor.col, theirs.cursor.row) {
+            cursor_differences.push(format!(
+                "client cursor projected to ({}, {}), reference at ({}, {})",
+                presented.0, presented.1, theirs.cursor.col, theirs.cursor.row
+            ));
+        }
+        if !cursor_differences.is_empty() {
+            comparison.cursor = Some(cursor_differences.join("; "));
+        }
+        if enabled != info.cursor_visible {
             comparison.notes.push(format!(
                 "cursor visible {}, tmux's cursor_flag {}",
-                ours.cursor.visible, info.cursor_visible
+                enabled, info.cursor_visible
             ));
         }
         if candidate.size != info.size || ours.size() != info.size {
@@ -307,7 +317,7 @@ exec sleep 1000
     /// Reads what tmux reports about `pane` in one command, which cannot
     /// redraw any client.
     fn pane(&self, pane: PaneId) -> Result<PaneInfo, String> {
-        const FORMAT: &str = "#{pane_left} #{pane_top} #{pane_width} #{pane_height} #{cursor_flag} #{keypad_cursor_flag} #{keypad_flag} #{insert_flag} #{wrap_flag} #{origin_flag} #{mouse_standard_flag} #{mouse_button_flag} #{mouse_all_flag} #{mouse_utf8_flag} #{mouse_sgr_flag}|#{bracket_paste_flag}|#{pane_private_modes}";
+        const FORMAT: &str = "#{pane_left} #{pane_top} #{pane_width} #{pane_height} #{cursor_x} #{cursor_y} #{cursor_flag} #{keypad_cursor_flag} #{keypad_flag} #{insert_flag} #{wrap_flag} #{origin_flag} #{mouse_standard_flag} #{mouse_button_flag} #{mouse_all_flag} #{mouse_utf8_flag} #{mouse_sgr_flag}|#{bracket_paste_flag}|#{pane_private_modes}";
         let target = format!("%{}", pane.0);
         let reply = self.run(&["display-message", "-p", "-t", &target, FORMAT])?;
         let malformed = || format!("unexpected pane formats {reply:?}");
@@ -321,7 +331,7 @@ exec sleep 1000
             .map(str::parse)
             .collect::<Result<_, _>>()
             .map_err(|_| malformed())?;
-        let [left, top, width, height, flags @ ..] = numbers.as_slice() else {
+        let [left, top, width, height, col, row, flags @ ..] = numbers.as_slice() else {
             return Err(malformed());
         };
         let [
@@ -352,6 +362,7 @@ exec sleep 1000
         Ok(PaneInfo {
             origin: (*left, *top),
             size: (*width, *height),
+            cursor: (*col, *row),
             cursor_visible: visible,
             modes: Modes {
                 cursor_keys,
@@ -370,6 +381,21 @@ exec sleep 1000
             },
         })
     }
+}
+
+/// tmux's ordinary-client cursor in this harness's viewport (the full
+/// window, with no status line or overlay). An off-viewport cursor is
+/// parked at home; one at the right edge is clamped to its last column.
+fn presentation(logical: (u16, u16), origin: (u16, u16), window: (u16, u16)) -> (u16, u16) {
+    let col = u32::from(logical.0) + u32::from(origin.0);
+    let row = u32::from(logical.1) + u32::from(origin.1);
+    if col > u32::from(window.0) || row > u32::from(window.1) {
+        return (0, 0);
+    }
+    (
+        col.min(u32::from(window.0 - 1)) as u16,
+        row.min(u32::from(window.1 - 1)) as u16,
+    )
 }
 
 /// The modes a comparison checks, by name. The extended-keys mode is not
