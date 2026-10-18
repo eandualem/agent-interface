@@ -21,9 +21,8 @@
 //! tmux keeps these controls as data, CAN and SUB included, while the engine
 //! gets NUL in their place and ends the string at a CAN or SUB. And at each
 //! of them tmux forgets the character `REP` repeats, while the engine keeps
-//! it. DEL, which the engine also draws and tmux ignores outside strings, is
-//! left alone: it is part of an OSC or APC string for both, so only a filter
-//! that follows their parsers' state could drop it.
+//! it. DEL is handled separately by the stateful `del` filter, which leaves
+//! string payloads unchanged.
 
 const NUL: u8 = 0x00;
 const CAN: u8 = 0x18;
@@ -143,5 +142,13 @@ mod tests {
     fn a_control_ends_a_partly_received_character() {
         let screen = drawn(b"a\xe2\x82\x10\xacb\xe2\x82\x18c");
         assert_eq!(text(&screen, 0), "a\u{fffd}\u{fffd}b\u{fffd}c");
+    }
+
+    #[test]
+    fn ground_del_keeps_the_cursor_wrap_and_partial_utf8() {
+        let screen = drawn(b"a\x7fb\xe2\x82\x7f\xaccdefghi\x7fj");
+        assert_eq!(text(&screen, 0), "ab€cdefghi");
+        assert_eq!(text(&screen, 1), "j");
+        assert_eq!((screen.cursor().col, screen.cursor().row), (1, 1));
     }
 }
