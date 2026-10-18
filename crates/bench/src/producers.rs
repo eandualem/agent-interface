@@ -1,7 +1,7 @@
 //! Output that the display gates run inside the measured terminal
 //! (`docs/decisions/0018-milestone-0-benchmark-method-revised.md`): a fire
 //! animation and a scroll test, each written to standard output as fast as
-//! the terminal accepts it, for a fixed time.
+//! the terminal accepts it, for a fixed time. Gate 5 runs a third, a count.
 //!
 //! Both are seeded, so every run draws the same frames in the same order.
 //! With `--ready FILE`, each creates FILE once its first output has been
@@ -68,6 +68,26 @@ pub fn scroll_test(options: &Options) -> Result<(), String> {
         end,
         Ready::from_options(options),
     )
+}
+
+/// `count`: prints consecutive numbers from 1, one per line and each in one
+/// of eight colours, as fast as the terminal accepts them, for `--seconds`.
+/// Gate 5 checks that a rebuilt pane continues the count with nothing lost or
+/// repeated.
+pub fn count(options: &Options) -> Result<(), String> {
+    let seconds: f64 = options.get("seconds", 5.0)?;
+    let end = Instant::now() + Duration::from_secs_f64(seconds);
+    let stdout = io::stdout();
+    let mut out = io::BufWriter::new(stdout.lock());
+    let mut number: u64 = 1;
+    while Instant::now() < end {
+        for _ in 0..1_000 {
+            writeln!(out, "\x1b[3{}m{number}\x1b[0m", number % 8)
+                .map_err(|error| error.to_string())?;
+            number += 1;
+        }
+    }
+    out.flush().map_err(|error| error.to_string())
 }
 
 /// Writes `lines` to `out` over and over until `end`, creating `ready`'s file

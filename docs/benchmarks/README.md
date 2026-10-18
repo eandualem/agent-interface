@@ -7,7 +7,9 @@ restates [0013](../decisions/0013-milestone-0-benchmark-method.md) with
 instruments for the display gates; gate 1 was measured under 0013, whose
 gate-1 method 0018 keeps unchanged. The harness is described in
 [0017](../decisions/0017-benchmark-harness.md), and the benchmark window of
-gates 2 to 4 in [0019](../decisions/0019-benchmark-window.md).
+gates 2 to 4 in [0019](../decisions/0019-benchmark-window.md). Gate 5's
+harness is part of the pane-state recovery decision,
+[0021](../decisions/0021-pane-state-recovery.md).
 
 | Gate | Results |
 | --- | --- |
@@ -226,3 +228,72 @@ only frames that changed count. Leaving out the first second, the frame rate
 is changed frames per second, and pacing is the share of intervals between
 them no longer than 1.5 times the display's refresh interval. The app is
 compared with plain Ghostty.
+
+## Running gate 5
+
+Gate 5 runs anywhere tmux and the [build prerequisites](../../CONTRIBUTING.md#set-up)
+are installed. It needs no display and opens no window. It runs on the first
+`tmux` on `PATH` and reports for that version, so run it once per supported
+version, putting each version's directory first on `PATH`:
+
+```sh
+LIBGHOSTTY_VT_SYS_OPTIMIZE=ReleaseFast cargo build --release --locked -p tmux-workspaces-bench
+./target/release/tmux-workspaces-bench gate5 --out results/gate5-3.7
+PATH=/path/to/tmux-3.3a:$PATH ./target/release/tmux-workspaces-bench gate5 --out results/gate5-3.3
+```
+
+A run takes a few minutes. It writes `summary.md`, the report, and `raw.tsv`,
+one line per comparison. `--scenarios` and `--fixtures` run a subset, which
+the report marks as incomplete, and `--pauses N` sets how many stalls the own-pause scenario makes (20). As in
+the other gates, every tmux process runs on a new private server and the
+harness never touches another one.
+
+## How gate 5 measures
+
+Gate 5 checks that the app's pane, rebuilt from tmux's state by the recovery
+code of [0021](../decisions/0021-pane-state-recovery.md), looks exactly like
+the same pane in an ordinary tmux client. 0021 describes the harness in
+full; in short:
+
+**Reference and candidate.** In each scenario, an ordinary tmux client runs
+in a pseudo-terminal attached to the session, and its output goes into a
+terminal engine like the app's. The candidate is the app's recovery code on
+a control-mode connection: a first attach, or a pause and capture on a
+connection that is receiving output. Its rebuilt pane then receives the
+pane's later output as the app would.
+
+**Comparison.** After the rebuild, and again after the fixture writes more
+output and receives input sent through the candidate's connection, the
+harness compares every cell of the pane (in the resize scenario, after each
+rebuild at a new size too, once the fixture has stopped drawing): text, width, colours, underline
+style and colour, attributes and hyperlink. Blank cells are equal when they
+look the same. The cursor position comes from the reference, and cursor
+visibility and modes from tmux's own formats; a mode a version does not
+report is listed as not compared.
+
+**Scenarios.** A first attach, in a window with one pane and in a split
+window; a pause forced under backlog, in both windows, while a hidden window
+floods output; flow control, where a pane counts as fast as it can and is
+rebuilt again and again, each rebuild checked to continue the count with
+nothing lost or repeated; tmux's own pause (`pause-after`), counting how
+many stalls ended in a pause, checking the count after each and comparing
+the last rebuild; four resizes by the reference's terminal; a pane that exits between the pause and the
+capture, and one that exits during a first attach; and hooks on the
+recovery's commands, which must be reported.
+
+**Fixtures.** Short shell scripts that draw one kind of state each: styles,
+erases with a background colour, wide characters and emoji, line drawing,
+history, the alternate screen, pending escape and string sequences, a cursor
+waiting to wrap, hyperlinks, tabs, underline colours, and the state 0021
+lists as impossible to restore.
+
+**Pass or fail.** Every difference must be one the fixture expects: a limit
+0021 lists, on the tmux versions where it applies, changing only the cell
+properties, rows and cursor that limit explains. A run passes when it covers
+every scenario and fixture, and every fixture and check completes with no
+unexpected difference and no failed check. tmux pauses a pane on its own only
+now and then (it often slows a stalled client's panes instead), so the
+report says how many stalls ended in a pause; a run with none, like a run of
+a subset, is reported as incomplete, not as a gate result. 0021 is accepted
+when the gate passes on tmux 3.3 and 3.8 and on each version between them
+that behaves differently.
