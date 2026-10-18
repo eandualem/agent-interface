@@ -1,8 +1,8 @@
 # 0021. Pane state recovery and the control-mode fidelity harness
 
-- **Status:** Proposed. Settles follow-up 1 of
-  [0003](0003-control-mode-connection-and-attachment-model.md) once
-  milestone-0 gate 5 passes, as described under **Accept when**.
+- **Status:** Accepted. [Gate 5 passes](../benchmarks/gate-5-cursor-recovery.md)
+  on all six supported versions, settling follow-up 1 of
+  [0003](0003-control-mode-connection-and-attachment-model.md).
 - **Date:** 2026-10-17, updated 2026-10-18
 
 ## Context

@@ -1,5 +1,8 @@
 # Gate 5: control-mode fidelity
 
+This is the original failed measurement. The [cursor recovery follow-up](gate-5-cursor-recovery.md)
+records the corrected implementation and its passing matrix.
+
 **Result: failed.** Across 3,600 comparisons in 18 full runs, 1
 comparison differed in a way the recovery decision does not explain.
 17 runs passed and 1 failed. The unexplained difference is tracked in
