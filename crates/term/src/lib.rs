@@ -13,6 +13,7 @@
 
 #![forbid(unsafe_code)]
 
+mod controls;
 mod rename;
 mod screen;
 
@@ -75,10 +76,13 @@ impl Terminal {
     /// Feeds pane output to the terminal, in the order the pane produced it.
     ///
     /// A window-rename sequence, `ESC k name ESC \`, is dropped as tmux
-    /// drops it, also when it arrives split across writes.
+    /// drops it, also when it arrives split across writes, and so are the
+    /// control bytes tmux ignores.
     pub fn write(&mut self, bytes: &[u8]) {
         let engine = &mut self.engine;
-        self.rename.filter(bytes, |part| engine.vt_write(part));
+        self.rename.filter(bytes, |part| {
+            controls::filter(part, |part| engine.vt_write(part));
+        });
     }
 
     /// Returns the number of lines of history the terminal holds.
