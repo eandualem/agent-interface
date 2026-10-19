@@ -105,12 +105,16 @@ exists, and otherwise stops with how to build it. Without `--vtebench`, gate
 private server and a new window, as the marker probe does. The pane runs a
 script that waits on a FIFO, which the harness opens once the window is
 shown, then runs
-`vtebench -b DIR/benchmarks --dat FILE --silent --min-bytes 8388608 --max-secs 10`,
-writes vtebench's exit status and renames the samples to their final name.
-While it waits for that file, the harness checks once a second that the
-window is still shown, since a hidden window stops drawing; the window is
-not captured. A run that exits unsuccessfully, or leaves a `.dat` file that
-does not parse, stops the gate.
+`vtebench -b benchmarks --dat FILE --silent --min-bytes 8388608 --max-secs 10`
+in the checkout, with its standard error kept in a file, writes vtebench's
+exit status and renames the samples to their final name. The benchmark path
+is relative because some benchmark scripts find their data with an unquoted
+`dirname $0`, which a checkout path with spaces would break. While it waits
+for that file, the harness checks once a second that the window is still
+shown, since a hidden window stops drawing; the window is not captured. A
+run that exits unsuccessfully, writes anything to standard error, or leaves a
+`.dat` file that does not parse stops the gate, since vtebench exits
+successfully even when it cannot write its samples.
 
 **Settings.** Each one below its value makes the run an exploratory subset:
 

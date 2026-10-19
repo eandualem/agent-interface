@@ -61,14 +61,16 @@ const REQUIRED_SECS: u64 = 10;
 const CASE_MARGIN: Duration = Duration::from_secs(60);
 
 /// The pane's script. It waits on the FIFO `$1`, then runs vtebench `$2` on
-/// the benchmarks in `$3`, with `$5` bytes per sample and `$6` seconds per
-/// case, writing its samples to `$4.part`. It then writes vtebench's exit
-/// status to `$4.status` and renames the samples to `$4`, the file the
-/// harness waits for. The part file is made first, so `$4` appears even if
-/// vtebench writes nothing.
+/// the benchmarks of the checkout `$3`, with `$5` bytes per sample and `$6`
+/// seconds per case, writing its samples to `$4.part` and its errors to
+/// `$4.err`. It then writes vtebench's exit status to `$4.status` and renames
+/// the samples to `$4`, the file the harness waits for. The part file is made
+/// first, so `$4` appears even if vtebench writes nothing. vtebench runs in
+/// the checkout with a relative benchmark path because some of its scripts
+/// find their data with an unquoted `dirname $0`.
 const SCRIPT: &str = r#"read -r _ < "$1"
 : > "$4.part"
-"$2" -b "$3" --dat "$4.part" --silent --min-bytes "$5" --max-secs "$6"
+cd "$3" && "$2" -b benchmarks --dat "$4.part" --silent --min-bytes "$5" --max-secs "$6" 2> "$4.err"
 echo "$?" > "$4.status"
 mv "$4.part" "$4"
 exec sleep 86400
@@ -196,12 +198,17 @@ pub fn measure(
         return Err("mkfifo failed".to_owned());
     }
     let dat = work.join(format!("{name}.dat"));
+    // A run of the same name, with a target listed twice, must not leave its
+    // samples for this one.
+    for path in [dat.clone(), beside(&dat, ".status"), beside(&dat, ".err")] {
+        let _ = fs::remove_file(path);
+    }
     let command = format!(
         "exec sh {} {} {} {} {} {} {}",
         targets::shell_word(&script),
         targets::shell_word(&fifo),
         targets::shell_word(&settings.dir.join(BINARY)),
-        targets::shell_word(&settings.dir.join("benchmarks")),
+        targets::shell_word(&settings.dir),
         targets::shell_word(&dat),
         settings.bytes,
         settings.secs
@@ -242,16 +249,28 @@ pub fn measure(
 }
 
 /// Reads a finished run's samples from `dat`, once the pane's script has
-/// renamed them to it, after checking the exit status it wrote beside them.
+/// renamed them to it, after checking the exit status and the errors it wrote
+/// beside them. vtebench exits successfully even when it cannot write its
+/// samples, so anything it wrote to standard error fails the run.
 fn results(dat: &Path) -> Result<Vec<Case>, String> {
-    let mut status = dat.as_os_str().to_owned();
-    status.push(".status");
-    let status =
-        fs::read_to_string(&status).map_err(|error| format!("vtebench's exit status: {error}"))?;
+    let status = fs::read_to_string(beside(dat, ".status"))
+        .map_err(|error| format!("vtebench's exit status: {error}"))?;
     if status.trim() != "0" {
         return Err(format!("vtebench exited with status {}", status.trim()));
     }
+    let errors = fs::read_to_string(beside(dat, ".err"))
+        .map_err(|error| format!("vtebench's errors: {error}"))?;
+    if !errors.trim().is_empty() {
+        return Err(format!("vtebench reported: {}", errors.trim()));
+    }
     parse(&fs::read_to_string(dat).map_err(|error| format!("{}: {error}", dat.display()))?)
+}
+
+/// Returns the path of the file beside `dat` whose name adds `suffix`.
+fn beside(dat: &Path, suffix: &str) -> PathBuf {
+    let mut path = dat.as_os_str().to_owned();
+    path.push(suffix);
+    PathBuf::from(path)
 }
 
 /// Parses vtebench's `.dat` file: a line of benchmark names, then a line per
@@ -601,13 +620,14 @@ mod tests {
     #[test]
     fn the_script_runs_vtebench_and_leaves_its_samples() {
         let work = tempfile::tempdir().unwrap();
-        // A stand-in for vtebench that notes its arguments and writes a
-        // small `.dat` file to the path after `--dat`.
+        // A stand-in for vtebench that notes its arguments in the directory
+        // it runs in, the checkout, and writes a small `.dat` file to the
+        // path after `--dat`.
         let fake = work.path().join("vtebench");
         fs::write(
             &fake,
             "#!/bin/sh\n\
-             echo \"$@\" > \"$(dirname \"$0\")/arguments\"\n\
+             echo \"$@\" > arguments\n\
              while [ $# -gt 0 ]; do\n\
              if [ \"$1\" = --dat ]; then printf 'dense_cells unicode \\n31 40 \\n29 _ \\n' > \"$2\"; fi\n\
              shift\n\
@@ -632,7 +652,7 @@ mod tests {
                 .arg(&script)
                 .arg(&fifo)
                 .arg(&fake)
-                .arg("benchmarks")
+                .arg(work.path())
                 .arg(&dat)
                 .args(["1024", "2"])
                 .spawn()
@@ -662,6 +682,17 @@ mod tests {
         assert_eq!(
             results(&dat),
             Err("vtebench exited with status 3".to_owned())
+        );
+        // So is one that cannot write its samples, though it exits with 0.
+        fs::write(
+            &fake,
+            "#!/bin/sh\necho 'Unable to write DAT file: disk full' >&2\n",
+        )
+        .unwrap();
+        run_script();
+        assert_eq!(
+            results(&dat),
+            Err("vtebench reported: Unable to write DAT file: disk full".to_owned())
         );
     }
 }
