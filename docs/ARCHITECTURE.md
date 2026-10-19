@@ -130,6 +130,7 @@ described in [0001](decisions/0001-record-architecture-decisions.md).
 | [0019. Benchmark window](decisions/0019-benchmark-window.md) | Accepted |
 | [0020. Benchmark launch context](decisions/0020-benchmark-launch-context.md) | Accepted |
 | [0021. Pane state recovery and the control-mode fidelity harness](decisions/0021-pane-state-recovery.md) | Accepted |
+| [0022. vtebench in gate 2](decisions/0022-vtebench-in-gate-2.md) | Proposed |
 
 ## Further reading
 

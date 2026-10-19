@@ -62,12 +62,15 @@ usage: tmux-workspaces-bench gate2|gate3|gate4 --out DIR [options]   (macOS)
                       the window must lie on the main display
   --refresh HZ        the display's refresh rate, when it reports none
   gate2: --payloads LIST (all four), --size BYTES (20000000), --seed N (1),
-         --warmup N (1); vtebench is not run yet
+         --warmup N (1); --vtebench DIR, a vtebench checkout at the pinned
+         commit with its release build (without it, vtebench is not run and
+         the gate cannot pass), --vtebench-runs N (2), --vtebench-bytes BYTES
+         (8388608), --vtebench-secs S (10)
   gate3: --keys N (40), --warmup-keys N (5), --conditions idle,busy, --seed N (1)
   gate4: --seconds S (30), --scenarios fire,scroll
-  a run with fewer payloads, conditions, scenarios, keys, bytes or seconds
-  than the gate needs is an exploratory subset: it can fail the gate but not
-  pass it
+  a run with fewer payloads, conditions, scenarios, keys, bytes, seconds or
+  vtebench runs or cases than the gate needs is an exploratory subset: it can
+  fail the gate but not pass it
 
 usage: tmux-workspaces-bench gate5 --out DIR [options]
   control-mode fidelity of decision record 0021, on the tmux first on PATH

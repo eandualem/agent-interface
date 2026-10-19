@@ -151,33 +151,52 @@ Before running them:
   while its window is frontmost; otherwise the run stops before any key is
   sent.
 
+Gate 2 also runs [vtebench](https://github.com/alacritty/vtebench), built
+from commit `ead80032e57dee2e75f0b51f2ea67528647d9944`
+([0022](../decisions/0022-vtebench-in-gate-2.md)). Clone and build it once,
+in a directory outside this repository:
+
+```sh
+git clone https://github.com/alacritty/vtebench
+git -C vtebench checkout ead80032e57dee2e75f0b51f2ea67528647d9944
+cargo build --release --locked --manifest-path vtebench/Cargo.toml
+```
+
 Build the harness and the window in the distributable configuration, as two
-commands, then run each gate:
+commands, then run each gate, giving gate 2 the vtebench checkout with
+`--vtebench`:
 
 ```sh
 LIBGHOSTTY_VT_SYS_OPTIMIZE=ReleaseFast cargo build --release --locked -p tmux-workspaces-bench
 LIBGHOSTTY_VT_SYS_OPTIMIZE=ReleaseFast cargo build --release --locked -p tmux-workspaces-app --example bench-window
-./target/release/tmux-workspaces-bench gate2 --out results/gate2
+./target/release/tmux-workspaces-bench gate2 --vtebench /path/to/vtebench --out results/gate2
 ./target/release/tmux-workspaces-bench gate3 --out results/gate3
 ./target/release/tmux-workspaces-bench gate4 --out results/gate4
 ```
 
+Before any window opens, gate 2 checks that the checkout is at that commit,
+has no changes and has its release build, `target/release/vtebench`;
+otherwise it stops. Without `--vtebench` it runs only the marker probe, and
+its report is an exploratory subset.
+
 Each writes `summary.md`, with the environment, the windows and a verdict per
-case, and `raw.tsv`, every sample. Running `tmux-workspaces-bench` without
-arguments lists the options. If the display reports no refresh rate, give it
-with `--refresh HZ`. An acceptance result needs three runs of each gate, as
-for gate 1.
+case, and `raw.tsv`, every sample. Gate 2 also writes `vtebench.tsv`, every
+vtebench sample. Running `tmux-workspaces-bench` without arguments lists the
+options. If the display reports no refresh rate, give it with `--refresh HZ`.
+An acceptance result needs three runs of each gate, as for gate 1.
 
 The benchmark window prints its revision and build when it starts, and the
 harness refuses one built from a different revision, Cargo profile and
 optimisation level, CPU target or engine optimisation. The report lists both
 programs' builds. A run with fewer cases than the gate needs (fewer
-payloads, conditions, keys or seconds) is reported as an exploratory subset:
-it can fail, but it cannot pass. A run from a build other than the
-distributable one (Cargo's release profile at `opt-level` 3, the `baseline`
-CPU target and the engine in `ReleaseFast` mode) decides nothing. A latency or end-time comparison (gates 2
-and 3) within one refresh interval of its limit is not decided until a
-camera confirms it (0018).
+payloads, conditions, keys or seconds, fewer vtebench runs, bytes or seconds
+than its defaults, or a vtebench case missing from its output) is reported as
+an exploratory subset: it can fail, but it cannot pass. A run from a build
+other than the distributable one (Cargo's release profile at `opt-level` 3,
+the `baseline` CPU target and the engine in `ReleaseFast` mode) decides
+nothing. A latency or end-time comparison (gates 2 and 3) within one refresh
+interval of its limit is not decided until a camera confirms it (0018).
+vtebench's times are not display times, so this does not apply to them.
 
 ## How gates 2 to 4 measure
 
@@ -207,8 +226,30 @@ which are the same for both programs.
 gate 1, then prints one of gate 1's payloads (20 MB by default) and fills the
 screen with a marker colour. The time runs from releasing the producer to the
 first frame that the marker colour fills, and the rate divides the payload's
-bytes by it. The app is compared with Ghostty running tmux. vtebench, which
-0018 also asks for, is not run yet, so this gate cannot pass until it is.
+bytes by it. The app is compared with Ghostty running tmux.
+
+**Gate 2, vtebench.** After the marker probe, each run's pane waits on a FIFO
+and then runs vtebench on its twelve benchmarks, the gate's vtebench cases.
+For each sample, vtebench writes at least 8 MiB of one benchmark's output to
+the pane and times how long the writes block, in whole milliseconds; it takes
+samples for 10 seconds per case and writes them to a file the harness reads.
+Each target runs twice, once first and once second, and its samples are
+pooled. A case passes when the app's median rate is at least 0.95 times
+Ghostty with tmux's; as both write the same bytes, that ratio is Ghostty with
+tmux's median time divided by the app's. Every case must be present in every
+run, because vtebench leaves out a benchmark whose script prints nothing.
+These windows are not captured; the harness only checks once a second that
+they stay visible.
+
+Inside tmux, vtebench's writes block until tmux reads them from the pane,
+and tmux stops reading a pane only when every attached client is a control
+client with output still pending. With an ordinary client attached, as when
+Ghostty runs tmux, tmux keeps reading and discards the output that client
+cannot keep up with, then redraws it. The app's control client holds tmux
+back instead when it falls behind. So the vtebench case measures mostly tmux
+for Ghostty with tmux, and the slower of tmux and the app for the app: a
+stricter test for the app. The marker probe, which waits for the final
+frame, is the part of gate 2 that measures what reaches the screen.
 
 **Gate 3, typing latency.** The pane runs `cat`. Lowercase letters are posted
 one at a time, at seeded random gaps of 150 to 350 ms, after a few unmeasured
