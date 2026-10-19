@@ -16,4 +16,5 @@ pub mod pixels;
 pub mod probe;
 pub mod report;
 pub mod targets;
+pub mod vtebench;
 pub mod windows;
