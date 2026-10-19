@@ -1,4 +1,4 @@
-//! Gate 2: end-to-end bulk output, the marker probe
+//! Gate 2: end-to-end bulk output, the marker probe and vtebench
 //! (`docs/decisions/0018-milestone-0-benchmark-method-revised.md`).
 //!
 //! A producer in a tmux pane waits on a FIFO, prints a 20 MB payload from
@@ -7,7 +7,9 @@
 //! the first frame the marker colour fills, in the app and in Ghostty running
 //! an ordinary tmux client.
 //!
-//! vtebench, the gate's other measurement, is not run yet.
+//! With `--vtebench DIR`, the same kind of pane then runs vtebench, the
+//! gate's other measurement ([`super::vtebench`]). Without it, the report is
+//! an exploratory subset.
 
 use std::fmt::Write;
 use std::fs;
@@ -21,6 +23,7 @@ use super::frames::{Frames, Region};
 use super::pixels::{Color, fraction_matching};
 use super::report::{self, Judged, Window, ms};
 use super::targets::{self, CHECK_EVERY, Programs, Target};
+use super::vtebench::{self, Outcome};
 use crate::options::Options;
 use crate::payload::{self, Kind};
 use crate::record;
@@ -65,6 +68,8 @@ struct Settings {
     targets: Vec<Target>,
     /// The refresh rate to use when the display does not report one.
     refresh: Option<f64>,
+    /// How vtebench runs, if it does.
+    vtebench: Option<vtebench::Settings>,
 }
 
 /// One timed run.
@@ -76,8 +81,9 @@ struct Measured {
     window: Window,
 }
 
-/// Runs gate 2's marker probe and writes `summary.md` and `raw.tsv` to
-/// `--out`.
+/// Runs gate 2's marker probe, then vtebench if `--vtebench` gives a
+/// checkout, and writes `summary.md`, `raw.tsv` and, with vtebench,
+/// `vtebench.tsv` to `--out`.
 pub fn run(options: &Options) -> Result<(), String> {
     let out = Path::new(options.required("out")?);
     let settings = Settings {
@@ -93,6 +99,8 @@ pub fn run(options: &Options) -> Result<(), String> {
         runs: options.get("runs", 5)?,
         targets: Target::list(options, &[Target::App, Target::GhosttyTmux])?,
         refresh: report::refresh_option(options)?,
+        // Checks the checkout before any window opens.
+        vtebench: vtebench::Settings::from_options(options)?,
     };
     if settings.runs == 0 || settings.targets.is_empty() {
         return Err("--runs and --targets must not be empty".to_owned());
@@ -108,6 +116,11 @@ pub fn run(options: &Options) -> Result<(), String> {
         .map_err(|error| error.to_string())?;
     let producer = work.path().join("producer.sh");
     fs::write(&producer, PRODUCER).map_err(|error| error.to_string())?;
+    // vtebench's benchmarks are copied and patched before any window opens.
+    let vtebench = match &settings.vtebench {
+        Some(vtebench) => Some((vtebench, vtebench::prepare(&vtebench.dir, work.path())?)),
+        None => None,
+    };
     let mut results = Vec::new();
     for &kind in &settings.payloads {
         let path = work.path().join(format!("payload-{}", kind.name()));
@@ -138,8 +151,34 @@ pub fn run(options: &Options) -> Result<(), String> {
             (kind, bytes)
         })
         .collect();
-    let summary = summary(&settings, &environment, &results, &payload_bytes);
-    report::write(out, &summary, &raw(&results, &payload_bytes))
+    let mut vtebench_runs = Vec::new();
+    if let Some((vtebench, root)) = &vtebench {
+        for run in 0..vtebench.runs {
+            for target in report::order(&settings.targets, run) {
+                vtebench_runs.push(vtebench::measure(
+                    target,
+                    &programs,
+                    vtebench,
+                    root,
+                    work.path(),
+                    run + 1,
+                )?);
+            }
+        }
+    }
+    let summary = summary(
+        &settings,
+        &environment,
+        &results,
+        &payload_bytes,
+        &vtebench_runs,
+    );
+    report::write(out, &summary, &raw(&results, &payload_bytes))?;
+    if settings.vtebench.is_some() {
+        fs::write(out.join("vtebench.tsv"), vtebench::tsv(&vtebench_runs))
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
 }
 
 /// Runs one payload through `target` and returns the time until the marker
@@ -248,8 +287,9 @@ fn summary(
     environment: &[(&str, String)],
     results: &[Measured],
     payload_bytes: &[(Kind, usize)],
+    vtebench_runs: &[vtebench::Run],
 ) -> String {
-    let verdict = verdict(settings, results, payload_bytes);
+    let verdict = verdict(settings, results, payload_bytes, vtebench_runs);
     let mut out = report::opening("Gate 2: end-to-end bulk output", &verdict, environment);
     let _ = write!(
         out,
@@ -257,14 +297,17 @@ fn summary(
          - Payloads from seed {}, at least {} bytes each; {} warm-up and {} timed run(s) per \
            target, each on a new private server and a new window.\n\
          - The time runs from releasing the producer to the display time of the first frame \
-           at least {:.0}% filled with the marker colour, below the title bar.\n\
-         - vtebench is not run yet.\n",
+           at least {:.0}% filled with the marker colour, below the title bar.\n",
         settings.seed,
         settings.size,
         settings.warmup,
         settings.runs,
         FILLED * 100.0
     );
+    out.push_str(match settings.vtebench {
+        Some(_) => "- vtebench ran after the marker probe: see its section.\n",
+        None => "- vtebench was not run: give `--vtebench DIR`.\n",
+    });
     for &kind in &settings.payloads {
         let bytes = bytes_of(payload_bytes, kind);
         let _ = write!(
@@ -291,6 +334,13 @@ fn summary(
             );
         }
     }
+    if let Some(vtebench) = &settings.vtebench {
+        out.push_str(&vtebench::section(
+            vtebench,
+            &settings.targets,
+            vtebench_runs,
+        ));
+    }
     let windows: Vec<(String, Window)> = results
         .iter()
         .map(|result| {
@@ -299,6 +349,11 @@ fn summary(
                 result.window.clone(),
             )
         })
+        .chain(
+            vtebench_runs
+                .iter()
+                .map(|run| (format!("vtebench {}", run.run), run.window.clone())),
+        )
         .collect();
     out.push_str(&report::windows_table(&windows));
     out
@@ -308,9 +363,11 @@ fn verdict(
     settings: &Settings,
     results: &[Measured],
     payload_bytes: &[(Kind, usize)],
+    vtebench_runs: &[vtebench::Run],
 ) -> (String, Vec<String>) {
     let mut reasons = Vec::new();
     let mut failed = false;
+    let mut undecided = false;
     for &kind in &settings.payloads {
         let (Some(app), Some(ghostty)) = (
             times(results, kind, Target::App),
@@ -320,6 +377,7 @@ fn verdict(
                 "{}: not decided, the app and Ghostty with tmux were not both measured",
                 kind.name()
             ));
+            undecided = true;
             continue;
         };
         let Some(refresh) = results
@@ -332,6 +390,7 @@ fn verdict(
                 "{}: not decided, the display reports no refresh rate: give --refresh HZ",
                 kind.name()
             ));
+            undecided = true;
             continue;
         };
         let bytes = bytes_of(payload_bytes, kind);
@@ -344,6 +403,7 @@ fn verdict(
         let judged = Judged::of(app.median, ghostty.median.div_f64(RATE_LIMIT), interval)
             .max(Judged::of(app.median, ghostty.median + interval, interval));
         failed |= judged == Judged::Fails;
+        undecided |= judged == Judged::Near;
         reasons.push(format!(
             "{}: the app's median rate is {:.2} times Ghostty with tmux's (needs {RATE_LIMIT}), \
              and its final frame {:.1} ms later (allowed {:.1} ms, one refresh interval): {}",
@@ -354,21 +414,23 @@ fn verdict(
             judged.describe(),
         ));
     }
-    reasons.push("vtebench is not run yet, so the gate cannot pass on this report.".to_owned());
+    if settings.vtebench.is_some() {
+        for (outcome, reason) in vtebench::judge(vtebench_runs, RATE_LIMIT) {
+            failed |= outcome == Outcome::Fails;
+            undecided |= outcome == Outcome::Undecided;
+            reasons.push(reason);
+        }
+    }
     reasons.push(
         "An acceptance result needs three independent runs of a clean build on a quiet \
          machine (decision record 0018); this report alone does not make one."
             .to_owned(),
     );
-    // Without vtebench, the gate can fail here but never pass.
+    // Without vtebench, it is missing: the gate can fail but never pass.
+    let mut missing = missing(settings, payload_bytes);
+    missing.extend(vtebench::missing(settings.vtebench.as_ref(), vtebench_runs));
     (
-        report::verdict(
-            2,
-            failed,
-            true,
-            &missing(settings, payload_bytes),
-            &settings.build_issues,
-        ),
+        report::verdict(2, failed, undecided, &missing, &settings.build_issues),
         reasons,
     )
 }
@@ -403,6 +465,7 @@ mod tests {
             runs: 1,
             targets: vec![Target::App, Target::GhosttyTmux],
             refresh: None,
+            vtebench: None,
         }
     }
 
@@ -434,7 +497,7 @@ mod tests {
                 measured(Target::App, app, refresh),
                 measured(Target::GhosttyTmux, 1000, refresh),
             ];
-            verdict(settings, &results, &bytes)
+            verdict(settings, &results, &bytes, &[])
         };
         let ascii = settings(&[Kind::Ascii]);
         // At 60 Hz, the final frame may come 16.7 ms after Ghostty's, and
@@ -461,6 +524,87 @@ mod tests {
             ..settings(&[Kind::Ascii])
         };
         assert!(judge(1100, None, &given).0.starts_with("Gate 2 failed"));
+    }
+
+    #[test]
+    fn full_coverage_with_vtebench_decides_the_gate() {
+        let full = Settings {
+            refresh: Some(60.0),
+            vtebench: Some(vtebench::Settings {
+                dir: std::path::PathBuf::new(),
+                runs: 2,
+                bytes: 8_388_608,
+                secs: 10,
+            }),
+            ..settings(&Kind::ALL)
+        };
+        let bytes: Vec<(Kind, usize)> = Kind::ALL
+            .iter()
+            .map(|&kind| (kind, REQUIRED_BYTES))
+            .collect();
+        let results: Vec<Measured> = Kind::ALL
+            .iter()
+            .flat_map(|&kind| {
+                [
+                    Measured {
+                        kind,
+                        ..measured(Target::App, 980, None)
+                    },
+                    Measured {
+                        kind,
+                        ..measured(Target::GhosttyTmux, 1000, None)
+                    },
+                ]
+            })
+            .collect();
+        // Two runs per target, in both orders, every case with one sample.
+        let runs = |app: u64| -> Vec<vtebench::Run> {
+            [
+                (Target::App, 1, app),
+                (Target::GhosttyTmux, 1, 100),
+                (Target::GhosttyTmux, 2, 100),
+                (Target::App, 2, app),
+            ]
+            .into_iter()
+            .map(|(target, run, ms)| vtebench::Run {
+                target,
+                run,
+                cases: vtebench::CASES
+                    .iter()
+                    .map(|case| ((*case).to_owned(), vec![ms]))
+                    .collect(),
+                window: measured(target, 0, None).window,
+            })
+            .collect()
+        };
+        assert_eq!(
+            verdict(&full, &results, &bytes, &runs(100)).0,
+            "Gate 2 passed"
+        );
+        // 100 ms against 110 ms is 0.91 times Ghostty with tmux's rate.
+        let (verdict_line, reasons) = verdict(&full, &results, &bytes, &runs(110));
+        assert_eq!(verdict_line, "Gate 2 failed");
+        assert!(
+            reasons.iter().any(|reason| reason
+                == "vtebench unicode: the app's median rate is 0.91 times Ghostty with tmux's \
+                    (needs 0.95): fails"),
+            "{reasons:?}"
+        );
+        // A case vtebench left out makes the run an exploratory subset.
+        let mut partial = runs(100);
+        partial[0].cases.retain(|(case, _)| case != "light_cells");
+        assert_eq!(
+            verdict(&full, &results, &bytes, &partial).0,
+            "Gate 2 not decided (exploratory subset: vtebench light_cells missing from app run 1)"
+        );
+        let without = Settings {
+            vtebench: None,
+            ..full
+        };
+        assert_eq!(
+            verdict(&without, &results, &bytes, &[]).0,
+            "Gate 2 not decided (exploratory subset: vtebench not run)"
+        );
     }
 
     #[test]
