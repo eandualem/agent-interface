@@ -100,6 +100,8 @@ struct Grid {
     /// Whether runs of ASCII text may be shaped together: only with a
     /// monospaced font, so that no character moves off its column.
     batch_ascii: bool,
+    /// The terminal font, built once: building it allocates.
+    font: Font,
 }
 
 impl TerminalView {
@@ -138,6 +140,7 @@ impl TerminalView {
         .detach();
         let cell = cell_size(cx.text_system(), &appearance);
         let batch_ascii = is_monospaced(cx.text_system(), &appearance);
+        let font = terminal_font(&appearance.font_family);
         Self {
             panes,
             grid: Rc::new(RefCell::new(Grid {
@@ -146,6 +149,7 @@ impl TerminalView {
                 appearance,
                 cell,
                 batch_ascii,
+                font,
             })),
             input,
             focus,
@@ -346,7 +350,7 @@ impl Grid {
 
     /// Returns the text style of a cell, with its length left at zero.
     fn text_run(&self, style: Style) -> TextRun {
-        let mut font = terminal_font(&self.appearance.font_family);
+        let mut font = self.font.clone();
         if style.attributes.contains(Attributes::BOLD) {
             font.weight = FontWeight::BOLD;
         }
