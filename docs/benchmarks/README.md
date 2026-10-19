@@ -230,8 +230,14 @@ bytes by it. The app is compared with Ghostty running tmux.
 
 **Gate 2, vtebench.** After the marker probe, each run's pane waits on a FIFO
 and then runs vtebench on its twelve benchmarks, the gate's vtebench cases.
-For each sample, vtebench writes at least 8 MiB of one benchmark's output to
-the pane and times how long the writes block, in whole milliseconds; it takes
+They run from a copy that the harness makes for each gate run, with one line
+changed in seven scripts so that they find the pane's terminal on macOS,
+where `ps` pads its name with spaces; the harness stops unless exactly those
+seven lines change. The pane's size, read with `stty size`, is passed to them
+in `LINES` and `COLUMNS`, without which `tput` reports 80×24 there
+([0022](../decisions/0022-vtebench-in-gate-2.md)). For
+each sample, vtebench writes at least 8 MiB of one benchmark's output to the
+pane and times how long the writes block, in whole milliseconds; it takes
 samples for 10 seconds per case and writes them to a file the harness reads.
 Each target runs twice, once first and once second, and its samples are
 pooled. A case passes when the app's median rate is at least 0.95 times

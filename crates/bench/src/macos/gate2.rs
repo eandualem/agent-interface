@@ -116,6 +116,11 @@ pub fn run(options: &Options) -> Result<(), String> {
         .map_err(|error| error.to_string())?;
     let producer = work.path().join("producer.sh");
     fs::write(&producer, PRODUCER).map_err(|error| error.to_string())?;
+    // vtebench's benchmarks are copied and patched before any window opens.
+    let vtebench = match &settings.vtebench {
+        Some(vtebench) => Some((vtebench, vtebench::prepare(&vtebench.dir, work.path())?)),
+        None => None,
+    };
     let mut results = Vec::new();
     for &kind in &settings.payloads {
         let path = work.path().join(format!("payload-{}", kind.name()));
@@ -147,13 +152,14 @@ pub fn run(options: &Options) -> Result<(), String> {
         })
         .collect();
     let mut vtebench_runs = Vec::new();
-    if let Some(vtebench) = &settings.vtebench {
+    if let Some((vtebench, root)) = &vtebench {
         for run in 0..vtebench.runs {
             for target in report::order(&settings.targets, run) {
                 vtebench_runs.push(vtebench::measure(
                     target,
                     &programs,
                     vtebench,
+                    root,
                     work.path(),
                     run + 1,
                 )?);

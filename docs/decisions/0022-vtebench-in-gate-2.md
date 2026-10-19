@@ -31,9 +31,25 @@ Observed in [vtebench](https://github.com/alacritty/vtebench) at commit
 - A benchmark whose script prints nothing is left out of the results without
   a message, and a `.dat` file that cannot be written is reported on standard
   error while vtebench still exits successfully.
-- Its twelve default benchmarks size their output to the terminal with
-  `tput cols` and `tput lines`, so both targets write the same bytes in the
-  200×50 session.
+- Seven of its scripts find the terminal with the line
+  `tty="/dev/$(ps -o tty= -p $$)"` and read its size from it with
+  `tput cols` or `tput lines`: the benchmarks of `cursor_motion`,
+  `dense_cells`, `light_cells` and `scrolling_fullscreen`, which size their
+  output to it, and the setups of `scrolling_bottom_region`,
+  `scrolling_bottom_small_region` and `scrolling_top_small_region`, which
+  size their scroll region. On macOS, `ps -o tty=` pads the name with
+  trailing spaces, so the path names no file and reading the size fails: the
+  four benchmarks write little or nothing, and the three setups get no line
+  count. vtebench then leaves out `cursor_motion` and `light_cells`, and
+  times `dense_cells` and `scrolling_fullscreen` on broken output
+  (**Evidence**). The other eight benchmarks write fixed output.
+- Even with that line fixed, the scripts' `tput` runs with its output in a
+  pipe, since vtebench collects each script's output, and on macOS it then
+  reports the terminal type's default of 80×24 rather than the pane's size.
+  `tput` takes the size from `LINES` and `COLUMNS` when they are set. Only
+  with both fixes, as decided below, do the scripts size their output and
+  scroll regions to the 200×50 session; both targets then write the same
+  bytes.
 - Its newest tag, `v0.3.1`, is from September 2020. The 19 commits since add
   the `medium_cells` and `sync_medium_cells` benchmarks and fix how the
   scripts read the terminal's size.
@@ -73,6 +89,14 @@ How vtebench reaches the harness:
 | Copy its source or scripts into this repository | Fixed with the harness, but it is another project's code to keep and license here. |
 | **The contributor builds a checkout once; the harness checks it** | One clone and build, documented in the [benchmark guide](../benchmarks/README.md). The harness checks the commit, the working tree and the build, but cannot check that the build came from the tree as it is now. |
 
+How the benchmarks find the terminal on macOS:
+
+| Option | Trade-offs |
+| --- | --- |
+| **Patch a copy at run time** | The checkout stays as pinned and checked, and nothing of vtebench's is kept here. The harness changes one line of another project's scripts, and a new pin needs that change checked again. |
+| Fix it upstream first | The right place for the fix in the end, but the gate would wait on another project's review and on a new pin. |
+| Leave it | Nothing to keep, but on macOS two cases are always missing, so gate 2 can never pass, and two are timed on broken payloads. |
+
 How its times are read and judged:
 
 | Option | Trade-offs |
@@ -101,20 +125,34 @@ checks that `git rev-parse HEAD` in it is the pinned commit, that
 exists, and otherwise stops with how to build it. Without `--vtebench`, gate
 2 runs the marker probe alone and its report is an exploratory subset.
 
+**Patching the benchmarks.** For each gate run, before any window opens, the
+harness copies the checkout's `benchmarks` directory into the run's private
+work directory and changes one line, `tty="/dev/$(ps -o tty= -p $$)"`, to
+`tty="/dev/$(ps -o tty= -p $$ | tr -d ' ')"`, which removes the padding.
+Nothing else changes: symbolic links stay links, files keep their
+permissions, and data files are copied byte for byte. The harness stops
+unless exactly seven lines changed, the seven at the pinned commit, so a
+different pin or an upstream change to those scripts is caught. vtebench
+still runs from the checkout's build, on the copy. Nothing from vtebench is
+copied into this repository: the copy lives in the run's temporary
+directory only.
+
 **Running it.** After the marker probe, each run of each target gets a new
 private server and a new window, as the marker probe does. The pane runs a
 script that waits on a FIFO, which the harness opens once the window is
-shown, then runs
+shown, then sets `LINES` and `COLUMNS` to the pane's size, read with
+`stty size` from the pane's own terminal, and runs
 `vtebench -b benchmarks --dat FILE --silent --min-bytes 8388608 --max-secs 10`
-in the checkout, with its standard error kept in a file, writes vtebench's
-exit status and renames the samples to their final name. The benchmark path
-is relative because some benchmark scripts find their data with an unquoted
-`dirname $0`, which a checkout path with spaces would break. While it waits
-for that file, the harness checks once a second that the window is still
-shown, since a hidden window stops drawing; the window is not captured. A
-run that exits unsuccessfully, writes anything to standard error, or leaves a
-`.dat` file that does not parse stops the gate, since vtebench exits
-successfully even when it cannot write its samples.
+in the directory that holds the patched copy, with its standard error kept
+in a file. If the size cannot be read, vtebench does not run and the run
+fails. The script then writes vtebench's exit status and renames the samples
+to their final name. The benchmark path is relative because some benchmark scripts
+find their data with an unquoted `dirname $0`, which a path with spaces
+would break. While it waits for that file, the harness checks once a second
+that the window is still shown, since a hidden window stops drawing; the
+window is not captured. A run that exits unsuccessfully, writes anything to
+standard error, or leaves a `.dat` file that does not parse stops the gate,
+since vtebench exits successfully even when it cannot write its samples.
 
 **Settings.** Each one below its value makes the run an exploratory subset:
 
@@ -156,6 +194,8 @@ a record that supersedes 0018.
 - Gate 2 can pass. A full run adds four vtebench runs of a few minutes each
   to the marker probe.
 - Running gate 2 needs a vtebench checkout, built once with a network.
+- A new vtebench pin needs the patch checked again: the harness stops while
+  the number of changed lines differs from the one it expects.
 - The vtebench case compares the app with mostly tmux's own rate, so it is a
   stricter test for the app than for Ghostty with tmux. A failure can come
   from how fast the app's control client reads, as well as from drawing.
@@ -178,6 +218,25 @@ aside for display measurements, has run every vtebench case in both targets.
   benchmarks left out, `src/format/dat.rs` for the `.dat` format,
   `src/cli.rs` for the options and their defaults, and `Cargo.toml`,
   `LICENSE-MIT` and `LICENSE-APACHE` for the licence.
+- The line `tty="/dev/$(ps -o tty= -p $$)"` at `ead8003`: in the
+  `benchmark` files of `cursor_motion`, `dense_cells`, `light_cells` and
+  `scrolling_fullscreen`, and the `setup` files of `scrolling_bottom_region`,
+  `scrolling_bottom_small_region` and `scrolling_top_small_region`.
+- Observed in a private 200×50 tmux 3.7c pane on macOS: `ps -o tty=` pads
+  the terminal's name with trailing spaces, and the scripts'
+  `tput cols < $tty` then fails with "No such file or directory". Each
+  benchmark script at `ead8003`, run in that pane, wrote these bytes:
+  `cursor_motion` 0, `dense_cells` 78, `light_cells` 0 and
+  `scrolling_fullscreen` 26, against 178,345 for `medium_cells`, 185,737 for
+  `sync_medium_cells`, 138,296 for `unicode` and 2, a `y` and a newline as
+  intended, for the five scrolling benchmarks that share
+  `scrolling/benchmark`. With the line patched, `cursor_motion` wrote
+  424,944, `dense_cells` 1,347,918, `light_cells` 49,998 and
+  `scrolling_fullscreen` 2,106 bytes: sized for 80×24. With `LINES` and
+  `COLUMNS` also set from `stty size`, they wrote 2,412,800, 7,020,078,
+  260,078 and 5,226 bytes: sized for the 200×50 pane (`light_cells`, for
+  example, writes 26 screens of 10,000 characters, each after a 3-byte
+  escape sequence).
 - tmux 3.3a, 3.4, 3.5a, 3.6b and 3.8 release sources:
   `server_client_check_pane_buffer` in `server-client.c`,
   `control_pane_offset` and `CONTROL_BUFFER_LOW` in `control.c`, and

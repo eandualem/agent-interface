@@ -2,9 +2,10 @@
 //! (`docs/decisions/0022-vtebench-in-gate-2.md`).
 //!
 //! Each run starts a new window of one target, whose tmux pane runs vtebench
-//! from a checkout at a pinned commit once the harness releases it. For each
-//! sample, vtebench times how long its writes of one benchmark to the pane
-//! block, and it writes every sample to a `.dat` file the harness reads.
+//! from a checkout at a pinned commit, on the gate's patched copy of its
+//! benchmarks, once the harness releases it. For each sample, vtebench times
+//! how long its writes of one benchmark to the pane block, and it writes every
+//! sample to a `.dat` file the harness reads.
 //!
 //! These are not display times. tmux keeps reading a pane that an ordinary
 //! client shows, and discards the output that client cannot keep up with, but
@@ -14,6 +15,7 @@
 
 use std::fmt::Write;
 use std::fs;
+use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::thread;
@@ -47,6 +49,15 @@ pub const CASES: [&str; 12] = [
 ];
 /// vtebench's release build, in the checkout.
 const BINARY: &str = "target/release/vtebench";
+/// The line that finds the pane's terminal in seven of vtebench's scripts at
+/// [`COMMIT`]. On macOS, `ps` pads the terminal's name with spaces, so the
+/// path names no file and `tput` reads no size from it (0022).
+const TTY_LINE: &str = r#"tty="/dev/$(ps -o tty= -p $$)""#;
+/// [`TTY_LINE`] as the gate runs it, without the padding.
+const TTY_FIXED: &str = r#"tty="/dev/$(ps -o tty= -p $$ | tr -d ' ')""#;
+/// How many lines of the benchmarks at [`COMMIT`] are [`TTY_LINE`]: one in
+/// each of those seven scripts.
+const TTY_LINES: usize = 7;
 /// The coverage a whole-gate result needs: runs per target, so that each
 /// target runs both first and second.
 const REQUIRED_RUNS: usize = 2;
@@ -61,15 +72,18 @@ const REQUIRED_SECS: u64 = 10;
 const CASE_MARGIN: Duration = Duration::from_secs(60);
 
 /// The pane's script. It waits on the FIFO `$1`, then runs vtebench `$2` on
-/// the benchmarks of the checkout `$3`, with `$5` bytes per sample and `$6`
-/// seconds per case, writing its samples to `$4.part` and its errors to
-/// `$4.err`. It then writes vtebench's exit status to `$4.status` and renames
-/// the samples to `$4`, the file the harness waits for. The part file is made
-/// first, so `$4` appears even if vtebench writes nothing. vtebench runs in
-/// the checkout with a relative benchmark path because some of its scripts
-/// find their data with an unquoted `dirname $0`.
+/// the benchmarks in the directory `$3`, the gate's copy, with `$5` bytes per
+/// sample and `$6` seconds per case, writing its samples to `$4.part` and its
+/// errors to `$4.err`. It then writes vtebench's exit status to `$4.status`
+/// and renames the samples to `$4`, the file the harness waits for. The part
+/// file is made first, so `$4` appears even if vtebench writes nothing.
+/// vtebench runs in `$3` with a relative benchmark path because some of its
+/// scripts find their data with an unquoted `dirname $0`. The pane's size,
+/// read from its terminal, goes to `LINES` and `COLUMNS`: the scripts' `tput`
+/// runs with its output in a pipe, and without them reports 80×24 on macOS.
 const SCRIPT: &str = r#"read -r _ < "$1"
 : > "$4.part"
+size=$(stty size) && export LINES="${size% *}" COLUMNS="${size#* }" &&
 cd "$3" && "$2" -b benchmarks --dat "$4.part" --silent --min-bytes "$5" --max-secs "$6" 2> "$4.err"
 echo "$?" > "$4.status"
 mv "$4.part" "$4"
@@ -161,6 +175,80 @@ fn checkout(dir: &Path) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
+/// Copies the `benchmarks` directory of `checkout` into `work`, with each
+/// [`TTY_LINE`] changed to [`TTY_FIXED`] and nothing else changed, and returns
+/// the directory that holds the copy, in which vtebench runs. Fails unless
+/// exactly [`TTY_LINES`] lines changed, so that a different pin, or a change
+/// to those scripts, is caught.
+pub fn prepare(checkout: &Path, work: &Path) -> Result<PathBuf, String> {
+    let root = work.join("vtebench");
+    fs::create_dir(&root).map_err(|error| format!("{}: {error}", root.display()))?;
+    let benchmarks = checkout.join("benchmarks");
+    let changed = copy(&benchmarks, &root.join("benchmarks"))?;
+    if changed != TTY_LINES {
+        return Err(format!(
+            "{}: {changed} line(s) are `{TTY_LINE}`, where commit {COMMIT} has {TTY_LINES}; \
+             the gate changes exactly those (docs/decisions/0022-vtebench-in-gate-2.md)",
+            benchmarks.display()
+        ));
+    }
+    Ok(root)
+}
+
+/// Copies the directory `from` to `to`, which must not exist yet, keeping
+/// symbolic links as links and the permissions of every file, with each line
+/// that is [`TTY_LINE`] changed to [`TTY_FIXED`]. Returns how many lines
+/// changed.
+fn copy(from: &Path, to: &Path) -> Result<usize, String> {
+    let failed = |path: &Path, error: std::io::Error| format!("{}: {error}", path.display());
+    fs::create_dir(to).map_err(|error| failed(to, error))?;
+    let mut changed = 0;
+    for entry in fs::read_dir(from).map_err(|error| failed(from, error))? {
+        let entry = entry.map_err(|error| failed(from, error))?;
+        let (path, copied) = (entry.path(), to.join(entry.file_name()));
+        let kind = entry.file_type().map_err(|error| failed(&path, error))?;
+        if kind.is_symlink() {
+            let link = fs::read_link(&path).map_err(|error| failed(&path, error))?;
+            symlink(link, &copied).map_err(|error| failed(&copied, error))?;
+        } else if kind.is_dir() {
+            changed += copy(&path, &copied)?;
+        } else if kind.is_file() {
+            let (bytes, count) = patch(&fs::read(&path).map_err(|error| failed(&path, error))?);
+            fs::write(&copied, bytes).map_err(|error| failed(&copied, error))?;
+            let permissions = entry
+                .metadata()
+                .map_err(|error| failed(&path, error))?
+                .permissions();
+            fs::set_permissions(&copied, permissions).map_err(|error| failed(&copied, error))?;
+            changed += count;
+        } else {
+            return Err(format!(
+                "{}: not a file, directory or symbolic link",
+                path.display()
+            ));
+        }
+    }
+    Ok(changed)
+}
+
+/// Returns `bytes` with each line that is [`TTY_LINE`] changed to
+/// [`TTY_FIXED`], and how many changed. Every other byte stays as it was.
+fn patch(bytes: &[u8]) -> (Vec<u8>, usize) {
+    let mut changed = 0;
+    let lines: Vec<&[u8]> = bytes
+        .split(|&byte| byte == b'\n')
+        .map(|line| {
+            if line == TTY_LINE.as_bytes() {
+                changed += 1;
+                TTY_FIXED.as_bytes()
+            } else {
+                line
+            }
+        })
+        .collect();
+    (lines.join(&b'\n'), changed)
+}
+
 /// A case's name and its samples, in milliseconds.
 pub type Case = (String, Vec<u64>);
 
@@ -177,11 +265,13 @@ pub struct Run {
 }
 
 /// Runs vtebench once in a new window of `target`, and returns its samples.
-/// `work` is a private directory, and `run` counts from 1.
+/// `root` holds the benchmarks [`prepare`] copied, `work` is a private
+/// directory, and `run` counts from 1.
 pub fn measure(
     target: Target,
     programs: &Programs,
     settings: &Settings,
+    root: &Path,
     work: &Path,
     run: usize,
 ) -> Result<Run, String> {
@@ -208,7 +298,7 @@ pub fn measure(
         targets::shell_word(&script),
         targets::shell_word(&fifo),
         targets::shell_word(&settings.dir.join(BINARY)),
-        targets::shell_word(&settings.dir),
+        targets::shell_word(root),
         targets::shell_word(&dat),
         settings.bytes,
         settings.secs
@@ -618,16 +708,64 @@ mod tests {
     }
 
     #[test]
+    fn the_benchmarks_are_copied_with_the_terminal_line_patched() {
+        let work = tempfile::tempdir().unwrap();
+        let checkout = work.path().join("checkout");
+        let from = checkout.join("benchmarks");
+        fs::create_dir_all(from.join("a")).unwrap();
+        fs::create_dir(from.join("b")).unwrap();
+        // A script with the line, a data file without it, and a relative link
+        // to the script.
+        let script = format!("#!/bin/sh\n\n{TTY_LINE}\ncolumns=$(tput cols < $tty)\n");
+        fs::write(from.join("a/benchmark"), &script).unwrap();
+        fs::set_permissions(from.join("a/benchmark"), fs::Permissions::from_mode(0o755)).unwrap();
+        let data = b"\xff\x1b[H\r\nno newline at the end";
+        fs::write(from.join("a/data"), data).unwrap();
+        fs::set_permissions(from.join("a/data"), fs::Permissions::from_mode(0o644)).unwrap();
+        symlink("../a/benchmark", from.join("b/benchmark")).unwrap();
+
+        let to = work.path().join("copy");
+        assert_eq!(copy(&from, &to), Ok(1));
+        let patched = script.replace(TTY_LINE, TTY_FIXED);
+        assert_eq!(fs::read_to_string(to.join("a/benchmark")).unwrap(), patched);
+        assert_eq!(fs::read(to.join("a/data")).unwrap(), data);
+        let mode = |path: &str| fs::metadata(to.join(path)).unwrap().permissions().mode() & 0o777;
+        assert_eq!((mode("a/benchmark"), mode("a/data")), (0o755, 0o644));
+        assert_eq!(
+            fs::read_link(to.join("b/benchmark")).unwrap(),
+            Path::new("../a/benchmark")
+        );
+        assert_eq!(fs::read_to_string(to.join("b/benchmark")).unwrap(), patched);
+
+        // One changed line is not the pinned commit's seven.
+        let error = prepare(&checkout, work.path()).unwrap_err();
+        assert!(
+            error.contains("1 line(s)") && error.contains("has 7"),
+            "{error}"
+        );
+        fs::write(
+            from.join("a/benchmark"),
+            script + &format!("{TTY_LINE}\n").repeat(TTY_LINES - 1),
+        )
+        .unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let root = prepare(&checkout, other.path()).unwrap();
+        assert_eq!(root, other.path().join("vtebench"));
+        assert!(root.join("benchmarks/b/benchmark").is_symlink());
+    }
+
+    #[test]
     fn the_script_runs_vtebench_and_leaves_its_samples() {
         let work = tempfile::tempdir().unwrap();
-        // A stand-in for vtebench that notes its arguments in the directory
-        // it runs in, the checkout, and writes a small `.dat` file to the
-        // path after `--dat`.
+        // A stand-in for vtebench that notes the size it was given and its
+        // arguments in the directory it runs in, the one holding the
+        // benchmarks, and writes a small `.dat` file to the path after
+        // `--dat`.
         let fake = work.path().join("vtebench");
         fs::write(
             &fake,
             "#!/bin/sh\n\
-             echo \"$@\" > arguments\n\
+             echo \"$LINES $COLUMNS $@\" > arguments\n\
              while [ $# -gt 0 ]; do\n\
              if [ \"$1\" = --dat ]; then printf 'dense_cells unicode \\n31 40 \\n29 _ \\n' > \"$2\"; fi\n\
              shift\n\
@@ -635,6 +773,12 @@ mod tests {
         )
         .unwrap();
         fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+        // A stand-in for `stty`, as the test has no terminal of its own.
+        let bin = work.path().join("bin");
+        fs::create_dir(&bin).unwrap();
+        fs::write(bin.join("stty"), "#!/bin/sh\necho 50 200\n").unwrap();
+        fs::set_permissions(bin.join("stty"), fs::Permissions::from_mode(0o755)).unwrap();
+        let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
         let script = work.path().join("vtebench.sh");
         // Replace the final sleep so the script ends.
         fs::write(&script, SCRIPT.replace("exec sleep 86400", "exit 0")).unwrap();
@@ -646,26 +790,29 @@ mod tests {
                 .unwrap()
                 .success()
         );
+        let root = work.path().join("root");
+        fs::create_dir(&root).unwrap();
         let dat = work.path().join("samples.dat");
         let run_script = || {
             let mut child = Command::new("sh")
                 .arg(&script)
                 .arg(&fifo)
                 .arg(&fake)
-                .arg(work.path())
+                .arg(&root)
                 .arg(&dat)
                 .args(["1024", "2"])
+                .env("PATH", &path)
                 .spawn()
                 .unwrap();
             record::release(&fifo).unwrap();
             assert!(child.wait().unwrap().success());
         };
         run_script();
-        let arguments = fs::read_to_string(work.path().join("arguments")).unwrap();
+        let arguments = fs::read_to_string(root.join("arguments")).unwrap();
         assert_eq!(
             arguments.trim(),
             format!(
-                "-b benchmarks --dat {}.part --silent --min-bytes 1024 --max-secs 2",
+                "50 200 -b benchmarks --dat {}.part --silent --min-bytes 1024 --max-secs 2",
                 dat.display()
             )
         );
