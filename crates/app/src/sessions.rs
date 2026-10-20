@@ -120,7 +120,9 @@ mod tests {
             [TmuxServer::SESSION]
         );
         std::fs::remove_file(&source).unwrap();
-        std::fs::write(&source, "not a socket").unwrap();
+        // A loop produces a filesystem error on both Linux and macOS. A
+        // regular file produces ECONNREFUSED on Linux (an absent server).
+        symlink("source", &source).unwrap();
         woken.recv_timeout(Duration::from_secs(10)).unwrap();
         let failed = sessions.take_update().unwrap();
         assert!(failed.sessions.is_empty());
