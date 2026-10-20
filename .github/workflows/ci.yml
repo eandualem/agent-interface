@@ -21,6 +21,8 @@ env:
   ZIG_VERSION: 0.15.2
   # The portable CPU target that distributed builds use (decision record 0011).
   LIBGHOSTTY_VT_SYS_CPU: baseline
+  # Keep runtime safety checks without Debug's full-page integrity scans.
+  LIBGHOSTTY_VT_SYS_OPTIMIZE: ReleaseSafe
 
 jobs:
   build:
@@ -71,7 +73,7 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             target
-          key: cargo-${{ runner.os }}-${{ runner.arch }}-zig-${{ env.ZIG_VERSION }}-cpu-${{ env.LIBGHOSTTY_VT_SYS_CPU }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+          key: cargo-${{ runner.os }}-${{ runner.arch }}-zig-${{ env.ZIG_VERSION }}-cpu-${{ env.LIBGHOSTTY_VT_SYS_CPU }}-mode-${{ env.LIBGHOSTTY_VT_SYS_OPTIMIZE }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
 
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
