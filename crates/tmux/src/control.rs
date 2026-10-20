@@ -26,6 +26,9 @@ pub enum Message<'a> {
     Begin {
         /// The number tmux gave the command.
         number: u64,
+        /// Guard flags. Bit zero marks a command sent by the control client;
+        /// hook commands do not carry that bit.
+        flags: u64,
     },
     /// A line of a reply, without its line end.
     ReplyLine(&'a [u8]),
@@ -149,11 +152,11 @@ impl Decoder {
                 data: &self.output,
             });
         } else if let Some(rest) = line.strip_prefix(b"%begin ") {
-            let number = guard_number(rest).ok_or(Error::Malformed(
+            let (number, flags) = guard(rest).ok_or(Error::Malformed(
                 "%begin without a time, a number and flags",
             ))?;
             self.reply = Some((number, rest.to_vec()));
-            on_message(Message::Begin { number });
+            on_message(Message::Begin { number, flags });
         } else if line.starts_with(b"%") {
             on_message(Message::Notification(line));
         } else {
@@ -165,9 +168,8 @@ impl Decoder {
     }
 }
 
-/// Returns the command number from the rest of a guard line, which is three
-/// numbers: the time, the command number and the flags.
-fn guard_number(rest: &[u8]) -> Option<u64> {
+/// Returns the command number and flags from a three-number guard line.
+fn guard(rest: &[u8]) -> Option<(u64, u64)> {
     let mut fields = rest.split(|&byte| byte == b' ');
     let (Some(time), Some(number), Some(flags), None) =
         (fields.next(), fields.next(), fields.next(), fields.next())
@@ -175,8 +177,7 @@ fn guard_number(rest: &[u8]) -> Option<u64> {
         return None;
     };
     parse_number(time)?;
-    parse_number(flags)?;
-    parse_number(number)
+    Some((parse_number(number)?, parse_number(flags)?))
 }
 
 /// Splits off the first space-separated word.
@@ -231,7 +232,7 @@ mod tests {
     fn owned(message: Message<'_>) -> Owned {
         match message {
             Message::Output { pane, data } => Owned::Output(pane.0, data.to_vec()),
-            Message::Begin { number } => Owned::Begin(number),
+            Message::Begin { number, .. } => Owned::Begin(number),
             Message::ReplyLine(line) => Owned::ReplyLine(line.to_vec()),
             Message::End { number } => Owned::End(number),
             Message::Error { number } => Owned::Error(number),
@@ -284,6 +285,22 @@ mod tests {
             Owned::Error(14),
             Owned::Notification(b"%exit".to_vec()),
         ]
+    }
+
+    #[test]
+    fn reply_flags_distinguish_hooks_from_client_commands() {
+        let mut flags = Vec::new();
+        Decoder::new()
+            .decode(
+                b"%begin 1 2 0\n%end 1 2 0\n%begin 1 3 1\n%end 1 3 1\n",
+                |message| {
+                    if let Message::Begin { flags: value, .. } = message {
+                        flags.push(value);
+                    }
+                },
+            )
+            .unwrap();
+        assert_eq!(flags, [0, 1]);
     }
 
     #[test]
