@@ -38,7 +38,7 @@ Facts observed while building it, with `gpui-pre` 0.3.9 on macOS 27.0.1:
 
 ## Decision
 
-**Where it lives.** The `app` package has a library target with two modules,
+**Where it lives.** The `app` package has a library target with two public modules,
 used by the benchmark window now and by the app later:
 
 - `panes`: a reader thread decodes a control-mode client's output, and a
@@ -65,6 +65,21 @@ never takes focus, so it opens in front of the current Space without changing
 which app is active, and keys reach it only when posted to its process. To
 show which code was measured, `app` uses the benchmark's build script, and the
 window prints its revision and build when it starts.
+
+**Initial contents.** The window attaches with `no-output,ignore-size` and
+uses the initial capture boundary from [0021](0021-pane-state-recovery.md)
+before enabling output. The worker installs the captured cells and modes,
+publishes an initial screen even for quiet panes, then applies subsequent
+output. The snapshot conversion is shared with the fidelity harness.
+Capture startup has a ten-second deadline and rejects recovery hooks or a
+pane whose size changed during attachment.
+
+The benchmark currently rejects an initial cursor at or beyond the right
+margin: it has not yet integrated 0021's repeated snapshot recovery into its
+worker. This is an explicit startup failure, not a fidelity pass. Its
+startup error path closes only its own control client on the disposable
+fixture server. Retrying failed captures while retaining a production
+attachment is still part of the full connection lifecycle.
 
 **Dependencies of `app`:**
 

@@ -8,4 +8,6 @@
 #![forbid(unsafe_code)]
 
 pub mod panes;
+mod restore;
+mod seed;
 pub mod view;
