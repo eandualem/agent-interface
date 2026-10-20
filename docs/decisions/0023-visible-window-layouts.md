@@ -55,3 +55,10 @@ with each terminal snapshot and publish those content rectangles. Every layout
 notification invalidates the visible captures. A capture started before a newer
 notification must be repeated before publishing that geometry. Initial capture
 retains interleaved layout notifications and output in their received order.
+
+Pane decorations can change content geometry without `%layout-change`. A
+client-local `refresh-client -B` subscription to the window's pane content
+formats invalidates captures on those changes. tmux checks subscriptions at
+most once per second; ordinary split/resize notifications still recover
+immediately after the 100 ms quiet interval. The subscription is available on
+the supported tmux 3.3 baseline and does not modify server options.

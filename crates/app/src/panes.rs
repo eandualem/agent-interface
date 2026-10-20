@@ -88,6 +88,7 @@ enum Event {
     Output(PaneId, Vec<u8>),
     Reply(Reply),
     Layout(layout::Change),
+    Geometry,
 }
 
 impl Event {
@@ -96,6 +97,7 @@ impl Event {
             Self::Output(_, bytes) => bytes.len(),
             Self::Reply(reply) => reply.lines.iter().map(Vec::len).sum(),
             Self::Layout(change) => change.panes.len() * std::mem::size_of::<PaneLayout>(),
+            Self::Geometry => 0,
         }
     }
 }
@@ -104,6 +106,7 @@ impl Event {
 enum ReplyOwner {
     Input(PaneId),
     Recovery,
+    GeometrySubscription,
 }
 
 struct Control {
@@ -389,6 +392,13 @@ impl Panes {
                 return Err(error);
             }
         }
+        // tmux does not emit layout-change for every content-geometry change
+        // (for example, switching top to bottom pane border status). Its format
+        // subscriptions report these changes, at most once per second.
+        panes.control.send(&format!(
+            "refresh-client -B 'content-geometry:@{}:#{{P:#{{pane_id}}/#{{pane_left}}/#{{pane_top}}/#{{pane_width}}/#{{pane_height}};}}'\n",
+            layout.window,
+        ), ReplyOwner::GeometrySubscription)?;
         let (ready, initialized) = mpsc::channel();
         panes.threads.push(spawn("terminal worker", {
             let shared = Arc::clone(&panes.shared);
@@ -533,6 +543,11 @@ fn read(shared: &Shared, mut stdout: ChildStdout, mut decoder: Decoder, window: 
                         exited = true;
                     }
                 }
+            }
+            Message::Notification(line)
+                if line.starts_with(b"%subscription-changed content-geometry ") =>
+            {
+                batch.push(Event::Geometry);
             }
             Message::Notification(line) if line.starts_with(b"%exit") => exited = true,
             _ => {}
@@ -826,6 +841,10 @@ fn apply(
                 *changed = window.layout.panes.iter().map(|pane| pane.id).collect();
             }
         }
+        Event::Geometry => {
+            window.change_layout(window.layout.clone(), scrollback)?;
+            *changed = window.layout.panes.iter().map(|pane| pane.id).collect();
+        }
         Event::Output(pane, bytes) => {
             if let Some((recovery, _, _)) = recovering.as_mut()
                 && recovery.pane() == pane
@@ -861,6 +880,12 @@ fn apply(
                             .collect::<Vec<_>>()
                             .join("; ");
                         return Err(format!("tmux rejected pane input: {text}"));
+                    }
+                }
+                Some(ReplyOwner::GeometrySubscription) => {
+                    pending.pop_front();
+                    if !reply.ok {
+                        return Err("tmux rejected the content geometry subscription".into());
                     }
                 }
                 Some(ReplyOwner::Recovery) => {
@@ -1210,6 +1235,7 @@ mod tests {
         server
             .run(&["set-option", "-w", "pane-border-status", "bottom"])
             .unwrap();
+        wait(&content_layout());
         server
             .run(&[
                 "resize-window",
