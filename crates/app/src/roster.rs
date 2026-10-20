@@ -10,6 +10,9 @@ use std::{
 
 use tmux_workspaces_roster::Snapshot;
 
+mod location;
+pub use location::provider_directory;
+
 /// One already-enabled provider, with a private cache on its own I/O worker.
 ///
 /// Updates coalesce into one slot. Failures retain metadata and mark it stale;
