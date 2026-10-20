@@ -1,4 +1,8 @@
-use std::{io::Read, time::Duration};
+use std::{
+    io::Read,
+    net::{Ipv6Addr, SocketAddr},
+    time::Duration,
+};
 
 use http::{HeaderValue, Uri};
 
@@ -45,6 +49,15 @@ fn response(url: &str, key: &str) -> Option<Vec<u8>> {
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
         .connection_verbose(false)
+        // Never start an uncancellable system lookup for the only allowed
+        // hostname. Client shutdown must not wait for DNS after the deadline.
+        .resolve_to_addrs(
+            "localhost",
+            &[
+                SocketAddr::from(([127, 0, 0, 1], 0)),
+                SocketAddr::from((Ipv6Addr::LOCALHOST, 0)),
+            ],
+        )
         .build()
         .ok()?;
     // Set the request's total deadline, including the response body, rather
@@ -236,7 +249,7 @@ mod tests {
                 "transport::tests::proxy_fixture_child",
                 "--nocapture",
             ])
-            .env("ROSTER_FIXTURE_URL", url);
+            .env("ROSTER_FIXTURE_URL", url.replace("127.0.0.1", "localhost"));
         for name in [
             "ALL_PROXY",
             "all_proxy",
