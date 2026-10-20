@@ -8,6 +8,8 @@ use std::time::{Duration, Instant};
 
 use tmux_workspaces_tmux::discovery::read_sessions;
 
+pub use crate::library::location::source_socket;
+
 /// A complete replacement for the source's previous availability.
 #[derive(Debug)]
 pub struct Observation {

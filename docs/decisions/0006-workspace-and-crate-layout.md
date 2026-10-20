@@ -139,3 +139,11 @@ missing server remains a successful empty observation. Dropping the handle wakes
 and joins the worker, with an in-flight query bounded by its three-second
 deadline. This read-only worker is not activated by the benchmark window or
 product UI; launcher source selection and metadata composition remain pending.
+
+`sessions::source_socket` resolves the launcher's source selection before a
+worker starts. A nonempty explicit path wins, followed by the invoking `TMUX`
+socket, then `TMUX_TMPDIR` (or `/tmp`) and `tmux-UID/default`. The two rightmost
+commas delimit the `TMUX` identity so commas in the socket path are preserved.
+The resolver shares home and symlink handling with library lookup, but accepts
+a missing source without creating it; library lookup still requires an existing
+directory. Launch integration remains separate from this read-only API.
