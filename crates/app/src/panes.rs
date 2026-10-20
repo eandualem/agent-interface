@@ -1128,11 +1128,13 @@ mod tests {
         let session = TmuxServer::SESSION;
         let signal = server.shell_command(&["wait-for", "-S", "seed-ready"]);
         let received_input = server.address().0.join("received-input");
+        let producer_done = received_input.with_file_name("producer-done");
         let script = format!(
             "stty -echo -icanon; {signal}; head -c 1 >/dev/null; \
-             (head -c 6291456 /dev/zero | tr '\\000' x) & producer=$!; \
+             (head -c 6291456 /dev/zero | tr '\\000' x; : > '{}') & producer=$!; \
              head -c 524288 > '{}'; wait $producer; \
              printf '\\033[2J\\033[HDONE'; exec sleep 60",
+            producer_done.display(),
             received_input.display()
         );
         server
@@ -1171,7 +1173,34 @@ mod tests {
             .unwrap()
             .unwrap();
         writer.join().unwrap();
-        wait_for_row(&panes, &woken, pane, "DONE");
+        wait_for_row_with_diagnostics(&panes, &woken, pane, "DONE", || {
+            let actual = std::fs::read(&received_input);
+            let received = actual.as_ref().map(|bytes| bytes.len());
+            let mismatch = actual
+                .as_ref()
+                .ok()
+                .and_then(|bytes| bytes.iter().zip(&expected).position(|(a, b)| a != b));
+            let real_row = server
+                .run(&["capture-pane", "-p", "-t", &format!("%{}", pane.0)])
+                .map(|text| {
+                    text.lines()
+                        .next()
+                        .unwrap_or_default()
+                        .chars()
+                        .take(80)
+                        .collect::<String>()
+                });
+            let state = panes.shared.lock();
+            format!(
+                "received={received:?}, first_mismatch={mismatch:?}, producer_done={}, tmux_row={real_row:?}, queued_bytes={}, queued_events={}, closed={}, finished={}, waiting_update={}",
+                producer_done.exists(),
+                state.queued,
+                state.queue.len(),
+                state.closed,
+                state.finished,
+                state.update.is_some()
+            )
+        });
         assert_eq!(std::fs::read(received_input).unwrap(), expected);
         assert_eq!(panes.failure(), None);
     }
@@ -1283,13 +1312,25 @@ mod tests {
 
     /// Waits until the pane's screen shows `text` on its first row.
     fn wait_for_row(panes: &Panes, woken: &mpsc::Receiver<()>, pane: PaneId, text: &str) {
+        wait_for_row_with_diagnostics(panes, woken, pane, text, String::new);
+    }
+
+    fn wait_for_row_with_diagnostics(
+        panes: &Panes,
+        woken: &mpsc::Receiver<()>,
+        pane: PaneId,
+        text: &str,
+        diagnostics: impl Fn() -> String,
+    ) {
         let deadline = Instant::now() + Duration::from_secs(10);
+        let mut last_row = None;
         loop {
             let left = deadline.saturating_duration_since(Instant::now());
             assert!(
                 woken.recv_timeout(left).is_ok(),
-                "no update showed {text:?}; failure: {:?}",
-                panes.failure()
+                "no update showed {text:?}; last_row={last_row:?}; failure: {:?}; {}",
+                panes.failure(),
+                diagnostics()
             );
             let Some(update) = panes.take_update() else {
                 continue;
@@ -1298,8 +1339,11 @@ mod tests {
                 let row: String = (0..screen.cols())
                     .filter_map(|col| screen.cell(0, col).map(|(text, _)| text.to_owned()))
                     .collect();
-                if id == pane && row.starts_with(text) {
-                    return;
+                if id == pane {
+                    if row.starts_with(text) {
+                        return;
+                    }
+                    last_row = Some(row.chars().take(80).collect::<String>());
                 }
             }
         }
