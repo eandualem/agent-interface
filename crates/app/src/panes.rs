@@ -89,6 +89,29 @@ struct State {
     /// A pipe failure is reported without abandoning already queued output.
     transport_failure: Option<String>,
     gone: Vec<PaneId>,
+    #[cfg(test)]
+    processing: Option<(&'static str, usize, Instant)>,
+    #[cfg(test)]
+    slowest: Option<(&'static str, usize, std::time::Duration)>,
+    #[cfg(test)]
+    completed_work: usize,
+}
+
+#[cfg(test)]
+impl State {
+    fn completed(&mut self) {
+        if let Some((phase, size, started)) = self.processing.take() {
+            let elapsed = started.elapsed();
+            if self
+                .slowest
+                .as_ref()
+                .is_none_or(|(_, _, previous)| elapsed > *previous)
+            {
+                self.slowest = Some((phase, size, elapsed));
+            }
+            self.completed_work += 1;
+        }
+    }
 }
 
 enum Event {
@@ -569,6 +592,10 @@ fn work(
         }
         if !changed.is_empty() && state.update.is_none() && !state.cancelled {
             let mut spare = std::mem::take(&mut state.spare);
+            #[cfg(test)]
+            {
+                state.processing = Some(("screen", changed.len(), Instant::now()));
+            }
             drop(state);
             let mut update = Vec::with_capacity(changed.len());
             for pane in changed.drain(..) {
@@ -581,6 +608,8 @@ fn work(
                 }
             }
             state = shared.lock();
+            #[cfg(test)]
+            state.completed();
             state.spare.extend(spare);
             state.update = Some(update);
             drop(state);
@@ -591,6 +620,10 @@ fn work(
             // not in it, joins it now, so that a quiet pane's change, such as
             // a key's echo, does not wait a frame behind a busy neighbour.
             let mut spare = std::mem::take(&mut state.spare);
+            #[cfg(test)]
+            {
+                state.processing = Some(("screen", changed.len(), Instant::now()));
+            }
             drop(state);
             let mut copies = Vec::with_capacity(joining.len());
             for &pane in &joining {
@@ -603,6 +636,8 @@ fn work(
                 }
             }
             state = shared.lock();
+            #[cfg(test)]
+            state.completed();
             if let Some(waiting) = state.update.as_mut() {
                 changed.retain(|pane| !joining.contains(pane));
                 waiting.extend(copies);
@@ -616,6 +651,17 @@ fn work(
             && let Some(event) = state.queue.pop_front()
         {
             state.queued -= event.size();
+            #[cfg(test)]
+            {
+                state.processing = Some((
+                    match &event {
+                        Event::Output(..) => "output",
+                        Event::Reply(..) => "reply",
+                    },
+                    event.size(),
+                    Instant::now(),
+                ));
+            }
             drop(state);
             shared.changed.notify_all();
             let result = apply(
@@ -627,6 +673,8 @@ fn work(
                 &mut changed,
             );
             state = shared.lock();
+            #[cfg(test)]
+            state.completed();
             match result {
                 Ok(Some(pane)) => {
                     if !state.gone.contains(&pane) {
@@ -1173,15 +1221,12 @@ mod tests {
             .unwrap()
             .unwrap();
         writer.join().unwrap();
-        // Debug terminal-engine builds on Linux can still be draining the 6 MiB
-        // after ten seconds. Input must finish within the separate bound above;
-        // this wait checks eventual output fidelity, not a latency benchmark.
         wait_for_row_with_diagnostics(
             &panes,
             &woken,
             pane,
             "DONE",
-            Duration::from_secs(30),
+            Duration::from_secs(10),
             || {
                 let actual = std::fs::read(&received_input);
                 let received = actual.as_ref().map(|bytes| bytes.len());
@@ -1190,14 +1235,19 @@ mod tests {
                     .ok()
                     .and_then(|bytes| bytes.iter().zip(&expected).position(|(a, b)| a != b));
                 let state = panes.shared.lock();
+                let processing = state
+                    .processing
+                    .map(|(phase, size, since)| (phase, size, since.elapsed()));
                 format!(
-                    "received={received:?}, first_mismatch={mismatch:?}, producer_done={}, queued_bytes={}, queued_events={}, closed={}, finished={}, waiting_update={}",
+                    "received={received:?}, first_mismatch={mismatch:?}, producer_done={}, queued_bytes={}, queued_events={}, closed={}, finished={}, waiting_update={}, processing={processing:?}, slowest={:?}, completed_work={}",
                     producer_done.exists(),
                     state.queued,
                     state.queue.len(),
                     state.closed,
                     state.finished,
-                    state.update.is_some()
+                    state.update.is_some(),
+                    state.slowest,
+                    state.completed_work
                 )
             },
         );
