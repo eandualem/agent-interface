@@ -15,7 +15,7 @@ const UNKNOWN: &str = "Cannot verify tmux version; tmux 3.3 or newer is required
 /// and bounded stdout/stderr capture. Patch and numbered development suffixes
 /// follow the Python preflight. Returns the trimmed version report on success.
 /// Failed/malformed output and stderr are never included in diagnostics.
-/// Call on an I/O worker; startup wiring and server-version checks are separate.
+/// Call on an I/O worker; product startup wiring is separate.
 pub fn check_tmux() -> io::Result<String> {
     let paths = env::var_os("PATH").unwrap_or_else(|| "/bin:/usr/bin".into());
     if paths.is_empty() {
@@ -51,6 +51,21 @@ pub fn check_tmux() -> io::Result<String> {
             "{version} detected; tmux 3.3 or newer is required. Upgrade tmux."
         ))),
         None => Err(io::Error::other(UNKNOWN)),
+    }
+}
+
+/// Verify the connected server's `#{version}` reply before enabling pane I/O.
+/// A newer executable does not imply that an already-running server is supported.
+/// This only validates a report; it runs no command and changes no server state.
+pub fn check_server_version(version: &str) -> io::Result<()> {
+    match supported(&format!("tmux {version}")) {
+        Some(true) => Ok(()),
+        Some(false) => Err(io::Error::other(format!(
+            "tmux server {version} detected; tmux 3.3 or newer is required. Upgrade the server."
+        ))),
+        None => Err(io::Error::other(
+            "Cannot verify tmux server version; tmux 3.3 or newer is required. Use a numbered server build.",
+        )),
     }
 }
 

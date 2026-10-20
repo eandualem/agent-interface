@@ -65,7 +65,12 @@ The existing bounded process capture drains stdout and stderr, limits their
 combined size to 1 MiB, and kills and reaps a stalled child after five seconds.
 It never contacts a server. Missing, failed, malformed and older versions have
 separate remedies; malformed output and stderr are not echoed in diagnostics.
-Normal product startup and checks of connected server versions remain pending.
+Before capturing panes or enabling input/output, the existing control-mode
+handshake also reads `#{version}` from its connected server and enforces the same
+floor. This follows the recovery-hook checks, so an unsafe display-message hook
+cannot run during the probe. An unsupported or malformed reply closes only the
+owned client; it never upgrades, restarts or stops the server. Normal product
+startup wiring remains pending.
 
 The parser follows Python's patch and numbered-development suffix rules and its
 Unicode digit/word classification. It compares major/minor values without machine
