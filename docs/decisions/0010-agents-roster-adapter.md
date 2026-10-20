@@ -159,7 +159,13 @@ reads immediately, then five seconds after each attempt, and publishes one
 coalesced snapshot. Failures replace unread successes with stale metadata; repairs
 are retried without affecting the separate tmux-discovery worker. Dropping the
 handle interrupts the polling wait and joins after the current read finishes.
-Launch-time enablement and product controls remain separate work.
+`app::roster::provider_directory` separately resolves the launch decision and
+path. Explicit disable and demo return before resolving provider environment or
+files; conflicting options are rejected. Unrequested enablement checks database
+existence only. An explicit directory, URL or enable request allows a missing
+database, leaving settings and credential validation to the worker. Directory
+selection reuses the app's home and symlink resolution without creating files.
+Product startup wiring and controls remain separate work.
 
 Typed object/array reads and borrowed raw field values preserve literal JSON
 types even when the workspace enables serde_json's raw-value and arbitrary-
