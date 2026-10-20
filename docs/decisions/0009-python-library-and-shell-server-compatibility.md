@@ -154,3 +154,34 @@ store.
   in the control-mode research.
 - [Parity checklist](../PARITY.md#persistence-concurrent-windows-and-conflict-handling),
   rows PE-1 to PE-25.
+
+## Read-only implementation
+
+`Store::open` takes an already resolved library directory. `load` validates the
+current row and returns a `Document` with the typed `core::Layout` and the exact
+original JSON. The original record retains unknown fields and absent/null
+values; the model is not a replacement serialization format. `data_version`
+is read before loading, on the same connection, so a concurrent commit still
+invalidates the next poll. Calls finish their statements before returning.
+The app's storage worker, path selection, navigation reconciliation and all
+writes remain separate integration work.
+
+The decoder bounds all containers, including extensions, and rejects duplicate
+keys before constructing maps. Borrowed `serde_json::RawValue` slices let it
+check depth itself rather than relying on serde_json's lower default recursion
+limit; `arbitrary_precision` retains large integer extension values. Split
+nodes use the schema's 64-level limit. Invalid input is never normalized into
+a different saved arrangement.
+
+Printable names and session references use `unicode-properties` 0.1.4
+(MIT OR Apache-2.0), already used by the terminal dependency graph, with only
+its general-category feature requested here. Its Unicode 17 categories reject
+control, format, unassigned and separator characters, except ordinary space.
+Python runtimes with older Unicode data can differ for newly assigned
+characters. Rust JSON strings also require Unicode scalar values; unpaired
+surrogate escapes are rejected even in unknown fields. These are explicit
+compatibility limits, not evidence of complete persistence parity.
+
+SQLite uses a 250 ms busy timeout. A hot journal requiring recovery is retried
+read-only for at most 250 ms, then reported for recovery by a writer; the reader
+never reopens writable. No polling loop or automatic repair is installed.
