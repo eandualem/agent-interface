@@ -30,7 +30,8 @@ pub struct Change {
 ///
 /// tmux sends both the saved layout and the visible layout; only the latter
 /// describes the rectangles to draw when a pane is zoomed. The four-digit
-/// checksum field is checked for valid syntax but is not recomputed.
+/// checksum field is checked for valid syntax but is not recomputed. Also
+/// accepts tmux 3.8 JSON layouts. Floating panes are rejected explicitly.
 pub fn parse(line: &[u8]) -> Result<Change, &'static str> {
     let line = std::str::from_utf8(line).map_err(|_| "layout is not UTF-8")?;
     let mut fields = line.split_ascii_whitespace();
@@ -44,6 +45,12 @@ pub fn parse(line: &[u8]) -> Result<Change, &'static str> {
         .ok_or("invalid window identity")?;
     fields.next().ok_or("missing saved layout")?;
     let visible = fields.next().ok_or("missing visible layout")?;
+    if visible.starts_with('{') {
+        return Ok(Change {
+            window,
+            panes: json_panes(visible)?,
+        });
+    }
     let (checksum, cells) = visible.split_once(',').ok_or("missing layout checksum")?;
     if checksum.len() != 4 || !checksum.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err("invalid layout checksum");
@@ -98,6 +105,59 @@ pub fn parse(line: &[u8]) -> Result<Change, &'static str> {
             }
         }
     }
+}
+
+fn json_panes(text: &str) -> Result<Vec<Pane>, &'static str> {
+    let value: serde_json::Value = serde_json::from_str(text).map_err(|_| "invalid JSON layout")?;
+    if value.get("V").and_then(serde_json::Value::as_u64) != Some(2) {
+        return Err("unsupported layout version");
+    }
+    let mut pending = vec![value.get("L").ok_or("missing layout root")?];
+    let mut panes = Vec::new();
+    while let Some(cell) = pending.pop() {
+        if cell.get("z").is_some() {
+            return Err("floating panes are not supported by this view");
+        }
+        let number = |key| -> Result<u16, &'static str> {
+            cell.get(key)
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|n| n.try_into().ok())
+                .ok_or("invalid rectangle number")
+        };
+        let (cols, rows, left, top) = (number("w")?, number("h")?, number("x")?, number("y")?);
+        if cols == 0 || rows == 0 {
+            return Err("empty pane rectangle");
+        }
+        match cell.get("t").and_then(serde_json::Value::as_str) {
+            Some("h" | "v") => {
+                let children = cell
+                    .get("c")
+                    .and_then(serde_json::Value::as_array)
+                    .ok_or("missing split children")?;
+                if children.is_empty() {
+                    return Err("empty split");
+                }
+                pending.extend(children.iter().rev());
+            }
+            Some("p") => {
+                let id = cell
+                    .get("I")
+                    .and_then(serde_json::Value::as_str)
+                    .and_then(|id| id.strip_prefix('%'))
+                    .and_then(|id| id.parse().ok())
+                    .ok_or("invalid pane identity")?;
+                panes.push(Pane {
+                    id: PaneId(id),
+                    left,
+                    top,
+                    cols,
+                    rows,
+                });
+            }
+            _ => return Err("invalid layout cell type"),
+        }
+    }
+    Ok(panes)
 }
 
 struct Input<'a>(&'a [u8]);
@@ -220,6 +280,28 @@ mod tests {
             }]
         );
         assert!(parse(b"%layout-change @1 abcd,80x24,0,0,1 abcd,80x24,0,0,1 ").is_ok());
+    }
+
+    #[test]
+    fn json_layout_preserves_rectangles_and_rejects_floating_panes() {
+        let tiled = r#"{"V":2,"L":{"t":"p","w":80,"h":24,"x":0,"y":0,"I":"%70000"}}"#;
+        let change = parse(format!("%layout-change @1 {tiled} {tiled} *").as_bytes()).unwrap();
+        assert_eq!(
+            change.panes,
+            [Pane {
+                id: PaneId(70000),
+                left: 0,
+                top: 0,
+                cols: 80,
+                rows: 24
+            }]
+        );
+        let floating = tiled.replace("\"I\":", "\"z\":1,\"I\":");
+        assert!(
+            parse(format!("%layout-change @1 {floating} {floating}").as_bytes())
+                .unwrap_err()
+                .contains("floating")
+        );
     }
 
     #[test]
