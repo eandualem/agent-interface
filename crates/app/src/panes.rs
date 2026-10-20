@@ -296,7 +296,8 @@ impl Panes {
     /// Starts keeping the panes in `layout` up to date from `client`, a
     /// control-mode client (`tmux -C`) with piped standard input and output,
     /// freshly attached with `-f no-output,ignore-size,new-layouts`. Its initial reply
-    /// must not have been read. Captures existing contents before enabling
+    /// must not have been read. Refreshes visible membership on that connection,
+    /// then captures existing contents before enabling
     /// live output; startup is bounded by a ten-second capture deadline.
     /// Each pane keeps about `scrollback` lines of history.
     ///
@@ -308,10 +309,7 @@ impl Panes {
         scrollback: usize,
         wake: impl Fn() + Send + 'static,
     ) -> io::Result<Self> {
-        let seed = match crate::seed::attach(
-            &mut client,
-            layout.panes.iter().map(|pane| pane.id).collect(),
-        ) {
+        let seed = match crate::seed::attach(&mut client, layout.window) {
             Ok(seed) => seed,
             Err(error) => {
                 let _ = client.kill();
@@ -325,6 +323,7 @@ impl Panes {
             decoder,
             snapshots,
             events,
+            layout,
         } = seed;
         let prefix = format!("%layout-change @{} ", layout.window);
         let mut queue = VecDeque::new();
@@ -354,7 +353,6 @@ impl Panes {
             }),
             changed: Condvar::new(),
         });
-        let layout = layout.clone();
         let (commands, requests) = mpsc::channel();
         // Should a thread fail to start, dropping `panes` stops what did.
         let mut panes = Self {
@@ -1069,11 +1067,7 @@ mod tests {
                 TmuxServer::SESSION,
             ])
             .unwrap();
-        let seed = crate::seed::attach(
-            &mut client,
-            layout.panes.iter().map(|pane| pane.id).collect(),
-        )
-        .unwrap();
+        let seed = crate::seed::attach(&mut client, layout.window).unwrap();
         let snapshots = seed.snapshots.clone();
         let mut margin_snapshot = snapshots[0].clone();
         margin_snapshot.state.cursor.0 = margin_snapshot.state.width;
@@ -1152,6 +1146,47 @@ mod tests {
                 .contains("Broken pipe")
         );
         assert!(state.failure.is_none());
+    }
+
+    #[test]
+    fn attachment_refreshes_membership_after_the_initial_probe() {
+        let server = TmuxServer::start().unwrap();
+        let initial = layout(&server);
+        let signal = server.shell_command(&["wait-for", "-S", "split-ready"]);
+        server
+            .run(&[
+                "split-window",
+                "-h",
+                "-t",
+                TmuxServer::SESSION,
+                &format!("printf NEW; {signal}; exec sleep 60"),
+            ])
+            .unwrap();
+        server.run(&["wait-for", "split-ready"]).unwrap();
+        let current = layout(&server);
+        let added = current
+            .panes
+            .iter()
+            .find(|p| p.id != initial.panes[0].id)
+            .unwrap()
+            .id;
+        let client = server
+            .control(&[
+                "attach-session",
+                "-f",
+                "no-output,ignore-size,new-layouts",
+                "-t",
+                TmuxServer::SESSION,
+            ])
+            .unwrap();
+        let (wake, woken) = mpsc::channel();
+        let panes = Panes::start(client, &initial, 100, move || {
+            let _ = wake.send(());
+        })
+        .unwrap();
+        // No later layout change may be needed to discover the added pane.
+        wait_for_row(&panes, &woken, added, "NEW");
+        assert_eq!(panes.failure(), None);
     }
 
     #[test]

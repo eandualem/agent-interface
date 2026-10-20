@@ -7,6 +7,7 @@ use std::thread;
 use std::time::Duration;
 
 use tmux_workspaces_tmux::control::{Decoder, Message, PaneId};
+use tmux_workspaces_tmux::layout;
 use tmux_workspaces_tmux::recovery::{self, Attach, Reply, Snapshot, Step};
 
 pub(crate) const TIMEOUT: Duration = Duration::from_secs(10);
@@ -16,6 +17,7 @@ pub(crate) struct Seed<I = ChildStdin, O = ChildStdout> {
     pub stdout: O,
     pub decoder: Decoder,
     pub snapshots: Vec<Snapshot>,
+    pub layout: layout::Change,
     pub events: Vec<Event>,
 }
 
@@ -28,7 +30,7 @@ pub(crate) enum Event {
 /// Reads the attach reply, checks recovery hooks and captures before enabling
 /// output. The process must have been started with no-output,ignore-size.
 /// A deadline bounds startup even if the control client stops replying.
-pub(crate) fn attach(client: &mut Child, panes: Vec<PaneId>) -> io::Result<Seed> {
+pub(crate) fn attach(client: &mut Child, window: u32) -> io::Result<Seed> {
     let stdin = client
         .stdin
         .take()
@@ -41,7 +43,7 @@ pub(crate) fn attach(client: &mut Child, panes: Vec<PaneId>) -> io::Result<Seed>
     let reader = thread::Builder::new()
         .name("pane snapshot".into())
         .spawn(move || {
-            let _ = send.send(capture(stdin, stdout, panes));
+            let _ = send.send(capture(stdin, stdout, window));
         })?;
     let result = receive
         .recv_timeout(TIMEOUT)
@@ -61,18 +63,15 @@ pub(crate) fn attach(client: &mut Child, panes: Vec<PaneId>) -> io::Result<Seed>
     result
 }
 
-fn capture<I: Write, O: Read>(
-    mut stdin: I,
-    mut stdout: O,
-    panes: Vec<PaneId>,
-) -> io::Result<Seed<I, O>> {
-    let (mut attach, commands) = Attach::new(panes);
+fn capture<I: Write, O: Read>(mut stdin: I, mut stdout: O, window: u32) -> io::Result<Seed<I, O>> {
+    let mut attach = None;
+    let mut layout = None;
     let mut decoder = Decoder::new();
     let mut buffer = [0; 64 * 1024];
     let mut reply = Reply::default();
     let mut expected_reply = false;
-    // The initial attach reply, then two show-hooks replies.
-    let mut preliminary = 3;
+    // The initial attach, two hook checks, then the attached layout query.
+    let mut preliminary = 4;
     let mut snapshots = None;
     let mut events = Vec::new();
     loop {
@@ -95,7 +94,7 @@ fn capture<I: Write, O: Read>(
                             reply = Reply::default();
                             // The command-line attach has no control flag;
                             // subsequent requests do. Ignore hook replies.
-                            expected_reply = preliminary == 3 || flags & 1 != 0;
+                            expected_reply = preliminary == 4 || flags & 1 != 0;
                         }
                         Message::ReplyLine(line) if expected_reply => {
                             reply.lines.push(line.to_vec())
@@ -112,7 +111,7 @@ fn capture<I: Write, O: Read>(
                                 ));
                             }
                             if preliminary > 0 {
-                                if preliminary < 3
+                                if matches!(preliminary, 2 | 3)
                                     && recovery::hooks_break_recovery(
                                         reply.lines.iter().map(Vec::as_slice),
                                     )
@@ -121,18 +120,38 @@ fn capture<I: Write, O: Read>(
                                         "tmux recovery hooks prevent an exact pane snapshot",
                                     ));
                                 }
-                                preliminary -= 1;
                                 let send = match preliminary {
-                                    2 => Some("show-hooks -g ; show-hooks\n"),
-                                    0 => Some(commands.as_str()),
+                                    4 => Some("show-hooks -g ; show-hooks\n".to_owned()),
+                                    2 => Some(format!(
+                                        "display-message -p -t @{window} '#{{window_id}} #{{window_layout}} #{{window_visible_layout}} #{{window_raw_flags}}'\n"
+                                    )),
+                                    1 => {
+                                        let [line] = reply.lines.as_slice() else {
+                                            return Err(io::Error::other("invalid initial window layout reply"));
+                                        };
+                                        let mut notification = b"%layout-change ".to_vec();
+                                        notification.extend_from_slice(line);
+                                        let current = layout::parse(&notification).map_err(io::Error::other)?;
+                                        if current.window != window {
+                                            return Err(io::Error::other("initial window layout target changed"));
+                                        }
+                                        let (capture, commands) = Attach::new(current.panes.iter().map(|p| p.id).collect());
+                                        attach = Some(capture);
+                                        layout = Some(current);
+                                        // This query supersedes layout notifications that
+                                        // preceded it. Later notifications stay ordered.
+                                        events.retain(|event| !matches!(event, Event::Layout(_)));
+                                        Some(commands)
+                                    }
                                     _ => None,
                                 };
+                                preliminary -= 1;
                                 if let Some(line) = send {
                                     stdin.write_all(line.as_bytes())?;
                                     stdin.flush()?;
                                 }
                             } else if snapshots.is_none() {
-                                match attach.reply(reply).map_err(io::Error::other)? {
+                                match attach.as_mut().expect("layout queried before capture").reply(reply).map_err(io::Error::other)? {
                                     Step::Done(seeds) => snapshots = Some(seeds),
                                     Step::Wait => {}
                                     Step::Send(_) | Step::Failed => {
@@ -180,6 +199,7 @@ fn capture<I: Write, O: Read>(
                 stdout,
                 decoder,
                 snapshots,
+                layout: layout.expect("layout queried before capture"),
                 events,
             });
         }
@@ -192,8 +212,15 @@ mod tests {
 
     #[test]
     fn completed_capture_keeps_coalesced_output_and_decoder_tail_even_at_exit() {
-        // Attach, two hook checks, then the snapshots for an 80x24 pane.
-        let mut replies = vec!["", "", "", "SEEDED", ""];
+        // Attach, two hook checks, the current layout, then an 80x24 snapshot.
+        let mut replies = vec![
+            "",
+            "",
+            "",
+            "@1 abcd,80x24,0,0,7 abcd,80x24,0,0,7 *",
+            "SEEDED",
+            "",
+        ];
         replies.extend([
             "80", "24", "0", "0", "0", "0", "6", "0", "1", "0", "23", "8,16", "0", "0", "0", "1",
             "0", "0", "0", "0", "0", "0", "", "", "",
@@ -202,13 +229,17 @@ mod tests {
         replies.extend(["0", "0", "", ""]);
         let mut wire = String::new();
         for (id, reply) in replies.iter().enumerate() {
+            if id == 3 {
+                wire.push_str("%layout-change @1 abcd,80x24,0,0,8 abcd,80x24,0,0,8 *\n");
+            }
             wire.push_str(&format!("%begin 1 {id} 1\n{reply}\n%end 1 {id} 1\n"));
         }
         wire.push_str("%output %7 more\n");
         let mut exited = wire.clone();
         exited.push_str("%exit\n");
-        let seed = capture(Vec::new(), exited.as_bytes(), vec![PaneId(7)]).unwrap();
+        let seed = capture(Vec::new(), exited.as_bytes(), 1).unwrap();
         assert_eq!(seed.snapshots[0].state.cursor, (6, 0));
+        assert_eq!(seed.layout.panes[0].id, PaneId(7));
         assert_eq!(seed.events, [Event::Output(PaneId(7), b"more".to_vec())]);
 
         let layout = b"%layout-change @1 abcd,80x24,0,0,7 abcd,80x24,0,0,7 *";
@@ -216,7 +247,7 @@ mod tests {
             "{wire}{}\n%output %7 later\n",
             String::from_utf8_lossy(layout)
         );
-        let seeded = capture(Vec::new(), with_layout.as_bytes(), vec![PaneId(7)]).unwrap();
+        let seeded = capture(Vec::new(), with_layout.as_bytes(), 1).unwrap();
         assert_eq!(
             seeded.events,
             [
@@ -226,7 +257,7 @@ mod tests {
             ]
         );
         wire.push_str("%output %7 par");
-        let mut seed = capture(Vec::new(), wire.as_bytes(), vec![PaneId(7)]).unwrap();
+        let mut seed = capture(Vec::new(), wire.as_bytes(), 1).unwrap();
         assert_eq!(seed.events, [Event::Output(PaneId(7), b"more".to_vec())]);
         seed.decoder
             .decode(b"tial\n", |message| {
