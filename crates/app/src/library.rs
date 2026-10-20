@@ -139,6 +139,7 @@ fn publish(updates: &Mutex<Option<Update>>, result: Result<Document, Error>, wak
 mod tests {
     use super::*;
     use rusqlite::Connection;
+    use std::cell::Cell;
 
     #[test]
     fn observes_peer_writes_preserves_valid_pending_data_and_reports_open_failure() {
@@ -152,11 +153,34 @@ mod tests {
             .execute("INSERT INTO terminal_layout VALUES (1, ?1)", [valid])
             .unwrap();
         let (wake, woken) = mpsc::channel();
+        let healthy_writer = Connection::open(directory.path().join("layouts.db")).unwrap();
+        let first = Cell::new(true);
         let library = Library::start(Some(directory.path().into()), move || {
+            // Commit after the first successful load, before its next poll.
+            // This exercises data_version without an intervening read error.
+            if first.replace(false) {
+                healthy_writer
+                    .execute(
+                        "UPDATE terminal_layout SET value = ?1",
+                        [valid.replace("Initial", "Healthy")],
+                    )
+                    .unwrap();
+            }
             let _ = wake.send(());
         })
         .unwrap();
         woken.recv_timeout(Duration::from_secs(5)).unwrap();
+        woken.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(
+            library
+                .updates
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .error
+                .is_none()
+        );
         // Leave the valid document pending across two distinct failures. Hold
         // the writer lock until the worker observes it, so commit timing cannot
         // decide whether the first error is a lock or an invalid document.
@@ -182,7 +206,7 @@ mod tests {
         let update = library.take_update().unwrap();
         assert_eq!(
             update.document.unwrap().model().workspaces[0].name,
-            "Initial"
+            "Healthy"
         );
         assert_eq!(
             update.error.as_ref().unwrap().detail,
