@@ -215,6 +215,13 @@ pub const FIXTURES: &[Fixture] = &[
         expected: &[],
     },
     Fixture {
+        name: "streamed-wrap-left",
+        draw: r"printf 'ready\r\n'",
+        more: r"printf '\033[1;1H%040d\033[5DX' 0",
+        runs: Runs::Everywhere,
+        expected: &[],
+    },
+    Fixture {
         name: "pending-wrap-backspace",
         draw: r"printf '\033[1;40HW'",
         more: r"printf '\b\b\b\b\bX'",

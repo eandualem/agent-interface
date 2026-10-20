@@ -13,6 +13,8 @@ use tmux_workspaces_tmux::recovery::{Attach, Rebuilt, Recovery, Snapshot, Step};
 #[path = "../../../app/src/restore.rs"]
 mod restore;
 use restore::restore;
+#[path = "../../../app/src/stream.rs"]
+mod stream;
 
 use super::connection::{Connection, Event, TIMEOUT};
 
@@ -55,15 +57,10 @@ impl Candidate {
         }
         let mut terminal =
             Terminal::restored(&restore, SCROLLBACK).map_err(|error| error.to_string())?;
-        if !captured {
-            terminal.write(output);
-        }
-        let needs_capture = if captured {
-            !output.is_empty()
+        let (fed, needs_capture) = if captured {
+            (0, !output.is_empty())
         } else {
-            terminal
-                .cursor_pending_wrap()
-                .map_err(|error| error.to_string())?
+            stream::write_until_wrap(&mut terminal, output).map_err(|error| error.to_string())?
         };
         Ok(Self {
             terminal,
@@ -72,11 +69,7 @@ impl Candidate {
             next,
             applied: output.to_vec(),
             seed: snapshot.clone(),
-            replayed: if captured {
-                Vec::new()
-            } else {
-                output.to_vec()
-            },
+            replayed: output[..fed].to_vec(),
             captured,
             needs_capture,
         })
@@ -100,12 +93,11 @@ impl Candidate {
                     if self.captured || self.needs_capture {
                         self.needs_capture |= !data.is_empty();
                     } else {
-                        self.terminal.write(&data);
-                        self.replayed.extend_from_slice(&data);
-                        self.needs_capture = self
-                            .terminal
-                            .cursor_pending_wrap()
-                            .map_err(|error| error.to_string())?;
+                        let (fed, needs_capture) =
+                            stream::write_until_wrap(&mut self.terminal, &data)
+                                .map_err(|error| error.to_string())?;
+                        self.replayed.extend_from_slice(&data[..fed]);
+                        self.needs_capture = needs_capture;
                     }
                     self.applied.extend_from_slice(&data);
                 }
