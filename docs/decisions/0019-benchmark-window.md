@@ -76,15 +76,20 @@ pane whose size changed during attachment.
 
 A cursor at or beyond the right margin uses 0021's display-only snapshot.
 Output causes a new pause/capture/continue recovery; normal streaming resumes
-only with an in-grid cursor. The worker also recaptures when streaming leaves
-the engine waiting to wrap, whose transitions can differ from tmux. Recovery
+only with an in-grid cursor. The worker checks wrap between control bytes,
+including within one output event, before an edit can clear the engine's
+pending-wrap state and hide a transition that differs from tmux. Recovery
 runs one pane at a time while other panes keep updating. Input acknowledgments
-and recovery replies retain their command order. A writer thread prevents a
+and recovery replies retain their command order; guard flags distinguish
+hook replies from commands sent by this connection. A writer thread prevents a
 large input from blocking the terminal worker while it drains replies and
 output. Input is split into commands of at most 1,024 bytes to stay below
 tmux's parser stack limit, preserving the order of each input call.
-Repeated recovery shares a ten-second deadline; failures are reported
-before the benchmark window closes.
+Repeated recovery shares a ten-second deadline per pane; an exited pane is
+retired without stopping its neighbors. Other recovery failures are reported
+once before the benchmark window closes. If the connection ends before a
+required capture completes, its final state remains unverified and the
+benchmark reports that failure instead of claiming an exact final frame.
 
 Resize recovery and retrying failed initial captures while retaining a
 production attachment still belong to the full connection lifecycle. The

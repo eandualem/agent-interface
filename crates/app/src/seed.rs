@@ -64,6 +64,7 @@ fn capture<I: Write, O: Read>(
     let mut decoder = Decoder::new();
     let mut buffer = [0; 64 * 1024];
     let mut reply = Reply::default();
+    let mut expected_reply = false;
     // The initial attach reply, then two show-hooks replies.
     let mut preliminary = 3;
     let mut snapshots = None;
@@ -84,9 +85,19 @@ fn capture<I: Write, O: Read>(
                 }
                 let result = (|| -> io::Result<()> {
                     match message {
-                        Message::Begin { .. } => reply = Reply::default(),
-                        Message::ReplyLine(line) => reply.lines.push(line.to_vec()),
+                        Message::Begin { flags, .. } => {
+                            reply = Reply::default();
+                            // The command-line attach has no control flag;
+                            // subsequent requests do. Ignore hook replies.
+                            expected_reply = preliminary == 3 || flags & 1 != 0;
+                        }
+                        Message::ReplyLine(line) if expected_reply => {
+                            reply.lines.push(line.to_vec())
+                        }
                         Message::End { .. } | Message::Error { .. } => {
+                            if !expected_reply {
+                                return Ok(());
+                            }
                             reply.ok = matches!(message, Message::End { .. });
                             let reply = std::mem::take(&mut reply);
                             if !reply.ok {
