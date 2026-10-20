@@ -57,6 +57,30 @@ Target **tmux 3.3** as the floor, matching the Python tool, under these rules:
   floor to every server the app connects to, not only to the `tmux` binary it
   runs.
 
+## Read-only executable preflight
+
+`tmux::preflight::check_tmux` is an explicit library call. It finds an executable
+using literal `PATH` entries, including relative entries, and runs only `tmux -V`.
+The existing bounded process capture drains stdout and stderr, limits their
+combined size to 1 MiB, and kills and reaps a stalled child after five seconds.
+It never contacts a server. Missing, failed, malformed and older versions have
+separate remedies; malformed output and stderr are not echoed in diagnostics.
+Normal product startup and checks of connected server versions remain pending.
+
+The parser follows Python's patch and numbered-development suffix rules and its
+Unicode digit/word classification. It compares major/minor values without machine
+integer overflow. Unicode decimal digits form ascending groups of ten
+([Unicode numeric values](https://www.unicode.org/versions/Unicode16.0.0/core-spec/chapter-4/));
+the existing `unicode-properties` dependency supplies their category.
+
+Executable permission checks use exact-pinned `rustix` 1.1.5 (MIT OR Apache-2.0 OR
+Apache-2.0 WITH LLVM-exception), already in the workspace lockfile. This exposes
+Unix access checks through a safe API, including filesystem permissions. The
+`which` 8.0.6 helper was considered but expands tildes in `PATH`, unlike Python's
+lookup. A literal path search avoids selecting a different executable. Existing
+`tempfile` 3.27.0 (MIT OR Apache-2.0) supplies isolated executable fixtures. No new
+package versions are introduced.
+
 ## Consequences
 
 - The protocol crate carries version fixtures and capability checks from the
