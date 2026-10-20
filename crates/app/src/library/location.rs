@@ -5,7 +5,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::{Component, Path, PathBuf};
 use uzers::os::unix::UserExt;
 
-use crate::Error;
+use tmux_workspaces_store::Error;
 
 /// Find an existing library directory using the Python tool's precedence:
 /// explicit path, nonempty `TMUX_WORKSPACES_DATA_DIR`, nonempty `XDG_DATA_HOME`

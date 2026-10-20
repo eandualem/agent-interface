@@ -6,7 +6,10 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use tmux_workspaces_store::{Document, Error, Store, library_directory};
+use tmux_workspaces_store::{Document, Error, Store};
+
+mod location;
+pub use location::library_directory;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
 
