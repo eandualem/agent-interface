@@ -241,7 +241,11 @@ mod tests {
             "head -c 600000 /dev/zero; exec head -c 600000 /dev/zero >&2",
         ]);
         assert_eq!(
-            capture(command, TIMEOUT).unwrap_err().kind(),
+            // Exercise the byte limit independently of the production deadline;
+            // a busy CI runner can take more than three seconds to emit the data.
+            capture(command, Duration::from_secs(30))
+                .unwrap_err()
+                .kind(),
             io::ErrorKind::InvalidData
         );
         let mut command = Command::new("/bin/sleep");
