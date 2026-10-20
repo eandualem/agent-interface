@@ -10,5 +10,6 @@
 pub mod capture;
 pub mod command;
 pub mod control;
+pub mod discovery;
 pub mod layout;
 pub mod recovery;

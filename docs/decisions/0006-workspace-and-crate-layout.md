@@ -112,3 +112,30 @@ the application owns any eventual process effects. Callers supply proposed
 names, directories and attachment references. As in the Python model, these
 operations do not replace persisted-schema validation or the write-conflict
 gate in [0009](0009-python-library-and-shell-server-compatibility.md).
+
+Read-only session discovery lives in `tmux::discovery`. It accepts an explicit,
+already resolved socket and runs one non-attaching, three-second bounded query.
+The app remains responsible for scheduling, source selection and invalidating
+previous availability on failure. The command inherits the narrow environment
+from [0016](0016-shell-environment-and-launch-context.md), plus `TMUX_TMPDIR`
+set to the explicit socket's parent for namespace isolation. Nonblocking Unix
+socket pairs drain stdout and stderr under one deadline and a combined 1 MiB
+limit; oversized output fails instead of exhausting memory. Blocking pipe readers
+would require additional threads and could outlive a failed query. No async
+runtime or subprocess dependency is added.
+
+Discovery reuses exact-pinned `unicode-properties` 0.1.4 (MIT OR Apache-2.0)
+for Python-compatible printable session-name filtering, with the same Unicode
+version limit documented in [0009](0009-python-library-and-shell-server-compatibility.md).
+Names are not trimmed or converted to command targets. The helper-session option
+filter matches the [Python provider](https://github.com/eandualem/tmux-workspaces/blob/51de6757cd0aeda3c19fe68fa4ec5b93ab206804/tmux_workspaces/adapters/tmux.py);
+a missing server yields an empty list, and other failures return a fixed
+diagnostic without exposing subprocess output.
+
+The app's `sessions::SessionSource` owns one worker per explicitly selected
+source socket. It queries immediately and every five seconds, coalescing full
+observations in one slot. Failures replace previous names and timestamps; a
+missing server remains a successful empty observation. Dropping the handle wakes
+and joins the worker, with an in-flight query bounded by its three-second
+deadline. This read-only worker is not activated by the benchmark window or
+product UI; launcher source selection and metadata composition remain pending.
