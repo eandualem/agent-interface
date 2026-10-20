@@ -5,6 +5,34 @@
 use crate::{Attachment, Direction, Layout, Leaf, Node, Tab, Workspace};
 use unicode_properties::{GeneralCategoryGroup, UnicodeGeneralCategory};
 
+/// The destination and attachment captured when a session chooser opens.
+#[derive(Clone, Debug)]
+pub struct AttachmentTarget {
+    tab: String,
+    pane: String,
+    attachment: Option<Attachment>,
+}
+
+impl AttachmentTarget {
+    /// Apply to the captured pane if its tab is still selected and its attachment
+    /// has not changed. Moving focus within that tab does not redirect the choice.
+    /// None returns to the ordinary shell reference. The caller first refreshes
+    /// shared data and cancels on reconciliation conflict; this changes only the
+    /// model, without connecting to a session or persisting anything.
+    #[must_use = "a changed destination requires a fresh choice"]
+    pub fn apply(&self, layout: &mut Layout, attachment: Option<Attachment>) -> bool {
+        let unchanged = layout.tab().is_some_and(|tab| {
+            tab.id == self.tab
+                && tab
+                    .tree
+                    .leaves()
+                    .iter()
+                    .any(|pane| pane.id == self.pane && pane.attachment == self.attachment)
+        });
+        unchanged && layout.choose_pane(&self.pane) && layout.attach(attachment)
+    }
+}
+
 /// The identity and original name captured when an inline editor opens.
 #[derive(Clone, Debug)]
 pub struct NameEdit {
@@ -177,6 +205,46 @@ impl Layout {
         match find_leaf(&mut tab.tree, &tab.focus)? {
             Node::Leaf(leaf) => Some(leaf),
             Node::Split { .. } => unreachable!("find_leaf only returns leaves"),
+        }
+    }
+
+    /// Bind an attachment chooser or Return to shell action to the focused pane.
+    pub fn attachment_target(&self) -> Option<AttachmentTarget> {
+        let tab = self.tab()?;
+        let pane = self.pane()?;
+        Some(AttachmentTarget {
+            tab: tab.id.clone(),
+            pane: pane.id.clone(),
+            attachment: pane.attachment.clone(),
+        })
+    }
+
+    /// Fill the named empty pane in the selected tab, selecting that destination
+    /// even if focus moved. None chooses its ordinary shell reference. A stale
+    /// tab, missing pane or already filled pane leaves the model unchanged.
+    /// The caller first refreshes shared data, cancels on reconciliation conflict
+    /// and checks that the destination is displayed. This starts no process.
+    #[must_use = "a changed destination requires a fresh choice"]
+    pub fn fill_pane(
+        &mut self,
+        tab_id: &str,
+        pane_id: &str,
+        attachment: Option<Attachment>,
+    ) -> bool {
+        let empty = self.tab().is_some_and(|tab| {
+            tab.id == tab_id
+                && tab
+                    .tree
+                    .leaves()
+                    .iter()
+                    .any(|pane| pane.id == pane_id && pane.empty && pane.attachment.is_none())
+        });
+        if !empty || !self.choose_pane(pane_id) {
+            return false;
+        }
+        match attachment {
+            Some(attachment) => self.attach(Some(attachment)),
+            None => self.open_terminal(),
         }
     }
 
@@ -519,6 +587,87 @@ fn remove_leaf(node: Node, target: &str) -> Option<Node> {
 mod tests {
     use super::*;
     use std::collections::HashSet;
+
+    #[test]
+    fn attachment_choices_keep_their_destination_and_refuse_changed_targets() {
+        let mut model = Layout::initial("/tmp".into());
+        let first = model.pane().unwrap().id.clone();
+        let target = model.attachment_target().unwrap();
+        let tab = model.tab().unwrap().clone();
+        model.split(Direction::Right, "/tmp".into(), false);
+        let second = model.pane().unwrap().id.clone();
+        let attachment = Attachment {
+            session: "work".into(),
+            source_socket: Some("/tmp/source.sock".into()),
+        };
+        assert!(target.apply(&mut model, Some(attachment.clone())));
+        assert_eq!(model.pane().unwrap().id, first);
+        assert_eq!(model.tab().unwrap().name, tab.name);
+        assert!(model.tab().unwrap().tree.leaves()[1].attachment.is_none());
+        let changed = model.clone();
+        assert!(!target.apply(&mut model, None));
+        assert_eq!(model, changed);
+
+        let target = model.attachment_target().unwrap();
+        model.attach(Some(Attachment {
+            source_socket: Some("/tmp/peer.sock".into()),
+            ..attachment
+        }));
+        let changed = model.clone();
+        assert!(!target.apply(&mut model, None));
+        assert_eq!(model, changed);
+        let target = model.attachment_target().unwrap();
+        model.add_tab(None, "/tmp".into(), true);
+        let changed = model.clone();
+        assert!(!target.apply(&mut model, None));
+        assert_eq!(model, changed);
+        model.choose_tab(&tab.id);
+        model.close_pane();
+        let changed = model.clone();
+        assert!(!target.apply(&mut model, None));
+        assert_eq!(model, changed);
+        assert_eq!(model.pane().unwrap().id, second);
+
+        model.attach(Some(Attachment {
+            session: "other".into(),
+            source_socket: None,
+        }));
+        let target = model.attachment_target().unwrap();
+        assert!(target.apply(&mut model, None));
+        assert!(model.pane().unwrap().attachment.is_none());
+        assert_eq!(model.pane().unwrap().id, second);
+    }
+
+    #[test]
+    fn empty_choices_fill_only_the_named_unfilled_pane() {
+        let mut model = Layout::initial("/tmp".into());
+        let first = model.pane().unwrap().id.clone();
+        model.split(Direction::Below, "/tmp/project".into(), true);
+        let tab = model.tab().unwrap().id.clone();
+        let destination = model.pane().unwrap().id.clone();
+        model.choose_pane(&first);
+        let before = model.clone();
+        assert!(!model.fill_pane("missing", &destination, None));
+        assert!(!model.fill_pane(&tab, "missing", None));
+        assert!(!model.fill_pane(&tab, &first, None));
+        assert_eq!(model, before);
+        let attachment = Attachment {
+            session: "work".into(),
+            source_socket: Some("/tmp/source.sock".into()),
+        };
+        assert!(model.fill_pane(&tab, &destination, Some(attachment.clone())));
+        assert_eq!(model.pane().unwrap().id, destination);
+        assert_eq!(model.pane().unwrap().attachment, Some(attachment));
+        assert_eq!(model.pane().unwrap().cwd.as_deref(), Some("/tmp/project"));
+        let filled = model.clone();
+        assert!(!model.fill_pane(&tab, &destination, None));
+        assert_eq!(model, filled);
+        model.split(Direction::Right, "/tmp/project".into(), true);
+        let destination = model.pane().unwrap().id.clone();
+        assert!(model.fill_pane(&tab, &destination, None));
+        assert!(!model.pane().unwrap().empty);
+        assert!(model.pane().unwrap().attachment.is_none());
+    }
 
     #[test]
     fn navigation_reordering_transfer_and_empty_workspace_deletion() {
