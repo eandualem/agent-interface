@@ -74,12 +74,33 @@ output. The snapshot conversion is shared with the fidelity harness.
 Capture startup has a ten-second deadline and rejects recovery hooks or a
 pane whose size changed during attachment.
 
-The benchmark currently rejects an initial cursor at or beyond the right
-margin: it has not yet integrated 0021's repeated snapshot recovery into its
-worker. This is an explicit startup failure, not a fidelity pass. Its
-startup error path closes only its own control client on the disposable
-fixture server. Retrying failed captures while retaining a production
-attachment is still part of the full connection lifecycle.
+A cursor at or beyond the right margin uses 0021's display-only snapshot.
+Output causes a new pause/capture/continue recovery; normal streaming resumes
+only with an in-grid cursor. The worker checks wrap between control bytes,
+including within one output event, before an edit can clear the engine's
+pending-wrap state and hide a transition that differs from tmux. Recovery
+runs one pane at a time while other panes keep updating. Input acknowledgments
+and recovery replies retain their command order; guard flags distinguish
+hook replies from commands sent by this connection. A writer thread prevents a
+large input from blocking the terminal worker while it drains replies and
+output. Input is split into commands of at most 1,024 bytes to stay below
+tmux's parser stack limit, preserving the order of each input call.
+Each recovery has a ten-second deadline. It is retained only when held
+output immediately requires another capture. A completed snapshot, including
+an idle margin snapshot, gets a fresh deadline when later output arrives. An exited pane is retired without stopping its neighbors. Recovery
+and input transport failures are reported once before the benchmark window
+closes; a failed write still lets queued output drain. If the connection ends before a
+required capture completes, its final state remains unverified and the
+benchmark reports that failure instead of claiming an exact final frame.
+
+Checking wrap between control bytes adds engine calls, and a margin at an
+output boundary can require a capture even if later text would wrap normally.
+This correctness path has a throughput cost; the bulk-output gate must measure
+it before the product can claim its speed target.
+
+Resize recovery and retrying failed initial captures while retaining a
+production attachment still belong to the full connection lifecycle. The
+startup error path closes only its own client on the disposable fixture.
 
 **Dependencies of `app`:**
 
