@@ -239,6 +239,17 @@ selection before sending input. This follows the Python viewer's refresh check
 in `sidebar.py` at the pinned reference version. The storage worker itself never
 dispatches input or changes focus.
 
+## Projecting model edits
+
+`Document::with_model` returns a newly validated document without accessing a
+file or database. It preserves extension fields by stable identity through
+splits, pane closes and tab moves. Unchanged models retain the original JSON
+text; edited documents may change whitespace and key order. Unchanged optional
+defaults and number representations are retained. Model tree depth, object count,
+serialized size and the complete resulting schema are checked before returning.
+The source document remains unchanged on success or failure. Database writes
+remain subject to the existing mixed-writer gate.
+
 ## In-memory conflict handling
 
 `core::merge::merge_shared_layout` accepts three already validated schema-v2

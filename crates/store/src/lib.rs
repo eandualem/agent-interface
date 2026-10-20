@@ -4,6 +4,7 @@
 #![forbid(unsafe_code)]
 
 mod json;
+mod project;
 mod schema;
 
 use rusqlite::{Connection, OpenFlags, OptionalExtension, types::ValueRef};
@@ -48,6 +49,26 @@ impl Document {
         let value = json::decode(&raw).map_err(|error| fail(error.to_string()))?;
         let model = schema::layout(&value).map_err(fail)?;
         Ok(Self { raw, model })
+    }
+
+    /// Apply in-memory model edits while retaining extension fields by stable identity.
+    /// Unchanged models retain the exact original JSON. Changed documents may change
+    /// JSON whitespace/key order; untouched values and optional defaults are retained.
+    /// The complete result is validated and bounded before returning. This performs
+    /// no SQLite or filesystem I/O; `path` is diagnostic only.
+    pub fn with_model(&self, model: &Layout, path: &Path) -> Result<Self, Error> {
+        if model == &self.model {
+            return Self::parse(self.raw.clone(), path);
+        }
+        let projected = (|| {
+            let raw = json::decode(&self.raw).map_err(|error| error.to_string())?;
+            project::apply(&raw, model)
+        })()
+        .map_err(|detail| Error {
+            path: path.to_owned(),
+            detail,
+        })?;
+        Self::parse(projected, path)
     }
 
     /// Original JSON, preserving unknown fields, number spellings and absent/null distinctions.
