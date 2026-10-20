@@ -3,8 +3,11 @@
 #![forbid(unsafe_code)]
 
 mod actions;
+mod geometry;
 pub mod merge;
 mod navigation;
+
+pub use geometry::PaneRect;
 
 /// An arrangement loaded from a library. Navigation values seed a new window;
 /// each window subsequently owns its selection and focus.
@@ -14,7 +17,7 @@ pub struct Layout {
     pub workspaces: Vec<Workspace>,
     /// Initially selected workspace identity.
     pub selected: String,
-    /// Saved initial focus flag for a new window.
+    /// Show only the selected pane; this is separate from keyboard input focus.
     pub focus: bool,
     /// Whether the optional roster is shown.
     pub show_agents: bool,
