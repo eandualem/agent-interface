@@ -103,7 +103,13 @@ fn run() -> Result<(), String> {
         .ok_or("the session has no panes")?;
 
     let client = server
-        .control(&["attach-session", "-t", &options.session])
+        .control(&[
+            "attach-session",
+            "-f",
+            "no-output,ignore-size",
+            "-t",
+            &options.session,
+        ])
         .map_err(|e| e.to_string())?;
     let (wake, woken) = futures::channel::mpsc::unbounded();
     let panes = Panes::start(client, &layout, options.scrollback, move || {

@@ -13,7 +13,7 @@
 use std::collections::VecDeque;
 use std::io::{self, Read, Write};
 use std::process::{Child, ChildStdin, ChildStdout};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, mpsc};
 use std::thread::{self, JoinHandle};
 
 use tmux_workspaces_term::{Screen, Terminal};
@@ -84,8 +84,10 @@ struct State {
 impl Panes {
     /// Starts keeping the panes in `layout` up to date from `client`, a
     /// control-mode client (`tmux -C`) with piped standard input and output,
-    /// already attached to their session. Each pane keeps about `scrollback`
-    /// lines of history.
+    /// freshly attached with `-f no-output,ignore-size`. Its initial reply
+    /// must not have been read. Captures existing contents before enabling
+    /// live output; startup is bounded by a ten-second capture deadline.
+    /// Each pane keeps about `scrollback` lines of history.
     ///
     /// `wake` is called on the worker thread whenever an update is ready, and
     /// once more when the worker has finished.
@@ -95,26 +97,41 @@ impl Panes {
         scrollback: usize,
         wake: impl Fn() + Send + 'static,
     ) -> io::Result<Self> {
-        let stdin = client.stdin.take();
-        let stdout = client
-            .stdout
-            .take()
-            .ok_or_else(|| io::Error::other("the client's standard output is not piped"))?;
+        let seed =
+            match crate::seed::attach(&mut client, layout.iter().map(|pane| pane.id).collect()) {
+                Ok(seed) => seed,
+                Err(error) => {
+                    let _ = client.kill();
+                    let _ = client.wait();
+                    return Err(error);
+                }
+            };
+        let crate::seed::Seed {
+            stdin,
+            stdout,
+            decoder,
+            snapshots,
+            output,
+        } = seed;
         let shared = Arc::new(Shared {
-            state: Mutex::new(State::default()),
+            state: Mutex::new(State {
+                queued: output.iter().map(|(_, bytes)| bytes.len()).sum(),
+                queue: output.into(),
+                ..State::default()
+            }),
             changed: Condvar::new(),
         });
         let layout = layout.to_vec();
         // Should a thread fail to start, dropping `panes` stops what did.
         let mut panes = Self {
             shared,
-            stdin: Mutex::new(stdin),
+            stdin: Mutex::new(Some(stdin)),
             client,
             threads: Vec::new(),
         };
         let reader = spawn("tmux reader", {
             let shared = Arc::clone(&panes.shared);
-            move || read(&shared, stdout)
+            move || read(&shared, stdout, decoder)
         });
         match reader {
             Ok(reader) => panes.threads.push(reader),
@@ -124,10 +141,15 @@ impl Panes {
                 return Err(error);
             }
         }
+        let (ready, initialized) = mpsc::channel();
         panes.threads.push(spawn("terminal worker", {
             let shared = Arc::clone(&panes.shared);
-            move || work(&shared, &layout, scrollback, &wake)
+            move || work(&shared, &layout, snapshots, scrollback, &wake, ready)
         })?);
+        initialized
+            .recv_timeout(crate::seed::TIMEOUT)
+            .map_err(|error| io::Error::other(format!("initializing terminal worker: {error}")))?
+            .map_err(io::Error::other)?;
         Ok(panes)
     }
 
@@ -202,8 +224,7 @@ fn spawn(name: &str, body: impl FnOnce() + Send + 'static) -> io::Result<JoinHan
 
 /// Reads and decodes the client's output, queueing each pane's output for the
 /// worker, until the client exits.
-fn read(shared: &Shared, mut stdout: ChildStdout) {
-    let mut decoder = Decoder::new();
+fn read(shared: &Shared, mut stdout: ChildStdout, mut decoder: Decoder) {
     let mut buffer = vec![0; READ_SIZE];
     loop {
         let read = match stdout.read(&mut buffer) {
@@ -248,19 +269,51 @@ fn read(shared: &Shared, mut stdout: ChildStdout) {
 
 /// Applies queued output to each pane's terminal and publishes updates, until
 /// the client has exited and the queue is empty.
-fn work(shared: &Shared, layout: &[PaneLayout], scrollback: usize, wake: &dyn Fn()) {
+fn work(
+    shared: &Shared,
+    layout: &[PaneLayout],
+    snapshots: Vec<tmux_workspaces_tmux::recovery::Snapshot>,
+    scrollback: usize,
+    wake: &dyn Fn(),
+    ready: mpsc::Sender<Result<(), String>>,
+) {
     // Engine handles are not `Send`, so they are made on this thread.
     let terminals: Result<Vec<_>, _> = layout
         .iter()
-        .map(|pane| Terminal::new(pane.cols, pane.rows, scrollback).map(|t| (pane.id, t)))
+        .map(|pane| {
+            let snapshot = snapshots
+                .iter()
+                .find(|snapshot| snapshot.pane == pane.id)
+                .ok_or_else(|| format!("no initial snapshot for pane %{}", pane.id.0))?;
+            if (snapshot.state.width, snapshot.state.height) != (pane.cols, pane.rows) {
+                return Err(format!(
+                    "pane %{} changed size during attachment",
+                    pane.id.0
+                ));
+            }
+            if snapshot.state.cursor.0 >= snapshot.state.width {
+                return Err(format!(
+                    "pane %{} needs right-margin snapshot recovery before streaming",
+                    pane.id.0
+                ));
+            }
+            Terminal::restored(&crate::restore::restore(snapshot), scrollback)
+                .map(|terminal| (pane.id, terminal))
+                .map_err(|error| error.to_string())
+        })
         .collect();
-    let Ok(mut terminals) = terminals else {
-        shared.lock().finished = true;
-        shared.changed.notify_all();
-        wake();
-        return;
+    let mut terminals = match terminals {
+        Ok(terminals) => terminals,
+        Err(error) => {
+            shared.lock().finished = true;
+            shared.changed.notify_all();
+            let _ = ready.send(Err(error));
+            wake();
+            return;
+        }
     };
-    let mut changed: Vec<PaneId> = Vec::new();
+    let _ = ready.send(Ok(()));
+    let mut changed: Vec<PaneId> = layout.iter().map(|pane| pane.id).collect();
     let mut state = shared.lock();
     loop {
         if !changed.is_empty() && state.update.is_none() && !state.cancelled {
@@ -356,6 +409,99 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn attachment_publishes_existing_styles_before_applying_new_output() {
+        let server = TmuxServer::start().unwrap();
+        let session = TmuxServer::SESSION;
+        let signal = server.shell_command(&["wait-for", "-S", "seed-ready"]);
+        let script =
+            format!("printf '\\033[2J\\033[H\\033[45mSEEDED\\033[0m'; {signal}; exec sleep 60");
+        server
+            .run(&["respawn-pane", "-k", "-t", session, &script])
+            .unwrap();
+        server.run(&["wait-for", "seed-ready"]).unwrap();
+        let layout = layout(&server);
+        let pane = layout[0].id;
+        let client = server
+            .control(&[
+                "attach-session",
+                "-f",
+                "no-output,ignore-size",
+                "-t",
+                session,
+            ])
+            .unwrap();
+        let (wake, woken) = mpsc::channel();
+        let panes = Panes::start(client, &layout, 100, move || {
+            let _ = wake.send(());
+        })
+        .unwrap();
+        woken.recv_timeout(Duration::from_secs(10)).unwrap();
+        let update = panes.take_update().unwrap();
+        let (_, screen) = update.iter().find(|(id, _)| *id == pane).unwrap();
+        let text: String = (0..6).map(|col| screen.cell(0, col).unwrap().0).collect();
+        assert_eq!(text, "SEEDED");
+        assert_eq!(
+            screen.cell(0, 0).unwrap().1.style.background,
+            tmux_workspaces_term::Color::Palette(5)
+        );
+        panes.send_input(pane, b"more").unwrap();
+        wait_for_row(&panes, &woken, pane, "SEEDEDmore");
+    }
+
+    #[test]
+    fn an_unsafe_capture_hook_fails_attachment_without_stopping_the_server() {
+        let server = TmuxServer::start().unwrap();
+        server
+            .run(&[
+                "set-hook",
+                "-g",
+                "after-capture-pane",
+                "display-message -p hooked",
+            ])
+            .unwrap();
+        let client = server
+            .control(&[
+                "attach-session",
+                "-f",
+                "no-output,ignore-size",
+                "-t",
+                TmuxServer::SESSION,
+            ])
+            .unwrap();
+        let result = Panes::start(client, &layout(&server), 100, || {});
+        assert!(result.err().unwrap().to_string().contains("recovery hooks"));
+        assert!(
+            server
+                .run(&["has-session", "-t", TmuxServer::SESSION])
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn an_initial_margin_cursor_is_reported_instead_of_clamped() {
+        let server = TmuxServer::start().unwrap();
+        let session = TmuxServer::SESSION;
+        let signal = server.shell_command(&["wait-for", "-S", "seed-ready"]);
+        let script = format!("printf '\\033[2J\\033[H%0200d' 0; {signal}; exec sleep 60");
+        server
+            .run(&["respawn-pane", "-k", "-t", session, &script])
+            .unwrap();
+        server.run(&["wait-for", "seed-ready"]).unwrap();
+        let client = server
+            .control(&[
+                "attach-session",
+                "-f",
+                "no-output,ignore-size",
+                "-t",
+                session,
+            ])
+            .unwrap();
+        let result = Panes::start(client, &layout(&server), 100, || {});
+        assert!(result.err().unwrap().to_string().contains("right-margin"));
+        assert!(server.run(&["has-session", "-t", session]).is_ok());
+    }
+
     /// Waits until the pane's screen shows `text` on its first row.
     fn wait_for_row(panes: &Panes, woken: &mpsc::Receiver<()>, pane: PaneId, text: &str) {
         let deadline = Instant::now() + Duration::from_secs(10);
@@ -397,13 +543,22 @@ mod tests {
             cols: 200,
             rows: 50,
         }];
-        let client = server.control(&["attach-session", "-t", session]).unwrap();
+        let client = server
+            .control(&[
+                "attach-session",
+                "-f",
+                "no-output,ignore-size",
+                "-t",
+                session,
+            ])
+            .unwrap();
         let (wake, woken) = mpsc::channel();
         let panes = Panes::start(client, &layout, 100, move || {
             let _ = wake.send(());
         })
         .unwrap();
 
+        wait_for_row(&panes, &woken, pane, "");
         // The first update waits, untaken, while more output arrives and the
         // client exits.
         panes.send_input(pane, b"first").unwrap();
@@ -464,7 +619,7 @@ mod tests {
         drop(client.stdin.take());
         // Read on another thread, so that a client that never exits fails
         // the test instead of hanging it: killing the client ends the read.
-        let reader = std::thread::spawn(move || read(&shared, stdout));
+        let reader = std::thread::spawn(move || read(&shared, stdout, Decoder::new()));
 
         let deadline = Instant::now() + Duration::from_secs(10);
         while client.try_wait().unwrap().is_none() {
@@ -492,13 +647,22 @@ mod tests {
             .unwrap();
         let layout = layout(&server);
         let quiet = layout[0].id;
-        let client = server.control(&["attach-session", "-t", session]).unwrap();
+        let client = server
+            .control(&[
+                "attach-session",
+                "-f",
+                "no-output,ignore-size",
+                "-t",
+                session,
+            ])
+            .unwrap();
         let (wake, woken) = mpsc::channel();
         let panes = Panes::start(client, &layout, 100, move || {
             let _ = wake.send(());
         })
         .unwrap();
 
+        wait_for_row(&panes, &woken, quiet, "");
         // An update holding the streaming pane waits, untaken, when the quiet
         // pane echoes a key. Only joining changes a waiting update, so without
         // it the echo never shows in this one.
@@ -537,7 +701,15 @@ mod tests {
             cols: 200,
             rows: 50,
         }];
-        let client = server.control(&["attach-session", "-t", session]).unwrap();
+        let client = server
+            .control(&[
+                "attach-session",
+                "-f",
+                "no-output,ignore-size",
+                "-t",
+                session,
+            ])
+            .unwrap();
         let (wake, woken) = mpsc::channel();
         let panes = Panes::start(client, &layout, 100, move || {
             let _ = wake.send(());
