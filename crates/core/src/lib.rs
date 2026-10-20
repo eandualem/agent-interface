@@ -6,6 +6,7 @@ mod actions;
 mod geometry;
 pub mod merge;
 mod navigation;
+pub mod theme;
 
 pub use actions::{AttachmentTarget, NameEdit, RenameOutcome};
 pub use geometry::PaneRect;
