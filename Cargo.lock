@@ -5317,6 +5317,7 @@ dependencies = [
  "gpui-pre",
  "gpui-pre-platform",
  "rusqlite",
+ "sha2",
  "tempfile",
  "tmux-workspaces-store",
  "tmux-workspaces-term",
