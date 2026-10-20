@@ -264,6 +264,13 @@ pub const FIXTURES: &[Fixture] = &[
         expected: &[],
     },
     Fixture {
+        name: "origin-horizontal-position",
+        draw: r"printf '\033[3;6r\033[?6h\033[2;2Hx'",
+        more: r"printf '\033[1GL\033[5`R\033[3;2HN'",
+        runs: Runs::Everywhere,
+        expected: &[],
+    },
+    Fixture {
         name: "links",
         draw: r"printf 'a\033]8;id=k;http://e.x/1\007LINK\033]8;;\007 b\033]8;;http://e.x/2\007two\033]8;;\007\n'",
         more: r"printf '\033]8;;http://e.x/3\007three\033]8;;\007\n'",

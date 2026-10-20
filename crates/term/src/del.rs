@@ -34,8 +34,10 @@ pub(crate) struct Del {
 }
 
 impl Del {
-    /// Passes every byte through except DEL in ground state.
-    pub(crate) fn filter(&mut self, bytes: &[u8], mut write: impl FnMut(&[u8])) {
+    /// Passes every byte through except DEL in ground state. Marks the final
+    /// byte of horizontal-position CSI commands so the caller can compensate
+    /// for the engine applying origin mode to their unchanged row.
+    pub(crate) fn filter(&mut self, bytes: &[u8], mut write: impl FnMut(&[u8], bool)) {
         let mut start = 0;
         let mut index = 0;
         while index < bytes.len() {
@@ -48,7 +50,7 @@ impl Del {
                 index += offset;
                 if bytes[index] == DEL {
                     if start < index {
-                        write(&bytes[start..index]);
+                        write(&bytes[start..index], false);
                     }
                     index += 1;
                     start = index;
@@ -65,12 +67,19 @@ impl Del {
                     break;
                 };
                 index += offset;
+                if matches!(bytes[index], b'G' | b'`') {
+                    if start < index {
+                        write(&bytes[start..index], false);
+                    }
+                    write(&bytes[index..index + 1], true);
+                    start = index + 1;
+                }
             }
             self.state = self.state.next(bytes[index]);
             index += 1;
         }
         if start < bytes.len() {
-            write(&bytes[start..]);
+            write(&bytes[start..], false);
         }
     }
 }
@@ -119,8 +128,8 @@ mod tests {
         for split in 0..=input.len() {
             let mut filter = Del::default();
             let mut actual = Vec::new();
-            filter.filter(&input[..split], |part| actual.extend_from_slice(part));
-            filter.filter(&input[split..], |part| actual.extend_from_slice(part));
+            filter.filter(&input[..split], |part, _| actual.extend_from_slice(part));
+            filter.filter(&input[split..], |part, _| actual.extend_from_slice(part));
             assert_eq!(actual, expected, "split at {split}");
         }
     }
@@ -145,5 +154,54 @@ mod tests {
             b"\x1bP1\x18\x7fa\x1bP:q\x1a\x7fb\x1bP1?q\x18\x7fc",
             b"\x1bP1\x18a\x1bP:q\x1ab\x1bP1?q\x18c",
         );
+    }
+
+    #[test]
+    fn horizontal_position_keeps_the_row_and_origin_mode_across_writes() {
+        use crate::Terminal;
+        for origin in [false, true] {
+            for final_byte in ['G', '`'] {
+                for (column, expected) in [("", 0), ("0", 0), ("1", 0), ("5", 4), ("999", 9)] {
+                    let input = format!(
+                        "\x1b[3;8r\x1b[?6{}\x1b[2;2H\x1b[{column}{final_byte}",
+                        if origin { 'h' } else { 'l' }
+                    );
+                    for split in 0..=input.len() {
+                        let mut terminal = Terminal::new(10, 10, 0).unwrap();
+                        terminal.write(&input.as_bytes()[..split]);
+                        terminal.write(&input.as_bytes()[split..]);
+                        let row = if origin { 3 } else { 1 };
+                        assert_eq!(
+                            terminal.cursor().unwrap(),
+                            (expected, row),
+                            "{input:?} split{split}"
+                        );
+                        assert_eq!(terminal.modes().unwrap().origin, origin);
+                        terminal.write(b"\x1b[2;2H");
+                        assert_eq!(terminal.cursor().unwrap(), (1, row));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn horizontal_markers_ignore_text_strings_and_cancelled_sequences() {
+        let input = b"G`\x1b]title[G\x07\x1bPqG`\x1b\\\x1b[1\x18G\x1b[5G\x1b[2`";
+        for split in 0..=input.len() {
+            let mut filter = Del::default();
+            let mut marked = Vec::new();
+            let mut actual = Vec::new();
+            for part in [&input[..split], &input[split..]] {
+                filter.filter(part, |bytes, horizontal| {
+                    actual.extend_from_slice(bytes);
+                    if horizontal {
+                        marked.extend_from_slice(bytes);
+                    }
+                });
+            }
+            assert_eq!(actual, input);
+            assert_eq!(marked, b"G`", "split{split}");
+        }
     }
 }
