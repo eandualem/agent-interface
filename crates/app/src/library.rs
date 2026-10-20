@@ -157,27 +157,66 @@ mod tests {
         })
         .unwrap();
         woken.recv_timeout(Duration::from_secs(5)).unwrap();
-        // Leave the valid document pending while a subsequent read fails.
+        // Leave the valid document pending across two distinct failures. Hold
+        // the writer lock until the worker observes it, so commit timing cannot
+        // decide whether the first error is a lock or an invalid document.
         writer
-            .execute("UPDATE terminal_layout SET value = '{}'", [])
+            .execute_batch("BEGIN EXCLUSIVE; UPDATE terminal_layout SET value = '{}'")
             .unwrap();
+        woken.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(
+            library
+                .updates
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .error
+                .as_ref()
+                .unwrap()
+                .detail,
+            "database is locked"
+        );
+        writer.execute_batch("COMMIT").unwrap();
         woken.recv_timeout(Duration::from_secs(5)).unwrap();
         let update = library.take_update().unwrap();
         assert_eq!(
             update.document.unwrap().model().workspaces[0].name,
             "Initial"
         );
-        assert!(update.error.is_some());
-        assert!(matches!(
-            woken.recv_timeout(Duration::from_millis(600)),
-            Err(mpsc::RecvTimeoutError::Timeout)
-        ));
+        assert_eq!(
+            update.error.as_ref().unwrap().detail,
+            "layout.version: unsupported version"
+        );
+        let quiet = woken.recv_timeout(Duration::from_millis(600));
+        assert!(
+            matches!(quiet, Err(mpsc::RecvTimeoutError::Timeout)),
+            "expected no repeated error notification; first error: {:?}, receive: {quiet:?}, next update: {:?}",
+            update.error,
+            library.take_update()
+        );
+        writer.execute_batch("BEGIN EXCLUSIVE").unwrap();
         writer
             .execute(
                 "UPDATE terminal_layout SET value = ?1",
                 [valid.replace("Initial", "Changed")],
             )
             .unwrap();
+        woken.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(
+            library
+                .updates
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .error
+                .as_ref()
+                .unwrap()
+                .detail,
+            "database is locked"
+        );
+        writer.execute_batch("COMMIT").unwrap();
         woken.recv_timeout(Duration::from_secs(5)).unwrap();
         let update = library.take_update().unwrap();
         assert_eq!(
