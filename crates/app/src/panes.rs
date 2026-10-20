@@ -73,8 +73,6 @@ struct State {
     queue: VecDeque<Event>,
     /// The bytes in `queue`.
     queued: usize,
-    received_events: u64,
-    applied_events: u64,
     /// The update waiting for the user interface.
     update: Option<Update>,
     /// Screens the user interface no longer needs, for the worker to reuse.
@@ -187,7 +185,6 @@ struct LivePane {
     captured: Option<Snapshot>,
     needs_capture: bool,
     recovery_deadline: Option<Instant>,
-    settle_through: Option<u64>,
 }
 
 impl LivePane {
@@ -205,8 +202,23 @@ impl LivePane {
             captured: captured.then_some(snapshot),
             needs_capture: false,
             recovery_deadline: None,
-            settle_through: None,
         })
+    }
+
+    fn resume_after_recovery(
+        &mut self,
+        bytes: &[u8],
+        deadline: Option<Instant>,
+    ) -> Result<(), String> {
+        self.output(bytes)?;
+        // An in-grid snapshot plus its held output completes this recovery.
+        // A later margin crossing is a new round trip, even with a backlog.
+        self.recovery_deadline = if self.captured.is_some() || self.needs_capture {
+            deadline
+        } else {
+            None
+        };
+        Ok(())
     }
 
     fn output(&mut self, bytes: &[u8]) -> Result<(), String> {
@@ -271,7 +283,6 @@ impl Panes {
         let shared = Arc::new(Shared {
             state: Mutex::new(State {
                 queued: output.iter().map(|(_, bytes)| bytes.len()).sum(),
-                received_events: output.len() as u64,
                 queue: output
                     .into_iter()
                     .map(|(pane, bytes)| Event::Output(pane, bytes))
@@ -467,7 +478,6 @@ fn read(shared: &Shared, mut stdout: ChildStdout, mut decoder: Decoder) {
             break;
         }
         state.queued += size;
-        state.received_events += batch.len() as u64;
         state.queue.extend(batch);
         drop(state);
         shared.changed.notify_all();
@@ -522,13 +532,15 @@ fn work(
     };
     let _ = ready.send(Ok(()));
     let mut recovering: Option<(Recovery, Instant)> = None;
+    let mut capture_unavailable = false;
     let mut changed: Vec<PaneId> = layout.iter().map(|pane| pane.id).collect();
     let mut state = shared.lock();
     loop {
         if state.cancelled || state.failure.is_some() {
             break;
         }
-        if recovering.is_none()
+        if !capture_unavailable
+            && recovering.is_none()
             && let Some((pane, terminal)) = terminals
                 .iter_mut()
                 .find(|(_, terminal)| terminal.needs_capture)
@@ -541,10 +553,15 @@ fn work(
             let sent = control.send(&line, ReplyOwner::Recovery);
             state = shared.lock();
             if let Err(error) = sent {
-                state.failure = Some(error.to_string());
-                break;
+                if state.write_failure.is_some() {
+                    capture_unavailable = true;
+                } else {
+                    state.failure = Some(error.to_string());
+                    break;
+                }
+            } else {
+                recovering = Some((recovery, deadline));
             }
-            recovering = Some((recovery, deadline));
         }
         if recovering
             .as_ref()
@@ -602,8 +619,6 @@ fn work(
             && let Some(event) = state.queue.pop_front()
         {
             state.queued -= event.size();
-            state.applied_events += 1;
-            let received_events = state.received_events;
             drop(state);
             shared.changed.notify_all();
             let result = apply(
@@ -613,7 +628,6 @@ fn work(
                 control,
                 scrollback,
                 &mut changed,
-                received_events,
             );
             state = shared.lock();
             match result {
@@ -624,11 +638,17 @@ fn work(
                 }
                 Ok(None) => {}
                 Err(error) => {
-                    state.failure = Some(error);
-                    break;
+                    if state.write_failure.is_some() {
+                        // Recovery can no longer issue commands, but other
+                        // panes may still have valid final output queued.
+                        capture_unavailable = true;
+                        recovering = None;
+                    } else {
+                        state.failure = Some(error);
+                        break;
+                    }
                 }
             }
-            settle_recoveries(&mut terminals, &recovering, &state);
         } else if state.cancelled || (state.closed && changed.is_empty() && recovering.is_none()) {
             // Once the client has exited, the last changes still wait for the
             // user interface to take the update before them.
@@ -662,7 +682,6 @@ fn apply(
     control: &Control,
     scrollback: usize,
     changed: &mut Vec<PaneId>,
-    received_events: u64,
 ) -> Result<Option<PaneId>, String> {
     match event {
         Event::Output(pane, bytes) => {
@@ -724,9 +743,7 @@ fn apply(
                                 .ok_or("recovery completed for an unknown pane")?;
                             let deadline = terminal.recovery_deadline;
                             *terminal = LivePane::restored(rebuilt.snapshot, scrollback)?;
-                            terminal.recovery_deadline = deadline;
-                            terminal.settle_through = Some(received_events);
-                            terminal.output(&rebuilt.output)?;
+                            terminal.resume_after_recovery(&rebuilt.output, deadline)?;
                             if terminal.needs_capture {
                                 changed.retain(|id| *id != pane);
                             } else if !changed.contains(&pane) {
@@ -749,28 +766,6 @@ fn apply(
         }
     }
     Ok(None)
-}
-
-// Only the queue prefix already present when a capture completes belongs to
-// its settling period. Newly arriving output must not extend an old deadline.
-fn settle_recoveries(
-    terminals: &mut [(PaneId, LivePane)],
-    recovering: &Option<(Recovery, Instant)>,
-    state: &State,
-) {
-    for (pane, terminal) in terminals {
-        if !terminal.needs_capture
-            && terminal
-                .settle_through
-                .is_some_and(|end| state.applied_events >= end)
-            && !recovering
-                .as_ref()
-                .is_some_and(|(recovery, _)| recovery.pane() == *pane)
-        {
-            terminal.recovery_deadline = None;
-            terminal.settle_through = None;
-        }
-    }
 }
 
 fn missing_pane(reply: &Reply, pane: PaneId) -> bool {
@@ -803,34 +798,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn settled_recovery_does_not_inherit_a_deadline_from_older_output() {
-        let pane = PaneId(1);
+    fn successful_recovery_does_not_lend_its_deadline_to_the_next_margin() {
         let expired = Instant::now() - Duration::from_secs(1);
-        let mut terminals = vec![(
-            pane,
-            LivePane {
-                terminal: Terminal::new(80, 24, 0).unwrap(),
-                captured: None,
-                needs_capture: false,
-                recovery_deadline: Some(expired),
-                settle_through: Some(4),
-            },
-        )];
-        let mut state = State {
-            applied_events: 3,
-            received_events: 4,
-            ..State::default()
+        let mut terminal = LivePane {
+            terminal: Terminal::new(80, 24, 0).unwrap(),
+            captured: None,
+            needs_capture: false,
+            recovery_deadline: None,
         };
-        settle_recoveries(&mut terminals, &None, &state);
-        assert_eq!(terminals[0].1.recovery_deadline, Some(expired));
-        // More output arrives while the original prefix is being drained.
-        state.received_events = 8;
-        state.applied_events = 4;
-        state
-            .queue
-            .push_back(Event::Output(pane, b"new output".to_vec()));
-        settle_recoveries(&mut terminals, &None, &state);
-        assert_eq!(terminals[0].1.recovery_deadline, None);
+        terminal
+            .resume_after_recovery(b"restored\r\n", Some(expired))
+            .unwrap();
+        assert_eq!(terminal.recovery_deadline, None);
+        // A new full-width row, already queued or newly received, gets a
+        // fresh deadline when the worker starts its recovery.
+        terminal.output(&[b'x'; 80]).unwrap();
+        assert!(terminal.needs_capture);
+        assert_eq!(terminal.recovery_deadline, None);
+        terminal
+            .resume_after_recovery(b"more", Some(expired))
+            .unwrap();
+        assert_eq!(terminal.recovery_deadline, Some(expired));
     }
 
     #[test]
@@ -876,6 +864,77 @@ mod tests {
         );
         assert_eq!(state.queue.len(), 1);
         assert!(!state.finished);
+    }
+
+    #[test]
+    fn failed_recovery_write_still_drains_a_neighbors_final_output() {
+        let server = TmuxServer::start().unwrap();
+        server
+            .run(&["split-window", "-h", "-t", TmuxServer::SESSION])
+            .unwrap();
+        let layout = layout(&server);
+        let mut client = server
+            .control(&[
+                "attach-session",
+                "-f",
+                "no-output,ignore-size",
+                "-t",
+                TmuxServer::SESSION,
+            ])
+            .unwrap();
+        let seed =
+            crate::seed::attach(&mut client, layout.iter().map(|pane| pane.id).collect()).unwrap();
+        let snapshots = seed.snapshots.clone();
+        drop(seed);
+        client.wait().unwrap();
+        let mut margin = b"\x1b[2J\x1b[H".to_vec();
+        margin.extend(vec![b'x'; usize::from(layout[0].cols)]);
+        let shared = Shared {
+            state: Mutex::new(State {
+                queue: VecDeque::from([
+                    Event::Output(layout[0].id, margin.clone()),
+                    Event::Output(layout[1].id, b"\x1b[2J\x1b[HFINAL".to_vec()),
+                ]),
+                queued: margin.len() + 12,
+                closed: true,
+                write_failure: Some("writing to control client: Broken pipe".into()),
+                ..State::default()
+            }),
+            changed: Condvar::new(),
+        };
+        let (commands, requests) = mpsc::channel();
+        drop(requests);
+        let control = Control {
+            commands,
+            pending: Mutex::new(VecDeque::new()),
+        };
+        let seen = Mutex::new(Vec::new());
+        let wake = || {
+            if let Some(update) = shared.lock().update.take() {
+                seen.lock().unwrap().extend(update);
+            }
+        };
+        let (ready, _) = mpsc::channel();
+        work(&shared, &control, &layout, snapshots, 100, &wake, ready);
+        let seen = seen.lock().unwrap();
+        let (_, screen) = seen
+            .iter()
+            .rev()
+            .find(|(id, _)| *id == layout[1].id)
+            .unwrap();
+        let text: String = (0..5).map(|col| screen.cell(0, col).unwrap().0).collect();
+        assert_eq!(text, "FINAL");
+        let state = shared.lock();
+        assert!(state.finished);
+        assert!(state.queue.is_empty());
+        assert!(
+            state
+                .write_failure
+                .as_ref()
+                .unwrap()
+                .contains("Broken pipe")
+        );
+        assert!(state.failure.is_none());
     }
 
     #[test]
