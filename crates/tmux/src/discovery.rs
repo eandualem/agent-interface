@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use unicode_properties::{GeneralCategoryGroup, UnicodeGeneralCategory};
 
 const TIMEOUT: Duration = Duration::from_secs(3);
+const CAPTURE_LIMIT: usize = 1024 * 1024;
 
 /// List attachable session names without starting a server or attaching a client.
 /// `socket` must be an absolute path selected by the caller. Helper sessions
@@ -61,7 +62,9 @@ pub fn read_sessions(socket: &Path) -> io::Result<Vec<String>> {
     let stdout = std::str::from_utf8(&output.stdout).map_err(|_| unavailable())?;
     let stderr = std::str::from_utf8(&output.stderr).map_err(|_| unavailable())?;
     if !output.status.success() {
-        return if !socket.exists() || stderr.contains("no server running") {
+        return if !socket.try_exists().map_err(|_| unavailable())?
+            || stderr.contains("no server running")
+        {
             Ok(Vec::new())
         } else {
             Err(unavailable())
@@ -109,13 +112,14 @@ fn capture(mut command: Command, timeout: Duration) -> io::Result<Output> {
     let result = (|| {
         let mut out = Vec::new();
         let mut err = Vec::new();
+        let mut remaining = CAPTURE_LIMIT;
         loop {
-            drain(&mut stdout, &mut out, deadline)?;
-            drain(&mut stderr, &mut err, deadline)?;
+            drain(&mut stdout, &mut out, deadline, &mut remaining)?;
+            drain(&mut stderr, &mut err, deadline, &mut remaining)?;
             if let Some(status) = child.try_wait()? {
                 // Include bytes written between the last drain and process exit.
-                drain(&mut stdout, &mut out, deadline)?;
-                drain(&mut stderr, &mut err, deadline)?;
+                drain(&mut stdout, &mut out, deadline, &mut remaining)?;
+                drain(&mut stderr, &mut err, deadline, &mut remaining)?;
                 return Ok(Output {
                     status,
                     stdout: out,
@@ -132,7 +136,12 @@ fn capture(mut command: Command, timeout: Duration) -> io::Result<Output> {
     result
 }
 
-fn drain(stream: &mut UnixStream, bytes: &mut Vec<u8>, deadline: Instant) -> io::Result<()> {
+fn drain(
+    stream: &mut UnixStream,
+    bytes: &mut Vec<u8>,
+    deadline: Instant,
+    remaining: &mut usize,
+) -> io::Result<()> {
     let mut buffer = [0; 8192];
     loop {
         if Instant::now() >= deadline {
@@ -143,7 +152,12 @@ fn drain(stream: &mut UnixStream, bytes: &mut Vec<u8>, deadline: Instant) -> io:
         }
         match stream.read(&mut buffer) {
             Ok(0) => return Ok(()),
-            Ok(count) => bytes.extend_from_slice(&buffer[..count]),
+            Ok(count) => {
+                *remaining = remaining.checked_sub(count).ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "session list too large")
+                })?;
+                bytes.extend_from_slice(&buffer[..count]);
+            }
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(()),
             Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
             Err(error) => return Err(error),
@@ -199,6 +213,15 @@ mod tests {
             "Session list unavailable"
         );
         assert_eq!(std::fs::read_to_string(invalid).unwrap(), "keep");
+        // A metadata failure is not proof of absence, including when the user
+        // cannot traverse the socket directory. A symlink loop tests that path
+        // independently of whether the test runner can bypass file permissions.
+        let inaccessible = server.address().0.join("loop");
+        std::os::unix::fs::symlink("loop", &inaccessible).unwrap();
+        assert_eq!(
+            read_sessions(&inaccessible).unwrap_err().to_string(),
+            "Session list unavailable"
+        );
         assert_eq!(
             names(" a \n=leading\ncafé\nbad:target\nbad\tname\n\u{a0}\n"),
             [" a ", "=leading", "café"]
@@ -213,6 +236,15 @@ mod tests {
         assert!(result.status.success());
         assert_eq!(result.stdout, b"output");
         assert_eq!(result.stderr, b"diagnostic");
+        let mut command = Command::new("/bin/sh");
+        command.args([
+            "-c",
+            "head -c 600000 /dev/zero; exec head -c 600000 /dev/zero >&2",
+        ]);
+        assert_eq!(
+            capture(command, TIMEOUT).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
         let mut command = Command::new("/bin/sleep");
         command.arg("60");
         assert_eq!(

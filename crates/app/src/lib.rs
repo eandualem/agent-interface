@@ -11,5 +11,6 @@ pub mod library;
 pub mod panes;
 mod restore;
 mod seed;
+pub mod sessions;
 mod stream;
 pub mod view;
