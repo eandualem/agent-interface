@@ -125,7 +125,9 @@ Python tool's `windows/<instance>/` runtime directories, viewer sockets or
 action sockets (PE-24).
 
 JSON is handled with `serde` (1.0.229) and `serde_json` (1.0.154), both MIT OR
-Apache-2.0, with duplicate-key detection added as described above.
+Apache-2.0, with duplicate-key detection added as described above. `core` also uses
+`serde_json` for shared-document merging: merging only the typed display model
+would discard unknown extension fields and absent/null distinctions.
 
 ## Consequences
 
@@ -185,3 +187,19 @@ compatibility limits, not evidence of complete persistence parity.
 SQLite uses a 250 ms busy timeout. A hot journal requiring recovery is retried
 read-only for at most 250 ms, then reported for recovery by a writer; the reader
 never reopens writable. No polling loop or automatic repair is installed.
+
+## In-memory conflict handling
+
+`core::merge::merge_shared_layout` accepts three already validated schema-v2
+JSON documents and removes window-local navigation before combining shared
+edits. Independent fields and stable-identity lists merge; conflicting trees,
+incompatible reorders, duplicate tab moves and deleting all workspaces fail.
+Unknown fields retain Python's numeric equality and identity-list semantics.
+Sixteen reference cases generated from the pinned Python model cover these
+rules, including deletion versus editing and numeric precision boundaries.
+
+The result has no navigation fields. A future caller must restore local
+navigation, validate the complete merged schema and size, and perform the
+required transactional checks before saving. The mixed-writer tests, migration
+agreement and write gate above remain outstanding; this function performs no
+persistence.
