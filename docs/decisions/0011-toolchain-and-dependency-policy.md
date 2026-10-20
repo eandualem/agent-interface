@@ -60,6 +60,11 @@ Observed facts from the research:
   release in the same change.
 - The engine's `-sys` crate pins the Ghostty source commit; record it with
   every benchmark.
+- Use `LIBGHOSTTY_VT_SYS_OPTIMIZE=ReleaseSafe` for development checks and CI.
+  It retains Zig runtime safety checks while omitting Ghostty's additional
+  Debug-only page-integrity scans, which dominate bulk scrolling and can
+  exceed fixture deadlines. Rust's debug profile is unchanged. Debug remains
+  available explicitly when investigating the engine's internal invariants.
 - Set `LIBGHOSTTY_VT_SYS_OPTIMIZE=ReleaseFast` for release and benchmark builds,
   and record the native build mode with results.
 - Distributed builds use the engine's portable `baseline` CPU target, and no
@@ -108,3 +113,7 @@ for packagers, or a pinned dependency stops receiving fixes.
   in the terminal-core research.
 - [GPUI lineage and a reproducible candidate](../research/ui-framework.md#gpui-lineage-and-a-reproducible-candidate)
   in the UI framework research.
+- [Ghostty's pinned build configuration](https://github.com/ghostty-org/ghostty/blob/a887df42c56f6de86c0fe6da9c4eeca37931e083/src/build/Config.zig#L583-L589)
+  enables `slow_runtime_safety` only for Debug;
+  [Zig 0.15.2 build modes](https://ziglang.org/documentation/0.15.2/#ReleaseSafe)
+  document optimized execution with safety checks in ReleaseSafe.

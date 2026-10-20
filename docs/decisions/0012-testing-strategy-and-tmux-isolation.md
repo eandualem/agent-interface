@@ -72,6 +72,9 @@ change options of, a server they did not create.
 - Runners: `macos-15` (arm64) and `ubuntu-24.04` (x86-64), using the same
   lockfile and the pinned Rust and Zig versions. Intel macOS and Linux arm64
   are added when they become supported targets.
+- Ghostty's native core uses `ReleaseSafe`, retaining runtime safety checks
+  without Debug-only full-page integrity scans. Test workloads and deadlines
+  do not depend on those scans; Rust uses its normal debug profile.
 - Jobs: `cargo fmt --all --check`,
   `cargo clippy --workspace --all-targets --locked -- -D warnings`,
   `cargo test --workspace --locked` (doctests included),

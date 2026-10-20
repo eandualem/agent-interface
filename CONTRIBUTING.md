@@ -38,6 +38,7 @@ Check the versions with `zig version` and `tmux -V`.
 ## Build and test
 
 ```sh
+export LIBGHOSTTY_VT_SYS_OPTIMIZE=ReleaseSafe
 cargo build --workspace
 cargo test --workspace
 cargo run -p tmux-workspaces-app
@@ -49,6 +50,7 @@ builds reuse it.
 Before each commit, run the checks that CI runs:
 
 ```sh
+export LIBGHOSTTY_VT_SYS_OPTIMIZE=ReleaseSafe
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
@@ -70,8 +72,12 @@ core with Zig. Three settings matter:
 
 - **Build mode.** Whenever Cargo builds with debug information, as `cargo
   build` and `cargo test` do by default, Ghostty's core is built in Zig's
-  Debug mode. That suits tests, but it runs many times slower. For release
-  builds and every measurement, set `LIBGHOSTTY_VT_SYS_OPTIMIZE=ReleaseFast`.
+  Debug mode. Its additional full-page integrity scans can overwhelm the
+  deadlines of bulk-output tests. Development checks and CI use
+  `LIBGHOSTTY_VT_SYS_OPTIMIZE=ReleaseSafe`: optimized native code with runtime
+  safety checks, without those extra scans. Rust remains in its normal debug
+  profile. For release builds and every measurement, set
+  `LIBGHOSTTY_VT_SYS_OPTIMIZE=ReleaseFast`.
 - **CPU target.** The default, `baseline`, runs on any CPU of the
   architecture and is what distributed builds use.
   `LIBGHOSTTY_VT_SYS_CPU=native` is for local experiments only, and any result
