@@ -126,6 +126,9 @@ impl TerminalView {
                 let closed = this.update(cx, |view, cx| {
                     let closed = view.panes.is_finished();
                     if closed {
+                        if let Some(error) = view.panes.failure() {
+                            eprintln!("pane recovery: {error}");
+                        }
                         cx.quit();
                     } else {
                         cx.notify();
@@ -182,6 +185,9 @@ impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.take_update();
         if self.panes.is_finished() {
+            if let Some(error) = self.panes.failure() {
+                eprintln!("pane recovery: {error}");
+            }
             // The client has gone: close once this frame, which shows its last
             // output, has been drawn.
             window.on_next_frame(|_, cx| cx.quit());
