@@ -25,7 +25,7 @@ use gpui::{
     WindowOptions, point, px, size,
 };
 use gpui_platform::application;
-use tmux_workspaces_app::panes::{PaneLayout, Panes};
+use tmux_workspaces_app::panes::Panes;
 use tmux_workspaces_app::view::{self, Appearance, TerminalView};
 use tmux_workspaces_test_support::ServerRef;
 use tmux_workspaces_tmux::control::PaneId;
@@ -72,31 +72,20 @@ fn run() -> Result<(), String> {
         )
         .map_err(|e| e.to_string())?;
     let [cols, rows] = numbers(&window)?;
-    let layout: Vec<PaneLayout> = server
+    let described = server
         .run(
             &[
-                &["list-panes"][..],
+                &["display-message", "-p"][..],
                 &target,
-                &[
-                    "-F",
-                    "#{pane_id} #{pane_left} #{pane_top} #{pane_width} #{pane_height}",
-                ],
+                &["#{window_id} #{window_layout} #{window_visible_layout} #{window_raw_flags}"],
             ]
             .concat(),
         )
-        .map_err(|e| e.to_string())?
-        .lines()
-        .map(|line| {
-            let [id, left, top, cols, rows] = numbers(&line.replace('%', ""))?;
-            Ok(PaneLayout {
-                id: PaneId(u32::from(id)),
-                left,
-                top,
-                cols,
-                rows,
-            })
-        })
-        .collect::<Result<_, String>>()?;
+        .map_err(|e| e.to_string())?;
+    let layout =
+        tmux_workspaces_tmux::layout::parse(format!("%layout-change {described}").as_bytes())
+            .map_err(str::to_owned)?
+            .panes;
     let input = options
         .input
         .or_else(|| layout.first().map(|pane| pane.id))

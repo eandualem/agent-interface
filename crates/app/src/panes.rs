@@ -32,20 +32,8 @@ const READ_SIZE: usize = 64 * 1024;
 /// Keep send-keys arguments below tmux's parser stack limit.
 const INPUT_CHUNK: usize = 1024;
 
-/// A pane's place in its tmux window, in cells.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct PaneLayout {
-    /// The pane.
-    pub id: PaneId,
-    /// The column of its left edge.
-    pub left: u16,
-    /// The row of its top edge.
-    pub top: u16,
-    /// Its width.
-    pub cols: u16,
-    /// Its height.
-    pub rows: u16,
-}
+/// A pane's place in its tmux window, in terminal cells.
+pub use tmux_workspaces_tmux::layout::Pane as PaneLayout;
 
 /// The screens of the panes that changed since the previous update.
 pub type Update = Vec<(PaneId, Screen)>;
