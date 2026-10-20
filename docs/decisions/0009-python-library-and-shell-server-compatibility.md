@@ -212,7 +212,10 @@ Printable names and session references use `unicode-properties` 0.1.4
 its general-category feature requested here. Its Unicode 17 categories reject
 control, format, unassigned and separator characters, except ordinary space.
 Python runtimes with older Unicode data can differ for newly assigned
-characters. Rust JSON strings also require Unicode scalar values; unpaired
+characters. The core reuses this pinned, dual-licensed dependency for rename
+normalization: Python whitespace trimming, printable-character filtering, then
+an 80-character limit. An empty result leaves the model unchanged; native edit
+controls, stale-editor checks and saving remain separate. Rust JSON strings also require Unicode scalar values; unpaired
 surrogate escapes are rejected even in unknown fields. These are explicit
 compatibility limits, not evidence of complete persistence parity.
 

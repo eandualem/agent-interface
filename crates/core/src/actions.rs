@@ -1,7 +1,26 @@
 //! In-memory equivalents of the Python workspace model operations. These do
-//! not persist records, validate proposed user input, or start/stop processes.
+//! not persist records or start/stop processes. Rename operations normalize
+//! proposed names; creation methods expect caller-validated values.
 
 use crate::{Attachment, Direction, Layout, Leaf, Node, Tab, Workspace};
+use unicode_properties::{GeneralCategoryGroup, UnicodeGeneralCategory};
+
+fn rename_value(value: &str) -> Option<String> {
+    // Python str.strip additionally treats these four separators as whitespace.
+    let name: String = value
+        .trim_matches(|ch: char| ch.is_whitespace() || ('\u{1c}'..='\u{1f}').contains(&ch))
+        .chars()
+        .filter(|ch| {
+            *ch == ' '
+                || !matches!(
+                    ch.general_category_group(),
+                    GeneralCategoryGroup::Other | GeneralCategoryGroup::Separator
+                )
+        })
+        .take(80)
+        .collect();
+    (!name.is_empty()).then_some(name)
+}
 
 fn identity() -> String {
     uuid::Uuid::new_v4().simple().to_string()[..12].to_owned()
@@ -101,6 +120,28 @@ impl Layout {
             Node::Leaf(leaf) => Some(leaf),
             Node::Split { .. } => unreachable!("find_leaf only returns leaves"),
         }
+    }
+
+    /// Rename the selected workspace, even when it has no tabs. Trim surrounding
+    /// whitespace, remove non-printing characters and keep at most 80 Unicode
+    /// scalar values, as in the Python name form. An empty result does nothing.
+    /// This changes only the name; persistence validation remains the caller's job.
+    pub fn rename_workspace(&mut self, value: &str) -> bool {
+        let (Some(name), Some(space)) = (rename_value(value), self.workspace_mut()) else {
+            return false;
+        };
+        space.name = name;
+        true
+    }
+
+    /// Rename the selected tab using the workspace name rules. Missing tabs or
+    /// empty results do nothing. Pane identities and attachments stay unchanged.
+    pub fn rename_tab(&mut self, value: &str) -> bool {
+        let (Some(name), Some(tab)) = (rename_value(value), self.tab_mut()) else {
+            return false;
+        };
+        tab.name = name;
+        true
     }
 
     /// Select an existing workspace by identity. Missing identities do nothing.
@@ -441,6 +482,34 @@ mod tests {
         assert!(model.close_tab());
         assert!(!model.delete_workspace());
         assert_eq!(model.workspaces.len(), 1);
+    }
+
+    #[test]
+    fn renaming_normalizes_names_and_preserves_terminal_identity() {
+        let mut model = Layout::initial("/tmp".into());
+        model.attach(Some(Attachment {
+            session: "worker".into(),
+            source_socket: None,
+        }));
+        model.split(Direction::Right, "/tmp".into(), true);
+        let original = model.clone();
+        assert!(model.rename_tab("\u{1c}  Build\n\u{200b} logs  \u{1f}"));
+        let mut expected = original.clone();
+        expected.tab_mut().unwrap().name = "Build logs".into();
+        assert_eq!(model, expected);
+        assert!(!model.rename_tab(" \t\n\u{200b} "));
+        assert_eq!(model, expected);
+        assert!(model.rename_tab(&"é".repeat(81)));
+        assert_eq!(model.tab().unwrap().name, "é".repeat(80));
+        model.add_workspace("Empty".into());
+        let empty = model.clone();
+        assert!(!model.rename_tab("Unavailable"));
+        assert!(!model.rename_workspace("\u{1c} \u{1f}"));
+        assert_eq!(model, empty);
+        assert!(model.rename_workspace("  Renamed  "));
+        let mut expected = empty;
+        expected.workspace_mut().unwrap().name = "Renamed".into();
+        assert_eq!(model, expected);
     }
 
     #[test]
