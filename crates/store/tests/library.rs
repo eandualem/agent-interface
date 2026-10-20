@@ -1,0 +1,435 @@
+//! Schema-v2 and read-only SQLite compatibility.
+
+use rusqlite::Connection;
+use std::path::Path;
+use tmux_workspaces_core::{Direction, Node};
+use tmux_workspaces_store::{Document, MAX_RECORD_BYTES, Store};
+
+const RECORD: &str = r#"{
+  "version": 2, "selected": "000000000001", "focus": false,
+  "extension": {"nullable": null, "large": 123456789012345678901234567890},
+  "workspaces": [{
+    "id": "000000000001", "name": "Development", "icon": "λ",
+    "selected": "000000000002", "tabs": [{
+      "id": "000000000002", "name": "Editor", "focus": "000000000004",
+      "tree": {"id": "000000000003", "direction": "right",
+        "first": {"id": "000000000004", "agent": "build worker", "cwd": "/tmp", "source_socket": "/tmp/example.sock"},
+        "second": {"id": "000000000005", "agent": null, "empty": true}}
+    }]
+  }, {"id": "000000000006", "name": "Empty", "tabs": [], "selected": ""}]
+}"#;
+
+fn parse(text: &str) -> Result<Document, tmux_workspaces_store::Error> {
+    Document::parse(text.to_owned(), Path::new("layouts.db"))
+}
+
+fn database(directory: &Path, record: &str) -> Connection {
+    let db = Connection::open(directory.join("layouts.db")).unwrap();
+    db.execute_batch("CREATE TABLE terminal_layout (id INTEGER PRIMARY KEY, value TEXT)")
+        .unwrap();
+    db.execute("INSERT INTO terminal_layout VALUES (1, ?1)", [record])
+        .unwrap();
+    db
+}
+
+#[test]
+fn schema_v2_keeps_order_attachments_navigation_and_original_json() {
+    let document = parse(RECORD).unwrap();
+    assert_eq!(document.raw_json(), RECORD);
+    let layout = document.model();
+    assert_eq!(layout.selected, "000000000001");
+    assert!(!layout.show_agents);
+    assert!(layout.workspaces[1].tabs.is_empty());
+    let tab = &layout.workspaces[0].tabs[0];
+    assert_eq!(tab.name, "Editor");
+    assert_eq!(tab.focus, "000000000004");
+    let Node::Split {
+        direction,
+        ratio,
+        first,
+        second,
+        ..
+    } = &tab.tree
+    else {
+        panic!()
+    };
+    assert_eq!(*direction, Direction::Right);
+    assert_eq!(*ratio, 0.5);
+    let Node::Leaf(first) = first.as_ref() else {
+        panic!()
+    };
+    let attachment = first.attachment.as_ref().unwrap();
+    assert_eq!(attachment.session, "build worker");
+    assert_eq!(
+        attachment.source_socket.as_deref(),
+        Some("/tmp/example.sock")
+    );
+    let Node::Leaf(second) = second.as_ref() else {
+        panic!()
+    };
+    assert!(second.empty);
+    assert!(second.cwd.is_none());
+}
+
+#[test]
+fn rejects_schema_violations_including_unknown_duplicate_fields() {
+    for (before, after) in [
+        ("\"version\": 2", "\"version\": 2.0"),
+        ("\"version\": 2", "\"version\": true"),
+        (
+            "\"nullable\": null",
+            "\"nullable\": null, \"nullable\": true",
+        ),
+        ("\"nullable\": null", "\"nullable\": NaN"),
+        ("\"nullable\": null", "\"nullable\": 1e400"),
+        ("\"id\": \"000000000005\"", "\"id\": \"000000000004\""),
+        (
+            "\"direction\": \"right\"",
+            "\"direction\": \"right\", \"ratio\": true",
+        ),
+        (
+            "\"direction\": \"right\"",
+            "\"direction\": \"right\", \"ratio\": 1.0",
+        ),
+        ("\"name\": \"Editor\"", "\"name\": \"\\u00a0\""),
+        ("\"agent\": \"build worker\"", "\"agent\": \"build:worker\""),
+        ("\"agent\": \"build worker\"", "\"agent\": null"),
+        ("\"cwd\": \"/tmp\"", "\"cwd\": null"),
+        ("\"cwd\": \"/tmp\"", "\"cwd\": \"relative\""),
+        ("\"cwd\": \"/tmp\"", "\"cwd\": \"/tmp\\u0000x\""),
+        ("\"empty\": true", "\"empty\": false"),
+        ("\"empty\": true", "\"empty\": true, \"ratio\": 0.5"),
+        ("\"focus\": \"000000000004\"", "\"focus\": \"000000000003\""),
+    ] {
+        let text = RECORD.replacen(before, after, 1);
+        assert_ne!(text, RECORD);
+        assert!(parse(&text).is_err(), "accepted {after}");
+    }
+}
+
+#[test]
+fn bounds_unknown_containers_values_and_record_bytes() {
+    // Root at depth zero, extension object at one, array at two.
+    let nested = format!("{}null{}", "[".repeat(127), "]".repeat(127));
+    assert!(
+        parse(&RECORD.replace("\"nullable\": null", &format!("\"nullable\": {nested}"))).is_ok()
+    );
+    assert!(
+        parse(&RECORD.replace("\"nullable\": null", &format!("\"nullable\": [{nested}]"))).is_err()
+    );
+    let values = vec!["0"; 100_000].join(",");
+    assert!(
+        parse(&RECORD.replace("\"nullable\": null", &format!("\"nullable\": [{values}]"))).is_err()
+    );
+    let objects = vec!["{}"; 10_000].join(",");
+    assert!(
+        parse(&RECORD.replace("\"nullable\": null", &format!("\"nullable\": [{objects}]")))
+            .is_err()
+    );
+    assert!(parse(&" ".repeat(MAX_RECORD_BYTES + 1)).is_err());
+}
+
+#[test]
+fn readonly_connection_does_not_hold_locks_or_change_saved_data() {
+    let directory = tempfile::tempdir().unwrap();
+    let db = database(directory.path(), RECORD);
+    db.busy_timeout(std::time::Duration::ZERO).unwrap();
+    let bytes = std::fs::read(directory.path().join("layouts.db")).unwrap();
+    let store = Store::open(directory.path()).unwrap();
+    let before = store.data_version().unwrap();
+    assert_eq!(store.load().unwrap().raw_json(), RECORD);
+    assert_eq!(
+        std::fs::read(directory.path().join("layouts.db")).unwrap(),
+        bytes
+    );
+    let changed = RECORD.replace("Development", "Updated");
+    db.execute("UPDATE terminal_layout SET value=?1", [&changed])
+        .unwrap();
+    assert_ne!(store.data_version().unwrap(), before);
+    assert_eq!(store.load().unwrap().model().workspaces[0].name, "Updated");
+    assert_eq!(
+        db.query_row("PRAGMA journal_mode", [], |r| r.get::<_, String>(0))
+            .unwrap(),
+        "delete"
+    );
+}
+
+#[test]
+fn missing_legacy_malformed_and_oversized_databases_are_not_initialized_or_repaired() {
+    let directory = tempfile::tempdir().unwrap();
+    assert!(Store::open(directory.path()).is_err());
+    assert!(!directory.path().join("layouts.db").exists());
+    let db = Connection::open(directory.path().join("layouts.db")).unwrap();
+    db.execute_batch("CREATE TABLE layout (id INTEGER PRIMARY KEY, value TEXT)")
+        .unwrap();
+    let store = Store::open(directory.path()).unwrap();
+    assert!(
+        store
+            .load()
+            .unwrap_err()
+            .detail
+            .contains("open this library once")
+    );
+    assert!(!db.table_exists(None, "terminal_layout").unwrap());
+    db.execute_batch("CREATE TABLE terminal_layout (id INTEGER PRIMARY KEY, value TEXT)")
+        .unwrap();
+    assert!(store.load().unwrap_err().detail.contains("row is missing"));
+    db.execute(
+        "INSERT INTO terminal_layout VALUES (1, ?1)",
+        [vec![b'x'; 4]],
+    )
+    .unwrap();
+    assert!(store.load().is_err());
+    db.execute(
+        "UPDATE terminal_layout SET value=?1",
+        [" ".repeat(MAX_RECORD_BYTES + 1)],
+    )
+    .unwrap();
+    assert!(store.load().unwrap_err().detail.contains("16 MiB"));
+    assert_eq!(
+        db.query_row("SELECT length(value) FROM terminal_layout", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        (MAX_RECORD_BYTES + 1) as i64
+    );
+}
+
+#[test]
+fn split_depth_boundary_matches_the_saved_schema() {
+    let mut state: serde_json::Value = serde_json::from_str(RECORD).unwrap();
+    for depth in 1..=64 {
+        let tree = &mut state["workspaces"][0]["tabs"][0]["tree"];
+        *tree = serde_json::json!({
+            "id": format!("{:012x}", 100 + depth * 2), "direction": "below", "first": tree.take(),
+            "second": {"id": format!("{:012x}", 101 + depth * 2), "agent": null}
+        });
+        let result = parse(&state.to_string());
+        assert_eq!(result.is_ok(), depth < 64, "added depth {depth}");
+        if depth == 63 {
+            let document = result.unwrap();
+            let mut model = document.model().clone();
+            model.rename_tab("At the depth limit");
+            assert!(document.with_model(&model, Path::new("layouts.db")).is_ok());
+            model.split(Direction::Right, "/tmp".into(), true);
+            assert!(
+                document
+                    .with_model(&model, Path::new("layouts.db"))
+                    .is_err()
+            );
+        }
+    }
+}
+
+#[test]
+fn model_edits_preserve_extensions_through_splits_moves_and_closes() {
+    let record = RECORD
+        .replace("\"direction\": \"right\"", "\"direction\": \"right\", \"empty\": {\"future\": true}")
+        .replace("\"icon\": \"λ\"", "\"icon\": null, \"extra\": {\"tree\": 42}")
+        .replace("\"name\": \"Editor\"", "\"name\": \"Editor\", \"extra\": 1.250e-1")
+        .replace("\"agent\": \"build worker\"", "\"tabs\": [{\"id\": \"000000000002\", \"extra\": \"unrelated\"}], \"agent\": \"build worker\"");
+    let document = parse(&record).unwrap();
+    let path = Path::new("layouts.db");
+    assert_eq!(
+        document
+            .with_model(document.model(), path)
+            .unwrap()
+            .raw_json(),
+        record
+    );
+    let mut model = document.model().clone();
+    assert!(model.rename_workspace("Renamed"));
+    assert!(model.split(Direction::Below, "/tmp".into(), true));
+    assert!(model.open_terminal());
+    assert!(model.transfer_tab("000000000006"));
+    let edited = document.with_model(&model, path).unwrap();
+    assert_eq!(edited.model(), &model);
+    assert_eq!(document.raw_json(), record);
+    let before: serde_json::Value = serde_json::from_str(&record).unwrap();
+    let after: serde_json::Value = serde_json::from_str(edited.raw_json()).unwrap();
+    assert_eq!(after["extension"], before["extension"]);
+    assert_eq!(
+        after["workspaces"][0]["extra"],
+        before["workspaces"][0]["extra"]
+    );
+    assert!(after["workspaces"][0]["icon"].is_null());
+    let tab = &after["workspaces"][1]["tabs"][0];
+    assert_eq!(tab["extra"], before["workspaces"][0]["tabs"][0]["extra"]);
+    assert!(!after.as_object().unwrap().contains_key("show_agents"));
+    assert!(!tab["tree"].as_object().unwrap().contains_key("ratio"));
+    assert_eq!(
+        tab["tree"]["empty"],
+        before["workspaces"][0]["tabs"][0]["tree"]["empty"]
+    );
+    assert_eq!(tab["tree"]["first"]["ratio"], 0.5);
+    assert_eq!(
+        tab["tree"]["first"]["first"],
+        before["workspaces"][0]["tabs"][0]["tree"]["first"]
+    );
+    assert!(
+        !tab["tree"]["first"]["second"]
+            .as_object()
+            .unwrap()
+            .contains_key("empty")
+    );
+
+    assert!(model.close_pane());
+    assert!(model.attach(None));
+    let collapsed = edited.with_model(&model, path).unwrap();
+    let after: serde_json::Value = serde_json::from_str(collapsed.raw_json()).unwrap();
+    let leaf = &after["workspaces"][1]["tabs"][0]["tree"]["first"];
+    assert_eq!(leaf["id"], "000000000004");
+    assert_eq!(
+        leaf["tabs"],
+        before["workspaces"][0]["tabs"][0]["tree"]["first"]["tabs"]
+    );
+    assert!(leaf["agent"].is_null());
+    assert!(!leaf.as_object().unwrap().contains_key("source_socket"));
+    assert_eq!(collapsed.model(), &model);
+    let explicit = parse(
+        &RECORD
+            .replace(
+                "\"direction\": \"right\"",
+                "\"direction\": \"right\", \"ratio\": 5E-1",
+            )
+            .replace(
+                "\"nullable\": null",
+                "\"nullable\": null, \"exponent\": 1e2",
+            ),
+    )
+    .unwrap();
+    let mut model = explicit.model().clone();
+    model.rename_tab("Keep ratio spelling");
+    let projected = explicit.with_model(&model, path).unwrap();
+    assert!(projected.raw_json().contains("5E-1"));
+    assert!(projected.raw_json().contains("1e2"));
+    let boundary = parse(&RECORD.replace(
+        "\"direction\": \"right\"",
+        "\"direction\": \"right\", \"ratio\": 0.5000000000000000555",
+    ))
+    .unwrap();
+    let mut model = boundary.model().clone();
+    model.rename_tab("Keep boundary ratio");
+    assert!(
+        boundary
+            .with_model(&model, path)
+            .unwrap()
+            .raw_json()
+            .contains("0.5000000000000000555")
+    );
+    let Node::Split { ratio, .. } = &mut model.workspaces[0].tabs[0].tree else {
+        panic!()
+    };
+    *ratio = 0.5000000000000001;
+    assert_eq!(boundary.with_model(&model, path).unwrap().model(), &model);
+}
+
+#[test]
+fn model_projection_rejects_invalid_edits_without_changing_the_document() {
+    let document = parse(RECORD).unwrap();
+    let path = Path::new("layouts.db");
+    let mut model = document.model().clone();
+    model.workspaces[1].id = model.workspaces[0].id.clone();
+    assert!(document.with_model(&model, path).is_err());
+    let mut model = document.model().clone();
+    let Node::Split { ratio, .. } = &mut model.workspaces[0].tabs[0].tree else {
+        panic!()
+    };
+    *ratio = f64::NAN;
+    assert!(document.with_model(&model, path).is_err());
+    let mut model = document.model().clone();
+    model.workspaces[0].name = "x".repeat(MAX_RECORD_BYTES);
+    assert!(document.with_model(&model, path).is_err());
+    assert_eq!(document.raw_json(), RECORD);
+}
+
+#[test]
+fn reconciliation_merges_refreshes_conflicts_and_retains_local_navigation() {
+    let base = parse(RECORD).unwrap();
+    let path = Path::new("layouts.db");
+    let mut local = base.model().clone();
+    local.rename_tab("Local tab");
+    local.choose_pane("000000000005");
+    local.focus = true;
+    let mut peer = base.model().clone();
+    peer.rename_workspace("Peer workspace");
+    peer.choose_workspace("000000000006");
+    peer.show_agents = true;
+    let latest = base.with_model(&peer, path).unwrap();
+    let merged = base.reconcile(&local, &latest, path).unwrap();
+    assert!(!merged.conflict && !merged.active_tree_changed);
+    let model = merged.document.model();
+    assert_eq!(model.workspace().unwrap().name, "Peer workspace");
+    assert_eq!(model.tab().unwrap().name, "Local tab");
+    assert_eq!(model.pane().unwrap().id, "000000000005");
+    assert!(model.focus && model.show_agents);
+    assert_eq!(model.selected, local.selected);
+    // Advance the base to the last incoming document, keeping unsaved local edits.
+    peer.choose_workspace("000000000001");
+    peer.rename_workspace("Peer again");
+    let newer = latest.with_model(&peer, path).unwrap();
+    let next = latest.reconcile(model, &newer, path).unwrap();
+    assert!(!next.conflict);
+    assert_eq!(next.document.model().tab().unwrap().name, "Local tab");
+    assert_eq!(
+        next.document.model().workspace().unwrap().name,
+        "Peer again"
+    );
+
+    peer.rename_tab("Peer tab");
+    let conflicting = latest.with_model(&peer, path).unwrap();
+    let refreshed = base.reconcile(&local, &conflicting, path).unwrap();
+    assert!(refreshed.conflict && !refreshed.active_tree_changed);
+    assert_eq!(refreshed.document.model().tab().unwrap().name, "Peer tab");
+    assert_eq!(
+        refreshed.document.model().pane().unwrap().id,
+        "000000000005"
+    );
+    assert_eq!(local.tab().unwrap().name, "Local tab");
+
+    let mut peer = base.model().clone();
+    peer.attach(None);
+    let changed = base.with_model(&peer, path).unwrap();
+    let changed = base.reconcile(&local, &changed, path).unwrap();
+    assert!(!changed.conflict && changed.active_tree_changed);
+    assert_eq!(changed.document.model().tab().unwrap().name, "Local tab");
+    peer.close_tab();
+    let deleted = base.with_model(&peer, path).unwrap();
+    let refreshed = base.reconcile(&local, &deleted, path).unwrap();
+    assert!(refreshed.conflict && refreshed.active_tree_changed);
+    assert!(refreshed.document.model().tab().is_none());
+    assert_eq!(base.raw_json(), RECORD);
+}
+
+#[test]
+fn reconciliation_refreshes_invalid_combinations_but_preserves_oversized_edits() {
+    let base = parse(RECORD).unwrap();
+    let path = Path::new("layouts.db");
+    let add = |model: &mut tmux_workspaces_core::Layout| {
+        model.add_tab(None, "/tmp".into(), true);
+        let tab = model.workspaces[0].tabs.last_mut().unwrap();
+        let Node::Leaf(leaf) = &mut tab.tree else {
+            panic!()
+        };
+        leaf.id = "aaaaaaaaaaaa".into();
+        tab.focus = leaf.id.clone();
+    };
+    let mut local = base.model().clone();
+    let mut peer = base.model().clone();
+    add(&mut local);
+    add(&mut peer);
+    let latest = base.with_model(&peer, path).unwrap();
+    // Each side is valid, but their distinct added tabs share a leaf identity.
+    let refreshed = base.reconcile(&local, &latest, path).unwrap();
+    assert!(refreshed.conflict);
+    assert_eq!(refreshed.document.model().workspaces[0].tabs.len(), 2);
+
+    let mut local = base.model().clone();
+    let mut peer = base.model().clone();
+    local.workspaces[0].name = "a".repeat(9 * 1024 * 1024);
+    peer.workspaces[1].name = "b".repeat(9 * 1024 * 1024);
+    let latest = base.with_model(&peer, path).unwrap();
+    assert!(base.reconcile(&local, &latest, path).is_err());
+    assert_eq!(local.workspaces[0].name.len(), 9 * 1024 * 1024);
+    assert_eq!(latest.model(), &peer);
+    assert_eq!(base.raw_json(), RECORD);
+}

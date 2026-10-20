@@ -87,6 +87,7 @@ fn is_monospaced(text_system: &TextSystem, appearance: &Appearance) -> bool {
 pub struct TerminalView {
     panes: Arc<Panes>,
     grid: Rc<RefCell<Grid>>,
+    // The configured destination stays fixed, including while another pane is zoomed.
     input: PaneId,
     focus: FocusHandle,
     failure_reported: bool,
@@ -173,7 +174,11 @@ impl TerminalView {
             return;
         };
         let mut grid = self.grid.borrow_mut();
+        grid.layout = update.layout;
+        let visible: Vec<_> = grid.layout.iter().map(|pane| pane.id).collect();
+        grid.screens.retain(|id, _| visible.contains(id));
         let replaced: Vec<Screen> = update
+            .screens
             .into_iter()
             .filter_map(|(pane, screen)| grid.screens.insert(pane, screen))
             .collect();
