@@ -15,13 +15,64 @@ use tmux_workspaces_store::Error;
 /// anything. A missing directory is an error in this read-only phase. Paths are
 /// kept as native OS strings, including non-UTF-8 Unix paths.
 pub fn library_directory(explicit: Option<&Path>) -> Result<PathBuf, Error> {
-    resolve(explicit, &|name| std::env::var_os(name), &|name| {
-        let user = match name {
-            Some(name) => uzers::get_user_by_name(name),
-            None => uzers::get_user_by_uid(uzers::get_current_uid()),
-        };
-        user.map(|user| user.home_dir().to_owned())
-    })
+    resolve(explicit, &|name| std::env::var_os(name), &user_home)
+}
+
+fn user_home(name: Option<&OsStr>) -> Option<PathBuf> {
+    let user = match name {
+        Some(name) => uzers::get_user_by_name(name),
+        None => uzers::get_user_by_uid(uzers::get_current_uid()),
+    };
+    user.map(|user| user.home_dir().to_owned())
+}
+
+/// Resolve the source socket before starting workers or clearing child context.
+/// A nonempty explicit path takes precedence, then the invoking `TMUX` socket,
+/// then `$TMUX_TMPDIR/tmux-UID/default` (`/tmp` when unset or empty).
+///
+/// Home, relative paths and symlinks are resolved without creating anything or
+/// connecting to a server. The source may not exist yet. Keep this result for
+/// the window's lifetime rather than re-reading launcher context on each poll.
+pub fn source_socket(explicit: Option<&Path>) -> io::Result<PathBuf> {
+    resolve_source(
+        explicit,
+        &|name| std::env::var_os(name),
+        &user_home,
+        uzers::get_current_uid(),
+    )
+}
+
+fn resolve_source(
+    explicit: Option<&Path>,
+    env: &impl Fn(&str) -> Option<OsString>,
+    user_home: &impl Fn(Option<&OsStr>) -> Option<PathBuf>,
+    uid: u32,
+) -> io::Result<PathBuf> {
+    let selected = explicit
+        .filter(|path| !path.as_os_str().is_empty())
+        .map(Path::to_owned)
+        .or_else(|| {
+            let identity = env("TMUX")?;
+            // Only the two rightmost commas delimit PID and session identity.
+            // A socket path itself may contain commas, or native non-UTF-8 bytes.
+            let socket = identity.as_bytes().rsplitn(3, |b| *b == b',').nth(2)?;
+            (!socket.is_empty()).then(|| PathBuf::from(OsStr::from_bytes(socket)))
+        })
+        .unwrap_or_else(|| {
+            PathBuf::from(
+                env("TMUX_TMPDIR")
+                    .filter(|v| !v.is_empty())
+                    .unwrap_or_else(|| "/tmp".into()),
+            )
+            .join(format!("tmux-{uid}/default"))
+        });
+    let expanded = expand_home(&selected, env, user_home).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "cannot resolve the home directory in the source socket path",
+        )
+    })?;
+    resolve_path(&expanded)
 }
 
 fn resolve(
@@ -48,17 +99,19 @@ fn resolve(
         path: selected.join("layouts.db"),
         detail: "cannot resolve the home directory in the library path".into(),
     })?;
-    resolve_existing(&expanded).map_err(|error| Error {
-        path: expanded.join("layouts.db"),
-        detail: error.to_string(),
-    })
+    resolve_path(&expanded)
+        .and_then(|path| path.canonicalize())
+        .map_err(|error| Error {
+            path: expanded.join("layouts.db"),
+            detail: error.to_string(),
+        })
 }
 
-fn resolve_existing(path: &Path) -> io::Result<PathBuf> {
+fn resolve_path(path: &Path) -> io::Result<PathBuf> {
     if path.as_os_str().as_bytes().contains(&0) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "library path contains NUL",
+            "path contains NUL",
         ));
     }
     enum Pending {
@@ -109,9 +162,9 @@ fn resolve_existing(path: &Path) -> io::Result<PathBuf> {
             }
         }
     }
-    // Missing intermediate components may have been removed by "..", but the
-    // final directory must exist before a read-only library can be opened.
-    result.canonicalize()
+    // Library lookup canonicalizes this result to require an existing directory;
+    // source lookup also accepts a socket that has not been created yet.
+    Ok(result)
 }
 
 fn expand_home(
@@ -145,6 +198,56 @@ fn expand_home(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_selection_uses_launcher_precedence_without_creating_a_socket() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let home = root.join("home");
+        std::fs::create_dir(&home).unwrap();
+        std::os::unix::fs::symlink(&home, root.join("alias")).unwrap();
+        let mut settings = HashMap::<&str, OsString>::new();
+        settings.insert("HOME", home.as_os_str().to_owned());
+        settings.insert("TMUX_TMPDIR", root.as_os_str().to_owned());
+        let inherited = root.join("server,with,commas");
+        let mut identity = inherited.as_os_str().to_owned();
+        identity.push(",123,4");
+        settings.insert("TMUX", identity);
+        let select = |explicit: Option<&Path>, settings: &HashMap<&str, OsString>| {
+            resolve_source(explicit, &|name| settings.get(name).cloned(), &|_| None, 42)
+        };
+        assert_eq!(select(None, &settings).unwrap(), inherited);
+        assert_eq!(select(Some(Path::new("")), &settings).unwrap(), inherited);
+        assert_eq!(
+            select(Some(Path::new("~/chosen")), &settings).unwrap(),
+            home.join("chosen")
+        );
+        assert_eq!(
+            select(Some(&root.join("alias/missing/socket")), &settings).unwrap(),
+            home.join("missing/socket")
+        );
+        assert_eq!(
+            select(Some(Path::new("relative-source")), &settings).unwrap(),
+            std::env::current_dir().unwrap().join("relative-source")
+        );
+        settings.insert("TMUX", "malformed,identity".into());
+        assert_eq!(
+            select(None, &settings).unwrap(),
+            root.join("tmux-42/default")
+        );
+        settings.insert("TMUX_TMPDIR", "".into());
+        assert_eq!(
+            select(None, &settings).unwrap(),
+            Path::new("/tmp")
+                .canonicalize()
+                .unwrap()
+                .join("tmux-42/default")
+        );
+        assert!(!inherited.exists());
+        assert!(!home.join("chosen").exists());
+        assert!(!home.join("missing").exists());
+        assert!(!root.join("tmux-42").exists());
+    }
 
     #[test]
     fn library_paths_follow_precedence_and_resolve_without_creating_directories() {
