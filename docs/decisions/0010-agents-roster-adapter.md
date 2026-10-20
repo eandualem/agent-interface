@@ -81,3 +81,27 @@ requires more than the agents endpoint.
   in the Rust architecture research, which links the Python adapter's endpoint
   validation, redirect refusal and request construction.
 - [Parity checklist](../PARITY.md#agents-roster), rows AG-1 to AG-25.
+
+## Response model
+
+The `roster::Snapshot` response model retains only validated agent names and
+reported states. Failed decoding or a caller-reported transport failure retains
+the last states and observation time with a fixed stale diagnostic. A successful
+response replaces the entire list, including an empty list, and clears the error.
+It does not load configuration, read credentials or issue requests.
+
+The decoder uses exact-pinned `serde_json` 1.0.154 (MIT OR Apache-2.0), already
+used by the workspace, to parse the endpoint's `items` array. It limits responses
+to 1 MiB and uses the parser's nesting limit; oversized, deeply nested or invalid
+JSON becomes unavailable rather than an unbounded allocation. Names follow the
+Python adapter's ASCII agent-name rule; disabled records are skipped, non-string
+states become `unknown`, and the last valid duplicate name wins. Unknown fields,
+including API attachment-availability claims, are discarded.
+
+The app's `sessions::with_roster` merges these values with discovery without
+changing either observation. Only successful discovery supplies `online`; a
+metadata failure cannot remove live ordinary sessions. Metadata names absent
+from discovery stay as offline references. The combined timestamp is the oldest
+observation only when all participating providers have one. The separate roster
+snapshot remains the input for future roster display. HTTP transport, polling
+and product controls remain separate work.

@@ -5319,6 +5319,7 @@ dependencies = [
  "rusqlite",
  "sha2",
  "tempfile",
+ "tmux-workspaces-roster",
  "tmux-workspaces-store",
  "tmux-workspaces-term",
  "tmux-workspaces-test-support",
@@ -5370,6 +5371,9 @@ dependencies = [
 [[package]]
 name = "tmux-workspaces-roster"
 version = "0.0.0"
+dependencies = [
+ "serde_json",
+]
 
 [[package]]
 name = "tmux-workspaces-store"
