@@ -59,5 +59,11 @@ signal-hook = "0.4.5"
 tempfile = "3.27.0"
 thiserror = "2.0.21"
 
+# Read-only schema-v2 library access (decision record 0009).
+rusqlite = { version = "=0.40.2", features = ["bundled"] }
+serde = "=1.0.229"
+serde_json = { version = "=1.0.154", features = ["raw_value", "arbitrary_precision"] }
+unicode-properties = { version = "=0.1.4", default-features = false, features = ["general-category"] }
+
 [workspace.lints.rust]
 missing_docs = "warn"
