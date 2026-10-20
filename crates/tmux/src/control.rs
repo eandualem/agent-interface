@@ -1,7 +1,8 @@
 //! Decoding the output of a tmux control-mode client (`tmux -C`).
 //!
-//! tmux writes one message per line. Outside a command's reply, every line is
-//! a notification that starts with `%`, such as `%output`. A reply is the
+//! tmux writes one message per line. Outside a command's reply, notifications
+//! start with `%`, such as `%output`; server-side hooks can also print unframed
+//! text. A reply is the
 //! lines between `%begin` and the matching `%end` or `%error`. In `%output`,
 //! tmux writes every byte below a space, and the backslash, as a backslash and
 //! three octal digits; [`Decoder`] removes that escaping.
@@ -45,6 +46,9 @@ pub enum Message<'a> {
     /// Any other notification, such as `%window-add @1`, as the whole line
     /// without its line end.
     Notification(&'a [u8]),
+    /// Unframed text from a server-side hook, outside a command reply.
+    /// This is neither pane output nor a reply to a client command.
+    Notice(&'a [u8]),
 }
 
 /// An error in what a control-mode client wrote.
@@ -160,9 +164,7 @@ impl Decoder {
         } else if line.starts_with(b"%") {
             on_message(Message::Notification(line));
         } else {
-            return Err(Error::Malformed(
-                "a line outside a reply that is not a notification",
-            ));
+            on_message(Message::Notice(line));
         }
         Ok(())
     }
@@ -227,6 +229,7 @@ mod tests {
         End(u64),
         Error(u64),
         Notification(Vec<u8>),
+        Notice(Vec<u8>),
     }
 
     fn owned(message: Message<'_>) -> Owned {
@@ -237,6 +240,7 @@ mod tests {
             Message::End { number } => Owned::End(number),
             Message::Error { number } => Owned::Error(number),
             Message::Notification(line) => Owned::Notification(line.to_vec()),
+            Message::Notice(line) => Owned::Notice(line.to_vec()),
         }
     }
 
@@ -252,6 +256,8 @@ mod tests {
     const SESSION: &[u8] = b"%begin 1700000000 12 0\n\
         %end 1700000000 12 0\n\
         %session-changed $0 fixture\n\
+        hook-printed\n\
+        \n\
         %output %3 a\\134b\\015\\012\xe7\x95\x8c\\033[0m\n\
         %extended-output %4 120 : x\\040: y\n\
         %extended-output %4 0 later fields : z\n\
@@ -271,6 +277,8 @@ mod tests {
             Owned::Begin(12),
             Owned::End(12),
             Owned::Notification(b"%session-changed $0 fixture".to_vec()),
+            Owned::Notice(b"hook-printed".to_vec()),
+            Owned::Notice(Vec::new()),
             Owned::Output(3, b"a\\b\r\n\xe7\x95\x8c\x1b[0m".to_vec()),
             Owned::Output(4, b"x : y".to_vec()),
             Owned::Output(4, b"z".to_vec()),
@@ -332,7 +340,6 @@ mod tests {
             b"%extended-output %3 120 no separator\n",
             b"%begin 1700000000 x 0\n",
             b"%begin 1700000000 12\n",
-            b"stray text\n",
         ] {
             assert!(decode_in_pieces(line, line.len()).is_err(), "{line:?}");
         }
