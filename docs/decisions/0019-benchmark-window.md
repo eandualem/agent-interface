@@ -85,9 +85,9 @@ hook replies from commands sent by this connection. A writer thread prevents a
 large input from blocking the terminal worker while it drains replies and
 output. Input is split into commands of at most 1,024 bytes to stay below
 tmux's parser stack limit, preserving the order of each input call.
-Repeated recovery shares a ten-second deadline per pane until the output
-already queued at capture completion has settled. Later output starts a new
-deadline. An exited pane is retired without stopping its neighbors. Recovery
+Each recovery has a ten-second deadline. It is retained across captures that
+still require recovery; an in-grid snapshot with safely applied held output
+completes that recovery, so the next margin crossing gets a fresh deadline. An exited pane is retired without stopping its neighbors. Recovery
 and input transport failures are reported once before the benchmark window
 closes; a failed write still lets queued output drain. If the connection ends before a
 required capture completes, its final state remains unverified and the
