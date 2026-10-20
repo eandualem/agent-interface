@@ -59,7 +59,6 @@ signal-hook = "0.4.5"
 tempfile = "3.27.0"
 thiserror = "2.0.21"
 # tmux 3.8 layout protocol (decision record 0023).
-serde_json = "=1.0.154"
 
 # Read-only schema-v2 library access (decision record 0009).
 rusqlite = { version = "=0.40.2", features = ["bundled"] }
