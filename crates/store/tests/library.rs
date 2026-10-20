@@ -302,6 +302,25 @@ fn model_edits_preserve_extensions_through_splits_moves_and_closes() {
     let projected = explicit.with_model(&model, path).unwrap();
     assert!(projected.raw_json().contains("5E-1"));
     assert!(projected.raw_json().contains("1e2"));
+    let boundary = parse(&RECORD.replace(
+        "\"direction\": \"right\"",
+        "\"direction\": \"right\", \"ratio\": 0.5000000000000000555",
+    ))
+    .unwrap();
+    let mut model = boundary.model().clone();
+    model.rename_tab("Keep boundary ratio");
+    assert!(
+        boundary
+            .with_model(&model, path)
+            .unwrap()
+            .raw_json()
+            .contains("0.5000000000000000555")
+    );
+    let Node::Split { ratio, .. } = &mut model.workspaces[0].tabs[0].tree else {
+        panic!()
+    };
+    *ratio = 0.5000000000000001;
+    assert_eq!(boundary.with_model(&model, path).unwrap().model(), &model);
 }
 
 #[test]
@@ -321,4 +340,96 @@ fn model_projection_rejects_invalid_edits_without_changing_the_document() {
     model.workspaces[0].name = "x".repeat(MAX_RECORD_BYTES);
     assert!(document.with_model(&model, path).is_err());
     assert_eq!(document.raw_json(), RECORD);
+}
+
+#[test]
+fn reconciliation_merges_refreshes_conflicts_and_retains_local_navigation() {
+    let base = parse(RECORD).unwrap();
+    let path = Path::new("layouts.db");
+    let mut local = base.model().clone();
+    local.rename_tab("Local tab");
+    local.choose_pane("000000000005");
+    local.focus = true;
+    let mut peer = base.model().clone();
+    peer.rename_workspace("Peer workspace");
+    peer.choose_workspace("000000000006");
+    peer.show_agents = true;
+    let latest = base.with_model(&peer, path).unwrap();
+    let merged = base.reconcile(&local, &latest, path).unwrap();
+    assert!(!merged.conflict && !merged.active_tree_changed);
+    let model = merged.document.model();
+    assert_eq!(model.workspace().unwrap().name, "Peer workspace");
+    assert_eq!(model.tab().unwrap().name, "Local tab");
+    assert_eq!(model.pane().unwrap().id, "000000000005");
+    assert!(model.focus && model.show_agents);
+    assert_eq!(model.selected, local.selected);
+    // Advance the base to the last incoming document, keeping unsaved local edits.
+    peer.choose_workspace("000000000001");
+    peer.rename_workspace("Peer again");
+    let newer = latest.with_model(&peer, path).unwrap();
+    let next = latest.reconcile(model, &newer, path).unwrap();
+    assert!(!next.conflict);
+    assert_eq!(next.document.model().tab().unwrap().name, "Local tab");
+    assert_eq!(
+        next.document.model().workspace().unwrap().name,
+        "Peer again"
+    );
+
+    peer.rename_tab("Peer tab");
+    let conflicting = latest.with_model(&peer, path).unwrap();
+    let refreshed = base.reconcile(&local, &conflicting, path).unwrap();
+    assert!(refreshed.conflict && !refreshed.active_tree_changed);
+    assert_eq!(refreshed.document.model().tab().unwrap().name, "Peer tab");
+    assert_eq!(
+        refreshed.document.model().pane().unwrap().id,
+        "000000000005"
+    );
+    assert_eq!(local.tab().unwrap().name, "Local tab");
+
+    let mut peer = base.model().clone();
+    peer.attach(None);
+    let changed = base.with_model(&peer, path).unwrap();
+    let changed = base.reconcile(&local, &changed, path).unwrap();
+    assert!(!changed.conflict && changed.active_tree_changed);
+    assert_eq!(changed.document.model().tab().unwrap().name, "Local tab");
+    peer.close_tab();
+    let deleted = base.with_model(&peer, path).unwrap();
+    let refreshed = base.reconcile(&local, &deleted, path).unwrap();
+    assert!(refreshed.conflict && refreshed.active_tree_changed);
+    assert!(refreshed.document.model().tab().is_none());
+    assert_eq!(base.raw_json(), RECORD);
+}
+
+#[test]
+fn reconciliation_refreshes_invalid_combinations_but_preserves_oversized_edits() {
+    let base = parse(RECORD).unwrap();
+    let path = Path::new("layouts.db");
+    let add = |model: &mut tmux_workspaces_core::Layout| {
+        model.add_tab(None, "/tmp".into(), true);
+        let tab = model.workspaces[0].tabs.last_mut().unwrap();
+        let Node::Leaf(leaf) = &mut tab.tree else {
+            panic!()
+        };
+        leaf.id = "aaaaaaaaaaaa".into();
+        tab.focus = leaf.id.clone();
+    };
+    let mut local = base.model().clone();
+    let mut peer = base.model().clone();
+    add(&mut local);
+    add(&mut peer);
+    let latest = base.with_model(&peer, path).unwrap();
+    // Each side is valid, but their distinct added tabs share a leaf identity.
+    let refreshed = base.reconcile(&local, &latest, path).unwrap();
+    assert!(refreshed.conflict);
+    assert_eq!(refreshed.document.model().workspaces[0].tabs.len(), 2);
+
+    let mut local = base.model().clone();
+    let mut peer = base.model().clone();
+    local.workspaces[0].name = "a".repeat(9 * 1024 * 1024);
+    peer.workspaces[1].name = "b".repeat(9 * 1024 * 1024);
+    let latest = base.with_model(&peer, path).unwrap();
+    assert!(base.reconcile(&local, &latest, path).is_err());
+    assert_eq!(local.workspaces[0].name.len(), 9 * 1024 * 1024);
+    assert_eq!(latest.model(), &peer);
+    assert_eq!(base.raw_json(), RECORD);
 }

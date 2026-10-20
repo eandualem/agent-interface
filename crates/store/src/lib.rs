@@ -5,6 +5,8 @@
 
 mod json;
 mod project;
+mod reconcile;
+pub use reconcile::Reconciliation;
 mod schema;
 
 use rusqlite::{Connection, OpenFlags, OptionalExtension, types::ValueRef};

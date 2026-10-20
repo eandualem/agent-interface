@@ -260,11 +260,18 @@ Unknown fields retain Python's numeric equality and identity-list semantics.
 Seventeen reference cases generated from the pinned Python model cover these
 rules, including deletion versus editing and numeric precision boundaries.
 
-The result has no navigation fields. A future caller must restore local
-navigation, validate the complete merged schema and size, and perform the
-required transactional checks before saving. The mixed-writer tests, migration
-agreement and write gate above remain outstanding; this function performs no
-persistence.
+The result has no navigation fields. `Document::reconcile` projects local model
+edits, combines them with a newer document, validates the merged shared schema,
+and restores local navigation. Conflicting or schema-invalid combinations
+return the latest arrangement with a conflict flag, so the controller can ask
+the user to retry. Invalid local edits or oversized results return an error and
+leave the inputs untouched. The result also reports active-tree changes that
+require input focus to return to navigation. The next merge base is the latest
+incoming document; the returned arrangement retains unsaved local edits.
+
+Reconciliation preserves JSON values, but may normalize numeric spellings and
+formatting. It performs no persistence. The transactional checks, mixed-writer
+tests, migration agreement and write gate above remain outstanding.
 
 ## Saved split geometry
 

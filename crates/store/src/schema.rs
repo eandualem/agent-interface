@@ -159,6 +159,15 @@ fn node(
 }
 
 pub(crate) fn layout(value: &Value) -> Result<Layout> {
+    read_layout(value, true)
+}
+
+/// Validate shared fields and seed valid defaults before restoring local navigation.
+pub(crate) fn shared_layout(value: &Value) -> Result<Layout> {
+    read_layout(value, false)
+}
+
+fn read_layout(value: &Value, navigation: bool) -> Result<Layout> {
     let root = object(value, "layout")?;
     if root.get("version").and_then(Value::as_u64) != Some(2) {
         return Err("layout.version: unsupported version".into());
@@ -209,7 +218,11 @@ pub(crate) fn layout(value: &Value) -> Result<Layout> {
                 &mut ids,
                 &mut leaves,
             )?;
-            let focus = string(tab, "focus", &at)?;
+            let focus = if navigation {
+                string(tab, "focus", &at)?
+            } else {
+                leaves[0].clone()
+            };
             if !leaves.contains(&focus) {
                 return Err(format!("{at}.focus: expected an existing leaf identity"));
             }
@@ -220,7 +233,11 @@ pub(crate) fn layout(value: &Value) -> Result<Layout> {
                 focus,
             });
         }
-        let selected = string(item, "selected", &at)?;
+        let selected = if navigation {
+            string(item, "selected", &at)?
+        } else {
+            tabs.first().map(|tab| tab.id.clone()).unwrap_or_default()
+        };
         if !(tabs.is_empty() && selected.is_empty() || tabs.iter().any(|t| t.id == selected)) {
             return Err(format!(
                 "{at}.selected: expected an existing tab identity (or empty for an empty workspace)"
@@ -234,14 +251,21 @@ pub(crate) fn layout(value: &Value) -> Result<Layout> {
             selected,
         });
     }
-    let selected = string(root, "selected", "layout")?;
+    let selected = if navigation {
+        string(root, "selected", "layout")?
+    } else {
+        workspaces[0].id.clone()
+    };
     if !workspaces.iter().any(|w| w.id == selected) {
         return Err("layout.selected: expected an existing workspace identity".into());
     }
-    let focus = root
-        .get("focus")
-        .and_then(Value::as_bool)
-        .ok_or("layout.focus: expected a boolean")?;
+    let focus = if navigation {
+        root.get("focus")
+            .and_then(Value::as_bool)
+            .ok_or("layout.focus: expected a boolean")?
+    } else {
+        false
+    };
     Ok(Layout {
         workspaces,
         selected,
