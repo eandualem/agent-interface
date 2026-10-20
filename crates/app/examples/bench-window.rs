@@ -84,18 +84,17 @@ fn run() -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     let layout =
         tmux_workspaces_tmux::layout::parse(format!("%layout-change {described}").as_bytes())
-            .map_err(str::to_owned)?
-            .panes;
+            .map_err(str::to_owned)?;
     let input = options
         .input
-        .or_else(|| layout.first().map(|pane| pane.id))
+        .or_else(|| layout.panes.first().map(|pane| pane.id))
         .ok_or("the session has no panes")?;
 
     let client = server
         .control(&[
             "attach-session",
             "-f",
-            "no-output,ignore-size",
+            "no-output,ignore-size,new-layouts",
             "-t",
             &options.session,
         ])
@@ -131,7 +130,9 @@ fn run() -> Result<(), String> {
             ..Default::default()
         };
         let opened = cx.open_window(options, |window, cx| {
-            cx.new(|cx| TerminalView::new(panes, layout, input, appearance, woken, window, cx))
+            cx.new(|cx| {
+                TerminalView::new(panes, layout.panes, input, appearance, woken, window, cx)
+            })
         });
         if let Err(error) = opened {
             eprintln!("bench-window: cannot open the window: {error}");

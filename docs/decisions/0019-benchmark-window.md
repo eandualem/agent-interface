@@ -98,9 +98,18 @@ output boundary can require a capture even if later text would wrap normally.
 This correctness path has a throughput cost; the bulk-output gate must measure
 it before the product can claim its speed target.
 
-Resize recovery and retrying failed initial captures while retaining a
-production attachment still belong to the full connection lifecycle. The
-startup error path closes only its own client on the disposable fixture.
+The control connection follows layout notifications for its initial window.
+The worker waits for 100 ms without a new layout before capturing resized or
+newly visible panes, matching the interval in the resize fidelity harness.
+It publishes rectangles together with matching recovered screens; the view
+keeps the previous layout until every visible pane is ready. Zoom, unzoom,
+splits and pane removal use the same path. Other windows' notifications do
+not alter this view. This follows tmux's window geometry; resizing the native
+window to drive tmux's geometry remains a later integration step.
+
+Retrying failed initial captures and switching the attachment to another
+window still belong to the full connection lifecycle. The startup error path
+closes only its own client on the disposable fixture.
 
 **Dependencies of `app`:**
 
