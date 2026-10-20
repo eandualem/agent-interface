@@ -10,8 +10,10 @@ use tmux_workspaces_store::{Document, Error, Store};
 
 pub(crate) mod location;
 mod shells;
+mod window;
 pub use location::library_directory;
 pub use shells::{existing_shell_socket, ordinary_session};
+pub use window::WindowLayout;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
 
@@ -100,9 +102,10 @@ impl Library {
         })
     }
 
-    /// Take the latest update, if any. Reconcile the replacement model with
-    /// `Layout::retain_navigation` before displaying it; when it returns true,
-    /// move input focus to navigation. This worker does not own input focus.
+    /// Take the latest update, if any. Apply replacement documents through
+    /// [`WindowLayout::refresh`] to retain this window's navigation and reconcile
+    /// local edits. Handle its conflict and active-tree flags before input is
+    /// handed off. Read errors leave the window's existing model available.
     pub fn take_update(&self) -> Option<Update> {
         self.updates
             .lock()
