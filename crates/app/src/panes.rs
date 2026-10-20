@@ -87,7 +87,7 @@ struct State {
     finished: bool,
     failure: Option<String>,
     /// A pipe failure is reported without abandoning already queued output.
-    write_failure: Option<String>,
+    transport_failure: Option<String>,
     gone: Vec<PaneId>,
 }
 
@@ -164,7 +164,7 @@ fn write_commands(
             .and_then(|()| stdin.flush());
         let failed = result.is_err();
         if let Err(error) = &result {
-            shared.lock().write_failure = Some(format!("writing to control client: {error}"));
+            shared.lock().transport_failure = Some(format!("writing to control client: {error}"));
             shared.changed.notify_all();
         }
         if let Some(sent) = sent {
@@ -211,13 +211,9 @@ impl LivePane {
         deadline: Option<Instant>,
     ) -> Result<(), String> {
         self.output(bytes)?;
-        // An in-grid snapshot plus its held output completes this recovery.
-        // A later margin crossing is a new round trip, even with a backlog.
-        self.recovery_deadline = if self.captured.is_some() || self.needs_capture {
-            deadline
-        } else {
-            None
-        };
+        // A snapshot with no pending output completes this recovery, including
+        // an idle margin snapshot. Later output starts a fresh round trip.
+        self.recovery_deadline = if self.needs_capture { deadline } else { None };
         Ok(())
     }
 
@@ -386,9 +382,9 @@ impl Panes {
     pub fn failure(&self) -> Option<String> {
         let state = self.shared.lock();
         state
-            .failure
+            .transport_failure
             .clone()
-            .or_else(|| state.write_failure.clone())
+            .or_else(|| state.failure.clone())
     }
 
     /// Returns whether the client has exited, the worker has handed over
@@ -553,7 +549,7 @@ fn work(
             let sent = control.send(&line, ReplyOwner::Recovery);
             state = shared.lock();
             if let Err(error) = sent {
-                if state.write_failure.is_some() {
+                if state.transport_failure.is_some() {
                     capture_unavailable = true;
                 } else {
                     state.failure = Some(error.to_string());
@@ -563,9 +559,10 @@ fn work(
                 recovering = Some((recovery, deadline));
             }
         }
-        if recovering
-            .as_ref()
-            .is_some_and(|(_, deadline)| Instant::now() >= *deadline)
+        if !state.closed
+            && recovering
+                .as_ref()
+                .is_some_and(|(_, deadline)| Instant::now() >= *deadline)
         {
             state.failure = Some("timed out recovering the pane".into());
             break;
@@ -638,7 +635,7 @@ fn work(
                 }
                 Ok(None) => {}
                 Err(error) => {
-                    if state.write_failure.is_some() {
+                    if state.transport_failure.is_some() {
                         // Recovery can no longer issue commands, but other
                         // panes may still have valid final output queued.
                         capture_unavailable = true;
@@ -658,8 +655,12 @@ fn work(
             return;
         } else if let Some((_, deadline)) = &recovering {
             if state.closed {
-                state.failure = Some("control client exited during pane recovery".into());
-                break;
+                state
+                    .transport_failure
+                    .get_or_insert_with(|| "control client exited during pane recovery".into());
+                capture_unavailable = true;
+                recovering = None;
+                continue;
             }
             state = shared
                 .changed
@@ -853,7 +854,7 @@ mod tests {
         let state = shared.lock();
         assert!(
             state
-                .write_failure
+                .transport_failure
                 .as_ref()
                 .unwrap()
                 .contains("writing to control client")
@@ -868,6 +869,15 @@ mod tests {
 
     #[test]
     fn failed_recovery_write_still_drains_a_neighbors_final_output() {
+        drains_after_writer_loss(false);
+    }
+
+    #[test]
+    fn exit_during_recovery_publishes_a_neighbors_last_waiting_frame() {
+        drains_after_writer_loss(true);
+    }
+
+    fn drains_after_writer_loss(in_flight: bool) {
         let server = TmuxServer::start().unwrap();
         server
             .run(&["split-window", "-h", "-t", TmuxServer::SESSION])
@@ -885,6 +895,16 @@ mod tests {
         let seed =
             crate::seed::attach(&mut client, layout.iter().map(|pane| pane.id).collect()).unwrap();
         let snapshots = seed.snapshots.clone();
+        let mut margin_snapshot = snapshots[0].clone();
+        margin_snapshot.state.cursor.0 = margin_snapshot.state.width;
+        let mut idle_margin = LivePane::restored(margin_snapshot, 100).unwrap();
+        idle_margin
+            .resume_after_recovery(b"", Some(Instant::now() - Duration::from_secs(1)))
+            .unwrap();
+        assert_eq!(idle_margin.recovery_deadline, None);
+        idle_margin.output(b"later").unwrap();
+        assert!(idle_margin.needs_capture);
+        assert_eq!(idle_margin.recovery_deadline, None);
         drop(seed);
         client.wait().unwrap();
         let mut margin = b"\x1b[2J\x1b[H".to_vec();
@@ -897,25 +917,42 @@ mod tests {
                 ]),
                 queued: margin.len() + 12,
                 closed: true,
-                write_failure: Some("writing to control client: Broken pipe".into()),
+                transport_failure: Some("writing to control client: Broken pipe".into()),
                 ..State::default()
             }),
             changed: Condvar::new(),
         };
         let (commands, requests) = mpsc::channel();
-        drop(requests);
+        let _requests = in_flight.then_some(requests);
         let control = Control {
             commands,
             pending: Mutex::new(VecDeque::new()),
         };
         let seen = Mutex::new(Vec::new());
+        let hold_first = std::sync::atomic::AtomicBool::new(in_flight);
         let wake = || {
+            if hold_first.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                return;
+            }
             if let Some(update) = shared.lock().update.take() {
                 seen.lock().unwrap().extend(update);
             }
         };
         let (ready, _) = mpsc::channel();
-        work(&shared, &control, &layout, snapshots, 100, &wake, ready);
+        thread::scope(|scope| {
+            if in_flight {
+                scope.spawn(|| {
+                    // Simulate a UI that has not yet drawn its waiting frame
+                    // when the connection exits during recovery.
+                    thread::sleep(Duration::from_millis(100));
+                    if let Some(update) = shared.lock().update.take() {
+                        seen.lock().unwrap().extend(update);
+                    }
+                    shared.changed.notify_all();
+                });
+            }
+            work(&shared, &control, &layout, snapshots, 100, &wake, ready);
+        });
         let seen = seen.lock().unwrap();
         let (_, screen) = seen
             .iter()
@@ -929,7 +966,7 @@ mod tests {
         assert!(state.queue.is_empty());
         assert!(
             state
-                .write_failure
+                .transport_failure
                 .as_ref()
                 .unwrap()
                 .contains("Broken pipe")
