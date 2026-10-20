@@ -18,6 +18,37 @@ pub struct PaneRect<'a> {
 }
 
 impl Node {
+    /// Remember a split's measured child sizes, excluding the separator.
+    ///
+    /// Like Python's resize handling, the saved ratio is clamped to 0.15..=0.85.
+    /// Zero-sized children and missing split identities leave the tree unchanged.
+    /// This records model state only; it does not resize a terminal.
+    pub fn remember_split_sizes(&mut self, id: &str, first_size: u16, second_size: u16) -> bool {
+        if first_size == 0 || second_size == 0 {
+            return false;
+        }
+        match self {
+            Self::Leaf(_) => false,
+            Self::Split {
+                id: split_id,
+                ratio,
+                first,
+                second,
+                ..
+            } => {
+                if split_id == id {
+                    *ratio = (f64::from(first_size)
+                        / (f64::from(first_size) + f64::from(second_size)))
+                    .clamp(0.15, 0.85);
+                    true
+                } else {
+                    first.remember_split_sizes(id, first_size, second_size)
+                        || second.remember_split_sizes(id, first_size, second_size)
+                }
+            }
+        }
+    }
+
     /// Minimum columns and rows for the complete tree: each leaf needs 34 by 6
     /// cells, with one separator cell between siblings, as in the Python model.
     /// The tree must satisfy the schema's depth limit.
@@ -134,7 +165,9 @@ mod tests {
         let first = layout.pane().unwrap().id.clone();
         layout.split(Direction::Right, "/tmp".into(), false);
         layout.split(Direction::Below, "/tmp".into(), false);
-        layout.workspaces[0].tabs[0].focus = first;
+        assert!(layout.choose_pane(&first));
+        assert!(!layout.choose_pane("missing"));
+        assert_eq!(layout.pane().unwrap().id, first);
         layout.split(Direction::Below, "/tmp".into(), false);
         let tab = &mut layout.workspaces[0].tabs[0];
         assert_eq!(tab.tree.minimum_size(), (69, 13));
@@ -176,5 +209,26 @@ mod tests {
         assert!(tab.pane_rectangles(140, 0, false).is_empty());
         assert_eq!(*tab, saved);
         assert_eq!(tab.pane_rectangles(69, 13, false).len(), 4);
+        let Node::Split { id, .. } = &tab.tree else {
+            panic!("the saved four-pane tree must remain split")
+        };
+        let split = id.clone();
+        assert!(!tab.tree.remember_split_sizes("missing", 35, 104));
+        assert!(!tab.tree.remember_split_sizes(&split, 0, 104));
+        assert_eq!(*tab, saved);
+        assert!(tab.tree.remember_split_sizes(&split, 35, 104));
+        assert_eq!(
+            geometry(tab.pane_rectangles(140, 13, false)),
+            [
+                (0, 0, 35, 6),
+                (0, 7, 35, 6),
+                (36, 0, 104, 6),
+                (36, 7, 104, 6)
+            ]
+        );
+        assert!(tab.tree.remember_split_sizes(&split, 1, u16::MAX));
+        assert!(matches!(&tab.tree, Node::Split { ratio, .. } if *ratio == 0.15));
+        assert!(tab.tree.remember_split_sizes(&split, u16::MAX, 1));
+        assert!(matches!(&tab.tree, Node::Split { ratio, .. } if *ratio == 0.85));
     }
 }
