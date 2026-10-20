@@ -138,7 +138,7 @@ impl<'a> Projection<'a> {
                         .objects
                         .get(id)
                         .and_then(|item| item.get("ratio"))
-                        .and_then(|raw| serde_json::from_str::<f64>(raw.get()).ok())
+                        .and_then(|raw| raw.get().parse::<f64>().ok())
                         .unwrap_or(0.5)
                         != *ratio
                 {
