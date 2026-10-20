@@ -64,6 +64,9 @@ pub fn load() -> String {
 /// Lists running compilers and build tools, which make a result exploratory.
 pub fn builds() -> String {
     let processes = run("ps", &["-axo", "comm="]);
+    if processes == "unknown" {
+        return processes;
+    }
     let mut found: Vec<&str> = processes
         .lines()
         .filter_map(|path| path.trim().rsplit('/').next())
@@ -130,8 +133,10 @@ fn cpu() -> String {
 
 fn memory() -> String {
     if cfg!(target_os = "macos") {
-        let bytes: u64 = run("sysctl", &["-n", "hw.memsize"]).parse().unwrap_or(0);
-        format!("{} GiB", bytes >> 30)
+        run("sysctl", &["-n", "hw.memsize"])
+            .parse::<u64>()
+            .map(|bytes| format!("{} GiB", bytes >> 30))
+            .unwrap_or_else(|_| "unknown".to_owned())
     } else {
         read("/proc/meminfo")
             .lines()
