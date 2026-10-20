@@ -137,8 +137,29 @@ snapshot remains the input for future roster display. `Snapshot::fetch` reads on
 response using an explicit address and key. It validates the address before
 constructing a request, disables proxies and redirects, limits the complete call
 to three seconds and the body to 1 MiB, and exposes only the fixed stale error.
-Credentials are never retained in the snapshot. Configuration loading, polling
-and product controls remain separate work.
+Credentials are never retained in the snapshot. `Snapshot::fetch_configured`
+re-reads configuration on each attempt for an already-enabled provider. It opens
+`backbone.db` read-only, queries only the host and port settings and waits at most
+250 ms for a database lock. A missing database uses defaults without creating it.
+An explicit URL bypasses the settings database. A nonempty environment key bypasses
+`.env`; otherwise only `BACKBONE_API_KEY` assignments are parsed. Quoting and comments
+match the pinned Python reader, including last-assignment precedence and rejection
+of malformed trailing words. No shell expression is evaluated or exported.
+
+Configuration reads reuse the workspace's exact-pinned `rusqlite` 0.40.2 (MIT;
+[0009](0009-python-library-and-shell-server-compatibility.md)). Existing `tempfile`
+3.27.0 (MIT OR Apache-2.0) supplies test fixtures; no new package versions are added.
+The shell lexer `shlex` 2.0.1 was considered but not used: it differs from Python's
+reader for comments inside words and backslashes before dollar signs and backticks.
+The small named-key parser follows the required Python behavior without loading a
+general environment file.
+
+`app::roster::RosterSource` starts only on an explicit call. Its dedicated worker
+reads immediately, then five seconds after each attempt, and publishes one
+coalesced snapshot. Failures replace unread successes with stale metadata; repairs
+are retried without affecting the separate tmux-discovery worker. Dropping the
+handle interrupts the polling wait and joins after the current read finishes.
+Launch-time enablement and product controls remain separate work.
 
 Typed object/array reads and borrowed raw field values preserve literal JSON
 types even when the workspace enables serde_json's raw-value and arbitrary-

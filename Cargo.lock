@@ -5505,7 +5505,9 @@ dependencies = [
  "http",
  "log",
  "reqwest",
+ "rusqlite",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]

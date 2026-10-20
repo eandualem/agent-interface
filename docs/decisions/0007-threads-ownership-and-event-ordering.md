@@ -42,6 +42,9 @@ socket.
 - A **storage worker** owns the one retained SQLite connection. `app::library`
   performs read-only polling and publishes one coalesced document/error update;
   the controller remains responsible for local navigation and input focus.
+- An explicit **roster worker** owns its metadata cache and re-reads provider
+  configuration for each request. It publishes one coalesced snapshot, including
+  stale failures, independently of source-session discovery (`app::roster`).
 - **Background input and output** drives tmux child processes and timers. The
   runtime used for this is decided in [0008](0008-background-io-runtime.md).
 

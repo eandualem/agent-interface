@@ -14,6 +14,8 @@ workspace = true
 serde_json.workspace = true
 http.workspace = true
 reqwest.workspace = true
+rusqlite.workspace = true
 
 [dev-dependencies]
 log = "=0.4.34"
+tempfile.workspace = true
