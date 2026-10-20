@@ -89,6 +89,7 @@ pub struct TerminalView {
     grid: Rc<RefCell<Grid>>,
     input: PaneId,
     focus: FocusHandle,
+    failure_reported: bool,
 }
 
 /// What the grid draws, shared with the paint callback of each frame.
@@ -126,9 +127,7 @@ impl TerminalView {
                 let closed = this.update(cx, |view, cx| {
                     let closed = view.panes.is_finished();
                     if closed {
-                        if let Some(error) = view.panes.failure() {
-                            eprintln!("pane recovery: {error}");
-                        }
+                        view.report_failure();
                         cx.quit();
                     } else {
                         cx.notify();
@@ -156,6 +155,16 @@ impl TerminalView {
             })),
             input,
             focus,
+            failure_reported: false,
+        }
+    }
+
+    fn report_failure(&mut self) {
+        if !self.failure_reported
+            && let Some(error) = self.panes.failure()
+        {
+            eprintln!("terminal connection: {error}");
+            self.failure_reported = true;
         }
     }
 
@@ -185,9 +194,7 @@ impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.take_update();
         if self.panes.is_finished() {
-            if let Some(error) = self.panes.failure() {
-                eprintln!("pane recovery: {error}");
-            }
+            self.report_failure();
             // The client has gone: close once this frame, which shows its last
             // output, has been drawn.
             window.on_next_frame(|_, cx| cx.quit());

@@ -86,6 +86,7 @@ struct State {
     /// because the panes are being dropped.
     finished: bool,
     failure: Option<String>,
+    gone: Vec<PaneId>,
 }
 
 enum Event {
@@ -104,7 +105,7 @@ impl Event {
 
 #[derive(Clone, Copy)]
 enum ReplyOwner {
-    Input,
+    Input(PaneId),
     Recovery,
 }
 
@@ -125,7 +126,7 @@ enum WriteRequest {
 impl Control {
     fn send(&self, line: &str, owner: ReplyOwner) -> io::Result<()> {
         let (sent, received) = mpsc::channel();
-        let wait = matches!(owner, ReplyOwner::Input);
+        let wait = matches!(owner, ReplyOwner::Input(_));
         self.commands
             .send(WriteRequest::Command {
                 line: line.into(),
@@ -148,7 +149,6 @@ fn write_commands(
     mut stdin: ChildStdin,
     requests: mpsc::Receiver<WriteRequest>,
     control: &Control,
-    shared: &Shared,
 ) {
     while let Ok(WriteRequest::Command { line, owner, sent }) = requests.recv() {
         control
@@ -159,13 +159,13 @@ fn write_commands(
         let result = stdin
             .write_all(line.as_bytes())
             .and_then(|()| stdin.flush());
-        let failed = result.as_ref().err().map(ToString::to_string);
+        let failed = result.is_err();
         if let Some(sent) = sent {
             let _ = sent.send(result);
         }
-        if let Some(error) = failed {
-            shared.lock().failure = Some(error);
-            shared.changed.notify_all();
+        if failed {
+            // Closing stdin ends the reader. Let the worker drain its final
+            // output; the input caller already received the write error.
             break;
         }
     }
@@ -177,6 +177,7 @@ struct LivePane {
     // Retain its authoritative snapshot and never stream into that copy.
     captured: Option<Snapshot>,
     needs_capture: bool,
+    recovery_deadline: Option<Instant>,
 }
 
 impl LivePane {
@@ -193,6 +194,7 @@ impl LivePane {
             terminal,
             captured: captured.then_some(snapshot),
             needs_capture: false,
+            recovery_deadline: None,
         })
     }
 
@@ -200,11 +202,24 @@ impl LivePane {
         if self.captured.is_some() || self.needs_capture {
             self.needs_capture |= !bytes.is_empty();
         } else {
-            self.terminal.write(bytes);
-            self.needs_capture = self
-                .terminal
-                .cursor_pending_wrap()
-                .map_err(|e| e.to_string())?;
+            // A cursor edit can clear pending wrap within the same output
+            // event. Stop before its control byte, not just at read boundaries.
+            let mut remaining = bytes;
+            while !remaining.is_empty() {
+                let end = remaining[1..]
+                    .iter()
+                    .position(|byte| *byte < 0x20 || *byte == 0x7f)
+                    .map_or(remaining.len(), |index| index + 1);
+                self.terminal.write(&remaining[..end]);
+                remaining = &remaining[end..];
+                self.needs_capture = self
+                    .terminal
+                    .cursor_pending_wrap()
+                    .map_err(|e| e.to_string())?;
+                if self.needs_capture {
+                    break;
+                }
+            }
         }
         Ok(())
     }
@@ -268,8 +283,7 @@ impl Panes {
         };
         let writer = spawn("tmux writer", {
             let control = Arc::clone(&panes.control);
-            let shared = Arc::clone(&panes.shared);
-            move || write_commands(stdin, requests, &control, &shared)
+            move || write_commands(stdin, requests, &control)
         });
         match writer {
             Ok(writer) => panes.threads.push(writer),
@@ -329,11 +343,17 @@ impl Panes {
         // even when recovery commands run between its chunks.
         let _input = self.input.lock().unwrap_or_else(|e| e.into_inner());
         for chunk in bytes.chunks(INPUT_CHUNK) {
+            if self.shared.lock().closed {
+                return Err(io::Error::other("the control client has exited"));
+            }
+            if self.shared.lock().gone.contains(&pane) {
+                return Err(io::Error::other(format!("pane %{} has exited", pane.0)));
+            }
             if let Some(failure) = self.failure() {
                 return Err(io::Error::other(failure));
             }
             self.control
-                .send(&command::send_bytes(pane, chunk), ReplyOwner::Input)?;
+                .send(&command::send_bytes(pane, chunk), ReplyOwner::Input(pane))?;
         }
         Ok(())
     }
@@ -391,6 +411,7 @@ fn spawn(name: &str, body: impl FnOnce() + Send + 'static) -> io::Result<JoinHan
 fn read(shared: &Shared, mut stdout: ChildStdout, mut decoder: Decoder) {
     let mut buffer = vec![0; READ_SIZE];
     let mut reply = Reply::default();
+    let mut from_client = false;
     loop {
         let read = match stdout.read(&mut buffer) {
             Ok(0) | Err(_) => break,
@@ -403,11 +424,16 @@ fn read(shared: &Shared, mut stdout: ChildStdout, mut decoder: Decoder) {
                 Some(Event::Output(last, bytes)) if *last == pane => bytes.extend_from_slice(data),
                 _ => batch.push(Event::Output(pane, data.to_vec())),
             },
-            Message::Begin { .. } => reply = Reply::default(),
-            Message::ReplyLine(line) => reply.lines.push(line.to_vec()),
+            Message::Begin { flags, .. } => {
+                reply = Reply::default();
+                from_client = flags & 1 != 0;
+            }
+            Message::ReplyLine(line) if from_client => reply.lines.push(line.to_vec()),
             Message::End { .. } | Message::Error { .. } => {
                 reply.ok = matches!(message, Message::End { .. });
-                batch.push(Event::Reply(std::mem::take(&mut reply)));
+                if from_client {
+                    batch.push(Event::Reply(std::mem::take(&mut reply)));
+                }
             }
             Message::Notification(line) if line.starts_with(b"%exit") => exited = true,
             _ => {}
@@ -478,7 +504,6 @@ fn work(
     };
     let _ = ready.send(Ok(()));
     let mut recovering: Option<(Recovery, Instant)> = None;
-    let mut retry_deadline = None;
     let mut changed: Vec<PaneId> = layout.iter().map(|pane| pane.id).collect();
     let mut state = shared.lock();
     loop {
@@ -486,14 +511,14 @@ fn work(
             break;
         }
         if recovering.is_none()
-            && let Some((pane, _)) = terminals
-                .iter()
+            && let Some((pane, terminal)) = terminals
+                .iter_mut()
                 .find(|(_, terminal)| terminal.needs_capture)
         {
             let (recovery, line) = Recovery::start(*pane);
-            let deadline = retry_deadline
-                .take()
-                .unwrap_or_else(|| Instant::now() + crate::seed::TIMEOUT);
+            let deadline = *terminal
+                .recovery_deadline
+                .get_or_insert_with(|| Instant::now() + crate::seed::TIMEOUT);
             drop(state);
             let sent = control.send(&line, ReplyOwner::Recovery);
             state = shared.lock();
@@ -565,15 +590,34 @@ fn work(
                 event,
                 &mut terminals,
                 &mut recovering,
-                &mut retry_deadline,
                 control,
                 scrollback,
                 &mut changed,
             );
             state = shared.lock();
-            if let Err(error) = result {
-                state.failure = Some(error);
-                break;
+            match result {
+                Ok(Some(pane)) => {
+                    if !state.gone.contains(&pane) {
+                        state.gone.push(pane);
+                    }
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    state.failure = Some(error);
+                    break;
+                }
+            }
+            // A completed capture can be followed by output already in the
+            // queue. Keep that pane's deadline until those bytes are handled,
+            // rather than granting each recapture another ten seconds.
+            for (pane, terminal) in &mut terminals {
+                if terminal.recovery_deadline.is_some()
+                    && !terminal.needs_capture
+                    && !recovering.as_ref().is_some_and(|(recovery, _)| recovery.pane() == *pane)
+                    && !state.queue.iter().any(|event| matches!(event, Event::Output(from, bytes) if from == pane && !bytes.is_empty()))
+                {
+                    terminal.recovery_deadline = None;
+                }
             }
         } else if state.cancelled || (state.closed && changed.is_empty() && recovering.is_none()) {
             // Once the client has exited, the last changes still wait for the
@@ -603,20 +647,19 @@ fn work(
 
 fn apply(
     event: Event,
-    terminals: &mut [(PaneId, LivePane)],
+    terminals: &mut Vec<(PaneId, LivePane)>,
     recovering: &mut Option<(Recovery, Instant)>,
-    retry_deadline: &mut Option<Instant>,
     control: &Control,
     scrollback: usize,
     changed: &mut Vec<PaneId>,
-) -> Result<(), String> {
+) -> Result<Option<PaneId>, String> {
     match event {
         Event::Output(pane, bytes) => {
             if let Some((recovery, _)) = recovering.as_mut()
                 && recovery.pane() == pane
             {
                 recovery.output(&bytes);
-                return Ok(());
+                return Ok(None);
             }
             if let Some((_, terminal)) = terminals.iter_mut().find(|(id, _)| *id == pane) {
                 terminal.output(&bytes)?;
@@ -630,8 +673,14 @@ fn apply(
         Event::Reply(reply) => {
             let mut pending = control.pending.lock().unwrap_or_else(|e| e.into_inner());
             match pending.front() {
-                Some(ReplyOwner::Input) => {
+                Some(ReplyOwner::Input(pane)) => {
+                    let pane = *pane;
                     pending.pop_front();
+                    if missing_pane(&reply, pane) {
+                        terminals.retain(|(id, _)| *id != pane);
+                        changed.retain(|id| *id != pane);
+                        return Ok(Some(pane));
+                    }
                     if !reply.ok {
                         let text = reply
                             .lines
@@ -643,8 +692,10 @@ fn apply(
                     }
                 }
                 Some(ReplyOwner::Recovery) => {
-                    let (recovery, deadline) =
+                    let (recovery, _) =
                         recovering.as_mut().ok_or("reply without a pane recovery")?;
+                    let pane = recovery.pane();
+                    let missing = missing_pane(&reply, pane);
                     match recovery.reply(reply).map_err(|e| e.to_string())? {
                         Step::Wait => {}
                         Step::Send(line) => {
@@ -660,15 +711,23 @@ fn apply(
                                 .iter_mut()
                                 .find(|(id, _)| *id == pane)
                                 .ok_or("recovery completed for an unknown pane")?;
+                            let deadline = terminal.recovery_deadline;
                             *terminal = LivePane::restored(rebuilt.snapshot, scrollback)?;
+                            terminal.recovery_deadline = deadline;
                             terminal.output(&rebuilt.output)?;
                             if terminal.needs_capture {
-                                *retry_deadline = Some(*deadline);
                                 changed.retain(|id| *id != pane);
                             } else if !changed.contains(&pane) {
                                 changed.push(pane);
                             }
                             *recovering = None;
+                        }
+                        Step::Failed if missing => {
+                            pending.pop_front();
+                            terminals.retain(|(id, _)| *id != pane);
+                            changed.retain(|id| *id != pane);
+                            *recovering = None;
+                            return Ok(Some(pane));
                         }
                         Step::Failed => return Err("tmux pane recovery command failed".into()),
                     }
@@ -677,7 +736,15 @@ fn apply(
             }
         }
     }
-    Ok(())
+    Ok(None)
+}
+
+fn missing_pane(reply: &Reply, pane: PaneId) -> bool {
+    !reply.ok
+        && reply
+            .lines
+            .iter()
+            .any(|line| line == format!("can't find pane: %{}", pane.0).as_bytes())
 }
 
 /// Returns the panes in `changed` that the waiting update does not hold, or
@@ -772,20 +839,29 @@ mod tests {
 
     #[test]
     fn an_initial_margin_cursor_recovers_before_applying_a_cursor_left_edit() {
-        margin_cursor_edit(true);
+        margin_cursor_edit(true, false);
     }
 
     #[test]
     fn a_streamed_margin_cursor_recovers_while_input_replies_arrive() {
-        margin_cursor_edit(false);
+        margin_cursor_edit(false, false);
     }
 
-    fn margin_cursor_edit(initial: bool) {
+    #[test]
+    fn a_margin_transition_inside_one_write_recovers_before_publishing() {
+        margin_cursor_edit(false, true);
+    }
+
+    fn margin_cursor_edit(initial: bool, combined: bool) {
         let server = TmuxServer::start().unwrap();
         let session = TmuxServer::SESSION;
         let signal = server.shell_command(&["wait-for", "-S", "seed-ready"]);
         let read = "dd bs=1 count=1 of=/dev/null 2>/dev/null";
-        let fill = "printf '%0200d' 0";
+        let fill = if combined {
+            "printf '%0200d\\033[5DX' 0"
+        } else {
+            "printf '%0200d' 0"
+        };
         let start = if initial {
             format!("{fill};")
         } else {
@@ -796,8 +872,13 @@ mod tests {
         } else {
             format!("{read}; {fill};")
         };
+        let edit = if combined {
+            String::new()
+        } else {
+            format!("{read}; printf '\\033[5DX';")
+        };
         let script = format!(
-            "stty -echo -icanon; printf '\\033[2J\\033[H'; {start} {signal}; {after} {read}; printf '\\033[5DX'; exec sleep 60"
+            "stty -echo -icanon; printf '\\033[2J\\033[H'; {start} {signal}; {after} {edit} exec sleep 60"
         );
         server
             .run(&["respawn-pane", "-k", "-t", session, &script])
@@ -823,9 +904,11 @@ mod tests {
             wait_for_row(&panes, &woken, pane, "");
             panes.send_input(pane, b"g").unwrap();
         }
-        wait_for_row(&panes, &woken, pane, &"0".repeat(200));
-        for _ in 0..8 {
-            panes.send_input(pane, b"g").unwrap();
+        if !combined {
+            wait_for_row(&panes, &woken, pane, &"0".repeat(200));
+            for _ in 0..8 {
+                panes.send_input(pane, b"g").unwrap();
+            }
         }
         let expected = format!("{}X{}", "0".repeat(195), "0".repeat(4));
         wait_for_row(&panes, &woken, pane, &expected);
@@ -884,6 +967,111 @@ mod tests {
         writer.join().unwrap();
         wait_for_row(&panes, &woken, pane, "DONE");
         assert_eq!(std::fs::read(received_input).unwrap(), expected);
+        assert_eq!(panes.failure(), None);
+    }
+
+    #[test]
+    fn a_stalled_recovery_reports_its_deadline() {
+        let server = TmuxServer::start().unwrap();
+        let session = TmuxServer::SESSION;
+        server
+            .run(&["respawn-pane", "-k", "-t", session, "exec cat"])
+            .unwrap();
+        let layout = layout(&server);
+        let pane = layout[0].id;
+        let client = server
+            .control(&[
+                "attach-session",
+                "-f",
+                "no-output,ignore-size",
+                "-t",
+                session,
+            ])
+            .unwrap();
+        let (wake, woken) = mpsc::channel();
+        let panes = Panes::start(client, &layout, 100, move || {
+            let _ = wake.send(());
+        })
+        .unwrap();
+        wait_for_row(&panes, &woken, pane, "");
+        // Change only this private fixture after the startup hook check.
+        // The hook's guard is ignored, but its wait stalls the capture line;
+        // the recovery must report its deadline instead of waiting forever.
+        server
+            .run(&[
+                "set-hook",
+                "-g",
+                "after-refresh-client",
+                "wait-for recovery-release",
+            ])
+            .unwrap();
+        panes.send_input(pane, &[b'x'; 200]).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while panes.failure().is_none() && Instant::now() < deadline {
+            let _ = woken.recv_timeout(deadline.saturating_duration_since(Instant::now()));
+        }
+        let failure = panes.failure();
+        server.run(&["wait-for", "-S", "recovery-release"]).unwrap();
+        assert!(
+            failure
+                .as_ref()
+                .is_some_and(|failure| failure.contains("timed out recovering")),
+            "{failure:?}"
+        );
+    }
+
+    #[test]
+    fn a_pane_removed_during_recovery_does_not_stop_its_neighbor() {
+        let server = TmuxServer::start().unwrap();
+        let session = TmuxServer::SESSION;
+        server
+            .run(&["respawn-pane", "-k", "-t", session, "exec cat"])
+            .unwrap();
+        server
+            .run(&["split-window", "-h", "-t", session, "exec cat"])
+            .unwrap();
+        let layout = layout(&server);
+        let gone = layout[0].id;
+        let alive = layout[1].id;
+        let client = server
+            .control(&[
+                "attach-session",
+                "-f",
+                "no-output,ignore-size",
+                "-t",
+                session,
+            ])
+            .unwrap();
+        let (wake, woken) = mpsc::channel();
+        let panes = Panes::start(client, &layout, 100, move || {
+            let _ = wake.send(());
+        })
+        .unwrap();
+        wait_for_row(&panes, &woken, gone, "");
+        // Remove the private fixture pane precisely between pause and capture.
+        server
+            .run(&[
+                "set-hook",
+                "-g",
+                "after-refresh-client",
+                &format!("kill-pane -t '%{}'", gone.0),
+            ])
+            .unwrap();
+        panes
+            .send_input(gone, &vec![b'x'; usize::from(layout[0].cols)])
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !panes.shared.lock().gone.contains(&gone) {
+            assert!(
+                Instant::now() < deadline,
+                "pane was not retired: {:?}",
+                panes.failure()
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(panes.send_input(gone, b"lost").is_err());
+        panes.send_input(alive, b"alive").unwrap();
+        wait_for_row(&panes, &woken, alive, "alive");
         assert_eq!(panes.failure(), None);
     }
 
@@ -952,6 +1140,12 @@ mod tests {
         panes.send_input(pane, b" second").unwrap();
         std::thread::sleep(Duration::from_millis(300));
         server.run(&["kill-server"]).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !panes.shared.lock().closed {
+            assert!(Instant::now() < deadline, "the reader did not close");
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(panes.send_input(pane, b"too late").is_err());
         assert!(panes.take_update().is_some());
         wait_for_row(&panes, &woken, pane, "first second");
         let deadline = Instant::now() + Duration::from_secs(10);
@@ -959,6 +1153,7 @@ mod tests {
             assert!(Instant::now() < deadline, "the worker did not finish");
             std::thread::sleep(Duration::from_millis(10));
         }
+        assert_eq!(panes.failure(), None);
     }
 
     /// Returns the panes of the server's session.
@@ -1070,8 +1265,16 @@ mod tests {
     }
 
     #[test]
-    fn input_reaches_the_pane_and_its_echo_comes_back_as_an_update() {
+    fn input_echo_and_reply_order_survive_input_hooks() {
         let server = TmuxServer::start().unwrap();
+        server
+            .run(&[
+                "set-hook",
+                "-g",
+                "after-send-keys",
+                "display-message -p typed",
+            ])
+            .unwrap();
         let session = TmuxServer::SESSION;
         server
             .run(&["respawn-pane", "-k", "-t", session, "exec cat"])
@@ -1104,6 +1307,9 @@ mod tests {
 
         panes.send_input(pane, b"hello").unwrap();
         wait_for_row(&panes, &woken, pane, "hello");
+        panes.send_input(pane, b" again").unwrap();
+        wait_for_row(&panes, &woken, pane, "hello again");
+        assert_eq!(panes.failure(), None);
         assert!(!panes.is_finished());
         drop(panes);
         assert!(server.run(&["has-session", "-t", session]).is_ok());
