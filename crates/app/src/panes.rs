@@ -89,29 +89,6 @@ struct State {
     /// A pipe failure is reported without abandoning already queued output.
     transport_failure: Option<String>,
     gone: Vec<PaneId>,
-    #[cfg(test)]
-    processing: Option<(&'static str, usize, Instant)>,
-    #[cfg(test)]
-    slowest: Option<(&'static str, usize, std::time::Duration)>,
-    #[cfg(test)]
-    completed_work: usize,
-}
-
-#[cfg(test)]
-impl State {
-    fn completed(&mut self) {
-        if let Some((phase, size, started)) = self.processing.take() {
-            let elapsed = started.elapsed();
-            if self
-                .slowest
-                .as_ref()
-                .is_none_or(|(_, _, previous)| elapsed > *previous)
-            {
-                self.slowest = Some((phase, size, elapsed));
-            }
-            self.completed_work += 1;
-        }
-    }
 }
 
 enum Event {
@@ -592,10 +569,6 @@ fn work(
         }
         if !changed.is_empty() && state.update.is_none() && !state.cancelled {
             let mut spare = std::mem::take(&mut state.spare);
-            #[cfg(test)]
-            {
-                state.processing = Some(("screen", changed.len(), Instant::now()));
-            }
             drop(state);
             let mut update = Vec::with_capacity(changed.len());
             for pane in changed.drain(..) {
@@ -608,8 +581,6 @@ fn work(
                 }
             }
             state = shared.lock();
-            #[cfg(test)]
-            state.completed();
             state.spare.extend(spare);
             state.update = Some(update);
             drop(state);
@@ -620,10 +591,6 @@ fn work(
             // not in it, joins it now, so that a quiet pane's change, such as
             // a key's echo, does not wait a frame behind a busy neighbour.
             let mut spare = std::mem::take(&mut state.spare);
-            #[cfg(test)]
-            {
-                state.processing = Some(("screen", changed.len(), Instant::now()));
-            }
             drop(state);
             let mut copies = Vec::with_capacity(joining.len());
             for &pane in &joining {
@@ -636,8 +603,6 @@ fn work(
                 }
             }
             state = shared.lock();
-            #[cfg(test)]
-            state.completed();
             if let Some(waiting) = state.update.as_mut() {
                 changed.retain(|pane| !joining.contains(pane));
                 waiting.extend(copies);
@@ -651,17 +616,6 @@ fn work(
             && let Some(event) = state.queue.pop_front()
         {
             state.queued -= event.size();
-            #[cfg(test)]
-            {
-                state.processing = Some((
-                    match &event {
-                        Event::Output(..) => "output",
-                        Event::Reply(..) => "reply",
-                    },
-                    event.size(),
-                    Instant::now(),
-                ));
-            }
             drop(state);
             shared.changed.notify_all();
             let result = apply(
@@ -673,8 +627,6 @@ fn work(
                 &mut changed,
             );
             state = shared.lock();
-            #[cfg(test)]
-            state.completed();
             match result {
                 Ok(Some(pane)) => {
                     if !state.gone.contains(&pane) {
@@ -1221,36 +1173,24 @@ mod tests {
             .unwrap()
             .unwrap();
         writer.join().unwrap();
-        wait_for_row_with_diagnostics(
-            &panes,
-            &woken,
-            pane,
-            "DONE",
-            Duration::from_secs(10),
-            || {
-                let actual = std::fs::read(&received_input);
-                let received = actual.as_ref().map(|bytes| bytes.len());
-                let mismatch = actual
-                    .as_ref()
-                    .ok()
-                    .and_then(|bytes| bytes.iter().zip(&expected).position(|(a, b)| a != b));
-                let state = panes.shared.lock();
-                let processing = state
-                    .processing
-                    .map(|(phase, size, since)| (phase, size, since.elapsed()));
-                format!(
-                    "received={received:?}, first_mismatch={mismatch:?}, producer_done={}, queued_bytes={}, queued_events={}, closed={}, finished={}, waiting_update={}, processing={processing:?}, slowest={:?}, completed_work={}",
-                    producer_done.exists(),
-                    state.queued,
-                    state.queue.len(),
-                    state.closed,
-                    state.finished,
-                    state.update.is_some(),
-                    state.slowest,
-                    state.completed_work
-                )
-            },
-        );
+        wait_for_row_with_diagnostics(&panes, &woken, pane, "DONE", || {
+            let actual = std::fs::read(&received_input);
+            let received = actual.as_ref().map(|bytes| bytes.len());
+            let mismatch = actual
+                .as_ref()
+                .ok()
+                .and_then(|bytes| bytes.iter().zip(&expected).position(|(a, b)| a != b));
+            let state = panes.shared.lock();
+            format!(
+                "received={received:?}, first_mismatch={mismatch:?}, producer_done={}, queued_bytes={}, queued_events={}, closed={}, finished={}, waiting_update={}",
+                producer_done.exists(),
+                state.queued,
+                state.queue.len(),
+                state.closed,
+                state.finished,
+                state.update.is_some()
+            )
+        });
         assert_eq!(std::fs::read(received_input).unwrap(), expected);
         assert_eq!(panes.failure(), None);
     }
@@ -1362,14 +1302,7 @@ mod tests {
 
     /// Waits until the pane's screen shows `text` on its first row.
     fn wait_for_row(panes: &Panes, woken: &mpsc::Receiver<()>, pane: PaneId, text: &str) {
-        wait_for_row_with_diagnostics(
-            panes,
-            woken,
-            pane,
-            text,
-            Duration::from_secs(10),
-            String::new,
-        );
+        wait_for_row_with_diagnostics(panes, woken, pane, text, String::new);
     }
 
     fn wait_for_row_with_diagnostics(
@@ -1377,10 +1310,9 @@ mod tests {
         woken: &mpsc::Receiver<()>,
         pane: PaneId,
         text: &str,
-        timeout: Duration,
         diagnostics: impl Fn() -> String,
     ) {
-        let deadline = Instant::now() + timeout;
+        let deadline = Instant::now() + Duration::from_secs(10);
         let mut last_row = None;
         loop {
             let left = deadline.saturating_duration_since(Instant::now());
