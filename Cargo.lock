@@ -5363,6 +5363,7 @@ name = "tmux-workspaces-core"
 version = "0.0.0"
 dependencies = [
  "serde_json",
+ "unicode-properties",
  "uuid",
 ]
 
