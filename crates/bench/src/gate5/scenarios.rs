@@ -994,6 +994,18 @@ mod tests {
         }
     }
 
+    #[test]
+    fn an_in_event_margin_transition_preserves_the_exact_replay_prefix() {
+        let mut seed = snapshot(&[""], 0, (0, 0), b"");
+        seed.state.modes.wrap = true;
+        let prefix = vec![b'0'; 80];
+        let output = [prefix.as_slice(), b"\x1b[5DX"].concat();
+        let candidate = Candidate::rebuilt(&seed, &output, 0).unwrap();
+        assert!(candidate.cursor().unwrap_err().contains("new snapshot"));
+        assert_eq!(candidate.replayed, prefix);
+        assert_eq!(candidate.applied, output);
+    }
+
     fn lines(from: u64) -> Vec<u8> {
         (from..from + 30)
             .flat_map(|number| format!("\x1b[3{}m{number}\x1b[0m\r\n", number % 8).into_bytes())

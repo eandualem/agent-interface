@@ -223,24 +223,8 @@ impl LivePane {
         if self.captured.is_some() || self.needs_capture {
             self.needs_capture |= !bytes.is_empty();
         } else {
-            // A cursor edit can clear pending wrap within the same output
-            // event. Stop before its control byte, not just at read boundaries.
-            let mut remaining = bytes;
-            while !remaining.is_empty() {
-                let end = remaining[1..]
-                    .iter()
-                    .position(|byte| *byte < 0x20 || *byte == 0x7f)
-                    .map_or(remaining.len(), |index| index + 1);
-                self.terminal.write(&remaining[..end]);
-                remaining = &remaining[end..];
-                self.needs_capture = self
-                    .terminal
-                    .cursor_pending_wrap()
-                    .map_err(|e| e.to_string())?;
-                if self.needs_capture {
-                    break;
-                }
-            }
+            (_, self.needs_capture) = crate::stream::write_until_wrap(&mut self.terminal, bytes)
+                .map_err(|e| e.to_string())?;
         }
         Ok(())
     }
