@@ -74,12 +74,19 @@ output. The snapshot conversion is shared with the fidelity harness.
 Capture startup has a ten-second deadline and rejects recovery hooks or a
 pane whose size changed during attachment.
 
-The benchmark currently rejects an initial cursor at or beyond the right
-margin: it has not yet integrated 0021's repeated snapshot recovery into its
-worker. This is an explicit startup failure, not a fidelity pass. Its
-startup error path closes only its own control client on the disposable
-fixture server. Retrying failed captures while retaining a production
-attachment is still part of the full connection lifecycle.
+A cursor at or beyond the right margin uses 0021's display-only snapshot.
+Output causes a new pause/capture/continue recovery; normal streaming resumes
+only with an in-grid cursor. The worker also recaptures when streaming leaves
+the engine waiting to wrap, whose transitions can differ from tmux. Recovery
+runs one pane at a time while other panes keep updating. Input acknowledgments
+and recovery replies retain their command order. A writer thread prevents a
+large input from blocking the terminal worker while it drains replies and
+output. Repeated recovery shares a ten-second deadline; failures are reported
+before the benchmark window closes.
+
+Resize recovery and retrying failed initial captures while retaining a
+production attachment still belong to the full connection lifecycle. The
+startup error path closes only its own client on the disposable fixture.
 
 **Dependencies of `app`:**
 
