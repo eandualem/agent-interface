@@ -65,6 +65,10 @@ pub struct Snapshot {
 /// value (`docs/decisions/0014-supported-tmux-versions.md`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PaneState {
+    /// Content column within the tmux window, excluding borders and scrollbars.
+    pub left: u16,
+    /// Content row within the tmux window, excluding pane border status.
+    pub top: u16,
     /// The pane's width in cells.
     pub width: u16,
     /// The pane's height in cells.
@@ -335,7 +339,7 @@ pub fn hooks_break_recovery<'a>(lines: impl IntoIterator<Item = &'a [u8]>) -> bo
 
 /// The formats each rebuild reads, one `display-message` each: some formats
 /// can contain a line end.
-const FORMATS: [&str; 25] = [
+const FORMATS: [&str; 27] = [
     "pane_width",
     "pane_height",
     "history_size",
@@ -361,6 +365,8 @@ const FORMATS: [&str; 25] = [
     "bracket_paste_flag",
     "pane_key_mode",
     "pane_private_modes",
+    "pane_left",
+    "pane_top",
 ];
 
 /// The replies a line has for each pane: two captures, the formats and the
@@ -486,6 +492,8 @@ fn pane_state(values: &[String]) -> Result<PaneState, Error> {
     // included. Either way, focus reporting is then unknown.
     let focus_events = (!private_modes.is_empty()).then(|| private_modes.contains(&1004));
     Ok(PaneState {
+        left: number("pane_left")?,
+        top: number("pane_top")?,
         width: number("pane_width")?,
         height: number("pane_height")?,
         history: value("history_size")
