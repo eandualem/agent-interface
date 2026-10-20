@@ -1301,6 +1301,15 @@ mod tests {
     #[test]
     fn attachment_publishes_existing_styles_before_applying_new_output() {
         let server = TmuxServer::start().unwrap();
+        // This server-side event hook prints outside any command reply guards.
+        server
+            .run(&[
+                "set-hook",
+                "-g",
+                "client-attached",
+                "display-message -p hook-printed",
+            ])
+            .unwrap();
         let session = TmuxServer::SESSION;
         let signal = server.shell_command(&["wait-for", "-S", "seed-ready"]);
         let script =

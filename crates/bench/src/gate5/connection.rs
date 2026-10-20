@@ -247,6 +247,7 @@ fn read(stdout: &mut impl Read, shared: &Shared, watched: &[PaneId]) -> Result<(
                     }
                 }
                 Message::Notification(line) => events.push(Event::Notification(line.to_vec())),
+                Message::Notice(_) => {}
             })
             .map_err(|error| error.to_string())?;
         if !events.is_empty() {
