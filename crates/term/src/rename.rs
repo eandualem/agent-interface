@@ -58,9 +58,7 @@ impl Rename {
                 State::Pass => {
                     // Most escapes start an ordinary sequence: look past
                     // those, in one scan, to the first that might not.
-                    let Some(after) = memchr::memchr_iter(ESC, &bytes[index..])
-                        .map(|offset| index + offset + 1)
-                        .find(|&after| !bytes.get(after).is_some_and(|&next| ordinary(next)))
+                    let Some(after) = find_escape(&bytes[index..]).map(|offset| index + offset + 1)
                     else {
                         break;
                     };
@@ -103,6 +101,32 @@ impl Rename {
     }
 }
 
+/// Finds an escape that might start a rename, including a trailing escape
+/// whose next byte will arrive in another write.
+fn find_escape(bytes: &[u8]) -> Option<usize> {
+    // Plain text needs only the fast byte search. For escape-heavy output,
+    // test adjacent bytes in whole chunks so the compiler can vectorize
+    // past ordinary sequences without branching at every escape.
+    let mut offset = memchr::memchr(ESC, bytes)?;
+    const CHUNK: usize = 32;
+    let pairs = bytes.len() - 1;
+    while pairs - offset >= CHUNK {
+        let interesting = bytes[offset..offset + CHUNK]
+            .iter()
+            .zip(&bytes[offset + 1..offset + CHUNK + 1])
+            .fold(0, |found, (&byte, &next)| {
+                found | u8::from((byte == ESC) & !ordinary(next))
+            });
+        if interesting != 0 {
+            break;
+        }
+        offset += CHUNK;
+    }
+    memchr::memchr_iter(ESC, &bytes[offset..])
+        .map(|at| offset + at)
+        .find(|&at| !bytes.get(at + 1).is_some_and(|&next| ordinary(next)))
+}
+
 /// Returns whether an escape followed by `next` is neither a rename nor an
 /// escape tmux keeps waiting on.
 fn ordinary(next: u8) -> bool {
@@ -117,7 +141,27 @@ fn flush(write: &mut impl FnMut(&[u8]), bytes: &[u8]) {
 
 #[cfg(test)]
 mod tests {
+    use super::Rename;
     use crate::{Color, Screen, Terminal};
+
+    #[test]
+    fn rename_sequences_cross_scan_chunks_and_write_boundaries() {
+        for padding in [0, 31, 32, 63, 64] {
+            let prefix = "\x1b[31m".repeat(padding);
+            let input = format!("{prefix}\x1bkname\x1b\\after\x1b");
+            let expected = format!("{prefix}\x1b\x1b\\after\x1b");
+            for split in 0..=input.len() {
+                let mut filter = Rename::default();
+                let mut actual = Vec::new();
+                for part in [&input.as_bytes()[..split], &input.as_bytes()[split..]] {
+                    filter.filter(part, |bytes| actual.extend_from_slice(bytes));
+                }
+                // The final escape remains pending across writes.
+                filter.filter(b"khidden\x18end", |bytes| actual.extend_from_slice(bytes));
+                assert_eq!(actual, format!("{expected}\x18end").as_bytes());
+            }
+        }
+    }
 
     /// Writes `bytes` to one terminal whole and to another a byte at a time,
     /// checks both draw the same screen, and returns it.
