@@ -81,7 +81,9 @@ the engine waiting to wrap, whose transitions can differ from tmux. Recovery
 runs one pane at a time while other panes keep updating. Input acknowledgments
 and recovery replies retain their command order. A writer thread prevents a
 large input from blocking the terminal worker while it drains replies and
-output. Repeated recovery shares a ten-second deadline; failures are reported
+output. Input is split into commands of at most 1,024 bytes to stay below
+tmux's parser stack limit, preserving the order of each input call.
+Repeated recovery shares a ten-second deadline; failures are reported
 before the benchmark window closes.
 
 Resize recovery and retrying failed initial captures while retaining a
