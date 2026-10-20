@@ -23,6 +23,7 @@ gpui_platform.workspace = true
 uzers.workspace = true
 sha2.workspace = true
 tmux-workspaces-store = { path = "../store" }
+tmux-workspaces-roster = { path = "../roster" }
 tmux-workspaces-term = { path = "../term" }
 tmux-workspaces-tmux = { path = "../tmux" }
 
