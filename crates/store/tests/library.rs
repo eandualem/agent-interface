@@ -205,5 +205,117 @@ fn split_depth_boundary_matches_the_saved_schema() {
         });
         let result = parse(&state.to_string());
         assert_eq!(result.is_ok(), depth < 64, "added depth {depth}");
+        if depth == 63 {
+            let document = result.unwrap();
+            let mut model = document.model().clone();
+            model.rename_tab("At the depth limit");
+            assert!(document.with_model(&model, Path::new("layouts.db")).is_ok());
+            model.split(Direction::Right, "/tmp".into(), true);
+            assert!(
+                document
+                    .with_model(&model, Path::new("layouts.db"))
+                    .is_err()
+            );
+        }
     }
+}
+
+#[test]
+fn model_edits_preserve_extensions_through_splits_moves_and_closes() {
+    let record = RECORD
+        .replace("\"direction\": \"right\"", "\"direction\": \"right\", \"empty\": {\"future\": true}")
+        .replace("\"icon\": \"λ\"", "\"icon\": null, \"extra\": {\"tree\": 42}")
+        .replace("\"name\": \"Editor\"", "\"name\": \"Editor\", \"extra\": 1.250e-1")
+        .replace("\"agent\": \"build worker\"", "\"tabs\": [{\"id\": \"000000000002\", \"extra\": \"unrelated\"}], \"agent\": \"build worker\"");
+    let document = parse(&record).unwrap();
+    let path = Path::new("layouts.db");
+    assert_eq!(
+        document
+            .with_model(document.model(), path)
+            .unwrap()
+            .raw_json(),
+        record
+    );
+    let mut model = document.model().clone();
+    assert!(model.rename_workspace("Renamed"));
+    assert!(model.split(Direction::Below, "/tmp".into(), true));
+    assert!(model.open_terminal());
+    assert!(model.transfer_tab("000000000006"));
+    let edited = document.with_model(&model, path).unwrap();
+    assert_eq!(edited.model(), &model);
+    assert_eq!(document.raw_json(), record);
+    let before: serde_json::Value = serde_json::from_str(&record).unwrap();
+    let after: serde_json::Value = serde_json::from_str(edited.raw_json()).unwrap();
+    assert_eq!(after["extension"], before["extension"]);
+    assert_eq!(
+        after["workspaces"][0]["extra"],
+        before["workspaces"][0]["extra"]
+    );
+    assert!(after["workspaces"][0]["icon"].is_null());
+    let tab = &after["workspaces"][1]["tabs"][0];
+    assert_eq!(tab["extra"], before["workspaces"][0]["tabs"][0]["extra"]);
+    assert!(!after.as_object().unwrap().contains_key("show_agents"));
+    assert!(!tab["tree"].as_object().unwrap().contains_key("ratio"));
+    assert_eq!(
+        tab["tree"]["empty"],
+        before["workspaces"][0]["tabs"][0]["tree"]["empty"]
+    );
+    assert_eq!(tab["tree"]["first"]["ratio"], 0.5);
+    assert_eq!(
+        tab["tree"]["first"]["first"],
+        before["workspaces"][0]["tabs"][0]["tree"]["first"]
+    );
+    assert!(
+        !tab["tree"]["first"]["second"]
+            .as_object()
+            .unwrap()
+            .contains_key("empty")
+    );
+
+    assert!(model.close_pane());
+    assert!(model.attach(None));
+    let collapsed = edited.with_model(&model, path).unwrap();
+    let after: serde_json::Value = serde_json::from_str(collapsed.raw_json()).unwrap();
+    let leaf = &after["workspaces"][1]["tabs"][0]["tree"]["first"];
+    assert_eq!(leaf["id"], "000000000004");
+    assert_eq!(
+        leaf["tabs"],
+        before["workspaces"][0]["tabs"][0]["tree"]["first"]["tabs"]
+    );
+    assert!(leaf["agent"].is_null());
+    assert!(!leaf.as_object().unwrap().contains_key("source_socket"));
+    assert_eq!(collapsed.model(), &model);
+    let explicit = parse(&RECORD.replace(
+        "\"direction\": \"right\"",
+        "\"direction\": \"right\", \"ratio\": 2.50e-1",
+    ))
+    .unwrap();
+    let mut model = explicit.model().clone();
+    model.rename_tab("Keep ratio spelling");
+    assert!(
+        explicit
+            .with_model(&model, path)
+            .unwrap()
+            .raw_json()
+            .contains("2.50e-1")
+    );
+}
+
+#[test]
+fn model_projection_rejects_invalid_edits_without_changing_the_document() {
+    let document = parse(RECORD).unwrap();
+    let path = Path::new("layouts.db");
+    let mut model = document.model().clone();
+    model.workspaces[1].id = model.workspaces[0].id.clone();
+    assert!(document.with_model(&model, path).is_err());
+    let mut model = document.model().clone();
+    let Node::Split { ratio, .. } = &mut model.workspaces[0].tabs[0].tree else {
+        panic!()
+    };
+    *ratio = f64::NAN;
+    assert!(document.with_model(&model, path).is_err());
+    let mut model = document.model().clone();
+    model.workspaces[0].name = "x".repeat(MAX_RECORD_BYTES);
+    assert!(document.with_model(&model, path).is_err());
+    assert_eq!(document.raw_json(), RECORD);
 }
