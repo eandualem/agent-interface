@@ -220,3 +220,19 @@ navigation, validate the complete merged schema and size, and perform the
 required transactional checks before saving. The mixed-writer tests, migration
 agreement and write gate above remain outstanding; this function performs no
 persistence.
+
+## Saved split geometry
+
+`core::Tab::pane_rectangles` calculates content rectangles without drawing or
+changing tmux. It follows the pinned Python `model.minimum_size` and
+`display.Display._tree`: a leaf needs 34 columns by 6 rows, sibling panes have
+one separator cell, and each ratio is rounded to the nearest cell with ties to
+even, then clamped to fit both subtrees. These are terminal content dimensions;
+the caller excludes the native sidebar and other window decorations.
+
+If the available content area is too small, or the local focus flag is enabled,
+only the focused leaf receives a rectangle. Restoring space or leaving focus
+mode reveals the same saved tree and ratios. A zero-sized content area has no
+rectangles. This preserves the Python behavior in a pure model operation;
+renderer integration and native-window resizing remain separate work. No new
+dependency is needed.
