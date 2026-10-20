@@ -12,6 +12,8 @@ pub use crate::library::location::source_socket;
 
 mod metadata;
 pub use metadata::{CombinedObservation, Origin, Session, with_roster};
+mod navigation;
+pub use navigation::choose_attached_session;
 
 /// A complete replacement for the source's previous availability.
 #[derive(Debug)]

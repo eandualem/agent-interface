@@ -107,7 +107,7 @@ fn resolve(
         })
 }
 
-fn resolve_path(path: &Path) -> io::Result<PathBuf> {
+pub(crate) fn resolve_path(path: &Path) -> io::Result<PathBuf> {
     if path.as_os_str().as_bytes().contains(&0) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
