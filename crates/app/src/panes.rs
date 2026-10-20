@@ -909,7 +909,12 @@ fn apply(
                                 .find(|(id, _)| *id == pane)
                                 .ok_or("recovery completed for an unknown pane")?;
                             let deadline = terminal.recovery_deadline;
+                            let geometry = (terminal.size, terminal.offset);
                             *terminal = LivePane::restored(rebuilt.snapshot, scrollback)?;
+                            // A snapshot can observe an option-only resize before
+                            // its once-per-second subscription notification. Do
+                            // not join this screen to an older waiting rectangle.
+                            window.geometry_changed |= geometry != (terminal.size, terminal.offset);
                             terminal.resume_after_recovery(&rebuilt.output, deadline)?;
                             if *generation != window.generation {
                                 terminal.needs_capture = true;
@@ -1786,6 +1791,110 @@ mod tests {
                 "the echo waited for the next update"
             );
             std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn recovered_content_geometry_never_joins_an_old_waiting_rectangle() {
+        let server = TmuxServer::start().unwrap();
+        let session = TmuxServer::SESSION;
+        server
+            .run(&["respawn-pane", "-k", "-t", session, "exec cat"])
+            .unwrap();
+        server
+            .run(&[
+                "split-window",
+                "-v",
+                "-t",
+                session,
+                "sh",
+                "-c",
+                "while :; do echo streaming; sleep 0.02; done",
+            ])
+            .unwrap();
+        server
+            .run(&["set-option", "-w", "pane-border-status", "top"])
+            .unwrap();
+        let layout = layout(&server);
+        let quiet = layout.panes[0].id;
+        let client = server
+            .control(&[
+                "attach-session",
+                "-f",
+                "no-output,ignore-size,new-layouts",
+                "-t",
+                session,
+            ])
+            .unwrap();
+        let (wake, woken) = mpsc::channel();
+        let panes = Panes::start(client, &layout, 100, move || {
+            let _ = wake.send(());
+        })
+        .unwrap();
+        wait_for_row(&panes, &woken, quiet, "");
+        // Remove the fixture's subscription to reproduce the interval before its
+        // next notification deterministically. This changes only this client.
+        panes
+            .control
+            .send(
+                "refresh-client -B content-geometry\n",
+                ReplyOwner::Input(quiet),
+            )
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !panes.control.pending.lock().unwrap().is_empty() {
+            assert!(Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(5));
+        }
+        // Drain any subscription-seeded frame, then hold a neighbor-only update.
+        loop {
+            if panes
+                .shared
+                .lock()
+                .update
+                .as_ref()
+                .is_some_and(|update| !update.screens.iter().any(|(id, _)| *id == quiet))
+            {
+                break;
+            }
+            panes.take_update();
+            assert!(Instant::now() < deadline);
+            let _ = woken.recv_timeout(Duration::from_millis(10));
+        }
+        server
+            .run(&["set-option", "-w", "pane-border-status", "bottom"])
+            .unwrap();
+        server
+            .run(&[
+                "set-hook",
+                "-g",
+                "after-capture-pane",
+                "wait-for -S recovered-geometry",
+            ])
+            .unwrap();
+        panes
+            .send_input(quiet, &vec![b'x'; usize::from(layout.panes[0].cols)])
+            .unwrap();
+        server.run(&["wait-for", "recovered-geometry"]).unwrap();
+        while !panes.control.pending.lock().unwrap().is_empty() {
+            assert!(Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(5));
+        }
+        loop {
+            assert_eq!(panes.failure(), None);
+            assert!(Instant::now() < deadline);
+            if let Some(update) = panes.take_update()
+                && let Some((_, screen)) = update.screens.iter().find(|(id, _)| *id == quiet)
+            {
+                let rectangle = update.layout.iter().find(|pane| pane.id == quiet).unwrap();
+                assert_eq!(rectangle.top, 0);
+                assert_eq!(
+                    (rectangle.cols, rectangle.rows),
+                    (screen.cols(), screen.rows())
+                );
+                break;
+            }
+            let _ = woken.recv_timeout(Duration::from_millis(10));
         }
     }
 
