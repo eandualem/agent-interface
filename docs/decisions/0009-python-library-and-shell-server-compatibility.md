@@ -165,8 +165,9 @@ original JSON. The original record retains unknown fields and absent/null
 values; the model is not a replacement serialization format. `data_version`
 is read before loading, on the same connection, so a concurrent commit still
 invalidates the next poll. Calls finish their statements before returning.
-The app's storage worker, path selection, navigation reconciliation and all
-writes remain separate integration work.
+The app's `library` storage worker owns the retained connection. Path selection,
+controller-level navigation reconciliation and all writes remain separate
+integration work.
 
 The decoder bounds all containers, including extensions, and rejects duplicate
 keys before constructing maps. Borrowed `serde_json::RawValue` slices let it
@@ -186,7 +187,15 @@ compatibility limits, not evidence of complete persistence parity.
 
 SQLite uses a 250 ms busy timeout. A hot journal requiring recovery is retried
 read-only for at most 250 ms, then reported for recovery by a writer; the reader
-never reopens writable. No polling loop or automatic repair is installed.
+never reopens writable. `app::library` polls every 250 ms on its storage thread
+and coalesces complete documents and errors into one pending update. A read
+failure preserves any valid document still awaiting consumption; callers also
+retain their displayed document. Unchanged errors are reported once, and a
+successful subsequent read clears the error. An initial open failure is reported
+and ends that worker; it never creates or repairs the library. Dropping the
+handle stops polling and joins the thread. Worker tests use the same pinned
+`rusqlite` only as a development dependency to simulate another writer on a
+disposable library.
 
 ## In-memory conflict handling
 
