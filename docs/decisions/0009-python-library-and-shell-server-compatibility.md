@@ -197,6 +197,14 @@ handle stops polling and joins the thread. Worker tests use the same pinned
 `rusqlite` only as a development dependency to simulate another writer on a
 disposable library.
 
+`Layout::retain_navigation` applies this window's selections to the incoming
+model and reports whether the active tab's tree changed. This includes attachment
+changes, splits and deletion; a rename alone does not trigger it. The controller
+must use that result to return input focus to navigation and require another pane
+selection before sending input. This follows the Python viewer's refresh check
+in `sidebar.py` at the pinned reference version. The storage worker itself never
+dispatches input or changes focus.
+
 ## In-memory conflict handling
 
 `core::merge::merge_shared_layout` accepts three already validated schema-v2

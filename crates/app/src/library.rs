@@ -92,8 +92,9 @@ impl Library {
         })
     }
 
-    /// Take the latest update, if any. Apply local navigation reconciliation
-    /// before displaying a replacement document; this worker does not own focus.
+    /// Take the latest update, if any. Reconcile the replacement model with
+    /// `Layout::retain_navigation` before displaying it; when it returns true,
+    /// move input focus to navigation. This worker does not own input focus.
     pub fn take_update(&self) -> Option<Update> {
         self.updates
             .lock()
