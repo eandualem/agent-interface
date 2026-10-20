@@ -52,7 +52,7 @@ For SQLite access:
 **Finding the library.** Choose the library directory in the Python tool's
 order: `--data-dir`, then `TMUX_WORKSPACES_DATA_DIR`, then
 `$XDG_DATA_HOME/tmux-workspaces`, then `~/.local/share/tmux-workspaces`, on
-macOS too (PE-1). `store::library_directory` implements this selection on Unix,
+macOS too (PE-1). `app::library::library_directory` implements this selection on Unix,
 ignores empty environment overrides, expands `~` and `~user`, and resolves
 relative paths and symlinks. Like Python's non-strict `Path.resolve`, a missing
 intermediate component may be removed by a later `..`; symlinks are expanded

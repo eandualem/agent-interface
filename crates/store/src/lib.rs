@@ -4,10 +4,7 @@
 #![forbid(unsafe_code)]
 
 mod json;
-mod location;
 mod schema;
-
-pub use location::library_directory;
 
 use rusqlite::{Connection, OpenFlags, OptionalExtension, types::ValueRef};
 use std::{

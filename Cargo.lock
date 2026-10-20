@@ -5322,6 +5322,7 @@ dependencies = [
  "tmux-workspaces-term",
  "tmux-workspaces-test-support",
  "tmux-workspaces-tmux",
+ "uzers",
 ]
 
 [[package]]
@@ -5379,7 +5380,6 @@ dependencies = [
  "thiserror 2.0.21",
  "tmux-workspaces-core",
  "unicode-properties",
- "uzers",
 ]
 
 [[package]]
