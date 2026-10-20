@@ -5,6 +5,64 @@
 use crate::{Attachment, Direction, Layout, Leaf, Node, Tab, Workspace};
 use unicode_properties::{GeneralCategoryGroup, UnicodeGeneralCategory};
 
+/// The identity and original name captured when an inline editor opens.
+#[derive(Clone, Debug)]
+pub struct NameEdit {
+    workspace: String,
+    tab: Option<String>,
+    name: String,
+}
+
+/// How the caller should finish an inline name edit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RenameOutcome {
+    /// The name changed; close the editor.
+    Applied,
+    /// No printable name remains; keep editing.
+    Empty,
+    /// The selection, target or original name changed; cancel and ask to retry.
+    Changed,
+}
+
+impl NameEdit {
+    /// The original name to show selected in the editor.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Apply to the same selected identity only if its original name still matches.
+    /// The caller first refreshes shared data and cancels on a reconciliation
+    /// conflict. Empty input is reported before checking the target, matching the
+    /// Python editor. This does not refresh, persist or change terminal processes.
+    #[must_use = "empty names keep editing; changed targets cancel the editor"]
+    pub fn apply(&self, layout: &mut Layout, input: &str) -> RenameOutcome {
+        let Some(name) = rename_value(input) else {
+            return RenameOutcome::Empty;
+        };
+        if !layout
+            .workspace()
+            .is_some_and(|space| space.id == self.workspace)
+        {
+            return RenameOutcome::Changed;
+        }
+        let target = if let Some(id) = &self.tab {
+            layout
+                .tab_mut()
+                .filter(|tab| tab.id == *id)
+                .map(|tab| &mut tab.name)
+        } else {
+            layout.workspace_mut().map(|space| &mut space.name)
+        };
+        match target {
+            Some(target) if *target == self.name => {
+                *target = name;
+                RenameOutcome::Applied
+            }
+            _ => RenameOutcome::Changed,
+        }
+    }
+}
+
 fn rename_value(value: &str) -> Option<String> {
     // Python str.strip additionally treats these four separators as whitespace.
     let name: String = value
@@ -120,6 +178,27 @@ impl Layout {
             Node::Leaf(leaf) => Some(leaf),
             Node::Split { .. } => unreachable!("find_leaf only returns leaves"),
         }
+    }
+
+    /// Capture the current workspace's identity and name for a guarded inline edit.
+    pub fn edit_workspace_name(&self) -> Option<NameEdit> {
+        let space = self.workspace()?;
+        Some(NameEdit {
+            workspace: space.id.clone(),
+            tab: None,
+            name: space.name.clone(),
+        })
+    }
+
+    /// Capture the current tab and workspace identities and the tab's original name.
+    pub fn edit_tab_name(&self) -> Option<NameEdit> {
+        let space = self.workspace()?;
+        let tab = self.tab()?;
+        Some(NameEdit {
+            workspace: space.id.clone(),
+            tab: Some(tab.id.clone()),
+            name: tab.name.clone(),
+        })
     }
 
     /// Rename the selected workspace, even when it has no tabs. Trim surrounding
@@ -482,6 +561,52 @@ mod tests {
         assert!(model.close_tab());
         assert!(!model.delete_workspace());
         assert_eq!(model.workspaces.len(), 1);
+    }
+
+    #[test]
+    fn inline_rename_refuses_changed_targets_and_keeps_empty_input_open() {
+        let mut model = Layout::initial("/tmp".into());
+        let edit = model.edit_tab_name().unwrap();
+        assert_eq!(edit.name(), model.tab().unwrap().name);
+        let original = model.clone();
+        assert_eq!(edit.apply(&mut model, " \n"), RenameOutcome::Empty);
+        assert_eq!(model, original);
+        model.rename_tab("Peer name");
+        let refreshed = model.clone();
+        assert_eq!(edit.apply(&mut model, "My name"), RenameOutcome::Changed);
+        assert_eq!(model, refreshed);
+        let edit = model.edit_tab_name().unwrap();
+        model.add_tab(Some("Other".into()), "/tmp".into(), true);
+        let switched = model.clone();
+        assert_eq!(edit.apply(&mut model, "My name"), RenameOutcome::Changed);
+        assert_eq!(model, switched);
+        model.choose_tab(&refreshed.tab().unwrap().id);
+        let edit = model.edit_tab_name().unwrap();
+        assert_eq!(
+            edit.apply(&mut model, "  My name  "),
+            RenameOutcome::Applied
+        );
+        assert_eq!(model.tab().unwrap().name, "My name");
+        let edit = model.edit_tab_name().unwrap();
+        model.close_tab();
+        let deleted = model.clone();
+        assert_eq!(edit.apply(&mut model, "Deleted"), RenameOutcome::Changed);
+        assert_eq!(model, deleted);
+        let edit = model.edit_workspace_name().unwrap();
+        model.add_workspace("Empty".into());
+        let switched = model.clone();
+        assert_eq!(
+            edit.apply(&mut model, "Wrong workspace"),
+            RenameOutcome::Changed
+        );
+        assert_eq!(model, switched);
+        assert!(model.edit_tab_name().is_none());
+        let edit = model.edit_workspace_name().unwrap();
+        assert_eq!(
+            edit.apply(&mut model, "Renamed empty"),
+            RenameOutcome::Applied
+        );
+        assert_eq!(model.workspace().unwrap().name, "Renamed empty");
     }
 
     #[test]
