@@ -54,7 +54,10 @@ order: `--data-dir`, then `TMUX_WORKSPACES_DATA_DIR`, then
 `$XDG_DATA_HOME/tmux-workspaces`, then `~/.local/share/tmux-workspaces`, on
 macOS too (PE-1). `store::library_directory` implements this selection on Unix,
 ignores empty environment overrides, expands `~` and `~user`, and resolves
-relative paths and symlinks. The read-only phase requires the selected directory
+relative paths and symlinks. Like Python's non-strict `Path.resolve`, a missing
+intermediate component may be removed by a later `..`; symlinks are expanded
+before processing their following parent components. The read-only phase
+requires the final resolved directory
 to exist; it never creates a missing library. `app::library` performs this lookup
 on its storage thread before opening SQLite. Product command-line parsing and
 window integration remain pending.

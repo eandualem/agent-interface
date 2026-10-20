@@ -1,4 +1,6 @@
+use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
+use std::io;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Component, Path, PathBuf};
 use uzers::os::unix::UserExt;
@@ -46,15 +48,70 @@ fn resolve(
         path: selected.join("layouts.db"),
         detail: "cannot resolve the home directory in the library path".into(),
     })?;
-    let path = if expanded.as_os_str().is_empty() {
-        Path::new(".")
-    } else {
-        &expanded
-    };
-    path.canonicalize().map_err(|error| Error {
-        path: path.join("layouts.db"),
+    resolve_existing(&expanded).map_err(|error| Error {
+        path: expanded.join("layouts.db"),
         detail: error.to_string(),
     })
+}
+
+fn resolve_existing(path: &Path) -> io::Result<PathBuf> {
+    if path.as_os_str().as_bytes().contains(&0) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "library path contains NUL",
+        ));
+    }
+    enum Pending {
+        Path(PathBuf),
+        SaveLink(PathBuf),
+    }
+    let mut result = if path.is_absolute() {
+        PathBuf::from("/")
+    } else {
+        std::env::current_dir()?
+    };
+    let mut pending = vec![Pending::Path(path.to_owned())];
+    // None marks an active symlink; Some caches its resolved target. This avoids
+    // recursion, repeated expansion and infinite loops, like Python's realpath.
+    let mut links: HashMap<PathBuf, Option<PathBuf>> = HashMap::new();
+    while let Some(step) = pending.pop() {
+        let path = match step {
+            Pending::Path(path) => path,
+            Pending::SaveLink(link) => {
+                links.insert(link, Some(result.clone()));
+                continue;
+            }
+        };
+        let mut parts = path.components();
+        while let Some(part) = parts.next() {
+            match part {
+                Component::RootDir => result = PathBuf::from("/"),
+                Component::ParentDir => {
+                    result.pop();
+                }
+                Component::Normal(name) => {
+                    result.push(name);
+                    if let Some(cached) = links.get(&result) {
+                        if let Some(target) = cached {
+                            result = target.clone();
+                        }
+                    } else if let Ok(target) = std::fs::read_link(&result) {
+                        let link = result.clone();
+                        links.insert(link.clone(), None);
+                        result.pop();
+                        pending.push(Pending::Path(parts.as_path().to_owned()));
+                        pending.push(Pending::SaveLink(link));
+                        pending.push(Pending::Path(target));
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    // Missing intermediate components may have been removed by "..", but the
+    // final directory must exist before a read-only library can be opened.
+    result.canonicalize()
 }
 
 fn expand_home(
@@ -88,7 +145,6 @@ fn expand_home(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
 
     #[test]
     fn library_paths_follow_precedence_and_resolve_without_creating_directories() {
@@ -173,6 +229,26 @@ mod tests {
         let missing = root.join("missing");
         assert!(locate(Some(&missing), &settings).is_err());
         assert!(!missing.exists());
+        assert_eq!(
+            locate(Some(&missing.join("../explicit library")), &settings).unwrap(),
+            explicit
+        );
+        assert_eq!(
+            locate(
+                Some(&missing.join("../link/../explicit library")),
+                &settings
+            )
+            .unwrap(),
+            sibling
+        );
+        assert!(!missing.exists());
+        let indirect = root.join("indirect");
+        std::os::unix::fs::symlink("missing/../nested/child", &indirect).unwrap();
+        assert_eq!(locate(Some(&indirect), &settings).unwrap(), target);
+        let cycle = root.join("cycle");
+        std::os::unix::fs::symlink("cycle", &cycle).unwrap();
+        assert!(locate(Some(&cycle), &settings).is_err());
+        assert!(locate(Some(&root.join("bad\0/../explicit library")), &settings).is_err());
         settings.insert("HOME", "".into());
         assert_eq!(
             expand_home(
