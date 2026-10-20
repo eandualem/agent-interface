@@ -115,12 +115,20 @@ fn find_escape(bytes: &[u8]) -> Option<usize> {
             .iter()
             .zip(&bytes[offset + 1..offset + CHUNK + 1])
             .fold(0, |found, (&byte, &next)| {
-                found | u8::from((byte == ESC) & !ordinary(next))
+                // Bit 1 records any escape; bit 0 records one that might
+                // start a rename.
+                let escape = u8::from(byte == ESC);
+                found | (escape << 1) | (escape & u8::from(!ordinary(next)))
             });
-        if interesting != 0 {
+        if interesting & 1 != 0 {
             break;
         }
         offset += CHUNK;
+        // Do not scan a long plain-text tail just because the write began
+        // with a colour or cursor sequence.
+        if interesting == 0 {
+            offset += memchr::memchr(ESC, &bytes[offset..])?;
+        }
     }
     memchr::memchr_iter(ESC, &bytes[offset..])
         .map(|at| offset + at)
@@ -147,7 +155,7 @@ mod tests {
     #[test]
     fn rename_sequences_cross_scan_chunks_and_write_boundaries() {
         for padding in [0, 31, 32, 63, 64] {
-            let prefix = "\x1b[31m".repeat(padding);
+            let prefix = format!("{}\x1b[0m{}", "\x1b[31m".repeat(padding), "x".repeat(128));
             let input = format!("{prefix}\x1bkname\x1b\\after\x1b");
             let expected = format!("{prefix}\x1b\x1b\\after\x1b");
             for split in 0..=input.len() {
