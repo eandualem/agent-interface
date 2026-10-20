@@ -1173,24 +1173,34 @@ mod tests {
             .unwrap()
             .unwrap();
         writer.join().unwrap();
-        wait_for_row_with_diagnostics(&panes, &woken, pane, "DONE", || {
-            let actual = std::fs::read(&received_input);
-            let received = actual.as_ref().map(|bytes| bytes.len());
-            let mismatch = actual
-                .as_ref()
-                .ok()
-                .and_then(|bytes| bytes.iter().zip(&expected).position(|(a, b)| a != b));
-            let state = panes.shared.lock();
-            format!(
-                "received={received:?}, first_mismatch={mismatch:?}, producer_done={}, queued_bytes={}, queued_events={}, closed={}, finished={}, waiting_update={}",
-                producer_done.exists(),
-                state.queued,
-                state.queue.len(),
-                state.closed,
-                state.finished,
-                state.update.is_some()
-            )
-        });
+        // Debug terminal-engine builds on Linux can still be draining the 6 MiB
+        // after ten seconds. Input must finish within the separate bound above;
+        // this wait checks eventual output fidelity, not a latency benchmark.
+        wait_for_row_with_diagnostics(
+            &panes,
+            &woken,
+            pane,
+            "DONE",
+            Duration::from_secs(30),
+            || {
+                let actual = std::fs::read(&received_input);
+                let received = actual.as_ref().map(|bytes| bytes.len());
+                let mismatch = actual
+                    .as_ref()
+                    .ok()
+                    .and_then(|bytes| bytes.iter().zip(&expected).position(|(a, b)| a != b));
+                let state = panes.shared.lock();
+                format!(
+                    "received={received:?}, first_mismatch={mismatch:?}, producer_done={}, queued_bytes={}, queued_events={}, closed={}, finished={}, waiting_update={}",
+                    producer_done.exists(),
+                    state.queued,
+                    state.queue.len(),
+                    state.closed,
+                    state.finished,
+                    state.update.is_some()
+                )
+            },
+        );
         assert_eq!(std::fs::read(received_input).unwrap(), expected);
         assert_eq!(panes.failure(), None);
     }
@@ -1302,7 +1312,14 @@ mod tests {
 
     /// Waits until the pane's screen shows `text` on its first row.
     fn wait_for_row(panes: &Panes, woken: &mpsc::Receiver<()>, pane: PaneId, text: &str) {
-        wait_for_row_with_diagnostics(panes, woken, pane, text, String::new);
+        wait_for_row_with_diagnostics(
+            panes,
+            woken,
+            pane,
+            text,
+            Duration::from_secs(10),
+            String::new,
+        );
     }
 
     fn wait_for_row_with_diagnostics(
@@ -1310,9 +1327,10 @@ mod tests {
         woken: &mpsc::Receiver<()>,
         pane: PaneId,
         text: &str,
+        timeout: Duration,
         diagnostics: impl Fn() -> String,
     ) {
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = Instant::now() + timeout;
         let mut last_row = None;
         loop {
             let left = deadline.saturating_duration_since(Instant::now());
