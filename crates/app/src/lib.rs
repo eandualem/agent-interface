@@ -1,5 +1,5 @@
-//! The parts of the tmux-workspaces app that exist so far: the terminal path
-//! from a tmux control-mode client to a drawn grid.
+//! The terminal path from a tmux control-mode client to a drawn grid, and
+//! read-only library polling on a storage worker.
 //!
 //! The milestone-0 benchmark window (`examples/bench-window.rs`) measures this
 //! path before any product interface is built
@@ -7,6 +7,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod library;
 pub mod panes;
 mod restore;
 mod seed;
