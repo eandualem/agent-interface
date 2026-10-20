@@ -58,15 +58,36 @@ roster entries onto tmux sessions and tabs.
   continues, and terminals and tmux discovery are unaffected (AG-17, AG-25). A
   roster state can never make a missing tmux session attachable (AG-18).
 
-The blocking HTTP client is exact-pinned `ureq` 3.4.2 (MIT OR Apache-2.0), with
-default features disabled. Its explicit proxy and redirect controls, body limit
-and end-to-end timeout fit the dedicated I/O worker without adding an async
-runtime. A handwritten HTTP client would duplicate framing and deadline handling;
-an async client would add a runtime this adapter does not need. TLS and compression
-are unnecessary for this loopback-only endpoint. The new locked dependencies
-`ureq-proto` 0.6.5, `httparse` 1.10.1 and `utf8-zero` 0.8.1 are also MIT OR Apache-2.0.
-See the [client configuration](https://docs.rs/ureq/3.4.2/ureq/config/struct.ConfigBuilder.html)
-and [bounded body reader](https://docs.rs/ureq/3.4.2/ureq/struct.BodyWithConfig.html).
+The HTTP client is exact-pinned `reqwest` 0.13.5 (MIT OR Apache-2.0), with
+only its `blocking` feature and no default features. It provides explicit proxy,
+redirect and connection-logging controls. Each request has a three-second total
+deadline, including its body, and the reader stops after 1 MiB plus one overflow
+byte. The decoder accepts exactly 1 MiB and rejects larger bodies.
+
+`ureq` 3.4.2 was considered for its smaller blocking implementation, but its
+protocol dependency traces serialized authorization bytes even when the header
+is marked sensitive. Disabling all application trace logging or maintaining a
+patched HTTP stack would impose unrelated costs. A handwritten client would
+duplicate framing and deadline handling. `reqwest` uses an internal Tokio runtime
+behind its blocking API; no runtime type escapes the roster crate. This choice
+does not settle the separate child-process runtime comparison in [0008](0008-background-io-runtime.md).
+TLS, compression and system-proxy support are disabled for this HTTP-only adapter.
+
+The existing `http` 1.5.0 (MIT OR Apache-2.0) is exact-pinned for strict URI
+validation before the client's URL normalization; malformed explicit ports are
+rejected. Test-only `log` 0.4.34 (MIT OR Apache-2.0) captures enabled trace output
+to verify credentials remain absent. Newly locked HTTP/runtime dependencies are:
+
+| Purpose | Dependencies and versions | Licence |
+| --- | --- | --- |
+| HTTP bodies, framing and connection support | http-body-util 0.1.5, hyper 1.12.0, hyper-util 0.1.21, want 0.3.2, try-lock 0.2.5 | MIT |
+| Request middleware | tower 0.5.3, tower-http 0.6.11, tower-layer 0.3.3, tower-service 0.3.3 | MIT |
+| Socket readiness | mio 1.2.4 | MIT |
+| Header parsing and address/socket support | httparse 1.10.1, ipnet 2.12.2, socket2 0.6.5 | MIT OR Apache-2.0 |
+| Thread-safe request storage | sync_wrapper 1.0.2 | Apache-2.0 |
+
+See the [client controls](https://docs.rs/reqwest/0.13.5/reqwest/blocking/struct.ClientBuilder.html)
+and [total request timeout](https://docs.rs/reqwest/0.13.5/reqwest/blocking/struct.RequestBuilder.html#method.timeout).
 
 ## Consequences
 
@@ -94,7 +115,7 @@ The `roster::Snapshot` response model retains only validated agent names and
 reported states. Failed decoding or a caller-reported transport failure retains
 the last states and observation time with a fixed stale diagnostic. A successful
 response replaces the entire list, including an empty list, and clears the error.
-It does not load configuration, read credentials or issue requests.
+Decoding does not load configuration, read credentials or issue requests.
 
 The decoder uses exact-pinned `serde_json` 1.0.154 (MIT OR Apache-2.0), already
 used by the workspace, to parse the endpoint's `items` array. It limits responses
