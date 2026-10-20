@@ -103,6 +103,120 @@ impl Layout {
         }
     }
 
+    /// Select an existing workspace by identity. Missing identities do nothing.
+    pub fn choose_workspace(&mut self, id: &str) -> bool {
+        if !self.workspaces.iter().any(|space| space.id == id) {
+            return false;
+        }
+        self.selected = id.to_owned();
+        true
+    }
+
+    /// Select an existing tab in the current workspace, retaining its pane focus.
+    pub fn choose_tab(&mut self, id: &str) -> bool {
+        let Some(space) = self.workspace_mut() else {
+            return false;
+        };
+        if !space.tabs.iter().any(|tab| tab.id == id) {
+            return false;
+        }
+        space.selected = id.to_owned();
+        true
+    }
+
+    /// Cycle workspaces, wrapping at either end and retaining each selection.
+    pub fn next_workspace(&mut self, offset: isize) -> bool {
+        let count = self.workspaces.len() as isize;
+        if count == 0 {
+            return false;
+        }
+        let index = self
+            .workspaces
+            .iter()
+            .position(|space| space.id == self.selected)
+            .unwrap_or(0);
+        let next = (index as isize + offset.rem_euclid(count)).rem_euclid(count) as usize;
+        self.selected = self.workspaces[next].id.clone();
+        true
+    }
+
+    /// Cycle tabs in the current workspace, wrapping at either end.
+    pub fn next_tab(&mut self, offset: isize) -> bool {
+        let Some(space) = self.workspace_mut() else {
+            return false;
+        };
+        let count = space.tabs.len() as isize;
+        if count == 0 {
+            return false;
+        }
+        let index = space
+            .tabs
+            .iter()
+            .position(|tab| tab.id == space.selected)
+            .unwrap_or(0);
+        let next = (index as isize + offset.rem_euclid(count)).rem_euclid(count) as usize;
+        space.selected = space.tabs[next].id.clone();
+        true
+    }
+
+    /// Move the selected tab within its workspace, stopping at either end.
+    pub fn move_tab(&mut self, offset: isize) -> bool {
+        let Some(space) = self.workspace_mut() else {
+            return false;
+        };
+        if space.tabs.is_empty() {
+            return false;
+        }
+        let index = space
+            .tabs
+            .iter()
+            .position(|tab| tab.id == space.selected)
+            .unwrap_or(0);
+        let target = index
+            .saturating_add_signed(offset)
+            .min(space.tabs.len() - 1);
+        let tab = space.tabs.remove(index);
+        space.tabs.insert(target, tab);
+        true
+    }
+
+    /// Move the selected tab to another workspace and select it there. Retain
+    /// its complete tree and focus; the source selects its first remaining tab.
+    /// Missing or current destinations, and empty sources, do nothing.
+    pub fn transfer_tab(&mut self, destination: &str) -> bool {
+        let Some(source) = self.workspace() else {
+            return false;
+        };
+        if source.id == destination || !self.workspaces.iter().any(|space| space.id == destination)
+        {
+            return false;
+        }
+        let Some(tab) = self.tab().cloned() else {
+            return false;
+        };
+        self.close_tab();
+        self.selected = destination.to_owned();
+        let space = self.workspace_mut().expect("destination exists");
+        space.selected = tab.id.clone();
+        space.tabs.push(tab);
+        true
+    }
+
+    /// Delete the current workspace only when empty and another workspace exists.
+    /// Select the first remaining workspace without changing any tab or process.
+    pub fn delete_workspace(&mut self) -> bool {
+        let Some(space) = self.workspace() else {
+            return false;
+        };
+        if !space.tabs.is_empty() || self.workspaces.len() <= 1 {
+            return false;
+        }
+        let id = space.id.clone();
+        self.workspaces.retain(|space| space.id != id);
+        self.selected = self.workspaces[0].id.clone();
+        true
+    }
+
     /// Add and select an empty workspace. The caller validates the proposed name;
     /// adding a workspace never populates tabs from sessions or the roster.
     pub fn add_workspace(&mut self, name: String) {
@@ -271,6 +385,49 @@ fn remove_leaf(node: Node, target: &str) -> Option<Node> {
 mod tests {
     use super::*;
     use std::collections::HashSet;
+
+    #[test]
+    fn navigation_reordering_transfer_and_empty_workspace_deletion() {
+        let mut model = Layout::initial("/tmp".into());
+        let first_space = model.selected.clone();
+        let first_tab = model.tab().unwrap().id.clone();
+        assert!(model.add_tab(Some("Second tab".into()), "/tmp".into(), true));
+        let moved = model.tab().unwrap().clone();
+        assert!(model.move_tab(-1));
+        assert_eq!(model.workspace().unwrap().tabs[0], moved);
+        assert!(model.move_tab(isize::MAX));
+        assert_eq!(model.workspace().unwrap().tabs[1], moved);
+        assert!(model.next_tab(1));
+        assert_eq!(model.tab().unwrap().id, first_tab);
+        assert!(model.next_tab(-1));
+        assert_eq!(model.tab().unwrap(), &moved);
+        assert!(!model.choose_tab("missing"));
+        assert!(!model.delete_workspace());
+        assert!(!model.transfer_tab("missing"));
+        assert!(!model.transfer_tab(&first_space));
+
+        model.add_workspace("Second workspace".into());
+        let second_space = model.selected.clone();
+        assert!(!model.next_tab(1));
+        assert!(!model.transfer_tab(&first_space));
+        assert!(model.next_workspace(1));
+        assert_eq!(model.selected, first_space);
+        assert!(model.choose_tab(&moved.id));
+        assert!(model.transfer_tab(&second_space));
+        assert_eq!(model.selected, second_space);
+        assert_eq!(model.tab().unwrap(), &moved);
+        assert!(model.next_workspace(-1));
+        assert_eq!(model.tab().unwrap().id, first_tab);
+        assert!(!model.choose_workspace("missing"));
+        assert!(model.choose_workspace(&second_space));
+        assert!(!model.delete_workspace());
+        assert!(model.close_tab());
+        assert!(model.delete_workspace());
+        assert_eq!(model.selected, first_space);
+        assert!(model.close_tab());
+        assert!(!model.delete_workspace());
+        assert_eq!(model.workspaces.len(), 1);
+    }
 
     #[test]
     fn workspace_tab_split_attachment_and_close_match_the_model_workflow() {
