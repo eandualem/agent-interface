@@ -5409,6 +5409,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.21",
  "tmux-workspaces-test-support",
+ "unicode-properties",
 ]
 
 [[package]]
