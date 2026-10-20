@@ -5356,6 +5356,9 @@ dependencies = [
 [[package]]
 name = "tmux-workspaces-core"
 version = "0.0.0"
+dependencies = [
+ "uuid",
+]
 
 [[package]]
 name = "tmux-workspaces-roster"

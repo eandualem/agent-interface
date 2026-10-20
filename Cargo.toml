@@ -66,5 +66,7 @@ serde = "=1.0.229"
 serde_json = { version = "=1.0.154", features = ["raw_value", "arbitrary_precision"] }
 unicode-properties = { version = "=0.1.4", default-features = false, features = ["general-category"] }
 
+uuid = { version = "=1.28.0", features = ["v4"] }
+
 [workspace.lints.rust]
 missing_docs = "warn"
