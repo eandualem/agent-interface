@@ -23,7 +23,8 @@ fn main() -> ExitCode {
             }
         },
         Err(error) => {
-            eprintln!("tmux-workspaces: {error}");
+            // Paths and unexpected arguments can contain control characters too.
+            eprintln!("tmux-workspaces: {}", error.escape_debug());
             ExitCode::FAILURE
         }
     }

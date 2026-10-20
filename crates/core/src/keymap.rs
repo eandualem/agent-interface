@@ -51,8 +51,13 @@ impl Keymap {
             return Err(format!("keymap exceeds {MAX_BYTES} bytes"));
         }
         let source = std::str::from_utf8(bytes).map_err(|_| "keymap must be UTF-8".to_owned())?;
-        let table: toml::Table =
-            toml::from_str(source).map_err(|e| format!("invalid keymap TOML: {e}"))?;
+        if source.starts_with('\u{feff}') {
+            return Err("keymap must not begin with a UTF-8 byte order mark".into());
+        }
+        let table: toml::Table = toml::from_str(source).map_err(|e: toml::de::Error| {
+            // Display includes raw source, which may contain terminal controls.
+            format!("invalid keymap TOML: {}", e.message().escape_debug())
+        })?;
         for key in table.keys() {
             if !matches!(key.as_str(), "prefix" | "bindings" | "direct") {
                 return Err(format!("unknown keymap option: {key:?}"));
@@ -385,6 +390,9 @@ quit = ["super+t"]
 
     #[test]
     fn invalid_configuration_and_colliding_aliases_are_reported() {
+        assert!(Keymap::parse(b"\xef\xbb\xbfprefix = 'C-b'\n").is_err());
+        let diagnostic = Keymap::parse(b"#\x1b[2J\n").unwrap_err();
+        assert!(!diagnostic.contains('\x1b'));
         for (text, error) in [
             ("unknown = 1", "unknown keymap option"),
             ("prefix = true", "prefix"),
