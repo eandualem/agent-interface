@@ -2,6 +2,8 @@
 
 #![forbid(unsafe_code)]
 
+mod navigation;
+
 /// An arrangement loaded from a library. Navigation values seed a new window;
 /// each window subsequently owns its selection and focus.
 #[derive(Clone, Debug, PartialEq)]
