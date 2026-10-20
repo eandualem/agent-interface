@@ -3,6 +3,7 @@
 #![forbid(unsafe_code)]
 
 mod actions;
+pub mod merge;
 mod navigation;
 
 /// An arrangement loaded from a library. Navigation values seed a new window;
