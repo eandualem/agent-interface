@@ -214,8 +214,11 @@ control, format, unassigned and separator characters, except ordinary space.
 Python runtimes with older Unicode data can differ for newly assigned
 characters. The core reuses this pinned, dual-licensed dependency for rename
 normalization: Python whitespace trimming, printable-character filtering, then
-an 80-character limit. An empty result leaves the model unchanged; native edit
-controls, stale-editor checks and saving remain separate. Rust JSON strings also require Unicode scalar values; unpaired
+an 80-character limit. An empty result leaves the model unchanged. `NameEdit`
+captures the selected workspace/tab identity and original name; applying it
+refuses a changed selection, removed item or peer rename. Empty input keeps the
+edit open. The caller refreshes first and cancels on a reconciliation conflict.
+Native edit controls and saving remain separate. Rust JSON strings also require Unicode scalar values; unpaired
 surrogate escapes are rejected even in unknown fields. These are explicit
 compatibility limits, not evidence of complete persistence parity.
 

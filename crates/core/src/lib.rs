@@ -7,6 +7,7 @@ mod geometry;
 pub mod merge;
 mod navigation;
 
+pub use actions::{NameEdit, RenameOutcome};
 pub use geometry::PaneRect;
 
 /// An arrangement loaded from a library. Navigation values seed a new window;
