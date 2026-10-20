@@ -9,7 +9,9 @@ use std::time::Duration;
 use tmux_workspaces_store::{Document, Error, Store};
 
 mod location;
+mod shells;
 pub use location::library_directory;
+pub use shells::{existing_shell_socket, ordinary_session};
 
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
 

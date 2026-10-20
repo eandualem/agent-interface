@@ -132,6 +132,21 @@ What the app does with edits before then is still open
   environment described in [0016](0016-shell-environment-and-launch-context.md).
   Lock interoperability with a running Python window is tested first.
 
+`app::library::existing_shell_socket` implements read-only endpoint lookup from
+an already resolved library path. It checks the existing parent directory and
+Unix socket metadata without creating, repairing or connecting to anything.
+Absence is returned separately from an invalid directory or non-socket file;
+filesystem presence does not establish that the tmux server is alive.
+`ordinary_session` maps a valid leaf identity to the Python session name.
+Connection and shell-lifecycle integration remain pending.
+
+The path digest uses `sha2` 0.10.9 (MIT OR Apache-2.0), pinned exactly and already
+present in the dependency graph. Using it avoids a local SHA-256 implementation
+or an external hashing command. The current UID comes from the existing `uzers`
+dependency. Non-UTF-8 resolved library paths are refused for shell lookup because
+Python hashes the UTF-8 path text; read-only database access still preserves
+native path bytes.
+
 **Theme and keymap files.** Read `theme.toml` and `keymap.toml` from the same
 XDG paths for parity, with `toml` (0.9.8, MIT OR Apache-2.0). Do not write them
 until a write contract matching the Python tool's conflict checks is agreed.

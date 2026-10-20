@@ -21,6 +21,7 @@ futures.workspace = true
 gpui.workspace = true
 gpui_platform.workspace = true
 uzers.workspace = true
+sha2.workspace = true
 tmux-workspaces-store = { path = "../store" }
 tmux-workspaces-term = { path = "../term" }
 tmux-workspaces-tmux = { path = "../tmux" }

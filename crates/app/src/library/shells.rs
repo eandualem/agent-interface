@@ -1,0 +1,132 @@
+use sha2::{Digest, Sha256};
+use std::io;
+use std::os::unix::fs::{FileTypeExt, MetadataExt};
+use std::path::{Path, PathBuf};
+
+/// Locate an existing ordinary-shell socket for a resolved library directory.
+///
+/// Pass the absolute result of [`super::library_directory`]. The socket uses
+/// Python's UTF-8 path hash and current UID. Its parent must be a real directory
+/// owned by that UID, with no group or other permissions. Missing directories
+/// or sockets return None. This reads metadata only: it does not create, repair,
+/// connect to or start anything. A socket file does not prove a server is alive.
+pub fn existing_shell_socket(resolved_directory: &Path) -> io::Result<Option<PathBuf>> {
+    if !resolved_directory.is_absolute() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "shell lookup requires the resolved absolute library directory",
+        ));
+    }
+    let text = resolved_directory.to_str().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Python-compatible shell lookup requires a UTF-8 library path",
+        )
+    })?;
+    let uid = uzers::get_current_uid();
+    let directory = PathBuf::from(format!("/tmp/tmux-workspaces-{uid}"));
+    existing_socket_in(&directory, uid, &socket_name(text))
+}
+
+fn socket_name(resolved_directory: &str) -> String {
+    let hash = format!("{:x}", Sha256::digest(resolved_directory.as_bytes()));
+    format!("{}-terminals.sock", &hash[..16])
+}
+
+fn existing_socket_in(directory: &Path, uid: u32, name: &str) -> io::Result<Option<PathBuf>> {
+    let metadata = match directory.symlink_metadata() {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    if !metadata.is_dir() || metadata.uid() != uid || metadata.mode() & 0o077 != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "shell socket directory must be a real private directory owned by the current user",
+        ));
+    }
+    let socket = directory.join(name);
+    match socket.metadata() {
+        Ok(metadata) if metadata.file_type().is_socket() => Ok(Some(socket)),
+        Ok(_) => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "shell socket path is not a Unix socket",
+        )),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+/// The ordinary shell session for one validated 12-character lowercase hex leaf
+/// identity. Invalid identities return None; no tmux command is run.
+pub fn ordinary_session(leaf_id: &str) -> Option<String> {
+    (leaf_id.len() == 12
+        && leaf_id
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
+    .then(|| format!("terminal-{leaf_id}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::net::UnixListener;
+
+    #[test]
+    fn shell_lookup_matches_python_and_only_reads_private_socket_metadata() {
+        // Fixed hash from Python hashlib.sha256 for this resolved path.
+        let name = socket_name("/tmp/example library");
+        assert_eq!(name, "b97f6756417fe702-terminals.sock");
+        assert_eq!(
+            ordinary_session("123456abcdef").unwrap(),
+            "terminal-123456abcdef"
+        );
+        for invalid in ["123", "123456ABCDEf", "session:name"] {
+            assert!(ordinary_session(invalid).is_none());
+        }
+        assert!(existing_shell_socket(Path::new("relative")).is_err());
+        assert!(existing_shell_socket(Path::new(OsStr::from_bytes(b"/tmp/library-\xff"))).is_err());
+
+        // Short private fixture path stays within macOS's Unix socket limit.
+        let fixture = tempfile::Builder::new()
+            .prefix("tw-s-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let directory = fixture.path().join("s");
+        let uid = uzers::get_current_uid();
+        assert!(
+            existing_socket_in(&directory, uid, &name)
+                .unwrap()
+                .is_none()
+        );
+        assert!(!directory.exists());
+        std::fs::create_dir(&directory).unwrap();
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(
+            existing_socket_in(&directory, uid, &name)
+                .unwrap()
+                .is_none()
+        );
+        let socket = directory.join(&name);
+        let listener = UnixListener::bind(&socket).unwrap();
+        assert_eq!(
+            existing_socket_in(&directory, uid, &name).unwrap(),
+            Some(socket.clone())
+        );
+        assert!(existing_socket_in(&directory, uid.wrapping_add(1), &name).is_err());
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o750)).unwrap();
+        assert!(existing_socket_in(&directory, uid, &name).is_err());
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let alias = fixture.path().join("alias");
+        std::os::unix::fs::symlink(&directory, &alias).unwrap();
+        assert!(existing_socket_in(&alias, uid, &name).is_err());
+        drop(listener);
+        std::fs::remove_file(&socket).unwrap();
+        std::fs::write(&socket, b"preserve").unwrap();
+        assert!(existing_socket_in(&directory, uid, &name).is_err());
+        assert_eq!(std::fs::read(&socket).unwrap(), b"preserve");
+    }
+}
