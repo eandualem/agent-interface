@@ -52,7 +52,23 @@ For SQLite access:
 **Finding the library.** Choose the library directory in the Python tool's
 order: `--data-dir`, then `TMUX_WORKSPACES_DATA_DIR`, then
 `$XDG_DATA_HOME/tmux-workspaces`, then `~/.local/share/tmux-workspaces`, on
-macOS too (PE-1).
+macOS too (PE-1). `app::library::library_directory` implements this selection on Unix,
+ignores empty environment overrides, expands `~` and `~user`, and resolves
+relative paths and symlinks. Like Python's non-strict `Path.resolve`, a missing
+intermediate component may be removed by a later `..`; symlinks are expanded
+before processing their following parent components. The read-only phase
+requires the final resolved directory
+to exist; it never creates a missing library. `app::library` performs this lookup
+on its storage thread before opening SQLite. Product command-line parsing and
+window integration remain pending.
+
+Named-user home expansion uses [`uzers` 0.12.2](https://docs.rs/uzers/0.12.2/uzers/),
+MIT, pinned exactly with default caching, mock and logging features disabled.
+It adds only the already used MIT/Apache-2.0 `libc` dependency. Its safe account
+lookup accepts native OS strings, so paths need not be UTF-8. Standard-library
+home lookup alone cannot expand `~user`; direct libc calls would add local
+unsafe code. A broad shell-expansion library is unnecessary: Python does not
+expand environment variables inside these paths.
 
 **Reading `layouts.db`.**
 
@@ -116,6 +132,21 @@ What the app does with edits before then is still open
   environment described in [0016](0016-shell-environment-and-launch-context.md).
   Lock interoperability with a running Python window is tested first.
 
+`app::library::existing_shell_socket` implements read-only endpoint lookup from
+an already resolved library path. It checks the existing parent directory and
+Unix socket metadata without creating, repairing or connecting to anything.
+Absence is returned separately from an invalid directory or non-socket file;
+filesystem presence does not establish that the tmux server is alive.
+`ordinary_session` maps a valid leaf identity to the Python session name.
+Connection and shell-lifecycle integration remain pending.
+
+The path digest uses `sha2` 0.10.9 (MIT OR Apache-2.0), pinned exactly and already
+present in the dependency graph. Using it avoids a local SHA-256 implementation
+or an external hashing command. The current UID comes from the existing `uzers`
+dependency. Non-UTF-8 resolved library paths are refused for shell lookup because
+Python hashes the UTF-8 path text; read-only database access still preserves
+native path bytes.
+
 **Theme and keymap files.** Read `theme.toml` and `keymap.toml` from the same
 XDG paths for parity, with `toml` (0.9.8, MIT OR Apache-2.0). Do not write them
 until a write contract matching the Python tool's conflict checks is agreed.
@@ -125,7 +156,9 @@ Python tool's `windows/<instance>/` runtime directories, viewer sockets or
 action sockets (PE-24).
 
 JSON is handled with `serde` (1.0.229) and `serde_json` (1.0.154), both MIT OR
-Apache-2.0, with duplicate-key detection added as described above.
+Apache-2.0, with duplicate-key detection added as described above. `core` also uses
+`serde_json` for shared-document merging: merging only the typed display model
+would discard unknown extension fields and absent/null distinctions.
 
 ## Consequences
 
@@ -154,3 +187,114 @@ store.
   in the control-mode research.
 - [Parity checklist](../PARITY.md#persistence-concurrent-windows-and-conflict-handling),
   rows PE-1 to PE-25.
+
+## Read-only implementation
+
+`Store::open` takes an already resolved library directory. `load` validates the
+current row and returns a `Document` with the typed `core::Layout` and the exact
+original JSON. The original record retains unknown fields and absent/null
+values; the model is not a replacement serialization format. `data_version`
+is read before loading, on the same connection, so a concurrent commit still
+invalidates the next poll. Calls finish their statements before returning.
+The app's `library` storage worker resolves the selected library path and owns
+the retained connection. Controller integration and all writes remain separate
+work.
+
+The decoder bounds all containers, including extensions, and rejects duplicate
+keys before constructing maps. Borrowed `serde_json::RawValue` slices let it
+check depth itself rather than relying on serde_json's lower default recursion
+limit; `arbitrary_precision` retains large integer extension values. Split
+nodes use the schema's 64-level limit. Invalid input is never normalized into
+a different saved arrangement.
+
+Printable names and session references use `unicode-properties` 0.1.4
+(MIT OR Apache-2.0), already used by the terminal dependency graph, with only
+its general-category feature requested here. Its Unicode 17 categories reject
+control, format, unassigned and separator characters, except ordinary space.
+Python runtimes with older Unicode data can differ for newly assigned
+characters. The core reuses this pinned, dual-licensed dependency for rename
+normalization: Python whitespace trimming, printable-character filtering, then
+an 80-character limit. An empty result leaves the model unchanged. `NameEdit`
+captures the selected workspace/tab identity and original name; applying it
+refuses a changed selection, removed item or peer rename. Empty input keeps the
+edit open. The caller refreshes first and cancels on a reconciliation conflict.
+Native edit controls and saving remain separate. Rust JSON strings also require Unicode scalar values; unpaired
+surrogate escapes are rejected even in unknown fields. These are explicit
+compatibility limits, not evidence of complete persistence parity.
+
+SQLite uses a 250 ms busy timeout. A hot journal requiring recovery is retried
+read-only for at most 250 ms, then reported for recovery by a writer; the reader
+never reopens writable. `app::library` polls every 250 ms on its storage thread
+and coalesces complete documents and errors into one pending update. A read
+failure preserves any valid document still awaiting consumption; callers also
+retain their displayed document. Unchanged errors are reported once, and a
+successful subsequent read clears the error. An initial open failure is reported
+and ends that worker; it never creates or repairs the library. Dropping the
+handle stops polling and joins the thread. Worker tests use the same pinned
+`rusqlite` only as a development dependency to simulate another writer on a
+disposable library.
+
+`Layout::retain_navigation` applies this window's selections to the incoming
+model and reports whether the active tab's tree changed. This includes attachment
+changes, splits and deletion; a rename alone does not trigger it. The controller
+must use that result to return input focus to navigation and require another pane
+selection before sending input. This follows the Python viewer's refresh check
+in `sidebar.py` at the pinned reference version. The storage worker itself never
+dispatches input or changes focus.
+
+## Projecting model edits
+
+`Document::with_model` returns a newly validated document without accessing a
+file or database. It preserves extension fields by stable identity through
+splits, pane closes and tab moves. Unchanged models retain the original JSON
+text; edited documents may change whitespace and key order. Unchanged optional
+defaults and number representations are retained. Model tree depth, object count,
+serialized size and the complete resulting schema are checked before returning.
+The source document remains unchanged on success or failure. Database writes
+remain subject to the existing mixed-writer gate.
+
+## In-memory conflict handling
+
+`core::merge::merge_shared_layout` accepts three already validated schema-v2
+JSON documents and removes window-local navigation before combining shared
+edits. Independent fields and stable-identity lists merge; conflicting trees,
+incompatible reorders, duplicate tab moves and deleting all workspaces fail.
+Unknown fields retain Python's numeric equality and identity-list semantics.
+Seventeen reference cases generated from the pinned Python model cover these
+rules, including deletion versus editing and numeric precision boundaries.
+
+The result has no navigation fields. `Document::reconcile` projects local model
+edits, combines them with a newer document, validates the merged shared schema,
+and restores local navigation. Conflicting or schema-invalid combinations
+return the latest arrangement with a conflict flag, so the controller can ask
+the user to retry. Invalid local edits or oversized results return an error and
+leave the inputs untouched. The result also reports active-tree changes that
+require input focus to return to navigation. The next merge base is the latest
+incoming document; the returned arrangement retains unsaved local edits.
+
+Reconciliation preserves JSON values, but may normalize numeric spellings and
+formatting. It performs no persistence. The transactional checks, mixed-writer
+tests, migration agreement and write gate above remain outstanding.
+
+## Saved split geometry
+
+`core::Tab::pane_rectangles` calculates content rectangles without drawing or
+changing tmux. It follows the pinned Python `model.minimum_size` and
+`display.Display._tree`: a leaf needs 34 columns by 6 rows, sibling panes have
+one separator cell, and each ratio is rounded to the nearest cell with ties to
+even, then clamped to fit both subtrees. These are terminal content dimensions;
+the caller excludes the native sidebar and other window decorations.
+
+If the available content area is too small, or the local focus flag is enabled,
+only the focused leaf receives a rectangle. Restoring space or leaving focus
+mode reveals the same saved tree and ratios. A zero-sized content area has no
+rectangles. This preserves the Python behavior in a pure model operation;
+renderer integration and native-window resizing remain separate work. No new
+dependency is needed.
+
+`Layout::choose_pane` accepts only a leaf in the current tab. After a resize,
+`Node::remember_split_sizes` records the ratio of the measured child content
+sizes, excluding the separator, with the Python viewer's 0.15 to 0.85 clamp.
+Missing identities and zero-sized children do nothing. These operations only
+change the model; terminal readiness, input handoff and resizing remain caller
+responsibilities.

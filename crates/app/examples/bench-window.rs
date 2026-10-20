@@ -25,7 +25,7 @@ use gpui::{
     WindowOptions, point, px, size,
 };
 use gpui_platform::application;
-use tmux_workspaces_app::panes::{PaneLayout, Panes};
+use tmux_workspaces_app::panes::Panes;
 use tmux_workspaces_app::view::{self, Appearance, TerminalView};
 use tmux_workspaces_test_support::ServerRef;
 use tmux_workspaces_tmux::control::PaneId;
@@ -72,41 +72,29 @@ fn run() -> Result<(), String> {
         )
         .map_err(|e| e.to_string())?;
     let [cols, rows] = numbers(&window)?;
-    let layout: Vec<PaneLayout> = server
+    let described = server
         .run(
             &[
-                &["list-panes"][..],
+                &["display-message", "-p"][..],
                 &target,
-                &[
-                    "-F",
-                    "#{pane_id} #{pane_left} #{pane_top} #{pane_width} #{pane_height}",
-                ],
+                &["#{window_id} #{window_layout} #{window_visible_layout} #{window_raw_flags}"],
             ]
             .concat(),
         )
-        .map_err(|e| e.to_string())?
-        .lines()
-        .map(|line| {
-            let [id, left, top, cols, rows] = numbers(&line.replace('%', ""))?;
-            Ok(PaneLayout {
-                id: PaneId(u32::from(id)),
-                left,
-                top,
-                cols,
-                rows,
-            })
-        })
-        .collect::<Result<_, String>>()?;
+        .map_err(|e| e.to_string())?;
+    let layout =
+        tmux_workspaces_tmux::layout::parse(format!("%layout-change {described}").as_bytes())
+            .map_err(str::to_owned)?;
     let input = options
         .input
-        .or_else(|| layout.first().map(|pane| pane.id))
+        .or_else(|| layout.panes.first().map(|pane| pane.id))
         .ok_or("the session has no panes")?;
 
     let client = server
         .control(&[
             "attach-session",
             "-f",
-            "no-output,ignore-size",
+            "no-output,ignore-size,new-layouts",
             "-t",
             &options.session,
         ])
@@ -142,7 +130,9 @@ fn run() -> Result<(), String> {
             ..Default::default()
         };
         let opened = cx.open_window(options, |window, cx| {
-            cx.new(|cx| TerminalView::new(panes, layout, input, appearance, woken, window, cx))
+            cx.new(|cx| {
+                TerminalView::new(panes, layout.panes, input, appearance, woken, window, cx)
+            })
         });
         if let Err(error) = opened {
             eprintln!("bench-window: cannot open the window: {error}");

@@ -39,7 +39,9 @@ socket.
   rows, cursor and mode information, each update tagged with a revision. One
   worker owns all terminals to start with; more are added only if fairness
   measurements require it.
-- A **storage worker** owns the one retained SQLite connection.
+- A **storage worker** owns the one retained SQLite connection. `app::library`
+  performs read-only polling and publishes one coalesced document/error update;
+  the controller remains responsible for local navigation and input focus.
 - **Background input and output** drives tmux child processes and timers. The
   runtime used for this is decided in [0008](0008-background-io-runtime.md).
 

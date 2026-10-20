@@ -15,12 +15,12 @@ use std::io::{self, Read, Write};
 use std::process::{Child, ChildStdout};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, mpsc};
 use std::thread::{self, JoinHandle};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use tmux_workspaces_term::{Screen, Terminal};
-use tmux_workspaces_tmux::command;
 use tmux_workspaces_tmux::control::{Decoder, Message, PaneId};
 use tmux_workspaces_tmux::recovery::{Recovery, Reply, Snapshot, Step};
+use tmux_workspaces_tmux::{command, layout};
 
 /// The most pane output the reader queues for the worker before it stops
 /// reading, so a slow worker holds back tmux instead of growing a queue.
@@ -32,23 +32,16 @@ const READ_SIZE: usize = 64 * 1024;
 /// Keep send-keys arguments below tmux's parser stack limit.
 const INPUT_CHUNK: usize = 1024;
 
-/// A pane's place in its tmux window, in cells.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct PaneLayout {
-    /// The pane.
-    pub id: PaneId,
-    /// The column of its left edge.
-    pub left: u16,
-    /// The row of its top edge.
-    pub top: u16,
-    /// Its width.
-    pub cols: u16,
-    /// Its height.
-    pub rows: u16,
-}
+/// A pane's place in its tmux window, in terminal cells.
+pub use tmux_workspaces_tmux::layout::Pane as PaneLayout;
 
-/// The screens of the panes that changed since the previous update.
-pub type Update = Vec<(PaneId, Screen)>;
+/// The current visible rectangles and the screens changed since the previous update.
+pub struct Update {
+    /// Rectangles that match these screens.
+    pub layout: Vec<PaneLayout>,
+    /// The panes whose screen contents changed.
+    pub screens: Vec<(PaneId, Screen)>,
+}
 
 /// The panes of one control-mode client, kept up to date in the background.
 ///
@@ -94,6 +87,8 @@ struct State {
 enum Event {
     Output(PaneId, Vec<u8>),
     Reply(Reply),
+    Layout(layout::Change),
+    Geometry,
 }
 
 impl Event {
@@ -101,6 +96,8 @@ impl Event {
         match self {
             Self::Output(_, bytes) => bytes.len(),
             Self::Reply(reply) => reply.lines.iter().map(Vec::len).sum(),
+            Self::Layout(change) => change.panes.len() * std::mem::size_of::<PaneLayout>(),
+            Self::Geometry => 0,
         }
     }
 }
@@ -109,6 +106,7 @@ impl Event {
 enum ReplyOwner {
     Input(PaneId),
     Recovery,
+    GeometrySubscription,
 }
 
 struct Control {
@@ -180,6 +178,8 @@ fn write_commands(
 
 struct LivePane {
     terminal: Terminal,
+    size: (u16, u16),
+    offset: (u16, u16),
     // The engine's display copy cannot express tmux's logical margin cursor.
     // Retain its authoritative snapshot and never stream into that copy.
     captured: Option<Snapshot>,
@@ -198,6 +198,8 @@ impl LivePane {
         }
         let terminal = Terminal::restored(&restore, scrollback).map_err(|e| e.to_string())?;
         Ok(Self {
+            size: (snapshot.state.width, snapshot.state.height),
+            offset: (snapshot.state.left, snapshot.state.top),
             terminal,
             captured: captured.then_some(snapshot),
             needs_capture: false,
@@ -244,11 +246,58 @@ impl LivePane {
     }
 }
 
+struct WindowState {
+    layout: layout::Change,
+    terminals: Vec<(PaneId, LivePane)>,
+    geometry_changed: bool,
+    settle_at: Option<Instant>,
+    generation: u64,
+}
+
+impl WindowState {
+    fn ready(&self) -> bool {
+        !self.geometry_changed
+            || self.layout.panes.iter().all(|pane| {
+                self.terminals
+                    .iter()
+                    .any(|(id, terminal)| *id == pane.id && !terminal.needs_capture)
+            })
+    }
+
+    fn change_layout(&mut self, change: layout::Change, scrollback: usize) -> Result<(), String> {
+        for pane in &change.panes {
+            if let Some((_, terminal)) = self.terminals.iter_mut().find(|(id, _)| *id == pane.id) {
+                terminal.needs_capture = true;
+            } else {
+                self.terminals.push((
+                    pane.id,
+                    LivePane {
+                        terminal: Terminal::new(pane.cols, pane.rows, scrollback)
+                            .map_err(|e| e.to_string())?,
+                        size: (pane.cols, pane.rows),
+                        offset: (pane.left, pane.top),
+                        captured: None,
+                        needs_capture: true,
+                        recovery_deadline: None,
+                    },
+                ));
+            }
+        }
+        self.layout = change;
+        self.generation += 1;
+        self.geometry_changed = true;
+        // Match the quiet interval exercised by the resize fidelity harness.
+        self.settle_at = Some(Instant::now() + Duration::from_millis(100));
+        Ok(())
+    }
+}
+
 impl Panes {
     /// Starts keeping the panes in `layout` up to date from `client`, a
     /// control-mode client (`tmux -C`) with piped standard input and output,
-    /// freshly attached with `-f no-output,ignore-size`. Its initial reply
-    /// must not have been read. Captures existing contents before enabling
+    /// freshly attached with `-f no-output,ignore-size,new-layouts`. Its initial reply
+    /// must not have been read. Refreshes visible membership on that connection,
+    /// then captures existing contents before enabling
     /// live output; startup is bounded by a ten-second capture deadline.
     /// Each pane keeps about `scrollback` lines of history.
     ///
@@ -256,38 +305,54 @@ impl Panes {
     /// once more when the worker has finished.
     pub fn start(
         mut client: Child,
-        layout: &[PaneLayout],
+        layout: &layout::Change,
         scrollback: usize,
         wake: impl Fn() + Send + 'static,
     ) -> io::Result<Self> {
-        let seed =
-            match crate::seed::attach(&mut client, layout.iter().map(|pane| pane.id).collect()) {
-                Ok(seed) => seed,
-                Err(error) => {
-                    let _ = client.kill();
-                    let _ = client.wait();
-                    return Err(error);
-                }
-            };
+        let seed = match crate::seed::attach(&mut client, layout.window) {
+            Ok(seed) => seed,
+            Err(error) => {
+                let _ = client.kill();
+                let _ = client.wait();
+                return Err(error);
+            }
+        };
         let crate::seed::Seed {
             stdin,
             stdout,
             decoder,
             snapshots,
-            output,
+            events,
+            layout,
         } = seed;
+        let prefix = format!("%layout-change @{} ", layout.window);
+        let mut queue = VecDeque::new();
+        for event in events {
+            match event {
+                crate::seed::Event::Output(pane, bytes) => {
+                    queue.push_back(Event::Output(pane, bytes))
+                }
+                crate::seed::Event::Layout(line) if line.starts_with(prefix.as_bytes()) => {
+                    match layout::parse(&line) {
+                        Ok(change) => queue.push_back(Event::Layout(change)),
+                        Err(error) => {
+                            let _ = client.kill();
+                            let _ = client.wait();
+                            return Err(io::Error::other(error));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
         let shared = Arc::new(Shared {
             state: Mutex::new(State {
-                queued: output.iter().map(|(_, bytes)| bytes.len()).sum(),
-                queue: output
-                    .into_iter()
-                    .map(|(pane, bytes)| Event::Output(pane, bytes))
-                    .collect(),
+                queued: queue.iter().map(Event::size).sum(),
+                queue,
                 ..State::default()
             }),
             changed: Condvar::new(),
         });
-        let layout = layout.to_vec();
         let (commands, requests) = mpsc::channel();
         // Should a thread fail to start, dropping `panes` stops what did.
         let mut panes = Self {
@@ -314,7 +379,8 @@ impl Panes {
         }
         let reader = spawn("tmux reader", {
             let shared = Arc::clone(&panes.shared);
-            move || read(&shared, stdout, decoder)
+            let window = layout.window;
+            move || read(&shared, stdout, decoder, window)
         });
         match reader {
             Ok(reader) => panes.threads.push(reader),
@@ -324,6 +390,13 @@ impl Panes {
                 return Err(error);
             }
         }
+        // tmux does not emit layout-change for every content-geometry change
+        // (for example, switching top to bottom pane border status). Its format
+        // subscriptions report these changes, at most once per second.
+        panes.control.send(&format!(
+            "refresh-client -B 'content-geometry:@{}:#{{P:#{{pane_id}}/#{{pane_left}}/#{{pane_top}}/#{{pane_width}}/#{{pane_height}};}}'\n",
+            layout.window,
+        ), ReplyOwner::GeometrySubscription)?;
         let (ready, initialized) = mpsc::channel();
         panes.threads.push(spawn("terminal worker", {
             let shared = Arc::clone(&panes.shared);
@@ -432,7 +505,8 @@ fn spawn(name: &str, body: impl FnOnce() + Send + 'static) -> io::Result<JoinHan
 
 /// Reads and decodes the client's output, queueing each pane's output for the
 /// worker, until the client exits.
-fn read(shared: &Shared, mut stdout: ChildStdout, mut decoder: Decoder) {
+fn read(shared: &Shared, mut stdout: ChildStdout, mut decoder: Decoder, window: u32) {
+    let layout_prefix = format!("%layout-change @{window} ");
     let mut buffer = vec![0; READ_SIZE];
     let mut reply = Reply::default();
     let mut from_client = false;
@@ -458,6 +532,20 @@ fn read(shared: &Shared, mut stdout: ChildStdout, mut decoder: Decoder) {
                 if from_client {
                     batch.push(Event::Reply(std::mem::take(&mut reply)));
                 }
+            }
+            Message::Notification(line) if line.starts_with(layout_prefix.as_bytes()) => {
+                match layout::parse(line) {
+                    Ok(change) => batch.push(Event::Layout(change)),
+                    Err(error) => {
+                        shared.lock().failure = Some(format!("invalid window layout: {error}"));
+                        exited = true;
+                    }
+                }
+            }
+            Message::Notification(line)
+                if line.starts_with(b"%subscription-changed content-geometry ") =>
+            {
+                batch.push(Event::Geometry);
             }
             Message::Notification(line) if line.starts_with(b"%exit") => exited = true,
             _ => {}
@@ -493,7 +581,7 @@ fn read(shared: &Shared, mut stdout: ChildStdout, mut decoder: Decoder) {
 fn work(
     shared: &Shared,
     control: &Control,
-    layout: &[PaneLayout],
+    layout: &layout::Change,
     snapshots: Vec<Snapshot>,
     scrollback: usize,
     wake: &dyn Fn(),
@@ -501,22 +589,17 @@ fn work(
 ) {
     // Engine handles are not `Send`, so they are made on this thread.
     let terminals: Result<Vec<_>, _> = layout
+        .panes
         .iter()
         .map(|pane| {
             let snapshot = snapshots
                 .iter()
                 .find(|snapshot| snapshot.pane == pane.id)
                 .ok_or_else(|| format!("no initial snapshot for pane %{}", pane.id.0))?;
-            if (snapshot.state.width, snapshot.state.height) != (pane.cols, pane.rows) {
-                return Err(format!(
-                    "pane %{} changed size during attachment",
-                    pane.id.0
-                ));
-            }
             LivePane::restored(snapshot.clone(), scrollback).map(|terminal| (pane.id, terminal))
         })
         .collect();
-    let mut terminals = match terminals {
+    let terminals = match terminals {
         Ok(terminals) => terminals,
         Err(error) => {
             shared.lock().finished = true;
@@ -526,20 +609,44 @@ fn work(
             return;
         }
     };
+    let mut window = WindowState {
+        layout: layout.clone(),
+        terminals,
+        geometry_changed: false,
+        settle_at: None,
+        generation: 0,
+    };
     let _ = ready.send(Ok(()));
-    let mut recovering: Option<(Recovery, Instant)> = None;
+    let mut recovering: Option<(Recovery, Instant, u64)> = None;
     let mut capture_unavailable = false;
-    let mut changed: Vec<PaneId> = layout.iter().map(|pane| pane.id).collect();
+    let mut changed: Vec<PaneId> = layout.panes.iter().map(|pane| pane.id).collect();
     let mut state = shared.lock();
     loop {
         if state.cancelled || state.failure.is_some() {
             break;
         }
+        if capture_unavailable && state.closed && state.queue.is_empty() && !window.ready() {
+            // The new geometry cannot be verified without another capture.
+            // Preserve the previous display and report transport failure.
+            changed.clear();
+        }
+        if window
+            .settle_at
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            window.settle_at = None;
+        }
         if !capture_unavailable
+            && window.settle_at.is_none()
             && recovering.is_none()
-            && let Some((pane, terminal)) = terminals
-                .iter_mut()
-                .find(|(_, terminal)| terminal.needs_capture)
+            && let Some((pane, terminal)) = window.terminals.iter_mut().find(|(pane, terminal)| {
+                terminal.needs_capture
+                    && window
+                        .layout
+                        .panes
+                        .iter()
+                        .any(|visible| visible.id == *pane)
+            })
         {
             let (recovery, line) = Recovery::start(*pane);
             let deadline = *terminal
@@ -556,23 +663,28 @@ fn work(
                     break;
                 }
             } else {
-                recovering = Some((recovery, deadline));
+                recovering = Some((recovery, deadline, window.generation));
             }
         }
         if !state.closed
             && recovering
                 .as_ref()
-                .is_some_and(|(_, deadline)| Instant::now() >= *deadline)
+                .is_some_and(|(_, deadline, _)| Instant::now() >= *deadline)
         {
             state.failure = Some("timed out recovering the pane".into());
             break;
         }
-        if !changed.is_empty() && state.update.is_none() && !state.cancelled {
+        if (!changed.is_empty() || window.geometry_changed)
+            && state.update.is_none()
+            && !state.cancelled
+            && window.ready()
+        {
             let mut spare = std::mem::take(&mut state.spare);
             drop(state);
             let mut update = Vec::with_capacity(changed.len());
             for pane in changed.drain(..) {
-                let Some((_, terminal)) = terminals.iter_mut().find(|(id, _)| *id == pane) else {
+                let Some((_, terminal)) = window.terminals.iter_mut().find(|(id, _)| *id == pane)
+                else {
                     continue;
                 };
                 let mut screen = spare.pop().unwrap_or_default();
@@ -582,11 +694,32 @@ fn work(
             }
             state = shared.lock();
             state.spare.extend(spare);
-            state.update = Some(update);
+            state.update = Some(Update {
+                layout: window
+                    .layout
+                    .panes
+                    .iter()
+                    .filter_map(|pane| {
+                        window.terminals.iter().find(|(id, _)| *id == pane.id).map(
+                            |(_, terminal)| PaneLayout {
+                                id: pane.id,
+                                left: terminal.offset.0,
+                                top: terminal.offset.1,
+                                cols: terminal.size.0,
+                                rows: terminal.size.1,
+                            },
+                        )
+                    })
+                    .collect(),
+                screens: update,
+            });
+            window.geometry_changed = false;
             drop(state);
             wake();
             state = shared.lock();
-        } else if let Some(joining) = joining(&state, &changed) {
+        } else if !window.geometry_changed
+            && let Some(joining) = joining(&state, &changed)
+        {
             // A pane that changed after the waiting update was made, and is
             // not in it, joins it now, so that a quiet pane's change, such as
             // a key's echo, does not wait a frame behind a busy neighbour.
@@ -594,7 +727,8 @@ fn work(
             drop(state);
             let mut copies = Vec::with_capacity(joining.len());
             for &pane in &joining {
-                let Some((_, terminal)) = terminals.iter_mut().find(|(id, _)| *id == pane) else {
+                let Some((_, terminal)) = window.terminals.iter_mut().find(|(id, _)| *id == pane)
+                else {
                     continue;
                 };
                 let mut screen = spare.pop().unwrap_or_default();
@@ -605,7 +739,7 @@ fn work(
             state = shared.lock();
             if let Some(waiting) = state.update.as_mut() {
                 changed.retain(|pane| !joining.contains(pane));
-                waiting.extend(copies);
+                waiting.screens.extend(copies);
             } else {
                 // Taken meanwhile: the panes stay changed, and the next
                 // update carries them.
@@ -620,7 +754,7 @@ fn work(
             shared.changed.notify_all();
             let result = apply(
                 event,
-                &mut terminals,
+                &mut window,
                 &mut recovering,
                 control,
                 scrollback,
@@ -629,6 +763,9 @@ fn work(
             state = shared.lock();
             match result {
                 Ok(Some(pane)) => {
+                    window.layout.panes.retain(|rect| rect.id != pane);
+                    window.geometry_changed = true;
+                    changed = window.layout.panes.iter().map(|rect| rect.id).collect();
                     if !state.gone.contains(&pane) {
                         state.gone.push(pane);
                     }
@@ -646,6 +783,10 @@ fn work(
                     }
                 }
             }
+            window.terminals.retain(|(id, _)| {
+                window.layout.panes.iter().any(|p| p.id == *id)
+                    || recovering.as_ref().is_some_and(|(r, _, _)| r.pane() == *id)
+            });
         } else if state.cancelled || (state.closed && changed.is_empty() && recovering.is_none()) {
             // Once the client has exited, the last changes still wait for the
             // user interface to take the update before them.
@@ -653,7 +794,7 @@ fn work(
             drop(state);
             wake();
             return;
-        } else if let Some((_, deadline)) = &recovering {
+        } else if let Some((_, deadline, _)) = &recovering {
             if state.closed {
                 state
                     .transport_failure
@@ -662,6 +803,12 @@ fn work(
                 recovering = None;
                 continue;
             }
+            state = shared
+                .changed
+                .wait_timeout(state, deadline.saturating_duration_since(Instant::now()))
+                .unwrap_or_else(|e| e.into_inner())
+                .0;
+        } else if let Some(deadline) = window.settle_at {
             state = shared
                 .changed
                 .wait_timeout(state, deadline.saturating_duration_since(Instant::now()))
@@ -678,15 +825,26 @@ fn work(
 
 fn apply(
     event: Event,
-    terminals: &mut Vec<(PaneId, LivePane)>,
-    recovering: &mut Option<(Recovery, Instant)>,
+    window: &mut WindowState,
+    recovering: &mut Option<(Recovery, Instant, u64)>,
     control: &Control,
     scrollback: usize,
     changed: &mut Vec<PaneId>,
 ) -> Result<Option<PaneId>, String> {
+    let terminals = &mut window.terminals;
     match event {
+        Event::Layout(change) => {
+            if change.window == window.layout.window {
+                window.change_layout(change, scrollback)?;
+                *changed = window.layout.panes.iter().map(|pane| pane.id).collect();
+            }
+        }
+        Event::Geometry => {
+            window.change_layout(window.layout.clone(), scrollback)?;
+            *changed = window.layout.panes.iter().map(|pane| pane.id).collect();
+        }
         Event::Output(pane, bytes) => {
-            if let Some((recovery, _)) = recovering.as_mut()
+            if let Some((recovery, _, _)) = recovering.as_mut()
                 && recovery.pane() == pane
             {
                 recovery.output(&bytes);
@@ -722,8 +880,14 @@ fn apply(
                         return Err(format!("tmux rejected pane input: {text}"));
                     }
                 }
+                Some(ReplyOwner::GeometrySubscription) => {
+                    pending.pop_front();
+                    if !reply.ok {
+                        return Err("tmux rejected the content geometry subscription".into());
+                    }
+                }
                 Some(ReplyOwner::Recovery) => {
-                    let (recovery, _) =
+                    let (recovery, _, generation) =
                         recovering.as_mut().ok_or("reply without a pane recovery")?;
                     let pane = recovery.pane();
                     let missing = missing_pane(&reply, pane);
@@ -743,8 +907,17 @@ fn apply(
                                 .find(|(id, _)| *id == pane)
                                 .ok_or("recovery completed for an unknown pane")?;
                             let deadline = terminal.recovery_deadline;
+                            let geometry = (terminal.size, terminal.offset);
                             *terminal = LivePane::restored(rebuilt.snapshot, scrollback)?;
+                            // A snapshot can observe an option-only resize before
+                            // its once-per-second subscription notification. Do
+                            // not join this screen to an older waiting rectangle.
+                            window.geometry_changed |= geometry != (terminal.size, terminal.offset);
                             terminal.resume_after_recovery(&rebuilt.output, deadline)?;
+                            if *generation != window.generation {
+                                terminal.needs_capture = true;
+                                terminal.recovery_deadline = deadline;
+                            }
                             if terminal.needs_capture {
                                 changed.retain(|id| *id != pane);
                             } else if !changed.contains(&pane) {
@@ -784,7 +957,7 @@ fn joining(state: &State, changed: &[PaneId]) -> Option<Vec<PaneId>> {
     let absent: Vec<PaneId> = changed
         .iter()
         .copied()
-        .filter(|pane| !waiting.iter().any(|(id, _)| id == pane))
+        .filter(|pane| !waiting.screens.iter().any(|(id, _)| id == pane))
         .collect();
     (!absent.is_empty()).then_some(absent)
 }
@@ -803,6 +976,8 @@ mod tests {
         let expired = Instant::now() - Duration::from_secs(1);
         let mut terminal = LivePane {
             terminal: Terminal::new(80, 24, 0).unwrap(),
+            size: (80, 24),
+            offset: (0, 0),
             captured: None,
             needs_capture: false,
             recovery_deadline: None,
@@ -887,13 +1062,12 @@ mod tests {
             .control(&[
                 "attach-session",
                 "-f",
-                "no-output,ignore-size",
+                "no-output,ignore-size,new-layouts",
                 "-t",
                 TmuxServer::SESSION,
             ])
             .unwrap();
-        let seed =
-            crate::seed::attach(&mut client, layout.iter().map(|pane| pane.id).collect()).unwrap();
+        let seed = crate::seed::attach(&mut client, layout.window).unwrap();
         let snapshots = seed.snapshots.clone();
         let mut margin_snapshot = snapshots[0].clone();
         margin_snapshot.state.cursor.0 = margin_snapshot.state.width;
@@ -908,12 +1082,12 @@ mod tests {
         drop(seed);
         client.wait().unwrap();
         let mut margin = b"\x1b[2J\x1b[H".to_vec();
-        margin.extend(vec![b'x'; usize::from(layout[0].cols)]);
+        margin.extend(vec![b'x'; usize::from(layout.panes[0].cols)]);
         let shared = Shared {
             state: Mutex::new(State {
                 queue: VecDeque::from([
-                    Event::Output(layout[0].id, margin.clone()),
-                    Event::Output(layout[1].id, b"\x1b[2J\x1b[HFINAL".to_vec()),
+                    Event::Output(layout.panes[0].id, margin.clone()),
+                    Event::Output(layout.panes[1].id, b"\x1b[2J\x1b[HFINAL".to_vec()),
                 ]),
                 queued: margin.len() + 12,
                 closed: true,
@@ -935,7 +1109,7 @@ mod tests {
                 return;
             }
             if let Some(update) = shared.lock().update.take() {
-                seen.lock().unwrap().extend(update);
+                seen.lock().unwrap().extend(update.screens);
             }
         };
         let (ready, _) = mpsc::channel();
@@ -946,7 +1120,7 @@ mod tests {
                     // when the connection exits during recovery.
                     thread::sleep(Duration::from_millis(100));
                     if let Some(update) = shared.lock().update.take() {
-                        seen.lock().unwrap().extend(update);
+                        seen.lock().unwrap().extend(update.screens);
                     }
                     shared.changed.notify_all();
                 });
@@ -957,7 +1131,7 @@ mod tests {
         let (_, screen) = seen
             .iter()
             .rev()
-            .find(|(id, _)| *id == layout[1].id)
+            .find(|(id, _)| *id == layout.panes[1].id)
             .unwrap();
         let text: String = (0..5).map(|col| screen.cell(0, col).unwrap().0).collect();
         assert_eq!(text, "FINAL");
@@ -975,6 +1149,172 @@ mod tests {
     }
 
     #[test]
+    fn attachment_refreshes_membership_after_the_initial_probe() {
+        let server = TmuxServer::start().unwrap();
+        let initial = layout(&server);
+        let signal = server.shell_command(&["wait-for", "-S", "split-ready"]);
+        server
+            .run(&[
+                "split-window",
+                "-h",
+                "-t",
+                TmuxServer::SESSION,
+                &format!("printf NEW; {signal}; exec sleep 60"),
+            ])
+            .unwrap();
+        server.run(&["wait-for", "split-ready"]).unwrap();
+        let current = layout(&server);
+        let added = current
+            .panes
+            .iter()
+            .find(|p| p.id != initial.panes[0].id)
+            .unwrap()
+            .id;
+        let client = server
+            .control(&[
+                "attach-session",
+                "-f",
+                "no-output,ignore-size,new-layouts",
+                "-t",
+                TmuxServer::SESSION,
+            ])
+            .unwrap();
+        let (wake, woken) = mpsc::channel();
+        let panes = Panes::start(client, &initial, 100, move || {
+            let _ = wake.send(());
+        })
+        .unwrap();
+        // No later layout change may be needed to discover the added pane.
+        wait_for_row(&panes, &woken, added, "NEW");
+        assert_eq!(panes.failure(), None);
+    }
+
+    #[test]
+    fn live_geometry_recovers_resize_split_zoom_and_removed_panes() {
+        let server = TmuxServer::start().unwrap();
+        let signal = server.shell_command(&["wait-for", "-S", "first-ready"]);
+        server
+            .run(&[
+                "respawn-pane",
+                "-k",
+                "-t",
+                TmuxServer::SESSION,
+                &format!("printf FIRST; {signal}; exec sleep 60"),
+            ])
+            .unwrap();
+        server.run(&["wait-for", "first-ready"]).unwrap();
+        server
+            .run(&["set-option", "-w", "pane-border-status", "top"])
+            .unwrap();
+        let initial = layout(&server);
+        let first = initial.panes[0].id;
+        let client = server
+            .control(&[
+                "attach-session",
+                "-f",
+                "no-output,ignore-size,new-layouts",
+                "-t",
+                TmuxServer::SESSION,
+            ])
+            .unwrap();
+        let (wake, woken) = mpsc::channel();
+        let panes = Panes::start(client, &initial, 100, move || {
+            let _ = wake.send(());
+        })
+        .unwrap();
+        wait_for_row(&panes, &woken, first, "FIRST");
+        let content_layout = || {
+            let mut visible = layout(&server);
+            for pane in &mut visible.panes {
+                let values = server
+                    .run(&[
+                        "display-message",
+                        "-p",
+                        "-t",
+                        &format!("%{}", pane.id.0),
+                        "#{pane_left} #{pane_top} #{pane_width} #{pane_height}",
+                    ])
+                    .unwrap();
+                let values: Vec<u16> = values
+                    .split_whitespace()
+                    .map(|v| v.parse().unwrap())
+                    .collect();
+                (pane.left, pane.top, pane.cols, pane.rows) =
+                    (values[0], values[1], values[2], values[3]);
+            }
+            visible
+        };
+        let wait = |expected: &layout::Change| {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                assert_eq!(panes.failure(), None);
+                assert!(
+                    Instant::now() < deadline,
+                    "layout did not settle: {expected:?}"
+                );
+                if let Some(update) = panes.take_update() {
+                    // No update may pair a rebuilt screen with stale geometry.
+                    for (id, screen) in &update.screens {
+                        let rect = update.layout.iter().find(|p| p.id == *id).unwrap();
+                        assert_eq!((screen.cols(), screen.rows()), (rect.cols, rect.rows));
+                    }
+                    if update.layout == expected.panes
+                        && update.screens.len() == expected.panes.len()
+                    {
+                        let (_, screen) =
+                            update.screens.iter().find(|(id, _)| *id == first).unwrap();
+                        let text: String =
+                            (0..5).map(|col| screen.cell(0, col).unwrap().0).collect();
+                        assert_eq!(text, "FIRST");
+                        break;
+                    }
+                }
+                let _ = woken.recv_timeout(Duration::from_millis(20));
+            }
+        };
+        server
+            .run(&["set-option", "-w", "pane-border-status", "bottom"])
+            .unwrap();
+        wait(&content_layout());
+        server
+            .run(&[
+                "resize-window",
+                "-t",
+                TmuxServer::SESSION,
+                "-x",
+                "120",
+                "-y",
+                "30",
+            ])
+            .unwrap();
+        wait(&content_layout());
+        server
+            .run(&[
+                "split-window",
+                "-h",
+                "-t",
+                TmuxServer::SESSION,
+                "exec sleep 60",
+            ])
+            .unwrap();
+        let split = layout(&server);
+        wait(&content_layout());
+        let second = split.panes.iter().find(|pane| pane.id != first).unwrap().id;
+        server
+            .run(&["resize-pane", "-Z", "-t", &format!("%{}", first.0)])
+            .unwrap();
+        wait(&content_layout());
+        server
+            .run(&["resize-pane", "-Z", "-t", &format!("%{}", first.0)])
+            .unwrap();
+        wait(&content_layout());
+        server
+            .run(&["kill-pane", "-t", &format!("%{}", second.0)])
+            .unwrap();
+        wait(&content_layout());
+    }
+
+    #[test]
     fn attachment_publishes_existing_styles_before_applying_new_output() {
         let server = TmuxServer::start().unwrap();
         let session = TmuxServer::SESSION;
@@ -986,12 +1326,12 @@ mod tests {
             .unwrap();
         server.run(&["wait-for", "seed-ready"]).unwrap();
         let layout = layout(&server);
-        let pane = layout[0].id;
+        let pane = layout.panes[0].id;
         let client = server
             .control(&[
                 "attach-session",
                 "-f",
-                "no-output,ignore-size",
+                "no-output,ignore-size,new-layouts",
                 "-t",
                 session,
             ])
@@ -1003,7 +1343,7 @@ mod tests {
         .unwrap();
         woken.recv_timeout(Duration::from_secs(10)).unwrap();
         let update = panes.take_update().unwrap();
-        let (_, screen) = update.iter().find(|(id, _)| *id == pane).unwrap();
+        let (_, screen) = update.screens.iter().find(|(id, _)| *id == pane).unwrap();
         let text: String = (0..6).map(|col| screen.cell(0, col).unwrap().0).collect();
         assert_eq!(text, "SEEDED");
         assert_eq!(
@@ -1029,7 +1369,7 @@ mod tests {
             .control(&[
                 "attach-session",
                 "-f",
-                "no-output,ignore-size",
+                "no-output,ignore-size,new-layouts",
                 "-t",
                 TmuxServer::SESSION,
             ])
@@ -1091,12 +1431,12 @@ mod tests {
             .unwrap();
         server.run(&["wait-for", "seed-ready"]).unwrap();
         let layout = layout(&server);
-        let pane = layout[0].id;
+        let pane = layout.panes[0].id;
         let client = server
             .control(&[
                 "attach-session",
                 "-f",
-                "no-output,ignore-size",
+                "no-output,ignore-size,new-layouts",
                 "-t",
                 session,
             ])
@@ -1142,12 +1482,12 @@ mod tests {
             .unwrap();
         server.run(&["wait-for", "seed-ready"]).unwrap();
         let layout = layout(&server);
-        let pane = layout[0].id;
+        let pane = layout.panes[0].id;
         let client = server
             .control(&[
                 "attach-session",
                 "-f",
-                "no-output,ignore-size",
+                "no-output,ignore-size,new-layouts",
                 "-t",
                 session,
             ])
@@ -1203,12 +1543,12 @@ mod tests {
             .run(&["respawn-pane", "-k", "-t", session, "exec cat"])
             .unwrap();
         let layout = layout(&server);
-        let pane = layout[0].id;
+        let pane = layout.panes[0].id;
         let client = server
             .control(&[
                 "attach-session",
                 "-f",
-                "no-output,ignore-size",
+                "no-output,ignore-size,new-layouts",
                 "-t",
                 session,
             ])
@@ -1256,13 +1596,13 @@ mod tests {
             .run(&["split-window", "-h", "-t", session, "exec cat"])
             .unwrap();
         let layout = layout(&server);
-        let gone = layout[0].id;
-        let alive = layout[1].id;
+        let gone = layout.panes[0].id;
+        let alive = layout.panes[1].id;
         let client = server
             .control(&[
                 "attach-session",
                 "-f",
-                "no-output,ignore-size",
+                "no-output,ignore-size,new-layouts",
                 "-t",
                 session,
             ])
@@ -1283,7 +1623,7 @@ mod tests {
             ])
             .unwrap();
         panes
-            .send_input(gone, &vec![b'x'; usize::from(layout[0].cols)])
+            .send_input(gone, &vec![b'x'; usize::from(layout.panes[0].cols)])
             .unwrap();
         let deadline = Instant::now() + Duration::from_secs(10);
         while !panes.shared.lock().gone.contains(&gone) {
@@ -1325,7 +1665,7 @@ mod tests {
             let Some(update) = panes.take_update() else {
                 continue;
             };
-            for (id, screen) in update {
+            for (id, screen) in update.screens {
                 let row: String = (0..screen.cols())
                     .filter_map(|col| screen.cell(0, col).map(|(text, _)| text.to_owned()))
                     .collect();
@@ -1350,18 +1690,12 @@ mod tests {
             .run(&["display-message", "-p", "-t", session, "#{pane_id}"])
             .unwrap();
         let pane = PaneId(id.trim().trim_start_matches('%').parse().unwrap());
-        let layout = [PaneLayout {
-            id: pane,
-            left: 0,
-            top: 0,
-            cols: 200,
-            rows: 50,
-        }];
+        let layout = layout(&server);
         let client = server
             .control(&[
                 "attach-session",
                 "-f",
-                "no-output,ignore-size",
+                "no-output,ignore-size,new-layouts",
                 "-t",
                 session,
             ])
@@ -1396,27 +1730,18 @@ mod tests {
         assert_eq!(panes.failure(), None);
     }
 
-    /// Returns the panes of the server's session.
-    fn layout(server: &TmuxServer) -> Vec<PaneLayout> {
-        let format = "#{pane_id} #{pane_left} #{pane_top} #{pane_width} #{pane_height}";
-        let listed = server
-            .run(&["list-panes", "-t", TmuxServer::SESSION, "-F", format])
+    /// Returns the visible panes of the server's session.
+    fn layout(server: &TmuxServer) -> layout::Change {
+        let fields = server
+            .run(&[
+                "display-message",
+                "-p",
+                "-t",
+                TmuxServer::SESSION,
+                "#{window_id} #{window_layout} #{window_visible_layout} #{window_raw_flags}",
+            ])
             .unwrap();
-        listed
-            .lines()
-            .map(|line| {
-                let mut fields = line.split(' ');
-                let id = fields.next().unwrap().trim_start_matches('%');
-                let mut number = || fields.next().unwrap().parse().unwrap();
-                PaneLayout {
-                    id: PaneId(id.parse().unwrap()),
-                    left: number(),
-                    top: number(),
-                    cols: number(),
-                    rows: number(),
-                }
-            })
-            .collect()
+        layout::parse(format!("%layout-change {fields}").as_bytes()).unwrap()
     }
 
     #[test]
@@ -1440,7 +1765,7 @@ mod tests {
         drop(client.stdin.take());
         // Read on another thread, so that a client that never exits fails
         // the test instead of hanging it: killing the client ends the read.
-        let reader = std::thread::spawn(move || read(&shared, stdout, Decoder::new()));
+        let reader = std::thread::spawn(move || read(&shared, stdout, Decoder::new(), 0));
 
         let deadline = Instant::now() + Duration::from_secs(10);
         while client.try_wait().unwrap().is_none() {
@@ -1467,12 +1792,12 @@ mod tests {
             .run(&["split-window", "-v", "-t", session, "sh", "-c", stream])
             .unwrap();
         let layout = layout(&server);
-        let quiet = layout[0].id;
+        let quiet = layout.panes[0].id;
         let client = server
             .control(&[
                 "attach-session",
                 "-f",
-                "no-output,ignore-size",
+                "no-output,ignore-size,new-layouts",
                 "-t",
                 session,
             ])
@@ -1490,7 +1815,7 @@ mod tests {
         woken.recv_timeout(Duration::from_secs(10)).unwrap();
         panes.send_input(quiet, b"x").unwrap();
         let echoed = |update: &Update| {
-            update.iter().any(|(id, screen)| {
+            update.screens.iter().any(|(id, screen)| {
                 *id == quiet && screen.cell(0, 0).is_some_and(|(t, _)| t == "x")
             })
         };
@@ -1501,6 +1826,110 @@ mod tests {
                 "the echo waited for the next update"
             );
             std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn recovered_content_geometry_never_joins_an_old_waiting_rectangle() {
+        let server = TmuxServer::start().unwrap();
+        let session = TmuxServer::SESSION;
+        server
+            .run(&["respawn-pane", "-k", "-t", session, "exec cat"])
+            .unwrap();
+        server
+            .run(&[
+                "split-window",
+                "-v",
+                "-t",
+                session,
+                "sh",
+                "-c",
+                "while :; do echo streaming; sleep 0.02; done",
+            ])
+            .unwrap();
+        server
+            .run(&["set-option", "-w", "pane-border-status", "top"])
+            .unwrap();
+        let layout = layout(&server);
+        let quiet = layout.panes[0].id;
+        let client = server
+            .control(&[
+                "attach-session",
+                "-f",
+                "no-output,ignore-size,new-layouts",
+                "-t",
+                session,
+            ])
+            .unwrap();
+        let (wake, woken) = mpsc::channel();
+        let panes = Panes::start(client, &layout, 100, move || {
+            let _ = wake.send(());
+        })
+        .unwrap();
+        wait_for_row(&panes, &woken, quiet, "");
+        // Remove the fixture's subscription to reproduce the interval before its
+        // next notification deterministically. This changes only this client.
+        panes
+            .control
+            .send(
+                "refresh-client -B content-geometry\n",
+                ReplyOwner::Input(quiet),
+            )
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !panes.control.pending.lock().unwrap().is_empty() {
+            assert!(Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(5));
+        }
+        // Drain any subscription-seeded frame, then hold a neighbor-only update.
+        loop {
+            if panes
+                .shared
+                .lock()
+                .update
+                .as_ref()
+                .is_some_and(|update| !update.screens.iter().any(|(id, _)| *id == quiet))
+            {
+                break;
+            }
+            panes.take_update();
+            assert!(Instant::now() < deadline);
+            let _ = woken.recv_timeout(Duration::from_millis(10));
+        }
+        server
+            .run(&["set-option", "-w", "pane-border-status", "bottom"])
+            .unwrap();
+        server
+            .run(&[
+                "set-hook",
+                "-g",
+                "after-capture-pane",
+                "wait-for -S recovered-geometry",
+            ])
+            .unwrap();
+        panes
+            .send_input(quiet, &vec![b'x'; usize::from(layout.panes[0].cols)])
+            .unwrap();
+        server.run(&["wait-for", "recovered-geometry"]).unwrap();
+        while !panes.control.pending.lock().unwrap().is_empty() {
+            assert!(Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(5));
+        }
+        loop {
+            assert_eq!(panes.failure(), None);
+            assert!(Instant::now() < deadline);
+            if let Some(update) = panes.take_update()
+                && let Some((_, screen)) = update.screens.iter().find(|(id, _)| *id == quiet)
+            {
+                let rectangle = update.layout.iter().find(|pane| pane.id == quiet).unwrap();
+                assert_eq!(rectangle.top, 0);
+                assert_eq!(
+                    (rectangle.cols, rectangle.rows),
+                    (screen.cols(), screen.rows())
+                );
+                break;
+            }
+            let _ = woken.recv_timeout(Duration::from_millis(10));
         }
     }
 
@@ -1523,18 +1952,12 @@ mod tests {
             .run(&["display-message", "-p", "-t", session, "#{pane_id}"])
             .unwrap();
         let pane = PaneId(id.trim().trim_start_matches('%').parse().unwrap());
-        let layout = [PaneLayout {
-            id: pane,
-            left: 0,
-            top: 0,
-            cols: 200,
-            rows: 50,
-        }];
+        let layout = layout(&server);
         let client = server
             .control(&[
                 "attach-session",
                 "-f",
-                "no-output,ignore-size",
+                "no-output,ignore-size,new-layouts",
                 "-t",
                 session,
             ])
