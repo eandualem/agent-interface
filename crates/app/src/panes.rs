@@ -29,6 +29,9 @@ const QUEUE_LIMIT: usize = 4 * 1024 * 1024;
 /// How much of the client's output the reader reads at a time.
 const READ_SIZE: usize = 64 * 1024;
 
+/// Keep send-keys arguments below tmux's parser stack limit.
+const INPUT_CHUNK: usize = 1024;
+
 /// A pane's place in its tmux window, in cells.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PaneLayout {
@@ -54,6 +57,7 @@ pub type Update = Vec<(PaneId, Screen)>;
 pub struct Panes {
     shared: Arc<Shared>,
     control: Arc<Control>,
+    input: Mutex<()>,
     client: Child,
     threads: Vec<JoinHandle<()>>,
 }
@@ -258,6 +262,7 @@ impl Panes {
                 commands,
                 pending: Mutex::new(VecDeque::new()),
             }),
+            input: Mutex::new(()),
             client,
             threads: Vec::new(),
         };
@@ -320,11 +325,17 @@ impl Panes {
 
     /// Sends `bytes` to `pane` as literal input.
     pub fn send_input(&self, pane: PaneId, bytes: &[u8]) -> io::Result<()> {
-        if let Some(failure) = self.failure() {
-            return Err(io::Error::other(failure));
+        // A whole input call stays ordered with respect to other input,
+        // even when recovery commands run between its chunks.
+        let _input = self.input.lock().unwrap_or_else(|e| e.into_inner());
+        for chunk in bytes.chunks(INPUT_CHUNK) {
+            if let Some(failure) = self.failure() {
+                return Err(io::Error::other(failure));
+            }
+            self.control
+                .send(&command::send_bytes(pane, chunk), ReplyOwner::Input)?;
         }
-        self.control
-            .send(&command::send_bytes(pane, bytes), ReplyOwner::Input)
+        Ok(())
     }
 
     /// Returns a terminal recovery failure, if the connection stopped updating.
@@ -827,11 +838,13 @@ mod tests {
         let server = TmuxServer::start().unwrap();
         let session = TmuxServer::SESSION;
         let signal = server.shell_command(&["wait-for", "-S", "seed-ready"]);
+        let received_input = server.address().0.join("received-input");
         let script = format!(
             "stty -echo -icanon; {signal}; head -c 1 >/dev/null; \
              (head -c 6291456 /dev/zero | tr '\\000' x) & producer=$!; \
-             head -c 524288 >/dev/null; wait $producer; \
-             printf '\\033[2J\\033[HDONE'; exec sleep 60"
+             head -c 524288 > '{}'; wait $producer; \
+             printf '\\033[2J\\033[HDONE'; exec sleep 60",
+            received_input.display()
         );
         server
             .run(&["respawn-pane", "-k", "-t", session, &script])
@@ -859,11 +872,10 @@ mod tests {
         panes.send_input(pane, b"g").unwrap();
         let (sent, received) = mpsc::channel();
         let writing = Arc::clone(&panes);
+        let input: Vec<u8> = (0..524288).map(|i| b'a' + (i % 26) as u8).collect();
+        let expected = input.clone();
         let writer = thread::spawn(move || {
-            // Keep each command within tmux's parser limit while filling
-            // its input pipe alongside more output than our queue holds.
-            let result = (0..512).try_for_each(|_| writing.send_input(pane, &[b'g'; 1024]));
-            let _ = sent.send(result);
+            let _ = sent.send(writing.send_input(pane, &input));
         });
         received
             .recv_timeout(Duration::from_secs(10))
@@ -871,6 +883,7 @@ mod tests {
             .unwrap();
         writer.join().unwrap();
         wait_for_row(&panes, &woken, pane, "DONE");
+        assert_eq!(std::fs::read(received_input).unwrap(), expected);
         assert_eq!(panes.failure(), None);
     }
 
