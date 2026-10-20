@@ -176,6 +176,7 @@ fn write_commands(
 struct LivePane {
     terminal: Terminal,
     size: (u16, u16),
+    offset: (u16, u16),
     // The engine's display copy cannot express tmux's logical margin cursor.
     // Retain its authoritative snapshot and never stream into that copy.
     captured: Option<Snapshot>,
@@ -195,6 +196,7 @@ impl LivePane {
         let terminal = Terminal::restored(&restore, scrollback).map_err(|e| e.to_string())?;
         Ok(Self {
             size: (snapshot.state.width, snapshot.state.height),
+            offset: (snapshot.state.left, snapshot.state.top),
             terminal,
             captured: captured.then_some(snapshot),
             needs_capture: false,
@@ -246,24 +248,23 @@ struct WindowState {
     terminals: Vec<(PaneId, LivePane)>,
     geometry_changed: bool,
     settle_at: Option<Instant>,
+    generation: u64,
 }
 
 impl WindowState {
     fn ready(&self) -> bool {
         !self.geometry_changed
             || self.layout.panes.iter().all(|pane| {
-                self.terminals.iter().any(|(id, terminal)| {
-                    *id == pane.id
-                        && !terminal.needs_capture
-                        && terminal.size == (pane.cols, pane.rows)
-                })
+                self.terminals
+                    .iter()
+                    .any(|(id, terminal)| *id == pane.id && !terminal.needs_capture)
             })
     }
 
     fn change_layout(&mut self, change: layout::Change, scrollback: usize) -> Result<(), String> {
         for pane in &change.panes {
             if let Some((_, terminal)) = self.terminals.iter_mut().find(|(id, _)| *id == pane.id) {
-                terminal.needs_capture |= terminal.size != (pane.cols, pane.rows);
+                terminal.needs_capture = true;
             } else {
                 self.terminals.push((
                     pane.id,
@@ -271,6 +272,7 @@ impl WindowState {
                         terminal: Terminal::new(pane.cols, pane.rows, scrollback)
                             .map_err(|e| e.to_string())?,
                         size: (pane.cols, pane.rows),
+                        offset: (pane.left, pane.top),
                         captured: None,
                         needs_capture: true,
                         recovery_deadline: None,
@@ -279,6 +281,7 @@ impl WindowState {
             }
         }
         self.layout = change;
+        self.generation += 1;
         self.geometry_changed = true;
         // Match the quiet interval exercised by the resize fidelity harness.
         self.settle_at = Some(Instant::now() + Duration::from_millis(100));
@@ -318,15 +321,32 @@ impl Panes {
             stdout,
             decoder,
             snapshots,
-            output,
+            events,
         } = seed;
+        let prefix = format!("%layout-change @{} ", layout.window);
+        let mut queue = VecDeque::new();
+        for event in events {
+            match event {
+                crate::seed::Event::Output(pane, bytes) => {
+                    queue.push_back(Event::Output(pane, bytes))
+                }
+                crate::seed::Event::Layout(line) if line.starts_with(prefix.as_bytes()) => {
+                    match layout::parse(&line) {
+                        Ok(change) => queue.push_back(Event::Layout(change)),
+                        Err(error) => {
+                            let _ = client.kill();
+                            let _ = client.wait();
+                            return Err(io::Error::other(error));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
         let shared = Arc::new(Shared {
             state: Mutex::new(State {
-                queued: output.iter().map(|(_, bytes)| bytes.len()).sum(),
-                queue: output
-                    .into_iter()
-                    .map(|(pane, bytes)| Event::Output(pane, bytes))
-                    .collect(),
+                queued: queue.iter().map(Event::size).sum(),
+                queue,
                 ..State::default()
             }),
             changed: Condvar::new(),
@@ -563,12 +583,6 @@ fn work(
                 .iter()
                 .find(|snapshot| snapshot.pane == pane.id)
                 .ok_or_else(|| format!("no initial snapshot for pane %{}", pane.id.0))?;
-            if (snapshot.state.width, snapshot.state.height) != (pane.cols, pane.rows) {
-                return Err(format!(
-                    "pane %{} changed size during attachment",
-                    pane.id.0
-                ));
-            }
             LivePane::restored(snapshot.clone(), scrollback).map(|terminal| (pane.id, terminal))
         })
         .collect();
@@ -587,9 +601,10 @@ fn work(
         terminals,
         geometry_changed: false,
         settle_at: None,
+        generation: 0,
     };
     let _ = ready.send(Ok(()));
-    let mut recovering: Option<(Recovery, Instant)> = None;
+    let mut recovering: Option<(Recovery, Instant, u64)> = None;
     let mut capture_unavailable = false;
     let mut changed: Vec<PaneId> = layout.panes.iter().map(|pane| pane.id).collect();
     let mut state = shared.lock();
@@ -635,13 +650,13 @@ fn work(
                     break;
                 }
             } else {
-                recovering = Some((recovery, deadline));
+                recovering = Some((recovery, deadline, window.generation));
             }
         }
         if !state.closed
             && recovering
                 .as_ref()
-                .is_some_and(|(_, deadline)| Instant::now() >= *deadline)
+                .is_some_and(|(_, deadline, _)| Instant::now() >= *deadline)
         {
             state.failure = Some("timed out recovering the pane".into());
             break;
@@ -667,7 +682,22 @@ fn work(
             state = shared.lock();
             state.spare.extend(spare);
             state.update = Some(Update {
-                layout: window.layout.panes.clone(),
+                layout: window
+                    .layout
+                    .panes
+                    .iter()
+                    .filter_map(|pane| {
+                        window.terminals.iter().find(|(id, _)| *id == pane.id).map(
+                            |(_, terminal)| PaneLayout {
+                                id: pane.id,
+                                left: terminal.offset.0,
+                                top: terminal.offset.1,
+                                cols: terminal.size.0,
+                                rows: terminal.size.1,
+                            },
+                        )
+                    })
+                    .collect(),
                 screens: update,
             });
             window.geometry_changed = false;
@@ -742,7 +772,7 @@ fn work(
             }
             window.terminals.retain(|(id, _)| {
                 window.layout.panes.iter().any(|p| p.id == *id)
-                    || recovering.as_ref().is_some_and(|(r, _)| r.pane() == *id)
+                    || recovering.as_ref().is_some_and(|(r, _, _)| r.pane() == *id)
             });
         } else if state.cancelled || (state.closed && changed.is_empty() && recovering.is_none()) {
             // Once the client has exited, the last changes still wait for the
@@ -751,7 +781,7 @@ fn work(
             drop(state);
             wake();
             return;
-        } else if let Some((_, deadline)) = &recovering {
+        } else if let Some((_, deadline, _)) = &recovering {
             if state.closed {
                 state
                     .transport_failure
@@ -783,7 +813,7 @@ fn work(
 fn apply(
     event: Event,
     window: &mut WindowState,
-    recovering: &mut Option<(Recovery, Instant)>,
+    recovering: &mut Option<(Recovery, Instant, u64)>,
     control: &Control,
     scrollback: usize,
     changed: &mut Vec<PaneId>,
@@ -791,13 +821,13 @@ fn apply(
     let terminals = &mut window.terminals;
     match event {
         Event::Layout(change) => {
-            if change.window == window.layout.window && change.panes != window.layout.panes {
+            if change.window == window.layout.window {
                 window.change_layout(change, scrollback)?;
                 *changed = window.layout.panes.iter().map(|pane| pane.id).collect();
             }
         }
         Event::Output(pane, bytes) => {
-            if let Some((recovery, _)) = recovering.as_mut()
+            if let Some((recovery, _, _)) = recovering.as_mut()
                 && recovery.pane() == pane
             {
                 recovery.output(&bytes);
@@ -834,7 +864,7 @@ fn apply(
                     }
                 }
                 Some(ReplyOwner::Recovery) => {
-                    let (recovery, _) =
+                    let (recovery, _, generation) =
                         recovering.as_mut().ok_or("reply without a pane recovery")?;
                     let pane = recovery.pane();
                     let missing = missing_pane(&reply, pane);
@@ -856,9 +886,7 @@ fn apply(
                             let deadline = terminal.recovery_deadline;
                             *terminal = LivePane::restored(rebuilt.snapshot, scrollback)?;
                             terminal.resume_after_recovery(&rebuilt.output, deadline)?;
-                            if let Some(rect) = window.layout.panes.iter().find(|p| p.id == pane)
-                                && terminal.size != (rect.cols, rect.rows)
-                            {
+                            if *generation != window.generation {
                                 terminal.needs_capture = true;
                                 terminal.recovery_deadline = deadline;
                             }
@@ -921,6 +949,7 @@ mod tests {
         let mut terminal = LivePane {
             terminal: Terminal::new(80, 24, 0).unwrap(),
             size: (80, 24),
+            offset: (0, 0),
             captured: None,
             needs_capture: false,
             recovery_deadline: None,
@@ -1109,6 +1138,9 @@ mod tests {
             ])
             .unwrap();
         server.run(&["wait-for", "first-ready"]).unwrap();
+        server
+            .run(&["set-option", "-w", "pane-border-status", "top"])
+            .unwrap();
         let initial = layout(&server);
         let first = initial.panes[0].id;
         let client = server
@@ -1126,6 +1158,27 @@ mod tests {
         })
         .unwrap();
         wait_for_row(&panes, &woken, first, "FIRST");
+        let content_layout = || {
+            let mut visible = layout(&server);
+            for pane in &mut visible.panes {
+                let values = server
+                    .run(&[
+                        "display-message",
+                        "-p",
+                        "-t",
+                        &format!("%{}", pane.id.0),
+                        "#{pane_left} #{pane_top} #{pane_width} #{pane_height}",
+                    ])
+                    .unwrap();
+                let values: Vec<u16> = values
+                    .split_whitespace()
+                    .map(|v| v.parse().unwrap())
+                    .collect();
+                (pane.left, pane.top, pane.cols, pane.rows) =
+                    (values[0], values[1], values[2], values[3]);
+            }
+            visible
+        };
         let wait = |expected: &layout::Change| {
             let deadline = Instant::now() + Duration::from_secs(10);
             loop {
@@ -1155,6 +1208,9 @@ mod tests {
             }
         };
         server
+            .run(&["set-option", "-w", "pane-border-status", "bottom"])
+            .unwrap();
+        server
             .run(&[
                 "resize-window",
                 "-t",
@@ -1165,7 +1221,7 @@ mod tests {
                 "30",
             ])
             .unwrap();
-        wait(&layout(&server));
+        wait(&content_layout());
         server
             .run(&[
                 "split-window",
@@ -1176,20 +1232,20 @@ mod tests {
             ])
             .unwrap();
         let split = layout(&server);
-        wait(&split);
+        wait(&content_layout());
         let second = split.panes.iter().find(|pane| pane.id != first).unwrap().id;
         server
             .run(&["resize-pane", "-Z", "-t", &format!("%{}", first.0)])
             .unwrap();
-        wait(&layout(&server));
+        wait(&content_layout());
         server
             .run(&["resize-pane", "-Z", "-t", &format!("%{}", first.0)])
             .unwrap();
-        wait(&layout(&server));
+        wait(&content_layout());
         server
             .run(&["kill-pane", "-t", &format!("%{}", second.0)])
             .unwrap();
-        wait(&layout(&server));
+        wait(&content_layout());
     }
 
     #[test]

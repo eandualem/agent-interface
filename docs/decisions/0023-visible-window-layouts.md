@@ -48,3 +48,10 @@ separate integrations.
 - Drawing the new rectangles immediately pairs them with stale screen sizes.
   Reflowing the local engine already failed the resize fidelity comparison;
   recover the pane instead, as specified in [0021](0021-pane-state-recovery.md).
+
+Layout cells identify visible panes but can include border status and reserved
+scrollbars. Capture `pane_left`, `pane_top`, `pane_width` and `pane_height`
+with each terminal snapshot and publish those content rectangles. Every layout
+notification invalidates the visible captures. A capture started before a newer
+notification must be repeated before publishing that geometry. Initial capture
+retains interleaved layout notifications and output in their received order.

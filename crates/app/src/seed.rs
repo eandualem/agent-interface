@@ -16,7 +16,13 @@ pub(crate) struct Seed<I = ChildStdin, O = ChildStdout> {
     pub stdout: O,
     pub decoder: Decoder,
     pub snapshots: Vec<Snapshot>,
-    pub output: Vec<(PaneId, Vec<u8>)>,
+    pub events: Vec<Event>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Event {
+    Output(PaneId, Vec<u8>),
+    Layout(Vec<u8>),
 }
 
 /// Reads the attach reply, checks recovery hooks and captures before enabling
@@ -68,7 +74,7 @@ fn capture<I: Write, O: Read>(
     // The initial attach reply, then two show-hooks replies.
     let mut preliminary = 3;
     let mut snapshots = None;
-    let mut output = Vec::new();
+    let mut events = Vec::new();
     loop {
         let count = stdout.read(&mut buffer)?;
         if count == 0 {
@@ -143,7 +149,10 @@ fn capture<I: Write, O: Read>(
                                     "output before snapshot: use no-output,ignore-size",
                                 ));
                             }
-                            output.push((pane, data.to_vec()));
+                            events.push(Event::Output(pane, data.to_vec()));
+                        }
+                        Message::Notification(line) if line.starts_with(b"%layout-change ") => {
+                            events.push(Event::Layout(line.to_vec()));
                         }
                         Message::Notification(line)
                             if line.starts_with(b"%exit") && snapshots.is_none() =>
@@ -171,7 +180,7 @@ fn capture<I: Write, O: Read>(
                 stdout,
                 decoder,
                 snapshots,
-                output,
+                events,
             });
         }
     }
@@ -190,7 +199,7 @@ mod tests {
             "0", "0", "0", "0", "0", "0", "", "", "",
         ]);
         // Pending bytes and the command enabling output.
-        replies.extend(["", ""]);
+        replies.extend(["0", "0", "", ""]);
         let mut wire = String::new();
         for (id, reply) in replies.iter().enumerate() {
             wire.push_str(&format!("%begin 1 {id} 1\n{reply}\n%end 1 {id} 1\n"));
@@ -200,23 +209,37 @@ mod tests {
         exited.push_str("%exit\n");
         let seed = capture(Vec::new(), exited.as_bytes(), vec![PaneId(7)]).unwrap();
         assert_eq!(seed.snapshots[0].state.cursor, (6, 0));
-        assert_eq!(seed.output, [(PaneId(7), b"more".to_vec())]);
+        assert_eq!(seed.events, [Event::Output(PaneId(7), b"more".to_vec())]);
 
+        let layout = b"%layout-change @1 abcd,80x24,0,0,7 abcd,80x24,0,0,7 *";
+        let with_layout = format!(
+            "{wire}{}\n%output %7 later\n",
+            String::from_utf8_lossy(layout)
+        );
+        let seeded = capture(Vec::new(), with_layout.as_bytes(), vec![PaneId(7)]).unwrap();
+        assert_eq!(
+            seeded.events,
+            [
+                Event::Output(PaneId(7), b"more".to_vec()),
+                Event::Layout(layout.to_vec()),
+                Event::Output(PaneId(7), b"later".to_vec()),
+            ]
+        );
         wire.push_str("%output %7 par");
         let mut seed = capture(Vec::new(), wire.as_bytes(), vec![PaneId(7)]).unwrap();
-        assert_eq!(seed.output, [(PaneId(7), b"more".to_vec())]);
+        assert_eq!(seed.events, [Event::Output(PaneId(7), b"more".to_vec())]);
         seed.decoder
             .decode(b"tial\n", |message| {
                 if let Message::Output { pane, data } = message {
-                    seed.output.push((pane, data.to_vec()));
+                    seed.events.push(Event::Output(pane, data.to_vec()));
                 }
             })
             .unwrap();
         assert_eq!(
-            seed.output,
+            seed.events,
             [
-                (PaneId(7), b"more".to_vec()),
-                (PaneId(7), b"partial".to_vec())
+                Event::Output(PaneId(7), b"more".to_vec()),
+                Event::Output(PaneId(7), b"partial".to_vec())
             ]
         );
     }

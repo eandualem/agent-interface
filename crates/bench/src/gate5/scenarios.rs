@@ -978,6 +978,8 @@ mod tests {
                 .collect(),
             saved: Vec::new(),
             state: PaneState {
+                left: 0,
+                top: 0,
                 width: 80,
                 height: u16::try_from(rows.len() - history).unwrap(),
                 history,
