@@ -92,7 +92,7 @@ It does not load configuration, read credentials or issue requests.
 
 The decoder uses exact-pinned `serde_json` 1.0.154 (MIT OR Apache-2.0), already
 used by the workspace, to parse the endpoint's `items` array. It limits responses
-to 1 MiB and uses the parser's nesting limit; oversized, deeply nested or invalid
+to 1 MiB and 128 nested containers; oversized, deeply nested or invalid
 JSON becomes unavailable rather than an unbounded allocation. Names follow the
 Python adapter's ASCII agent-name rule; disabled records are skipped, non-string
 states become `unknown`, and the last valid duplicate name wins. Unknown fields,
@@ -105,3 +105,9 @@ from discovery stay as offline references. The combined timestamp is the oldest
 observation only when all participating providers have one. The separate roster
 snapshot remains the input for future roster display. HTTP transport, polling
 and product controls remain separate work.
+
+Typed object/array reads and borrowed raw field values preserve literal JSON
+types even when the workspace enables serde_json's raw-value and arbitrary-
+precision features. Internal marker-looking keys remain ordinary object keys;
+they cannot turn an object into an empty list or a false configured value. An
+explicit depth check bounds skipped raw values, including unknown fields.
