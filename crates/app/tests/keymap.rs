@@ -65,6 +65,16 @@ fn printing_uses_effective_keys_without_a_terminal_tmux_or_library() {
         fs::read_to_string(&config).unwrap(),
         "prefix = 'C-b'\n[bindings]\nnew-tab = ['F2']"
     );
+    let unusual = root.join("bad\x1b[2J.toml");
+    fs::write(&unusual, b"#\x1b[2J\n").unwrap();
+    let output = command()
+        .arg("--keymap")
+        .arg(&unusual)
+        .args(["--print-keymap", "toml"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(!output.stderr.contains(&0x1b));
 }
 
 #[test]

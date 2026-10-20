@@ -63,7 +63,14 @@ fn source(
     let required = explicit.is_some() || configured.is_some();
     let home = || {
         env("HOME")
-            .map(PathBuf::from)
+            // Python's POSIX expanduser("~") returns / for an empty HOME.
+            .map(|path| {
+                if path.is_empty() {
+                    PathBuf::from("/")
+                } else {
+                    PathBuf::from(path)
+                }
+            })
             .or_else(|| {
                 uzers::get_user_by_uid(uzers::get_current_uid())
                     .map(|user| user.home_dir().to_owned())
@@ -184,6 +191,13 @@ mod tests {
                 .unwrap()
                 .prefix(),
             "C-e"
+        );
+        env.insert("HOME", OsString::new());
+        assert_eq!(
+            source(Some(Path::new("~/keys.toml")), &|k| env.get(k).cloned())
+                .unwrap()
+                .0,
+            PathBuf::from("/keys.toml")
         );
     }
 }
