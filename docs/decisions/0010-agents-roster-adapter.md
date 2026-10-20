@@ -72,6 +72,9 @@ duplicate framing and deadline handling. `reqwest` uses an internal Tokio runtim
 behind its blocking API; no runtime type escapes the roster crate. This choice
 does not settle the separate child-process runtime comparison in [0008](0008-background-io-runtime.md).
 TLS, compression and system-proxy support are disabled for this HTTP-only adapter.
+The accepted hostname `localhost` resolves only to IPv4 and IPv6 loopback literals
+through a client override. No system DNS task can outlive the request deadline
+and delay client shutdown.
 
 The existing `http` 1.5.0 (MIT OR Apache-2.0) is exact-pinned for strict URI
 validation before the client's URL normalization; malformed explicit ports are
