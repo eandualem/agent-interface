@@ -12,3 +12,4 @@ workspace = true
 
 [dependencies]
 serde_json.workspace = true
+ureq.workspace = true
