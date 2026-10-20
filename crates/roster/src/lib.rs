@@ -10,6 +10,8 @@ use std::time::Instant;
 
 use serde_json::value::RawValue;
 
+mod transport;
+
 const RESPONSE_LIMIT: usize = 1024 * 1024;
 const UNAVAILABLE: &str = "Backbone unavailable; states stale";
 

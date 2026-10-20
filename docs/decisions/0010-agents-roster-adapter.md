@@ -58,9 +58,15 @@ roster entries onto tmux sessions and tabs.
   continues, and terminals and tmux discovery are unaffected (AG-17, AG-25). A
   roster state can never make a missing tmux session attachable (AG-18).
 
-This record does not choose an HTTP client library. Whichever is used must let
-the adapter turn off redirects and proxy settings, and its licence is recorded
-when it is added ([0011](0011-toolchain-and-dependency-policy.md)).
+The blocking HTTP client is exact-pinned `ureq` 3.4.2 (MIT OR Apache-2.0), with
+default features disabled. Its explicit proxy and redirect controls, body limit
+and end-to-end timeout fit the dedicated I/O worker without adding an async
+runtime. A handwritten HTTP client would duplicate framing and deadline handling;
+an async client would add a runtime this adapter does not need. TLS and compression
+are unnecessary for this loopback-only endpoint. The new locked dependencies
+`ureq-proto` 0.6.5, `httparse` 1.10.1 and `utf8-zero` 0.8.1 are also MIT OR Apache-2.0.
+See the [client configuration](https://docs.rs/ureq/3.4.2/ureq/config/struct.ConfigBuilder.html)
+and [bounded body reader](https://docs.rs/ureq/3.4.2/ureq/struct.BodyWithConfig.html).
 
 ## Consequences
 
@@ -103,7 +109,11 @@ changing either observation. Only successful discovery supplies `online`; a
 metadata failure cannot remove live ordinary sessions. Metadata names absent
 from discovery stay as offline references. The combined timestamp is the oldest
 observation only when all participating providers have one. The separate roster
-snapshot remains the input for future roster display. HTTP transport, polling
+snapshot remains the input for future roster display. `Snapshot::fetch` reads one
+response using an explicit address and key. It validates the address before
+constructing a request, disables proxies and redirects, limits the complete call
+to three seconds and the body to 1 MiB, and exposes only the fixed stale error.
+Credentials are never retained in the snapshot. Configuration loading, polling
 and product controls remain separate work.
 
 Typed object/array reads and borrowed raw field values preserve literal JSON
