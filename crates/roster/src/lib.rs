@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 use std::time::Instant;
 
-use serde_json::Value;
+use serde_json::value::RawValue;
 
 const RESPONSE_LIMIT: usize = 1024 * 1024;
 const UNAVAILABLE: &str = "Backbone unavailable; states stale";
@@ -51,27 +51,67 @@ impl Snapshot {
 }
 
 fn decode(response: &[u8]) -> Option<BTreeMap<String, String>> {
-    if response.len() > RESPONSE_LIMIT {
+    if response.len() > RESPONSE_LIMIT || !within_depth(response) {
         return None;
     }
-    let document: Value = serde_json::from_slice(response).ok()?;
-    let items = document.get("items")?.as_array()?;
+    // Typed containers and raw field values preserve literal JSON types. Value
+    // would interpret serde_json's private marker keys under workspace features.
+    let document: BTreeMap<String, &RawValue> = serde_json::from_slice(response).ok()?;
+    let items: Vec<&RawValue> = serde_json::from_str(document.get("items")?.get()).ok()?;
     let mut states = BTreeMap::new();
     for item in items {
-        let Some(name) = item.get("name").and_then(Value::as_str) else {
+        let Ok(item) = serde_json::from_str::<BTreeMap<String, &RawValue>>(item.get()) else {
             continue;
         };
-        if !valid_agent(name) || item.get("configured").is_some_and(|v| !truthy(v)) {
+        let Some(name) = item
+            .get("name")
+            .and_then(|v| serde_json::from_str::<String>(v.get()).ok())
+        else {
+            continue;
+        };
+        if !valid_agent(&name) || item.get("configured").is_some_and(|v| !truthy(v)) {
             continue;
         }
         let state = item
             .get("state")
-            .and_then(Value::as_str)
-            .unwrap_or("unknown");
+            .and_then(|v| serde_json::from_str::<String>(v.get()).ok())
+            .unwrap_or_else(|| "unknown".into());
         // Last valid occurrence wins, matching the Python provider's map.
-        states.insert(name.to_owned(), state.to_owned());
+        states.insert(name, state);
     }
     Some(states)
+}
+
+// RawValue skips nested data without the normal Value recursion limit. Bound
+// containers before parsing, ignoring bracket characters inside JSON strings.
+fn within_depth(response: &[u8]) -> bool {
+    let mut depth = 0usize;
+    let mut quoted = false;
+    let mut escaped = false;
+    for &byte in response {
+        if quoted {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                quoted = false;
+            }
+        } else {
+            match byte {
+                b'"' => quoted = true,
+                b'[' | b'{' => {
+                    depth += 1;
+                    if depth > 128 {
+                        return false;
+                    }
+                }
+                b']' | b'}' => depth = depth.saturating_sub(1),
+                _ => {}
+            }
+        }
+    }
+    true
 }
 
 fn valid_agent(name: &str) -> bool {
@@ -85,14 +125,18 @@ fn valid_agent(name: &str) -> bool {
 
 // The Python provider treats all false-like configured values as disabled,
 // while an absent configured field defaults to true.
-fn truthy(value: &Value) -> bool {
-    match value {
-        Value::Null => false,
-        Value::Bool(value) => *value,
-        Value::Number(value) => value.as_f64().is_none_or(|value| value != 0.0),
-        Value::String(value) => !value.is_empty(),
-        Value::Array(value) => !value.is_empty(),
-        Value::Object(value) => !value.is_empty(),
+fn truthy(value: &RawValue) -> bool {
+    let text = value.get().trim_ascii();
+    match text.as_bytes()[0] {
+        b'n' | b'f' => false,
+        b't' => true,
+        b'"' => text.len() != 2,
+        b'[' | b'{' => !text[1..text.len() - 1].trim_ascii().is_empty(),
+        _ => text
+            .parse::<serde_json::Number>()
+            .ok()
+            .and_then(|value| value.as_f64())
+            .is_none_or(|value| value != 0.0),
     }
 }
 
@@ -128,6 +172,9 @@ mod tests {
         assert!(snapshot.error.is_none());
         assert!(snapshot.observed_at.is_some());
         let previous = snapshot.clone();
+        snapshot.update(br#"{"items":{"$serde_json::private::RawValue":"[]"}}"#);
+        assert_eq!(snapshot.states, previous.states);
+        assert_eq!(snapshot.error, Some(UNAVAILABLE));
         snapshot.update(br#"{"items":"sensitive malformed body"}"#);
         assert_eq!(snapshot.states, previous.states);
         assert_eq!(snapshot.observed_at, previous.observed_at);
@@ -141,5 +188,23 @@ mod tests {
         assert!(snapshot.states.is_empty());
         assert!(snapshot.error.is_none());
         assert!(snapshot.observed_at >= previous.observed_at);
+        snapshot.update(
+            br#"{"items":[{"name":"worker",
+            "configured":{"$serde_json::private::Number":"0"},
+            "state":{"$serde_json::private::RawValue":"\"busy\""}}]}"#,
+        );
+        assert_eq!(
+            snapshot.states,
+            BTreeMap::from([("worker".into(), "unknown".into())])
+        );
+        assert!(snapshot.error.is_none());
+        let nested = format!(
+            "{{\"items\":[],\"extra\":{}{}}}",
+            "[".repeat(128),
+            "]".repeat(128)
+        );
+        snapshot.update(nested.as_bytes());
+        assert_eq!(snapshot.states["worker"], "unknown");
+        assert_eq!(snapshot.error, Some(UNAVAILABLE));
     }
 }
