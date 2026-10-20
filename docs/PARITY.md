@@ -67,14 +67,18 @@ Decision values:
 
 ## Workspaces and tabs
 
+The core model supports in-memory creation, splitting, attachment changes and
+closing records. Product controls, persistence and shell lifecycle integration
+remain pending; model operations alone do not complete these workflows.
+
 | # | Behaviour (Python tool) | Source | Decision | Notes | Status |
 | --- | --- | --- | --- | --- | --- |
-| WS-1 | A new library starts with one workspace, **Workspace 1**, holding one tab with a random name such as **Tab a82f** and one ordinary shell. | [README][rd-first], [GUIDE][g-organize] | Keep | | Not started |
-| WS-2 | Tabs are only created by the user. Nothing is populated from the agent roster, and the session list is only an attachment chooser, never a source of tabs. | [GUIDE][g-organize], [GUIDE][g-attach] | Keep | | Not started |
-| WS-3 | A new workspace starts empty, with no tabs; the user adds its first tab with new tab. | [GUIDE][g-organize], [SHORTCUTS][sc-ws] | Keep | | Not started |
+| WS-1 | A new library starts with one workspace, **Workspace 1**, holding one tab with a random name such as **Tab a82f** and one ordinary shell. | [README][rd-first], [GUIDE][g-organize] | Keep | | In progress |
+| WS-2 | Tabs are only created by the user. Nothing is populated from the agent roster, and the session list is only an attachment chooser, never a source of tabs. | [GUIDE][g-organize], [GUIDE][g-attach] | Keep | | In progress |
+| WS-3 | A new workspace starts empty, with no tabs; the user adds its first tab with new tab. | [GUIDE][g-organize], [SHORTCUTS][sc-ws] | Keep | | In progress |
 | WS-4 | Upgrading keeps existing saved names, tabs and attachments; the tool never deletes earlier arrangements. | [GUIDE][g-organize] | Keep | Also applies between the two tools: opening a library in the Rust app must not drop anything the Python tool saved. | Not started |
-| WS-5 | The **+** on the TABS row and the new-tab shortcut create a tab whose only pane starts as the new-pane chooser (see CH-1). | [GUIDE][g-organize], [README][rd-first] | Keep | | Not started |
-| WS-6 | Names belong to the user: attaching a session never renames a tab, and renaming a tab or workspace never renames an attached session or ends a shell. | [GUIDE][g-organize], [INLINE_RENAME][ir-use] | Keep | | Not started |
+| WS-5 | The **+** on the TABS row and the new-tab shortcut create a tab whose only pane starts as the new-pane chooser (see CH-1). | [GUIDE][g-organize], [README][rd-first] | Keep | | In progress |
+| WS-6 | Names belong to the user: attaching a session never renames a tab, and renaming a tab or workspace never renames an attached session or ends a shell. | [GUIDE][g-organize], [INLINE_RENAME][ir-use] | Keep | | In progress |
 | WS-7 | **Rename tab** is the first item in the tab menu. The rename form saves with **Save name** or Enter, and `Ctrl-u` clears the field. | [GUIDE][g-organize], [SHORTCUTS][sc-right] | Keep | | Not started |
 | WS-8 | Rename fields open with the existing name selected, so typing replaces it. | [GUIDE][g-keys], [SHORTCUTS][sc-right] | Keep | | Not started |
 | WS-9 | Double-clicking the active tab's name, or the workspace name at the top, edits it in place. Enter saves; Escape or a click elsewhere cancels. | [INLINE_RENAME][ir-use], [GUIDE][g-organize] | Keep | | Not started |
@@ -95,14 +99,14 @@ Decision values:
 | WS-24 | The tab menu opens from the **⋯** at the right end of the selected tab, from a right-click on any tab (even an inactive one), or from the tab-options shortcut. | [GUIDE][g-split], [SHORTCUTS][sc-right] | Keep | | Not started |
 | WS-25 | The tab menu holds Rename tab, Split right, Split below, Focus one pane or Restore layout, pane cycling, Attach session, Return to shell, reordering, moving to another workspace, and closing panes and tabs. | [SHORTCUTS][sc-right], [GUIDE][g-split], [GUIDE][g-attach] | Keep | | Not started |
 | WS-26 | The tab menu reorders tabs and moves a tab to another workspace; these need no shortcut of their own. | [GUIDE][g-ws], [SHORTCUTS][sc-cover] | Keep | The menu path stays even if drag and drop is added later. | Not started |
-| WS-27 | **Close tab** closes the whole tab and ends its ordinary shells; attached external sessions keep running. | [GUIDE][g-settings], [SHORTCUTS][sc-tabs] | Keep | Keys are KB-20. Process rules are SH-12. | Not started |
-| WS-28 | Every new tab gets a neutral random name, **Tab** followed by four hexadecimal characters, unless the user supplies one. | [INITIAL_TASK][it-req], [ACCEPTANCE][ac-checks] | Keep | | Not started |
+| WS-27 | **Close tab** closes the whole tab and ends its ordinary shells; attached external sessions keep running. | [GUIDE][g-settings], [SHORTCUTS][sc-tabs] | Keep | Keys are KB-20. Process rules are SH-12. | In progress |
+| WS-28 | Every new tab gets a neutral random name, **Tab** followed by four hexadecimal characters, unless the user supplies one. | [INITIAL_TASK][it-req], [ACCEPTANCE][ac-checks] | Keep | | In progress |
 
 ## Splits, focus and layout
 
 | # | Behaviour (Python tool) | Source | Decision | Notes | Status |
 | --- | --- | --- | --- | --- | --- |
-| SP-1 | **Split right** adds a pane beside the selected one, with a vertical divider. **Split below** adds one under it, with a horizontal divider. | [GUIDE][g-split], [SHORTCUTS][sc-tabs] | Keep | Keys are KB-3 and KB-4. | Not started |
+| SP-1 | **Split right** adds a pane beside the selected one, with a vertical divider. **Split below** adds one under it, with a horizontal divider. | [GUIDE][g-split], [SHORTCUTS][sc-tabs] | Keep | Keys are KB-3 and KB-4. | In progress |
 | SP-2 | Both splits are in the tab menu and on shortcuts. | [GUIDE][g-split] | Keep | | Not started |
 | SP-3 | A new split opens as the new-pane chooser. A terminal chosen there starts in the working directory of the shell it was split from. | [GUIDE][g-split], [README][rd-first], [ARCHITECTURE][ar-modules] | Keep | Read the source pane's current directory from tmux on the shell server. | Not started |
 | SP-4 | One tab can hold several panes; a four-pane tab is a normal, tested case. | [GUIDE][g-split], [ACCEPTANCE][ac-checks] | Keep | | Not started |

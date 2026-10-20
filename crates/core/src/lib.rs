@@ -2,6 +2,7 @@
 
 #![forbid(unsafe_code)]
 
+mod actions;
 mod navigation;
 
 /// An arrangement loaded from a library. Navigation values seed a new window;

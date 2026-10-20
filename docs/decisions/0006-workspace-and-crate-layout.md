@@ -77,6 +77,7 @@ Shared dependencies chosen here:
 
 | Dependency | Version examined | Licence | Reason |
 | --- | --- | --- | --- |
+| `uuid` with `v4` | 1.28.0 | MIT OR Apache-2.0 | Generate the same 12-character lowercase hexadecimal identities used by the Python model; already present through the UI dependency graph. |
 | `thiserror` | 2.0.21 | MIT OR Apache-2.0 | Deriving typed library errors |
 | `anyhow` | 1.0.104 | MIT OR Apache-2.0 | Error reporting at the application boundary only |
 | `tracing` | 0.1.44 | MIT | Structured events and timing spans in every crate |
@@ -104,3 +105,10 @@ internal modules change for unrelated reasons.
   and [configuration, errors and observability](../research/rust-architecture.md#configuration-errors-and-observability)
   in the Rust architecture research.
 - [Cargo workspace reference at `d419f52`](https://github.com/rust-lang/cargo/blob/d419f522507a7f981d19bd80a7ae8566e744a487/doc/book/src/reference/workspaces.md).
+
+The in-memory `Layout` operations mirror the Python model's create, split,
+attach, close and pane-cycle behavior. They create or remove records only;
+the application owns any eventual process effects. Callers supply proposed
+names, directories and attachment references. As in the Python model, these
+operations do not replace persisted-schema validation or the write-conflict
+gate in [0009](0009-python-library-and-shell-server-compatibility.md).
