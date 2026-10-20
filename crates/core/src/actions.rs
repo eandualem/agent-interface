@@ -124,6 +124,20 @@ impl Layout {
         true
     }
 
+    /// Select a leaf in the current tab. A stale or other tab's identity does
+    /// nothing. This changes model focus only; the caller confirms the terminal
+    /// input destination separately.
+    pub fn choose_pane(&mut self, id: &str) -> bool {
+        let Some(tab) = self.tab_mut() else {
+            return false;
+        };
+        if !tab.tree.leaves().iter().any(|leaf| leaf.id == id) {
+            return false;
+        }
+        tab.focus = id.to_owned();
+        true
+    }
+
     /// Cycle workspaces, wrapping at either end and retaining each selection.
     pub fn next_workspace(&mut self, offset: isize) -> bool {
         let count = self.workspaces.len() as isize;

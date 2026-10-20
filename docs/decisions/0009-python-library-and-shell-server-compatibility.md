@@ -236,3 +236,10 @@ mode reveals the same saved tree and ratios. A zero-sized content area has no
 rectangles. This preserves the Python behavior in a pure model operation;
 renderer integration and native-window resizing remain separate work. No new
 dependency is needed.
+
+`Layout::choose_pane` accepts only a leaf in the current tab. After a resize,
+`Node::remember_split_sizes` records the ratio of the measured child content
+sizes, excluding the separator, with the Python viewer's 0.15 to 0.85 clamp.
+Missing identities and zero-sized children do nothing. These operations only
+change the model; terminal readiness, input handoff and resizing remain caller
+responsibilities.
