@@ -12,7 +12,7 @@
 
 use std::collections::VecDeque;
 use std::io::{self, Read, Write};
-use std::process::{Child, ChildStdin, ChildStdout};
+use std::process::{Child, ChildStdout};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::Instant;
@@ -73,6 +73,8 @@ struct State {
     queue: VecDeque<Event>,
     /// The bytes in `queue`.
     queued: usize,
+    received_events: u64,
+    applied_events: u64,
     /// The update waiting for the user interface.
     update: Option<Update>,
     /// Screens the user interface no longer needs, for the worker to reuse.
@@ -86,6 +88,8 @@ struct State {
     /// because the panes are being dropped.
     finished: bool,
     failure: Option<String>,
+    /// A pipe failure is reported without abandoning already queued output.
+    write_failure: Option<String>,
     gone: Vec<PaneId>,
 }
 
@@ -146,9 +150,10 @@ impl Control {
 // Writes must not block the terminal worker: while a large input fills the
 // client's pipe, that worker still drains output and command replies.
 fn write_commands(
-    mut stdin: ChildStdin,
+    mut stdin: impl Write,
     requests: mpsc::Receiver<WriteRequest>,
     control: &Control,
+    shared: &Shared,
 ) {
     while let Ok(WriteRequest::Command { line, owner, sent }) = requests.recv() {
         control
@@ -160,12 +165,16 @@ fn write_commands(
             .write_all(line.as_bytes())
             .and_then(|()| stdin.flush());
         let failed = result.is_err();
+        if let Err(error) = &result {
+            shared.lock().write_failure = Some(format!("writing to control client: {error}"));
+            shared.changed.notify_all();
+        }
         if let Some(sent) = sent {
             let _ = sent.send(result);
         }
         if failed {
             // Closing stdin ends the reader. Let the worker drain its final
-            // output; the input caller already received the write error.
+            // output. The UI can also report the retained write error.
             break;
         }
     }
@@ -178,6 +187,7 @@ struct LivePane {
     captured: Option<Snapshot>,
     needs_capture: bool,
     recovery_deadline: Option<Instant>,
+    settle_through: Option<u64>,
 }
 
 impl LivePane {
@@ -195,6 +205,7 @@ impl LivePane {
             captured: captured.then_some(snapshot),
             needs_capture: false,
             recovery_deadline: None,
+            settle_through: None,
         })
     }
 
@@ -260,6 +271,7 @@ impl Panes {
         let shared = Arc::new(Shared {
             state: Mutex::new(State {
                 queued: output.iter().map(|(_, bytes)| bytes.len()).sum(),
+                received_events: output.len() as u64,
                 queue: output
                     .into_iter()
                     .map(|(pane, bytes)| Event::Output(pane, bytes))
@@ -283,7 +295,8 @@ impl Panes {
         };
         let writer = spawn("tmux writer", {
             let control = Arc::clone(&panes.control);
-            move || write_commands(stdin, requests, &control)
+            let shared = Arc::clone(&panes.shared);
+            move || write_commands(stdin, requests, &control, &shared)
         });
         match writer {
             Ok(writer) => panes.threads.push(writer),
@@ -358,9 +371,13 @@ impl Panes {
         Ok(())
     }
 
-    /// Returns a terminal recovery failure, if the connection stopped updating.
+    /// Returns a terminal recovery or input transport failure.
     pub fn failure(&self) -> Option<String> {
-        self.shared.lock().failure.clone()
+        let state = self.shared.lock();
+        state
+            .failure
+            .clone()
+            .or_else(|| state.write_failure.clone())
     }
 
     /// Returns whether the client has exited, the worker has handed over
@@ -450,6 +467,7 @@ fn read(shared: &Shared, mut stdout: ChildStdout, mut decoder: Decoder) {
             break;
         }
         state.queued += size;
+        state.received_events += batch.len() as u64;
         state.queue.extend(batch);
         drop(state);
         shared.changed.notify_all();
@@ -584,6 +602,8 @@ fn work(
             && let Some(event) = state.queue.pop_front()
         {
             state.queued -= event.size();
+            state.applied_events += 1;
+            let received_events = state.received_events;
             drop(state);
             shared.changed.notify_all();
             let result = apply(
@@ -593,6 +613,7 @@ fn work(
                 control,
                 scrollback,
                 &mut changed,
+                received_events,
             );
             state = shared.lock();
             match result {
@@ -607,18 +628,7 @@ fn work(
                     break;
                 }
             }
-            // A completed capture can be followed by output already in the
-            // queue. Keep that pane's deadline until those bytes are handled,
-            // rather than granting each recapture another ten seconds.
-            for (pane, terminal) in &mut terminals {
-                if terminal.recovery_deadline.is_some()
-                    && !terminal.needs_capture
-                    && !recovering.as_ref().is_some_and(|(recovery, _)| recovery.pane() == *pane)
-                    && !state.queue.iter().any(|event| matches!(event, Event::Output(from, bytes) if from == pane && !bytes.is_empty()))
-                {
-                    terminal.recovery_deadline = None;
-                }
-            }
+            settle_recoveries(&mut terminals, &recovering, &state);
         } else if state.cancelled || (state.closed && changed.is_empty() && recovering.is_none()) {
             // Once the client has exited, the last changes still wait for the
             // user interface to take the update before them.
@@ -652,6 +662,7 @@ fn apply(
     control: &Control,
     scrollback: usize,
     changed: &mut Vec<PaneId>,
+    received_events: u64,
 ) -> Result<Option<PaneId>, String> {
     match event {
         Event::Output(pane, bytes) => {
@@ -714,6 +725,7 @@ fn apply(
                             let deadline = terminal.recovery_deadline;
                             *terminal = LivePane::restored(rebuilt.snapshot, scrollback)?;
                             terminal.recovery_deadline = deadline;
+                            terminal.settle_through = Some(received_events);
                             terminal.output(&rebuilt.output)?;
                             if terminal.needs_capture {
                                 changed.retain(|id| *id != pane);
@@ -737,6 +749,28 @@ fn apply(
         }
     }
     Ok(None)
+}
+
+// Only the queue prefix already present when a capture completes belongs to
+// its settling period. Newly arriving output must not extend an old deadline.
+fn settle_recoveries(
+    terminals: &mut [(PaneId, LivePane)],
+    recovering: &Option<(Recovery, Instant)>,
+    state: &State,
+) {
+    for (pane, terminal) in terminals {
+        if !terminal.needs_capture
+            && terminal
+                .settle_through
+                .is_some_and(|end| state.applied_events >= end)
+            && !recovering
+                .as_ref()
+                .is_some_and(|(recovery, _)| recovery.pane() == *pane)
+        {
+            terminal.recovery_deadline = None;
+            terminal.settle_through = None;
+        }
+    }
 }
 
 fn missing_pane(reply: &Reply, pane: PaneId) -> bool {
@@ -767,6 +801,82 @@ mod tests {
     use tmux_workspaces_test_support::TmuxServer;
 
     use super::*;
+
+    #[test]
+    fn settled_recovery_does_not_inherit_a_deadline_from_older_output() {
+        let pane = PaneId(1);
+        let expired = Instant::now() - Duration::from_secs(1);
+        let mut terminals = vec![(
+            pane,
+            LivePane {
+                terminal: Terminal::new(80, 24, 0).unwrap(),
+                captured: None,
+                needs_capture: false,
+                recovery_deadline: Some(expired),
+                settle_through: Some(4),
+            },
+        )];
+        let mut state = State {
+            applied_events: 3,
+            received_events: 4,
+            ..State::default()
+        };
+        settle_recoveries(&mut terminals, &None, &state);
+        assert_eq!(terminals[0].1.recovery_deadline, Some(expired));
+        // More output arrives while the original prefix is being drained.
+        state.received_events = 8;
+        state.applied_events = 4;
+        state
+            .queue
+            .push_back(Event::Output(pane, b"new output".to_vec()));
+        settle_recoveries(&mut terminals, &None, &state);
+        assert_eq!(terminals[0].1.recovery_deadline, None);
+    }
+
+    #[test]
+    fn writer_failure_is_reported_without_discarding_queued_output() {
+        use std::os::unix::net::UnixStream;
+        let (stdin, peer) = UnixStream::pair().unwrap();
+        drop(peer);
+        let (commands, requests) = mpsc::channel();
+        let control = Control {
+            commands,
+            pending: Mutex::new(VecDeque::new()),
+        };
+        let shared = Shared {
+            state: Mutex::new(State::default()),
+            changed: Condvar::new(),
+        };
+        shared
+            .lock()
+            .queue
+            .push_back(Event::Output(PaneId(1), b"last frame".to_vec()));
+        let (sent, received) = mpsc::channel();
+        control
+            .commands
+            .send(WriteRequest::Command {
+                line: "send-keys\n".into(),
+                owner: ReplyOwner::Input(PaneId(1)),
+                sent: Some(sent),
+            })
+            .unwrap();
+        write_commands(stdin, requests, &control, &shared);
+        assert!(received.recv().unwrap().is_err());
+        let state = shared.lock();
+        assert!(
+            state
+                .write_failure
+                .as_ref()
+                .unwrap()
+                .contains("writing to control client")
+        );
+        assert!(
+            state.failure.is_none(),
+            "the worker must still drain output"
+        );
+        assert_eq!(state.queue.len(), 1);
+        assert!(!state.finished);
+    }
 
     #[test]
     fn attachment_publishes_existing_styles_before_applying_new_output() {
