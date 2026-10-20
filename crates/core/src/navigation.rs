@@ -20,6 +20,62 @@ impl Node {
 }
 
 impl Layout {
+    /// Select an existing attachment without creating or attaching a session.
+    ///
+    /// Prefer the current tab, then the tab with the highest window-local use
+    /// counter, then its focused matching pane. Unvisited tabs rank below any
+    /// visited tab; remaining ties keep workspace, tab and split order.
+    /// `source_matches` compares the attachment's source with this window's
+    /// canonical source socket, treating an absent source as the window default.
+    /// Path resolution belongs to the caller; this model performs no I/O.
+    ///
+    /// The caller refreshes the shared arrangement before this operation and
+    /// confirms the selected attachment again before handing off keyboard input.
+    /// False means no match and leaves the layout unchanged, so the caller can
+    /// show session status. Recency is owned by the window and is not persisted.
+    pub fn choose_attached_session(
+        &mut self,
+        name: &str,
+        tab_uses: &HashMap<String, u64>,
+        source_matches: impl Fn(Option<&str>) -> bool,
+    ) -> bool {
+        let current = self.tab().map(|tab| &tab.id);
+        let mut best_rank = None;
+        let mut target = None;
+        for (space_index, space) in self.workspaces.iter().enumerate() {
+            for (tab_index, tab) in space.tabs.iter().enumerate() {
+                for pane in tab.tree.leaves() {
+                    let Some(attachment) = &pane.attachment else {
+                        continue;
+                    };
+                    if attachment.session != name
+                        || !source_matches(attachment.source_socket.as_deref())
+                    {
+                        continue;
+                    }
+                    let rank = (
+                        Some(&tab.id) == current,
+                        tab_uses.get(&tab.id).copied(),
+                        pane.id == tab.focus,
+                    );
+                    if best_rank.is_none_or(|best| rank > best) {
+                        best_rank = Some(rank);
+                        target = Some((space_index, tab_index, pane.id.clone()));
+                    }
+                }
+            }
+        }
+        let Some((space_index, tab_index, pane)) = target else {
+            return false;
+        };
+        let space = &mut self.workspaces[space_index];
+        let tab = &mut space.tabs[tab_index];
+        self.selected = space.id.clone();
+        space.selected = tab.id.clone();
+        tab.focus = pane;
+        true
+    }
+
     /// Keep this window's navigation when loading a newer shared arrangement.
     ///
     /// Existing selections follow stable identities, including pane focus when
@@ -88,6 +144,69 @@ mod tests {
             cwd: None,
             empty: false,
         })
+    }
+
+    #[test]
+    fn session_navigation_prefers_current_recent_and_focused_matches_on_its_source() {
+        let mut model = Layout::initial("/tmp".into());
+        let first_space = model.selected.clone();
+        let first_tab = model.tab().unwrap().id.clone();
+        let first_pane = model.pane().unwrap().id.clone();
+        let local = Attachment {
+            session: "worker".into(),
+            source_socket: None,
+        };
+        model.attach(Some(local.clone()));
+        model.split(Direction::Right, "/tmp".into(), true);
+        model.attach(Some(Attachment {
+            source_socket: Some("/fixture/source".into()),
+            ..local.clone()
+        }));
+        let focused_pane = model.pane().unwrap().id.clone();
+        model.add_workspace("Other workspace".into());
+        model.add_tab(None, "/tmp".into(), true);
+        model.attach(Some(local.clone()));
+        let older_tab = model.tab().unwrap().id.clone();
+        model.add_tab(None, "/tmp".into(), true);
+        model.attach(Some(local.clone()));
+        let recent_tab = model.tab().unwrap().id.clone();
+        let uses = HashMap::from([(older_tab.clone(), 0), (recent_tab.clone(), 1)]);
+        let source_matches =
+            |source: Option<&str>| source.is_none() || source == Some("/fixture/source");
+
+        model.choose_workspace(&first_space);
+        assert!(model.choose_attached_session("worker", &uses, source_matches));
+        assert_eq!(model.tab().unwrap().id, first_tab);
+        assert_eq!(model.pane().unwrap().id, focused_pane);
+
+        // A matching name on another server cannot win, even when focused.
+        model.attach(Some(Attachment {
+            source_socket: Some("/fixture/other".into()),
+            ..local
+        }));
+        assert!(model.choose_attached_session("worker", &uses, source_matches));
+        assert_eq!(model.pane().unwrap().id, first_pane);
+        model.attach(None);
+        assert!(model.choose_attached_session("worker", &uses, source_matches));
+        assert_eq!(model.tab().unwrap().id, recent_tab);
+        assert_ne!(model.selected, first_space);
+
+        // A visited tab with counter zero outranks an unvisited tab.
+        model.choose_workspace(&first_space);
+        let uses = HashMap::from([(recent_tab.clone(), 0)]);
+        assert!(model.choose_attached_session("worker", &uses, source_matches));
+        assert_eq!(model.tab().unwrap().id, recent_tab);
+
+        // Equal unvisited ranks retain saved order across tabs.
+        model.choose_workspace(&first_space);
+        assert!(model.choose_attached_session("worker", &HashMap::new(), source_matches));
+        assert_eq!(model.tab().unwrap().id, older_tab);
+
+        let before = model.clone();
+        assert!(!model.choose_attached_session("missing", &uses, source_matches));
+        assert_eq!(model, before);
+        assert!(!model.choose_attached_session("worker", &uses, |_| false));
+        assert_eq!(model, before);
     }
 
     #[test]
