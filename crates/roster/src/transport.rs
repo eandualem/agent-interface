@@ -1,6 +1,6 @@
-use std::time::Duration;
+use std::{io::Read, time::Duration};
 
-use ureq::http::{HeaderValue, Uri};
+use http::{HeaderValue, Uri};
 
 use crate::{RESPONSE_LIMIT, Snapshot};
 
@@ -28,6 +28,7 @@ fn endpoint(url: &str) -> Option<Uri> {
             .iter()
             .any(|host| authority.host().eq_ignore_ascii_case(host))
         || authority.as_str().contains('@')
+        || (authority.as_str() != authority.host() && authority.port_u16().is_none())
         || uri.query().is_some()
         || url.contains('#')
     {
@@ -40,28 +41,32 @@ fn endpoint(url: &str) -> Option<Uri> {
 
 fn response(url: &str, key: &str) -> Option<Vec<u8>> {
     let uri = endpoint(url)?;
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .proxy(None)
-        .max_redirects(0)
-        .timeout_global(Some(Duration::from_secs(3)))
+    let client = reqwest::blocking::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .connection_verbose(false)
         .build()
-        .into();
-    let mut request = agent.get(uri);
+        .ok()?;
+    // Set the request's total deadline, including the response body, rather
+    // than only a timeout renewed for each blocking read.
+    let mut request = client.get(uri.to_string()).timeout(Duration::from_secs(3));
     if !key.is_empty() {
         let mut value = HeaderValue::from_str(&format!("Bearer {key}")).ok()?;
         value.set_sensitive(true);
         request = request.header("Authorization", value);
     }
-    let mut response = request.call().ok()?;
+    let response = request.send().ok()?;
     if !response.status().is_success() {
         return None;
     }
+    // Read one extra byte to distinguish an exact-size body from an oversized
+    // one. Snapshot::update keeps the inclusive limit when decoding.
+    let mut bytes = Vec::new();
     response
-        .body_mut()
-        .with_config()
-        .limit(RESPONSE_LIMIT as u64)
-        .read_to_vec()
-        .ok()
+        .take(RESPONSE_LIMIT as u64 + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    Some(bytes)
 }
 
 #[cfg(test)]
@@ -91,6 +96,7 @@ mod tests {
                     Err(error) => panic!("{error}"),
                 }
             };
+            socket.set_nonblocking(false).unwrap();
             socket
                 .set_read_timeout(Some(Duration::from_secs(5)))
                 .unwrap();
@@ -145,6 +151,10 @@ mod tests {
             "http://localhost/#fragment",
             "/relative",
             "http://[::ffff:127.0.0.1]",
+            "http://127.0.0.1:99999",
+            "http://localhost:invalid",
+            "http://[::1]:65536",
+            "http://localhost:",
         ] {
             assert!(endpoint(url).is_none(), "{url}");
         }
@@ -158,6 +168,13 @@ mod tests {
         let request = worker.join().unwrap().to_ascii_lowercase();
         assert!(request.starts_with("get /prefix/api/agents http/1.1\r\n"));
         assert!(request.contains("authorization: bearer fixture-token\r\n"));
+        assert_eq!(snapshot.states["worker"], "busy");
+
+        let boundary = format!("{BODY}{}", " ".repeat(RESPONSE_LIMIT - BODY.len()));
+        let (url, worker) = server(ok(&boundary), Duration::ZERO);
+        snapshot.fetch(&url, "");
+        worker.join().unwrap();
+        assert!(snapshot.error.is_none());
         assert_eq!(snapshot.states["worker"], "busy");
         let observed = snapshot.observed_at;
 
@@ -244,9 +261,27 @@ mod tests {
         let Ok(url) = std::env::var("ROSTER_FIXTURE_URL") else {
             return;
         };
+        struct Logs(std::sync::Mutex<String>);
+        impl log::Log for Logs {
+            fn enabled(&self, _: &log::Metadata<'_>) -> bool {
+                true
+            }
+            fn log(&self, record: &log::Record<'_>) {
+                use std::fmt::Write as _;
+                writeln!(self.0.lock().unwrap(), "{}", record.args()).unwrap();
+            }
+            fn flush(&self) {}
+        }
+        static LOGS: Logs = Logs(std::sync::Mutex::new(String::new()));
+        log::set_logger(&LOGS).unwrap();
+        log::set_max_level(log::LevelFilter::Trace);
         let mut snapshot = Snapshot::default();
-        snapshot.fetch(&url, "fixture-token");
+        snapshot.fetch(&url, "fixture-token-ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ");
         assert!(snapshot.error.is_none());
         assert_eq!(snapshot.states["worker"], "busy");
+        let logs = LOGS.0.lock().unwrap();
+        assert!(!logs.is_empty(), "trace logging must be exercised");
+        assert!(!logs.contains("fixture-token") && !logs.contains("ZZZZ"));
+        assert!(!logs.to_ascii_lowercase().contains("5a5a"));
     }
 }
