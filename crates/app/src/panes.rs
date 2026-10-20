@@ -1180,19 +1180,9 @@ mod tests {
                 .as_ref()
                 .ok()
                 .and_then(|bytes| bytes.iter().zip(&expected).position(|(a, b)| a != b));
-            let real_row = server
-                .run(&["capture-pane", "-p", "-t", &format!("%{}", pane.0)])
-                .map(|text| {
-                    text.lines()
-                        .next()
-                        .unwrap_or_default()
-                        .chars()
-                        .take(80)
-                        .collect::<String>()
-                });
             let state = panes.shared.lock();
             format!(
-                "received={received:?}, first_mismatch={mismatch:?}, producer_done={}, tmux_row={real_row:?}, queued_bytes={}, queued_events={}, closed={}, finished={}, waiting_update={}",
+                "received={received:?}, first_mismatch={mismatch:?}, producer_done={}, queued_bytes={}, queued_events={}, closed={}, finished={}, waiting_update={}",
                 producer_done.exists(),
                 state.queued,
                 state.queue.len(),
