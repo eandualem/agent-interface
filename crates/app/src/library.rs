@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use tmux_workspaces_store::{Document, Error, Store};
+use tmux_workspaces_store::{Document, Error, Store, library_directory};
 
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
 
@@ -31,19 +31,22 @@ pub struct Library {
 }
 
 impl Library {
-    /// Start reading an already selected library directory without blocking on
-    /// SQLite in the calling thread. `wake` runs after an update is published.
+    /// Start reading a library without blocking on path lookup or SQLite in the
+    /// calling thread. None uses the Python tool's environment/default path
+    /// precedence. `wake` runs after an update is published.
     ///
     /// An initial open failure is published and ends the worker. Once opened,
     /// read failures are retried, with unchanged errors reported only once.
-    pub fn start(directory: PathBuf, wake: impl Fn() + Send + 'static) -> io::Result<Self> {
+    pub fn start(directory: Option<PathBuf>, wake: impl Fn() + Send + 'static) -> io::Result<Self> {
         let updates = Arc::new(Mutex::new(None));
         let (stop, stopped) = mpsc::channel();
         let pending = Arc::clone(&updates);
         let worker = thread::Builder::new()
             .name("storage worker".into())
             .spawn(move || {
-                let store = match Store::open(&directory) {
+                let store = match library_directory(directory.as_deref())
+                    .and_then(|directory| Store::open(&directory))
+                {
                     Ok(store) => store,
                     Err(error) => {
                         publish(&pending, Err(error), &wake);
@@ -144,7 +147,7 @@ mod tests {
             .execute("INSERT INTO terminal_layout VALUES (1, ?1)", [valid])
             .unwrap();
         let (wake, woken) = mpsc::channel();
-        let library = Library::start(directory.path().into(), move || {
+        let library = Library::start(Some(directory.path().into()), move || {
             let _ = wake.send(());
         })
         .unwrap();
@@ -181,7 +184,7 @@ mod tests {
 
         let missing = directory.path().join("missing");
         let (wake, woken) = mpsc::channel();
-        let library = Library::start(missing.clone(), move || {
+        let library = Library::start(Some(missing.clone()), move || {
             let _ = wake.send(());
         })
         .unwrap();

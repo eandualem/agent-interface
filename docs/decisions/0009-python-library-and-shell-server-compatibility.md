@@ -52,7 +52,20 @@ For SQLite access:
 **Finding the library.** Choose the library directory in the Python tool's
 order: `--data-dir`, then `TMUX_WORKSPACES_DATA_DIR`, then
 `$XDG_DATA_HOME/tmux-workspaces`, then `~/.local/share/tmux-workspaces`, on
-macOS too (PE-1).
+macOS too (PE-1). `store::library_directory` implements this selection on Unix,
+ignores empty environment overrides, expands `~` and `~user`, and resolves
+relative paths and symlinks. The read-only phase requires the selected directory
+to exist; it never creates a missing library. `app::library` performs this lookup
+on its storage thread before opening SQLite. Product command-line parsing and
+window integration remain pending.
+
+Named-user home expansion uses [`uzers` 0.12.2](https://docs.rs/uzers/0.12.2/uzers/),
+MIT, pinned exactly with default caching, mock and logging features disabled.
+It adds only the already used MIT/Apache-2.0 `libc` dependency. Its safe account
+lookup accepts native OS strings, so paths need not be UTF-8. Standard-library
+home lookup alone cannot expand `~user`; direct libc calls would add local
+unsafe code. A broad shell-expansion library is unnecessary: Python does not
+expand environment variables inside these paths.
 
 **Reading `layouts.db`.**
 
@@ -165,9 +178,9 @@ original JSON. The original record retains unknown fields and absent/null
 values; the model is not a replacement serialization format. `data_version`
 is read before loading, on the same connection, so a concurrent commit still
 invalidates the next poll. Calls finish their statements before returning.
-The app's `library` storage worker owns the retained connection. Path selection,
-controller-level navigation reconciliation and all writes remain separate
-integration work.
+The app's `library` storage worker resolves the selected library path and owns
+the retained connection. Controller integration and all writes remain separate
+work.
 
 The decoder bounds all containers, including extensions, and rejects duplicate
 keys before constructing maps. Borrowed `serde_json::RawValue` slices let it
