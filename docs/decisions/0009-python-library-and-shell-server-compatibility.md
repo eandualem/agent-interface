@@ -195,7 +195,7 @@ JSON documents and removes window-local navigation before combining shared
 edits. Independent fields and stable-identity lists merge; conflicting trees,
 incompatible reorders, duplicate tab moves and deleting all workspaces fail.
 Unknown fields retain Python's numeric equality and identity-list semantics.
-Sixteen reference cases generated from the pinned Python model cover these
+Seventeen reference cases generated from the pinned Python model cover these
 rules, including deletion versus editing and numeric precision boundaries.
 
 The result has no navigation fields. A future caller must restore local

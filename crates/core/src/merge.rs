@@ -130,18 +130,30 @@ fn merge(
             if reordered && latest_order != base_order && latest_order != mine_order {
                 return Err(LayoutConflict);
             }
-            let keys: BTreeSet<_> = maps.iter().flat_map(|map| map.keys()).collect();
-            let mut merged = BTreeMap::new();
-            for key in keys {
-                if let Some(value) = merge(
-                    maps[0].get(key),
-                    maps[1].get(key),
-                    maps[2].get(key),
-                    matches!(key, Identity::Text(text) if text == "tree"),
-                )? {
-                    merged.insert(key.clone(), value);
+            // Whole-map shortcuts also choose which equivalent JSON types survive.
+            // Applying only per-entry shortcuts can replace false with numeric zero.
+            let same_map = |a: &BTreeMap<Identity, Value>, b: &BTreeMap<Identity, Value>| {
+                a.len() == b.len() && a.iter().all(|(key, value)| same(Some(value), b.get(key)))
+            };
+            let merged = if same_map(&maps[1], &maps[0]) {
+                maps[2].clone()
+            } else if same_map(&maps[2], &maps[0]) || same_map(&maps[1], &maps[2]) {
+                maps[1].clone()
+            } else {
+                let keys: BTreeSet<_> = maps.iter().flat_map(|map| map.keys()).collect();
+                let mut result = BTreeMap::new();
+                for key in keys {
+                    if let Some(value) = merge(
+                        maps[0].get(key),
+                        maps[1].get(key),
+                        maps[2].get(key),
+                        matches!(key, Identity::Text(text) if text == "tree"),
+                    )? {
+                        result.insert(key.clone(), value);
+                    }
                 }
-            }
+                result
+            };
             let (primary, secondary) = if reordered {
                 (mine, latest)
             } else {
