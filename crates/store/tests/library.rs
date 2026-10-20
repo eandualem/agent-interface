@@ -285,20 +285,23 @@ fn model_edits_preserve_extensions_through_splits_moves_and_closes() {
     assert!(leaf["agent"].is_null());
     assert!(!leaf.as_object().unwrap().contains_key("source_socket"));
     assert_eq!(collapsed.model(), &model);
-    let explicit = parse(&RECORD.replace(
-        "\"direction\": \"right\"",
-        "\"direction\": \"right\", \"ratio\": 2.50e-1",
-    ))
+    let explicit = parse(
+        &RECORD
+            .replace(
+                "\"direction\": \"right\"",
+                "\"direction\": \"right\", \"ratio\": 5E-1",
+            )
+            .replace(
+                "\"nullable\": null",
+                "\"nullable\": null, \"exponent\": 1e2",
+            ),
+    )
     .unwrap();
     let mut model = explicit.model().clone();
     model.rename_tab("Keep ratio spelling");
-    assert!(
-        explicit
-            .with_model(&model, path)
-            .unwrap()
-            .raw_json()
-            .contains("2.50e-1")
-    );
+    let projected = explicit.with_model(&model, path).unwrap();
+    assert!(projected.raw_json().contains("5E-1"));
+    assert!(projected.raw_json().contains("1e2"));
 }
 
 #[test]

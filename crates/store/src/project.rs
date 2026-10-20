@@ -1,58 +1,93 @@
 //! Project model edits onto retained schema objects without losing extensions.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::{self, Write};
 
-use serde_json::{Map, Value};
+use serde::{Serialize, Serializer};
+use serde_json::{Value, value::RawValue};
 use tmux_workspaces_core::{Direction, Layout, Node};
 
-type Object = Map<String, Value>;
+type RawObject<'a> = BTreeMap<String, &'a RawValue>;
+type Object<'a> = BTreeMap<String, Field<'a>>;
 
-fn index<'a>(root: &'a Object, objects: &mut HashMap<&'a str, &'a Object>) {
-    fn insert<'a>(item: &'a Value, objects: &mut HashMap<&'a str, &'a Object>) {
-        let object = item.as_object().expect("validated schema object");
-        objects.insert(object["id"].as_str().expect("validated identity"), object);
+enum Field<'a> {
+    Raw(&'a RawValue),
+    Value(Value),
+    Object(Object<'a>),
+    Array(Vec<Field<'a>>),
+}
+
+impl Serialize for Field<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Raw(value) => value.serialize(serializer),
+            Self::Value(value) => value.serialize(serializer),
+            Self::Object(value) => value.serialize(serializer),
+            Self::Array(value) => value.serialize(serializer),
+        }
     }
-    fn node<'a>(item: &'a Value, objects: &mut HashMap<&'a str, &'a Object>) {
+}
+
+fn value<'a>(value: impl Into<Value>) -> Field<'a> {
+    Field::Value(value.into())
+}
+
+fn raw_object(raw: &str) -> RawObject<'_> {
+    serde_json::from_str(raw).expect("already validated schema object")
+}
+
+fn index<'a>(root: &RawObject<'a>, objects: &mut HashMap<String, RawObject<'a>>) {
+    fn insert<'a>(item: RawObject<'a>, objects: &mut HashMap<String, RawObject<'a>>) {
+        let id: String = serde_json::from_str(item["id"].get()).expect("validated identity");
+        objects.insert(id, item);
+    }
+    fn node<'a>(raw: &'a RawValue, objects: &mut HashMap<String, RawObject<'a>>) {
+        let item = raw_object(raw.get());
+        if !item.contains_key("agent") {
+            node(item["first"], objects);
+            node(item["second"], objects);
+        }
         insert(item, objects);
-        if item.get("agent").is_none() {
-            node(&item["first"], objects);
-            node(&item["second"], objects);
-        }
     }
-    for space in root["workspaces"].as_array().expect("validated workspaces") {
-        insert(space, objects);
-        for tab in space["tabs"].as_array().expect("validated tabs") {
+    let spaces: Vec<&RawValue> =
+        serde_json::from_str(root["workspaces"].get()).expect("validated workspaces");
+    for space in spaces {
+        let space = raw_object(space.get());
+        let tabs: Vec<&RawValue> =
+            serde_json::from_str(space["tabs"].get()).expect("validated tabs");
+        for tab in tabs {
+            let tab = raw_object(tab.get());
+            node(tab["tree"], objects);
             insert(tab, objects);
-            node(&tab["tree"], objects);
         }
+        insert(space, objects);
     }
 }
 
 struct Projection<'a> {
-    objects: HashMap<&'a str, &'a Object>,
+    objects: HashMap<String, RawObject<'a>>,
     count: usize,
 }
 
-impl Projection<'_> {
-    fn object(&mut self, id: &str, children: &[&str]) -> Result<Object, String> {
+impl<'a> Projection<'a> {
+    fn object(&mut self, id: &str, children: &[&str]) -> Result<Object<'a>, String> {
         self.count += 1;
         if self.count > 10_000 {
             return Err("too many model objects (limit 10000)".into());
         }
-        let mut object: Object = self
+        let mut object: Object<'a> = self
             .objects
             .get(id)
             .into_iter()
             .flat_map(|item| item.iter())
             .filter(|(key, _)| !children.contains(&key.as_str()))
-            .map(|(key, value)| (key.clone(), value.clone()))
+            .map(|(key, value)| (key.clone(), Field::Raw(value)))
             .collect();
-        object.insert("id".into(), id.into());
+        object.insert("id".into(), value(id));
         Ok(object)
     }
 
-    fn node(&mut self, node: &Node, depth: usize) -> Result<Value, String> {
+    fn node(&mut self, node: &Node, depth: usize) -> Result<Field<'a>, String> {
         if depth > 64 {
             return Err("split nesting exceeds 64 levels".into());
         }
@@ -61,7 +96,7 @@ impl Projection<'_> {
                 let mut item = self.object(&leaf.id, &["first", "second", "direction", "ratio"])?;
                 item.insert(
                     "agent".into(),
-                    leaf.attachment.as_ref().map(|a| a.session.clone()).into(),
+                    value(leaf.attachment.as_ref().map(|a| a.session.clone())),
                 );
                 optional(&mut item, "cwd", leaf.cwd.as_deref());
                 optional(
@@ -72,7 +107,7 @@ impl Projection<'_> {
                         .and_then(|a| a.source_socket.as_deref()),
                 );
                 if leaf.empty {
-                    item.insert("empty".into(), true.into());
+                    item.insert("empty".into(), value(true));
                 } else {
                     item.remove("empty");
                 }
@@ -89,75 +124,86 @@ impl Projection<'_> {
                     self.object(id, &["first", "second", "agent", "cwd", "source_socket"])?;
                 item.insert(
                     "direction".into(),
-                    match direction {
+                    value(match direction {
                         Direction::Right => "right",
                         Direction::Below => "below",
-                    }
-                    .into(),
+                    }),
                 );
                 if !ratio.is_finite() {
                     return Err("split ratio must be finite".into());
                 }
                 // Keep an absent default or an unchanged original number spelling.
                 if !self.objects.contains_key(id.as_str())
-                    || item.get("ratio").and_then(Value::as_f64).unwrap_or(0.5) != *ratio
+                    || self
+                        .objects
+                        .get(id)
+                        .and_then(|item| item.get("ratio"))
+                        .and_then(|raw| serde_json::from_str::<f64>(raw.get()).ok())
+                        .unwrap_or(0.5)
+                        != *ratio
                 {
-                    item.insert("ratio".into(), (*ratio).into());
+                    item.insert("ratio".into(), value(*ratio));
                 }
                 item.insert("first".into(), self.node(first, depth + 1)?);
                 item.insert("second".into(), self.node(second, depth + 1)?);
                 item
             }
         };
-        Ok(Value::Object(object))
+        Ok(Field::Object(object))
     }
 }
 
-fn optional(item: &mut Object, key: &str, value: Option<&str>) {
-    if let Some(value) = value {
-        item.insert(key.into(), value.into());
+fn optional(item: &mut Object<'_>, key: &str, text: Option<&str>) {
+    if let Some(text) = text {
+        item.insert(key.into(), value(text));
     } else {
         item.remove(key);
     }
 }
 
-pub(crate) fn apply(raw: &Value, model: &Layout) -> Result<String, String> {
-    let original = raw.as_object().expect("validated document");
+pub(crate) fn apply(raw: &str, model: &Layout) -> Result<String, String> {
+    let original = raw_object(raw);
     let mut projection = Projection {
         objects: HashMap::new(),
         count: 0,
     };
-    index(original, &mut projection.objects);
-    let mut root: Object = original
+    index(&original, &mut projection.objects);
+    let mut root: Object<'_> = original
         .iter()
         .filter(|(key, _)| key.as_str() != "workspaces")
-        .map(|(key, value)| (key.clone(), value.clone()))
+        .map(|(key, value)| (key.clone(), Field::Raw(value)))
         .collect();
     let mut spaces = Vec::new();
     for space in &model.workspaces {
         let mut item = projection.object(&space.id, &["tabs"])?;
-        item.insert("name".into(), space.name.clone().into());
-        item.insert("selected".into(), space.selected.clone().into());
+        item.insert("name".into(), value(space.name.clone()));
+        item.insert("selected".into(), value(space.selected.clone()));
         // Missing and explicit null both represent no icon; retain either if unchanged.
-        if space.icon.is_some() || item.get("icon").is_some_and(|icon| !icon.is_null()) {
+        if space.icon.is_some()
+            || projection
+                .objects
+                .get(&space.id)
+                .and_then(|item| item.get("icon"))
+                .is_some_and(|icon| icon.get() != "null")
+        {
             optional(&mut item, "icon", space.icon.as_deref());
         }
         let mut tabs = Vec::new();
         for tab in &space.tabs {
             let mut item = projection.object(&tab.id, &["tree"])?;
-            item.insert("name".into(), tab.name.clone().into());
-            item.insert("focus".into(), tab.focus.clone().into());
+            item.insert("name".into(), value(tab.name.clone()));
+            item.insert("focus".into(), value(tab.focus.clone()));
             item.insert("tree".into(), projection.node(&tab.tree, 0)?);
-            tabs.push(Value::Object(item));
+            tabs.push(Field::Object(item));
         }
-        item.insert("tabs".into(), tabs.into());
-        spaces.push(Value::Object(item));
+        item.insert("tabs".into(), Field::Array(tabs));
+        spaces.push(Field::Object(item));
     }
-    root.insert("workspaces".into(), spaces.into());
-    root.insert("selected".into(), model.selected.clone().into());
-    root.insert("focus".into(), model.focus.into());
+    root.insert("workspaces".into(), Field::Array(spaces));
+    root.insert("selected".into(), value(model.selected.clone()));
+    root.insert("focus".into(), value(model.focus));
     if model.show_agents || root.contains_key("show_agents") {
-        root.insert("show_agents".into(), model.show_agents.into());
+        root.insert("show_agents".into(), value(model.show_agents));
     }
     let mut output = Limited(Vec::new());
     serde_json::to_writer(&mut output, &root).map_err(|error| error.to_string())?;

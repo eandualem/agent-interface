@@ -60,11 +60,7 @@ impl Document {
         if model == &self.model {
             return Self::parse(self.raw.clone(), path);
         }
-        let projected = (|| {
-            let raw = json::decode(&self.raw).map_err(|error| error.to_string())?;
-            project::apply(&raw, model)
-        })()
-        .map_err(|detail| Error {
+        let projected = project::apply(&self.raw, model).map_err(|detail| Error {
             path: path.to_owned(),
             detail,
         })?;
