@@ -1,5 +1,5 @@
 diff --git a/src/terminal/PageList.zig b/src/terminal/PageList.zig
-index 79aa96f18..8e8840ddd 100644
+index 79aa96f..8e8840d 100644
 --- a/src/terminal/PageList.zig
 +++ b/src/terminal/PageList.zig
 @@ -3515,7 +3515,20 @@ pub fn grow(self: *PageList) Allocator.Error!?*List.Node {
@@ -131,7 +131,7 @@ index 79aa96f18..8e8840ddd 100644
 +    _ = pages.getTopLeft(.active);
 +}
 diff --git a/src/terminal/Screen.zig b/src/terminal/Screen.zig
-index 6c4db3237..ffe65e376 100644
+index 6c4db32..ffe65e3 100644
 --- a/src/terminal/Screen.zig
 +++ b/src/terminal/Screen.zig
 @@ -2062,6 +2062,36 @@ pub fn setAttribute(
@@ -243,7 +243,7 @@ index 6c4db3237..ffe65e376 100644
 +    s.assertIntegrity();
 +}
 diff --git a/src/terminal/Terminal.zig b/src/terminal/Terminal.zig
-index 089201276..e95a26ced 100644
+index 0892012..e95a26c 100644
 --- a/src/terminal/Terminal.zig
 +++ b/src/terminal/Terminal.zig
 @@ -1421,8 +1421,26 @@ fn printWrap(self: *Terminal) !void {
@@ -317,7 +317,7 @@ index 089201276..e95a26ced 100644
 +    }
 +}
 diff --git a/src/terminal/stream.zig b/src/terminal/stream.zig
-index efb06ecdc..a13ad55f5 100644
+index efb06ec..a13ad55 100644
 --- a/src/terminal/stream.zig
 +++ b/src/terminal/stream.zig
 @@ -528,7 +528,14 @@ pub fn Stream(comptime H: type) type {
@@ -401,7 +401,7 @@ index efb06ecdc..a13ad55f5 100644
 +    try testing.expectEqualStrings("hello\x7fworld", scalar.handler.payload.items);
 +}
 diff --git a/src/terminal/stream_terminal.zig b/src/terminal/stream_terminal.zig
-index 91cfb21cf..9e0ec667a 100644
+index 91cfb21..cf076db 100644
 --- a/src/terminal/stream_terminal.zig
 +++ b/src/terminal/stream_terminal.zig
 @@ -31,6 +31,11 @@ pub const Stream = stream.Stream(Handler);
@@ -415,4 +415,31 @@ index 91cfb21cf..9e0ec667a 100644
 +
      /// The terminal state to modify.
      terminal: *Terminal,
+ 
+@@ -171,16 +176,17 @@ pub const Handler = struct {
+             .cursor_left => self.terminal.cursorLeft(value.value),
+             .cursor_right => self.terminal.cursorRight(value.value),
+             .cursor_pos => self.terminal.setCursorPos(value.row, value.col),
+-            .cursor_col => self.terminal.setCursorPos(self.terminal.screens.active.cursor.y + 1, value.value),
++            .cursor_col => {
++                // tmux CHA/HPA address the column without applying origin mode
++                // to the unchanged row. Set the bit directly to avoid homing.
++                const origin = self.terminal.modes.get(.origin);
++                self.terminal.modes.set(.origin, false);
++                defer self.terminal.modes.set(.origin, origin);
++                self.terminal.setCursorPos(self.terminal.screens.active.cursor.y + 1, value.value);
++            },
+             .cursor_row => self.terminal.setCursorPos(value.value, self.terminal.screens.active.cursor.x + 1),
+-            .cursor_col_relative => self.terminal.setCursorPos(
+-                self.terminal.screens.active.cursor.y + 1,
+-                self.terminal.screens.active.cursor.x + 1 +| value.value,
+-            ),
+-            .cursor_row_relative => self.terminal.setCursorPos(
+-                self.terminal.screens.active.cursor.y + 1 +| value.value,
+-                self.terminal.screens.active.cursor.x + 1,
+-            ),
++            // tmux ignores HPR/VPR, including their effect on pending wrap and REP.
++            .cursor_col_relative, .cursor_row_relative => {},
+             .cursor_style => {
+                 self.default_cursor = false;
  
