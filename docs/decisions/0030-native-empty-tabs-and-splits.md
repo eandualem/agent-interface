@@ -22,7 +22,8 @@ queries after three seconds; an already running query retains its own three-seco
 bound. Split creation follows these snapshots and inherits the focused leaf's
 ordinary cwd, falling back to the launch directory. New tabs always use the
 launch directory. A saved cwd change does not change a terminal connection's
-identity or its remembered tmux window.
+identity, remembered tmux window or input focus. The navigation handoff still
+resets input for structural and attachment changes.
 
 Build a detached candidate and save before replacing the displayed arrangement.
 The existing store validates depth, identities, nesting and record size, and

@@ -130,6 +130,20 @@ mod tests {
     }
 
     #[test]
+    fn a_peer_directory_snapshot_keeps_terminal_input_focus() {
+        let path = Path::new("layouts.db");
+        let raw = r#"{"version":2,"workspaces":[{"id":"000000000001","name":"Workspace","tabs":[{"id":"000000000002","name":"Tab","tree":{"id":"000000000003","agent":null,"cwd":"/before"},"focus":"000000000003"}],"selected":"000000000002"}],"selected":"000000000001","focus":false}"#;
+        let mut window = WindowLayout::new(Document::parse(raw.into(), path).unwrap());
+        let latest = Document::parse(raw.replace("/before", "/after"), path).unwrap();
+        let result = window.refresh(latest, path).unwrap();
+        assert!(!result.active_tree_changed && !result.conflict);
+        assert_eq!(
+            window.model().pane().unwrap().cwd.as_deref(),
+            Some("/after")
+        );
+    }
+
+    #[test]
     fn save_completion_keeps_new_navigation_and_advances_the_edit_base() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("layouts.db");
