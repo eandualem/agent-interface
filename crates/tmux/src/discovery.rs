@@ -97,7 +97,7 @@ fn names(output: &str) -> Vec<String> {
 
 // Nonblocking socket pairs let the worker drain both streams while enforcing
 // one deadline, without reader threads that could outlive a failed query.
-fn capture(mut command: Command, timeout: Duration) -> io::Result<Output> {
+pub(crate) fn capture(mut command: Command, timeout: Duration) -> io::Result<Output> {
     let deadline = Instant::now() + timeout;
     let (mut stdout, output) = UnixStream::pair()?;
     let (mut stderr, error) = UnixStream::pair()?;

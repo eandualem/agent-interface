@@ -10,15 +10,15 @@ feature parity first, then a better interface. tmux is meant to stay the
 process layer, so shells keep running when the app closes and existing
 sessions can be attached.
 
-**Status:** early development. The native window can browse an existing library's
-workspaces, tabs and saved split layouts. Navigation is local to the window;
-saved layouts are not edited. Terminal connections, editing controls and
-performance acceptance remain unfinished. This is not yet a replacement for
-the Python app.
+**Status:** early development. The native app opens the Python library's saved
+workspaces, tabs and split layouts and connects to their existing tmux sessions.
+It displays live terminal output and sends typed keys to the clicked pane.
+Editing, shell creation, full input parity and performance acceptance remain
+unfinished; it is not yet a replacement for the Python app.
 
 Targets macOS first and Linux from the same code. Windows is optional.
 
-## Try the library browser
+## Run the app
 
 Follow the [build prerequisites](CONTRIBUTING.md#set-up), then run:
 
@@ -26,10 +26,24 @@ Follow the [build prerequisites](CONTRIBUTING.md#set-up), then run:
 cargo run -p tmux-workspaces-app --bin tmux-workspaces -- --data-dir /path/to/library
 ```
 
-Select workspaces and tabs in the sidebar to inspect their saved panes. The
-panes are previews; they are not connected terminals. **Open library…** chooses
-another folder containing `layouts.db`. Changes saved by the Python app refresh
-automatically, while your local navigation stays selected where possible.
+Use the workspace heading to choose a workspace, then choose a tab. The saved
+split layout contains actual sessions; click a terminal before typing. Command-1
+through Command-9 select tabs, and Command-Option-1 through Command-Option-9 select
+workspaces. The pane header's expand control toggles the selected pane's view.
+**Open library…** chooses another folder containing `layouts.db`.
+
+Existing ordinary shells use the Python library's shell server; attachments use
+their saved source socket, or the source resolved from the launch environment.
+Missing sessions show an error with **Reconnect** instead of starting a shell.
+Sessions keep running when you change tabs or close the app. Connections preserve
+the session environment and do not participate in resizing other clients; text
+scales down when the existing terminal is larger than its native pane.
+
+Changes saved by the Python app refresh automatically. Native navigation and
+pane expansion are local, and the app does not write saved layouts. Attached
+sessions currently show the window selected at connection time. Custom tmux
+prefix bindings, terminal mouse reporting, clipboard paste, scrollback navigation
+and full mode-aware key encoding are not yet wired into the product UI.
 
 Omit `--data-dir` to use the Python-compatible environment and default library
 location. An absent or unreadable library shows an error and can be replaced

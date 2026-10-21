@@ -68,9 +68,10 @@ Decision values:
 ## Workspaces and tabs
 
 The core model supports in-memory creation, splitting, attachment changes and
-closing records. A native read-only sidebar now selects saved workspaces and tabs and previews
-their split layouts. Editing controls, persistence and shell lifecycle integration
-remain pending; browsing alone does not complete these workflows.
+closing records. The native sidebar selects saved workspaces and tabs and displays existing tmux
+sessions inside their saved split layouts. Clicked terminals accept typed keys.
+Editing controls, persistence, shell creation and complete terminal interaction
+remain pending; the connected window does not yet complete these workflows.
 
 | # | Behaviour (Python tool) | Source | Decision | Notes | Status |
 | --- | --- | --- | --- | --- | --- |

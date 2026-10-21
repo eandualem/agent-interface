@@ -8,9 +8,9 @@ a tmux client.
 This page describes the design decided so far, with the decision record behind
 each part, and then the code that exists today. So far the code is the Cargo
 workspace, its build, its test fixtures, the terminal path, the benchmark harness
-and a read-only native library browser ([0024](decisions/0024-read-only-library-browser.md)).
-Terminal connection integration and milestone-0 performance acceptance remain
-unfinished ([0018](decisions/0018-milestone-0-benchmark-method-revised.md)).
+and a native workspace window with existing-session terminal connections
+([0025](decisions/0025-existing-session-terminals.md)). Full connection/input parity
+and milestone-0 performance acceptance remain unfinished ([0018](decisions/0018-milestone-0-benchmark-method-revised.md)).
 
 ## The design at a glance
 
@@ -78,7 +78,7 @@ The repository is a Cargo workspace. Each crate above is a package under
 | `crates/roster` | Crate documentation stating its responsibility; no code yet. |
 | `crates/tmux` | `control`, the decoder for a control-mode client's output: pane output with tmux's escaping removed, command replies and notifications. `layout`, which reads visible pane rectangles (including zoom) from layout notifications. `capture`, which reads a pane's rows and pending parser bytes from `capture-pane`, and `recovery`, the commands and reply handling that rebuild a pane's state ([0021](decisions/0021-pane-state-recovery.md)). |
 | `crates/term` | `Terminal`, the wrapper around the terminal engine: it creates a terminal with grapheme clustering on, feeds it bytes, and copies the visible screen into a `Screen`, owned display data that any thread can hold. `restore`, which builds a terminal from a pane's state as tmux holds it ([0021](decisions/0021-pane-state-recovery.md)). |
-| `crates/app` | The `tmux-workspaces` binary opens a native read-only library browser (`desktop`), with workspace/tab navigation and saved split previews. The library provides library path and shell identity lookup plus a read-only storage worker and per-window layout reconciliation and viewing history (`library`), and the terminal path: `panes` starts from captured pane state, keeps each terminal on a worker thread and hands over owned display data, and `view` draws it with GPUI. The `bench-window` example draws one tmux window with them for the benchmarks ([0019](decisions/0019-benchmark-window.md)); the product browser does not connect terminal sessions yet. Initial capture, right-margin recovery and recovery after visible layout changes are integrated. Driving tmux geometry from native window resizing, changing windows and retrying failed attachments still belong to the full connection lifecycle. |
+| `crates/app` | The `tmux-workspaces` binary opens a native workspace window (`desktop`), with workspace/tab navigation, saved splits and live existing-session terminals. The library provides library path and shell identity lookup plus a read-only storage worker and per-window layout reconciliation and viewing history (`library`), and the terminal path: `panes` starts from captured pane state, keeps each terminal on a worker thread and hands over owned display data, and `view` draws it with GPUI. The `bench-window` example draws one tmux window with them for the benchmarks ([0019](decisions/0019-benchmark-window.md)); the product window reuses the same renderer and terminal worker for its visible saved leaves. Initial capture, right-margin recovery and recovery after visible layout changes are integrated. Driving tmux geometry from native window resizing, and changing attached windows still belong to the full connection lifecycle. Failed connections have a native reconnect action. |
 | `crates/test-support` | Development-only fixtures. `TmuxServer` starts the private tmux servers that tests use, and control-mode clients on them ([0012](decisions/0012-testing-strategy-and-tmux-isolation.md)). |
 | `crates/bench`, `crates/bench-rio` | The development-only milestone-0 benchmark harness and its separate `rio-vt` program ([0017](decisions/0017-benchmark-harness.md)). |
 | `docs/` | This page, the decision records, the research, the parity checklist and the [benchmark results](benchmarks/README.md). |
@@ -134,6 +134,7 @@ described in [0001](decisions/0001-record-architecture-decisions.md).
 | [0020. Benchmark launch context](decisions/0020-benchmark-launch-context.md) | Accepted |
 | [0021. Pane state recovery and the control-mode fidelity harness](decisions/0021-pane-state-recovery.md) | Accepted |
 | [0022. vtebench in gate 2](decisions/0022-vtebench-in-gate-2.md) | Proposed |
+| [0025. Existing-session terminals](decisions/0025-existing-session-terminals.md) | Accepted for development; acceptance pending |
 | [0024. Native read-only library browser](decisions/0024-read-only-library-browser.md) | Accepted for development; acceptance pending |
 
 ## Further reading

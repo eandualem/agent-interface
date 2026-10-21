@@ -4,6 +4,9 @@
   performance acceptance remain pending.
 - **Date:** 2026-10-21
 
+The placeholder pane presentation is superseded by
+[0025](0025-existing-session-terminals.md). The library remains read-only.
+
 ## Context
 
 Workspace models and read-only library polling can support browsing saved

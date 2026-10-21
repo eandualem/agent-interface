@@ -13,3 +13,5 @@ pub mod control;
 pub mod discovery;
 pub mod layout;
 pub mod recovery;
+
+pub mod connection;

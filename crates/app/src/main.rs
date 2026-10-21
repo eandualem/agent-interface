@@ -1,10 +1,10 @@
-//! Start the native read-only workspace browser.
+//! Start the native workspace and terminal window.
 
 #![forbid(unsafe_code)]
 
 use std::{ffi::OsString, path::PathBuf, process::ExitCode};
 
-const USAGE: &str = "Usage: tmux-workspaces [--data-dir PATH]\n\nBrowse saved workspaces and tabs without editing saved layouts or starting terminals.\n";
+const USAGE: &str = "Usage: tmux-workspaces [--data-dir PATH]\n\nOpen saved workspaces and connect their existing tmux sessions. Saved layouts are not modified.\n";
 
 fn main() -> ExitCode {
     match options(std::env::args_os().skip(1)) {
