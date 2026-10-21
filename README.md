@@ -47,7 +47,8 @@ screens currently retain their displayed row breaks, including wrapped lines.
 For programs with mouse reporting enabled, hold Shift to select text locally.
 Ordinary clicks, drags, requested pointer motion and wheel gestures reach the
 program. Each drag stays with its original pane; only one held-button gesture is
-forwarded at a time. On macOS, changing modifiers during a drag ends it.
+forwarded at a time. On macOS, either left/right release ends an active left/right gesture;
+simultaneous left/right button chords are unsupported.
 Hold Shift to keep scrolling local to the native viewer.
 Command-N or **New Window** opens another native window on the current library,
 with independent navigation and terminal connections. Closing one leaves the

@@ -58,10 +58,12 @@ layout changes may clear it too. Selection works on a retained disconnected scre
 use the destination's mouse encoder when reporting is enabled. A drag stays bound
 to its original pane, clamping to its edge outside that pane. One held-button
 gesture is forwarded at a time. Focus loss, deactivation, navigation or view
-release ends it. On macOS, modifier changes also end the gesture: the pinned
-GPUI backend remaps Control-left button down/up independently and removes the
-Control flag, so a changed modifier could otherwise make the release unmatched.
-Application button presses focus their terminal so modifier events reach it.
+release ends it. The pinned macOS GPUI backend remaps Control-left down/up
+independently, removes Control from those events, and may omit modifier callbacks
+after window activation. For that backend, either left/right release ends an
+active left/right gesture using its originally encoded button. Simultaneous
+left/right chords are unsupported; this avoids leaving the program pressed after
+an unmatched Control-click release. Application button presses focus their terminal.
 Hover reports use the element's hit testing so overlays can
 consume pointer movement. The worker retains accepted button ownership through
 capture recovery and can encode its release after resizing or entering history.
