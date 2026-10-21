@@ -140,6 +140,31 @@ attributes are a fixture profile, not a production capability declaration.
 The engine's reply callback must remain disabled for control-mode pane decoding:
 forwarding those replies too would duplicate responses already owned by tmux.
 
+### Extended-key negotiation
+
+A separate fixture enables `extended-keys` and declares `extkeys` support on its
+private server. This is an explicit fixture capability profile, not a proposal to
+override source settings in the product. The native encoder takes its options
+from the outer terminal after tmux's request, without forced encoder flags. The
+events carry the unmodified text and modifiers expected by the pinned key API.
+
+The fixture checks Ctrl-I, Ctrl-Shift-A and Tab, plus an application that disables
+extended keys after requesting them. On tmux 3.5a, 3.6b, 3.7c and 3.8, tmux requests
+modifyOtherKeys mode 2 from the outer terminal. The raw application receives the
+configured `csi-u` or `xterm` format; both preserve Ctrl-I as distinct from Tab.
+After the application disables extended keys, it receives Tab for Ctrl-I even
+though the outer terminal still sends an extended key sequence.
+
+tmux 3.3a and 3.4 request mode 1 and have no `extended-keys-format` option. The
+native encoder sends CSI-u sequences for the tested modified letters, but those
+tmux versions normalize Ctrl-I to Tab before delivering it. The fixture records
+that limitation, not a fix or a reason to raise the supported-version floor.
+Ctrl-Shift-A still reaches the raw application as an extended sequence.
+
+These assertions passed on all six versions. They cover the named keys and
+mode transitions, not all keyboard layouts, composition, Kitty keyboard flags,
+key-release events, custom bindings or operating-system event mapping.
+
 ## Tradeoffs and remaining acceptance
 
 An ordinary client retains tmux's own presentation and input semantics rather
