@@ -214,7 +214,7 @@ impl Recovery {
             replies: Vec::new(),
             held: Some(Vec::new()),
         };
-        (recovery, line(&[pane], &continue_command(pane)))
+        (recovery, line(&[pane], &continue_command(pane), None))
     }
 
     /// The pane being rebuilt.
@@ -244,7 +244,11 @@ impl Recovery {
             Waiting::Pause => {
                 self.waiting = Waiting::Line;
                 self.held = Some(Vec::new());
-                Ok(Step::Send(line(&[self.pane], &continue_command(self.pane))))
+                Ok(Step::Send(line(
+                    &[self.pane],
+                    &continue_command(self.pane),
+                    None,
+                )))
             }
             Waiting::Line => {
                 self.replies.push(reply);
@@ -280,7 +284,16 @@ pub struct Attach {
 impl Attach {
     /// Starts rebuilding `panes`, returning the line to send.
     pub fn new(panes: Vec<PaneId>) -> (Self, String) {
-        let command = line(&panes, "refresh-client -f '!no-output'");
+        Self::start(panes, None)
+    }
+
+    /// Rebuilds only panes still in the expected source session and window.
+    pub fn in_session(panes: Vec<PaneId>, session: u32, window: u32) -> (Self, String) {
+        Self::start(panes, Some((session, window)))
+    }
+
+    fn start(panes: Vec<PaneId>, source: Option<(u32, u32)>) -> (Self, String) {
+        let command = line(&panes, "refresh-client -f '!no-output'", source);
         let attach = Self {
             panes,
             replies: Vec::new(),
@@ -391,10 +404,13 @@ fn continue_command(pane: PaneId) -> String {
 /// Returns one line that reads every pane's state and then runs `last`.
 /// None of its commands waits, so tmux reads no pane output while it runs
 /// them.
-fn line(panes: &[PaneId], last: &str) -> String {
+fn line(panes: &[PaneId], last: &str, source: Option<(u32, u32)>) -> String {
     let mut commands = Vec::new();
     for &pane in panes {
-        let target = target(pane);
+        let target = source.map_or_else(
+            || target(pane),
+            |(session, window)| format!("${session}:@{window}.%{}", pane.0),
+        );
         // The screen with all retained history, then the primary screen
         // saved while the alternate screen is on (empty otherwise).
         commands.push(format!("capture-pane -p -e -N -C -S - -E - -t '{target}'"));

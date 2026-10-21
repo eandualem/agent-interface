@@ -14,6 +14,7 @@ use tmux_workspaces_core::{Direction, Node};
 use crate::library::{Library, Update, WindowLayout};
 mod terminal;
 use terminal::{LiveTerminal, Target};
+use tmux_workspaces_tmux::connection::SessionWindow;
 
 actions!(
     library_browser,
@@ -90,6 +91,7 @@ struct Browser {
     directory: Option<PathBuf>,
     source: Option<Result<PathBuf, String>>,
     terminals: HashMap<String, gpui::Entity<LiveTerminal>>,
+    window_choices: HashMap<String, (Target, SessionWindow)>,
     layout: Option<WindowLayout>,
     error: Option<String>,
     loading: bool,
@@ -103,6 +105,7 @@ impl Browser {
     fn open(&mut self, directory: Option<PathBuf>, cx: &mut Context<Self>) {
         self.updates = None;
         self.terminals.clear();
+        self.window_choices.clear();
         self.reset_focus = true;
         self.directory = directory.clone();
         // A previous connection may be finishing a bounded SQLite read. Join its
@@ -322,6 +325,26 @@ impl Render for Browser {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
+        // Keep only the source-bound choice, not hidden clients or renderers.
+        for (id, terminal) in &self.terminals {
+            let terminal = terminal.read(cx);
+            if let Some(selected) = terminal.selection() {
+                self.window_choices
+                    .insert(id.clone(), (terminal.target.clone(), selected));
+            }
+        }
+        self.window_choices.retain(|_, (target, _)| {
+            self.layout.as_ref().is_some_and(|layout| {
+                layout.model().workspaces.iter().any(|workspace| {
+                    workspace.tabs.iter().any(|tab| {
+                        tab.tree
+                            .leaves()
+                            .into_iter()
+                            .any(|leaf| *leaf == target.leaf)
+                    })
+                })
+            })
+        });
         self.terminals
             .retain(|id, _| leaves.iter().any(|leaf| &leaf.id == id));
         for leaf in leaves {
@@ -338,8 +361,15 @@ impl Render for Browser {
                 .get(&leaf.id)
                 .is_some_and(|view| view.read(cx).target == target)
             {
-                self.terminals
-                    .insert(leaf.id, cx.new(|cx| LiveTerminal::new(target, cx)));
+                let selected = self
+                    .window_choices
+                    .get(&leaf.id)
+                    .filter(|(previous, _)| *previous == target)
+                    .map(|(_, selected)| selected.clone());
+                self.terminals.insert(
+                    leaf.id,
+                    cx.new(|cx| LiveTerminal::new(target, selected, cx)),
+                );
             }
         }
         let mut tabs = div().id("tabs").flex_1().min_h_0().overflow_y_scroll();
