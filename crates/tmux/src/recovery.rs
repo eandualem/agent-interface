@@ -120,6 +120,8 @@ pub struct Modes {
     pub bracketed_paste: Option<bool>,
     /// The extended-keys mode; reported from tmux 3.5.
     pub extended_keys: Option<ExtendedKeys>,
+    /// Source server extended-key format: true for CSI-u, false for xterm.
+    pub extended_keys_csi_u: Option<bool>,
     /// Focus reporting (1004); reported from tmux 3.8.
     pub focus_events: Option<bool>,
 }
@@ -339,7 +341,7 @@ pub fn hooks_break_recovery<'a>(lines: impl IntoIterator<Item = &'a [u8]>) -> bo
 
 /// The formats each rebuild reads, one `display-message` each: some formats
 /// can contain a line end.
-const FORMATS: [&str; 27] = [
+const FORMATS: [&str; 28] = [
     "pane_width",
     "pane_height",
     "history_size",
@@ -364,6 +366,7 @@ const FORMATS: [&str; 27] = [
     "mouse_sgr_flag",
     "bracket_paste_flag",
     "pane_key_mode",
+    "extended-keys-format",
     "pane_private_modes",
     "pane_left",
     "pane_top",
@@ -524,6 +527,12 @@ fn pane_state(values: &[String]) -> Result<PaneState, Error> {
             mouse_sgr: flag("mouse_sgr_flag")?,
             bracketed_paste: optional_flag("bracket_paste_flag")?,
             extended_keys,
+            extended_keys_csi_u: match value("extended-keys-format") {
+                "" => None,
+                "xterm" => Some(false),
+                "csi-u" => Some(true),
+                _ => return Err(Error::Format("extended-keys-format")),
+            },
             focus_events,
         },
     })
@@ -552,7 +561,10 @@ mod tests {
                     "scroll_region_lower" => "23",
                     "pane_tabs" => "8,16",
                     "cursor_flag" | "wrap_flag" => "1",
-                    "bracket_paste_flag" | "pane_key_mode" | "pane_private_modes" => "",
+                    "bracket_paste_flag"
+                    | "pane_key_mode"
+                    | "pane_private_modes"
+                    | "extended-keys-format" => "",
                     _ => "0",
                 };
                 (name, value)
@@ -692,6 +704,21 @@ mod tests {
     #[test]
     fn modes_a_tmux_does_not_report_are_unknown() {
         let modes = with(&[]).unwrap().modes;
+        assert_eq!(modes.extended_keys_csi_u, None);
+        assert_eq!(
+            with(&[("extended-keys-format", "xterm")])
+                .unwrap()
+                .modes
+                .extended_keys_csi_u,
+            Some(false)
+        );
+        assert_eq!(
+            with(&[("extended-keys-format", "csi-u")])
+                .unwrap()
+                .modes
+                .extended_keys_csi_u,
+            Some(true)
+        );
         assert_eq!(
             (
                 modes.bracketed_paste,

@@ -207,7 +207,8 @@ impl LivePane {
             restore.cursor_visible = false;
             restore.pending.clear();
         }
-        let terminal = Terminal::restored(&restore, scrollback).map_err(|e| e.to_string())?;
+        let mut terminal = Terminal::restored(&restore, scrollback).map_err(|e| e.to_string())?;
+        terminal.set_extended_keys_csi_u(snapshot.state.modes.extended_keys_csi_u.unwrap_or(false));
         Ok(Self {
             size: (snapshot.state.width, snapshot.state.height),
             offset: (snapshot.state.left, snapshot.state.top),
@@ -251,11 +252,11 @@ struct WindowState {
 }
 
 impl WindowState {
-    fn encode_ready_inputs(&mut self) {
+    fn encode_ready_inputs(&mut self, changed: &mut Vec<PaneId>) {
         self.inputs.retain(|request| {
             let terminal = self
                 .terminals
-                .iter()
+                .iter_mut()
                 .find(|(id, _)| *id == request.pane)
                 .filter(|(id, _)| self.layout.panes.iter().any(|pane| pane.id == *id));
             if let Some((_, terminal)) = terminal {
@@ -264,12 +265,16 @@ impl WindowState {
                 if terminal.needs_capture {
                     return true;
                 }
-                let _ = request.reply.send(
-                    terminal
-                        .terminal
-                        .encode_input(&request.input)
-                        .map_err(|e| e.to_string()),
-                );
+                let before = terminal.terminal.scrolled_row();
+                let result = terminal
+                    .terminal
+                    .encode_input(&request.input)
+                    .map_err(|e| e.to_string());
+                let after = terminal.terminal.scrolled_row();
+                if before.ok() != after.ok() && !changed.contains(&request.pane) {
+                    changed.push(request.pane);
+                }
+                let _ = request.reply.send(result);
             } else {
                 let _ = request
                     .reply
@@ -416,9 +421,10 @@ impl Panes {
         }
         // tmux does not emit layout-change for every content-geometry change
         // (for example, switching top to bottom pane border status). Its format
-        // subscriptions report these changes, at most once per second.
+        // subscriptions report these changes, at most once per second. Also
+        // refresh the source server's extended-key format when it changes.
         panes.control.send(&format!(
-            "refresh-client -B 'content-geometry:@{}:#{{P:#{{pane_id}}/#{{pane_left}}/#{{pane_top}}/#{{pane_width}}/#{{pane_height}};}}'\n",
+            "refresh-client -B 'content-geometry:@{}:#{{P:#{{pane_id}}/#{{pane_left}}/#{{pane_top}}/#{{pane_width}}/#{{pane_height}};}}/#{{extended-keys-format}}'\n",
             layout.window,
         ), ReplyOwner::GeometrySubscription)?;
         let (ready, initialized) = mpsc::channel();
@@ -680,7 +686,7 @@ fn work(
         }
         if !window.inputs.is_empty() {
             drop(state);
-            window.encode_ready_inputs();
+            window.encode_ready_inputs(&mut changed);
             state = shared.lock();
         }
         if capture_unavailable && state.closed && state.queue.is_empty() && !window.ready() {
@@ -967,12 +973,19 @@ fn apply(
                                 .ok_or("recovery completed for an unknown pane")?;
                             let deadline = terminal.recovery_deadline;
                             let geometry = (terminal.size, terminal.offset);
+                            let scrolled = terminal
+                                .terminal
+                                .scrolled_row()
+                                .map_err(|e| e.to_string())?;
                             *terminal = LivePane::restored(rebuilt.snapshot, scrollback)?;
                             // A snapshot can observe an option-only resize before
                             // its once-per-second subscription notification. Do
                             // not join this screen to an older waiting rectangle.
                             window.geometry_changed |= geometry != (terminal.size, terminal.offset);
                             terminal.resume_after_recovery(&rebuilt.output, deadline)?;
+                            if let Some(row) = scrolled {
+                                terminal.terminal.restore_scrolled_row(row);
+                            }
                             if *generation != window.generation {
                                 terminal.needs_capture = true;
                                 terminal.recovery_deadline = deadline;
@@ -1654,10 +1667,72 @@ mod tests {
     }
 
     #[test]
+    fn local_history_scroll_survives_capture_and_typing_returns_to_live_output() {
+        use tmux_workspaces_term::input::Scroll;
+        let server = TmuxServer::start().unwrap();
+        let script = "stty raw -echo; printf 'history-first\\r\\n'; i=0; while [ \"$i\" -lt 60 ]; do printf 'history-%02d\\r\\n' \"$i\"; i=$((i+1)); done; printf '\\033[2J\\033[Hlive-ready'; exec cat";
+        server
+            .run(&[
+                "respawn-pane",
+                "-k",
+                "-t",
+                TmuxServer::SESSION,
+                "sh",
+                "-c",
+                script,
+            ])
+            .unwrap();
+        let layout = layout(&server);
+        let pane = layout.panes[0].id;
+        let client = server
+            .control(&[
+                "attach-session",
+                "-f",
+                "no-output,ignore-size,new-layouts",
+                "-t",
+                TmuxServer::SESSION,
+            ])
+            .unwrap();
+        let (wake, woken) = mpsc::channel();
+        let panes = Panes::start(client, &layout, 100, move || {
+            let _ = wake.send(());
+        })
+        .unwrap();
+        wait_for_row(&panes, &woken, pane, "live-ready");
+        panes
+            .send_encoded_input(pane, Input::Scroll(Scroll::Top))
+            .unwrap();
+        wait_for_row(&panes, &woken, pane, "history-first");
+        // Another private-fixture client produces a wrapping line while this
+        // viewer reads history. Its capture recovery must keep the local view.
+        server
+            .run(&[
+                "send-keys",
+                "-l",
+                "-t",
+                &format!("%{}", pane.0),
+                &"x".repeat(usize::from(layout.panes[0].cols) + 5),
+            ])
+            .unwrap();
+        wait_for_row(&panes, &woken, pane, "history-first");
+        panes
+            .send_encoded_input(pane, Input::Paste("typed".into()))
+            .unwrap();
+        wait_for_row(&panes, &woken, pane, "live-readyxxx");
+        assert_eq!(panes.failure(), None);
+    }
+
+    #[test]
     fn worker_encodes_application_keys_and_bracketed_paste_in_stream_order() {
         use tmux_workspaces_term::input::KeyPress;
         let server = TmuxServer::start().unwrap();
-        let script = "stty raw -echo; printf '\\033[?1h\\033[2J\\033[Harrow-ready'; arrow=$(dd bs=1 count=3 2>/dev/null | od -An -tx1 | tr -d '[:space:]'); printf '\\033[?2004h\\033[2J\\033[Hpaste-ready%s' \"$arrow\"; pasted=$(dd bs=1 count=15 2>/dev/null | od -An -tx1 | tr -d '[:space:]'); printf '\\033[2J\\033[Hpaste:%s' \"$pasted\"; exec cat";
+        server
+            .run(&["set-option", "-s", "extended-keys", "on"])
+            .unwrap();
+        server
+            .run(&["set-option", "-s", "extended-keys-format", "csi-u"])
+            .unwrap();
+        let script = "stty raw -echo; printf '\\033[>4;2m\\033[?1h\\033[2J\\033[Harrow-ready'; arrow=$(dd bs=1 count=3 2>/dev/null | od -An -tx1 | tr -d '[:space:]'); printf '\\033[2J\\033[Hextended-ready%s' \"$arrow\"; extended=$(dd bs=1 count=7 2>/dev/null | od -An -tx1 | tr -d '[:space:]'); printf '\\033[?2004h\\033[2J\\033[Hpaste-ready%s' \"$extended\"; pasted=$(dd bs=1 count=15 2>/dev/null | od -An -tx1 | tr -d '[:space:]'); printf '\\033[2J\\033[Hpaste:%s' \"$pasted\"; exec cat";
         server
             .run(&[
                 "respawn-pane",
@@ -1695,7 +1770,19 @@ mod tests {
                 }),
             )
             .unwrap();
-        wait_for_row(&panes, &woken, pane, "paste-ready1b4f41");
+        wait_for_row(&panes, &woken, pane, "extended-ready1b4f41");
+        panes
+            .send_encoded_input(
+                pane,
+                Input::Key(KeyPress {
+                    key: "h".into(),
+                    control: true,
+                    shift: true,
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+        wait_for_row(&panes, &woken, pane, "paste-ready1b5b37323b3675");
         panes
             .send_encoded_input(pane, Input::Paste("ok\n".into()))
             .unwrap();

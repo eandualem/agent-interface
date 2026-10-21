@@ -4,7 +4,7 @@ use crate::{Error, Terminal};
 use libghostty_vt::{
     key::{Action, Encoder, Event, Key, Mods},
     paste,
-    terminal::Mode,
+    terminal::{Mode, ScrollViewport},
 };
 
 /// A keyboard event independent of the native UI framework.
@@ -25,6 +25,17 @@ pub struct KeyPress {
     pub repeat: bool,
 }
 
+/// Local history navigation, without changing tmux copy mode.
+#[derive(Clone, Copy, Debug)]
+pub enum Scroll {
+    /// Move by rows; negative moves toward earlier output.
+    Lines(isize),
+    /// Show the oldest retained output.
+    Top,
+    /// Return to the live screen.
+    Bottom,
+}
+
 /// One ordered user input operation. App shortcuts are handled before this.
 #[derive(Clone, Debug)]
 pub enum Input {
@@ -32,6 +43,8 @@ pub enum Input {
     Key(KeyPress),
     /// Clipboard text; the engine sanitizes control bytes and brackets it when enabled.
     Paste(String),
+    /// Scroll this viewer through the pane's retained history.
+    Scroll(Scroll),
 }
 
 impl Input {
@@ -40,15 +53,45 @@ impl Input {
         match self {
             Self::Key(key) => key.key.len() + key.text.as_ref().map_or(0, String::len),
             Self::Paste(text) => text.len(),
+            Self::Scroll(_) => 0,
         }
     }
 }
 
 impl Terminal {
+    /// Select the source server's extended-key wire format. False is xterm;
+    /// true is CSI-u. This is independent of the program's negotiated level.
+    pub fn set_extended_keys_csi_u(&mut self, enabled: bool) {
+        self.extended_keys_csi_u = enabled;
+    }
+
+    /// Current history row, or none when following the live screen.
+    pub fn scrolled_row(&self) -> Result<Option<usize>, Error> {
+        let bar = self.engine.scrollbar().map_err(Error)?;
+        Ok((bar.offset < bar.total.saturating_sub(bar.len)).then_some(bar.offset as usize))
+    }
+
+    /// Restore a history view after rebuilding terminal state. Rows beyond
+    /// retained history are clamped by the engine.
+    pub fn restore_scrolled_row(&mut self, row: usize) {
+        self.engine.scroll_viewport(ScrollViewport::Row(row));
+    }
+
     /// Encode input on this terminal's owning thread. This sends nothing and
     /// never reads another pane's modes or the system clipboard.
-    pub fn encode_input(&self, input: &Input) -> Result<Vec<u8>, Error> {
+    pub fn encode_input(&mut self, input: &Input) -> Result<Vec<u8>, Error> {
+        if !matches!(input, Input::Scroll(_)) {
+            self.engine.scroll_viewport(ScrollViewport::Bottom);
+        }
         match input {
+            Input::Scroll(scroll) => {
+                self.engine.scroll_viewport(match scroll {
+                    Scroll::Lines(rows) => ScrollViewport::Delta(*rows),
+                    Scroll::Top => ScrollViewport::Top,
+                    Scroll::Bottom => ScrollViewport::Bottom,
+                });
+                Ok(Vec::new())
+            }
             Input::Key(key) => {
                 let mut encoder = Encoder::new().map_err(Error)?;
                 encoder.set_options_from_terminal(&self.engine);
@@ -93,6 +136,45 @@ impl Terminal {
                 event.set_utf8(text);
                 let mut encoded = Vec::with_capacity(32);
                 encoder.encode_to_vec(&event, &mut encoded).map_err(Error)?;
+                // The engine disambiguates a few legacy control keys using
+                // CSI-u even without an extended protocol. Literal tmux input
+                // must retain the traditional shell bytes in that case.
+                if self
+                    .engine
+                    .kitty_keyboard_flags()
+                    .map_err(Error)?
+                    .is_empty()
+                    && key.control
+                    && !key.shift
+                    && !key.alt
+                    && encoded.starts_with(b"\x1b[")
+                    && encoded.ends_with(b"u")
+                    && let Some(ch) = character.map(|ch| ch.to_ascii_uppercase())
+                {
+                    let byte = match ch {
+                        '@'..='_' => Some(ch as u8 & 0x1f),
+                        ' ' | '2' => Some(0),
+                        '?' => Some(0x7f),
+                        _ => None,
+                    };
+                    if let Some(byte) = byte {
+                        return Ok(vec![byte]);
+                    }
+                }
+                if self.extended_keys_csi_u
+                    && let Some(sequence) = encoded
+                        .strip_prefix(b"\x1b[27;")
+                        .and_then(|s| s.strip_suffix(b"~"))
+                    && let Some(separator) = sequence.iter().position(|&byte| byte == b';')
+                {
+                    let (mods, code) = sequence.split_at(separator);
+                    let mut csi = b"\x1b[".to_vec();
+                    csi.extend_from_slice(&code[1..]);
+                    csi.push(b';');
+                    csi.extend_from_slice(mods);
+                    csi.push(b'u');
+                    return Ok(csi);
+                }
                 Ok(encoded)
             }
             Input::Paste(text) => {
@@ -230,6 +312,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn local_scroll_moves_the_viewport_and_input_returns_to_live_screen() {
+        let mut terminal = Terminal::new(20, 3, 100).unwrap();
+        terminal.write(b"first\r\nsecond\r\nthird\r\nfourth\r\nfifth");
+        let mut screen = crate::Screen::default();
+        terminal.encode_input(&Input::Scroll(Scroll::Top)).unwrap();
+        terminal.read_screen(&mut screen).unwrap();
+        assert_eq!(screen.cell(0, 0).unwrap().0, "f");
+        assert_eq!(terminal.scrolled_row().unwrap(), Some(0));
+        terminal
+            .encode_input(&Input::Scroll(Scroll::Lines(1)))
+            .unwrap();
+        assert_eq!(terminal.scrolled_row().unwrap(), Some(1));
+        terminal.encode_input(&Input::Paste("text".into())).unwrap();
+        assert_eq!(terminal.scrolled_row().unwrap(), None);
+        terminal.read_screen(&mut screen).unwrap();
+        assert_eq!(screen.cell(0, 0).unwrap().0, "t");
+    }
+
+    #[test]
     fn keys_and_paste_follow_the_destination_modes_and_sanitize_paste() {
         let mut terminal = Terminal::new(80, 24, 0).unwrap();
         let key = |name: &str| {
@@ -239,6 +340,18 @@ mod tests {
             })
         };
         assert_eq!(terminal.encode_input(&key("up")).unwrap(), b"\x1b[A");
+        for (name, byte) in [("i", 9), ("m", 13), ("[", 27)] {
+            assert_eq!(
+                terminal
+                    .encode_input(&Input::Key(KeyPress {
+                        key: name.into(),
+                        control: true,
+                        ..Default::default()
+                    }))
+                    .unwrap(),
+                [byte]
+            );
+        }
         terminal.write(b"\x1b[?1h");
         assert_eq!(terminal.encode_input(&key("up")).unwrap(), b"\x1bOA");
         assert_eq!(
@@ -275,6 +388,28 @@ mod tests {
                 }))
                 .unwrap(),
             b"\x1b[27;6;72~"
+        );
+        terminal.set_extended_keys_csi_u(true);
+        assert_eq!(
+            terminal
+                .encode_input(&Input::Key(KeyPress {
+                    key: "h".into(),
+                    control: true,
+                    shift: true,
+                    ..Default::default()
+                }))
+                .unwrap(),
+            b"\x1b[72;6u"
+        );
+        assert_eq!(
+            terminal
+                .encode_input(&Input::Key(KeyPress {
+                    key: "i".into(),
+                    control: true,
+                    ..Default::default()
+                }))
+                .unwrap(),
+            b"\x1b[105;5u"
         );
         terminal.write(b"\x1b[>4;0m\x1b[?1l\x1b[?2004l");
         assert_eq!(terminal.encode_input(&key("up")).unwrap(), b"\x1b[A");

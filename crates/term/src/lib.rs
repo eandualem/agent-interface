@@ -53,6 +53,7 @@ pub struct Terminal {
     /// is given.
     grapheme: String,
     del: del::Del,
+    extended_keys_csi_u: bool,
     rename: rename::Rename,
 }
 
@@ -84,6 +85,7 @@ impl Terminal {
             cells: CellIterator::new().map_err(Error)?,
             grapheme: String::new(),
             del: del::Del::default(),
+            extended_keys_csi_u: false,
             rename: rename::Rename::default(),
         })
     }
