@@ -396,14 +396,6 @@ impl Render for NameField {
                     cx.notify();
                 }),
             )
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|field, _, _, _| field.dragging = false),
-            )
-            .on_mouse_up_out(
-                MouseButton::Left,
-                cx.listener(|field, _, _, _| field.dragging = false),
-            )
             .child(
                 canvas(
                     |_, _, _| (),
@@ -415,6 +407,14 @@ impl Render for NameField {
                             cx,
                         );
                         entity.update(cx, |field, cx| field.paint(bounds, window, cx));
+                        let released = entity.downgrade();
+                        window.on_mouse_event(move |event: &gpui::MouseUpEvent, phase, _, cx| {
+                            if phase == gpui::DispatchPhase::Capture
+                                && event.button == MouseButton::Left
+                            {
+                                let _ = released.update(cx, |field, _| field.dragging = false);
+                            }
+                        });
                         let field = entity.downgrade();
                         window.on_mouse_event(move |event: &gpui::MouseMoveEvent, phase, _, cx| {
                             if phase == gpui::DispatchPhase::Capture {
