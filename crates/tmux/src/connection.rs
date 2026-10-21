@@ -31,6 +31,8 @@ pub struct Connection {
     pub input: PaneId,
     /// Existing windows available for local navigation.
     pub windows: Vec<SessionWindow>,
+    /// Numeric session identity verified for this control client.
+    pub session: u32,
 }
 
 /// Connect to an exact existing session on an explicit socket. This uses `-E`
@@ -167,6 +169,7 @@ fn connect_selected(
         layout,
         input,
         windows,
+        session: identity[1..].parse().map_err(io::Error::other)?,
     })
 }
 

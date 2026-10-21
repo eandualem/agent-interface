@@ -54,6 +54,7 @@ pub struct Panes {
     shared: Arc<Shared>,
     control: Arc<Control>,
     input: Mutex<()>,
+    source: Option<(u32, u32)>,
     client: Child,
     threads: Vec<JoinHandle<()>>,
 }
@@ -118,6 +119,7 @@ enum ReplyOwner {
     Input(PaneId),
     Recovery,
     GeometrySubscription,
+    SourceSubscription,
 }
 
 struct Control {
@@ -333,12 +335,34 @@ impl Panes {
     /// `wake` is called on the worker thread whenever an update is ready, and
     /// once more when the worker has finished.
     pub fn start(
-        mut client: Child,
+        client: Child,
         layout: &layout::Change,
         scrollback: usize,
         wake: impl Fn() + Send + 'static,
     ) -> io::Result<Self> {
-        let seed = match crate::seed::attach(&mut client, layout.window) {
+        Self::start_checked(client, layout, None, scrollback, wake)
+    }
+
+    /// Starts a product connection whose selected window must still belong to
+    /// the verified source session when capture begins on that client.
+    pub fn start_in_session(
+        client: Child,
+        layout: &layout::Change,
+        session: u32,
+        scrollback: usize,
+        wake: impl Fn() + Send + 'static,
+    ) -> io::Result<Self> {
+        Self::start_checked(client, layout, Some(session), scrollback, wake)
+    }
+
+    fn start_checked(
+        mut client: Child,
+        layout: &layout::Change,
+        session: Option<u32>,
+        scrollback: usize,
+        wake: impl Fn() + Send + 'static,
+    ) -> io::Result<Self> {
+        let seed = match crate::seed::attach(&mut client, layout.window, session) {
             Ok(seed) => seed,
             Err(error) => {
                 let _ = client.kill();
@@ -391,6 +415,7 @@ impl Panes {
                 pending: Mutex::new(VecDeque::new()),
             }),
             input: Mutex::new(()),
+            source: session.map(|session| (session, layout.window)),
             client,
             threads: Vec::new(),
         };
@@ -409,7 +434,7 @@ impl Panes {
         let reader = spawn("tmux reader", {
             let shared = Arc::clone(&panes.shared);
             let window = layout.window;
-            move || read(&shared, stdout, decoder, window)
+            move || read(&shared, stdout, decoder, window, session)
         });
         match reader {
             Ok(reader) => panes.threads.push(reader),
@@ -427,6 +452,12 @@ impl Panes {
             "refresh-client -B 'content-geometry:@{}:#{{P:#{{pane_id}}/#{{pane_left}}/#{{pane_top}}/#{{pane_width}}/#{{pane_height}};}}/#{{extended-keys-format}}'\n",
             layout.window,
         ), ReplyOwner::GeometrySubscription)?;
+        if session.is_some() {
+            panes.control.send(
+                "refresh-client -B 'source-window::#{session_id}/#{W:#{window_id};}'\n",
+                ReplyOwner::SourceSubscription,
+            )?;
+        }
         let (ready, initialized) = mpsc::channel();
         panes.threads.push(spawn("terminal worker", {
             let shared = Arc::clone(&panes.shared);
@@ -475,8 +506,13 @@ impl Panes {
             if let Some(failure) = self.failure() {
                 return Err(io::Error::other(failure));
             }
-            self.control
-                .send(&command::send_bytes(pane, chunk), ReplyOwner::Input(pane))?;
+            let line = match self.source {
+                Some((session, window)) => {
+                    command::send_bytes_in_session(session, window, pane, chunk)
+                }
+                None => command::send_bytes(pane, chunk),
+            };
+            self.control.send(&line, ReplyOwner::Input(pane))?;
         }
         Ok(())
     }
@@ -563,8 +599,15 @@ fn spawn(name: &str, body: impl FnOnce() + Send + 'static) -> io::Result<JoinHan
 
 /// Reads and decodes the client's output, queueing each pane's output for the
 /// worker, until the client exits.
-fn read(shared: &Shared, mut stdout: ChildStdout, mut decoder: Decoder, window: u32) {
+fn read(
+    shared: &Shared,
+    mut stdout: ChildStdout,
+    mut decoder: Decoder,
+    window: u32,
+    session: Option<u32>,
+) {
     let layout_prefix = format!("%layout-change @{window} ");
+    let removed = format!("%unlinked-window-close @{window}");
     let mut buffer = vec![0; READ_SIZE];
     let mut reply = Reply::default();
     let mut from_client = false;
@@ -605,7 +648,29 @@ fn read(shared: &Shared, mut stdout: ChildStdout, mut decoder: Decoder, window: 
             {
                 batch.push(Event::Geometry);
             }
+            Message::Notification(line)
+                if session.is_some()
+                    && line.starts_with(b"%subscription-changed source-window ") =>
+            {
+                let value = std::str::from_utf8(line)
+                    .ok()
+                    .and_then(|line| line.split_once(" : "));
+                let member = value
+                    .and_then(|(_, value)| value.split_once('/'))
+                    .is_some_and(|(source, windows)| {
+                        source == format!("${}", session.unwrap())
+                            && windows.split(';').any(|id| id == format!("@{window}"))
+                    });
+                if !member {
+                    shared.lock().failure = Some("Selected window left the source session".into());
+                    exited = true;
+                }
+            }
             Message::Notification(line) if line.starts_with(b"%exit") => exited = true,
+            Message::Notification(line) if line == removed.as_bytes() => {
+                shared.lock().failure = Some("Selected window left the source session".into());
+                exited = true;
+            }
             _ => {}
         });
         if decoded.is_err() {
@@ -951,6 +1016,12 @@ fn apply(
                         return Err("tmux rejected the content geometry subscription".into());
                     }
                 }
+                Some(ReplyOwner::SourceSubscription) => {
+                    pending.pop_front();
+                    if !reply.ok {
+                        return Err("tmux rejected the source window subscription".into());
+                    }
+                }
                 Some(ReplyOwner::Recovery) => {
                     let (recovery, _, generation) =
                         recovering.as_mut().ok_or("reply without a pane recovery")?;
@@ -1141,7 +1212,7 @@ mod tests {
                 TmuxServer::SESSION,
             ])
             .unwrap();
-        let seed = crate::seed::attach(&mut client, layout.window).unwrap();
+        let seed = crate::seed::attach(&mut client, layout.window, None).unwrap();
         let snapshots = seed.snapshots.clone();
         let mut margin_snapshot = snapshots[0].clone();
         margin_snapshot.state.cursor.0 = margin_snapshot.state.width;
@@ -1998,7 +2069,7 @@ mod tests {
         drop(client.stdin.take());
         // Read on another thread, so that a client that never exits fails
         // the test instead of hanging it: killing the client ends the read.
-        let reader = std::thread::spawn(move || read(&shared, stdout, Decoder::new(), 0));
+        let reader = std::thread::spawn(move || read(&shared, stdout, Decoder::new(), 0, None));
 
         let deadline = Instant::now() + Duration::from_secs(10);
         while client.try_wait().unwrap().is_none() {

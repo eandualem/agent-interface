@@ -30,7 +30,7 @@ pub(crate) enum Event {
 /// Reads the attach reply, checks recovery hooks and captures before enabling
 /// output. The process must have been started with no-output,ignore-size.
 /// A deadline bounds startup even if the control client stops replying.
-pub(crate) fn attach(client: &mut Child, window: u32) -> io::Result<Seed> {
+pub(crate) fn attach(client: &mut Child, window: u32, session: Option<u32>) -> io::Result<Seed> {
     let stdin = client
         .stdin
         .take()
@@ -43,7 +43,7 @@ pub(crate) fn attach(client: &mut Child, window: u32) -> io::Result<Seed> {
     let reader = thread::Builder::new()
         .name("pane snapshot".into())
         .spawn(move || {
-            let _ = send.send(capture(stdin, stdout, window));
+            let _ = send.send(capture(stdin, stdout, window, session));
         })?;
     let result = receive
         .recv_timeout(TIMEOUT)
@@ -63,7 +63,17 @@ pub(crate) fn attach(client: &mut Child, window: u32) -> io::Result<Seed> {
     result
 }
 
-fn capture<I: Write, O: Read>(mut stdin: I, mut stdout: O, window: u32) -> io::Result<Seed<I, O>> {
+fn capture<I: Write, O: Read>(
+    mut stdin: I,
+    mut stdout: O,
+    window: u32,
+    session: Option<u32>,
+) -> io::Result<Seed<I, O>> {
+    let target = session.map_or_else(
+        || format!("@{window}"),
+        |session| format!("${session}:@{window}"),
+    );
+    let removed = format!("%unlinked-window-close @{window}");
     let mut attach = None;
     let mut layout = None;
     let mut decoder = Decoder::new();
@@ -123,7 +133,7 @@ fn capture<I: Write, O: Read>(mut stdin: I, mut stdout: O, window: u32) -> io::R
                                 let send = match preliminary {
                                     4 => Some("show-hooks -g ; show-hooks\n".to_owned()),
                                     2 => Some(format!(
-                                        "display-message -p -t @{window} '#{{window_id}} #{{window_layout}} #{{window_visible_layout}} #{{window_raw_flags}}'\n"
+                                        "display-message -p -t '{target}' '#{{window_id}} #{{window_layout}} #{{window_visible_layout}} #{{window_raw_flags}}'\n"
                                     )),
                                     1 => {
                                         let [line] = reply.lines.as_slice() else {
@@ -172,6 +182,16 @@ fn capture<I: Write, O: Read>(mut stdin: I, mut stdout: O, window: u32) -> io::R
                         }
                         Message::Notification(line) if line.starts_with(b"%layout-change ") => {
                             events.push(Event::Layout(line.to_vec()));
+                        }
+                        Message::Notification(line) if line == removed.as_bytes() => {
+                            return Err(io::Error::other("selected window left the source session during capture"));
+                        }
+                        Message::Notification(line) if line.starts_with(b"%session-changed ") && session.is_some() => {
+                            let actual = line.split(|byte| *byte == b' ').nth(1)
+                                .and_then(|id| id.strip_prefix(b"$"))
+                                .and_then(|id| std::str::from_utf8(id).ok())
+                                .and_then(|id| id.parse::<u32>().ok());
+                            if actual != session { return Err(io::Error::other("source session changed during capture")); }
                         }
                         Message::Notification(line)
                             if line.starts_with(b"%exit") && snapshots.is_none() =>
@@ -237,7 +257,7 @@ mod tests {
         wire.push_str("%output %7 more\n");
         let mut exited = wire.clone();
         exited.push_str("%exit\n");
-        let seed = capture(Vec::new(), exited.as_bytes(), 1).unwrap();
+        let seed = capture(Vec::new(), exited.as_bytes(), 1, None).unwrap();
         assert_eq!(seed.snapshots[0].state.cursor, (6, 0));
         assert_eq!(seed.layout.panes[0].id, PaneId(7));
         assert_eq!(seed.events, [Event::Output(PaneId(7), b"more".to_vec())]);
@@ -247,7 +267,7 @@ mod tests {
             "{wire}{}\n%output %7 later\n",
             String::from_utf8_lossy(layout)
         );
-        let seeded = capture(Vec::new(), with_layout.as_bytes(), 1).unwrap();
+        let seeded = capture(Vec::new(), with_layout.as_bytes(), 1, None).unwrap();
         assert_eq!(
             seeded.events,
             [
@@ -257,7 +277,7 @@ mod tests {
             ]
         );
         wire.push_str("%output %7 par");
-        let mut seed = capture(Vec::new(), wire.as_bytes(), 1).unwrap();
+        let mut seed = capture(Vec::new(), wire.as_bytes(), 1, None).unwrap();
         assert_eq!(seed.events, [Event::Output(PaneId(7), b"more".to_vec())]);
         seed.decoder
             .decode(b"tial\n", |message| {
