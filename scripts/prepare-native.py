@@ -34,8 +34,14 @@ def main():
         raise SystemExit("native/ghostty.patch does not match native/ghostty.json")
     override = os.environ.get("GHOSTTY_SOURCE_DIR")
     if override is not None:
-        source = Path(override).resolve()
+        source = Path(override)
         verify(source)
+        expected = f"ghostty-{MANIFEST['commit']}-{digest}"
+        if not source.is_absolute() or source.name != expected:
+            raise SystemExit(
+                f"GHOSTTY_SOURCE_DIR must be an absolute, immutable path ending in {expected}; "
+                "prepare a new directory instead of patching an existing override"
+            )
         print(source)
         return
 

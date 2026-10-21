@@ -37,7 +37,10 @@ watches the source path environment variable, but does not track changes within
 that directory. Therefore a changed patch must have a new directory name in
 `.cargo/config.toml`. A fixed mutable directory or symlink would risk reusing an
 old native build. The `term` build script checks the patch and modified source
-files, including an explicit `GHOSTTY_SOURCE_DIR`, before accepting the build.
+files before accepting the build. An explicit `GHOSTTY_SOURCE_DIR` must also be
+an absolute, immutable path with the same commit-and-digest directory name;
+mutable overrides are rejected even when their current files match. Never patch
+an existing override in place: prepare a new directory for each native patch.
 These checks protect the required patches; they are not an audit of arbitrary
 changes elsewhere in a caller-provided source tree.
 
