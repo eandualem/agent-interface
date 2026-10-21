@@ -145,7 +145,11 @@ fn capture<I: Write, O: Read>(
                                         if current.window != window {
                                             return Err(io::Error::other("initial window layout target changed"));
                                         }
-                                        let (capture, commands) = Attach::new(current.panes.iter().map(|p| p.id).collect());
+                                        let panes = current.panes.iter().map(|p| p.id).collect();
+                                        let (capture, commands) = match session {
+                                            Some(session) => Attach::in_session(panes, session, window),
+                                            None => Attach::new(panes),
+                                        };
                                         attach = Some(capture);
                                         layout = Some(current);
                                         // This query supersedes layout notifications that
@@ -229,6 +233,60 @@ fn capture<I: Write, O: Read>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn window_moved_after_layout_reply_cannot_be_captured() {
+        use tmux_workspaces_test_support::TmuxServer;
+        struct MoveOnCapture<'a> {
+            stdin: ChildStdin,
+            server: &'a TmuxServer,
+            window: String,
+        }
+        impl Write for MoveOnCapture<'_> {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                if bytes.starts_with(b"capture-pane ") {
+                    self.server
+                        .run(&["move-window", "-s", &self.window, "-t", "=fixture:1"])?;
+                }
+                self.stdin.write(bytes)
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                self.stdin.flush()
+            }
+        }
+        let server = TmuxServer::start().unwrap();
+        server
+            .run(&["new-session", "-d", "-s", "capture-source", "cat"])
+            .unwrap();
+        server
+            .run(&["new-window", "-d", "-t", "=capture-source:", "cat"])
+            .unwrap();
+        let socket = server
+            .run(&["display-message", "-p", "#{socket_path}"])
+            .unwrap();
+        let mut connection = tmux_workspaces_tmux::connection::connect(
+            std::path::Path::new(socket.trim()),
+            "capture-source",
+        )
+        .unwrap();
+        let stdin = MoveOnCapture {
+            stdin: connection.client.stdin.take().unwrap(),
+            server: &server,
+            window: format!("@{}", connection.layout.window),
+        };
+        let result = capture(
+            stdin,
+            connection.client.stdout.take().unwrap(),
+            connection.layout.window,
+            Some(connection.session),
+        );
+        let _ = connection.client.kill();
+        let _ = connection.client.wait();
+        assert!(
+            result.is_err(),
+            "captured a window after it left the source"
+        );
+    }
 
     #[test]
     fn completed_capture_keeps_coalesced_output_and_decoder_tail_even_at_exit() {

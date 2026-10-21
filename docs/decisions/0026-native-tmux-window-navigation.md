@@ -32,8 +32,11 @@ existing three-second discovery timeout and output limit and runs off the UI
 thread. A new terminal requires explicit input focus after connection.
 
 The first connection uses the source's current window. Choice remains local to
-the displayed leaf through resizing; retaining it across workspace/tab switches
-is still pending. Lists refresh on connection, selection or explicit Refresh,
+each saved leaf through resizing and workspace/tab switches. Hidden leaves release
+their clients and renderers; returning reconnects the last successfully selected
+window, with the same source-identity and membership validation. Changed or removed
+leaves discard their remembered choice. Opening a library clears all remembered
+choices. No choice is written to the database. Lists refresh on connection, selection or explicit Refresh,
 not continuously. Missing sessions/windows are never created. Saved layouts,
 source selection, environment and geometry remain unchanged.
 

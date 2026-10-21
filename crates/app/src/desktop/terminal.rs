@@ -95,7 +95,7 @@ pub(super) struct LiveTerminal {
     error: Option<String>,
     connecting: bool,
     windows: Vec<SessionWindow>,
-    selected_window: Option<u32>,
+    selected_window: Option<SessionWindow>,
     task: Option<Task<()>>,
     closed: Option<gpui::Subscription>,
 }
@@ -109,18 +109,22 @@ impl LiveTerminal {
         }
     }
 
-    pub fn new(target: Target, cx: &mut Context<Self>) -> Self {
+    pub fn selection(&self) -> Option<SessionWindow> {
+        self.selected_window.clone()
+    }
+
+    pub fn new(target: Target, selected: Option<SessionWindow>, cx: &mut Context<Self>) -> Self {
         let mut terminal = Self {
             target,
             view: None,
             error: None,
             connecting: false,
             windows: Vec::new(),
-            selected_window: None,
+            selected_window: selected.clone(),
             task: None,
             closed: None,
         };
-        terminal.start(cx);
+        terminal.start_window(selected, cx);
         terminal
     }
 
@@ -151,7 +155,11 @@ impl LiveTerminal {
                 match result {
                     Ok(mut ready) => {
                         terminal.windows = std::mem::take(&mut ready.windows);
-                        terminal.selected_window = Some(ready.window);
+                        terminal.selected_window = terminal
+                            .windows
+                            .iter()
+                            .find(|window| window.id == ready.window)
+                            .cloned();
                         let view = cx.new(|cx| {
                             TerminalView::embedded(
                                 ready.panes.take().unwrap(),
@@ -203,9 +211,12 @@ impl Render for LiveTerminal {
                     .py_1()
                     .flex_shrink_0()
                     .cursor_pointer()
-                    .when(self.selected_window == Some(item.id), |el| {
-                        el.bg(rgb(0x2a3c58))
-                    })
+                    .when(
+                        self.selected_window
+                            .as_ref()
+                            .is_some_and(|window| window.id == item.id),
+                        |el| el.bg(rgb(0x2a3c58)),
+                    )
                     .child(format!("{}: {name}", item.index))
                     .when(!self.connecting, |el| {
                         el.on_click(cx.listener(move |terminal, _, _, cx| {
@@ -224,11 +235,7 @@ impl Render for LiveTerminal {
                 .child("Refresh")
                 .when(!self.connecting, |el| {
                     el.on_click(cx.listener(|terminal, _, _, cx| {
-                        let selected = terminal
-                            .windows
-                            .iter()
-                            .find(|window| Some(window.id) == terminal.selected_window)
-                            .cloned();
+                        let selected = terminal.selected_window.clone();
                         terminal.start_window(selected, cx);
                     }))
                 }),
