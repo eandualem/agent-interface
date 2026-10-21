@@ -12,7 +12,7 @@ sessions can be attached.
 
 **Status:** early development. The native app opens the Python library's saved
 workspaces, tabs and split layouts and connects to their existing tmux sessions.
-It displays live terminal output and sends typed keys to the clicked pane.
+It displays live terminal output and sends typed keys to the selected ready pane.
 Editing, shell creation, full input parity and performance acceptance remain
 unfinished; it is not yet a replacement for the Python app.
 
@@ -29,7 +29,11 @@ cargo run -p tmux-workspaces-app --bin tmux-workspaces -- --data-dir /path/to/li
 Use the workspace heading to choose a workspace, then choose a tab. The saved
 split layout contains actual sessions; click a terminal before typing. Command-1
 through Command-9 select tabs, and Command-Option-1 through Command-Option-9 select
-workspaces. Command-V pastes clipboard text (Control-Shift-V on Linux), using
+workspaces. Command-[ and Command-] cycle panes; add Shift to cycle tabs.
+Command-Option-Left/Right cycle workspaces, Command-Shift-Enter expands or
+restores the selected pane, and Command-B focuses the sidebar. Navigation focuses
+an already connected destination; if it is still connecting, click it when ready.
+Command-V pastes clipboard text (Control-Shift-V on Linux), using
 bracketed paste when the pane requests it. Keys follow the destination pane's
 application cursor and extended-key modes. Paste is limited to 4 MiB per operation.
 The pane header's expand control toggles the selected pane's view. Scroll over a
@@ -40,7 +44,8 @@ and triple-click selects a row. Command-C copies it (Control-Shift-C on Linux).
 Selection keeps its displayed text while new output arrives. Escape, typing or
 a new click outside the selection resumes the updated view. Copies from recovered
 screens currently retain their displayed row breaks, including wrapped lines.
-For programs with mouse reporting enabled, ordinary clicks and wheel gestures
+For programs with mouse reporting enabled, hold Shift to select text locally.
+Ordinary clicks and wheel gestures
 reach the program. Hold Shift to keep scrolling local to the native viewer.
 **Open library…** chooses another folder containing `layouts.db`.
 

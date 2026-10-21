@@ -57,6 +57,8 @@ pub struct Pointer {
     pub control: bool,
     /// Alt/Option modifier.
     pub alt: bool,
+    /// Identity of a continuous wheel gesture; absent for discrete wheel ticks.
+    pub gesture: Option<u64>,
 }
 
 /// Mouse buttons forwarded for ordinary clicks.
@@ -100,6 +102,11 @@ impl Input {
 }
 
 impl Terminal {
+    /// Retain gesture ownership while replacing a terminal after capture recovery.
+    pub fn inherit_wheel_gesture(&mut self, previous: &Self) {
+        self.wheel_owner = previous.wheel_owner;
+    }
+
     /// Select the source server's extended-key wire format. False is xterm;
     /// true is CSI-u. This is independent of the program's negotiated level.
     pub fn set_extended_keys_csi_u(&mut self, enabled: bool) {
@@ -182,10 +189,21 @@ impl Terminal {
         }
         match input {
             Input::Wheel(pointer, rows) => {
-                if pointer.shift
+                let local = pointer.shift
                     || self.scrolled_row()?.is_some()
-                    || !self.engine.is_mouse_tracking().map_err(Error)?
-                {
+                    || !self.engine.is_mouse_tracking().map_err(Error)?;
+                let local = match pointer.gesture {
+                    Some(id) => {
+                        let local = local
+                            || self
+                                .wheel_owner
+                                .is_some_and(|(previous, local)| previous == id && local);
+                        self.wheel_owner = Some((id, local));
+                        local
+                    }
+                    None => local,
+                };
+                if local {
                     self.engine.scroll_viewport(ScrollViewport::Delta(*rows));
                     return Ok(Vec::new());
                 }
@@ -469,6 +487,9 @@ mod tests {
             .encode_input(&Input::Scroll(Scroll::Bottom))
             .unwrap();
         terminal.write(b"\x1b[?1000h\x1b[?1006h");
+        let mut screen = crate::Screen::default();
+        terminal.read_screen(&mut screen).unwrap();
+        assert!(screen.mouse_input());
         assert_eq!(
             terminal
                 .encode_input(&Input::Click(pointer, Button::Left))
@@ -492,6 +513,47 @@ mod tests {
                 .is_empty()
         );
         assert!(terminal.scrolled_row().unwrap().is_some());
+        terminal.read_screen(&mut screen).unwrap();
+        assert!(!screen.mouse_input());
+        let gesture = Pointer {
+            gesture: Some(7),
+            ..pointer
+        };
+        assert!(
+            terminal
+                .encode_input(&Input::Wheel(gesture, 100))
+                .unwrap()
+                .is_empty()
+        );
+        assert!(terminal.scrolled_row().unwrap().is_none());
+        // Momentum reaching the live screen remains local until another gesture.
+        assert!(
+            terminal
+                .encode_input(&Input::Wheel(gesture, 1))
+                .unwrap()
+                .is_empty()
+        );
+        let mut recovered = Terminal::new(80, 24, 100).unwrap();
+        recovered.write(b"\x1b[?1000h\x1b[?1006h");
+        recovered.inherit_wheel_gesture(&terminal);
+        assert!(
+            recovered
+                .encode_input(&Input::Wheel(gesture, 1))
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            recovered
+                .encode_input(&Input::Wheel(
+                    Pointer {
+                        gesture: Some(8),
+                        ..pointer
+                    },
+                    1
+                ))
+                .unwrap(),
+            b"\x1b[<65;3;4M"
+        );
         terminal
             .encode_input(&Input::Scroll(Scroll::Bottom))
             .unwrap();

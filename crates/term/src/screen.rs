@@ -25,6 +25,7 @@ pub struct Screen {
     text: String,
     cursor: Cursor,
     wrapped: Vec<bool>,
+    pub(crate) mouse_input: bool,
 }
 
 /// One cell of a [`Screen`]. Its text is read through [`Screen::cell`].
@@ -157,6 +158,11 @@ impl Screen {
         self.cursor
     }
 
+    /// Whether the displayed live program owns unmodified mouse clicks.
+    pub fn mouse_input(&self) -> bool {
+        self.mouse_input
+    }
+
     /// Returns the text and the cell at `row` and `col`, counted from zero at
     /// the top left, or `None` outside the screen. The text is a whole
     /// grapheme cluster, and empty when the cell has none.
@@ -186,6 +192,7 @@ impl Screen {
         self.cells.clear();
         self.text.clear();
         self.cursor = Cursor::default();
+        self.mouse_input = false;
         self.wrapped.clear();
         self.wrapped.resize(usize::from(rows), false);
     }

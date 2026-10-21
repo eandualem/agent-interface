@@ -977,7 +977,9 @@ fn apply(
                                 .terminal
                                 .scrolled_row()
                                 .map_err(|e| e.to_string())?;
-                            *terminal = LivePane::restored(rebuilt.snapshot, scrollback)?;
+                            let mut restored = LivePane::restored(rebuilt.snapshot, scrollback)?;
+                            restored.terminal.inherit_wheel_gesture(&terminal.terminal);
+                            *terminal = restored;
                             // A snapshot can observe an option-only resize before
                             // its once-per-second subscription notification. Do
                             // not join this screen to an older waiting rectangle.

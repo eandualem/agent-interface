@@ -54,6 +54,7 @@ pub struct Terminal {
     grapheme: String,
     del: del::Del,
     extended_keys_csi_u: bool,
+    wheel_owner: Option<(u64, bool)>,
     rename: rename::Rename,
 }
 
@@ -86,6 +87,7 @@ impl Terminal {
             grapheme: String::new(),
             del: del::Del::default(),
             extended_keys_csi_u: false,
+            wheel_owner: None,
             rename: rename::Rename::default(),
         })
     }
@@ -136,11 +138,14 @@ impl Terminal {
     /// This updates the engine's render state, then copies every cell, so the
     /// result does not depend on what earlier reads copied.
     pub fn read_screen(&mut self, screen: &mut Screen) -> Result<(), Error> {
+        let mouse_input =
+            self.engine.is_mouse_tracking().map_err(Error)? && self.scrolled_row()?.is_none();
         let snapshot = self.render.update(&self.engine).map_err(Error)?;
         screen.clear(
             snapshot.cols().map_err(Error)?,
             snapshot.rows().map_err(Error)?,
         );
+        screen.mouse_input = mouse_input;
         let mut rows = self.rows.update(&snapshot).map_err(Error)?;
         let mut row_number = 0;
         while let Some(row) = rows.next() {

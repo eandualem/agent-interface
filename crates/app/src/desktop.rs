@@ -500,28 +500,29 @@ impl Render for Browser {
             .when_some(self.navigation.clone(), |el, focus| el.track_focus(&focus))
             .capture_key_down(
                 cx.listener(|browser, event: &gpui::KeyDownEvent, window, cx| {
-                    if event.keystroke.modifiers.platform
-                        && let Ok(number @ 1..=9) = event.keystroke.key.parse::<usize>()
-                        && let Some(layout) = &mut browser.layout
-                    {
-                        let model = layout.model_mut();
-                        if event.keystroke.modifiers.alt {
-                            if let Some(id) = model
-                                .workspaces
-                                .get(number - 1)
-                                .map(|space| space.id.clone())
-                            {
-                                model.choose_workspace(&id);
-                            }
-                        } else if let Some(id) = model
-                            .workspace()
-                            .and_then(|space| space.tabs.get(number - 1))
-                            .map(|tab| tab.id.clone())
-                        {
-                            model.choose_tab(&id);
-                        }
+                    let key = &event.keystroke;
+                    let sidebar = key.modifiers.platform
+                        && !key.modifiers.control
+                        && !key.modifiers.alt
+                        && !key.modifiers.shift
+                        && key.key == "b";
+                    let navigated = browser
+                        .layout
+                        .as_mut()
+                        .is_some_and(|layout| navigate_key(layout.model_mut(), key));
+                    if sidebar || navigated {
                         if let Some(focus) = &browser.navigation {
                             window.focus(focus, cx);
+                        }
+                        if navigated
+                            && let Some(leaf) = browser
+                                .layout
+                                .as_ref()
+                                .and_then(|layout| layout.model().pane())
+                            && let Some(terminal) = browser.terminals.get(&leaf.id)
+                            && terminal.read(cx).target.leaf == *leaf
+                        {
+                            terminal.update(cx, |terminal, cx| terminal.focus_terminal(window, cx));
                         }
                         browser.workspace_menu = false;
                         cx.stop_propagation();
@@ -551,10 +552,100 @@ impl Render for Browser {
     }
 }
 
+// Navigation changes this window's selection only. An unavailable terminal keeps
+// focus on navigation; no keys are queued for a future connection.
+fn navigate_key(model: &mut tmux_workspaces_core::Layout, key: &gpui::Keystroke) -> bool {
+    let mods = key.modifiers;
+    if !mods.platform || mods.control || mods.function {
+        return false;
+    }
+    if !mods.shift
+        && let Ok(number @ 1..=9) = key.key.parse::<usize>()
+    {
+        let id = if mods.alt {
+            model
+                .workspaces
+                .get(number - 1)
+                .map(|space| space.id.clone())
+        } else {
+            model
+                .workspace()
+                .and_then(|space| space.tabs.get(number - 1))
+                .map(|tab| tab.id.clone())
+        };
+        if let Some(id) = id {
+            if mods.alt {
+                model.choose_workspace(&id);
+            } else {
+                model.choose_tab(&id);
+            }
+        }
+        return true;
+    }
+    match (mods.alt, mods.shift, key.key.as_str()) {
+        (false, false, "]") => {
+            model.next_pane(1);
+        }
+        (false, false, "[") => {
+            model.next_pane(-1);
+        }
+        // macOS normalizes shifted punctuation to its resulting character.
+        (false, true, "]") | (false, false, "}") => {
+            model.next_tab(1);
+        }
+        (false, true, "[") | (false, false, "{") => {
+            model.next_tab(-1);
+        }
+        (true, false, "right") => {
+            model.next_workspace(1);
+        }
+        (true, false, "left") => {
+            model.next_workspace(-1);
+        }
+        (false, true, "enter") => {
+            if model.pane().is_some() {
+                model.focus = !model.focus;
+            }
+        }
+        _ => return false,
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use tmux_workspaces_store::{Document, Error};
+
+    #[test]
+    fn native_navigation_cycles_saved_selections_without_editing_the_tree() {
+        let mut model = tmux_workspaces_core::Layout::initial("/tmp".into());
+        let first = model.pane().unwrap().id.clone();
+        model.split(Direction::Right, "/tmp".into(), true);
+        let second = model.pane().unwrap().id.clone();
+        let tree = model.tab().unwrap().tree.clone();
+        let key = |value| gpui::Keystroke::parse(value).unwrap();
+        assert!(navigate_key(&mut model, &key("cmd-]")));
+        assert_eq!(model.pane().unwrap().id, first);
+        assert!(navigate_key(&mut model, &key("cmd-[")));
+        assert_eq!(model.pane().unwrap().id, second);
+        navigate_key(&mut model, &key("cmd-shift-enter"));
+        assert!(model.focus);
+        assert_eq!(model.tab().unwrap().tree, tree);
+        let tab = model.tab().unwrap().id.clone();
+        model.add_tab(None, "/tmp".into(), true);
+        navigate_key(&mut model, &key("cmd-}"));
+        assert_eq!(model.tab().unwrap().id, tab);
+        let workspace = model.selected.clone();
+        model.add_workspace("Other".into());
+        navigate_key(&mut model, &key("cmd-alt-right"));
+        assert_eq!(model.selected, workspace);
+        let before = model.clone();
+        assert!(!navigate_key(&mut model, &key("ctrl-]")));
+        assert!(!navigate_key(&mut model, &key("cmd-alt-]")));
+        assert!(!navigate_key(&mut model, &key("cmd-ctrl-1")));
+        assert_eq!(model, before);
+    }
 
     #[test]
     fn refresh_keeps_local_navigation_and_read_errors_keep_the_last_good_layout() {

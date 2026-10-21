@@ -93,8 +93,9 @@ fn is_monospaced(text_system: &TextSystem, appearance: &Appearance) -> bool {
 pub struct TerminalView {
     panes: Option<Arc<Panes>>,
     grid: Rc<RefCell<Grid>>,
-    // Input goes to this exact pane, changed only by an explicit visible-pane click.
+    // Input goes to this exact pane after explicit clicking or navigation.
     input: Option<PaneId>,
+    initial_input: PaneId,
     focus: FocusHandle,
     failure_reported: bool,
     embedded: bool,
@@ -103,7 +104,9 @@ pub struct TerminalView {
     input_rejection: Option<String>,
     closed_reported: bool,
     wheel: Option<(PaneId, f32)>,
-    secondary_press: Option<(PaneId, Button)>,
+    secondary_press: Option<(PaneId, Button, bool)>,
+    primary_click: Option<(PaneId, gpui::Point<Pixels>)>,
+    wheel_gesture: u64,
 }
 
 pub(crate) struct Disconnected;
@@ -236,6 +239,7 @@ impl TerminalView {
                 selection: None,
             })),
             input: (!embedded).then_some(input),
+            initial_input: input,
             focus,
             failure_reported: false,
             embedded,
@@ -245,11 +249,36 @@ impl TerminalView {
             closed_reported: false,
             wheel: None,
             secondary_press: None,
+            primary_click: None,
+            wheel_gesture: 0,
         }
     }
 
     fn panes(&self) -> &Panes {
         self.panes.as_deref().expect("terminal entity is alive")
+    }
+
+    pub(crate) fn focus_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.take_update();
+        if self.panes().is_finished() {
+            return;
+        }
+        let grid = self.grid.borrow();
+        let preferred = self.input.unwrap_or(self.initial_input);
+        let ready = |id: PaneId| {
+            grid.layout.iter().any(|pane| pane.id == id) && grid.screens.contains_key(&id)
+        };
+        let input = if ready(preferred) {
+            Some(preferred)
+        } else {
+            grid.layout.iter().map(|pane| pane.id).find(|id| ready(*id))
+        };
+        drop(grid);
+        if let Some(input) = input {
+            self.input = Some(input);
+            window.focus(&self.focus, cx);
+            cx.notify();
+        }
     }
 
     fn report_failure(&mut self) {
@@ -401,6 +430,11 @@ impl TerminalView {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if let Some((_, start)) = self.primary_click
+            && event.position != start
+        {
+            self.primary_click = None;
+        }
         let mut grid = self.grid.borrow_mut();
         let Some(selection) = grid
             .selection
@@ -427,6 +461,20 @@ impl TerminalView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if let Some((pane, start)) = self.primary_click.take()
+            && start == event.position
+        {
+            let pointer = pointer_at(
+                &self.grid.borrow(),
+                pane,
+                event.position,
+                window.scale_factor(),
+                event.modifiers,
+            );
+            if let Some(pointer) = pointer {
+                self.send_click(pane, pointer, Button::Left, cx);
+            }
+        }
         let mut grid = self.grid.borrow_mut();
         let position = grid
             .selection
@@ -446,29 +494,10 @@ impl TerminalView {
             }
             selection.dragging = false;
         }
-        let click = grid
-            .selection
-            .as_ref()
-            .filter(|selection| {
-                selection.is_empty() && event.click_count == 1 && self.input == Some(selection.pane)
-            })
-            .and_then(|selection| {
-                pointer_at(
-                    &grid,
-                    selection.pane,
-                    event.position,
-                    window.scale_factor(),
-                    event.modifiers,
-                )
-                .map(|pointer| (selection.pane, pointer))
-            });
         if grid.selection.as_ref().is_some_and(Selection::is_empty) {
             grid.selection = None;
         }
         drop(grid);
-        if let Some((pane, pointer)) = click {
-            self.send_click(pane, pointer, Button::Left, cx);
-        }
         cx.notify();
     }
 
@@ -518,7 +547,13 @@ impl TerminalView {
                     .as_ref()
                     .is_some_and(|selection| selection.pane == *pane && !selection.is_empty())
             })
-            .map(|pane| (pane, button));
+            .map(|pane| {
+                (
+                    pane,
+                    button,
+                    event.modifiers.shift || !grid.screens[&pane].mouse_input(),
+                )
+            });
     }
 
     fn secondary_up(
@@ -527,7 +562,7 @@ impl TerminalView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some((pane, button)) = self.secondary_press.take() else {
+        let Some((pane, button, local)) = self.secondary_press.take() else {
             return;
         };
         let released = if event.button == gpui::MouseButton::Right {
@@ -535,7 +570,15 @@ impl TerminalView {
         } else {
             Button::Middle
         };
-        if released != button {
+        if released != button
+            || local
+            || self
+                .grid
+                .borrow()
+                .selection
+                .as_ref()
+                .is_some_and(|selection| !selection.is_empty())
+        {
             return;
         }
         let pointer = pointer_at(
@@ -602,7 +645,14 @@ impl Render for TerminalView {
                     view.wheel = None;
                     return;
                 };
-                let Some(pointer) = pointer_at(&grid, pane, event.position, window.scale_factor(), event.modifiers) else { return; };
+                let Some(mut pointer) = pointer_at(&grid, pane, event.position, window.scale_factor(), event.modifiers) else { return; };
+                if event.touch_phase == gpui::TouchPhase::Started || view.wheel.is_none_or(|(id, _)| id != pane) {
+                    view.wheel_gesture = view.wheel_gesture.wrapping_add(1);
+                    view.wheel = None;
+                }
+                if matches!(event.delta, gpui::ScrollDelta::Pixels(_)) {
+                    pointer.gesture = Some(view.wheel_gesture);
+                }
                 let delta = match event.delta {
                     gpui::ScrollDelta::Pixels(delta) => {
                         f32::from(delta.y) / f32::from(grid.cell.height).max(1.0)
@@ -618,7 +668,7 @@ impl Render for TerminalView {
                 let accumulated = previous - delta;
                 let rows = accumulated.trunc() as isize;
                 view.wheel = Some((pane, accumulated - rows as f32));
-                if rows != 0
+                if (rows != 0 || pointer.gesture.is_some())
                     && view
                         .input_queue
                         .try_send((pane, Input::Wheel(pointer, rows)))
@@ -655,11 +705,15 @@ impl Render for TerminalView {
                             event.position,
                         )
                     });
+                    view.primary_click = None;
                     view.input = hit.filter(|_| !view.panes().is_finished());
                     if let Some(pane) = hit {
                         let (row, cell) = selection_point(&grid, pane, event.position, false).unwrap();
                         let keep = event.click_count == 1 && grid.selection.as_ref().is_some_and(|selection| selection.pane == pane && selection.contains(row, cell));
-                        if keep {
+                        if grid.screens[&pane].mouse_input() && !event.modifiers.shift && !keep {
+                            grid.selection = None;
+                            view.primary_click = Some((pane, event.position));
+                        } else if keep {
                             grid.selection.as_mut().unwrap().dragging = false;
                         } else {
                             let (row, col) = selection_point(&grid, pane, event.position, event.click_count < 2).unwrap();
@@ -781,6 +835,7 @@ fn pointer_at(
         shift: mods.shift,
         control: mods.control,
         alt: mods.alt,
+        gesture: None,
     })
 }
 
