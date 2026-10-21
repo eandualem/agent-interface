@@ -84,6 +84,10 @@ impl SessionChooser {
         self.field.read(cx).composing()
     }
 
+    pub fn focus_handle(&self, cx: &gpui::App) -> gpui::FocusHandle {
+        self.field.read(cx).focus.clone()
+    }
+
     pub fn focused(&self, window: &Window, cx: &gpui::App) -> bool {
         self.field.read(cx).focus.is_focused(window)
     }
