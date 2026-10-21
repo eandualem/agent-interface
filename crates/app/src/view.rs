@@ -23,7 +23,7 @@ use gpui::{
 };
 use tmux_workspaces_term::{
     Attributes, Color, Screen, Style, Underline, Width,
-    input::{Button, Input, KeyPress, Pointer, Scroll},
+    input::{Button, Input, KeyPress, MouseAction, Pointer, Scroll},
 };
 use tmux_workspaces_tmux::control::PaneId;
 
@@ -101,13 +101,13 @@ pub struct TerminalView {
     focus: FocusHandle,
     failure_reported: bool,
     embedded: bool,
-    input_queue: std::sync::mpsc::SyncSender<(PaneId, Input)>,
+    input_queue: InputQueue,
     input_error: Option<String>,
     input_rejection: Option<String>,
     closed_reported: bool,
     wheel: Option<(PaneId, f32)>,
-    secondary_press: Option<(PaneId, Button, bool)>,
-    primary_click: Option<(PaneId, gpui::Point<Pixels>)>,
+    program_press: Option<(PaneId, Button, Pointer)>,
+    pointer_subscriptions: Vec<gpui::Subscription>,
     wheel_gesture: WheelGesture,
 }
 
@@ -174,6 +174,7 @@ impl TerminalView {
     ) -> Self {
         let focus = cx.focus_handle();
         cx.on_release(|view, cx| {
+            view.release_mouse();
             let panes = view.panes.take();
             cx.background_executor()
                 .spawn(async move { drop(panes) })
@@ -250,8 +251,8 @@ impl TerminalView {
             input_rejection: None,
             closed_reported: false,
             wheel: None,
-            secondary_press: None,
-            primary_click: None,
+            program_press: None,
+            pointer_subscriptions: Vec::new(),
             wheel_gesture: WheelGesture::default(),
         }
     }
@@ -262,8 +263,7 @@ impl TerminalView {
 
     pub(crate) fn suspend_input(&mut self, cx: &mut Context<Self>) {
         self.input = None;
-        self.primary_click = None;
-        self.secondary_press = None;
+        self.release_mouse();
         self.clear_selection(cx);
     }
 
@@ -436,14 +436,10 @@ impl TerminalView {
     fn selection_move(
         &mut self,
         event: &gpui::MouseMoveEvent,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some((_, start)) = self.primary_click
-            && event.position != start
-        {
-            self.primary_click = None;
-        }
+        self.mouse_move(event, window, cx);
         let mut grid = self.grid.borrow_mut();
         let Some(selection) = grid
             .selection
@@ -470,20 +466,7 @@ impl TerminalView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some((pane, start)) = self.primary_click.take()
-            && start == event.position
-        {
-            let pointer = pointer_at(
-                &self.grid.borrow(),
-                pane,
-                event.position,
-                window.scale_factor(),
-                event.modifiers,
-            );
-            if let Some(pointer) = pointer {
-                self.send_click(pane, pointer, Button::Left, cx);
-            }
-        }
+        self.mouse_up(event, window);
         let mut grid = self.grid.borrow_mut();
         let position = grid
             .selection
@@ -510,32 +493,143 @@ impl TerminalView {
         cx.notify();
     }
 
-    fn send_click(
+    fn release_mouse(&mut self) {
+        if let Some((pane, button, pointer)) = self.program_press.take() {
+            let _ = self
+                .input_queue
+                .try_send((pane, Input::Mouse(pointer, MouseAction::Release(button))));
+        }
+    }
+
+    fn mouse_down(
         &mut self,
         pane: PaneId,
-        pointer: Pointer,
         button: Button,
+        pointer: Pointer,
         cx: &mut Context<Self>,
     ) {
-        if !self.panes().is_finished()
-            && self
-                .input_queue
-                .try_send((pane, Input::Click(pointer, button)))
-                .is_err()
+        // One application gesture at a time. A second button does not retarget it.
+        if self.program_press.is_some() || self.panes().is_finished() {
+            return;
+        }
+        if self
+            .input_queue
+            .try_send((pane, Input::Mouse(pointer, MouseAction::Press(button))))
+            .is_ok()
         {
+            self.program_press = Some((pane, button, pointer));
+        } else {
             self.input_rejection = Some("Click was not sent: terminal queue is busy or disconnected. Click the terminal to dismiss.".into());
             cx.notify();
         }
     }
 
+    fn mouse_move(
+        &mut self,
+        event: &gpui::MouseMoveEvent,
+        window: &mut Window,
+        _: &mut Context<Self>,
+    ) {
+        if let Some((pane, button, previous)) = self.program_press {
+            if event.pressed_button.and_then(mouse_button) != Some(button) {
+                self.release_mouse();
+                return;
+            }
+            let pointer = drag_pointer(
+                &self.grid.borrow(),
+                pane,
+                event.position,
+                window.scale_factor(),
+                event.modifiers,
+            )
+            .unwrap_or(previous);
+            self.program_press = Some((pane, button, pointer));
+            // Intermediate motions may be dropped under pressure; the final release
+            // retains its reserved queue slot and last pointer position.
+            let _ = self
+                .input_queue
+                .try_send((pane, Input::Mouse(pointer, MouseAction::Move(Some(button)))));
+        }
+    }
+
+    fn hover_mouse(
+        &mut self,
+        event: &gpui::MouseMoveEvent,
+        window: &mut Window,
+        _: &mut Context<Self>,
+    ) {
+        if self.program_press.is_none() && event.pressed_button.is_none() {
+            let grid = self.grid.borrow();
+            if grid
+                .selection
+                .as_ref()
+                .is_some_and(|selection| !selection.is_empty())
+            {
+                return;
+            }
+            let Some(pane) = grid.bounds.and_then(|bounds| {
+                hit_pane(
+                    &grid.layout,
+                    &grid.screens,
+                    grid.cell,
+                    bounds,
+                    event.position,
+                )
+            }) else {
+                return;
+            };
+            if !grid.screens[&pane].mouse_input() {
+                return;
+            }
+            if let Some(pointer) = pointer_at(
+                &grid,
+                pane,
+                event.position,
+                window.scale_factor(),
+                event.modifiers,
+            ) {
+                let _ = self
+                    .input_queue
+                    .try_send((pane, Input::Mouse(pointer, MouseAction::Move(None))));
+            }
+        }
+    }
+
+    fn mouse_up(&mut self, event: &gpui::MouseUpEvent, window: &mut Window) {
+        let Some((pane, button, previous)) = self.program_press else {
+            return;
+        };
+        if mouse_button(event.button) != Some(button) {
+            return;
+        }
+        let pointer = drag_pointer(
+            &self.grid.borrow(),
+            pane,
+            event.position,
+            window.scale_factor(),
+            event.modifiers,
+        )
+        .unwrap_or(previous);
+        self.program_press = Some((pane, button, pointer));
+        self.release_mouse();
+    }
+
     fn secondary_down(
         &mut self,
         event: &gpui::MouseDownEvent,
-        _: &mut Window,
-        _: &mut Context<Self>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
     ) {
         let grid = self.grid.borrow();
-        let pane = grid.bounds.and_then(|bounds| {
+        if event.modifiers.shift
+            || grid
+                .selection
+                .as_ref()
+                .is_some_and(|selection| !selection.is_empty())
+        {
+            return;
+        }
+        let Some(pane) = grid.bounds.and_then(|bounds| {
             hit_pane(
                 &grid.layout,
                 &grid.screens,
@@ -543,63 +637,32 @@ impl TerminalView {
                 bounds,
                 event.position,
             )
-        });
-        let button = if event.button == gpui::MouseButton::Right {
-            Button::Right
-        } else {
-            Button::Middle
+        }) else {
+            return;
         };
-        self.secondary_press = pane
-            .filter(|pane| {
-                !grid
-                    .selection
-                    .as_ref()
-                    .is_some_and(|selection| selection.pane == *pane && !selection.is_empty())
-            })
-            .map(|pane| {
-                (
-                    pane,
-                    button,
-                    event.modifiers.shift || !grid.screens[&pane].mouse_input(),
-                )
-            });
+        if !grid.screens[&pane].mouse_input() {
+            return;
+        }
+        let pointer = pointer_at(
+            &grid,
+            pane,
+            event.position,
+            window.scale_factor(),
+            event.modifiers,
+        );
+        drop(grid);
+        if let Some(pointer) = pointer {
+            self.mouse_down(pane, mouse_button(event.button).unwrap(), pointer, cx);
+        }
     }
 
     fn secondary_up(
         &mut self,
         event: &gpui::MouseUpEvent,
         window: &mut Window,
-        cx: &mut Context<Self>,
+        _: &mut Context<Self>,
     ) {
-        let Some((pane, button, local)) = self.secondary_press.take() else {
-            return;
-        };
-        let released = if event.button == gpui::MouseButton::Right {
-            Button::Right
-        } else {
-            Button::Middle
-        };
-        if released != button
-            || local
-            || self
-                .grid
-                .borrow()
-                .selection
-                .as_ref()
-                .is_some_and(|selection| !selection.is_empty())
-        {
-            return;
-        }
-        let pointer = pointer_at(
-            &self.grid.borrow(),
-            pane,
-            event.position,
-            window.scale_factor(),
-            event.modifiers,
-        );
-        if let Some(pointer) = pointer {
-            self.send_click(pane, pointer, button, cx);
-        }
+        self.mouse_up(event, window);
     }
 }
 
@@ -617,6 +680,16 @@ impl Render for TerminalView {
             if !self.embedded {
                 window.on_next_frame(|_, cx| cx.quit());
             }
+        }
+        if self.pointer_subscriptions.is_empty() {
+            self.pointer_subscriptions
+                .push(cx.on_blur(&self.focus, window, |view, _, _| view.release_mouse()));
+            self.pointer_subscriptions
+                .push(cx.observe_window_activation(window, |view, window, _| {
+                    if !window.is_window_active() {
+                        view.release_mouse();
+                    }
+                }));
         }
         let grid = Rc::clone(&self.grid);
         let selection_move = Rc::new(cx.listener(Self::selection_move));
@@ -640,6 +713,7 @@ impl Render for TerminalView {
             .bg(background)
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::key_down))
+            .on_mouse_move(cx.listener(Self::hover_mouse))
             .on_scroll_wheel(cx.listener(|view, event: &gpui::ScrollWheelEvent, window, cx| {
                 let previous_gesture = view.wheel_gesture.id();
                 let gesture = matches!(event.delta, gpui::ScrollDelta::Pixels(_))
@@ -719,14 +793,15 @@ impl Render for TerminalView {
                             event.position,
                         )
                     });
-                    view.primary_click = None;
+                    if view.program_press.is_some() { return; }
+                    let mut program_pointer = None;
                     view.input = hit.filter(|_| !view.panes().is_finished());
                     if let Some(pane) = hit {
                         let (row, cell) = selection_point(&grid, pane, event.position, false).unwrap();
                         let keep = event.click_count == 1 && grid.selection.as_ref().is_some_and(|selection| selection.pane == pane && selection.contains(row, cell));
                         if grid.screens[&pane].mouse_input() && !event.modifiers.shift && !keep {
                             grid.selection = None;
-                            view.primary_click = Some((pane, event.position));
+                            program_pointer = pointer_at(&grid, pane, event.position, window.scale_factor(), event.modifiers);
                         } else if keep {
                             grid.selection.as_mut().unwrap().dragging = false;
                         } else {
@@ -742,6 +817,10 @@ impl Render for TerminalView {
                     } else {
                         grid.selection = None;
                         window.blur(cx);
+                    }
+                    drop(grid);
+                    if let (Some(pane), Some(pointer)) = (hit, program_pointer) {
+                        view.mouse_down(pane, Button::Left, pointer, cx);
                     }
                     cx.notify();
                 }),
@@ -782,13 +861,44 @@ impl Render for TerminalView {
     }
 }
 
+pub(crate) struct InputQueue {
+    sender: std::sync::mpsc::Sender<(PaneId, Input)>,
+    queued: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl InputQueue {
+    pub(crate) fn try_send(&self, event: (PaneId, Input)) -> Result<(), ()> {
+        use std::sync::atomic::Ordering;
+        // A view owns at most one outstanding press. Its release must fit even
+        // when ordinary input has filled all 64 slots.
+        let limit = if matches!(event.1, Input::Mouse(_, MouseAction::Release(_))) {
+            65
+        } else {
+            64
+        };
+        self.queued
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                (count < limit).then_some(count + 1)
+            })
+            .map_err(|_| ())?;
+        if self.sender.send(event).is_err() {
+            self.queued.fetch_sub(1, Ordering::AcqRel);
+            return Err(());
+        }
+        Ok(())
+    }
+}
+
 pub(crate) fn input_queue(
     panes: Arc<Panes>,
     report: impl Fn(Option<String>) + Send + 'static,
-) -> std::sync::mpsc::SyncSender<(PaneId, Input)> {
-    let (queue, pending) = std::sync::mpsc::sync_channel::<(PaneId, Input)>(64);
+) -> InputQueue {
+    let (sender, pending) = std::sync::mpsc::channel::<(PaneId, Input)>();
+    let queued = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let waiting = Arc::clone(&queued);
     std::thread::spawn(move || {
         while let Ok((pane, input)) = pending.recv() {
+            waiting.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
             // A retired pane is a local rejection, not a failed connection.
             report(
                 panes
@@ -798,7 +908,42 @@ pub(crate) fn input_queue(
             );
         }
     });
-    queue
+    InputQueue { sender, queued }
+}
+
+fn mouse_button(button: gpui::MouseButton) -> Option<Button> {
+    match button {
+        gpui::MouseButton::Left => Some(Button::Left),
+        gpui::MouseButton::Middle => Some(Button::Middle),
+        gpui::MouseButton::Right => Some(Button::Right),
+        _ => None,
+    }
+}
+
+fn drag_pointer(
+    grid: &Grid,
+    id: PaneId,
+    position: gpui::Point<Pixels>,
+    scale: f32,
+    mods: gpui::Modifiers,
+) -> Option<Pointer> {
+    let pane = grid
+        .layout
+        .iter()
+        .find(|pane| pane.id == id && pane.cols > 0 && pane.rows > 0)?;
+    let bounds = grid.bounds?;
+    let left = bounds.origin.x + grid.cell.width * f32::from(pane.left);
+    let top = bounds.origin.y + grid.cell.height * f32::from(pane.top);
+    let position = point(
+        position.x.clamp(
+            left,
+            left + grid.cell.width * (f32::from(pane.cols) - 0.001),
+        ),
+        position
+            .y
+            .clamp(top, top + grid.cell.height * (f32::from(pane.rows) - 0.001)),
+    );
+    pointer_at(grid, id, position, scale, mods)
 }
 
 fn hit_pane(
@@ -1177,6 +1322,50 @@ fn input_key(key: &Keystroke, repeat: bool) -> Option<Input> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn saturated_input_queue_reserves_the_drag_release_in_order() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let queue = InputQueue {
+            sender,
+            queued: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        };
+        let pane = PaneId(1);
+        let pointer = Pointer::default();
+        queue
+            .try_send((
+                pane,
+                Input::Mouse(pointer, MouseAction::Press(Button::Left)),
+            ))
+            .unwrap();
+        for _ in 0..63 {
+            queue.try_send((pane, Input::Paste("x".into()))).unwrap();
+        }
+        assert!(
+            queue
+                .try_send((
+                    pane,
+                    Input::Mouse(pointer, MouseAction::Move(Some(Button::Left)))
+                ))
+                .is_err()
+        );
+        queue
+            .try_send((
+                pane,
+                Input::Mouse(pointer, MouseAction::Release(Button::Left)),
+            ))
+            .unwrap();
+        let events: Vec<_> = receiver.try_iter().collect();
+        assert_eq!(events.len(), 65);
+        assert!(matches!(
+            events[0].1,
+            Input::Mouse(_, MouseAction::Press(Button::Left))
+        ));
+        assert!(matches!(
+            events[64].1,
+            Input::Mouse(_, MouseAction::Release(Button::Left))
+        ));
+    }
 
     #[test]
     fn selection_coordinates_distinguish_words_and_clamp_external_drags() {
