@@ -40,7 +40,7 @@ pub struct Connection {
 /// geometry alone. It never creates a helper, session, window or pane.
 /// Call on a worker: each discovery query is bounded to three seconds.
 pub fn connect(socket: &Path, session: &str) -> io::Result<Connection> {
-    connect_selected(socket, session, None)
+    connect_selected(socket, session, None, false)
 }
 
 /// View a previously listed window without selecting it on the source session.
@@ -50,13 +50,25 @@ pub fn connect_window(
     session: &str,
     window: &SessionWindow,
 ) -> io::Result<Connection> {
-    connect_selected(socket, session, Some(window))
+    connect_selected(socket, session, Some(window), false)
+}
+
+/// Reconnect after an explicit ordinary-shell open. Preserve a listed window
+/// while its session is unchanged; use the replacement session's current window
+/// if the old server/session identity is gone. This never creates a session.
+pub fn connect_reopened(
+    socket: &Path,
+    session: &str,
+    window: &SessionWindow,
+) -> io::Result<Connection> {
+    connect_selected(socket, session, Some(window), true)
 }
 
 fn connect_selected(
     socket: &Path,
     session: &str,
-    selected: Option<&SessionWindow>,
+    mut selected: Option<&SessionWindow>,
+    reopened: bool,
 ) -> io::Result<Connection> {
     if !socket.is_absolute() || session.is_empty() || session.contains([':', '\n', '\r', '\0']) {
         return Err(io::Error::new(
@@ -79,9 +91,13 @@ fn connect_selected(
         .split_once(' ')
         .ok_or_else(|| io::Error::other("invalid source identity"))?;
     if selected.is_some_and(|window| window.source != source) {
-        return Err(io::Error::other(
-            "Session changed; reconnect before selecting a window",
-        ));
+        if reopened {
+            selected = None;
+        } else {
+            return Err(io::Error::other(
+                "Session changed; reconnect before selecting a window",
+            ));
+        }
     }
     let mut fields = text.splitn(3, ' ');
     let identity = fields
@@ -313,6 +329,44 @@ fn command(socket: &Path) -> io::Result<Command> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explicit_reopen_keeps_live_selection_but_discards_replaced_session_identity() {
+        let server = tmux_workspaces_test_support::TmuxServer::start().unwrap();
+        server
+            .run(&["new-session", "-d", "-s", "reopened", "cat"])
+            .unwrap();
+        server
+            .run(&["new-window", "-d", "-t", "=reopened:", "cat"])
+            .unwrap();
+        let socket = server
+            .run(&["display-message", "-p", "#{socket_path}"])
+            .unwrap();
+        let socket = Path::new(socket.trim());
+        let mut first = connect(socket, "reopened").unwrap();
+        let selected = first
+            .windows
+            .iter()
+            .find(|window| window.id != first.layout.window)
+            .unwrap()
+            .clone();
+        let mut retained = connect_reopened(socket, "reopened", &selected).unwrap();
+        assert_eq!(retained.layout.window, selected.id);
+        for client in [&mut first.client, &mut retained.client] {
+            client.kill().unwrap();
+            client.wait().unwrap();
+        }
+        server.run(&["kill-session", "-t", "=reopened:"]).unwrap();
+        server
+            .run(&["new-session", "-d", "-s", "reopened", "cat"])
+            .unwrap();
+        assert!(connect_window(socket, "reopened", &selected).is_err());
+        let mut replacement = connect_reopened(socket, "reopened", &selected).unwrap();
+        assert_ne!(replacement.session, first.session);
+        assert_ne!(replacement.layout.window, selected.id);
+        replacement.client.kill().unwrap();
+        replacement.client.wait().unwrap();
+    }
 
     #[test]
     fn window_names_cannot_inject_records_and_old_sources_are_rejected() {
