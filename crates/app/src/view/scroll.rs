@@ -2,6 +2,7 @@
 
 use gpui::TouchPhase;
 use std::time::{Duration, Instant};
+use tmux_workspaces_tmux::control::PaneId;
 
 #[derive(Default)]
 pub(super) struct WheelGesture {
@@ -9,6 +10,7 @@ pub(super) struct WheelGesture {
     last: Option<Instant>,
     phased: bool,
     local: bool,
+    pane: Option<PaneId>,
 }
 
 impl WheelGesture {
@@ -24,6 +26,7 @@ impl WheelGesture {
         {
             self.id = self.id.wrapping_add(1);
             self.local = false;
+            self.pane = None;
         }
         match phase {
             TouchPhase::Started => self.phased = true,
@@ -38,6 +41,16 @@ impl WheelGesture {
         self.local |= local;
         self.local
     }
+
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
+    // Keep the authoritative worker's ownership on one pane. Crossing a
+    // separator cannot dispatch a continuation to a different terminal worker.
+    pub fn accepts(&mut self, pane: PaneId) -> bool {
+        *self.pane.get_or_insert(pane) == pane
+    }
 }
 
 #[cfg(test)]
@@ -49,6 +62,8 @@ mod tests {
         let mut gesture = WheelGesture::default();
         let now = Instant::now();
         let first = gesture.update(TouchPhase::Started, now);
+        assert!(gesture.accepts(PaneId(1)));
+        assert!(!gesture.accepts(PaneId(2)));
         assert!(gesture.keep_local(true));
         // No pane is involved in the identity, including moves over separators.
         assert_eq!(
@@ -56,6 +71,8 @@ mod tests {
             first
         );
         assert!(gesture.keep_local(false));
+        assert!(gesture.accepts(PaneId(1)));
+        assert!(!gesture.accepts(PaneId(2)));
         gesture.update(TouchPhase::Ended, now + Duration::from_secs(2));
         assert_eq!(
             gesture.update(TouchPhase::Moved, now + Duration::from_millis(2100)),
@@ -64,6 +81,7 @@ mod tests {
         assert!(gesture.keep_local(false));
         let next = gesture.update(TouchPhase::Moved, now + Duration::from_secs(3));
         assert_ne!(next, first);
+        assert!(gesture.accepts(PaneId(2)));
         assert!(!gesture.keep_local(false));
         assert!(gesture.keep_local(true));
         assert_ne!(
