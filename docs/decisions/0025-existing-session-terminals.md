@@ -77,11 +77,11 @@ window would exercise a different path from saved workspaces. Reuse the chosen
 renderer in the product itself. No new dependencies or licences are introduced:
 GPUI (Apache-2.0), libghostty-vt (MIT) and tmux (ISC) retain their recorded pins.
 
-Grouped helper sessions, window switching, selection across history pages, input
+Selection across history pages, input
 methods, key-release events, mouse motion reporting and tmux prefix compatibility
-remain follow-up work under 0003 and 0015. The first connection observes the
-window selected at connection time; it does not promise independent tmux window
-navigation. Scaling preserves source geometry but is not final sizing parity. Selection
+remain follow-up work under 0003 and 0015. Local tmux window navigation is
+implemented by [0026](0026-native-tmux-window-navigation.md), without grouped
+helpers or changing the source session’s selected window. Scaling preserves source geometry but is not final sizing parity. Selection
 retains graphemes and joins soft wraps known to the engine, but recovery captures
 currently omit soft-wrap flags (0021): copied recovered rows keep visual line
 breaks. Authoritative captured wrap metadata remains follow-up work.
