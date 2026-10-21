@@ -81,18 +81,16 @@ impl WindowLayout {
     /// Choose an existing attachment using this window's actual viewing history.
     /// Refresh the shared arrangement first and pass the captured window source.
     /// This reads source paths only and changes model selection, not terminal input.
+    /// A selected attachment or a lookup error returns input focus to navigation.
+    /// No match leaves the current focus unchanged.
     /// Call [`Self::record_shown_tab`] after the chosen tab is actually displayed.
     pub fn choose_attached_session(&mut self, name: &str, source: &Path) -> io::Result<bool> {
-        let chosen = crate::sessions::choose_attached_session(
-            &mut self.model,
-            name,
-            &self.tab_uses,
-            source,
-        )?;
-        if chosen {
+        let result =
+            crate::sessions::choose_attached_session(&mut self.model, name, &self.tab_uses, source);
+        if !matches!(&result, Ok(false)) {
             self.focus_navigation();
         }
-        Ok(chosen)
+        result
     }
 
     /// Apply a validated library replacement and return its conflict/input flags.
@@ -119,6 +117,35 @@ impl WindowLayout {
 mod tests {
     use super::*;
     use tmux_workspaces_core::Attachment;
+
+    #[test]
+    fn failed_session_navigation_disarms_input_without_changing_the_layout() {
+        let path = Path::new("layouts.db");
+        let raw = r#"{"version":2,"workspaces":[{"id":"000000000001","name":"Workspace","tabs":[{"id":"000000000002","name":"Editor","tree":{"id":"000000000003","agent":null},"focus":"000000000003"}],"selected":"000000000002"}],"selected":"000000000001","focus":false}"#;
+        let mut window = WindowLayout::new(Document::parse(raw.into(), path).unwrap());
+        let before = window.model().clone();
+        assert!(window.focus_terminal());
+        let error = window
+            .choose_attached_session("worker", Path::new("invalid\0source"))
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(window.terminal_input().is_none());
+        assert_eq!(window.model(), &before);
+
+        // An unchanged library refresh cannot silently re-enable terminal input.
+        let result = window
+            .refresh(Document::parse(raw.into(), path).unwrap(), path)
+            .unwrap();
+        assert!(!result.conflict && !result.active_tree_changed);
+        assert!(window.terminal_input().is_none());
+        assert!(window.focus_terminal());
+        assert!(
+            !window
+                .choose_attached_session("missing", Path::new("/fixture/source"))
+                .unwrap()
+        );
+        assert!(window.terminal_input().is_some());
+    }
 
     #[test]
     fn changed_shared_panes_require_explicit_window_local_input_focus() {
