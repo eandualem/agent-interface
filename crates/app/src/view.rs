@@ -531,10 +531,8 @@ impl TerminalView {
         _: &mut Context<Self>,
     ) {
         if let Some((pane, button, previous)) = self.program_press {
-            if event.pressed_button.and_then(mouse_button) != Some(button) {
-                self.release_mouse();
-                return;
-            }
+            // Backends report one pressed button, not the complete held set.
+            // Only this button's up event or explicit cancellation ends ownership.
             let pointer = drag_pointer(
                 &self.grid.borrow(),
                 pane,
