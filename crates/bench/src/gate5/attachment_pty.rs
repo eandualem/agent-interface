@@ -497,3 +497,214 @@ fn ordinary_late_attach_preserves_unexported_pane_state() {
         }
     }
 }
+
+/// The outer terminal's key protocol and the application's protocol are
+/// separate: tmux translates between them according to the pane's mode.
+#[test]
+fn ordinary_host_uses_tmux_extended_key_policy() {
+    use std::cell::RefCell;
+
+    use libghostty_vt::key;
+    use libghostty_vt::terminal::{Options, Terminal as Host};
+
+    let server = TmuxServer::start().unwrap();
+    let version = super::fixtures::version(&describe(&server, "fixture", "#{version}")).unwrap();
+    let files = tempfile::tempdir().unwrap();
+    let input = files.path().join("input");
+    server.run(&["set-option", "-g", "status", "off"]).unwrap();
+    server
+        .run(&["set-option", "-g", "assume-paste-time", "0"])
+        .unwrap();
+    server
+        .run(&["set-option", "-s", "extended-keys", "on"])
+        .unwrap();
+    server
+        .run(&[
+            "set-option",
+            "-as",
+            "terminal-features",
+            "xterm-256color:extkeys",
+        ])
+        .unwrap();
+    let script = files.path().join("keys.sh");
+    std::fs::write(&script, format!(
+        "stty raw -echo\ncat < /dev/tty > {} &\nprintf '\\033[>4;2mKEYS_READY'\n{}\nprintf '\\033[>4;0mKEYS_DISABLED'\nwait\n",
+        quote(input.to_str().unwrap()), server.shell_command(&["wait-for", "keys-disable"])
+    )).unwrap();
+    server
+        .run(&[
+            "respawn-pane",
+            "-k",
+            "-t",
+            "fixture:0",
+            &format!("sh {}", quote(script.to_str().unwrap())),
+        ])
+        .unwrap();
+    let replies = RefCell::new(Vec::new());
+    let mut host = Host::new(Options {
+        cols: 80,
+        rows: 24,
+        max_scrollback: 0,
+    })
+    .unwrap();
+    host.on_pty_write(|_, data| replies.borrow_mut().extend_from_slice(data))
+        .unwrap();
+    let client = Reference::attach(&server, "fixture", 80, 24).unwrap();
+    eprintln!(
+        "extended keys: {}",
+        describe(&server, "fixture", "#{pid}|#{socket_path}|#{version}")
+    );
+    let mut offset = 0;
+    let mut pump = |host: &mut Host<'_, '_>| {
+        let bytes = client.bytes_from(offset);
+        offset += bytes.len();
+        host.vt_write(&bytes);
+        client
+            .send(&std::mem::take(&mut *replies.borrow_mut()))
+            .unwrap();
+    };
+    wait_for(|| {
+        pump(&mut host);
+        let request = if version < (3, 5) {
+            b"\x1b[>4;1m"
+        } else {
+            b"\x1b[>4;2m"
+        };
+        client
+            .bytes_from(0)
+            .windows(request.len())
+            .any(|bytes| bytes == request)
+            && server
+                .run(&["capture-pane", "-p", "-t", "fixture:0"])
+                .unwrap()
+                .contains("KEYS_READY")
+            && input.exists()
+    });
+    assert!(std::fs::read(&input).unwrap().is_empty());
+    eprintln!(
+        "clients: {}",
+        server
+            .run(&[
+                "list-clients",
+                "-t",
+                "fixture",
+                "-F",
+                "#{client_pid}|#{client_termname}|#{client_termfeatures}"
+            ])
+            .unwrap()
+            .trim()
+    );
+    let mut keys = key::Encoder::new().unwrap();
+    let mut encoded = [0; 64];
+    let mut expected = Vec::new();
+    let expect_input = |expected: &[u8]| {
+        let deadline = Instant::now() + TIMEOUT;
+        loop {
+            let actual = std::fs::read(&input).unwrap();
+            if actual == expected {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "input {actual:?}, expected {expected:?}"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    };
+    let formats = if version < (3, 5) {
+        &["csi-u"][..]
+    } else {
+        &["csi-u", "xterm"][..]
+    };
+    for format in formats {
+        if version >= (3, 5) {
+            server
+                .run(&["set-option", "-s", "extended-keys-format", format])
+                .unwrap();
+        }
+        pump(&mut host);
+        keys.set_options_from_terminal(&host);
+        for (key, mods, text, unshifted, outer, csi) in [
+            (
+                key::Key::I,
+                key::Mods::CTRL,
+                "i",
+                'i',
+                if version < (3, 5) {
+                    b"\x1b[105;5u".as_slice()
+                } else {
+                    b"\x1b[27;5;105~".as_slice()
+                },
+                if version < (3, 5) {
+                    b"\t".as_slice()
+                } else {
+                    b"\x1b[105;5u".as_slice()
+                },
+            ),
+            (
+                key::Key::A,
+                key::Mods::CTRL | key::Mods::SHIFT,
+                "A",
+                'a',
+                if version < (3, 5) {
+                    b"\x1b[97;6u".as_slice()
+                } else {
+                    b"\x1b[27;6;65~".as_slice()
+                },
+                b"\x1b[65;6u".as_slice(),
+            ),
+        ] {
+            let mut event = key::Event::new().unwrap();
+            event
+                .set_action(key::Action::Press)
+                .set_key(key)
+                .set_mods(mods)
+                .set_utf8(Some(text))
+                .set_unshifted_codepoint(unshifted);
+            let size = keys.encode(&event, &mut encoded).unwrap();
+            assert_eq!(&encoded[..size], outer);
+            client.send(&encoded[..size]).unwrap();
+            expected.extend_from_slice(if *format == "xterm" { outer } else { csi });
+            expect_input(&expected);
+        }
+        // A literal Tab stays distinct from Ctrl-I on tmux >= 3.5. Earlier
+        // versions normalize Ctrl-I to Tab even with extended keys enabled.
+        let mut tab = key::Event::new().unwrap();
+        tab.set_action(key::Action::Press).set_key(key::Key::Tab);
+        let size = keys.encode(&tab, &mut encoded).unwrap();
+        assert_eq!(&encoded[..size], b"\t");
+        client.send(&encoded[..size]).unwrap();
+        expected.push(b'\t');
+        expect_input(&expected);
+    }
+    server.run(&["wait-for", "-S", "keys-disable"]).unwrap();
+    wait_for(|| {
+        server
+            .run(&["capture-pane", "-p", "-t", "fixture:0"])
+            .unwrap()
+            .contains("KEYS_DISABLED")
+    });
+    pump(&mut host);
+    keys.set_options_from_terminal(&host);
+    let mut control_i = key::Event::new().unwrap();
+    control_i
+        .set_action(key::Action::Press)
+        .set_key(key::Key::I)
+        .set_mods(key::Mods::CTRL)
+        .set_utf8(Some("i"))
+        .set_unshifted_codepoint('i');
+    let size = keys.encode(&control_i, &mut encoded).unwrap();
+    assert_eq!(
+        &encoded[..size],
+        if version < (3, 5) {
+            b"\x1b[105;5u".as_slice()
+        } else {
+            b"\x1b[27;5;105~".as_slice()
+        }
+    );
+    client.send(&encoded[..size]).unwrap();
+    expected.push(b'\t');
+    client.send(b"END").unwrap();
+    expected.extend_from_slice(b"END");
+    expect_input(&expected);
+}
