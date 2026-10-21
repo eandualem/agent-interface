@@ -63,8 +63,7 @@ sessions start on the source’s current window. Use the window names above a
 terminal to view another existing tmux window without switching other clients.
 The chosen window is remembered locally when switching workspace tabs; reopening
 the library starts from the source's current window again.
-Refresh reloads that list; changing workspace tabs currently resets this local
-window choice. Custom tmux
+Refresh reloads that list. Custom tmux
 prefix bindings, terminal mouse motion reporting, selection across history pages, input methods
 and key-release events are not yet wired into the product UI.
 
