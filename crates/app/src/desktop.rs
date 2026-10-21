@@ -21,6 +21,7 @@ mod name;
 use chooser::{Choice, SessionChooser};
 use layout_edit::{Create, Selection};
 mod terminal;
+mod workspace;
 use name::{NameEvent, NameField};
 use terminal::{LiveTerminal, Target};
 use tmux_workspaces_tmux::connection::SessionWindow;
@@ -129,7 +130,7 @@ fn open_browser(
 }
 
 struct EditingName {
-    target: NameEdit,
+    target: Option<NameEdit>,
     tab: bool,
     field: gpui::Entity<NameField>,
     _events: gpui::Subscription,
@@ -396,7 +397,28 @@ impl Browser {
         let Some(target) = target else {
             return;
         };
-        let field = cx.new(|cx| NameField::new(target.name(), window, cx));
+        self.edit_name(Some(target), tab, window, cx);
+    }
+
+    fn begin_workspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.saving || self.save_failed || self.editing.is_some() || self.layout.is_none() {
+            return;
+        }
+        if let Some(update) = self.library.as_ref().and_then(Library::take_update) {
+            self.apply(update);
+        }
+        self.edit_name(None, false, window, cx);
+    }
+
+    fn edit_name(
+        &mut self,
+        target: Option<NameEdit>,
+        tab: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let name = target.as_ref().map_or("", NameEdit::name);
+        let field = cx.new(|cx| NameField::new(name, window, cx));
         let events = cx.subscribe_in(
             &field,
             window,
@@ -435,10 +457,16 @@ impl Browser {
         let (Some(edit), Some(layout)) = (&self.editing, &mut self.layout) else {
             return;
         };
-        match edit
-            .target
-            .apply(layout.model_mut(), edit.field.read(cx).value())
-        {
+        let outcome = if let Some(target) = &edit.target {
+            target.apply(layout.model_mut(), edit.field.read(cx).value())
+        } else if let Some(proposal) = workspace::create(layout, edit.field.read(cx).value()) {
+            self.creation_from = Some(Selection::capture(layout.model()));
+            self.pending_save = Some(proposal);
+            RenameOutcome::Applied
+        } else {
+            RenameOutcome::Empty
+        };
+        match outcome {
             RenameOutcome::Empty => return,
             RenameOutcome::Changed => {
                 self.editing = None;
@@ -454,6 +482,35 @@ impl Browser {
             window.focus(focus, cx);
         }
         cx.notify();
+    }
+
+    fn delete_workspace(&mut self, expected: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.saving || self.save_failed {
+            return;
+        }
+        if let Some(update) = self.library.as_ref().and_then(Library::take_update) {
+            self.apply(update);
+        }
+        let Some(proposal) = self
+            .layout
+            .as_ref()
+            .and_then(|layout| workspace::delete(layout, expected))
+        else {
+            self.save_notice = Some(
+                "Only an empty workspace can be deleted, and one workspace must remain.".into(),
+            );
+            cx.notify();
+            return;
+        };
+        self.pending_save = Some(proposal);
+        self.workspace_menu = false;
+        self.editing = None;
+        self.tab_menu = None;
+        self.chooser = None;
+        if let Some(focus) = &self.navigation {
+            window.focus(focus, cx);
+        }
+        self.save(cx);
     }
 
     fn create(&mut self, action: Create, window: &mut Window, cx: &mut Context<Self>) {
@@ -892,7 +949,17 @@ impl Browser {
                     .id("save-name")
                     .cursor_pointer()
                     .text_xs()
-                    .child("Save name")
+                    .child(
+                        if self
+                            .editing
+                            .as_ref()
+                            .is_some_and(|edit| edit.target.is_none())
+                        {
+                            "Create workspace"
+                        } else {
+                            "Save name"
+                        },
+                    )
                     .on_mouse_down(gpui::MouseButton::Left, |_, window, _| {
                         window.prevent_default()
                     })
@@ -1179,17 +1246,6 @@ impl Render for Browser {
                 if self.tab_menu.is_some() {
                     tabs = tabs.child(self.tab_options(cx));
                 } else if self.workspace_menu {
-                    tabs = tabs.child(
-                        div()
-                            .id("rename-workspace")
-                            .px_2()
-                            .py_1()
-                            .cursor_pointer()
-                            .child("Rename workspace")
-                            .on_click(cx.listener(|browser, _, window, cx| {
-                                browser.begin_name(false, window, cx)
-                            })),
-                    );
                     tabs = tabs.child(div().px_2().py_1().text_xs().child("WORKSPACES"));
                     for space in &model.workspaces {
                         let id = space.id.clone();
@@ -1215,6 +1271,55 @@ impl Render for Browser {
                                 })),
                         );
                     }
+                    tabs = tabs.child(div().px_2().py_1().text_xs().child("THIS WORKSPACE"));
+                    tabs = tabs.child(
+                        div()
+                            .id("rename-workspace")
+                            .px_2()
+                            .py_1()
+                            .cursor_pointer()
+                            .child("Rename workspace")
+                            .on_click(cx.listener(|browser, _, window, cx| {
+                                browser.begin_name(false, window, cx)
+                            })),
+                    );
+                    let reason = if !space.tabs.is_empty() {
+                        Some("has tabs")
+                    } else if model.workspaces.len() == 1 {
+                        Some("last one")
+                    } else {
+                        None
+                    };
+                    let expected = space.id.clone();
+                    tabs = tabs.child(
+                        div()
+                            .id("delete-workspace")
+                            .px_2()
+                            .py_1()
+                            .child(reason.map_or_else(
+                                || "Delete workspace".to_owned(),
+                                |reason| format!("Delete workspace · {reason}"),
+                            ))
+                            .when(reason.is_none(), |el| {
+                                el.cursor_pointer().on_click(cx.listener(
+                                    move |browser, _, window, cx| {
+                                        browser.delete_workspace(&expected, window, cx);
+                                    },
+                                ))
+                            })
+                            .when(reason.is_some(), |el| el.text_color(rgb(0x9aa9bf))),
+                    );
+                    tabs = tabs.child(
+                        div()
+                            .id("new-workspace")
+                            .px_2()
+                            .py_1()
+                            .cursor_pointer()
+                            .child("New workspace")
+                            .on_click(cx.listener(|browser, _, window, cx| {
+                                browser.begin_workspace(window, cx)
+                            })),
+                    );
                 } else {
                     tabs = tabs.child(
                         div()
@@ -1362,6 +1467,18 @@ impl Render for Browser {
                             .text_ellipsis()
                             .cursor_pointer()
                             .child(heading.clone())
+                            .on_mouse_down(
+                                gpui::MouseButton::Right,
+                                cx.listener(|browser, _, window, cx| {
+                                    browser.tab_menu = None;
+                                    browser.workspace_menu = true;
+                                    if let Some(focus) = &browser.navigation {
+                                        window.focus(focus, cx);
+                                    }
+                                    cx.stop_propagation();
+                                    cx.notify();
+                                }),
+                            )
                             .on_click(cx.listener(
                                 |browser, event: &gpui::ClickEvent, window, cx| {
                                     if event.click_count() == 2 {
@@ -1456,6 +1573,16 @@ impl Render for Browser {
                         if chooser.view.read(cx).composing(cx) {
                             return;
                         }
+                    }
+                    if key.modifiers.platform
+                        && key.modifiers.shift
+                        && !key.modifiers.control
+                        && !key.modifiers.alt
+                        && key.key == "n"
+                    {
+                        browser.begin_workspace(window, cx);
+                        cx.stop_propagation();
+                        return;
                     }
                     if key.modifiers.platform && !key.modifiers.control && !key.modifiers.alt {
                         let action = match key.key.as_str() {

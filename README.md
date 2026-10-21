@@ -53,6 +53,13 @@ Command-N or **New Window** opens another native window on the current library,
 with independent navigation and terminal connections. Closing one leaves the
 other windows open. **Open library…** chooses another folder containing `layouts.db`.
 
+Open the workspace chooser with **▾** or a right-click on the workspace heading.
+Choose **New workspace**, or press Command-Shift-N, and enter a name. Enter or
+Create workspace saves it; Escape cancels. New workspaces have no tabs or shells.
+Choose **Delete workspace** to remove an empty workspace; the last workspace and
+workspaces with tabs cannot be deleted. Deleting selects the first remaining
+workspace and leaves its tabs and sessions intact.
+
 Click **+** beside TABS or press Command-T to add an empty tab. Command-D splits
 right; Command-Shift-D splits below. Both split actions are also in tab options.
 The existing pane remains intact and the new pane offers Open terminal or Attach session. New tabs

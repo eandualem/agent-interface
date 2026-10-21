@@ -84,11 +84,14 @@ impl Selection {
 
 pub(super) fn select_created(model: &mut Layout, created: &Layout) {
     // Do not reset remembered selections in other workspaces or tabs.
-    if let (Some(tab), Some(pane)) = (created.tab(), created.pane())
-        && model.choose_workspace(&created.selected)
-        && model.choose_tab(&tab.id)
-        && model.choose_pane(&pane.id)
-    {
+    if !model.choose_workspace(&created.selected) {
+        return;
+    }
+    if let (Some(tab), Some(pane)) = (created.tab(), created.pane()) {
+        if model.choose_tab(&tab.id) && model.choose_pane(&pane.id) {
+            model.focus = created.focus;
+        }
+    } else {
         model.focus = created.focus;
     }
 }
