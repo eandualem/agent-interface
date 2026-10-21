@@ -19,10 +19,20 @@ pub(super) struct Target {
 }
 
 struct Ready {
-    panes: Arc<Panes>,
-    layout: tmux_workspaces_tmux::layout::Change,
+    panes: Option<Arc<Panes>>,
+    layout: Option<tmux_workspaces_tmux::layout::Change>,
     input: tmux_workspaces_tmux::control::PaneId,
-    updates: UnboundedReceiver<()>,
+    updates: Option<UnboundedReceiver<()>>,
+}
+
+impl Drop for Ready {
+    fn drop(&mut self) {
+        // A completed background task may be cancelled on the foreground
+        // executor before installation. It must not join tmux workers there.
+        if let Some(panes) = self.panes.take() {
+            std::thread::spawn(move || drop(panes));
+        }
+    }
 }
 
 fn connect(target: Target) -> Result<Ready, String> {
@@ -52,10 +62,10 @@ fn connect(target: Target) -> Result<Ready, String> {
     })
     .map_err(|e| e.to_string())?;
     Ok(Ready {
-        panes: Arc::new(panes),
-        layout: connection.layout,
+        panes: Some(Arc::new(panes)),
+        layout: Some(connection.layout),
         input: connection.input,
-        updates,
+        updates: Some(updates),
     })
 }
 
@@ -96,14 +106,14 @@ impl LiveTerminal {
             let _ = this.update(cx, |terminal, cx| {
                 terminal.connecting = false;
                 match result {
-                    Ok(ready) => {
+                    Ok(mut ready) => {
                         let view = cx.new(|cx| {
                             TerminalView::embedded(
-                                ready.panes,
-                                ready.layout.panes,
+                                ready.panes.take().unwrap(),
+                                ready.layout.take().unwrap().panes,
                                 ready.input,
                                 appearance(),
-                                ready.updates,
+                                ready.updates.take().unwrap(),
                                 cx,
                             )
                         });
@@ -247,11 +257,12 @@ mod tests {
             source: Err("must use saved explicit socket".into()),
         };
         let ready = connect(target.clone()).unwrap();
+        let panes = ready.panes.as_ref().unwrap();
         let mut screens = HashMap::new();
         let wait = |screens: &mut HashMap<_, Screen>, expected: &str| {
             let deadline = Instant::now() + Duration::from_secs(10);
             loop {
-                if let Some(update) = ready.panes.take_update() {
+                if let Some(update) = panes.take_update() {
                     screens.extend(update.screens);
                 }
                 if screens
@@ -263,7 +274,7 @@ mod tests {
                 assert!(
                     Instant::now() < deadline,
                     "missing {expected}: {:?}",
-                    ready.panes.failure()
+                    panes.failure()
                 );
                 std::thread::sleep(Duration::from_millis(5));
             }
@@ -271,10 +282,7 @@ mod tests {
         wait(&mut screens, "existing-output");
         wait(&mut screens, "second-pane");
         assert_eq!(screens.len(), 2);
-        ready
-            .panes
-            .send_input(ready.input, b"typed-marker\r")
-            .unwrap();
+        panes.send_input(ready.input, b"typed-marker\r").unwrap();
         wait(&mut screens, "typed-marker");
         assert!(text(&screens[&ready.input]).contains("typed-marker"));
         assert!(
@@ -301,9 +309,39 @@ mod tests {
                 .unwrap(),
             environment
         );
+        // A stale queued key for a retired pane must not disable its neighbor.
+        let retired = *screens.keys().find(|id| **id != ready.input).unwrap();
+        server
+            .run(&["kill-pane", "-t", &format!("%{}", retired.0)])
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Some(update) = panes.take_update()
+                && !update.layout.iter().any(|pane| pane.id == retired)
+            {
+                break;
+            }
+            assert!(Instant::now() < deadline, "pane removal was not observed");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        while panes.send_input(retired, b"discarded").is_ok() {
+            assert!(Instant::now() < deadline, "retired pane was not rejected");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let queue = crate::view::input_queue(Arc::clone(panes));
+        queue.send((retired, b"discarded\r".to_vec())).unwrap();
+        queue
+            .send((ready.input, b"surviving-input\r".to_vec()))
+            .unwrap();
+        wait(&mut screens, "surviving-input");
+        drop(queue);
         drop(ready);
         assert!(server.run(&["has-session", "-t", &target_name]).is_ok());
-        assert!(server.run(&["list-clients"]).unwrap().is_empty());
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !server.run(&["list-clients"]).unwrap().is_empty() {
+            assert!(Instant::now() < deadline, "connection did not detach");
+            std::thread::sleep(Duration::from_millis(5));
+        }
         // No session-name prefix matching and no implicit server creation.
         target.leaf.attachment.as_mut().unwrap().session = "=editor".into();
         assert!(connect(target.clone()).is_err());

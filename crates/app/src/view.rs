@@ -88,7 +88,7 @@ pub struct TerminalView {
     panes: Option<Arc<Panes>>,
     grid: Rc<RefCell<Grid>>,
     // Input goes to this exact pane, changed only by an explicit visible-pane click.
-    input: PaneId,
+    input: Option<PaneId>,
     focus: FocusHandle,
     failure_reported: bool,
     embedded: bool,
@@ -165,17 +165,7 @@ impl TerminalView {
                 .detach();
         })
         .detach();
-        let (input_queue, pending) = std::sync::mpsc::sync_channel::<(PaneId, Vec<u8>)>(64);
-        let writing = Arc::clone(&panes);
-        // Keep both pipe writes and the final connection join off the UI thread.
-        // Dropping the view closes this bounded queue; no hidden view keeps focus.
-        std::thread::spawn(move || {
-            while let Ok((pane, bytes)) = pending.recv() {
-                if writing.send_input(pane, &bytes).is_err() {
-                    break;
-                }
-            }
-        });
+        let input_queue = input_queue(Arc::clone(&panes));
         // An update is taken when the next frame is drawn, so the worker
         // copies at most one update per frame.
         cx.spawn(async move |this, cx| {
@@ -215,7 +205,7 @@ impl TerminalView {
                 batch_ascii,
                 font,
             })),
-            input,
+            input: (!embedded).then_some(input),
             focus,
             failure_reported: false,
             embedded,
@@ -256,20 +246,21 @@ impl TerminalView {
 
     fn key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
         let bytes = encode_key(&event.keystroke);
-        if !bytes.is_empty()
+        if let Some(input) = self.input
+            && !bytes.is_empty()
             && self
                 .grid
                 .borrow()
                 .layout
                 .iter()
-                .any(|pane| pane.id == self.input)
-            && self.grid.borrow().screens.contains_key(&self.input)
+                .any(|pane| pane.id == input)
+            && self.grid.borrow().screens.contains_key(&input)
             && !self.panes().is_finished()
         {
             // Queue input without waiting for a pipe write on the UI thread.
             self.input_error = self
                 .input_queue
-                .try_send((self.input, bytes))
+                .try_send((input, bytes))
                 .err()
                 .map(|_| "Terminal input is busy or disconnected; key was not sent.".into());
             if self.input_error.is_some() {
@@ -311,23 +302,28 @@ impl Render for TerminalView {
             .bg(background)
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::key_down))
+            .capture_any_mouse_down(|_, window, _| window.prevent_default())
             .on_mouse_down(
                 gpui::MouseButton::Left,
                 cx.listener(|view, event: &gpui::MouseDownEvent, window, cx| {
+                    // track_focus otherwise focuses the entire div, including
+                    // blank padding and separators. Only a ready cell can arm input.
+                    window.prevent_default();
                     let grid = view.grid.borrow();
-                    if let Some(bounds) = grid.bounds {
-                        let position = event.position - bounds.origin;
-                        let col = f32::from(position.x) / f32::from(grid.cell.width);
-                        let row = f32::from(position.y) / f32::from(grid.cell.height);
-                        if let Some(pane) = grid.layout.iter().find(|p| {
-                            col >= f32::from(p.left)
-                                && col < f32::from(p.left) + f32::from(p.cols)
-                                && row >= f32::from(p.top)
-                                && row < f32::from(p.top) + f32::from(p.rows)
-                        }) {
-                            view.input = pane.id;
-                            window.focus(&view.focus, cx);
-                        }
+                    view.input = grid.bounds.and_then(|bounds| {
+                        hit_pane(
+                            &grid.layout,
+                            &grid.screens,
+                            grid.cell,
+                            bounds,
+                            event.position,
+                        )
+                    });
+                    if view.input.is_some() && !view.panes().is_finished() {
+                        window.focus(&view.focus, cx);
+                    } else {
+                        view.input = None;
+                        window.blur(cx);
                     }
                 }),
             )
@@ -358,6 +354,43 @@ impl Render for TerminalView {
                 )
             })
     }
+}
+
+pub(crate) fn input_queue(panes: Arc<Panes>) -> std::sync::mpsc::SyncSender<(PaneId, Vec<u8>)> {
+    let (queue, pending) = std::sync::mpsc::sync_channel::<(PaneId, Vec<u8>)>(64);
+    std::thread::spawn(move || {
+        while let Ok((pane, bytes)) = pending.recv() {
+            // A retired pane is a local rejection, not a failed connection.
+            // Keep serving surviving panes; transport failure is shown by the view.
+            let _ = panes.send_input(pane, &bytes);
+        }
+    });
+    queue
+}
+
+fn hit_pane(
+    layout: &[PaneLayout],
+    screens: &HashMap<PaneId, Screen>,
+    cell: Size<Pixels>,
+    bounds: Bounds<Pixels>,
+    position: gpui::Point<Pixels>,
+) -> Option<PaneId> {
+    if !bounds.contains(&position) {
+        return None;
+    }
+    let position = position - bounds.origin;
+    let col = f32::from(position.x) / f32::from(cell.width);
+    let row = f32::from(position.y) / f32::from(cell.height);
+    layout
+        .iter()
+        .find(|pane| {
+            screens.contains_key(&pane.id)
+                && col >= f32::from(pane.left)
+                && col < f32::from(pane.left) + f32::from(pane.cols)
+                && row >= f32::from(pane.top)
+                && row < f32::from(pane.top) + f32::from(pane.rows)
+        })
+        .map(|pane| pane.id)
 }
 
 impl Grid {
@@ -662,6 +695,47 @@ fn encode_key(keystroke: &Keystroke) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn terminal_clicks_require_ready_cells_not_padding_or_separators() {
+        let layout = [
+            PaneLayout {
+                id: PaneId(1),
+                left: 0,
+                top: 0,
+                cols: 4,
+                rows: 2,
+            },
+            PaneLayout {
+                id: PaneId(2),
+                left: 5,
+                top: 0,
+                cols: 4,
+                rows: 2,
+            },
+        ];
+        let bounds = Bounds::new(point(px(20.0), px(30.0)), size(px(100.0), px(100.0)));
+        let cell = size(px(10.0), px(10.0));
+        let mut screens = HashMap::new();
+        assert_eq!(
+            hit_pane(&layout, &screens, cell, bounds, point(px(21.0), px(31.0))),
+            None
+        );
+        screens.insert(PaneId(1), Screen::default());
+        screens.insert(PaneId(2), Screen::default());
+        for (x, y, expected) in [
+            (21.0, 31.0, Some(PaneId(1))),
+            (71.0, 31.0, Some(PaneId(2))),
+            (61.0, 31.0, None),
+            (21.0, 51.0, None),
+            (10.0, 31.0, None),
+        ] {
+            assert_eq!(
+                hit_pane(&layout, &screens, cell, bounds, point(px(x), px(y))),
+                expected
+            );
+        }
+    }
 
     #[test]
     fn the_palette_has_the_standard_cube_and_grey_ramp() {
