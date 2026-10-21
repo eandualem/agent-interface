@@ -68,8 +68,9 @@ Decision values:
 ## Workspaces and tabs
 
 The core model supports in-memory creation, splitting, attachment changes and
-closing records. Product controls, persistence and shell lifecycle integration
-remain pending; model operations alone do not complete these workflows.
+closing records. A native read-only sidebar now selects saved workspaces and tabs and previews
+their split layouts. Editing controls, persistence and shell lifecycle integration
+remain pending; browsing alone does not complete these workflows.
 
 | # | Behaviour (Python tool) | Source | Decision | Notes | Status |
 | --- | --- | --- | --- | --- | --- |
@@ -174,7 +175,7 @@ tool. It writes that library only after PE-15 is in place.
 
 | # | Behaviour (Python tool) | Source | Decision | Notes | Status |
 | --- | --- | --- | --- | --- | --- |
-| PE-1 | The library directory is chosen in this order: `--data-dir`, then `$TMUX_WORKSPACES_DATA_DIR`, then `$XDG_DATA_HOME/tmux-workspaces`, then `~/.local/share/tmux-workspaces`. | [GUIDE][g-iso], [NAMING][nm-compat], [PACKAGING][pk-layout] | Keep | Use the same order on macOS too (not `~/Library/Application Support`), so both tools open the same library. | In progress: read-only path selection and expansion implemented; product CLI/window integration pending. |
+| PE-1 | The library directory is chosen in this order: `--data-dir`, then `$TMUX_WORKSPACES_DATA_DIR`, then `$XDG_DATA_HOME/tmux-workspaces`, then `~/.local/share/tmux-workspaces`. | [GUIDE][g-iso], [NAMING][nm-compat], [PACKAGING][pk-layout] | Keep | Use the same order on macOS too (not `~/Library/Application Support`), so both tools open the same library. | In progress: read-only path selection, CLI --data-dir and native folder selection implemented; library creation pending. |
 | PE-2 | Workspaces, ordered tabs, terminal identities and split layouts live in `layouts.db`, a SQLite database with schema version 2. | [GUIDE][g-iso], [ARCHITECTURE][ar-modules] | Keep | Read support first. Write support waits for PE-15. | In progress |
 | PE-3 | The current arrangement is in the `terminal_layout` table. The earlier `layout` and `shared_layout` tables are kept with their exact JSON text and are never used as a silent fallback. | [RECOVERY][rc-copy], [GUIDE][g-iso] | Keep | | In progress |
 | PE-4 | Older layouts are imported once into the terminal library in the same database. Old viewers cannot overwrite the new library, and later edits made in an old version are not synchronized. | [GUIDE][g-iso] | Open | Decide whether the Rust app performs this one-time import itself, or asks the user to open the library once with the Python tool first. | Not started |
@@ -191,8 +192,8 @@ tool. It writes that library only after PE-15 is in place.
 | PE-15 | Concurrent edits to different items are merged. A conflicting edit to the same item is refreshed, and the user is asked to retry. | [GUIDE][g-iso], [ACCEPTANCE][ac-checks] | Keep | This three-way merge is the gate for writing `layouts.db`. | In progress: document reconciliation and window state merge local edits or refresh conflicts while retaining navigation and the correct merge base; persistence and UI refresh pending. |
 | PE-16 | If another window changes the active pane's layout or attachment, focus moves to the navigation panel, so typing cannot land in a different terminal. | [GUIDE][g-iso] | Keep | | In progress: model reconciliation reports active-tree changes; controller focus handoff pending. |
 | PE-17 | A rename that conflicts with another window's rename or deletion is cancelled instead of overwriting it. | [INLINE_RENAME][ir-use] | Keep | | In progress: model inline-rename guards and document reconciliation implemented; native editor and persistence pending. |
-| PE-18 | Shared names, tabs, arrangements and attachment availability refresh during normal use, without a restart. | [REFRESH][rf-reopen] | Keep | The Python docs do not give an interval. Watching the database file or polling are both possible. | In progress: read-only storage worker publishes validated updates and window state applies successive document refreshes; UI integration pending. |
-| PE-19 | Each window keeps its own selected workspace, tab, pane, focus mode and dimensions. The library is shared, and closing one window leaves the others running. | [GUIDE][g-iso], [SHORTCUTS][sc-top] | Keep | Windows of one app process behave like separate viewers. | In progress: model retains local selection; app windows pending. |
+| PE-18 | Shared names, tabs, arrangements and attachment availability refresh during normal use, without a restart. | [REFRESH][rf-reopen] | Keep | The Python docs do not give an interval. Watching the database file or polling are both possible. | In progress: native browser applies read-only library updates while retaining local selection; terminal availability integration pending. |
+| PE-19 | Each window keeps its own selected workspace, tab, pane, focus mode and dimensions. The library is shared, and closing one window leaves the others running. | [GUIDE][g-iso], [SHORTCUTS][sc-top] | Keep | Windows of one app process behave like separate viewers. | In progress: native browser retains local workspace/tab/pane selection; multi-window controls and terminal integration pending. |
 | PE-20 | The last-used navigation seeds new windows. | [GUIDE][g-iso] | Keep | | In progress |
 | PE-21 | The store holds one shared arrangement. Each running window keeps its own selected workspace, tab, pane and focus mode in memory, and the last-used navigation seeds new windows. The agents toggle is saved with the layout. | [ARCHITECTURE][ar-modules], [GUIDE][g-iso], [GUIDE][g-bb] | Open | Until write support lands, decide whether the app keeps navigation and edits in memory only, or disables editing. | Not started |
 | PE-22 | The tool stores references, not transcripts or credentials. | [GUIDE][g-iso] | Keep | | Not started |
