@@ -48,7 +48,9 @@ For programs with mouse reporting enabled, hold Shift to select text locally.
 Ordinary clicks, drags, requested pointer motion and wheel gestures reach the
 program. Each drag stays with its original pane; only one held-button gesture is
 forwarded at a time. Hold Shift to keep scrolling local to the native viewer.
-**Open library…** chooses another folder containing `layouts.db`.
+Command-N or **New Window** opens another native window on the current library,
+with independent navigation and terminal connections. Closing one leaves the
+other windows open. **Open library…** chooses another folder containing `layouts.db`.
 
 Existing ordinary shells use the Python library's shell server; attachments use
 their saved source socket, or the source resolved from the launch environment.

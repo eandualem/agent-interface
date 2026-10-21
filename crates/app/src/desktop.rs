@@ -20,7 +20,9 @@ actions!(
     library_browser,
     [
         /// Close the library browser without changing saved layouts or sessions.
-        Quit
+        Quit,
+        /// Open an independent native window on the current library.
+        NewWindow
     ]
 );
 
@@ -39,11 +41,17 @@ pub fn run(directory: Option<PathBuf>) -> Result<(), String> {
             cx.spawn(async |cx| cx.update(|cx| cx.quit())).detach();
             return;
         }
-        cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
+        cx.bind_keys([
+            KeyBinding::new("cmd-q", Quit, None),
+            KeyBinding::new("cmd-n", NewWindow, None),
+        ]);
         cx.on_action(|_: &Quit, cx| cx.quit());
         cx.set_menus(vec![Menu {
             name: "tmux-workspaces".into(),
-            items: vec![MenuItem::action("Quit tmux-workspaces", Quit)],
+            items: vec![
+                MenuItem::action("New Window", NewWindow),
+                MenuItem::action("Quit tmux-workspaces", Quit),
+            ],
             disabled: false,
         }]);
         cx.on_window_closed(|cx, _| {
@@ -52,30 +60,7 @@ pub fn run(directory: Option<PathBuf>) -> Result<(), String> {
             }
         })
         .detach();
-        let options = WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
-                None,
-                size(px(1040.0), px(700.0)),
-                cx,
-            ))),
-            window_min_size: Some(size(px(640.0), px(420.0))),
-            titlebar: Some(TitlebarOptions {
-                title: Some("tmux-workspaces".into()),
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-        if let Err(error) = cx.open_window(options, |_, cx| {
-            cx.new(|cx| {
-                let mut browser = Browser {
-                    source: Some(source),
-                    navigation: Some(cx.focus_handle()),
-                    ..Browser::default()
-                };
-                browser.open(directory, cx);
-                browser
-            })
-        }) {
+        if let Err(error) = open_browser(directory, source, cx) {
             *opened.borrow_mut() = Some(format!("cannot open window: {error}"));
             cx.spawn(async |cx| cx.update(|cx| cx.quit())).detach();
             return;
@@ -83,6 +68,39 @@ pub fn run(directory: Option<PathBuf>) -> Result<(), String> {
         cx.activate(true);
     });
     failure.borrow_mut().take().map_or(Ok(()), Err)
+}
+
+fn open_browser(
+    directory: Option<PathBuf>,
+    source: Result<PathBuf, String>,
+    cx: &mut App,
+) -> Result<(), String> {
+    let options = WindowOptions {
+        window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+            None,
+            size(px(1040.0), px(700.0)),
+            cx,
+        ))),
+        window_min_size: Some(size(px(640.0), px(420.0))),
+        titlebar: Some(TitlebarOptions {
+            title: Some("tmux-workspaces".into()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    cx.open_window(options, |_, cx| {
+        cx.new(|cx| {
+            let mut browser = Browser {
+                source: Some(source),
+                navigation: Some(cx.focus_handle()),
+                ..Browser::default()
+            };
+            browser.open(directory, cx);
+            browser
+        })
+    })
+    .map(|_| ())
+    .map_err(|error| error.to_string())
 }
 
 #[derive(Default)]
@@ -528,6 +546,16 @@ impl Render for Browser {
             .text_color(rgb(0xe2e9f3))
             .font_family(Arc::<str>::from(".SystemUIFont"))
             .when_some(self.navigation.clone(), |el, focus| el.track_focus(&focus))
+            .on_action(cx.listener(|browser, _: &NewWindow, _, cx| {
+                let source = browser
+                    .source
+                    .clone()
+                    .unwrap_or_else(|| Err("Source socket unavailable".into()));
+                if let Err(error) = open_browser(browser.directory.clone(), source, cx) {
+                    browser.error = Some(format!("Cannot open window: {error}"));
+                    cx.notify();
+                }
+            }))
             .capture_key_down(
                 cx.listener(|browser, event: &gpui::KeyDownEvent, window, cx| {
                     let key = &event.keystroke;

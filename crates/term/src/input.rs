@@ -262,15 +262,19 @@ impl Terminal {
             }
             Input::Mouse(pointer, action) => {
                 let mut pointer = *pointer;
+                let pressed = match action {
+                    MouseAction::Press(button) => Some(*button),
+                    _ => None,
+                };
                 let (button, action) = match *action {
                     MouseAction::Press(button) => {
                         if pointer.shift
+                            || self.mouse_button.is_some()
                             || self.scrolled_row()?.is_some()
                             || !self.engine.is_mouse_tracking().map_err(Error)?
                         {
                             return Ok(Vec::new());
                         }
-                        self.mouse_button = Some(button);
                         (Some(button), mouse::Action::Press)
                     }
                     MouseAction::Move(button) => {
@@ -300,7 +304,13 @@ impl Terminal {
                     Button::Middle => mouse::Button::Middle,
                     Button::Right => mouse::Button::Right,
                 });
-                self.encode_mouse(&pointer, button, action, 1, false)
+                let bytes = self.encode_mouse(&pointer, button, action, 1, false)?;
+                if !bytes.is_empty()
+                    && let Some(button) = pressed
+                {
+                    self.mouse_button = Some(button);
+                }
+                Ok(bytes)
             }
             Input::Scroll(scroll) => {
                 self.engine.scroll_viewport(match scroll {
@@ -606,6 +616,31 @@ mod tests {
         assert!(
             terminal
                 .encode_input(&Input::Mouse(moved, MouseAction::Move(Some(Button::Left))))
+                .unwrap()
+                .is_empty()
+        );
+        // A stale press rejected after resizing never owns a later drag.
+        assert!(
+            restored
+                .encode_input(&Input::Mouse(pointer, MouseAction::Press(Button::Left)))
+                .is_err()
+        );
+        assert!(
+            restored
+                .encode_input(&Input::Mouse(
+                    Pointer {
+                        cols: 40,
+                        rows: 12,
+                        ..moved
+                    },
+                    MouseAction::Move(Some(Button::Left))
+                ))
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            restored
+                .encode_input(&Input::Mouse(moved, MouseAction::Release(Button::Left)))
                 .unwrap()
                 .is_empty()
         );
