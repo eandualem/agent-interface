@@ -53,10 +53,14 @@ impl Drop for Ready {
 }
 
 fn connect(target: Target) -> Result<Ready, String> {
-    connect_selected(target, None)
+    connect_selected(target, None, false)
 }
 
-fn connect_selected(target: Target, selected: Option<SessionWindow>) -> Result<Ready, String> {
+fn connect_selected(
+    target: Target,
+    selected: Option<SessionWindow>,
+    reopened: bool,
+) -> Result<Ready, String> {
     let (socket, session) = if let Some(attachment) = &target.leaf.attachment {
         let socket = match &attachment.source_socket {
             Some(path) => {
@@ -76,6 +80,9 @@ fn connect_selected(target: Target, selected: Option<SessionWindow>) -> Result<R
         (socket, session)
     };
     let connection = match selected {
+        Some(window) if reopened => {
+            tmux_workspaces_tmux::connection::connect_reopened(&socket, &session, &window)
+        }
         Some(window) => {
             tmux_workspaces_tmux::connection::connect_window(&socket, &session, &window)
         }
@@ -175,6 +182,7 @@ impl LiveTerminal {
         self.connecting = true;
         let target = self.target.clone();
         let connection = cx.background_executor().spawn(async move {
+            let reopened = environment.is_some();
             if let Some(environment) = environment {
                 if target.leaf.empty || target.leaf.attachment.is_some() {
                     return Err("Only an ordinary terminal can be opened.".into());
@@ -194,7 +202,7 @@ impl LiveTerminal {
                 .map_err(|error| error.to_string())?;
             }
             match selected {
-                Some(window) => connect_selected(target, Some(window)),
+                Some(window) => connect_selected(target, Some(window), reopened),
                 None => connect(target),
             }
         });
@@ -435,7 +443,7 @@ mod tests {
                 "on",
             ])
             .unwrap();
-        let ready = connect_selected(target.clone(), Some(selected.clone())).unwrap();
+        let ready = connect_selected(target.clone(), Some(selected.clone()), false).unwrap();
         drop(first);
         assert_eq!(ready.window, selected.id);
         let panes = ready.panes.as_ref().unwrap();
@@ -499,7 +507,7 @@ mod tests {
             Panes::start_in_session(moved.client, &moved.layout, moved.session, 100, || {})
                 .is_err()
         );
-        assert!(connect_selected(target, Some(selected)).is_err());
+        assert!(connect_selected(target, Some(selected), false).is_err());
         assert_eq!(current(), original);
         assert!(
             server
