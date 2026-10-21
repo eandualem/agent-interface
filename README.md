@@ -62,14 +62,20 @@ session-lifetime policy still applies. Connections preserve
 the session environment and do not participate in resizing other clients; text
 scales down when the existing terminal is larger than its native pane.
 
-Changes saved by the Python app refresh automatically. Native navigation and
-pane expansion are local, and the app does not write saved layouts. Attached
+Changes saved by the Python app refresh automatically. Double-click the workspace
+name or the active tab's name to rename it. An inactive tab must first be selected.
+The original name starts selected; Enter or **Save name** saves it, Escape or
+clicking elsewhere cancels, and Ctrl-U clears the field. Names are limited to 80
+characters. A failed save retains the edit and offers **Retry saving name**;
+a conflicting peer edit refreshes the saved name and asks you to rename it again.
+Renaming requires an existing version-2 library and does not change tmux sessions.
+Navigation and pane expansion stay local. Attached
 sessions start on the source’s current window. Use the window names above a
 terminal to view another existing tmux window without switching other clients.
 The chosen window is remembered locally when switching workspace tabs; reopening
 the library starts from the source's current window again.
 Refresh reloads that list. Custom tmux
-prefix bindings, selection across history pages, input methods
+prefix bindings, selection across history pages, terminal input methods
 and key-release events are not yet wired into the product UI.
 
 Omit `--data-dir` to use the Python-compatible environment and default library

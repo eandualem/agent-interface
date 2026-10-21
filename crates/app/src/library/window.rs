@@ -8,8 +8,7 @@ use tmux_workspaces_store::{Document, Error, Reconciliation};
 /// Stored navigation seeds this model only once. Later library reads preserve
 /// local selection and reconcile structural edits through the store's conflict
 /// rules. Session selection reads socket paths without connecting to a server.
-/// This state holder enables no editing controls, database writes, terminal
-/// operations or keyboard dispatch.
+/// Database I/O remains on the storage worker, outside this state holder.
 #[derive(Debug)]
 pub struct WindowLayout {
     base: Document,
@@ -38,6 +37,23 @@ impl WindowLayout {
     /// schema-valid; an invalid model is rejected by the next refresh.
     pub fn model_mut(&mut self) -> &mut Layout {
         &mut self.model
+    }
+
+    /// Capture a save without borrowing the UI state during database I/O.
+    /// The caller permits navigation, but no further edits, until completion.
+    pub fn save_snapshot(&self) -> (Document, Layout) {
+        (self.base.clone(), self.model.clone())
+    }
+
+    /// Apply a completed save or conflict refresh, keeping navigation performed
+    /// while the worker was busy. `base` is the base updated by `Store::save`.
+    /// Returns whether input must return to navigation before further typing.
+    pub fn saved(&mut self, base: Document, result: &Reconciliation) -> bool {
+        let mut model = result.document.model().clone();
+        let changed = model.retain_navigation(&self.model);
+        self.base = base;
+        self.model = model;
+        changed
     }
 
     /// Record the current tab only after it has actually been shown. Selecting
@@ -79,6 +95,73 @@ impl WindowLayout {
 mod tests {
     use super::*;
     use tmux_workspaces_core::Attachment;
+
+    #[test]
+    fn save_completion_keeps_new_navigation_and_advances_the_edit_base() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("layouts.db");
+        let writer = rusqlite::Connection::open(&path).unwrap();
+        writer
+            .execute_batch("CREATE TABLE terminal_layout (id INTEGER PRIMARY KEY, value TEXT)")
+            .unwrap();
+        let raw = r#"{"version":2,"workspaces":[{"id":"000000000001","name":"Workspace","tabs":[],"selected":""}],"selected":"000000000001","focus":false}"#;
+        let original = Document::parse(raw.into(), &path).unwrap();
+        let mut model = original.model().clone();
+        model.add_tab(Some("First".into()), "/tmp".into(), true);
+        let first = model.tab().unwrap().id.clone();
+        model.add_tab(Some("Second".into()), "/tmp".into(), true);
+        let second = model.tab().unwrap().id.clone();
+        let document = original.with_model(&model, &path).unwrap();
+        writer
+            .execute(
+                "INSERT INTO terminal_layout VALUES (1, ?1)",
+                [document.raw_json()],
+            )
+            .unwrap();
+        let mut store =
+            tmux_workspaces_store::Store::open_existing_writable(directory.path()).unwrap();
+        let mut window = WindowLayout::new(document);
+        window.model_mut().rename_tab("Renamed");
+        let (mut base, local) = window.save_snapshot();
+        // Selection changes while the database worker is in flight.
+        window.model_mut().choose_tab(&first);
+        let result = store.save(&mut base, &local).unwrap();
+        assert!(!window.saved(base, &result));
+        assert_eq!(window.model().tab().unwrap().id, first);
+        assert_eq!(window.model().workspace().unwrap().tabs[1].name, "Renamed");
+        let result = window.refresh(store.load().unwrap(), &path).unwrap();
+        assert!(!result.conflict && !result.active_tree_changed);
+
+        window.model_mut().choose_tab(&second);
+        window.model_mut().rename_tab("Local retry");
+        let (mut base, local) = window.save_snapshot();
+        let mut peer = store.load().unwrap();
+        let mut peer_model = peer.model().clone();
+        peer_model.choose_tab(&second);
+        peer_model.rename_tab("Peer name");
+        assert!(!store.save(&mut peer, &peer_model).unwrap().conflict);
+        let result = store.save(&mut base, &local).unwrap();
+        assert!(result.conflict);
+        assert!(!window.saved(base, &result));
+        assert_eq!(window.model().tab().unwrap().name, "Peer name");
+        window.model_mut().rename_tab("Retried");
+        let (mut base, local) = window.save_snapshot();
+        let result = store.save(&mut base, &local).unwrap();
+        assert!(!result.conflict);
+        window.saved(base, &result);
+        assert_eq!(store.load().unwrap().model().tab().unwrap().name, "Retried");
+
+        // A peer removes the selected tab during the final rename save.
+        window.model_mut().rename_workspace("Updated");
+        let (mut base, local) = window.save_snapshot();
+        let mut peer = store.load().unwrap();
+        let mut peer_model = peer.model().clone();
+        peer_model.close_tab();
+        assert!(!store.save(&mut peer, &peer_model).unwrap().conflict);
+        let result = store.save(&mut base, &local).unwrap();
+        assert!(window.saved(base, &result));
+        assert_eq!(window.model().tab().unwrap().id, first);
+    }
 
     #[test]
     fn repeated_refreshes_retain_local_edits_and_advance_the_base_only_after_success() {
