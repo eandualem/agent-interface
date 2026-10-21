@@ -371,3 +371,129 @@ fn ordinary_host_routes_replies_paste_mouse_and_clipboard() {
     expected.extend_from_slice(b"END");
     wait_for(|| std::fs::read(&input).unwrap() == expected);
 }
+
+/// Compare a late ordinary attach with an uninterrupted client, using the
+/// same fixtures that expose state lost by capture-based recovery.
+#[test]
+fn ordinary_late_attach_preserves_unexported_pane_state() {
+    use super::session::{Layout, SESSION, Session, quiet};
+    use super::{compare, fixtures};
+
+    let version = {
+        let server = TmuxServer::start().unwrap();
+        fixtures::version(
+            &server
+                .run(&["display-message", "-p", "#{version}"])
+                .unwrap(),
+        )
+        .unwrap()
+    };
+    for name in [
+        "background-erase",
+        "tabs",
+        "tab-moved",
+        "link-wrap",
+        "current-style",
+        "partial-utf8",
+        "saved-cursor",
+        "still-line-drawing",
+        "alternate-resize",
+    ] {
+        let fixture = fixtures::FIXTURES
+            .iter()
+            .find(|fixture| fixture.name == name)
+            .unwrap();
+        let session = Session::start(version).unwrap();
+        let script = session.script(fixture.draw, fixture.more).unwrap();
+        session.open(Layout::One(40, 8), &script).unwrap();
+        let uninterrupted = Reference::attach(&session.server, SESSION, 40, 8).unwrap();
+        let rules = session.reference_ready(&uninterrupted).unwrap();
+        session.signal("ref").unwrap();
+        session.wait("drawn", TIMEOUT).unwrap();
+        quiet(&uninterrupted, None).unwrap();
+        let (cols, reference_from) = if name == "alternate-resize" {
+            // The pane keeps its saved primary screen at the old width while
+            // its alternate screen shrinks. Compare from the ensuing redraw.
+            let from = uninterrupted.len();
+            uninterrupted.resize(30, 8).unwrap();
+            wait_for(|| {
+                session
+                    .run(&["display-message", "-p", "-t", SESSION, "#{pane_width}"])
+                    .unwrap()
+                    .trim()
+                    == "30"
+            });
+            quiet(&uninterrupted, None).unwrap();
+            (30, from)
+        } else {
+            (40, 0)
+        };
+        // Keep the pre-attach display: attaching another client may redraw
+        // the first one, which must not hide an initial state difference.
+        let before_attach = uninterrupted.bytes_from(reference_from);
+        let late = Reference::attach(&session.server, SESSION, cols, 8).unwrap();
+        wait_for(|| {
+            session
+                .run(&["list-clients", "-t", SESSION, "-F", "#{client_pid}"])
+                .unwrap()
+                .lines()
+                .count()
+                == 2
+        });
+        eprintln!(
+            "{name}: {}",
+            session
+                .run(&[
+                    "display-message",
+                    "-p",
+                    "-t",
+                    SESSION,
+                    "#{pid}|#{socket_path}|#{version}"
+                ])
+                .unwrap()
+                .trim()
+        );
+        eprintln!(
+            "clients: {}",
+            session
+                .run(&[
+                    "list-clients",
+                    "-t",
+                    SESSION,
+                    "-F",
+                    "#{client_pid}|#{client_termname}|#{client_termfeatures}|#{client_width}x#{client_height}"
+                ])
+                .unwrap()
+                .trim()
+        );
+        for continued in [false, true] {
+            if continued {
+                session.signal("go").unwrap();
+                session.wait("more", TIMEOUT).unwrap();
+            }
+            quiet(&uninterrupted, None).unwrap();
+            quiet(&late, None).unwrap();
+            let decode = |bytes: &[u8]| {
+                let mut terminal = Terminal::new(cols, 8, 0).unwrap();
+                terminal.write(bytes);
+                compare::grid(&mut terminal).unwrap()
+            };
+            let reference = decode(&if continued {
+                uninterrupted.bytes_from(reference_from)
+            } else {
+                before_attach.clone()
+            });
+            let candidate = decode(&late.bytes_from(0));
+            assert_eq!(candidate.size(), reference.size());
+            let differences = compare::cells(&reference, (0, 0), &candidate, rules);
+            assert!(
+                differences.is_empty(),
+                "{name}, continued={continued}: {differences:?}"
+            );
+            assert_eq!(
+                candidate.cursor, reference.cursor,
+                "{name}, continued={continued}"
+            );
+        }
+    }
+}
