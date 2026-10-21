@@ -11,6 +11,7 @@ publish.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
 unicode-properties.workspace = true
+caseless.workspace = true
 
 [lints]
 workspace = true
