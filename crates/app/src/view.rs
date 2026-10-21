@@ -23,7 +23,7 @@ use gpui::{
 };
 use tmux_workspaces_term::{
     Attributes, Color, Screen, Style, Underline, Width,
-    input::{Input, KeyPress},
+    input::{Input, KeyPress, Scroll},
 };
 use tmux_workspaces_tmux::control::PaneId;
 
@@ -97,7 +97,9 @@ pub struct TerminalView {
     embedded: bool,
     input_queue: std::sync::mpsc::SyncSender<(PaneId, Input)>,
     input_error: Option<String>,
+    input_rejection: Option<String>,
     closed_reported: bool,
+    wheel: Option<(PaneId, f32)>,
 }
 
 pub(crate) struct Disconnected;
@@ -233,7 +235,9 @@ impl TerminalView {
             embedded,
             input_queue,
             input_error: None,
+            input_rejection: None,
             closed_reported: false,
+            wheel: None,
         }
     }
 
@@ -288,7 +292,31 @@ impl TerminalView {
                 && key.modifiers.shift
                 && !key.modifiers.alt
                 && key.key == "v");
-        let operation = if paste {
+        let scroll = if key.modifiers.shift
+            && !key.modifiers.control
+            && !key.modifiers.alt
+            && !key.modifiers.platform
+        {
+            let rows = self
+                .grid
+                .borrow()
+                .screens
+                .get(&input)
+                .map_or(1, |screen| screen.rows().saturating_sub(1).max(1) as isize);
+            match key.key.as_str() {
+                "pageup" => Some(Scroll::Lines(-rows)),
+                "pagedown" => Some(Scroll::Lines(rows)),
+                "home" => Some(Scroll::Top),
+                "end" => Some(Scroll::Bottom),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        let operation = if let Some(scroll) = scroll {
+            cx.stop_propagation();
+            Some(Input::Scroll(scroll))
+        } else if paste {
             cx.stop_propagation();
             cx.read_from_clipboard()
                 .and_then(|clipboard| clipboard.text())
@@ -298,15 +326,17 @@ impl TerminalView {
         };
         if let Some(operation) = operation {
             if operation.size() > crate::panes::INPUT_LIMIT {
-                self.input_error = Some("Input was not sent: paste exceeds 4 MiB.".into());
+                self.input_rejection = Some(
+                    "Input was not sent: paste exceeds 4 MiB. Click the terminal to dismiss."
+                        .into(),
+                );
                 cx.notify();
                 return;
             }
             // The input thread waits for mode-aware encoding on the terminal
             // worker before writing, preserving key/paste order without UI I/O.
             if self.input_queue.try_send((input, operation)).is_err() {
-                self.input_error =
-                    Some("Input was not sent: terminal queue is busy or disconnected.".into());
+                self.input_rejection = Some("Input was not sent: terminal queue is busy or disconnected. Click the terminal to dismiss.".into());
                 cx.notify();
             }
         }
@@ -331,13 +361,17 @@ impl Render for TerminalView {
         let grid = Rc::clone(&self.grid);
         let background = self.grid.borrow().appearance.background;
         let embedded = self.embedded;
-        let message = self.input_error.clone().or_else(|| {
-            self.panes().is_finished().then(|| {
-                self.panes()
-                    .failure()
-                    .unwrap_or_else(|| "Session disconnected.".into())
-            })
-        });
+        let message = self
+            .input_rejection
+            .clone()
+            .or(self.input_error.clone())
+            .or_else(|| {
+                self.panes().is_finished().then(|| {
+                    self.panes()
+                        .failure()
+                        .unwrap_or_else(|| "Session disconnected.".into())
+                })
+            });
         div()
             .size_full()
             .overflow_hidden()
@@ -345,6 +379,45 @@ impl Render for TerminalView {
             .bg(background)
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::key_down))
+            .on_scroll_wheel(cx.listener(|view, event: &gpui::ScrollWheelEvent, _, cx| {
+                let grid = view.grid.borrow();
+                let Some(pane) = grid.bounds.and_then(|bounds| {
+                    hit_pane(
+                        &grid.layout,
+                        &grid.screens,
+                        grid.cell,
+                        bounds,
+                        event.position,
+                    )
+                }) else {
+                    view.wheel = None;
+                    return;
+                };
+                let delta = match event.delta {
+                    gpui::ScrollDelta::Pixels(delta) => {
+                        f32::from(delta.y) / f32::from(grid.cell.height).max(1.0)
+                    }
+                    gpui::ScrollDelta::Lines(delta) => delta.y,
+                };
+                drop(grid);
+                let previous = view
+                    .wheel
+                    .filter(|(id, _)| *id == pane)
+                    .map_or(0.0, |(_, rows)| rows);
+                let accumulated = previous - delta;
+                let rows = accumulated.trunc() as isize;
+                view.wheel = Some((pane, accumulated - rows as f32));
+                if rows != 0
+                    && view
+                        .input_queue
+                        .try_send((pane, Input::Scroll(Scroll::Lines(rows))))
+                        .is_err()
+                {
+                    view.input_rejection = Some("Scroll was not applied: terminal queue is busy or disconnected. Click the terminal to dismiss.".into());
+                    cx.notify();
+                }
+                cx.stop_propagation();
+            }))
             .capture_any_mouse_down(|_, window, _| window.prevent_default())
             .on_mouse_down(
                 gpui::MouseButton::Left,
@@ -363,6 +436,8 @@ impl Render for TerminalView {
                         )
                     });
                     if view.input.is_some() && !view.panes().is_finished() {
+                        view.input_rejection = None;
+                        cx.notify();
                         window.focus(&view.focus, cx);
                     } else {
                         view.input = None;
@@ -783,8 +858,8 @@ mod tests {
             key_char: Some(char.to_owned()),
             ..key(text)
         };
-        let terminal = tmux_workspaces_term::Terminal::new(80, 24, 0).unwrap();
-        let encode_key = |key: &Keystroke| {
+        let mut terminal = tmux_workspaces_term::Terminal::new(80, 24, 0).unwrap();
+        let mut encode_key = |key: &Keystroke| {
             input_key(key, false)
                 .map(|input| terminal.encode_input(&input).unwrap())
                 .unwrap_or_default()

@@ -407,7 +407,7 @@ themselves are listed under [Default key bindings](#default-key-bindings).
 | IN-22 | tmux's late `DoubleClick1Pane` notification is ignored; renaming uses the panel's own click timing. | [ARCHITECTURE][ar-input] | Drop | The app gets native click events. | Not started |
 | IN-23 | Fragmented Unicode input is handled correctly. | [PERFORMANCE][pf-nav] | Keep | Includes native input methods such as dead keys and composed or CJK input. | Not started |
 | IN-24 | Mouse reporting must be on in the terminal for the viewer's mouse controls. | [GUIDE][g-keys] | Drop | The app receives mouse events natively. | Not started |
-| IN-25 | Scrolling inside a pane depends on the terminal and the inner session's mouse settings. | [GUIDE][g-limits] | Change | The app keeps native scrollback per pane. The wheel scrolls history, or goes to the program when it has asked for mouse events. | Not started |
+| IN-25 | Scrolling inside a pane depends on the terminal and the inner session's mouse settings. | [GUIDE][g-limits] | Change | The app keeps native scrollback per pane. The wheel scrolls history, or goes to the program when it has asked for mouse events. | In progress: native wheel and keyboard history navigation implemented; application mouse reports and desktop acceptance pending. |
 
 ### Default key bindings
 
