@@ -79,6 +79,11 @@ Parity rows: [CH-32](../PARITY.md#choosers-and-attaching-existing-sessions)
   so their behaviour is covered by the fidelity corpus
   ([0004](0004-terminal-emulation-core.md)).
 
+The [ordinary-client alternative](0026-ordinary-client-attachment-alternative.md)
+evaluates preserving those tmux interactions through a PTY while still decoding
+and drawing terminal output natively. It does not activate a product transport
+or accept the prefix-compatibility loss proposed above.
+
 ## Accept when
 
 Run through private tmux servers ([0012](0012-testing-strategy-and-tmux-isolation.md)):
