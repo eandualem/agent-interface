@@ -5423,10 +5423,12 @@ dependencies = [
 name = "tmux-workspaces-tmux"
 version = "0.0.0"
 dependencies = [
+ "libc",
  "serde_json",
  "thiserror 2.0.21",
  "tmux-workspaces-test-support",
  "unicode-properties",
+ "uzers",
 ]
 
 [[package]]

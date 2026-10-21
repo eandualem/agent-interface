@@ -15,3 +15,6 @@ pub mod layout;
 pub mod recovery;
 
 pub mod connection;
+
+// Not activated by the desktop app until interoperability fixtures pass.
+pub mod shells;
