@@ -411,15 +411,32 @@ impl TerminalView {
             return;
         }
         let pane = selection.pane;
-        if let Some((row, col)) = selection_point(&grid, pane, event.position, true) {
+        if let Some((row, col)) =
+            selection_point(&grid, pane, event.position, selection.uses_boundaries())
+        {
             grid.selection.as_mut().unwrap().extend(row, col);
             cx.notify();
         }
     }
 
-    fn selection_up(&mut self, _: &gpui::MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
+    fn selection_up(&mut self, event: &gpui::MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
         let mut grid = self.grid.borrow_mut();
+        let position = grid
+            .selection
+            .as_ref()
+            .filter(|selection| selection.dragging)
+            .and_then(|selection| {
+                selection_point(
+                    &grid,
+                    selection.pane,
+                    event.position,
+                    selection.uses_boundaries(),
+                )
+            });
         if let Some(selection) = &mut grid.selection {
+            if let Some((row, col)) = position {
+                selection.extend(row, col);
+            }
             selection.dragging = false;
         }
         if grid.selection.as_ref().is_some_and(Selection::is_empty) {
@@ -445,6 +462,7 @@ impl Render for TerminalView {
             }
         }
         let grid = Rc::clone(&self.grid);
+        let selection_move = Rc::new(cx.listener(Self::selection_move));
         let background = self.grid.borrow().appearance.background;
         let embedded = self.embedded;
         let message = self
@@ -506,7 +524,6 @@ impl Render for TerminalView {
                 cx.stop_propagation();
             }))
             .capture_any_mouse_down(|_, window, _| window.prevent_default())
-            .on_mouse_move(cx.listener(Self::selection_move))
             .on_mouse_up(gpui::MouseButton::Left, cx.listener(Self::selection_up))
             .on_mouse_up_out(gpui::MouseButton::Left, cx.listener(Self::selection_up))
             .on_mouse_down_out(cx.listener(|view, event: &gpui::MouseDownEvent, _, cx| { if event.button == gpui::MouseButton::Left { view.clear_selection(cx); } }))
@@ -534,8 +551,11 @@ impl Render for TerminalView {
                             grid.selection.as_mut().unwrap().dragging = false;
                         } else {
                             let (row, col) = selection_point(&grid, pane, event.position, event.click_count < 2).unwrap();
-                            let screen = grid.screens[&pane].clone();
-                            grid.selection = Some(Selection::new(pane, screen, row, col, event.click_count));
+                            let selection = grid.selection.as_ref()
+                                .filter(|selection| event.click_count >= 2 && selection.pane == pane && !selection.is_empty())
+                                .map(|selection| selection.reselect(row, col, event.click_count))
+                                .unwrap_or_else(|| Selection::new(pane, grid.screens[&pane].clone(), row, col, event.click_count));
+                            grid.selection = Some(selection);
                         }
                         view.input_rejection = None;
                         window.focus(&view.focus, cx);
@@ -556,6 +576,13 @@ impl Render for TerminalView {
                         }
                         grid.bounds = Some(bounds);
                         grid.paint(bounds, window, cx);
+                        // The element's hovered-only move handler loses drags
+                        // outside its bounds. Register during paint for the
+                        // whole window and clamp to the selected pane instead.
+                        let listener = Rc::clone(&selection_move);
+                        window.on_mouse_event(move |event: &gpui::MouseMoveEvent, phase, window, cx| {
+                            if phase == gpui::DispatchPhase::Capture { listener(event, window, cx); }
+                        });
                     },
                 )
                 .size_full(),
@@ -633,11 +660,19 @@ fn selection_point(
     let x = f32::from(position.x) / f32::from(grid.cell.width) - f32::from(pane.left);
     let y = f32::from(position.y) / f32::from(grid.cell.height) - f32::from(pane.top);
     let row = y.floor().clamp(0.0, f32::from(pane.rows - 1)) as u16;
-    let col = (x + if boundary { 0.5 } else { 0.0 }).floor().clamp(
-        0.0,
-        f32::from(if boundary { pane.cols } else { pane.cols - 1 }),
-    ) as u16;
+    let col = selection_column(x, pane.cols, boundary);
     Some((row, col))
+}
+
+fn selection_column(x: f32, cols: u16, boundary: bool) -> u16 {
+    (x + if boundary { 0.5 } else { 0.0 }).floor().clamp(
+        0.0,
+        f32::from(if boundary {
+            cols
+        } else {
+            cols.saturating_sub(1)
+        }),
+    ) as u16
 }
 
 impl Grid {
@@ -935,6 +970,15 @@ fn input_key(key: &Keystroke, repeat: bool) -> Option<Input> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn selection_coordinates_distinguish_words_and_clamp_external_drags() {
+        assert_eq!(selection_column(2.8, 7, false), 2);
+        assert_eq!(selection_column(2.8, 7, true), 3);
+        assert_eq!(selection_column(100.0, 7, true), 7);
+        assert_eq!(selection_column(100.0, 7, false), 6);
+        assert_eq!(selection_column(-10.0, 7, true), 0);
+    }
 
     #[test]
     fn terminal_clicks_require_ready_cells_not_padding_or_separators() {
