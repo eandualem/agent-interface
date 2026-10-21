@@ -3,11 +3,13 @@
 #![forbid(unsafe_code)]
 
 mod actions;
+mod choices;
 mod geometry;
 pub mod merge;
 mod navigation;
 
 pub use actions::{AttachmentTarget, NameEdit, RenameOutcome};
+pub use choices::SessionChoices;
 pub use geometry::PaneRect;
 
 /// An arrangement loaded from a library. Navigation values seed a new window;

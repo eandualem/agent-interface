@@ -10,6 +10,7 @@ use gpui::{
 
 use super::name::{NameEvent, NameField};
 use crate::sessions::SessionSource;
+use tmux_workspaces_core::SessionChoices;
 
 pub(super) enum Choice {
     Session(String),
@@ -18,9 +19,7 @@ pub(super) enum Choice {
 
 pub(super) struct SessionChooser {
     field: Entity<NameField>,
-    names: Vec<String>,
-    query: String,
-    selected: usize,
+    choices: SessionChoices,
     loading: bool,
     error: Option<String>,
     scroll: ScrollHandle,
@@ -37,15 +36,18 @@ impl SessionChooser {
         let input = cx.subscribe_in(&field, window, |chooser, _, event, _, cx| {
             match event {
                 NameEvent::Changed(query) => {
-                    chooser.query = query.to_lowercase();
-                    chooser.selected = 0;
+                    chooser.choices.edit('\u{15}');
+                    for ch in query.chars() {
+                        chooser.choices.edit(ch);
+                    }
                     chooser.scroll.scroll_to_item(0);
                 }
                 NameEvent::Save => {
-                    if let Some(name) =
-                        matches(&chooser.names, &chooser.query).get(chooser.selected)
+                    chooser.refresh(cx);
+                    if chooser.error.is_none()
+                        && let Some(name) = chooser.choices.choice()
                     {
-                        chooser.choose(name, cx);
+                        cx.emit(Choice::Session(name.into()));
                     }
                 }
                 NameEvent::Cancel => cx.emit(Choice::Cancel),
@@ -68,9 +70,7 @@ impl SessionChooser {
         });
         Self {
             field,
-            names: Vec::new(),
-            query: String::new(),
-            selected: 0,
+            choices: SessionChoices::default(),
             loading: source.is_some(),
             error,
             scroll: ScrollHandle::new(),
@@ -90,21 +90,11 @@ impl SessionChooser {
 
     fn refresh(&mut self, cx: &mut Context<Self>) {
         if let Some(observation) = self.source.as_ref().and_then(SessionSource::take_update) {
-            let selected = matches(&self.names, &self.query)
-                .get(self.selected)
-                .cloned();
-            self.names = observation.sessions;
-            self.names.sort_by_key(|name| name.to_lowercase());
+            self.choices.update(observation.sessions);
             self.error = observation.error;
             self.loading = false;
-            self.selected = selected
-                .and_then(|name| {
-                    matches(&self.names, &self.query)
-                        .iter()
-                        .position(|item| *item == name)
-                })
-                .unwrap_or(0);
-            self.scroll.scroll_to_item(self.selected);
+            // Discovery does not move the viewport: mouse browsing must survive
+            // both unchanged polls and insertions above the current selection.
             cx.notify();
         }
     }
@@ -113,7 +103,7 @@ impl SessionChooser {
         self.refresh(cx);
         // A click may come from an older frame. Failed discovery must not leave
         // a selectable row that claims the old source observation is current.
-        if self.error.is_none() && self.names.iter().any(|item| item == name) {
+        if self.error.is_none() && self.choices.rows().iter().any(|item| item == name) {
             cx.emit(Choice::Session(name.into()));
         }
     }
@@ -129,17 +119,10 @@ impl Drop for SessionChooser {
     }
 }
 
-fn matches(names: &[String], query: &str) -> Vec<String> {
-    names
-        .iter()
-        .filter(|name| name.to_lowercase().contains(query))
-        .cloned()
-        .collect()
-}
-
 impl Render for SessionChooser {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let names = matches(&self.names, &self.query);
+        self.choices.presented();
+        let names = self.choices.rows().to_vec();
         let status = if let Some(error) = &self.error {
             error.clone()
         } else if self.loading {
@@ -162,7 +145,9 @@ impl Render for SessionChooser {
                     .px_2()
                     .py_1()
                     .cursor_pointer()
-                    .when(index == self.selected, |el| el.bg(rgb(0x2a3c58)))
+                    .when(Some(index) == self.choices.index(), |el| {
+                        el.bg(rgb(0x2a3c58))
+                    })
                     .hover(|el| el.bg(rgb(0x25334a)))
                     .child(name.clone())
                     .on_click(cx.listener(move |chooser, _, _, cx| {
@@ -192,15 +177,14 @@ impl Render for SessionChooser {
                 if key.modifiers.platform || key.modifiers.control || key.modifiers.alt {
                     return;
                 }
-                let count = matches(&chooser.names, &chooser.query).len();
                 match key.key.as_str() {
-                    "up" => chooser.selected = chooser.selected.saturating_sub(1),
-                    "down" => {
-                        chooser.selected = (chooser.selected + 1).min(count.saturating_sub(1))
-                    }
+                    "up" => chooser.choices.move_by(-1),
+                    "down" => chooser.choices.move_by(1),
                     _ => return,
                 }
-                chooser.scroll.scroll_to_item(chooser.selected);
+                if let Some(index) = chooser.choices.index() {
+                    chooser.scroll.scroll_to_item(index);
+                }
                 cx.stop_propagation();
                 cx.notify();
             }))
@@ -223,19 +207,5 @@ impl Render for SessionChooser {
             .child(self.field.clone())
             .child(div().text_xs().child(status))
             .child(rows)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn filtering_keeps_exact_targets_with_spaces_unicode_and_long_names() {
-        let names = vec!["My worker".into(), "Éditeur".into(), "x".repeat(100)];
-        assert_eq!(matches(&names, "worker"), ["My worker"]);
-        assert_eq!(matches(&names, &"ÉDI".to_lowercase()), ["Éditeur"]);
-        assert_eq!(matches(&names, &"x".repeat(90)), ["x".repeat(100)]);
-        assert!(matches(&names, "absent").is_empty());
     }
 }

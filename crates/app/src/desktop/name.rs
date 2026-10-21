@@ -7,6 +7,7 @@ use gpui::{
     FocusHandle, MouseButton, Pixels, Point, ShapedLine, Subscription, TextRun, UTF16Selection,
     Window, canvas, div, fill, point, prelude::*, px, rgb, size,
 };
+use unicode_properties::{GeneralCategoryGroup, UnicodeGeneralCategory};
 use unicode_segmentation::UnicodeSegmentation;
 
 pub(super) enum NameEvent {
@@ -15,24 +16,13 @@ pub(super) enum NameEvent {
     Changed(String),
 }
 
+#[derive(Default)]
 struct Text {
     value: String,
     anchor: usize,
     cursor: usize,
     marked: Option<Range<usize>>,
-    limit: usize,
-}
-
-impl Default for Text {
-    fn default() -> Self {
-        Self {
-            value: String::new(),
-            anchor: 0,
-            cursor: 0,
-            marked: None,
-            limit: 80,
-        }
-    }
+    search: bool,
 }
 
 impl Text {
@@ -58,8 +48,16 @@ impl Text {
             self.value[..range.start].chars().count() + self.value[range.end..].chars().count();
         let inserted: String = text
             .chars()
-            .filter(|ch| !ch.is_control())
-            .take(self.limit.saturating_sub(remaining))
+            .filter(|ch| {
+                !ch.is_control()
+                    && (!self.search
+                        || *ch == ' '
+                        || !matches!(
+                            ch.general_category_group(),
+                            GeneralCategoryGroup::Other | GeneralCategoryGroup::Separator
+                        ))
+            })
+            .take(80usize.saturating_sub(remaining))
             .collect();
         let end = range.start + inserted.len();
         self.value.replace_range(range.clone(), &inserted);
@@ -160,7 +158,7 @@ impl NameField {
 
     pub fn search(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let mut field = Self::new("", window, cx);
-        field.text.limit = usize::MAX;
+        field.text.search = true;
         field.cancel_on_blur = false;
         field
     }
@@ -198,7 +196,9 @@ impl NameField {
         let range = self.text.selection();
         match key.key.as_str() {
             "escape" => cx.emit(NameEvent::Cancel),
-            "enter" => cx.emit(NameEvent::Save),
+            "enter" if !mods.platform && !mods.control && !mods.alt && !mods.shift => {
+                cx.emit(NameEvent::Save)
+            }
             "u" if mods.control && !mods.alt && !mods.platform => {
                 self.text.anchor = 0;
                 self.text.cursor = self.text.value.len();
@@ -544,14 +544,18 @@ mod tests {
         text.replace(None, "ab", false);
         assert!(text.value.starts_with("a😀"));
         assert_eq!(text.value.chars().count(), 80);
-        text.limit = usize::MAX;
+        text.search = true;
         text.anchor = 0;
         text.cursor = text.value.len();
         text.replace(None, &"query".repeat(20), false);
         assert_eq!(
             text.value.chars().count(),
-            100,
-            "search fields retain longer filters"
+            80,
+            "search fields retain the reference filter limit"
         );
+        text.anchor = 0;
+        text.cursor = text.value.len();
+        text.replace(None, " Straße\u{a0}\u{200b} ", false);
+        assert_eq!(text.value, " Straße ");
     }
 }

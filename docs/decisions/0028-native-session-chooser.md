@@ -32,9 +32,12 @@ existing sessions; ordinary-shell creation is a separate workflow. Fresh ordinar
 shell directory snapshots remain separate from preserving the stored directory.
 
 Reuse GPUI and the native text field from [0027](0027-native-name-editing.md).
-Name editing retains its 80-character bound; session filters can include longer
-search strings. Polling, storage and worker disposal stay off the UI thread.
-No new dependency is introduced.
+Use the existing [session choice model](0029-attachment-chooser-model.md) for full
+Unicode case folding, 80 printable scalar filters and stale-selection guards.
+The native field uses the existing MIT/Apache-2.0 unicode-properties dependency
+for the same printable-character rules. Polling, storage and worker disposal
+stay off the UI thread. Discovery preserves manual scrolling; keyboard selection
+and filter edits explicitly reveal the selected row.
 
 ## Alternatives and verification
 
