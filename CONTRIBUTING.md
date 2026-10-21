@@ -93,9 +93,12 @@ core with Zig. Three settings matter:
   source commit and patch digest. It never edits a caller's source checkout.
   Cargo selects that directory through `.cargo/config.toml`; the `term` build
   checks the patched files against `native/ghostty.json`. An explicit
-  `GHOSTTY_SOURCE_DIR` must use a UTF-8 path and contain the same patched files.
-  An unpatched checkout is rejected because DEL handling now belongs to the
-  native stream.
+  `GHOSTTY_SOURCE_DIR` must be an absolute UTF-8 path ending in the same
+  `ghostty-<commit>-<patch-sha256>` directory name and contain the same patched
+  files. Treat it as immutable: prepare a new directory for each patch, never
+  patch an existing override in place. The binding does not watch source files,
+  so reusing a mutable path can link an old native library. An unpatched checkout
+  is rejected because DEL handling now belongs to the native stream.
 
 ### Building offline
 

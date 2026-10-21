@@ -27,6 +27,15 @@ fn main() {
     let source = PathBuf::from(env::var("GHOSTTY_SOURCE_DIR").expect(
         "GHOSTTY_SOURCE_DIR must be a UTF-8 path; run python3 scripts/prepare-native.py from the repository",
     ));
+    let directory = format!(
+        "ghostty-{}-{}",
+        manifest["commit"].as_str().expect("native commit"),
+        manifest["patch_sha256"].as_str().expect("patch digest")
+    );
+    assert!(
+        source.is_absolute() && source.file_name() == Some(std::ffi::OsStr::new(&directory)),
+        "GHOSTTY_SOURCE_DIR must be an absolute, immutable source path ending in {directory}; prepare a new directory instead of patching an existing override"
+    );
     for (name, digest) in manifest["files"].as_object().expect("native file digests") {
         let path = source.join(name);
         println!("cargo:rerun-if-changed={}", path.display());
