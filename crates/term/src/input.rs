@@ -3,7 +3,7 @@
 use crate::{Error, Terminal};
 use libghostty_vt::{
     key::{Action, Encoder, Event, Key, Mods},
-    paste,
+    mouse, paste,
     terminal::{Mode, ScrollViewport},
 };
 
@@ -36,6 +36,40 @@ pub enum Scroll {
     Bottom,
 }
 
+/// A pointer within a rendered pane, with device-pixel cell dimensions.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Pointer {
+    /// Horizontal position in cell units, relative to the pane.
+    pub x: f32,
+    /// Vertical position in cell units, relative to the pane.
+    pub y: f32,
+    /// Columns at the time of the event.
+    pub cols: u16,
+    /// Rows at the time of the event.
+    pub rows: u16,
+    /// Rendered cell width in device pixels.
+    pub cell_width: u32,
+    /// Rendered cell height in device pixels.
+    pub cell_height: u32,
+    /// Shift keeps mouse gestures local to the viewer.
+    pub shift: bool,
+    /// Control modifier.
+    pub control: bool,
+    /// Alt/Option modifier.
+    pub alt: bool,
+}
+
+/// Mouse buttons forwarded for ordinary clicks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Button {
+    /// Primary button.
+    Left,
+    /// Middle button.
+    Middle,
+    /// Secondary button.
+    Right,
+}
+
 /// One ordered user input operation. App shortcuts are handled before this.
 #[derive(Clone, Debug)]
 pub enum Input {
@@ -45,15 +79,22 @@ pub enum Input {
     Paste(String),
     /// Scroll this viewer through the pane's retained history.
     Scroll(Scroll),
+    /// Wheel rows: negative is up. Programs with mouse reporting receive it;
+    /// otherwise it navigates local history.
+    Wheel(Pointer, isize),
+    /// A completed click; drag selection is handled locally before this.
+    Click(Pointer, Button),
 }
 
 impl Input {
-    /// Owned text bytes, for bounded queue accounting.
+    /// Text bytes or a conservative wire-size estimate, for bounded queues.
     pub fn size(&self) -> usize {
         match self {
             Self::Key(key) => key.key.len() + key.text.as_ref().map_or(0, String::len),
             Self::Paste(text) => text.len(),
             Self::Scroll(_) => 0,
+            Self::Wheel(_, rows) => rows.unsigned_abs().saturating_mul(64),
+            Self::Click(_, _) => 64,
         }
     }
 }
@@ -77,13 +118,98 @@ impl Terminal {
         self.engine.scroll_viewport(ScrollViewport::Row(row));
     }
 
+    fn encode_mouse(
+        &self,
+        pointer: &Pointer,
+        button: mouse::Button,
+        count: usize,
+        release: bool,
+    ) -> Result<Vec<u8>, Error> {
+        if pointer.cols != self.engine.cols().map_err(Error)?
+            || pointer.rows != self.engine.rows().map_err(Error)?
+            || pointer.cell_width == 0
+            || pointer.cell_height == 0
+            || !pointer.x.is_finite()
+            || !pointer.y.is_finite()
+            || pointer.x < 0.0
+            || pointer.y < 0.0
+            || pointer.x >= f32::from(pointer.cols)
+            || pointer.y >= f32::from(pointer.rows)
+        {
+            return Err(Error(libghostty_vt::Error::InvalidValue));
+        }
+        let mut encoder = mouse::Encoder::new().map_err(Error)?;
+        encoder
+            .set_options_from_terminal(&self.engine)
+            .set_size(mouse::EncoderSize {
+                screen_width: u32::from(pointer.cols).saturating_mul(pointer.cell_width),
+                screen_height: u32::from(pointer.rows).saturating_mul(pointer.cell_height),
+                cell_width: pointer.cell_width,
+                cell_height: pointer.cell_height,
+                padding_top: 0,
+                padding_bottom: 0,
+                padding_left: 0,
+                padding_right: 0,
+            });
+        let mut mods = Mods::empty();
+        mods.set(Mods::CTRL, pointer.control);
+        mods.set(Mods::ALT, pointer.alt);
+        let mut event = mouse::Event::new().map_err(Error)?;
+        event
+            .set_button(Some(button))
+            .set_mods(mods)
+            .set_position(mouse::Position {
+                x: pointer.x * pointer.cell_width as f32,
+                y: pointer.y * pointer.cell_height as f32,
+            });
+        let mut bytes = Vec::new();
+        for _ in 0..count {
+            event.set_action(mouse::Action::Press);
+            encoder.encode_to_vec(&event, &mut bytes).map_err(Error)?;
+            if release {
+                event.set_action(mouse::Action::Release);
+                encoder.encode_to_vec(&event, &mut bytes).map_err(Error)?;
+            }
+        }
+        Ok(bytes)
+    }
+
     /// Encode input on this terminal's owning thread. This sends nothing and
     /// never reads another pane's modes or the system clipboard.
     pub fn encode_input(&mut self, input: &Input) -> Result<Vec<u8>, Error> {
-        if !matches!(input, Input::Scroll(_)) {
+        if matches!(input, Input::Key(_) | Input::Paste(_)) {
             self.engine.scroll_viewport(ScrollViewport::Bottom);
         }
         match input {
+            Input::Wheel(pointer, rows) => {
+                if pointer.shift
+                    || self.scrolled_row()?.is_some()
+                    || !self.engine.is_mouse_tracking().map_err(Error)?
+                {
+                    self.engine.scroll_viewport(ScrollViewport::Delta(*rows));
+                    return Ok(Vec::new());
+                }
+                let button = if *rows < 0 {
+                    mouse::Button::Four
+                } else {
+                    mouse::Button::Five
+                };
+                self.encode_mouse(pointer, button, rows.unsigned_abs(), false)
+            }
+            Input::Click(pointer, button) => {
+                if pointer.shift
+                    || self.scrolled_row()?.is_some()
+                    || !self.engine.is_mouse_tracking().map_err(Error)?
+                {
+                    return Ok(Vec::new());
+                }
+                let button = match button {
+                    Button::Left => mouse::Button::Left,
+                    Button::Middle => mouse::Button::Middle,
+                    Button::Right => mouse::Button::Right,
+                };
+                self.encode_mouse(pointer, button, 1, true)
+            }
             Input::Scroll(scroll) => {
                 self.engine.scroll_viewport(match scroll {
                     Scroll::Lines(rows) => ScrollViewport::Delta(*rows),
@@ -310,6 +436,77 @@ fn logical_key(name: &str) -> Key {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mouse_clicks_and_wheels_follow_program_modes_with_local_history_fallback() {
+        let mut terminal = Terminal::new(80, 24, 100).unwrap();
+        for _ in 0..40 {
+            terminal.write(b"history\r\n");
+        }
+        let pointer = Pointer {
+            x: 2.5,
+            y: 3.5,
+            cols: 80,
+            rows: 24,
+            cell_width: 8,
+            cell_height: 16,
+            ..Default::default()
+        };
+        assert!(
+            terminal
+                .encode_input(&Input::Click(pointer, Button::Left))
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            terminal
+                .encode_input(&Input::Wheel(pointer, -1))
+                .unwrap()
+                .is_empty()
+        );
+        assert!(terminal.scrolled_row().unwrap().is_some());
+        terminal
+            .encode_input(&Input::Scroll(Scroll::Bottom))
+            .unwrap();
+        terminal.write(b"\x1b[?1000h\x1b[?1006h");
+        assert_eq!(
+            terminal
+                .encode_input(&Input::Click(pointer, Button::Left))
+                .unwrap(),
+            b"\x1b[<0;3;4M\x1b[<0;3;4m"
+        );
+        assert_eq!(
+            terminal.encode_input(&Input::Wheel(pointer, -1)).unwrap(),
+            b"\x1b[<64;3;4M"
+        );
+        assert!(
+            terminal
+                .encode_input(&Input::Wheel(
+                    Pointer {
+                        shift: true,
+                        ..pointer
+                    },
+                    -1
+                ))
+                .unwrap()
+                .is_empty()
+        );
+        assert!(terminal.scrolled_row().unwrap().is_some());
+        terminal
+            .encode_input(&Input::Scroll(Scroll::Bottom))
+            .unwrap();
+        assert!(
+            terminal
+                .encode_input(&Input::Click(
+                    Pointer {
+                        cols: 79,
+                        ..pointer
+                    },
+                    Button::Left
+                ))
+                .is_err()
+        );
+    }
 
     #[test]
     fn local_scroll_moves_the_viewport_and_input_returns_to_live_screen() {
