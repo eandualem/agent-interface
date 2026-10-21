@@ -61,6 +61,8 @@ pub struct AttachmentPolicy {
 }
 
 /// Resolve an exact raw session name and its effective attachment policy.
+/// Names are compared literally in a bounded listing: tmux's target syntax can
+/// interpret an ID-shaped name as an ID even with its exact-name prefix.
 ///
 /// This bounded read starts no server, attaches no client and changes no options.
 /// The format includes inherited `destroy-unattached` values. Call on a worker
@@ -75,18 +77,31 @@ pub fn read_attachment_policy(socket: &Path, session: &str) -> io::Result<Attach
     }
     let mut command = command(socket).ok_or_else(unavailable)?;
     command.args([
-        "display-message",
-        "-p",
-        "-t",
-        &format!("={session}:"),
-        "#{session_id}|#{window_id}|#{pid}|#{destroy-unattached}",
+        "list-sessions",
+        "-F",
+        "#{session_id}|#{window_id}|#{pid}|#{destroy-unattached}|#{session_name}",
     ]);
     let output = capture(command, TIMEOUT).map_err(|_| unavailable())?;
     if !output.status.success() {
         return Err(unavailable());
     }
     let output = std::str::from_utf8(&output.stdout).map_err(|_| unavailable())?;
-    policy(output.strip_suffix('\n').ok_or_else(unavailable)?).ok_or_else(unavailable)
+    named_policy(output, session).ok_or_else(unavailable)
+}
+
+fn named_policy(output: &str, session: &str) -> Option<AttachmentPolicy> {
+    let mut found = None;
+    for line in output.strip_suffix('\n')?.split('\n') {
+        // The four fixed fields come first; a raw name may itself contain '|'.
+        let separator = line.match_indices('|').nth(3)?.0;
+        if &line[separator + 1..] == session {
+            if found.is_some() {
+                return None;
+            }
+            found = Some(policy(&line[..separator])?);
+        }
+    }
+    found
 }
 
 fn policy(line: &str) -> Option<AttachmentPolicy> {
@@ -327,6 +342,24 @@ mod tests {
             assert!(Instant::now() < deadline, "fixture client did not attach");
             std::thread::sleep(Duration::from_millis(10));
         }
+        // A literal ID-shaped name must not resolve as another session's ID.
+        let literal_name = format!("${}", original.session_id);
+        let literal_id = server
+            .run(&[
+                "new-session",
+                "-d",
+                "-P",
+                "-F",
+                "#{session_id}",
+                "-s",
+                &literal_name,
+                "sleep 60",
+            ])
+            .unwrap();
+        let literal_id = literal_id.trim_end();
+        server
+            .run(&["set-option", "-t", literal_id, "destroy-unattached", "off"])
+            .unwrap();
         // An owned client keeps the fixture alive while automatic destruction is on.
         server
             .run(&["set-option", "-g", "destroy-unattached", "on"])
@@ -346,6 +379,10 @@ mod tests {
                 ..original
             }
         );
+        let literal = read_attachment_policy(socket, &literal_name).unwrap();
+        assert_eq!(literal.session_id.to_string(), &literal_id[1..]);
+        assert_ne!(literal.session_id, original.session_id);
+        assert!(literal.may_group);
         assert_eq!(server.run(&["show-options", "-g"]).unwrap(), options);
         assert_eq!(
             server
@@ -372,6 +409,8 @@ mod tests {
             read_attachment_policy(socket, TmuxServer::SESSION).unwrap(),
             original
         );
+        server.run(&["kill-session", "-t", literal_id]).unwrap();
+        assert!(read_attachment_policy(socket, &literal_name).is_err());
         assert!(read_attachment_policy(socket, "fixt").is_err());
         let missing = server.address().0.join("missing.sock");
         assert!(read_attachment_policy(&missing, TmuxServer::SESSION).is_err());
@@ -381,6 +420,12 @@ mod tests {
         assert!(policy("$+0|@0|123|off").is_none());
         assert!(policy("$0|@0|123|off\nextra").is_none());
         assert!(policy("$0|@0|0|off").is_none());
+        assert_eq!(
+            named_policy("$9|@2|123|off|work|session\n", "work|session")
+                .unwrap()
+                .session_id,
+            9
+        );
         drop(owner.stdin.take());
         assert!(owner.wait().unwrap().success());
     }
