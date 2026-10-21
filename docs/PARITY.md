@@ -114,7 +114,7 @@ remain pending; the connected window does not yet complete these workflows.
 | SP-4 | One tab can hold several panes; a four-pane tab is a normal, tested case. | [GUIDE][g-split], [ACCEPTANCE][ac-checks] | Keep | | In progress: pure cell geometry and focused-pane fallback implemented; product rendering pending. |
 | SP-5 | Clicking a pane selects it, and typing goes there. | [GUIDE][g-split] | Keep | | In progress: model pane selection and measured split ratios implemented; native controls and input handoff pending. |
 | SP-6 | Dragging the separator between two panes resizes the split; the navigation panel keeps its width. | [GUIDE][g-split], [GUIDE][g-resize] | Keep | | In progress: model pane selection and measured split ratios implemented; native controls and input handoff pending. |
-| SP-7 | Next and previous pane shortcuts move input focus between the panes of the selected tab. | [GUIDE][g-split] | Keep | Keys are KB-10 and KB-11. | Not started |
+| SP-7 | Next and previous pane shortcuts move input focus between the panes of the selected tab. | [GUIDE][g-split] | Keep | Keys are KB-10 and KB-11. | In progress: direct shortcuts select the next/previous saved pane and focus a connected destination; connecting panes require a ready-pane click. |
 | SP-8 | **Focus one pane** temporarily shows only the selected pane; **Restore layout** shows the splits again. The saved arrangement does not change. | [GUIDE][g-split], [SHORTCUTS][sc-tabs], [UI_PREVIEW][up-try2] | Keep | Key is KB-12. Focus mode is per window (PE-19). | In progress: pure cell geometry and focused-pane fallback implemented; product rendering pending. |
 | SP-9 | When the complete layout does not fit the window, only the focused pane is shown for the moment, and the saved split tree is kept. | [GUIDE][g-split], [GUIDE][g-resize], [ACCEPTANCE][ac-limits] | Keep | | In progress: pure cell geometry and focused-pane fallback implemented; product rendering pending. |
 | SP-10 | Saved split proportions are limited by the space each nested layout needs. | [GUIDE][g-resize] | Keep | | Not started |
@@ -424,21 +424,21 @@ Prefix keys are pressed after `Ctrl-g`. Direct keys are written in
 | KB-5 | `attach`: prefix `a`; direct `Command-Shift-A`. Attaches a session to the focused pane. | [keymap.toml][km], [SHORTCUTS][sc-ws] | Keep | | Not started |
 | KB-6 | `rename-tab`: prefix `r`; direct `Command-R`. | [keymap.toml][km], [SHORTCUTS][sc-tabs] | Keep | | Not started |
 | KB-7 | `tab-options`: prefix `m`; no direct key. | [keymap.toml][km], [GUIDE][g-keys] | Keep | | Not started |
-| KB-8 | `next-tab`: prefix `n`; direct `Command-Shift-]`. | [keymap.toml][km], [SHORTCUTS][sc-tabs] | Keep | | Not started |
-| KB-9 | `previous-tab`: prefix `p`; direct `Command-Shift-[`. | [keymap.toml][km], [SHORTCUTS][sc-tabs] | Keep | | Not started |
-| KB-10 | `next-pane`: prefix `o`; direct `Command-]`. | [keymap.toml][km], [SHORTCUTS][sc-tabs] | Keep | | Not started |
-| KB-11 | `previous-pane`: prefix `O`; direct `Command-[`. | [keymap.toml][km], [SHORTCUTS][sc-tabs] | Keep | | Not started |
-| KB-12 | `focus` (focus one pane, or restore the layout): prefix `z`; direct `Command-Shift-Enter`. | [keymap.toml][km], [SHORTCUTS][sc-tabs] | Keep | | Not started |
+| KB-8 | `next-tab`: prefix `n`; direct `Command-Shift-]`. | [keymap.toml][km], [SHORTCUTS][sc-tabs] | Keep | | In progress: native direct shortcut implemented; prefix/custom keymaps and desktop event acceptance pending. |
+| KB-9 | `previous-tab`: prefix `p`; direct `Command-Shift-[`. | [keymap.toml][km], [SHORTCUTS][sc-tabs] | Keep | | In progress: native direct shortcut implemented; prefix/custom keymaps and desktop event acceptance pending. |
+| KB-10 | `next-pane`: prefix `o`; direct `Command-]`. | [keymap.toml][km], [SHORTCUTS][sc-tabs] | Keep | | In progress: native direct shortcut implemented; prefix/custom keymaps and desktop event acceptance pending. |
+| KB-11 | `previous-pane`: prefix `O`; direct `Command-[`. | [keymap.toml][km], [SHORTCUTS][sc-tabs] | Keep | | In progress: native direct shortcut implemented; prefix/custom keymaps and desktop event acceptance pending. |
+| KB-12 | `focus` (focus one pane, or restore the layout): prefix `z`; direct `Command-Shift-Enter`. | [keymap.toml][km], [SHORTCUTS][sc-tabs] | Keep | | In progress: native direct shortcut implemented; prefix/custom keymaps and desktop event acceptance pending. |
 | KB-13 | `workspaces` (the workspace chooser): prefix `w`; no direct key. | [keymap.toml][km], [GUIDE][g-keys] | Keep | | Not started |
 | KB-14 | `workspace-options`: prefix `M`; no direct key. | [keymap.toml][km], [GUIDE][g-keys] | Keep | | Not started |
 | KB-15 | `new-workspace`: prefix `W`; direct `Command-Shift-N` (create and name a workspace). | [keymap.toml][km], [SHORTCUTS][sc-ws] | Keep | | Not started |
 | KB-16 | `rename-workspace`: prefix `R`; direct `Command-Shift-R`. | [keymap.toml][km], [SHORTCUTS][sc-ws] | Keep | | Not started |
-| KB-17 | `next-workspace`: prefix `]`; direct `Command-Option-Right`. | [keymap.toml][km], [SHORTCUTS][sc-ws] | Keep | | Not started |
-| KB-18 | `previous-workspace`: prefix `[`; direct `Command-Option-Left`. | [keymap.toml][km], [SHORTCUTS][sc-ws] | Keep | | Not started |
+| KB-17 | `next-workspace`: prefix `]`; direct `Command-Option-Right`. | [keymap.toml][km], [SHORTCUTS][sc-ws] | Keep | | In progress: native direct shortcut implemented; prefix/custom keymaps and desktop event acceptance pending. |
+| KB-18 | `previous-workspace`: prefix `[`; direct `Command-Option-Left`. | [keymap.toml][km], [SHORTCUTS][sc-ws] | Keep | | In progress: native direct shortcut implemented; prefix/custom keymaps and desktop event acceptance pending. |
 | KB-19 | `close-pane`: prefix `x`; direct `Command-W`. | [keymap.toml][km], [SHORTCUTS][sc-tabs] | Keep | | Not started |
 | KB-20 | `close-tab`: prefix `&`; direct `Command-Shift-W`. | [keymap.toml][km], [SHORTCUTS][sc-tabs] | Keep | | Not started |
 | KB-21 | `copy-selection`: prefix `y`; direct `Command-C`. | [keymap.toml][km], [SHORTCUTS][sc-copy] | Keep | | Not started |
-| KB-22 | `sidebar` (focus the navigation panel): prefix `s`; direct `Command-B`. | [keymap.toml][km], [SHORTCUTS][sc-ws] | Keep | | Not started |
+| KB-22 | `sidebar` (focus the navigation panel): prefix `s`; direct `Command-B`. | [keymap.toml][km], [SHORTCUTS][sc-ws] | Keep | | In progress: native direct shortcut implemented; prefix/custom keymaps and desktop event acceptance pending. |
 | KB-23 | `refresh-viewer`: prefix `f`; no direct key. | [keymap.toml][km], [SHORTCUTS][sc-top] | Change | Runs the in-process reload from RF-1. | Not started |
 | KB-24 | `show-agents`: prefix `A`; no direct key. | [keymap.toml][km], [GUIDE][g-keys] | Keep | | Not started |
 | KB-25 | `quit` (detach, keeping every terminal): prefix `d`; no direct key. | [keymap.toml][km], [GUIDE][g-keys], [SHORTCUTS][sc-other] | Keep | | Not started |

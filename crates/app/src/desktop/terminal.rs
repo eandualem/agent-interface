@@ -79,6 +79,12 @@ pub(super) struct LiveTerminal {
 }
 
 impl LiveTerminal {
+    pub fn focus_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(view) = &self.view {
+            view.update(cx, |view, cx| view.focus_terminal(window, cx));
+        }
+    }
+
     pub fn new(target: Target, cx: &mut Context<Self>) -> Self {
         let mut terminal = Self {
             target,

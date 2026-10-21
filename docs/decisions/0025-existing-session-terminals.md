@@ -18,7 +18,7 @@ Connection discovery and capture run in the background. Each leaf entity owns
 its connection generation; a removed entity cannot receive a stale result.
 Failed connections show an error and a reconnect action. Disconnect retains the
 last screen and offers reconnect without closing the app. Keys require an
-explicit terminal click and a ready screen, and go to an exact visible pane.
+explicit terminal click or navigation to a ready screen, and go to an exact visible pane.
 A bounded input queue keeps pipe writes off the UI thread. The terminal worker
 encodes keys and paste using each destination's current modes after preceding
 queued output. It retains legacy shell control bytes when extended keys are off
@@ -39,7 +39,13 @@ local viewport: wheel/trackpad and Shift-Page Up/Down/Home/End operate on the
 pointed or focused pane. It leaves the shared tmux copy mode unchanged. Typing
 returns to live output. Capture recovery retains the local history row, clamped
 to the retained history; pruning or geometry changes can change its contents.
-Command-number tab and Command-Option-number workspace navigation run before terminal key handling.
+Command-number tab and Command-Option-number workspace navigation run before
+terminal key handling. Command-brackets cycle panes; adding Shift cycles tabs.
+Command-Option-arrows cycle workspaces, Command-Shift-Enter toggles pane expansion,
+and Command-B focuses navigation. A selected connected leaf receives input focus
+on its last selected ready inner pane, or its initial/first ready pane. Unavailable
+or newly connecting destinations leave focus in navigation; no input waits for a
+future connection. Structural library changes still return focus to navigation.
 
 Selection owns a local copy of the selected pane's display. Live output continues
 to drain into its latest screen while the selected copy stays visible. Dragging
@@ -48,9 +54,15 @@ a row. Native copy writes the selected text to the clipboard and keeps the
 highlight. Escape, typing, explicit scrolling or a new outside click clears it;
 layout changes may clear it too. Selection works on a retained disconnected screen. Completed primary, middle and
 secondary clicks and wheel gestures use the destination's mouse encoder when
-reporting is enabled. Drag selection stays local. Shift, or an already scrolled
+reporting is enabled. In a mouse-enabled live program, Shift starts local selection;
+unmodified multi-clicks belong to the program. Local selections never become
+application clicks, even if Shift is released or a drag returns to its anchor.
+Shift, or an already scrolled
 history viewport, keeps wheel navigation local; mouse clicks in that viewport
-are not sent to the running program. A geometry change rejects stale mouse
+are not sent to the running program. Continuous pixel-wheel gestures retain local
+ownership through their remaining events and momentum, including capture recovery;
+a new platform start event begins a new gesture. Discrete wheel ticks decide
+individually. A geometry change rejects stale mouse
 coordinates. Pointer motion reports remain pending.
 
 ## Alternatives and limits
