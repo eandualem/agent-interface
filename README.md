@@ -29,7 +29,10 @@ cargo run -p tmux-workspaces-app --bin tmux-workspaces -- --data-dir /path/to/li
 Use the workspace heading to choose a workspace, then choose a tab. The saved
 split layout contains actual sessions; click a terminal before typing. Command-1
 through Command-9 select tabs, and Command-Option-1 through Command-Option-9 select
-workspaces. The pane header's expand control toggles the selected pane's view.
+workspaces. Command-V pastes clipboard text (Control-Shift-V on Linux), using
+bracketed paste when the pane requests it. Keys follow the destination pane's
+application cursor and extended-key modes. Paste is limited to 4 MiB per operation.
+The pane header's expand control toggles the selected pane's view.
 **Open library…** chooses another folder containing `layouts.db`.
 
 Existing ordinary shells use the Python library's shell server; attachments use
@@ -42,8 +45,8 @@ scales down when the existing terminal is larger than its native pane.
 Changes saved by the Python app refresh automatically. Native navigation and
 pane expansion are local, and the app does not write saved layouts. Attached
 sessions currently show the window selected at connection time. Custom tmux
-prefix bindings, terminal mouse reporting, clipboard paste, scrollback navigation
-and full mode-aware key encoding are not yet wired into the product UI.
+prefix bindings, terminal mouse reporting, scrollback navigation, input methods
+and key-release events are not yet wired into the product UI.
 
 Omit `--data-dir` to use the Python-compatible environment and default library
 location. An absent or unreadable library shows an error and can be replaced

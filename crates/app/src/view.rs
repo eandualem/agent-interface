@@ -21,7 +21,10 @@ use gpui::{
     StrikethroughStyle, TextAlign, TextRun, TextSystem, UnderlineStyle, Window, canvas, div, fill,
     point, prelude::*, px, size,
 };
-use tmux_workspaces_term::{Attributes, Color, Screen, Style, Underline, Width};
+use tmux_workspaces_term::{
+    Attributes, Color, Screen, Style, Underline, Width,
+    input::{Input, KeyPress},
+};
 use tmux_workspaces_tmux::control::PaneId;
 
 use crate::panes::{PaneLayout, Panes};
@@ -92,7 +95,7 @@ pub struct TerminalView {
     focus: FocusHandle,
     failure_reported: bool,
     embedded: bool,
-    input_queue: std::sync::mpsc::SyncSender<(PaneId, Vec<u8>)>,
+    input_queue: std::sync::mpsc::SyncSender<(PaneId, Input)>,
     input_error: Option<String>,
     closed_reported: bool,
 }
@@ -165,7 +168,26 @@ impl TerminalView {
                 .detach();
         })
         .detach();
-        let input_queue = input_queue(Arc::clone(&panes));
+        let (status, mut statuses) = futures::channel::mpsc::unbounded();
+        let input_queue = input_queue(Arc::clone(&panes), move |error| {
+            let _ = status.unbounded_send(error);
+        });
+        cx.spawn(async move |this, cx| {
+            while let Some(error) = statuses.next().await {
+                if this
+                    .update(cx, |view, cx| {
+                        if view.input_error != error {
+                            view.input_error = error;
+                            cx.notify();
+                        }
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .detach();
         // An update is taken when the next frame is drawn, so the worker
         // copies at most one update per frame.
         cx.spawn(async move |this, cx| {
@@ -245,25 +267,46 @@ impl TerminalView {
     }
 
     fn key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
-        let bytes = encode_key(&event.keystroke);
-        if let Some(input) = self.input
-            && !bytes.is_empty()
-            && self
-                .grid
+        let Some(input) = self.input.filter(|input| {
+            self.grid
                 .borrow()
                 .layout
                 .iter()
-                .any(|pane| pane.id == input)
-            && self.grid.borrow().screens.contains_key(&input)
-            && !self.panes().is_finished()
-        {
-            // Queue input without waiting for a pipe write on the UI thread.
-            self.input_error = self
-                .input_queue
-                .try_send((input, bytes))
-                .err()
-                .map(|_| "Terminal input is busy or disconnected; key was not sent.".into());
-            if self.input_error.is_some() {
+                .any(|pane| pane.id == *input)
+                && self.grid.borrow().screens.contains_key(input)
+                && !self.panes().is_finished()
+        }) else {
+            return;
+        };
+        let key = &event.keystroke;
+        let paste = (key.modifiers.platform
+            && !key.modifiers.control
+            && !key.modifiers.alt
+            && key.key == "v")
+            || (!cfg!(target_os = "macos")
+                && key.modifiers.control
+                && key.modifiers.shift
+                && !key.modifiers.alt
+                && key.key == "v");
+        let operation = if paste {
+            cx.stop_propagation();
+            cx.read_from_clipboard()
+                .and_then(|clipboard| clipboard.text())
+                .map(Input::Paste)
+        } else {
+            input_key(key, event.is_held)
+        };
+        if let Some(operation) = operation {
+            if operation.size() > crate::panes::INPUT_LIMIT {
+                self.input_error = Some("Input was not sent: paste exceeds 4 MiB.".into());
+                cx.notify();
+                return;
+            }
+            // The input thread waits for mode-aware encoding on the terminal
+            // worker before writing, preserving key/paste order without UI I/O.
+            if self.input_queue.try_send((input, operation)).is_err() {
+                self.input_error =
+                    Some("Input was not sent: terminal queue is busy or disconnected.".into());
                 cx.notify();
             }
         }
@@ -356,13 +399,20 @@ impl Render for TerminalView {
     }
 }
 
-pub(crate) fn input_queue(panes: Arc<Panes>) -> std::sync::mpsc::SyncSender<(PaneId, Vec<u8>)> {
-    let (queue, pending) = std::sync::mpsc::sync_channel::<(PaneId, Vec<u8>)>(64);
+pub(crate) fn input_queue(
+    panes: Arc<Panes>,
+    report: impl Fn(Option<String>) + Send + 'static,
+) -> std::sync::mpsc::SyncSender<(PaneId, Input)> {
+    let (queue, pending) = std::sync::mpsc::sync_channel::<(PaneId, Input)>(64);
     std::thread::spawn(move || {
-        while let Ok((pane, bytes)) = pending.recv() {
+        while let Ok((pane, input)) = pending.recv() {
             // A retired pane is a local rejection, not a failed connection.
-            // Keep serving surviving panes; transport failure is shown by the view.
-            let _ = panes.send_input(pane, &bytes);
+            report(
+                panes
+                    .send_encoded_input(pane, input)
+                    .err()
+                    .map(|e| e.to_string()),
+            );
         }
     });
     queue
@@ -655,41 +705,19 @@ fn rgb(r: u8, g: u8, b: u8) -> Rgba {
     }
 }
 
-/// Returns the bytes a key sends to the pane, or none for keys the app keeps.
-///
-/// This covers ordinary text, control letters and basic navigation keys. Full
-/// mode-aware input still requires the terminal engine's key encoder
-/// (`docs/decisions/0015-input-routing.md`).
-fn encode_key(keystroke: &Keystroke) -> Vec<u8> {
-    let modifiers = &keystroke.modifiers;
-    if modifiers.platform {
-        return Vec::new();
+/// Translate platform input without exposing GPUI types to the terminal worker.
+fn input_key(key: &Keystroke, repeat: bool) -> Option<Input> {
+    if key.modifiers.platform {
+        return None;
     }
-    let named: &[u8] = match keystroke.key.as_str() {
-        "enter" => b"\r",
-        "backspace" => b"\x7f",
-        "tab" => b"\t",
-        "escape" => b"\x1b",
-        "up" => b"\x1b[A",
-        "down" => b"\x1b[B",
-        "right" => b"\x1b[C",
-        "left" => b"\x1b[D",
-        _ => b"",
-    };
-    if !named.is_empty() {
-        return named.to_vec();
-    }
-    if modifiers.control
-        && let [letter] = keystroke.key.as_bytes()
-        && letter.is_ascii_alphabetic()
-    {
-        return vec![letter.to_ascii_lowercase() & 0x1f];
-    }
-    keystroke
-        .key_char
-        .as_ref()
-        .map(|text| text.as_bytes().to_vec())
-        .unwrap_or_default()
+    Some(Input::Key(KeyPress {
+        key: key.key.clone(),
+        text: key.key_char.clone(),
+        shift: key.modifiers.shift,
+        control: key.modifiers.control,
+        alt: key.modifiers.alt,
+        repeat,
+    }))
 }
 
 #[cfg(test)]
@@ -754,6 +782,12 @@ mod tests {
         let typed = |text: &str, char: &str| Keystroke {
             key_char: Some(char.to_owned()),
             ..key(text)
+        };
+        let terminal = tmux_workspaces_term::Terminal::new(80, 24, 0).unwrap();
+        let encode_key = |key: &Keystroke| {
+            input_key(key, false)
+                .map(|input| terminal.encode_input(&input).unwrap())
+                .unwrap_or_default()
         };
         assert_eq!(encode_key(&typed("a", "a")), b"a");
         assert_eq!(encode_key(&typed("shift-a", "A")), b"A");
