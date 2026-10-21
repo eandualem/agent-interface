@@ -58,7 +58,7 @@ The fixture checks:
   identity and pane PID.
 - `-E` preserves a pre-existing helper session environment value.
 
-The focused check passed on macOS with tmux 3.3a, 3.4, 3.5a, 3.6b, 3.7c
+The prefix/modes check passed on macOS with tmux 3.3a, 3.4, 3.5a, 3.6b, 3.7c
 and 3.8. These results cover the assertions above, not the remaining acceptance
 items below.
 
@@ -76,6 +76,51 @@ it does not bypass or clear the separate cleanup regression. It disables
 classified as pasted text and bypass bindings. This is fixture setup, not a
 proposal to override user options in the product.
 
+### Outer-terminal protocol prototype
+
+A second fixture uses the pinned native engine directly, with in-memory reply
+and clipboard callbacks. The existing product `Terminal` wrapper suppresses
+replies intentionally for control-mode pane streams; it is not an ordinary
+PTY host as it stands.
+
+The prototype returns the engine's replies to tmux through the owned PTY. A raw
+fixture application asks for its cursor position and receives exactly one
+response from tmux; outer-terminal negotiation does not leak extra bytes into
+that application. The test also checks bracketed multiline paste, a cursor key
+encoded from the outer terminal's modes, an encoded mouse click with known cell
+geometry, and a tmux clipboard write decoded into a memory buffer. An application
+marker after these operations verifies the preceding input remained exact.
+No operating-system mouse, keyboard or clipboard service is called.
+
+This protocol probe passed on macOS with tmux 3.4, 3.5a, 3.6b, 3.7c and 3.8.
+The locally built tmux 3.3a linked to ncurses 6.6 exited unexpectedly at
+`set-buffer -w`, after the reply, paste, mouse and key assertions passed. A
+corresponding crash trace points to `tty_set_selection`: the generated code
+accesses a null expansion returned through `tty_term_ptr2`. This is a bounded
+build/platform failure, not proof that all tmux 3.3a installations fail.
+A separately built tmux 3.3a linked to macOS system ncurses 5.4 passed the
+same probe. A small expansion-only diagnostic also distinguished the libraries:
+the older `tparm` call returned null with ncurses 6.6 and a string with system
+ncurses; `tiparm_s`, used by newer tmux builds, returned a string with both.
+The original failing build remains unchanged. Clipboard compatibility therefore
+cannot be inferred from the tmux version number alone.
+
+The probe is opt-in so ordinary tests do not trigger that known server crash:
+
+```sh
+cargo test -p tmux-workspaces-bench ordinary_host_routes -- --ignored --nocapture
+```
+
+It uses disposable servers even when explicitly requested. No supported-version
+floor is raised and no clipboard success is inferred from an ignored test.
+
+These assertions exercise the outer protocol, not the product input adapter.
+They do not establish extended-key compatibility, clipboard read support,
+selection policy, every mouse mode or real desktop-event mapping. Device
+attributes are a fixture profile, not a production capability declaration.
+The engine's reply callback must remain disabled for control-mode pane decoding:
+forwarding those replies too would duplicate responses already owned by tmux.
+
 ## Tradeoffs and remaining acceptance
 
 An ordinary client retains tmux's own presentation and input semantics rather
@@ -86,8 +131,8 @@ tmux's copy mode and history remain distinct from the engine's local history.
 
 Before adopting this alternative:
 
-1. Test the complete PTY-host contract, including terminal query replies,
-   extended keys, bracketed paste, mouse routing and clipboard interactions.
+1. Complete the PTY-host contract beyond the bounded fixture: extended keys,
+   terminal capability reporting, other mouse modes and clipboard interactions.
    The control-mode rule that discards engine replies cannot be reused blindly:
    an ordinary client can ask its outer terminal questions.
 2. Validate resizing, source settings, helper lifetime and reconnect on supported
@@ -108,5 +153,8 @@ version, persisted schema or product activation gate changes in this record.
 The fixture reuses the existing PTY helper, `libc` (MIT OR Apache-2.0), `tempfile`
 (MIT OR Apache-2.0), the MIT-licensed native terminal wrapper, and the installed
 tmux executable (ISC). No package or native dependency is added or upgraded.
+The protocol fixture adds the already pinned `libghostty-vt = 0.2.2`
+(MIT OR Apache-2.0) as a direct benchmark development dependency so it can test
+callbacks without widening the product wrapper API. No package version changes.
 The alternative keeps the OS PTY boundary already used by the benchmark; a
 production transport and its ownership rules remain separate work.
