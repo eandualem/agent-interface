@@ -597,7 +597,9 @@ impl TerminalView {
         let Some((pane, button, previous)) = self.program_press else {
             return;
         };
-        if mouse_button(event.button) != Some(button) {
+        if !mouse_button(event.button)
+            .is_some_and(|released| ends_mouse_gesture(button, released, cfg!(target_os = "macos")))
+        {
             return;
         }
         let pointer = drag_pointer(
@@ -714,12 +716,6 @@ impl Render for TerminalView {
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::key_down))
             .on_mouse_move(cx.listener(Self::hover_mouse))
-            .on_modifiers_changed(cx.listener(|view, _: &gpui::ModifiersChangedEvent, _, _| {
-                // macOS remaps Control-left down/up independently, clearing the
-                // modifier in each event. End an accepted gesture before that
-                // mapping can change its release identity.
-                if cfg!(target_os = "macos") { view.release_mouse(); }
-            }))
             .on_scroll_wheel(cx.listener(|view, event: &gpui::ScrollWheelEvent, window, cx| {
                 let previous_gesture = view.wheel_gesture.id();
                 let gesture = matches!(event.delta, gpui::ScrollDelta::Pixels(_))
@@ -915,6 +911,14 @@ pub(crate) fn input_queue(
         }
     });
     InputQueue { sender, queued }
+}
+
+fn ends_mouse_gesture(pressed: Button, released: Button, macos: bool) -> bool {
+    // macOS GPUI independently remaps Control-left down/up and erases Control.
+    // It cannot distinguish that release from a physical right-button release.
+    // End either left/right gesture with its original encoded button; simultaneous
+    // left/right chords are unsupported on this backend.
+    pressed == released || (macos && pressed != Button::Middle && released != Button::Middle)
 }
 
 fn mouse_button(button: gpui::MouseButton) -> Option<Button> {
@@ -1328,6 +1332,14 @@ fn input_key(key: &Keystroke, repeat: bool) -> Option<Input> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn control_click_release_aliases_end_the_original_macos_gesture() {
+        assert!(ends_mouse_gesture(Button::Left, Button::Right, true));
+        assert!(ends_mouse_gesture(Button::Right, Button::Left, true));
+        assert!(!ends_mouse_gesture(Button::Right, Button::Left, false));
+        assert!(!ends_mouse_gesture(Button::Middle, Button::Left, true));
+    }
 
     #[test]
     fn saturated_input_queue_reserves_the_drag_release_in_order() {
