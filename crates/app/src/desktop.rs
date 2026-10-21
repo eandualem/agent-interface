@@ -27,6 +27,12 @@ pub fn run(directory: Option<PathBuf>) -> Result<(), String> {
     let failure = Rc::new(RefCell::new(None));
     let opened = Rc::clone(&failure);
     application().run(move |cx: &mut App| {
+        if cfg!(target_os = "linux") && cx.graphical_environment().is_none() {
+            *opened.borrow_mut() =
+                Some("the workspace browser requires a graphical desktop".into());
+            cx.quit();
+            return;
+        }
         cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
         cx.on_action(|_: &Quit, cx| cx.quit());
         cx.set_menus(vec![Menu {
@@ -232,6 +238,7 @@ impl Browser {
                         .flex_grow(*ratio as f32)
                         .min_w_0()
                         .min_h_0()
+                        .overflow_hidden()
                         .child(Self::tree(first, focus, cx)),
                 )
                 .child(
@@ -240,6 +247,7 @@ impl Browser {
                         .flex_grow((1.0 - ratio) as f32)
                         .min_w_0()
                         .min_h_0()
+                        .overflow_hidden()
                         .child(Self::tree(second, focus, cx)),
                 )
                 .into_any_element(),
@@ -342,6 +350,7 @@ impl Render for Browser {
                         div()
                             .flex_1()
                             .min_h_0()
+                            .overflow_hidden()
                             .child(Self::tree(&tab.tree, &tab.focus, cx)),
                     );
             } else {
