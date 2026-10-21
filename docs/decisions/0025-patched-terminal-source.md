@@ -15,6 +15,9 @@ retains Ghostty's own licence files. The patch changes five native source files:
   path retained for generic stream handlers and allocation-failure recovery.
 - Handle DEL in the native stream without interrupting a partial UTF-8 character.
   This replaces the Rust DEL parser pass; native string handling stays intact.
+- Keep the row unchanged for horizontal absolute positioning in origin mode,
+  and ignore relative positioning commands that tmux ignores. These preserve
+  cursor compatibility when removing the Rust DEL parser.
 - On a soft-wrap scroll, use default backgrounds for newly exposed blank cells,
   as tmux does. Printed text and explicit newline scrolling retain their styles.
 
