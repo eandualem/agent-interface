@@ -30,7 +30,9 @@ pub fn run(directory: Option<PathBuf>) -> Result<(), String> {
         if cfg!(target_os = "linux") && cx.graphical_environment().is_none() {
             *opened.borrow_mut() =
                 Some("the workspace browser requires a graphical desktop".into());
-            cx.quit();
+            // Linux's event loop resets its stop flag when run() begins, after
+            // this launch callback. Request exit on its first dispatched task.
+            cx.spawn(async |cx| cx.update(|cx| cx.quit())).detach();
             return;
         }
         cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
@@ -67,7 +69,7 @@ pub fn run(directory: Option<PathBuf>) -> Result<(), String> {
             })
         }) {
             *opened.borrow_mut() = Some(format!("cannot open window: {error}"));
-            cx.quit();
+            cx.spawn(async |cx| cx.update(|cx| cx.quit())).detach();
             return;
         }
         cx.activate(true);
