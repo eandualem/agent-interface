@@ -1,6 +1,6 @@
 # 0031. Ordinary-shell creation and shared locking
 
-- **Status:** Implementation and compatibility verification; desktop activation pending.
+- **Status:** Implemented and compatibility verified; desktop acceptance pending.
 - **Date:** 2026-10-21
 
 ## Decision
@@ -36,7 +36,7 @@ and saved cwd or process cwd, falling back to the home directory when invalid.
 New sessions use no user tmux configuration, status off, mouse on and
 remain-on-exit on. This does not adopt the separate PATH shell-discovery proposal
 in [0016](0016-shell-environment-and-launch-context.md), add terminal environment defaults, or enable
-implicit missing-shell startup. Desktop activation requires the compatibility
+implicit missing-shell startup. Desktop activation follows the compatibility
 proof below. The explicit Open terminal action first saves an ordinary leaf
 through the existing conflict rules. Save failures retain the proposal for retry;
 conflicts or discarding an edit cancel startup. Creation runs on a worker only

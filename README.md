@@ -67,6 +67,11 @@ use the launch directory; splits inherit the ordinary shell’s remembered direc
 The new arrangement appears after saving. Navigation made while saving stays local;
 otherwise the new tab or pane is selected.
 
+Drag the divider between native panes to adjust their relative sizes. Release
+saves the ratio; Escape or switching to another window during a drag cancels it.
+This changes the native viewport without resizing other tmux clients. A changed
+tab or split tree cancels the gesture. Save errors offer the usual Retry or Discard.
+
 Choose **Open terminal** in an ordinary pane header or tab options to start its
 login shell, or reuse it if already running. The pane is saved before its shell
 starts; a save error offers Retry or Discard. The new shell uses its saved directory
