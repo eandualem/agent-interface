@@ -23,8 +23,10 @@ You need:
 - **A C toolchain**: the Xcode Command Line Tools on macOS
   (`xcode-select --install`), or your distribution's compiler package, such as
   `build-essential` on Debian and Ubuntu.
-- **git and network access** for the first build. The engine's build script
-  clones Ghostty at a pinned commit, and Zig then fetches Ghostty's own
+- **Python 3.9 or newer** for preparing the native source. It uses only the
+  standard library; the app itself does not need Python.
+- **git and network access** for the first build. The preparation script
+  fetches Ghostty at a pinned commit, and Zig then fetches Ghostty's own
   dependencies. To build without a network, see
   [Building offline](#building-offline).
 - **tmux 3.3 or newer** for the tests that start tmux.
@@ -38,6 +40,7 @@ Check the versions with `zig version` and `tmux -V`.
 ## Build and test
 
 ```sh
+python3 scripts/prepare-native.py
 export LIBGHOSTTY_VT_SYS_OPTIMIZE=ReleaseSafe
 cargo build --workspace
 cargo test --workspace
@@ -84,29 +87,35 @@ core with Zig. Three settings matter:
   measured with it says so.
 - **Source.** The build fetches Ghostty commit
   `a887df42c56f6de86c0fe6da9c4eeca37931e083`, the commit that
-  `libghostty-vt-sys` 0.2.2 pins.
+  `libghostty-vt-sys` 0.2.2 pins, and applies `native/ghostty.patch`
+  ([0025](docs/decisions/0025-patched-terminal-source.md)). Run
+  `python3 scripts/prepare-native.py` after cloning or changing native inputs.
+  It verifies and reuses a prepared directory under `.native/`, named by the
+  source commit and patch digest. It never edits a caller's source checkout.
+  Cargo selects that directory through `.cargo/config.toml`; the `term` build
+  checks the patched files against `native/ghostty.json`. An explicit
+  `GHOSTTY_SOURCE_DIR` must use a UTF-8 path and contain the same patched files.
+  An unpatched checkout is rejected because DEL handling now belongs to the
+  native stream.
 
 ### Building offline
 
-Prepare once, while online. In a Ghostty checkout at the pinned commit, fetch
+Prepare once, while online. In the prepared source directory, fetch
 every Zig package that Ghostty's build can ask for. That is about 600 MB,
 because it includes packages that only the full Ghostty app uses:
 
 ```sh
-git clone https://github.com/ghostty-org/ghostty.git
-cd ghostty
-git checkout a887df42c56f6de86c0fe6da9c4eeca37931e083
-zig build --fetch=all -Demit-lib-vt=true -Demit-xcframework=false -Dapp-runtime=none
+native_source="$(python3 scripts/prepare-native.py)"
+(cd "$native_source" && zig build --fetch=all -Demit-lib-vt=true -Demit-xcframework=false -Dapp-runtime=none)
+cargo fetch
 ```
-
-Then, in this repository, download the Rust crates with `cargo fetch`.
 
 Zig keeps the packages in its global cache, where later builds find them, as
 long as `ZIG_GLOBAL_CACHE_DIR`, if you set it, has the same value. Build
 without a network with:
 
 ```sh
-GHOSTTY_SOURCE_DIR=/path/to/ghostty cargo build --workspace --offline
+cargo build --workspace --offline
 ```
 
 ## Tests that use tmux

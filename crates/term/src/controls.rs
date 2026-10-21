@@ -21,8 +21,8 @@
 //! tmux keeps these controls as data, CAN and SUB included, while the engine
 //! gets NUL in their place and ends the string at a CAN or SUB. And at each
 //! of them tmux forgets the character `REP` repeats, while the engine keeps
-//! it. DEL is handled separately by the stateful `del` filter, which leaves
-//! string payloads unchanged.
+//! it. The native stream ignores DEL in ground state before UTF-8 decoding,
+//! without interrupting a partial character or changing string payload handling.
 
 const NUL: u8 = 0x00;
 const CAN: u8 = 0x18;
@@ -150,5 +150,13 @@ mod tests {
         assert_eq!(text(&screen, 0), "ab€cdefghi");
         assert_eq!(text(&screen, 1), "j");
         assert_eq!((screen.cursor().col, screen.cursor().row), (1, 1));
+
+        // tmux keeps cancellation inside DCS data. Although the native parser
+        // exits DCS, later DEL bytes must not create spurious visible cells.
+        let screen = drawn(&[
+            0x1b, b'P', b'q', 0x18, 0x7f, 0x1b, b'x', 0x7f, 0x1b, b'\\', 0x7f, b'a',
+        ]);
+        assert_eq!(text(&screen, 0), "a");
+        assert_eq!((screen.cursor().col, screen.cursor().row), (1, 0));
     }
 }
