@@ -9,11 +9,15 @@ use gpui::{
     size,
 };
 use gpui_platform::application;
-use tmux_workspaces_core::{Direction, NameEdit, Node, RenameOutcome, Tab};
-use tmux_workspaces_store::Store;
+use tmux_workspaces_core::{
+    Attachment, AttachmentTarget, Direction, Layout, NameEdit, Node, RenameOutcome, Tab,
+};
+use tmux_workspaces_store::{Document, Store};
 
 use crate::library::{Library, Update, WindowLayout};
+mod chooser;
 mod name;
+use chooser::{Choice, SessionChooser};
 mod terminal;
 use name::{NameEvent, NameField};
 use terminal::{LiveTerminal, Target};
@@ -128,6 +132,7 @@ struct EditingName {
 #[derive(Clone)]
 enum TabAction {
     Rename,
+    Attach,
     Move(isize),
     Transfer(String),
 }
@@ -142,6 +147,66 @@ impl TabMenu {
     fn current(&self, layout: &tmux_workspaces_core::Layout) -> bool {
         layout.selected == self.workspace && layout.tab() == Some(&self.tab)
     }
+}
+
+struct AttachmentEdit {
+    tab: String,
+    pane: String,
+    empty: bool,
+    target: AttachmentTarget,
+}
+
+impl AttachmentEdit {
+    fn capture(model: &Layout) -> Option<Self> {
+        Some(Self {
+            tab: model.tab()?.id.clone(),
+            pane: model.pane()?.id.clone(),
+            empty: model.pane()?.empty,
+            target: model.attachment_target()?,
+        })
+    }
+
+    fn apply(&self, model: &mut Layout, attachment: Attachment) -> bool {
+        if self.empty {
+            let displayed = model
+                .tab()
+                .is_some_and(|tab| !model.focus || tab.focus == self.pane);
+            displayed && model.fill_pane(&self.tab, &self.pane, Some(attachment))
+        } else {
+            self.target.apply(model, Some(attachment))
+        }
+    }
+
+    fn displayed(&self, model: &Layout) -> bool {
+        model.tab().is_some_and(|tab| {
+            tab.id == self.tab
+                && (!model.focus || tab.focus == self.pane)
+                && tab.tree.leaves().iter().any(|leaf| leaf.id == self.pane)
+        })
+    }
+
+    fn propose(
+        &self,
+        layout: &mut WindowLayout,
+        attachment: Attachment,
+    ) -> Option<(Document, Layout)> {
+        let (base, mut proposed) = layout.save_snapshot();
+        if !self.apply(&mut proposed, attachment) {
+            return None;
+        }
+        // Confirmation returns selection to the captured destination, but keeps
+        // its original terminal until the detached proposal has committed.
+        // The caller explicitly returns keyboard focus to navigation on confirmation.
+        let _ = layout.model_mut().retain_navigation(&proposed);
+        Some((base, proposed))
+    }
+}
+
+struct Attaching {
+    destination: AttachmentEdit,
+    source: String,
+    view: gpui::Entity<SessionChooser>,
+    _events: gpui::Subscription,
 }
 
 #[derive(Default)]
@@ -164,6 +229,9 @@ struct Browser {
     save_notice: Option<String>,
     name_click: Option<(String, bool)>,
     tab_menu: Option<TabMenu>,
+    chooser: Option<Attaching>,
+    // A failed proposed edit remains detached until its transaction succeeds.
+    pending_save: Option<(Document, Layout)>,
 }
 
 impl Browser {
@@ -192,6 +260,7 @@ impl Browser {
             return;
         }
         self.editing = None;
+        self.chooser = None;
         self.name_click = None;
         self.tab_menu = None;
         self.save_notice = None;
@@ -282,6 +351,7 @@ impl Browser {
             &field,
             window,
             |browser, field, event, window, cx| match event {
+                NameEvent::Changed(_) => {}
                 NameEvent::Save => browser.submit_name(window, cx),
                 NameEvent::Cancel => {
                     if field.read(cx).focus.is_focused(window)
@@ -296,6 +366,7 @@ impl Browser {
         );
         self.workspace_menu = false;
         self.tab_menu = None;
+        self.chooser = None;
         self.reset_focus = false;
         self.save_notice = None;
         self.editing = Some(EditingName {
@@ -342,7 +413,10 @@ impl Browser {
         let Some(layout) = &self.layout else {
             return;
         };
-        let (mut base, local) = layout.save_snapshot();
+        let (mut base, local) = self
+            .pending_save
+            .take()
+            .unwrap_or_else(|| layout.save_snapshot());
         let directory = self.directory.clone();
         // Discard all pending reads before saving. A fresh reader starts only
         // after applying the result, so no older snapshot can undo the commit.
@@ -357,10 +431,10 @@ impl Browser {
             let result = crate::library::library_directory(directory.as_deref())
                 .and_then(|directory| Store::open_existing_writable(&directory))
                 .and_then(|mut store| store.save(&mut base, &local));
-            (base, result)
+            (base, local, result)
         });
         cx.spawn(async move |this, cx| {
-            let (base, result) = work.await;
+            let (base, local, result) = work.await;
             let _ = this.update(cx, |browser, cx| {
                 browser.saving = false;
                 match result {
@@ -375,12 +449,28 @@ impl Browser {
                     }
                     Err(error) => {
                         browser.save_failed = true;
+                        browser.pending_save = Some((base, local));
                         browser.error = Some(format!("Changes not saved: {error}. Retry saving."));
                     }
                 }
                 cx.notify();
             });
         }).detach();
+        cx.notify();
+    }
+
+    fn discard_save(&mut self, cx: &mut Context<Self>) {
+        if !self.save_failed || self.saving {
+            return;
+        }
+        self.pending_save = None;
+        self.save_failed = false;
+        self.save_notice = None;
+        self.error = None;
+        if let Some(layout) = &mut self.layout {
+            self.reset_focus |= layout.discard_edits();
+        }
+        self.start_reader(cx);
         cx.notify();
     }
 
@@ -403,6 +493,7 @@ impl Browser {
             tab,
         });
         self.editing = None;
+        self.chooser = None;
         self.workspace_menu = false;
         if let Some(focus) = &self.navigation {
             window.focus(focus, cx);
@@ -430,6 +521,11 @@ impl Browser {
         }
         match action {
             TabAction::Rename => self.begin_name(true, window, cx),
+            TabAction::Attach => {
+                if let Some(pane) = layout.model().pane().map(|pane| pane.id.clone()) {
+                    self.open_attach(&pane, window, cx);
+                }
+            }
             TabAction::Move(offset) => {
                 layout.model_mut().move_tab(offset);
                 self.save(cx);
@@ -454,7 +550,10 @@ impl Browser {
                 cx.notify();
             }))
             .child(div().text_xs().child("TAB OPTIONS"));
-        let mut actions = vec![("Rename tab".to_owned(), TabAction::Rename)];
+        let mut actions = vec![
+            ("Rename tab".to_owned(), TabAction::Rename),
+            ("Attach session".to_owned(), TabAction::Attach),
+        ];
         if let (Some(menu), Some(layout)) = (&self.tab_menu, &self.layout) {
             if let Some(space) = layout.model().workspace()
                 && let Some(index) = space.tabs.iter().position(|tab| tab.id == menu.tab.id)
@@ -490,6 +589,107 @@ impl Browser {
             );
         }
         options.into_any_element()
+    }
+
+    fn open_attach(&mut self, pane: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.saving || self.save_failed {
+            return;
+        }
+        if let Some(update) = self.library.as_ref().and_then(Library::take_update) {
+            self.apply(update);
+        }
+        let Some(layout) = &mut self.layout else {
+            return;
+        };
+        if !layout
+            .model()
+            .tab()
+            .is_some_and(|tab| !layout.model().focus || tab.focus == pane)
+            || !layout.model_mut().choose_pane(pane)
+        {
+            return;
+        }
+        let Some(destination) = AttachmentEdit::capture(layout.model()) else {
+            return;
+        };
+        let source = match &self.source {
+            Some(Ok(path)) => path.clone(),
+            _ => {
+                self.error = Some("Source socket unavailable".into());
+                cx.notify();
+                return;
+            }
+        };
+        let Some(saved_source) = source.to_str().map(str::to_owned) else {
+            self.error = Some("The source socket path cannot be saved as text.".into());
+            cx.notify();
+            return;
+        };
+        self.editing = None;
+        self.tab_menu = None;
+        self.chooser = None;
+        self.reset_focus = false;
+        let view = cx.new(|cx| SessionChooser::new(source, window, cx));
+        let events = cx.subscribe_in(&view, window, |browser, chooser, event, window, cx| {
+            if !browser
+                .chooser
+                .as_ref()
+                .is_some_and(|active| active.view == *chooser)
+            {
+                return;
+            }
+            match event {
+                Choice::Cancel => {
+                    if chooser.read(cx).focused(window, cx)
+                        && let Some(focus) = &browser.navigation
+                    {
+                        window.focus(focus, cx);
+                    }
+                    browser.chooser = None;
+                }
+                Choice::Session(name) => browser.attach_session(name, window, cx),
+            }
+            cx.notify();
+        });
+        self.chooser = Some(Attaching {
+            destination,
+            source: saved_source,
+            view,
+            _events: events,
+        });
+        cx.notify();
+    }
+
+    fn attach_session(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(chooser) = self.chooser.take() else {
+            return;
+        };
+        if self.saving || self.save_failed {
+            return;
+        }
+        if let Some(update) = self.library.as_ref().and_then(Library::take_update) {
+            self.apply(update);
+        }
+        let Some(layout) = &mut self.layout else {
+            return;
+        };
+        let attachment = Attachment {
+            session: name.into(),
+            source_socket: Some(chooser.source),
+        };
+        if let Some(proposal) = chooser.destination.propose(layout, attachment) {
+            // The displayed model retains its original terminal until saving
+            // completes. Failed or conflicting edits never start a replacement.
+            self.pending_save = Some(proposal);
+            self.save(cx);
+        } else {
+            self.save_notice =
+                Some("The destination changed. Open Attach session again to retry.".into());
+        }
+        if let Some(focus) = &self.navigation {
+            window.focus(focus, cx);
+        }
+        cx.notify();
     }
 
     fn name_editor(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -557,6 +757,7 @@ impl Browser {
         node: &Node,
         focus: &str,
         terminals: &HashMap<String, gpui::Entity<LiveTerminal>>,
+        chooser: Option<&Attaching>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         match node {
@@ -600,6 +801,19 @@ impl Browser {
                             .child(title)
                             .child(
                                 div()
+                                    .id(SharedString::from(format!("attach-{}", leaf.id)))
+                                    .cursor_pointer()
+                                    .child("Attach session")
+                                    .on_click(cx.listener({
+                                        let id = leaf.id.clone();
+                                        move |browser, _, window, cx| {
+                                            cx.stop_propagation();
+                                            browser.open_attach(&id, window, cx);
+                                        }
+                                    })),
+                            )
+                            .child(
+                                div()
                                     .id(SharedString::from(format!("zoom-{}", leaf.id)))
                                     .cursor_pointer()
                                     .child("⤢")
@@ -616,14 +830,20 @@ impl Browser {
                                     })),
                             ),
                     )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_h_0()
-                            .overflow_hidden()
-                            .children(terminals.get(&leaf.id).cloned())
-                            .when(leaf.empty, |el| el.child("Empty pane")),
-                    )
+                    .child(div().flex_1().min_h_0().overflow_hidden().child(
+                        if let Some(chooser) =
+                            chooser.filter(|chooser| chooser.destination.pane == leaf.id)
+                        {
+                            chooser.view.clone().into_any_element()
+                        } else if let Some(terminal) = terminals.get(&leaf.id) {
+                            terminal.clone().into_any_element()
+                        } else {
+                            div()
+                                .p_2()
+                                .child("Choose Attach session to fill this empty pane.")
+                                .into_any_element()
+                        },
+                    ))
                     .into_any_element()
             }
             Node::Split {
@@ -646,7 +866,7 @@ impl Browser {
                         .min_w_0()
                         .min_h_0()
                         .overflow_hidden()
-                        .child(Self::tree(first, focus, terminals, cx)),
+                        .child(Self::tree(first, focus, terminals, chooser, cx)),
                 )
                 .child(
                     div()
@@ -655,7 +875,7 @@ impl Browser {
                         .min_w_0()
                         .min_h_0()
                         .overflow_hidden()
-                        .child(Self::tree(second, focus, terminals, cx)),
+                        .child(Self::tree(second, focus, terminals, chooser, cx)),
                 )
                 .into_any_element(),
         }
@@ -664,6 +884,15 @@ impl Browser {
 
 impl Render for Browser {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.chooser.as_ref().is_some_and(|chooser| {
+            !self
+                .layout
+                .as_ref()
+                .is_some_and(|layout| chooser.destination.displayed(layout.model()))
+        }) {
+            self.chooser = None;
+            self.reset_focus = true;
+        }
         if std::mem::take(&mut self.reset_focus)
             && let Some(focus) = &self.navigation
         {
@@ -867,6 +1096,7 @@ impl Render for Browser {
                     tree.as_ref().unwrap_or(&tab.tree),
                     &tab.focus,
                     &self.terminals,
+                    self.chooser.as_ref(),
                     cx,
                 ));
             }
@@ -957,6 +1187,17 @@ impl Render for Browser {
                         .on_click(cx.listener(|browser, _, _, cx| browser.save(cx))),
                 )
             })
+            .when(self.save_failed, |el| {
+                el.child(
+                    div()
+                        .id("discard-save")
+                        .px_2()
+                        .py_2()
+                        .cursor_pointer()
+                        .child("Discard unsaved changes")
+                        .on_click(cx.listener(|browser, _, _, cx| browser.discard_save(cx))),
+                )
+            })
             .child(
                 div()
                     .id("open-library")
@@ -982,6 +1223,34 @@ impl Render for Browser {
                         return;
                     }
                     let key = &event.keystroke;
+                    if let Some(chooser) = &browser.chooser {
+                        if key.key == "escape" && !chooser.view.read(cx).composing(cx) {
+                            browser.chooser = None;
+                            if let Some(focus) = &browser.navigation {
+                                window.focus(focus, cx);
+                            }
+                            cx.stop_propagation();
+                            cx.notify();
+                        }
+                        return;
+                    }
+                    if key.modifiers.platform
+                        && key.modifiers.shift
+                        && !key.modifiers.control
+                        && !key.modifiers.alt
+                        && key.key == "a"
+                    {
+                        if let Some(pane) = browser
+                            .layout
+                            .as_ref()
+                            .and_then(|layout| layout.model().pane())
+                            .map(|pane| pane.id.clone())
+                        {
+                            browser.open_attach(&pane, window, cx);
+                        }
+                        cx.stop_propagation();
+                        return;
+                    }
                     if browser.tab_menu.is_some() && key.key == "escape" {
                         browser.tab_menu = None;
                         cx.stop_propagation();
@@ -1113,6 +1382,150 @@ fn navigate_key(model: &mut tmux_workspaces_core::Layout, key: &gpui::Keystroke)
 mod tests {
     use super::*;
     use tmux_workspaces_store::{Document, Error};
+
+    #[test]
+    fn attachment_guards_empty_displayed_panes_and_keeps_the_original_destination() {
+        let mut model = Layout::initial("/tmp".into());
+        model.split(Direction::Right, "/tmp".into(), true);
+        let pane = model.pane().unwrap().id.clone();
+        let edit = AttachmentEdit::capture(&model).unwrap();
+        let attachment = Attachment {
+            session: "existing worker".into(),
+            source_socket: Some("/fixture/source".into()),
+        };
+        model.next_pane(1);
+        assert!(edit.apply(&mut model, attachment.clone()));
+        assert_eq!(model.pane().unwrap().id, pane);
+        assert_eq!(model.pane().unwrap().cwd.as_deref(), Some("/tmp"));
+        assert!(!model.pane().unwrap().empty);
+
+        model.split(Direction::Right, "/tmp".into(), true);
+        let empty = AttachmentEdit::capture(&model).unwrap();
+        model.open_terminal();
+        let before = model.clone();
+        assert!(!empty.apply(&mut model, attachment.clone()));
+        assert_eq!(
+            model, before,
+            "peer-filled ordinary shell must not be overwritten"
+        );
+
+        model.split(Direction::Right, "/tmp".into(), true);
+        let hidden = AttachmentEdit::capture(&model).unwrap();
+        model.next_pane(1);
+        model.focus = true;
+        assert!(!hidden.apply(&mut model, attachment.clone()));
+        model.focus = false;
+        assert!(hidden.apply(&mut model, attachment.clone()));
+
+        let menu = AttachmentEdit::capture(&model).unwrap();
+        model.split(Direction::Below, "/tmp".into(), true);
+        assert!(
+            menu.apply(&mut model, attachment),
+            "safe refreshed changes to another pane remain valid"
+        );
+    }
+
+    #[test]
+    fn an_attachment_proposal_is_displayed_only_after_a_successful_save() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("layouts.db");
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        connection
+            .execute_batch("CREATE TABLE terminal_layout (id INTEGER PRIMARY KEY, value TEXT)")
+            .unwrap();
+        let raw = r#"{"version":2,"workspaces":[{"id":"000000000001","name":"Workspace","tabs":[{"id":"000000000002","name":"Tab","tree":{"id":"000000000003","direction":"right","first":{"id":"000000000004","agent":null,"empty":true,"cwd":"/tmp","extension":"keep"},"second":{"id":"000000000005","agent":null,"cwd":"/tmp"}},"focus":"000000000004"}],"selected":"000000000002"}],"selected":"000000000001","focus":false}"#;
+        connection
+            .execute("INSERT INTO terminal_layout VALUES (1, ?1)", [raw])
+            .unwrap();
+        let mut store = Store::open_existing_writable(directory.path()).unwrap();
+        let mut window = WindowLayout::new(store.load().unwrap());
+        let destination = AttachmentEdit::capture(window.model()).unwrap();
+        window.model_mut().next_pane(1);
+        assert_ne!(window.model().pane().unwrap().id, destination.pane);
+        let (mut base, proposed) = destination
+            .propose(
+                &mut window,
+                Attachment {
+                    session: "worker".into(),
+                    source_socket: Some("/fixture/source".into()),
+                },
+            )
+            .unwrap();
+        assert_eq!(window.model().pane().unwrap().id, destination.pane);
+        assert!(
+            window.model().pane().unwrap().empty,
+            "pre-commit display retains the existing model"
+        );
+        // An invalid peer document makes saving fail without exposing the proposal.
+        connection
+            .execute("UPDATE terminal_layout SET value = '{}'", [])
+            .unwrap();
+        assert!(store.save(&mut base, &proposed).is_err());
+        assert!(window.model().pane().unwrap().empty);
+        connection
+            .execute("UPDATE terminal_layout SET value = ?1", [raw])
+            .unwrap();
+        let result = store.save(&mut base, &proposed).unwrap();
+        assert!(window.model().pane().unwrap().empty);
+        assert!(window.saved(base, &result));
+        assert_eq!(
+            window
+                .model()
+                .pane()
+                .unwrap()
+                .attachment
+                .as_ref()
+                .unwrap()
+                .session,
+            "worker"
+        );
+        let saved = store.load().unwrap();
+        assert!(saved.raw_json().contains("\"extension\":\"keep\""));
+        assert!(!saved.raw_json().contains("\"empty\""));
+
+        // A later conflict adopts the peer attachment, never the rejected choice.
+        let destination = AttachmentEdit::capture(window.model()).unwrap();
+        let (mut base, mut proposed) = window.save_snapshot();
+        destination.apply(
+            &mut proposed,
+            Attachment {
+                session: "local".into(),
+                source_socket: Some("/fixture/source".into()),
+            },
+        );
+        let mut peer = store.load().unwrap();
+        let mut peer_model = peer.model().clone();
+        peer_model.attach(Some(Attachment {
+            session: "peer".into(),
+            source_socket: Some("/fixture/source".into()),
+        }));
+        assert!(!store.save(&mut peer, &peer_model).unwrap().conflict);
+        let result = store.save(&mut base, &proposed).unwrap();
+        assert!(result.conflict);
+        assert_eq!(
+            window
+                .model()
+                .pane()
+                .unwrap()
+                .attachment
+                .as_ref()
+                .unwrap()
+                .session,
+            "worker"
+        );
+        assert!(window.saved(base, &result));
+        assert_eq!(
+            window
+                .model()
+                .pane()
+                .unwrap()
+                .attachment
+                .as_ref()
+                .unwrap()
+                .session,
+            "peer"
+        );
+    }
 
     #[test]
     fn tab_options_reject_changed_targets_and_moves_keep_the_terminal_tree() {

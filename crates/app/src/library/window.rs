@@ -56,6 +56,15 @@ impl WindowLayout {
         changed
     }
 
+    /// Abandon the unsaved edit without touching the database or local navigation.
+    /// The caller resumes polling to reconcile any newer shared changes.
+    pub fn discard_edits(&mut self) -> bool {
+        let mut model = self.base.model().clone();
+        let changed = model.retain_navigation(&self.model);
+        self.model = model;
+        changed
+    }
+
     /// Record the current tab only after it has actually been shown. Selecting
     /// a tab or applying a library refresh alone does not make it recently viewed.
     /// Empty workspaces do nothing. History stays local for this window's lifetime
@@ -95,6 +104,30 @@ impl WindowLayout {
 mod tests {
     use super::*;
     use tmux_workspaces_core::Attachment;
+
+    #[test]
+    fn discarding_an_edit_preserves_navigation_and_the_shared_base() {
+        let path = Path::new("layouts.db");
+        let raw = r#"{"version":2,"workspaces":[{"id":"000000000001","name":"Workspace","tabs":[],"selected":""}],"selected":"000000000001","focus":false}"#;
+        let document = Document::parse(raw.into(), path).unwrap();
+        let mut model = document.model().clone();
+        model.add_tab(Some("First".into()), "/tmp".into(), true);
+        let first = model.tab().unwrap().id.clone();
+        model.add_tab(Some("Second".into()), "/tmp".into(), true);
+        let mut window = WindowLayout::new(document.with_model(&model, path).unwrap());
+        window.model_mut().rename_workspace("Unsaved");
+        window.model_mut().choose_tab(&first);
+        assert!(!window.discard_edits());
+        assert_eq!(window.model().workspace().unwrap().name, "Workspace");
+        assert_eq!(window.model().tab().unwrap().id, first);
+        let mut latest = window.base.model().clone();
+        latest.rename_workspace("Peer name");
+        let result = window
+            .refresh(window.base.with_model(&latest, path).unwrap(), path)
+            .unwrap();
+        assert!(!result.conflict && !result.active_tree_changed);
+        assert_eq!(window.model().workspace().unwrap().name, "Peer name");
+    }
 
     #[test]
     fn save_completion_keeps_new_navigation_and_advances_the_edit_base() {

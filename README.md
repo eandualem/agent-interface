@@ -56,6 +56,16 @@ other windows open. **Open library…** chooses another folder containing `layou
 
 Existing ordinary shells use the Python library's shell server; attachments use
 their saved source socket, or the source resolved from the launch environment.
+Use **Attach session** in a pane header or tab options, or Command-Shift-A, to
+choose an existing source session. Type to filter names, use Up/Down and Enter,
+or click a row. Escape or Cancel closes the chooser. It retains its destination
+when focus moves within the tab; a changed or hidden empty destination must be
+chosen again. Confirmation saves before replacing the terminal. Empty panes keep
+their identity and saved directory when filled. Replacing an ordinary terminal
+leaves its shell on the library server; fresh working-directory snapshots and
+Return to shell remain unfinished. The chooser currently lists tmux sessions
+without optional agent metadata.
+
 Missing sessions show an error with **Reconnect** instead of starting a shell.
 Changing tabs or closing the app detaches its clients; the source’s existing
 session-lifetime policy still applies. Connections preserve
@@ -72,8 +82,12 @@ opened again before editing it.
 
 The original name starts selected; Enter or **Save name** saves it, Escape or
 clicking elsewhere cancels, and Ctrl-U clears the field. Names are limited to 80
-characters. A failed save retains the edit and offers **Retry saving changes**;
-a conflicting peer edit refreshes the saved name and asks you to rename it again.
+characters. A failed save retains the edit and offers **Retry saving changes** or
+**Discard unsaved changes**. Discard restores the last shared arrangement and
+resumes polling with surviving local navigation. Panes that remain displayed keep
+their connections.
+A conflicting peer edit refreshes the saved arrangement and asks you to repeat
+the edit.
 Renaming requires an existing version-2 library and does not change tmux sessions.
 Navigation and pane expansion stay local. Attached
 sessions start on the source’s current window. Use the window names above a
