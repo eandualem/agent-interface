@@ -72,8 +72,12 @@ expand environment variables inside these paths.
 
 **Reading `layouts.db`.**
 
-- Open with `SQLITE_OPEN_READONLY` (`mode=ro`), never creating or migrating
-  anything. Keep one connection open on the storage worker
+- Open with `SQLITE_OPEN_READONLY` (`mode=ro`), never creating a database,
+  migrating its schema or changing its records. SQLite may create or update the
+  `-shm` shared-memory sidecar to coordinate WAL readers, while stored records
+  remain unchanged. See SQLite’s
+  [read-only WAL requirements](https://www.sqlite.org/wal.html#read_only_databases).
+  Keep one connection open on the storage worker
   ([0007](0007-threads-ownership-and-event-ordering.md)) and poll
   `PRAGMA data_version` on it.
 - Finish or reset every statement before returning to the poll loop; never hold
