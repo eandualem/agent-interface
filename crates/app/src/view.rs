@@ -260,6 +260,13 @@ impl TerminalView {
         self.panes.as_deref().expect("terminal entity is alive")
     }
 
+    pub(crate) fn suspend_input(&mut self, cx: &mut Context<Self>) {
+        self.input = None;
+        self.primary_click = None;
+        self.secondary_press = None;
+        self.clear_selection(cx);
+    }
+
     pub(crate) fn focus_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.take_update();
         if self.panes().is_finished() {

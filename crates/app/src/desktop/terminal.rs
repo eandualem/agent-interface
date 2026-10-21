@@ -69,9 +69,15 @@ fn connect_selected(target: Target, selected: Option<SessionWindow>) -> Result<R
     }
     .map_err(|e| e.to_string())?;
     let (wake, updates) = mpsc::unbounded();
-    let panes = Panes::start(connection.client, &connection.layout, 10_000, move || {
-        let _ = wake.unbounded_send(());
-    })
+    let panes = Panes::start_in_session(
+        connection.client,
+        &connection.layout,
+        connection.session,
+        10_000,
+        move || {
+            let _ = wake.unbounded_send(());
+        },
+    )
     .map_err(|e| e.to_string())?;
     Ok(Ready {
         panes: Some(Arc::new(panes)),
@@ -96,7 +102,9 @@ pub(super) struct LiveTerminal {
 
 impl LiveTerminal {
     pub fn focus_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(view) = &self.view {
+        if !self.connecting
+            && let Some(view) = &self.view
+        {
             view.update(cx, |view, cx| view.focus_terminal(window, cx));
         }
     }
@@ -122,7 +130,11 @@ impl LiveTerminal {
 
     fn start_window(&mut self, selected: Option<SessionWindow>, cx: &mut Context<Self>) {
         self.closed = None;
-        self.view = None;
+        // Keep the old client attached until its replacement is ready. A source
+        // with destroy-unattached enabled must not disappear during navigation.
+        if let Some(view) = &self.view {
+            view.update(cx, |view, cx| view.suspend_input(cx));
+        }
         self.error = None;
         self.connecting = true;
         let target = self.target.clone();
@@ -183,7 +195,10 @@ impl Render for LiveTerminal {
                 .collect();
             windows = windows.child(
                 div()
-                    .id(SharedString::from(format!("tmux-window-{}", item.id)))
+                    .id(SharedString::from(format!(
+                        "tmux-window-{}-{}",
+                        item.id, item.index
+                    )))
                     .px_2()
                     .py_1()
                     .flex_shrink_0()
@@ -226,7 +241,12 @@ impl Render for LiveTerminal {
             .min_h_0()
             .overflow_hidden()
             .child(windows)
-            .child(div().flex_1().min_h_0().children(self.view.clone()))
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .children((!self.connecting).then(|| self.view.clone()).flatten()),
+            )
             .when(self.connecting, |el| el.child("Connecting…"))
             .when_some(self.error.clone(), |el, error| {
                 el.child(div().p_2().text_sm().child(error))
@@ -344,8 +364,17 @@ mod tests {
             .find(|window| format!("@{}", window.id) == second.trim())
             .unwrap()
             .clone();
-        drop(first);
+        server
+            .run(&[
+                "set-option",
+                "-t",
+                "=window-source:",
+                "destroy-unattached",
+                "on",
+            ])
+            .unwrap();
         let ready = connect_selected(target.clone(), Some(selected.clone())).unwrap();
+        drop(first);
         assert_eq!(ready.window, selected.id);
         let panes = ready.panes.as_ref().unwrap();
         let wait = |marker: &str| {
@@ -377,8 +406,37 @@ mod tests {
             .run(&["capture-pane", "-p", "-t", "=window-source:"])
             .unwrap();
         assert!(!original_text.contains("selected-window-input"));
+        // Restore the fixture's ordinary lifetime before testing removal.
+        server
+            .run(&[
+                "set-option",
+                "-t",
+                "=window-source:",
+                "destroy-unattached",
+                "off",
+            ])
+            .unwrap();
+        let moved = tmux_workspaces_tmux::connection::connect_window(
+            std::path::Path::new(socket.trim()),
+            "window-source",
+            &selected,
+        )
+        .unwrap();
+        // Move after discovery/attachment, before the attached capture starts.
+        server
+            .run(&["move-window", "-s", second.trim(), "-t", "=fixture:1"])
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while panes.failure().is_none() {
+            assert!(Instant::now() < deadline, "removed window stayed available");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(panes.send_input(ready.input, b"must-not-send").is_err());
         drop(ready);
-        server.run(&["kill-window", "-t", second.trim()]).unwrap();
+        assert!(
+            Panes::start_in_session(moved.client, &moved.layout, moved.session, 100, || {})
+                .is_err()
+        );
         assert!(connect_selected(target, Some(selected)).is_err());
         assert_eq!(current(), original);
         assert!(

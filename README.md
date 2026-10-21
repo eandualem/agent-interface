@@ -52,7 +52,8 @@ reach the program. Hold Shift to keep scrolling local to the native viewer.
 Existing ordinary shells use the Python library's shell server; attachments use
 their saved source socket, or the source resolved from the launch environment.
 Missing sessions show an error with **Reconnect** instead of starting a shell.
-Sessions keep running when you change tabs or close the app. Connections preserve
+Changing tabs or closing the app detaches its clients; the source’s existing
+session-lifetime policy still applies. Connections preserve
 the session environment and do not participate in resizing other clients; text
 scales down when the existing terminal is larger than its native pane.
 
