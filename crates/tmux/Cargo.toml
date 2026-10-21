@@ -12,6 +12,8 @@ workspace = true
 
 [dependencies]
 thiserror.workspace = true
+libc.workspace = true
+uzers.workspace = true
 serde_json.workspace = true
 unicode-properties.workspace = true
 

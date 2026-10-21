@@ -9,7 +9,7 @@
 
 use std::ffi::c_int;
 use std::io;
-use std::os::unix::fs::{FileTypeExt, MetadataExt};
+use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt};
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -63,6 +63,20 @@ impl TmuxServer {
         Self::start_by(|tmpdir, socket_name| {
             launch(&shell_command(tmpdir, socket_name, &[], &START))?;
             run(tmpdir, socket_name, &["has-session", "-t", Self::SESSION]).map(drop)
+        })
+    }
+
+    /// Let product startup create the first session on this fixture's socket.
+    /// The private parent exists before `start` runs; the callback must use this
+    /// exact socket and must not start any other server. Normal cleanup and
+    /// interrupt tracking own it before the callback begins.
+    pub fn start_on_socket(start: impl FnOnce(&Path) -> io::Result<()>) -> io::Result<Self> {
+        Self::start_by(|tmpdir, name| {
+            let tmpdir = tmpdir.canonicalize()?;
+            let parent = tmpdir.join(format!("tmux-{}", tmpdir.metadata()?.uid()));
+            std::fs::DirBuilder::new().mode(0o700).create(&parent)?;
+            start(&parent.join(name))?;
+            run(&tmpdir, name, &["list-sessions"]).map(drop)
         })
     }
 
@@ -431,8 +445,7 @@ fn command(tmpdir: &Path, socket_name: &str) -> Command {
     command
 }
 
-/// The only command that may start a server: it creates the session
-/// [`TmuxServer::SESSION`].
+/// The default fixture startup command, creating [`TmuxServer::SESSION`].
 const START: [&str; 9] = [
     "new-session",
     "-d",
@@ -473,8 +486,8 @@ fn quote(word: &str) -> String {
 }
 
 /// Runs one tmux command with `-N`, so that it cannot start the server:
-/// only [`TmuxServer::start`] does, and nothing starts it again once it has
-/// been stopped.
+/// only fixture constructors start servers, and nothing starts one again
+/// once it has been stopped.
 fn run(tmpdir: &Path, socket_name: &str, args: &[&str]) -> io::Result<String> {
     let mut command = command(tmpdir, socket_name);
     command.arg("-N");
