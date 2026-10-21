@@ -62,8 +62,11 @@ history viewport, keeps wheel navigation local; mouse clicks in that viewport
 are not sent to the running program. Continuous pixel-wheel gestures retain local
 ownership through their remaining events and momentum, including capture recovery;
 a new platform start event begins a new gesture. Hit-test gaps and inner-pane
-crossings retain the gesture. Backends without start/end events use a 500 ms idle
-gap; after an end event this also bounds retained momentum. Discrete wheel ticks decide
+crossings retain the gesture. A gesture remains bound to its first ready pane;
+events over another inner pane are ignored until a new gesture, so worker-owned
+history state cannot leak input across panes. Backends without start/end events use a 500 ms idle
+gap; after an end event this also bounds retained momentum. Every new gesture
+clears fractional rows from its predecessor. Discrete wheel ticks decide
 individually. A geometry change rejects stale mouse
 coordinates. Pointer motion reports remain pending.
 

@@ -634,8 +634,10 @@ impl Render for TerminalView {
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::key_down))
             .on_scroll_wheel(cx.listener(|view, event: &gpui::ScrollWheelEvent, window, cx| {
+                let previous_gesture = view.wheel_gesture.id();
                 let gesture = matches!(event.delta, gpui::ScrollDelta::Pixels(_))
                     .then(|| view.wheel_gesture.update(event.touch_phase, std::time::Instant::now()));
+                if gesture.is_some_and(|id| id != previous_gesture) { view.wheel = None; }
                 let grid = view.grid.borrow();
                 let Some(pane) = grid.bounds.and_then(|bounds| {
                     hit_pane(
@@ -649,12 +651,15 @@ impl Render for TerminalView {
                     view.wheel = None;
                     return;
                 };
+                if gesture.is_some() && !view.wheel_gesture.accepts(pane) {
+                    cx.stop_propagation();
+                    return;
+                }
                 let Some(mut pointer) = pointer_at(&grid, pane, event.position, window.scale_factor(), event.modifiers) else { return; };
                 pointer.gesture = gesture;
                 if gesture.is_some() {
                     pointer.shift = view.wheel_gesture.keep_local(pointer.shift || !grid.screens[&pane].mouse_input());
                 }
-                if event.touch_phase == gpui::TouchPhase::Started { view.wheel = None; }
                 let delta = match event.delta {
                     gpui::ScrollDelta::Pixels(delta) => {
                         f32::from(delta.y) / f32::from(grid.cell.height).max(1.0)
