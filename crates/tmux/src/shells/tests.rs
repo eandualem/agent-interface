@@ -71,6 +71,9 @@ fn ordinary_shell_creation_is_isolated_and_reuses_sessions() {
             })
             .collect();
         let environment = Environment::capture().unwrap();
+        if let Some(started) = input["started"].as_str() {
+            std::fs::write(started, b"true").unwrap();
+        }
         let result = ensure(socket, &requests, &environment);
         let mut pids = BTreeMap::new();
         if result.is_ok() {
@@ -115,10 +118,18 @@ fn ordinary_shell_creation_is_isolated_and_reuses_sessions() {
     let home = root.join("home");
     std::fs::create_dir(&cwd).unwrap();
     std::fs::create_dir(&home).unwrap();
+    // A tmux client HOME does not replace an existing server HOME. Keep real
+    // fallback shells away from the runner's profile and ENV startup files.
+    server
+        .run(&["set-environment", "-g", "HOME", home.to_str().unwrap()])
+        .unwrap();
+    for name in ["ENV", "BASH_ENV", "ZDOTDIR"] {
+        server.run(&["set-environment", "-gu", name]).unwrap();
+    }
     let shell = root.join("fixture ' shell;");
     std::fs::write(&shell, r#"#!/usr/bin/env python3
 import json, os, pathlib, sys, time
-names = ['TMUX','TMUX_PANE','SSH_AUTH_SOCK','XDG_CONFIG_HOME','XDG_CONFIG_DIRS','XDG_DATA_HOME','XDG_DATA_DIRS','XDG_CACHE_HOME','XDG_STATE_HOME','XDG_RUNTIME_DIR','FIXTURE_SECRET']
+names = ['TMUX','TMUX_PANE','TMUX_TMPDIR','SSH_AUTH_SOCK','XDG_CONFIG_HOME','XDG_CONFIG_DIRS','XDG_DATA_HOME','XDG_DATA_DIRS','XDG_CACHE_HOME','XDG_STATE_HOME','XDG_RUNTIME_DIR','FIXTURE_SECRET']
 path = pathlib.Path(__file__).parent / ('proof-' + str(os.getpid()) + '.json')
 path.write_text(json.dumps({'cwd':os.getcwd(),'args':sys.argv[1:],'environment':{name:os.environ.get(name) for name in names}}))
 while True: time.sleep(60)
@@ -170,6 +181,7 @@ while True: time.sleep(60)
     assert_eq!(proof["args"], serde_json::json!(["-l", "-i"]));
     assert!(proof["environment"]["TMUX"].is_null());
     assert!(proof["environment"]["TMUX_PANE"].is_null());
+    assert!(proof["environment"]["TMUX_TMPDIR"].is_null());
     assert_eq!(
         proof["environment"]["SSH_AUTH_SOCK"],
         "fixture socket ' ; value"
@@ -226,26 +238,74 @@ while True: time.sleep(60)
     if let Some(worker) = std::env::var_os("TW_PYTHON_SHELL_WORKER") {
         interoperability(&server, socket, &environment, Path::new(&worker));
     }
-    // A failed command must leave the shared lock available for the next window.
-    environment
-        .variables
-        .insert("PATH".into(), "/nonexistent-fixture-tools".into());
-    assert!(
-        ensure(
-            socket,
-            &[Request {
-                id: "000000000003".into(),
-                cwd: None
-            }],
-            &environment
-        )
-        .is_err()
-    );
-    let lock = OpenOptions::new()
-        .append(true)
-        .open(format!("{}.viewer-lock", socket.display()))
+    // Force a real new-session command error after a successful list-sessions,
+    // then retry through the unchanged shared lock file.
+    let lock_path = format!("{}.viewer-lock", socket.display());
+    let before = std::fs::metadata(&lock_path).unwrap();
+    let original_path = environment.variables[OsStr::new("PATH")].clone();
+    let tmux = std::env::split_paths(&original_path)
+        .map(|path| path.join("tmux"))
+        .find(|path| path.is_file())
         .unwrap();
+    let tools = root.join("failure-tools");
+    std::fs::create_dir(&tools).unwrap();
+    let calls = root.join("failed-creation-calls.jsonl");
+    let wrapper = tools.join("tmux");
+    let script = format!(
+        r#"#!/usr/bin/env python3
+import json, os, subprocess, sys
+args = sys.argv[1:]
+if 'new-session' in args:
+    args.insert(args.index('new-session') + 1, '-Z')
+result = subprocess.run([{tmux}] + args)
+with open({calls}, 'a') as stream:
+    stream.write(json.dumps({{'args': args, 'returncode': result.returncode}}) + '\n')
+sys.exit(result.returncode)
+"#,
+        tmux = serde_json::to_string(tmux.to_str().unwrap()).unwrap(),
+        calls = serde_json::to_string(calls.to_str().unwrap()).unwrap()
+    );
+    std::fs::write(&wrapper, script).unwrap();
+    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let mut path = tools.as_os_str().to_owned();
+    path.push(":");
+    path.push(&original_path);
+    environment.variables.insert("PATH".into(), path);
+    let retry = [Request {
+        id: "000000000003".into(),
+        cwd: None,
+    }];
+    let error = ensure(socket, &retry, &environment).unwrap_err();
+    assert!(error.to_string().contains("Ordinary-shell command failed"));
+    let calls: Vec<serde_json::Value> = std::fs::read_to_string(&calls)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(calls.len(), 2);
+    assert!(
+        calls[0]["args"]
+            .as_array()
+            .unwrap()
+            .contains(&"list-sessions".into())
+    );
+    assert_eq!(calls[0]["returncode"], 0);
+    assert!(
+        calls[1]["args"]
+            .as_array()
+            .unwrap()
+            .contains(&"new-session".into())
+    );
+    assert_ne!(calls[1]["returncode"], 0);
+    let lock = OpenOptions::new().append(true).open(&lock_path).unwrap();
     lock.try_lock().unwrap();
+    assert_eq!(lock.metadata().unwrap().ino(), before.ino());
+    drop(lock);
+    environment.variables.insert("PATH".into(), original_path);
+    ensure(socket, &retry, &environment).unwrap();
+    assert!(!pid(&server, "000000000003").is_empty());
+    let after = std::fs::metadata(&lock_path).unwrap();
+    assert_eq!((after.dev(), after.ino()), (before.dev(), before.ino()));
     assert!(server.run(&["list-clients"]).unwrap().is_empty());
 }
 
@@ -330,8 +390,8 @@ fn interoperability(
             requests.push(serde_json::json!({"id":"000000000010","cwd":environment.home}));
         }
         let holder = serde_json::json!({"socket":socket,"requests":requests,"receipt":holder_receipt,"hold_ready":ready,"hold_release":release});
-        let waiter =
-            serde_json::json!({"socket":socket,"requests":requests,"receipt":waiter_receipt});
+        let waiter_started = root.join(format!("waiter-started-{round}.json"));
+        let waiter = serde_json::json!({"socket":socket,"requests":requests,"receipt":waiter_receipt,"started":waiter_started});
         let holder_input = root.join(format!("holder-input-{round}.json"));
         let waiter_input = root.join(format!("waiter-input-{round}.json"));
         std::fs::write(&holder_input, holder.to_string()).unwrap();
@@ -339,6 +399,7 @@ fn interoperability(
         let holder = spawn(rust_holds, &holder_input, &context);
         wait_file(&ready);
         let waiter = spawn(!rust_holds, &waiter_input, &context);
+        wait_file(&waiter_started);
         thread::sleep(Duration::from_millis(150));
         assert!(
             !waiter_receipt.exists(),
@@ -468,7 +529,14 @@ fn creates_the_first_ordinary_session_on_a_fixture_owned_socket() {
     let server = TmuxServer::start_on_socket(|socket| {
         let parent = socket.parent().unwrap();
         let mut environment = Environment::capture()?;
-        environment.shell = "/bin/sh".into();
+        let shell = parent.join("namespace-shell");
+        std::fs::write(&shell, r#"#!/usr/bin/env python3
+import json, os, pathlib, time
+pathlib.Path(__file__).with_suffix('.json').write_text(json.dumps({'TMUX_TMPDIR': os.environ.get('TMUX_TMPDIR')}))
+while True: time.sleep(60)
+"#)?;
+        std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o700))?;
+        environment.shell = shell;
         environment.home = parent.to_owned();
         environment.cwd = parent.to_owned();
         environment
@@ -490,6 +558,14 @@ fn creates_the_first_ordinary_session_on_a_fixture_owned_socket() {
         )
     })
     .unwrap();
+    let socket = server
+        .run(&["display-message", "-p", "#{socket_path}"])
+        .unwrap();
+    let namespace = Path::new(socket.trim())
+        .parent()
+        .unwrap()
+        .join("namespace-shell.json");
+    assert!(wait_file(&namespace)["TMUX_TMPDIR"].is_null());
     assert_eq!(
         server
             .run(&["list-sessions", "-F", "#{session_name}"])
@@ -511,4 +587,34 @@ fn creates_the_first_ordinary_session_on_a_fixture_owned_socket() {
         "on"
     );
     assert!(server.run(&["list-clients"]).unwrap().is_empty());
+}
+
+#[test]
+fn fifo_lock_is_rejected_without_waiting_for_a_reader() {
+    let server = TmuxServer::start().unwrap();
+    let socket = server
+        .run(&["display-message", "-p", "#{socket_path}"])
+        .unwrap();
+    let socket = Path::new(socket.trim());
+    let lock = format!("{}.viewer-lock", socket.display());
+    assert!(
+        Command::new("mkfifo")
+            .arg(&lock)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let start = Instant::now();
+    assert!(
+        ensure(
+            socket,
+            &[Request {
+                id: "000000000001".into(),
+                cwd: None
+            }],
+            &Environment::capture().unwrap()
+        )
+        .is_err()
+    );
+    assert!(start.elapsed() < Duration::from_secs(1));
 }

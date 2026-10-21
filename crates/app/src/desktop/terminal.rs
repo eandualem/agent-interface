@@ -123,6 +123,19 @@ impl LiveTerminal {
         }
     }
 
+    pub fn open_shell(
+        &mut self,
+        leaf: Leaf,
+        environment: tmux_workspaces_tmux::shells::Environment,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.target.matches_leaf(&leaf) {
+            return;
+        }
+        self.target.leaf = leaf;
+        self.start_window(self.selected_window.clone(), Some(environment), cx);
+    }
+
     pub fn selection(&self) -> Option<SessionWindow> {
         self.selected_window.clone()
     }
@@ -138,15 +151,20 @@ impl LiveTerminal {
             task: None,
             closed: None,
         };
-        terminal.start_window(selected, cx);
+        terminal.start_window(selected, None, cx);
         terminal
     }
 
     fn start(&mut self, cx: &mut Context<Self>) {
-        self.start_window(None, cx);
+        self.start_window(None, None, cx);
     }
 
-    fn start_window(&mut self, selected: Option<SessionWindow>, cx: &mut Context<Self>) {
+    fn start_window(
+        &mut self,
+        selected: Option<SessionWindow>,
+        environment: Option<tmux_workspaces_tmux::shells::Environment>,
+        cx: &mut Context<Self>,
+    ) {
         self.closed = None;
         // Keep the old client attached until its replacement is ready. A source
         // with destroy-unattached enabled must not disappear during navigation.
@@ -157,6 +175,24 @@ impl LiveTerminal {
         self.connecting = true;
         let target = self.target.clone();
         let connection = cx.background_executor().spawn(async move {
+            if let Some(environment) = environment {
+                if target.leaf.empty || target.leaf.attachment.is_some() {
+                    return Err("Only an ordinary terminal can be opened.".into());
+                }
+                let directory = library::library_directory(target.directory.as_deref())
+                    .map_err(|error| error.to_string())?;
+                let socket = library::shell_socket_for_creation(&directory)
+                    .map_err(|error| error.to_string())?;
+                tmux_workspaces_tmux::shells::ensure(
+                    &socket,
+                    &[tmux_workspaces_tmux::shells::Request {
+                        id: target.leaf.id.clone(),
+                        cwd: target.leaf.cwd.as_ref().map(PathBuf::from),
+                    }],
+                    &environment,
+                )
+                .map_err(|error| error.to_string())?;
+            }
             match selected {
                 Some(window) => connect_selected(target, Some(window)),
                 None => connect(target),
@@ -234,7 +270,7 @@ impl Render for LiveTerminal {
                     .child(format!("{}: {name}", item.index))
                     .when(!self.connecting, |el| {
                         el.on_click(cx.listener(move |terminal, _, _, cx| {
-                            terminal.start_window(Some(selected.clone()), cx);
+                            terminal.start_window(Some(selected.clone()), None, cx);
                         }))
                     }),
             );
@@ -250,7 +286,7 @@ impl Render for LiveTerminal {
                 .when(!self.connecting, |el| {
                     el.on_click(cx.listener(|terminal, _, _, cx| {
                         let selected = terminal.selected_window.clone();
-                        terminal.start_window(selected, cx);
+                        terminal.start_window(selected, None, cx);
                     }))
                 }),
         );

@@ -10,7 +10,7 @@ use gpui::{
 };
 use gpui_platform::application;
 use tmux_workspaces_core::{
-    Attachment, AttachmentTarget, Direction, Layout, NameEdit, Node, RenameOutcome, Tab,
+    Attachment, AttachmentTarget, Direction, Layout, Leaf, NameEdit, Node, RenameOutcome, Tab,
 };
 use tmux_workspaces_store::Document;
 
@@ -113,6 +113,10 @@ fn open_browser(
         cx.new(|cx| {
             let mut browser = Browser {
                 source: Some(source),
+                shell_environment: Some(
+                    tmux_workspaces_tmux::shells::Environment::capture()
+                        .map_err(|error| error.to_string()),
+                ),
                 navigation: Some(cx.focus_handle()),
                 ..Browser::default()
             };
@@ -136,6 +140,7 @@ enum TabAction {
     Rename,
     Attach,
     ReturnToShell,
+    OpenTerminal,
     Split(Direction),
     Move(isize),
     Transfer(String),
@@ -199,6 +204,29 @@ impl AttachmentEdit {
         })
     }
 
+    fn propose_shell(&self, layout: &mut WindowLayout) -> Option<(Document, Layout)> {
+        let (base, mut proposed) = layout.save_snapshot();
+        let leaf = proposed
+            .tab()?
+            .tree
+            .leaves()
+            .into_iter()
+            .find(|leaf| leaf.id == self.pane)?;
+        if leaf.attachment.is_some() {
+            return None;
+        }
+        let applied = if self.empty {
+            self.displayed(&proposed) && proposed.fill_pane(&self.tab, &self.pane, None)
+        } else {
+            self.target.apply(&mut proposed, None)
+        };
+        if !applied {
+            return None;
+        }
+        let _ = layout.model_mut().retain_navigation(&proposed);
+        Some((base, proposed))
+    }
+
     fn propose(
         &self,
         layout: &mut WindowLayout,
@@ -249,6 +277,9 @@ struct Browser {
     pending_creation: Option<(Create, String)>,
     creation_from: Option<Selection>,
     tabs_scroll: gpui::ScrollHandle,
+    shell_environment: Option<Result<tmux_workspaces_tmux::shells::Environment, String>>,
+    shell_after_save: Option<Leaf>,
+    shell_to_open: Option<Leaf>,
 }
 
 impl Browser {
@@ -278,6 +309,8 @@ impl Browser {
         }
         self.editing = None;
         self.chooser = None;
+        self.shell_after_save = None;
+        self.shell_to_open = None;
         self.name_click = None;
         self.tab_menu = None;
         self.save_notice = None;
@@ -508,6 +541,7 @@ impl Browser {
                             }
                         }
                         browser.creation_from = None;
+                        browser.shell_to_open = if result.conflict { browser.shell_after_save = None; None } else { browser.shell_after_save.take() };
                         browser.start_reader(cx);
                         if result.conflict {
                             browser.save_notice = Some("The library changed. Your edit was not saved; repeat it on the latest layout to retry.".into());
@@ -532,6 +566,8 @@ impl Browser {
         self.pending_save = None;
         self.pending_creation = None;
         self.creation_from = None;
+        self.shell_after_save = None;
+        self.shell_to_open = None;
         self.save_failed = false;
         self.save_notice = None;
         self.error = None;
@@ -613,6 +649,11 @@ impl Browser {
                     self.open_attach(&pane, window, cx);
                 }
             }
+            TabAction::OpenTerminal => {
+                if let Some(pane) = layout.model().pane().map(|pane| pane.id.clone()) {
+                    self.open_terminal(&pane, window, cx);
+                }
+            }
             TabAction::Split(direction) => self.create(Create::Split(direction), window, cx),
             TabAction::Move(offset) => {
                 layout.model_mut().move_tab(offset);
@@ -647,6 +688,8 @@ impl Browser {
         if let (Some(menu), Some(layout)) = (&self.tab_menu, &self.layout) {
             if menu.shell.is_some() {
                 actions.push(("Return to shell".into(), TabAction::ReturnToShell));
+            } else {
+                actions.push(("Open terminal".into(), TabAction::OpenTerminal));
             }
             if let Some(space) = layout.model().workspace()
                 && let Some(index) = space.tabs.iter().position(|tab| tab.id == menu.tab.id)
@@ -682,6 +725,48 @@ impl Browser {
             );
         }
         options.into_any_element()
+    }
+
+    fn open_terminal(&mut self, pane: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.saving || self.save_failed {
+            return;
+        }
+        if let Some(Err(error)) = &self.shell_environment {
+            self.save_notice = Some(format!("Cannot open terminal: {error}"));
+            cx.notify();
+            return;
+        }
+        if let Some(update) = self.library.as_ref().and_then(Library::take_update) {
+            self.apply(update);
+        }
+        let Some(layout) = &mut self.layout else {
+            return;
+        };
+        if !layout
+            .model()
+            .tab()
+            .is_some_and(|tab| !layout.model().focus || tab.focus == pane)
+            || !layout.model_mut().choose_pane(pane)
+        {
+            return;
+        }
+        let Some(target) = AttachmentEdit::capture(layout.model()) else {
+            return;
+        };
+        let Some(proposal) = target.propose_shell(layout) else {
+            self.save_notice = Some("The pane changed. Choose Open terminal again.".into());
+            cx.notify();
+            return;
+        };
+        self.shell_after_save = proposal.1.pane().cloned();
+        self.pending_save = Some(proposal);
+        self.editing = None;
+        self.chooser = None;
+        self.tab_menu = None;
+        if let Some(focus) = &self.navigation {
+            window.focus(focus, cx);
+        }
+        self.save(cx);
     }
 
     fn open_attach(&mut self, pane: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -892,6 +977,13 @@ impl Browser {
                             .text_xs()
                             .px_1()
                             .child(title)
+                            .when(leaf.attachment.is_none(), |el| el.child(
+                                div().id(SharedString::from(format!("open-terminal-{}",leaf.id)))
+                                    .cursor_pointer().child("Open terminal")
+                                    .on_click(cx.listener({ let id=leaf.id.clone(); move |browser, _, window, cx| {
+                                        cx.stop_propagation(); browser.open_terminal(&id, window, cx);
+                                    }}))
+                            ))
                             .child(
                                 div()
                                     .id(SharedString::from(format!("attach-{}", leaf.id)))
@@ -933,7 +1025,7 @@ impl Browser {
                         } else {
                             div()
                                 .p_2()
-                                .child("Choose Attach session to fill this empty pane.")
+                                .child("Choose Open terminal or Attach session to fill this empty pane.")
                                 .into_any_element()
                         },
                     ))
@@ -1052,6 +1144,24 @@ impl Render for Browser {
                     cx.new(|cx| LiveTerminal::new(target, selected, cx)),
                 );
             }
+        }
+        if let Some(request) = self.shell_to_open.take()
+            && let Some(layout) = &self.layout
+            && let Some(tab) = layout.model().tab()
+            && (!layout.model().focus || tab.focus == request.id)
+            && let Some(leaf) = tab
+                .tree
+                .leaves()
+                .into_iter()
+                .find(|leaf| leaf.id == request.id && !leaf.empty && leaf.attachment.is_none())
+            && let Some(terminal) = self.terminals.get(&request.id)
+            && let Some(Ok(environment)) = &self.shell_environment
+        {
+            let environment = environment.clone();
+            let leaf = leaf.clone();
+            terminal.update(cx, |terminal, cx| {
+                terminal.open_shell(leaf, environment, cx)
+            });
         }
         let mut tabs = div()
             .id("tabs")
@@ -1562,6 +1672,35 @@ mod tests {
             menu.apply(&mut model, attachment),
             "safe refreshed changes to another pane remain valid"
         );
+    }
+
+    #[test]
+    fn ordinary_shell_proposals_keep_the_empty_pane_until_saved_and_reject_stale_targets() {
+        let path = std::path::Path::new("layouts.db");
+        let raw = r#"{"version":2,"workspaces":[{"id":"000000000001","name":"Workspace","tabs":[{"id":"000000000002","name":"Tab","tree":{"id":"000000000003","agent":null,"empty":true,"cwd":"/tmp"},"focus":"000000000003"}],"selected":"000000000002"}],"selected":"000000000001","focus":false}"#;
+        let mut window = WindowLayout::new(Document::parse(raw.into(), path).unwrap());
+        let destination = AttachmentEdit::capture(window.model()).unwrap();
+        let before = window.model().pane().unwrap().clone();
+        let (_, proposed) = destination.propose_shell(&mut window).unwrap();
+        assert_eq!(window.model().pane(), Some(&before));
+        let ordinary = proposed.pane().unwrap();
+        assert!(!ordinary.empty);
+        assert!(ordinary.attachment.is_none());
+        assert_eq!(ordinary.id, before.id);
+        assert_eq!(ordinary.cwd, before.cwd);
+        window.model_mut().open_terminal();
+        assert!(destination.propose_shell(&mut window).is_none());
+        let ordinary = AttachmentEdit::capture(window.model()).unwrap();
+        assert!(ordinary.propose_shell(&mut window).is_some());
+        window.model_mut().attach(Some(Attachment {
+            session: "external".into(),
+            source_socket: Some("/fixture/source".into()),
+        }));
+        assert!(ordinary.propose_shell(&mut window).is_none());
+        let external = AttachmentEdit::capture(window.model()).unwrap();
+        assert!(external.propose_shell(&mut window).is_none());
+        window.model_mut().add_tab(None, "/tmp".into(), true);
+        assert!(destination.propose_shell(&mut window).is_none());
     }
 
     #[test]
