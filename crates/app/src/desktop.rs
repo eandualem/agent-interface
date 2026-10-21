@@ -20,6 +20,7 @@ mod layout_edit;
 mod name;
 use chooser::{Choice, SessionChooser};
 use layout_edit::{Create, Selection};
+mod split_resize;
 mod terminal;
 mod workspace;
 use name::{NameEvent, NameField};
@@ -281,6 +282,9 @@ struct Browser {
     shell_environment: Option<Result<tmux_workspaces_tmux::shells::Environment, String>>,
     shell_after_save: Option<Leaf>,
     shell_to_open: Option<Leaf>,
+    resize: Option<split_resize::Drag>,
+    split_bounds: Rc<RefCell<HashMap<String, Bounds<gpui::Pixels>>>>,
+    resize_activation: Option<gpui::Subscription>,
 }
 
 impl Browser {
@@ -312,6 +316,7 @@ impl Browser {
         self.chooser = None;
         self.shell_after_save = None;
         self.shell_to_open = None;
+        self.resize = None;
         self.name_click = None;
         self.tab_menu = None;
         self.save_notice = None;
@@ -625,6 +630,7 @@ impl Browser {
         self.creation_from = None;
         self.shell_after_save = None;
         self.shell_to_open = None;
+        self.resize = None;
         self.save_failed = false;
         self.save_notice = None;
         self.error = None;
@@ -998,11 +1004,101 @@ impl Browser {
         .detach();
     }
 
+    fn begin_resize(
+        &mut self,
+        split: &str,
+        position: gpui::Point<gpui::Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.saving || self.save_failed {
+            return;
+        }
+        if let Some(update) = self.library.as_ref().and_then(Library::take_update) {
+            self.apply(update);
+        }
+        self.resize = self.layout.as_ref().and_then(|layout| {
+            let bounds = *self.split_bounds.borrow().get(split)?;
+            split_resize::Drag::begin(layout.model(), split, bounds, position)
+        });
+        if self.resize.is_some() {
+            self.editing = None;
+            self.chooser = None;
+            self.tab_menu = None;
+            self.workspace_menu = false;
+            if let Some(focus) = &self.navigation {
+                window.focus(focus, cx);
+            }
+            cx.stop_propagation();
+            cx.notify();
+        }
+    }
+
+    fn resize_motion(
+        &mut self,
+        event: &gpui::MouseMoveEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(drag) = &mut self.resize else {
+            return;
+        };
+        if !drag.dragging {
+            return;
+        }
+        if event.dragging()
+            && self
+                .layout
+                .as_ref()
+                .is_some_and(|layout| drag.valid(layout.model()))
+            && self.split_bounds.borrow().get(&drag.split) == Some(&drag.bounds)
+        {
+            drag.motion(event.position);
+        } else {
+            self.resize = None;
+        }
+        cx.stop_propagation();
+        cx.notify();
+    }
+
+    fn finish_resize(
+        &mut self,
+        event: &gpui::MouseUpEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if event.button != gpui::MouseButton::Left {
+            return;
+        }
+        let Some(drag) = &mut self.resize else {
+            return;
+        };
+        if !drag.dragging {
+            return;
+        }
+        drag.dragging = false;
+        drag.motion(event.position);
+        let proposal = self.layout.as_ref().and_then(|layout| {
+            (self.split_bounds.borrow().get(&drag.split) == Some(&drag.bounds))
+                .then(|| drag.proposal(layout))
+                .flatten()
+        });
+        if let Some(proposal) = proposal {
+            self.pending_save = Some(proposal);
+            self.save(cx);
+        } else {
+            self.resize = None;
+        }
+        cx.stop_propagation();
+        cx.notify();
+    }
+
     fn tree(
         node: &Node,
         focus: &str,
         terminals: &HashMap<String, gpui::Entity<LiveTerminal>>,
         chooser: Option<&Attaching>,
+        split_bounds: &Rc<RefCell<HashMap<String, Bounds<gpui::Pixels>>>>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         match node {
@@ -1099,12 +1195,14 @@ impl Browser {
                     .into_any_element()
             }
             Node::Split {
+                id,
                 direction,
                 ratio,
                 first,
                 second,
                 ..
             } => div()
+                .relative()
                 .size_full()
                 .min_w_0()
                 .min_h_0()
@@ -1118,7 +1216,40 @@ impl Browser {
                         .min_w_0()
                         .min_h_0()
                         .overflow_hidden()
-                        .child(Self::tree(first, focus, terminals, chooser, cx)),
+                        .child(Self::tree(
+                            first,
+                            focus,
+                            terminals,
+                            chooser,
+                            split_bounds,
+                            cx,
+                        )),
+                )
+                .child(
+                    div()
+                        .id(SharedString::from(format!("divider-{id}")))
+                        .flex_shrink_0()
+                        .bg(rgb(0x303b4d))
+                        .hover(|el| el.bg(rgb(0x627a9c)))
+                        .when(*direction == Direction::Right, |el| {
+                            el.w(px(split_resize::DIVIDER))
+                                .h_full()
+                                .cursor(gpui::CursorStyle::ResizeLeftRight)
+                        })
+                        .when(*direction == Direction::Below, |el| {
+                            el.h(px(split_resize::DIVIDER))
+                                .w_full()
+                                .cursor(gpui::CursorStyle::ResizeUpDown)
+                        })
+                        .on_mouse_down(
+                            gpui::MouseButton::Left,
+                            cx.listener({
+                                let id = id.clone();
+                                move |browser, event: &gpui::MouseDownEvent, window, cx| {
+                                    browser.begin_resize(&id, event.position, window, cx);
+                                }
+                            }),
+                        ),
                 )
                 .child(
                     div()
@@ -1127,7 +1258,25 @@ impl Browser {
                         .min_w_0()
                         .min_h_0()
                         .overflow_hidden()
-                        .child(Self::tree(second, focus, terminals, chooser, cx)),
+                        .child(Self::tree(
+                            second,
+                            focus,
+                            terminals,
+                            chooser,
+                            split_bounds,
+                            cx,
+                        )),
+                )
+                .child(
+                    gpui::canvas(|_, _, _| (), {
+                        let id = id.clone();
+                        let bounds = Rc::clone(split_bounds);
+                        move |area, (), _, _| {
+                            bounds.borrow_mut().insert(id.clone(), area);
+                        }
+                    })
+                    .absolute()
+                    .size_full(),
                 )
                 .into_any_element(),
         }
@@ -1136,6 +1285,28 @@ impl Browser {
 
 impl Render for Browser {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.resize_activation.is_none() {
+            self.resize_activation =
+                Some(cx.observe_window_activation(window, |browser, window, cx| {
+                    if !window.is_window_active()
+                        && browser.resize.as_ref().is_some_and(|drag| drag.dragging)
+                    {
+                        browser.resize = None;
+                        cx.notify();
+                    }
+                }));
+        }
+        if self.resize.as_ref().is_some_and(|drag| {
+            !self
+                .layout
+                .as_ref()
+                .is_some_and(|layout| drag.valid(layout.model()))
+        }) {
+            self.resize = None;
+        }
+        self.split_bounds.borrow_mut().clear();
+        let resize_motion = cx.listener(Self::resize_motion);
+        let resize_end = cx.listener(Self::finish_resize);
         if self.chooser.as_ref().is_some_and(|chooser| {
             !self
                 .layout
@@ -1418,10 +1589,13 @@ impl Render for Browser {
                     None
                 };
                 content = content.child(Self::tree(
-                    tree.as_ref().unwrap_or(&tab.tree),
+                    tree.as_ref()
+                        .or_else(|| self.resize.as_ref().map(split_resize::Drag::tree))
+                        .unwrap_or(&tab.tree),
                     &tab.focus,
                     &self.terminals,
                     self.chooser.as_ref(),
+                    &self.split_bounds,
                     cx,
                 ));
             }
@@ -1547,15 +1721,47 @@ impl Render for Browser {
                     .on_click(cx.listener(|browser, _, _, cx| browser.pick_library(cx))),
             );
         div()
+            .relative()
             .size_full()
             .flex()
             .flex_col()
+            .child(
+                gpui::canvas(
+                    |_, _, _| (),
+                    move |_, (), window, _| {
+                        window.on_mouse_event(
+                            move |event: &gpui::MouseMoveEvent, phase, window, cx| {
+                                if phase == gpui::DispatchPhase::Capture {
+                                    resize_motion(event, window, cx);
+                                }
+                            },
+                        );
+                        window.on_mouse_event(
+                            move |event: &gpui::MouseUpEvent, phase, window, cx| {
+                                if phase == gpui::DispatchPhase::Capture {
+                                    resize_end(event, window, cx);
+                                }
+                            },
+                        );
+                    },
+                )
+                .absolute()
+                .size_full(),
+            )
             .bg(rgb(0x101620))
             .text_color(rgb(0xe2e9f3))
             .font_family(Arc::<str>::from(".SystemUIFont"))
             .when_some(self.navigation.clone(), |el, focus| el.track_focus(&focus))
             .capture_key_down(
                 cx.listener(|browser, event: &gpui::KeyDownEvent, window, cx| {
+                    if browser.resize.as_ref().is_some_and(|drag| drag.dragging) {
+                        browser.resize = None;
+                        cx.notify();
+                        if event.keystroke.key == "escape" {
+                            cx.stop_propagation();
+                            return;
+                        }
+                    }
                     if browser.editing.is_some() {
                         return;
                     }
