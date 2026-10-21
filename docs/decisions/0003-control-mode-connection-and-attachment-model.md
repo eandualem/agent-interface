@@ -153,6 +153,10 @@ superseding record.
 
 ## Evidence
 
+The control-mode decoder uses `memchr` (locked to 2.8.3,
+Unlicense OR MIT) to find line endings and octal escape introducers without
+scanning ordinary output one byte at a time. Parsing and error rules are unchanged.
+
 - [Decisions that materially change the architecture](../research/tmux-control-mode.md#decisions-that-materially-change-the-architecture)
   and [existing shell-server compatibility](../research/tmux-control-mode.md#existing-shell-server-compatibility).
 - [Process lifetime, transport and protocol](../research/tmux-control-mode.md#process-lifetime-transport-and-protocol),
