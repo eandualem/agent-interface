@@ -1,4 +1,4 @@
-//! Read-only session discovery on one explicit tmux socket.
+//! Bounded read-only session discovery and attachment policy on an explicit socket.
 
 use std::io::{self, Read};
 use std::os::fd::OwnedFd;
@@ -22,8 +22,104 @@ const CAPTURE_LIMIT: usize = 1024 * 1024;
 /// Call this on the app's worker, not its UI thread. Failed reads must replace
 /// previous availability; cached names are not evidence that sessions are online.
 pub fn read_sessions(socket: &Path) -> io::Result<Vec<String>> {
-    if !socket.is_absolute() {
+    let mut command = command(socket).ok_or_else(unavailable)?;
+    command.args([
+        "list-sessions",
+        "-f",
+        "#{!=:#{@tmux_workspaces_attachment},1}",
+        "-F",
+        "#{session_name}",
+    ]);
+    let output = capture(command, TIMEOUT).map_err(|_| unavailable())?;
+    let stdout = std::str::from_utf8(&output.stdout).map_err(|_| unavailable())?;
+    let stderr = std::str::from_utf8(&output.stderr).map_err(|_| unavailable())?;
+    if !output.status.success() {
+        return if !socket.try_exists().map_err(|_| unavailable())?
+            || stderr.contains("no server running")
+        {
+            Ok(Vec::new())
+        } else {
+            Err(unavailable())
+        };
+    }
+    Ok(names(stdout))
+}
+
+/// A read-only attachment decision for a session on the queried server.
+/// IDs belong to that server incarnation, not to a reusable session name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AttachmentPolicy {
+    /// Numeric part of tmux's `$N` session ID.
+    pub session_id: u32,
+    /// Numeric part of the source's current `@N` window ID.
+    pub window_id: u32,
+    /// PID of the tmux server that supplied these IDs.
+    pub server_pid: u32,
+    /// Only an explicit `destroy-unattached=off` permits grouping. All other
+    /// values, including unknown policies, require direct attachment.
+    pub may_group: bool,
+}
+
+/// Resolve an exact raw session name and its effective attachment policy.
+///
+/// This bounded read starts no server, attaches no client and changes no options.
+/// The format includes inherited `destroy-unattached` values. Call on a worker
+/// with an absolute socket. Missing sessions or malformed replies return a fixed
+/// diagnostic, never a guessed identity or permission to group. This is a
+/// snapshot: attachment code must revalidate the identity and policy before any
+/// lifecycle operation. A later session reusing the name is a different target.
+pub fn read_attachment_policy(socket: &Path, session: &str) -> io::Result<AttachmentPolicy> {
+    let unavailable = || io::Error::other("Attachment policy unavailable");
+    if names(session).as_slice() != [session] {
         return Err(unavailable());
+    }
+    let mut command = command(socket).ok_or_else(unavailable)?;
+    command.args([
+        "display-message",
+        "-p",
+        "-t",
+        &format!("={session}:"),
+        "#{session_id}|#{window_id}|#{pid}|#{destroy-unattached}",
+    ]);
+    let output = capture(command, TIMEOUT).map_err(|_| unavailable())?;
+    if !output.status.success() {
+        return Err(unavailable());
+    }
+    let output = std::str::from_utf8(&output.stdout).map_err(|_| unavailable())?;
+    policy(output.strip_suffix('\n').ok_or_else(unavailable)?).ok_or_else(unavailable)
+}
+
+fn policy(line: &str) -> Option<AttachmentPolicy> {
+    if line.contains('\n') || line.contains('\r') {
+        return None;
+    }
+    fn number(value: &str) -> Option<u32> {
+        value
+            .bytes()
+            .all(|b| b.is_ascii_digit())
+            .then(|| value.parse().ok())
+            .flatten()
+    }
+    let mut fields = line.split('|');
+    let session_id = number(fields.next()?.strip_prefix('$')?)?;
+    let window_id = number(fields.next()?.strip_prefix('@')?)?;
+    let server_pid = number(fields.next()?)?;
+    let may_group = fields.next()? == "off";
+    if server_pid == 0 || fields.next().is_some() {
+        return None;
+    }
+    Some(AttachmentPolicy {
+        session_id,
+        window_id,
+        server_pid,
+        may_group,
+    })
+}
+
+/// Both queries use the same isolated, non-starting client and bounded capture.
+fn command(socket: &Path) -> Option<Command> {
+    if !socket.is_absolute() {
+        return None;
     }
     let mut command = Command::new("tmux");
     command
@@ -48,29 +144,10 @@ pub fn read_sessions(socket: &Path) -> io::Result<Vec<String>> {
         }))
         // -S is authoritative. Also keep temporary socket state in this explicit
         // namespace; fixture callers supply an existing private parent directory.
-        .env("TMUX_TMPDIR", socket.parent().ok_or_else(unavailable)?)
+        .env("TMUX_TMPDIR", socket.parent()?)
         .args(["-N", "-S"])
-        .arg(socket)
-        .args([
-            "list-sessions",
-            "-f",
-            "#{!=:#{@tmux_workspaces_attachment},1}",
-            "-F",
-            "#{session_name}",
-        ]);
-    let output = capture(command, TIMEOUT).map_err(|_| unavailable())?;
-    let stdout = std::str::from_utf8(&output.stdout).map_err(|_| unavailable())?;
-    let stderr = std::str::from_utf8(&output.stderr).map_err(|_| unavailable())?;
-    if !output.status.success() {
-        return if !socket.try_exists().map_err(|_| unavailable())?
-            || stderr.contains("no server running")
-        {
-            Ok(Vec::new())
-        } else {
-            Err(unavailable())
-        };
-    }
-    Ok(names(stdout))
+        .arg(socket);
+    Some(command)
 }
 
 fn unavailable() -> io::Error {
@@ -225,6 +302,87 @@ mod tests {
             names(" a \n=leading\ncafé\nbad:target\nbad\tname\n\u{a0}\n"),
             [" a ", "=leading", "café"]
         );
+    }
+
+    #[test]
+    fn attachment_policy_reads_inherited_values_without_changing_the_source() {
+        let server = TmuxServer::start().unwrap();
+        let socket = server
+            .run(&["display-message", "-p", "#{socket_path}"])
+            .unwrap();
+        let socket = Path::new(socket.trim_end());
+        let original = read_attachment_policy(socket, TmuxServer::SESSION).unwrap();
+        assert!(original.may_group);
+        let mut owner = server
+            .control(&[
+                "attach-session",
+                "-f",
+                "read-only,ignore-size",
+                "-t",
+                TmuxServer::SESSION,
+            ])
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while server.run(&["list-clients"]).unwrap().is_empty() {
+            assert!(Instant::now() < deadline, "fixture client did not attach");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        // An owned client keeps the fixture alive while automatic destruction is on.
+        server
+            .run(&["set-option", "-g", "destroy-unattached", "on"])
+            .unwrap();
+        let options = server.run(&["show-options", "-g"]).unwrap();
+        let sessions = server
+            .run(&["list-sessions", "-F", "#{session_id}"])
+            .unwrap();
+        let clients = server
+            .run(&["list-clients", "-F", "#{client_pid}"])
+            .unwrap();
+        let direct = read_attachment_policy(socket, TmuxServer::SESSION).unwrap();
+        assert_eq!(
+            direct,
+            AttachmentPolicy {
+                may_group: false,
+                ..original
+            }
+        );
+        assert_eq!(server.run(&["show-options", "-g"]).unwrap(), options);
+        assert_eq!(
+            server
+                .run(&["list-sessions", "-F", "#{session_id}"])
+                .unwrap(),
+            sessions
+        );
+        assert_eq!(
+            server
+                .run(&["list-clients", "-F", "#{client_pid}"])
+                .unwrap(),
+            clients
+        );
+        server
+            .run(&[
+                "set-option",
+                "-t",
+                TmuxServer::SESSION,
+                "destroy-unattached",
+                "off",
+            ])
+            .unwrap();
+        assert_eq!(
+            read_attachment_policy(socket, TmuxServer::SESSION).unwrap(),
+            original
+        );
+        assert!(read_attachment_policy(socket, "fixt").is_err());
+        let missing = server.address().0.join("missing.sock");
+        assert!(read_attachment_policy(&missing, TmuxServer::SESSION).is_err());
+        assert!(!missing.exists());
+        assert!(!policy("$0|@0|123|future-policy").unwrap().may_group);
+        assert!(!policy("$0|@0|123|").unwrap().may_group);
+        assert!(policy("$+0|@0|123|off").is_none());
+        assert!(policy("$0|@0|123|off\nextra").is_none());
+        assert!(policy("$0|@0|0|off").is_none());
+        drop(owner.stdin.take());
+        assert!(owner.wait().unwrap().success());
     }
 
     #[test]
