@@ -292,7 +292,8 @@ Bundled SQLite otherwise enables foreign keys by default, allowing
 `REPLACE` to cascade deletions into unrelated extension tables. Journal mode and
 older table records remain unchanged. There is no initialization or legacy import.
 
-The app continues using `Store::open` read-only until editing is integrated.
+The app uses `Store::open` for polling and the explicit existing-library writer
+for native renames ([0027](0027-native-name-editing.md)).
 The storage gate is satisfied for already initialized version-2 libraries:
 the merge differential tests, mixed-process fixtures and agreed refusal of
 initialization and legacy import cover this bounded path. Use the Python tool

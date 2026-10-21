@@ -24,8 +24,8 @@ reports pane output and events to a program instead of drawing a screen. The app
 draws every terminal pane itself on the GPU, handles keys and mouse natively,
 and keeps each pane's terminal state in memory. It reads the same library
 (`layouts.db`, schema version 2) and attaches to the same shell server as the
-Python tool, so one library opens in both. It writes that library only after it
-implements the same merge and conflict rules.
+Python tool, so one library opens in both. Native renames use the same merge and
+conflict rules when saving to an existing version-2 library.
 
 ## Words used here
 
@@ -70,8 +70,9 @@ Decision values:
 The core model supports in-memory creation, splitting, attachment changes and
 closing records. The native sidebar selects saved workspaces and tabs and displays existing tmux
 sessions inside their saved split layouts. Clicked terminals accept typed keys.
-Editing controls, persistence, shell creation and complete terminal interaction
-remain pending; the connected window does not yet complete these workflows.
+Native workspace/tab renames save through the shared conflict rules. Other editing
+controls, shell creation and complete terminal interaction remain pending; the
+connected window does not yet complete these workflows.
 
 | # | Behaviour (Python tool) | Source | Decision | Notes | Status |
 | --- | --- | --- | --- | --- | --- |
@@ -166,10 +167,10 @@ remain pending; the connected window does not yet complete these workflows.
 
 ## Persistence, concurrent windows and conflict handling
 
-The read-only model/store implements the schema checks below and exposes a
-change token. Storage polling and per-window refresh state are implemented;
-product windows and database writes remain pending. These rows do not yet
-describe a usable app workflow.
+The model/store implements the schema checks below, change tokens and transactional
+saving to existing version-2 libraries. Native windows poll shared changes and
+save renames with conflict handling. Other editing workflows, library creation
+and desktop acceptance remain pending.
 
 Data compatibility lives here. The Rust app reads the same library as the Python
 tool. It writes that library only after PE-15 is in place.

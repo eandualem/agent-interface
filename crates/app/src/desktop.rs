@@ -384,6 +384,9 @@ impl Browser {
                     .cursor_pointer()
                     .text_xs()
                     .child("Save name")
+                    .on_mouse_down(gpui::MouseButton::Left, |_, window, _| {
+                        window.prevent_default()
+                    })
                     .on_click(cx.listener(|browser, _, window, cx| {
                         cx.stop_propagation();
                         browser.submit_name(window, cx);
