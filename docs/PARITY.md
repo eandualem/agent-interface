@@ -80,7 +80,7 @@ connected window does not yet complete these workflows.
 | WS-2 | Tabs are only created by the user. Nothing is populated from the agent roster, and the session list is only an attachment chooser, never a source of tabs. | [GUIDE][g-organize], [GUIDE][g-attach] | Keep | | In progress |
 | WS-3 | A new workspace starts empty, with no tabs; the user adds its first tab with new tab. | [GUIDE][g-organize], [SHORTCUTS][sc-ws] | Keep | | In progress |
 | WS-4 | Upgrading keeps existing saved names, tabs and attachments; the tool never deletes earlier arrangements. | [GUIDE][g-organize] | Keep | Also applies between the two tools: opening a library in the Rust app must not drop anything the Python tool saved. | Not started |
-| WS-5 | The **+** on the TABS row and the new-tab shortcut create a tab whose only pane starts as the new-pane chooser (see CH-1). | [GUIDE][g-organize], [README][rd-first] | Keep | | In progress |
+| WS-5 | The **+** on the TABS row and the new-tab shortcut create a tab whose only pane starts as the new-pane chooser (see CH-1). | [GUIDE][g-organize], [README][rd-first] | Keep | | In progress: native + and Command-T save an empty tab before display; full chooser and desktop acceptance pending. |
 | WS-6 | Names belong to the user: attaching a session never renames a tab, and renaming a tab or workspace never renames an attached session or ends a shell. | [GUIDE][g-organize], [INLINE_RENAME][ir-use] | Keep | | In progress: native renames save through the shared conflict rules without changing sessions; desktop acceptance pending. |
 | WS-7 | **Rename tab** is the first item in the tab menu. The rename form saves with **Save name** or Enter, and `Ctrl-u` clears the field. | [GUIDE][g-organize], [SHORTCUTS][sc-right] | Keep | | In progress: Rename tab is first in native tab options; Save name, Enter and Ctrl-U implemented; desktop acceptance pending. |
 | WS-8 | Rename fields open with the existing name selected, so typing replaces it. | [GUIDE][g-keys], [SHORTCUTS][sc-right] | Keep | | In progress: native field starts with the existing name selected; desktop acceptance pending. |
@@ -103,15 +103,15 @@ connected window does not yet complete these workflows.
 | WS-25 | The tab menu holds Rename tab, Split right, Split below, Focus one pane or Restore layout, pane cycling, Attach session, Return to shell, reordering, moving to another workspace, and closing panes and tabs. | [SHORTCUTS][sc-right], [GUIDE][g-split], [GUIDE][g-attach] | Keep | | In progress: native options include renaming, reordering and moving between workspaces; other menu actions pending. |
 | WS-26 | The tab menu reorders tabs and moves a tab to another workspace; these need no shortcut of their own. | [GUIDE][g-ws], [SHORTCUTS][sc-cover] | Keep | The menu path stays even if drag and drop is added later. | In progress: native tab options save reorder and transfer operations; desktop acceptance pending. |
 | WS-27 | **Close tab** closes the whole tab and ends its ordinary shells; attached external sessions keep running. | [GUIDE][g-settings], [SHORTCUTS][sc-tabs] | Keep | Keys are KB-20. Process rules are SH-12. | In progress |
-| WS-28 | Every new tab gets a neutral random name, **Tab** followed by four hexadecimal characters, unless the user supplies one. | [INITIAL_TASK][it-req], [ACCEPTANCE][ac-checks] | Keep | | In progress |
+| WS-28 | Every new tab gets a neutral random name, **Tab** followed by four hexadecimal characters, unless the user supplies one. | [INITIAL_TASK][it-req], [ACCEPTANCE][ac-checks] | Keep | | In progress: native new tabs use the model’s random neutral name; desktop acceptance pending. |
 
 ## Splits, focus and layout
 
 | # | Behaviour (Python tool) | Source | Decision | Notes | Status |
 | --- | --- | --- | --- | --- | --- |
-| SP-1 | **Split right** adds a pane beside the selected one, with a vertical divider. **Split below** adds one under it, with a horizontal divider. | [GUIDE][g-split], [SHORTCUTS][sc-tabs] | Keep | Keys are KB-3 and KB-4. | In progress |
-| SP-2 | Both splits are in the tab menu and on shortcuts. | [GUIDE][g-split] | Keep | | Not started |
-| SP-3 | A new split opens as the new-pane chooser. A terminal chosen there starts in the working directory of the shell it was split from. | [GUIDE][g-split], [README][rd-first], [ARCHITECTURE][ar-modules] | Keep | Read the source pane's current directory from tmux on the shell server. | Not started |
+| SP-1 | **Split right** adds a pane beside the selected one, with a vertical divider. **Split below** adds one under it, with a horizontal divider. | [GUIDE][g-split], [SHORTCUTS][sc-tabs] | Keep | Keys are KB-3 and KB-4. | In progress: native saved right/below splits retain the existing leaf and add an empty pane; desktop acceptance pending. |
+| SP-2 | Both splits are in the tab menu and on shortcuts. | [GUIDE][g-split] | Keep | | In progress: native tab options and Command-D/Command-Shift-D; desktop acceptance pending. |
+| SP-3 | A new split opens as the new-pane chooser. A terminal chosen there starts in the working directory of the shell it was split from. | [GUIDE][g-split], [README][rd-first], [ARCHITECTURE][ar-modules] | Keep | Read the source pane's current directory from tmux on the shell server. | In progress: native split inherits refreshed ordinary or parked shell cwd; new pane can attach existing sessions. Ordinary-shell creation and desktop acceptance pending. |
 | SP-4 | One tab can hold several panes; a four-pane tab is a normal, tested case. | [GUIDE][g-split], [ACCEPTANCE][ac-checks] | Keep | | In progress: pure cell geometry and focused-pane fallback implemented; product rendering pending. |
 | SP-5 | Clicking a pane selects it, and typing goes there. | [GUIDE][g-split] | Keep | | In progress: model pane selection and measured split ratios implemented; native controls and input handoff pending. |
 | SP-6 | Dragging the separator between two panes resizes the split; the navigation panel keeps its width. | [GUIDE][g-split], [GUIDE][g-resize] | Keep | | In progress: model pane selection and measured split ratios implemented; native controls and input handoff pending. |
@@ -419,9 +419,9 @@ Prefix keys are pressed after `Ctrl-g`. Direct keys are written in
 | # | Behaviour (Python tool) | Source | Decision | Notes | Status |
 | --- | --- | --- | --- | --- | --- |
 | KB-1 | The prefix is `Ctrl-g` (`prefix = "C-g"`). | [keymap.toml][km], [README][rd-keys] | Keep | | Not started |
-| KB-2 | `new-tab`: prefix `t` or `c`; direct `Command-T`. Opens a new tab as a chooser. | [keymap.toml][km], [SHORTCUTS][sc-tabs], [GUIDE][g-keys] | Keep | | Not started |
-| KB-3 | `split-right`: prefix `v` or `%`; direct `Command-D`. | [keymap.toml][km], [SHORTCUTS][sc-tabs], [GUIDE][g-keys] | Keep | | Not started |
-| KB-4 | `split-below`: prefix `h` or `"`; direct `Command-Shift-D`. | [keymap.toml][km], [SHORTCUTS][sc-tabs], [GUIDE][g-keys] | Keep | | Not started |
+| KB-2 | `new-tab`: prefix `t` or `c`; direct `Command-T`. Opens a new tab as a chooser. | [keymap.toml][km], [SHORTCUTS][sc-tabs], [GUIDE][g-keys] | Keep | | In progress: native Command-T; prefix bindings and desktop acceptance pending. |
+| KB-3 | `split-right`: prefix `v` or `%`; direct `Command-D`. | [keymap.toml][km], [SHORTCUTS][sc-tabs], [GUIDE][g-keys] | Keep | | In progress: native Command-D; prefix bindings and desktop acceptance pending. |
+| KB-4 | `split-below`: prefix `h` or `"`; direct `Command-Shift-D`. | [keymap.toml][km], [SHORTCUTS][sc-tabs], [GUIDE][g-keys] | Keep | | In progress: native Command-Shift-D; prefix bindings and desktop acceptance pending. |
 | KB-5 | `attach`: prefix `a`; direct `Command-Shift-A`. Attaches a session to the focused pane. | [keymap.toml][km], [SHORTCUTS][sc-ws] | Keep | | In progress: direct Command-Shift-A opens native attachment selection; prefix binding and desktop acceptance pending. |
 | KB-6 | `rename-tab`: prefix `r`; direct `Command-R`. | [keymap.toml][km], [SHORTCUTS][sc-tabs] | Keep | | In progress: direct Command-R opens native rename; prefix binding and desktop acceptance pending. |
 | KB-7 | `tab-options`: prefix `m`; no direct key. | [keymap.toml][km], [GUIDE][g-keys] | Keep | | Not started |
