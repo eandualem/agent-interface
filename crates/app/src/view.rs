@@ -650,6 +650,8 @@ impl TerminalView {
         );
         drop(grid);
         if let Some(pointer) = pointer {
+            self.input = Some(pane);
+            window.focus(&self.focus, cx);
             self.mouse_down(pane, mouse_button(event.button).unwrap(), pointer, cx);
         }
     }
@@ -712,6 +714,12 @@ impl Render for TerminalView {
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::key_down))
             .on_mouse_move(cx.listener(Self::hover_mouse))
+            .on_modifiers_changed(cx.listener(|view, _: &gpui::ModifiersChangedEvent, _, _| {
+                // macOS remaps Control-left down/up independently, clearing the
+                // modifier in each event. End an accepted gesture before that
+                // mapping can change its release identity.
+                if cfg!(target_os = "macos") { view.release_mouse(); }
+            }))
             .on_scroll_wheel(cx.listener(|view, event: &gpui::ScrollWheelEvent, window, cx| {
                 let previous_gesture = view.wheel_gesture.id();
                 let gesture = matches!(event.delta, gpui::ScrollDelta::Pixels(_))
