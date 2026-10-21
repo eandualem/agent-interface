@@ -8,6 +8,8 @@
 //! version. Every server is private, through `tmux-workspaces-test-support`.
 
 mod candidate;
+#[cfg(test)]
+mod coexistence;
 mod compare;
 mod connection;
 mod fixtures;
