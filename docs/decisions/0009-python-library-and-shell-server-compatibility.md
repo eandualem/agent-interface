@@ -294,8 +294,10 @@ older table records remain unchanged. There is no initialization or legacy impor
 
 The app continues using `Store::open` read-only. This candidate is not wired into
 product editing, and the broader write gate above remains in force. The first
-mixed-process fixtures cover independent renames and conflicting renames with
-explicit retry, with Python and Rust each committing first. Both processes load
+mixed-process fixtures cover independent renames, additions and split edits;
+conflicting renames, splits, moves, reorders and stale deletion; tab moves and
+navigation fallback after workspace removal. Conflicts are retried explicitly,
+with Python and Rust each committing first. Both processes load
 before either saves; reopening in both validates the final record. To run against
 a clean checkout of the pinned Python reference:
 
@@ -305,9 +307,10 @@ python3 crates/store/tests/mixed_writers.py /path/to/tmux-workspaces
 
 The script requires Python 3.11+, Cargo and rustc. It creates only temporary
 synthetic databases, never starts tmux, and does not modify the reference checkout.
-Rust tests also exercise malformed/missing current rows, schema changes and
-commit failure under a retained reader lock. Concurrent structural edits and the
-remaining write-gate cases still need mixed-process coverage before activation.
+Rust tests also exercise empty/legacy-only refusal, malformed/missing current rows
+beside valid legacy data, schema changes, oversized local and merged edits, and
+commit failure under a retained reader lock. These bounded compatibility
+checks do not establish the full write gate or enable product editing.
 
 ## Saved split geometry
 

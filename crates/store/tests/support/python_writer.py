@@ -29,6 +29,10 @@ with closing(Store(root)) as store:
         op = command["op"]
         if op == "quit":
             break
+        if op == "state":
+            model.state = command["state"]
+            emit("edited")
+            continue
         if op in ("workspace_name", "tab_name"):
             items = model.state["workspaces"]
             if op == "tab_name":
