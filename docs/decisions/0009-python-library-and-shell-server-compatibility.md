@@ -276,7 +276,7 @@ Reconciliation preserves JSON values, but may normalize numeric spellings and
 formatting. It performs no persistence. The transactional checks, mixed-writer
 tests, migration agreement and write gate above remain outstanding.
 
-## Existing-library save candidate
+## Verified existing-library saving
 
 `Store::open_existing_writable` opens an already initialized version-2 library
 without SQLite's create flag. It refuses missing tables/rows, malformed current
@@ -292,9 +292,13 @@ Bundled SQLite otherwise enables foreign keys by default, allowing
 `REPLACE` to cascade deletions into unrelated extension tables. Journal mode and
 older table records remain unchanged. There is no initialization or legacy import.
 
-The app continues using `Store::open` read-only. This candidate is not wired into
-product editing, and the broader write gate above remains in force. The first
-mixed-process fixtures cover independent renames, additions and split edits;
+The app continues using `Store::open` read-only until editing is integrated.
+The storage gate is satisfied for already initialized version-2 libraries:
+the merge differential tests, mixed-process fixtures and agreed refusal of
+initialization and legacy import cover this bounded path. Use the Python tool
+to initialize a library or import older tables. An importer would require its
+own compatibility evidence; it is not a prerequisite for saving an existing
+version-2 row. The mixed-process fixtures cover independent renames, additions and split edits;
 conflicting renames, splits, moves, reorders and stale deletion; tab moves and
 navigation fallback after workspace removal. Conflicts are retried explicitly,
 with Python and Rust each committing first. Both processes load
@@ -309,8 +313,10 @@ The script requires Python 3.11+, Cargo and rustc. It creates only temporary
 synthetic databases, never starts tmux, and does not modify the reference checkout.
 Rust tests also exercise empty/legacy-only refusal, malformed/missing current rows
 beside valid legacy data, schema changes, oversized local and merged edits, and
-commit failure under a retained reader lock. These bounded compatibility
-checks do not establish the full write gate or enable product editing.
+commit failure under a retained reader lock. Product integration must apply save
+and conflict results, show errors and retry, preserve unsaved edits on other
+failures, retain local navigation and honor `active_tree_changed` before input.
+Storage acceptance does not cover shell creation or change its separate gate.
 
 ## Saved split geometry
 
