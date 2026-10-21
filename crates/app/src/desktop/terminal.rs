@@ -19,6 +19,20 @@ pub(super) struct Target {
     pub source: Result<PathBuf, String>,
 }
 
+impl Target {
+    pub fn matches_leaf(&self, leaf: &Leaf) -> bool {
+        self.leaf.id == leaf.id
+            && self.leaf.attachment == leaf.attachment
+            && self.leaf.empty == leaf.empty
+    }
+
+    pub fn same_session(&self, other: &Self) -> bool {
+        self.matches_leaf(&other.leaf)
+            && self.directory == other.directory
+            && self.source == other.source
+    }
+}
+
 struct Ready {
     panes: Option<Arc<Panes>>,
     layout: Option<tmux_workspaces_tmux::layout::Change>,
@@ -364,6 +378,11 @@ mod tests {
             directory: None,
             source: Err("use explicit source".into()),
         };
+        let mut refreshed = target.clone();
+        refreshed.leaf.cwd = Some("/updated/saved/directory".into());
+        assert!(target.same_session(&refreshed));
+        refreshed.leaf.id = "ffffffffffff".into();
+        assert!(!target.same_session(&refreshed));
         let first = connect(target.clone()).unwrap();
         let selected = first
             .windows

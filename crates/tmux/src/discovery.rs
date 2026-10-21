@@ -1,4 +1,4 @@
-//! Read-only session discovery on one explicit tmux socket.
+//! Bounded read-only session discovery and directory queries on an explicit socket.
 
 use std::io::{self, Read};
 use std::os::fd::OwnedFd;
@@ -22,8 +22,65 @@ const CAPTURE_LIMIT: usize = 1024 * 1024;
 /// Call this on the app's worker, not its UI thread. Failed reads must replace
 /// previous availability; cached names are not evidence that sessions are online.
 pub fn read_sessions(socket: &Path) -> io::Result<Vec<String>> {
-    if !socket.is_absolute() {
+    let mut command = command(socket).ok_or_else(unavailable)?;
+    command.args([
+        "list-sessions",
+        "-f",
+        "#{!=:#{@tmux_workspaces_attachment},1}",
+        "-F",
+        "#{session_name}",
+    ]);
+    let output = capture(command, TIMEOUT).map_err(|_| unavailable())?;
+    let stdout = std::str::from_utf8(&output.stdout).map_err(|_| unavailable())?;
+    let stderr = std::str::from_utf8(&output.stderr).map_err(|_| unavailable())?;
+    if !output.status.success() {
+        return if !socket.try_exists().map_err(|_| unavailable())?
+            || stderr.contains("no server running")
+        {
+            Ok(Vec::new())
+        } else {
+            Err(unavailable())
+        };
+    }
+    Ok(names(stdout))
+}
+
+/// Read the current directory of an exact session's active pane.
+///
+/// The caller supplies an absolute socket and a raw session name. This starts
+/// no server and attaches no client. A missing session, failed query, timeout or
+/// invalid directory returns a fixed diagnostic; callers keep their saved cwd.
+/// UTF-8 paths retain spaces and newlines, including a trailing newline. Like
+/// discovery, this bounded query belongs on a worker, not the UI thread.
+pub fn read_session_directory(socket: &Path, session: &str) -> io::Result<String> {
+    let unavailable = || io::Error::other("Working directory unavailable");
+    if names(session).as_slice() != [session] {
         return Err(unavailable());
+    }
+    let mut command = command(socket).ok_or_else(unavailable)?;
+    command.args([
+        "display-message",
+        "-p",
+        "-t",
+        &format!("={session}:"),
+        "#{pane_current_path}",
+    ]);
+    let output = capture(command, TIMEOUT).map_err(|_| unavailable())?;
+    if !output.status.success() {
+        return Err(unavailable());
+    }
+    let output = std::str::from_utf8(&output.stdout).map_err(|_| unavailable())?;
+    let directory = output.strip_suffix('\n').ok_or_else(unavailable)?;
+    if !Path::new(directory).is_absolute() || directory.contains('\0') {
+        return Err(unavailable());
+    }
+    Ok(directory.to_owned())
+}
+
+/// Both queries use the same isolated, non-starting client and bounded capture.
+fn command(socket: &Path) -> Option<Command> {
+    if !socket.is_absolute() {
+        return None;
     }
     let mut command = Command::new("tmux");
     command
@@ -48,29 +105,10 @@ pub fn read_sessions(socket: &Path) -> io::Result<Vec<String>> {
         }))
         // -S is authoritative. Also keep temporary socket state in this explicit
         // namespace; fixture callers supply an existing private parent directory.
-        .env("TMUX_TMPDIR", socket.parent().ok_or_else(unavailable)?)
+        .env("TMUX_TMPDIR", socket.parent()?)
         .args(["-N", "-S"])
-        .arg(socket)
-        .args([
-            "list-sessions",
-            "-f",
-            "#{!=:#{@tmux_workspaces_attachment},1}",
-            "-F",
-            "#{session_name}",
-        ]);
-    let output = capture(command, TIMEOUT).map_err(|_| unavailable())?;
-    let stdout = std::str::from_utf8(&output.stdout).map_err(|_| unavailable())?;
-    let stderr = std::str::from_utf8(&output.stderr).map_err(|_| unavailable())?;
-    if !output.status.success() {
-        return if !socket.try_exists().map_err(|_| unavailable())?
-            || stderr.contains("no server running")
-        {
-            Ok(Vec::new())
-        } else {
-            Err(unavailable())
-        };
-    }
-    Ok(names(stdout))
+        .arg(socket);
+    Some(command)
 }
 
 fn unavailable() -> io::Error {

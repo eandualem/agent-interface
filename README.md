@@ -54,6 +54,13 @@ Command-N or **New Window** opens another native window on the current library,
 with independent navigation and terminal connections. Closing one leaves the
 other windows open. **Open library…** chooses another folder containing `layouts.db`.
 
+Click **+** beside TABS or press Command-T to add an empty tab. Command-D splits
+right; Command-Shift-D splits below. Both split actions are also in tab options.
+The existing pane remains intact and the new pane offers Attach session. New tabs
+use the launch directory; splits inherit the ordinary shell’s remembered directory.
+The new arrangement appears after saving. Navigation made while saving stays local;
+otherwise the new tab or pane is selected. Shell creation is not yet enabled.
+
 Existing ordinary shells use the Python library's shell server; attachments use
 their saved source socket, or the source resolved from the launch environment.
 Use **Attach session** in a pane header or tab options, or Command-Shift-A, to
@@ -62,8 +69,9 @@ or click a row. Escape or Cancel closes the chooser. It retains its destination
 when focus moves within the tab; a changed or hidden empty destination must be
 chosen again. Confirmation saves before replacing the terminal. Empty panes keep
 their identity and saved directory when filled. Replacing an ordinary terminal
-leaves its shell on the library server; fresh working-directory snapshots remain
-unfinished. Return to shell in tab options restores the existing ordinary shell
+leaves its shell on the library server. Saves refresh the current tab’s nonempty
+ordinary-shell directories, including parked shells, without copying external
+session directories. Failed reads retain saved paths. Return to shell in tab options restores the existing ordinary shell
 after saving; an absent shell remains disconnected. The chooser lists tmux sessions
 without optional agent metadata.
 

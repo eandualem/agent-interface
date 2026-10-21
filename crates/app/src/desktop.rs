@@ -12,12 +12,14 @@ use gpui_platform::application;
 use tmux_workspaces_core::{
     Attachment, AttachmentTarget, Direction, Layout, NameEdit, Node, RenameOutcome, Tab,
 };
-use tmux_workspaces_store::{Document, Store};
+use tmux_workspaces_store::Document;
 
 use crate::library::{Library, Update, WindowLayout};
 mod chooser;
+mod layout_edit;
 mod name;
 use chooser::{Choice, SessionChooser};
+use layout_edit::{Create, Selection};
 mod terminal;
 use name::{NameEvent, NameField};
 use terminal::{LiveTerminal, Target};
@@ -134,6 +136,7 @@ enum TabAction {
     Rename,
     Attach,
     ReturnToShell,
+    Split(Direction),
     Move(isize),
     Transfer(String),
 }
@@ -243,6 +246,9 @@ struct Browser {
     chooser: Option<Attaching>,
     // A failed proposed edit remains detached until its transaction succeeds.
     pending_save: Option<(Document, Layout)>,
+    pending_creation: Option<(Create, String)>,
+    creation_from: Option<Selection>,
+    tabs_scroll: gpui::ScrollHandle,
 }
 
 impl Browser {
@@ -417,6 +423,39 @@ impl Browser {
         cx.notify();
     }
 
+    fn create(&mut self, action: Create, window: &mut Window, cx: &mut Context<Self>) {
+        if self.saving || self.save_failed {
+            return;
+        }
+        if let Some(update) = self.library.as_ref().and_then(Library::take_update) {
+            self.apply(update);
+        }
+        let Some(layout) = &self.layout else {
+            return;
+        };
+        let cwd = match std::env::current_dir()
+            .ok()
+            .and_then(|path| path.to_str().map(str::to_owned))
+        {
+            Some(cwd) => cwd,
+            None => {
+                self.save_notice = Some("Cannot read the launch directory as text.".into());
+                cx.notify();
+                return;
+            }
+        };
+        self.creation_from = Some(Selection::capture(layout.model()));
+        self.pending_creation = Some((action, cwd));
+        self.editing = None;
+        self.chooser = None;
+        self.tab_menu = None;
+        self.workspace_menu = false;
+        if let Some(focus) = &self.navigation {
+            window.focus(focus, cx);
+        }
+        self.save(cx);
+    }
+
     fn save(&mut self, cx: &mut Context<Self>) {
         if self.saving {
             return;
@@ -424,7 +463,9 @@ impl Browser {
         let Some(layout) = &self.layout else {
             return;
         };
-        let (mut base, local) = self
+        let previous = layout.model().tab().cloned();
+        let creation = self.pending_creation.take();
+        let (mut base, mut local) = self
             .pending_save
             .take()
             .unwrap_or_else(|| layout.save_snapshot());
@@ -439,9 +480,13 @@ impl Browser {
         // Closing this window does not cancel a save while the app is running.
         // SQLite and its busy timeout never run on the UI thread.
         let work = cx.background_executor().spawn(async move {
-            let result = crate::library::library_directory(directory.as_deref())
-                .and_then(|directory| Store::open_existing_writable(&directory))
-                .and_then(|mut store| store.save(&mut base, &local));
+            let result = layout_edit::save(
+                directory.as_deref(),
+                &mut base,
+                &mut local,
+                previous.as_ref(),
+                creation,
+            );
             (base, local, result)
         });
         cx.spawn(async move |this, cx| {
@@ -451,8 +496,18 @@ impl Browser {
                 match result {
                     Ok(result) => {
                         if let Some(layout) = &mut browser.layout {
+                            let follow = browser.creation_from.as_ref()
+                                .is_some_and(|original| original.unchanged(layout.model()));
                             browser.reset_focus |= layout.saved(base, &result);
+                            if follow && !result.conflict {
+                                layout_edit::select_created(layout.model_mut(), &local);
+                                browser.reset_focus = true;
+                                if let Some(space) = layout.model().workspace()
+                                    && let Some(index) = space.tabs.iter().position(|tab| tab.id == space.selected)
+                                { browser.tabs_scroll.scroll_to_item(index + 1); }
+                            }
                         }
+                        browser.creation_from = None;
                         browser.start_reader(cx);
                         if result.conflict {
                             browser.save_notice = Some("The library changed. Your edit was not saved; repeat it on the latest layout to retry.".into());
@@ -475,6 +530,8 @@ impl Browser {
             return;
         }
         self.pending_save = None;
+        self.pending_creation = None;
+        self.creation_from = None;
         self.save_failed = false;
         self.save_notice = None;
         self.error = None;
@@ -556,6 +613,7 @@ impl Browser {
                     self.open_attach(&pane, window, cx);
                 }
             }
+            TabAction::Split(direction) => self.create(Create::Split(direction), window, cx),
             TabAction::Move(offset) => {
                 layout.model_mut().move_tab(offset);
                 self.save(cx);
@@ -583,6 +641,8 @@ impl Browser {
         let mut actions = vec![
             ("Rename tab".to_owned(), TabAction::Rename),
             ("Attach session".to_owned(), TabAction::Attach),
+            ("Split right".to_owned(), TabAction::Split(Direction::Right)),
+            ("Split below".to_owned(), TabAction::Split(Direction::Below)),
         ];
         if let (Some(menu), Some(layout)) = (&self.tab_menu, &self.layout) {
             if menu.shell.is_some() {
@@ -961,7 +1021,7 @@ impl Render for Browser {
                         tab.tree
                             .leaves()
                             .into_iter()
-                            .any(|leaf| *leaf == target.leaf)
+                            .any(|leaf| target.matches_leaf(leaf))
                     })
                 })
             })
@@ -980,12 +1040,12 @@ impl Render for Browser {
             if !self
                 .terminals
                 .get(&leaf.id)
-                .is_some_and(|view| view.read(cx).target == target)
+                .is_some_and(|view| view.read(cx).target.same_session(&target))
             {
                 let selected = self
                     .window_choices
                     .get(&leaf.id)
-                    .filter(|(previous, _)| *previous == target)
+                    .filter(|(previous, _)| previous.same_session(&target))
                     .map(|(_, selected)| selected.clone());
                 self.terminals.insert(
                     leaf.id,
@@ -993,7 +1053,12 @@ impl Render for Browser {
                 );
             }
         }
-        let mut tabs = div().id("tabs").flex_1().min_h_0().overflow_y_scroll();
+        let mut tabs = div()
+            .id("tabs")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .track_scroll(&self.tabs_scroll);
         let mut heading = "Workspaces".to_owned();
         let mut status = "Opening library…".to_owned();
         let mut content = div().flex_1().min_w_0().h_full().overflow_hidden();
@@ -1047,7 +1112,19 @@ impl Render for Browser {
                             .py_1()
                             .text_xs()
                             .text_color(rgb(0x9aa9bf))
-                            .child("TABS"),
+                            .flex()
+                            .justify_between()
+                            .child("TABS")
+                            .child(
+                                div()
+                                    .id("new-tab")
+                                    .px_2()
+                                    .cursor_pointer()
+                                    .child("+")
+                                    .on_click(cx.listener(|browser, _, window, cx| {
+                                        browser.create(Create::Tab, window, cx)
+                                    })),
+                            ),
                     );
                     for (index, tab) in space.tabs.iter().enumerate() {
                         let id = tab.id.clone();
@@ -1270,6 +1347,22 @@ impl Render for Browser {
                             return;
                         }
                     }
+                    if key.modifiers.platform && !key.modifiers.control && !key.modifiers.alt {
+                        let action = match key.key.as_str() {
+                            "t" if !key.modifiers.shift => Some(Create::Tab),
+                            "d" => Some(Create::Split(if key.modifiers.shift {
+                                Direction::Below
+                            } else {
+                                Direction::Right
+                            })),
+                            _ => None,
+                        };
+                        if let Some(action) = action {
+                            browser.create(action, window, cx);
+                            cx.stop_propagation();
+                            return;
+                        }
+                    }
                     if key.modifiers.platform
                         && key.modifiers.shift
                         && !key.modifiers.control
@@ -1329,7 +1422,7 @@ impl Render for Browser {
                                 let focus = chooser.view.read(cx).focus_handle(cx);
                                 window.focus(&focus, cx);
                             } else if let Some(terminal) = browser.terminals.get(&leaf.id)
-                                && terminal.read(cx).target.leaf == *leaf
+                                && terminal.read(cx).target.matches_leaf(leaf)
                             {
                                 terminal
                                     .update(cx, |terminal, cx| terminal.focus_terminal(window, cx));
@@ -1427,7 +1520,7 @@ fn navigate_key(model: &mut tmux_workspaces_core::Layout, key: &gpui::Keystroke)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tmux_workspaces_store::{Document, Error};
+    use tmux_workspaces_store::{Document, Error, Store};
 
     #[test]
     fn attachment_guards_empty_displayed_panes_and_keeps_the_original_destination() {
