@@ -62,8 +62,9 @@ or click a row. Escape or Cancel closes the chooser. It retains its destination
 when focus moves within the tab; a changed or hidden empty destination must be
 chosen again. Confirmation saves before replacing the terminal. Empty panes keep
 their identity and saved directory when filled. Replacing an ordinary terminal
-leaves its shell on the library server; fresh working-directory snapshots and
-Return to shell remain unfinished. The chooser currently lists tmux sessions
+leaves its shell on the library server; fresh working-directory snapshots remain
+unfinished. Return to shell in tab options restores the existing ordinary shell
+after saving; an absent shell remains disconnected. The chooser lists tmux sessions
 without optional agent metadata.
 
 Missing sessions show an error with **Reconnect** instead of starting a shell.

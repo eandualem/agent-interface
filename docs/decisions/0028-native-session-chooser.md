@@ -24,6 +24,12 @@ restores the known shared base with local navigation, and resumes polling withou
 tearing down unchanged displayed panes. Successful replacement returns keyboard focus
 to navigation.
 
+Return to shell in tab options captures the original pane and attachment. Refresh
+and apply that guard before saving its ordinary-shell reference. Other-pane changes
+may survive; a changed target cancels the action. Keep the attached client until
+the save succeeds, then reconnect the same leaf identity on the library shell
+server. Missing shells remain disconnected; this action does not create one.
+
 Reuse the accepted existing-version-2 store and its whole-tab-tree conflict rules.
 A filled leaf retains its identity and saved directory, removes the empty flag,
 and stores the attachment name/socket. No extra library fields or migration are

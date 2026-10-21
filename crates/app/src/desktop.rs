@@ -133,6 +133,7 @@ struct EditingName {
 enum TabAction {
     Rename,
     Attach,
+    ReturnToShell,
     Move(isize),
     Transfer(String),
 }
@@ -141,9 +142,19 @@ enum TabAction {
 struct TabMenu {
     workspace: String,
     tab: Tab,
+    shell: Option<AttachmentTarget>,
 }
 
 impl TabMenu {
+    fn shell_proposal(&self, layout: &mut WindowLayout) -> Option<(Document, Layout)> {
+        let (base, mut proposed) = layout.save_snapshot();
+        if !self.shell.as_ref()?.apply(&mut proposed, None) {
+            return None;
+        }
+        let _ = layout.model_mut().retain_navigation(&proposed);
+        Some((base, proposed))
+    }
+
     fn current(&self, layout: &tmux_workspaces_core::Layout) -> bool {
         layout.selected == self.workspace && layout.tab() == Some(&self.tab)
     }
@@ -490,6 +501,10 @@ impl Browser {
         }
         self.tab_menu = model.tab().cloned().map(|tab| TabMenu {
             workspace: model.selected.clone(),
+            shell: model
+                .pane()
+                .and_then(|pane| pane.attachment.as_ref())
+                .and_then(|_| model.attachment_target()),
             tab,
         });
         self.editing = None;
@@ -514,12 +529,27 @@ impl Browser {
         let Some(layout) = &mut self.layout else {
             return;
         };
+        if matches!(action, TabAction::ReturnToShell) {
+            if let Some(proposal) = menu.shell_proposal(layout) {
+                self.pending_save = Some(proposal);
+                self.save(cx);
+            } else {
+                self.save_notice =
+                    Some("The destination changed. Open its options again to retry.".into());
+            }
+            if let Some(focus) = &self.navigation {
+                window.focus(focus, cx);
+            }
+            cx.notify();
+            return;
+        }
         if !menu.current(layout.model()) {
             self.save_notice = Some("The tab changed. Open its options again to retry.".into());
             cx.notify();
             return;
         }
         match action {
+            TabAction::ReturnToShell => unreachable!("handled before the whole-tab move guard"),
             TabAction::Rename => self.begin_name(true, window, cx),
             TabAction::Attach => {
                 if let Some(pane) = layout.model().pane().map(|pane| pane.id.clone()) {
@@ -555,6 +585,9 @@ impl Browser {
             ("Attach session".to_owned(), TabAction::Attach),
         ];
         if let (Some(menu), Some(layout)) = (&self.tab_menu, &self.layout) {
+            if menu.shell.is_some() {
+                actions.push(("Return to shell".into(), TabAction::ReturnToShell));
+            }
             if let Some(space) = layout.model().workspace()
                 && let Some(index) = space.tabs.iter().position(|tab| tab.id == menu.tab.id)
             {
@@ -1287,10 +1320,20 @@ impl Render for Browser {
                                 .layout
                                 .as_ref()
                                 .and_then(|layout| layout.model().pane())
-                            && let Some(terminal) = browser.terminals.get(&leaf.id)
-                            && terminal.read(cx).target.leaf == *leaf
                         {
-                            terminal.update(cx, |terminal, cx| terminal.focus_terminal(window, cx));
+                            if let Some(chooser) = browser
+                                .chooser
+                                .as_ref()
+                                .filter(|chooser| chooser.destination.pane == leaf.id)
+                            {
+                                let focus = chooser.view.read(cx).focus_handle(cx);
+                                window.focus(&focus, cx);
+                            } else if let Some(terminal) = browser.terminals.get(&leaf.id)
+                                && terminal.read(cx).target.leaf == *leaf
+                            {
+                                terminal
+                                    .update(cx, |terminal, cx| terminal.focus_terminal(window, cx));
+                            }
                         }
                         browser.workspace_menu = false;
                         browser.tab_menu = None;
@@ -1486,6 +1529,37 @@ mod tests {
         assert!(saved.raw_json().contains("\"extension\":\"keep\""));
         assert!(!saved.raw_json().contains("\"empty\""));
 
+        // Returning to the captured shell preserves the attachment until commit,
+        // even after focus moves, and never redirects to a different pane.
+        let menu = TabMenu {
+            workspace: window.model().selected.clone(),
+            tab: window.model().tab().unwrap().clone(),
+            shell: window.model().attachment_target(),
+        };
+        let attached = window.model().pane().unwrap().clone();
+        window.model_mut().next_pane(1);
+        let (mut shell_base, shell_model) = menu.shell_proposal(&mut window).unwrap();
+        assert_eq!(window.model().pane().unwrap(), &attached);
+        assert_eq!(shell_model.pane().unwrap().attachment, None);
+        assert_eq!(shell_model.pane().unwrap().id, attached.id);
+        assert_eq!(shell_model.pane().unwrap().cwd, attached.cwd);
+        let shell_result = store.save(&mut shell_base, &shell_model).unwrap();
+        assert_eq!(window.model().pane().unwrap(), &attached);
+        assert!(window.saved(shell_base, &shell_result));
+        assert_eq!(window.model().pane().unwrap().attachment, None);
+        assert!(menu.shell_proposal(&mut window).is_none());
+        assert!(
+            store
+                .load()
+                .unwrap()
+                .raw_json()
+                .contains("\"extension\":\"keep\"")
+        );
+        let (mut base, mut restored) = window.save_snapshot();
+        restored.attach(attached.attachment);
+        let result = store.save(&mut base, &restored).unwrap();
+        window.saved(base, &result);
+
         // A later conflict adopts the peer attachment, never the rejected choice.
         let destination = AttachmentEdit::capture(window.model()).unwrap();
         let (mut base, mut proposed) = window.save_snapshot();
@@ -1539,6 +1613,7 @@ mod tests {
         let menu = TabMenu {
             workspace: source.clone(),
             tab: tab.clone(),
+            shell: None,
         };
         assert!(menu.current(&model));
         model.rename_tab("Peer rename");
