@@ -85,7 +85,8 @@ impl Layout {
     /// Returns true when the active tab's tree changed, including a change of
     /// attachment or removal of the active tab. The caller must then move input
     /// focus to navigation and require a fresh pane selection. Renaming alone
-    /// does not require that handoff. This does not dispatch input, write either
+    /// or changing saved working directories does not require that handoff.
+    /// This does not dispatch input, write either
     /// arrangement or create a terminal session.
     #[must_use = "a changed active tree requires input focus to return to navigation"]
     pub fn retain_navigation(&mut self, previous: &Layout) -> bool {
@@ -128,7 +129,43 @@ impl Layout {
             .map(|space| space.id.clone())
             .unwrap_or_default();
         self.focus = previous.focus;
-        self.tab().map(|tab| &tab.tree) != previous.tab().map(|tab| &tab.tree)
+        match (self.tab(), previous.tab()) {
+            (Some(current), Some(old)) => !same_input_tree(&current.tree, &old.tree),
+            (None, None) => false,
+            _ => true,
+        }
+    }
+}
+
+// Saved cwd is metadata for an ordinary shell, not its input destination.
+fn same_input_tree(current: &Node, previous: &Node) -> bool {
+    match (current, previous) {
+        (Node::Leaf(a), Node::Leaf(b)) => {
+            a.id == b.id && a.attachment == b.attachment && a.empty == b.empty
+        }
+        (
+            Node::Split {
+                id: a_id,
+                direction: a_direction,
+                ratio: a_ratio,
+                first: a_first,
+                second: a_second,
+            },
+            Node::Split {
+                id: b_id,
+                direction: b_direction,
+                ratio: b_ratio,
+                first: b_first,
+                second: b_second,
+            },
+        ) => {
+            a_id == b_id
+                && a_direction == b_direction
+                && a_ratio == b_ratio
+                && same_input_tree(a_first, b_first)
+                && same_input_tree(a_second, b_second)
+        }
+        _ => false,
     }
 }
 
@@ -297,6 +334,15 @@ mod tests {
         assert!(!incoming.retain_navigation(&previous));
         assert_eq!(incoming.selected, previous.selected);
 
+        let previous = incoming.clone();
+        if let Node::Leaf(leaf) = &mut incoming.workspaces[0].tabs[0].tree {
+            leaf.cwd = Some("/changed/directory".into());
+        }
+        assert!(!incoming.retain_navigation(&previous));
+        assert_eq!(
+            incoming.pane().unwrap().cwd.as_deref(),
+            Some("/changed/directory")
+        );
         let previous = incoming.clone();
         incoming.attach(Some(Attachment {
             session: "editor".into(),

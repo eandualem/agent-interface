@@ -19,6 +19,7 @@ pub struct Reconciliation {
     pub conflict: bool,
     /// Move input focus to navigation and require a new pane selection before
     /// typing: the active tree or attachment changed, or the active tab disappeared.
+    /// Saved working-directory metadata alone does not require an input handoff.
     pub active_tree_changed: bool,
 }
 
