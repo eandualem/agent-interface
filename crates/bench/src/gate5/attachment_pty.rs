@@ -708,3 +708,140 @@ fn ordinary_host_uses_tmux_extended_key_policy() {
     expected.extend_from_slice(b"END");
     expect_input(&expected);
 }
+
+/// Keep one native host alive across PTY size changes and compare it with a
+/// clean decoder of each resize redraw, including subsequent pane output.
+#[test]
+fn ordinary_host_retains_state_through_resizing() {
+    use std::cell::RefCell;
+
+    use libghostty_vt::render::{CellIterator, RenderState, RowIterator};
+    use libghostty_vt::screen::CellContentTag;
+    use libghostty_vt::style::StyleColor;
+    use libghostty_vt::terminal::{Options, Terminal as Host};
+
+    use super::fixtures;
+    use super::session::{Layout, SESSION, Session, quiet};
+
+    let snapshot = |host: &Host<'_, '_>| {
+        let mut render = RenderState::new().unwrap();
+        let view = render.update(host).unwrap();
+        let mut rows = RowIterator::new().unwrap();
+        let mut cells = CellIterator::new().unwrap();
+        let mut content = Vec::new();
+        let mut iter = rows.update(&view).unwrap();
+        while let Some(row) = iter.next() {
+            let mut iter = cells.update(row).unwrap();
+            while let Some(cell) = iter.next() {
+                let raw = cell.raw_cell().unwrap();
+                let mut text = String::new();
+                if raw.has_text().unwrap() {
+                    cell.graphemes_utf8(&mut text).unwrap();
+                }
+                let mut style = cell.style().unwrap();
+                match raw.content_tag().unwrap() {
+                    CellContentTag::BgColorPalette => {
+                        style.bg_color = StyleColor::Palette(raw.bg_color_palette().unwrap());
+                    }
+                    CellContentTag::BgColorRgb => {
+                        style.bg_color = StyleColor::Rgb(raw.bg_color_rgb().unwrap());
+                    }
+                    _ => {}
+                }
+                content.push((text, raw.wide().unwrap(), style));
+            }
+        }
+        (
+            view.cols().unwrap(),
+            view.rows().unwrap(),
+            content,
+            host.cursor_x().unwrap(),
+            host.cursor_y().unwrap(),
+            host.is_cursor_visible().unwrap(),
+        )
+    };
+    let version = {
+        let server = TmuxServer::start().unwrap();
+        fixtures::version(&describe(&server, "fixture", "#{version}")).unwrap()
+    };
+    for name in ["reflow", "background-erase", "alternate-resize"] {
+        let fixture = fixtures::FIXTURES.iter().find(|f| f.name == name).unwrap();
+        let session = Session::start(version).unwrap();
+        let script = session.script(fixture.draw, fixture.more).unwrap();
+        session.open(Layout::One(40, 8), &script).unwrap();
+        let client = Reference::attach(&session.server, SESSION, 40, 8).unwrap();
+        session.reference_ready(&client).unwrap();
+        session.signal("ref").unwrap();
+        session.wait("drawn", TIMEOUT).unwrap();
+        quiet(&client, None).unwrap();
+        let replies = RefCell::new(Vec::new());
+        let mut host = Host::new(Options {
+            cols: 40,
+            rows: 8,
+            max_scrollback: 0,
+        })
+        .unwrap();
+        host.on_pty_write(|_, data| replies.borrow_mut().extend_from_slice(data))
+            .unwrap();
+        let mut offset = 0;
+        let mut pump = |host: &mut Host<'_, '_>| {
+            let bytes = client.bytes_from(offset);
+            offset += bytes.len();
+            host.vt_write(&bytes);
+            client
+                .send(&std::mem::take(&mut *replies.borrow_mut()))
+                .unwrap();
+        };
+        pump(&mut host);
+        quiet(&client, None).unwrap();
+        pump(&mut host);
+        eprintln!(
+            "{name}: {}",
+            describe(
+                &session.server,
+                SESSION,
+                "#{pid}|#{socket_path}|#{version}|#{pane_pid}"
+            )
+        );
+        for (cols, rows) in [(30, 6), (50, 10)] {
+            // The app is waiting at a fixture barrier: drain old-size output
+            // before resizing the host and then notifying the owned PTY.
+            quiet(&client, None).unwrap();
+            pump(&mut host);
+            let from = client.len();
+            host.resize(cols, rows, 10, 20).unwrap();
+            client.resize(cols, rows).unwrap();
+            wait_for(|| {
+                describe(&session.server, SESSION, "#{pane_width}x#{pane_height}")
+                    == format!("{cols}x{rows}")
+            });
+            quiet(&client, None).unwrap();
+            pump(&mut host);
+            let mut clean = Host::new(Options {
+                cols,
+                rows,
+                max_scrollback: 0,
+            })
+            .unwrap();
+            clean.vt_write(&client.bytes_from(from));
+            assert_eq!(
+                snapshot(&host),
+                snapshot(&clean),
+                "{name}: resize to {cols}x{rows}"
+            );
+            if cols == 30 {
+                let from = client.len();
+                session.signal("go").unwrap();
+                session.wait("more", TIMEOUT).unwrap();
+                quiet(&client, None).unwrap();
+                pump(&mut host);
+                clean.vt_write(&client.bytes_from(from));
+                assert_eq!(
+                    snapshot(&host),
+                    snapshot(&clean),
+                    "{name}: continued output at {cols}x{rows}"
+                );
+            }
+        }
+    }
+}

@@ -95,6 +95,23 @@ The resize case covers one 40-to-30-column shrink while the alternate screen is
 active, then a return to the primary screen. It decodes the reference from the
 resize redraw; it does not test a persistent native renderer through resizing.
 
+### Persistent native host resizing
+
+A separate check keeps one native terminal alive while the ordinary client's PTY
+changes from 40 by 8 cells to 30 by 6, then 50 by 10. At each change, the fixture
+drains old-size output, resizes the native host, notifies the PTY and waits for
+tmux to report the new pane geometry. It compares the persistent host with a
+fresh native decoder of that resize redraw. Text, cell widths, styles, erased
+background colors, cursor position and cursor visibility must match.
+
+Three existing fixtures cover reflow, background erasure and alternate-screen
+exit. Application output continues after the shrink, including a return to the
+saved primary screen, before the expansion. No native terminal reset or capture
+recovery is used for the persistent side. All three fixtures passed on tmux
+3.3a, 3.4, 3.5a, 3.6b, 3.7c and 3.8. The check does not establish desktop
+resize-event ordering, continuous-output races, independent emulator fidelity,
+renderer behavior or performance acceptance.
+
 ### Outer-terminal protocol prototype
 
 A second fixture uses the pinned native engine directly, with in-memory reply
