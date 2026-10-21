@@ -26,7 +26,8 @@ Use the exact dependency `caseless` 0.2.2, licensed MIT, for default full Unicod
 case folding. Its data is Unicode 16.0.0. Use `default_case_fold_str` only, without
 canonical or compatibility normalization: matching preserves accents and
 literal spaces as Python does. The crate's `unicode-normalization` dependency
-(MIT OR Apache-2.0), locked at 0.1.26, is also new to the workspace. Filter edits use the
+(`(MIT OR Apache-2.0) AND Unicode-3.0`), locked at 0.1.26, is also new to the
+workspace. Filter edits use the
 existing `unicode-properties` 0.1.4 general categories, as model names do.
 
 ## Alternatives and evidence
