@@ -84,9 +84,10 @@ impl Environment {
     }
 
     fn shell_command(&self) -> OsString {
-        let mut words: Vec<OsString> = ["env", "-u", "TMUX", "-u", "TMUX_PANE"]
-            .map(Into::into)
-            .to_vec();
+        let mut words: Vec<OsString> =
+            ["env", "-u", "TMUX", "-u", "TMUX_PANE", "-u", "TMUX_TMPDIR"]
+                .map(Into::into)
+                .to_vec();
         for name in CONTEXT {
             words.extend(["-u".into(), (*name).into()]);
         }
@@ -127,11 +128,11 @@ impl Environment {
                 command.env(name, value);
             }
         }
-        // Both production and fixture callers provide an existing private parent.
-        command
-            .env("TMUX_TMPDIR", socket.parent().unwrap())
-            .args(["-S"])
-            .arg(socket);
+        // Fixture commands additionally require a private default namespace.
+        // Production uses only the reference allowlist and the explicit socket.
+        #[cfg(test)]
+        command.env("TMUX_TMPDIR", socket.parent().unwrap());
+        command.arg("-S").arg(socket);
         for arg in args {
             let bytes = arg.as_bytes();
             if bytes.last() == Some(&b';') {
@@ -197,7 +198,7 @@ pub fn ensure(socket: &Path, requests: &[Request], environment: &Environment) ->
         .append(true)
         .create(true)
         .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(&lock_path)?;
     let opened = lock.metadata()?;
     if !opened.is_file() || opened.uid() != uid || opened.nlink() != 1 {

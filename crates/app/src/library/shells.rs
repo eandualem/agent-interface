@@ -1,6 +1,6 @@
 use sha2::{Digest, Sha256};
 use std::io;
-use std::os::unix::fs::{FileTypeExt, MetadataExt};
+use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt};
 use std::path::{Path, PathBuf};
 
 /// Locate an existing ordinary-shell socket for a resolved library directory.
@@ -26,6 +26,33 @@ pub fn existing_shell_socket(resolved_directory: &Path) -> io::Result<Option<Pat
     let uid = uzers::get_current_uid();
     let directory = PathBuf::from(format!("/tmp/tmux-workspaces-{uid}"));
     existing_socket_in(&directory, uid, &socket_name(text))
+}
+
+/// Resolve the ordinary-shell socket for an explicit creation request. Unlike
+/// lookup, this may create the private parent, but never repairs unsafe metadata.
+/// The caller must have saved an eligible ordinary leaf before using this path.
+pub fn shell_socket_for_creation(resolved_directory: &Path) -> io::Result<PathBuf> {
+    let text = resolved_directory
+        .to_str()
+        .filter(|_| resolved_directory.is_absolute())
+        .ok_or_else(|| io::Error::other("Shell creation requires a resolved UTF-8 library path"))?;
+    let uid = uzers::get_current_uid();
+    create_socket_in(
+        &PathBuf::from(format!("/tmp/tmux-workspaces-{uid}")),
+        uid,
+        &socket_name(text),
+    )
+}
+
+fn create_socket_in(directory: &Path, uid: u32, name: &str) -> io::Result<PathBuf> {
+    match std::fs::DirBuilder::new().mode(0o700).create(directory) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error),
+    }
+    // Lookup validates a nonsymlink, privately owned parent and any existing socket.
+    existing_socket_in(directory, uid, name)?;
+    Ok(directory.join(name))
 }
 
 fn socket_name(resolved_directory: &str) -> String {
@@ -91,6 +118,25 @@ mod tests {
     use std::os::unix::ffi::OsStrExt;
     use std::os::unix::fs::PermissionsExt;
     use std::os::unix::net::UnixListener;
+
+    #[test]
+    fn explicit_creation_makes_only_a_private_parent_and_rejects_unsafe_reuse() {
+        let root = tempfile::tempdir().unwrap();
+        let parent = root.path().join("shells");
+        let socket = create_socket_in(&parent, uzers::get_current_uid(), "fixture.sock").unwrap();
+        assert!(!socket.exists());
+        assert_eq!(parent.symlink_metadata().unwrap().mode() & 0o777, 0o700);
+        assert_eq!(
+            create_socket_in(&parent, uzers::get_current_uid(), "fixture.sock").unwrap(),
+            socket
+        );
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(create_socket_in(&parent, uzers::get_current_uid(), "fixture.sock").is_err());
+        assert_eq!(parent.symlink_metadata().unwrap().mode() & 0o777, 0o755);
+        let link = root.path().join("link");
+        std::os::unix::fs::symlink(&parent, &link).unwrap();
+        assert!(create_socket_in(&link, uzers::get_current_uid(), "fixture.sock").is_err());
+    }
 
     #[test]
     fn directory_refresh_uses_the_exact_ordinary_shell_and_preserves_newline_paths() {

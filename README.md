@@ -13,8 +13,7 @@ sessions can be attached.
 **Status:** early development. The native app opens the Python library's saved
 workspaces, tabs and split layouts and connects to their existing tmux sessions.
 It displays live terminal output and sends typed keys to the selected ready pane.
-Editing, shell creation, full input parity and performance acceptance remain
-unfinished; it is not yet a replacement for the Python app.
+Editing, full input parity and performance acceptance remain unfinished; it is not yet a replacement for the Python app.
 
 Targets macOS first and Linux from the same code. Windows is optional.
 
@@ -56,10 +55,18 @@ other windows open. **Open library…** chooses another folder containing `layou
 
 Click **+** beside TABS or press Command-T to add an empty tab. Command-D splits
 right; Command-Shift-D splits below. Both split actions are also in tab options.
-The existing pane remains intact and the new pane offers Attach session. New tabs
+The existing pane remains intact and the new pane offers Open terminal or Attach session. New tabs
 use the launch directory; splits inherit the ordinary shell’s remembered directory.
 The new arrangement appears after saving. Navigation made while saving stays local;
-otherwise the new tab or pane is selected. Shell creation is not yet enabled.
+otherwise the new tab or pane is selected.
+
+Choose **Open terminal** in an ordinary pane header or tab options to start its
+login shell, or reuse it if already running. The pane is saved before its shell
+starts; a save error offers Retry or Discard. The new shell uses its saved directory
+and the creating window's allowed environment. Existing shells retain their process
+and environment. Navigating away before saving finishes cancels pending startup;
+choose Open terminal again when returning. Exited shells retain their output and
+are not restarted by this action.
 
 Existing ordinary shells use the Python library's shell server; attachments use
 their saved source socket, or the source resolved from the launch environment.
@@ -72,7 +79,7 @@ their identity and saved directory when filled. Replacing an ordinary terminal
 leaves its shell on the library server. Saves refresh the current tab’s nonempty
 ordinary-shell directories, including parked shells, without copying external
 session directories. Failed reads retain saved paths. Return to shell in tab options restores the existing ordinary shell
-after saving; an absent shell remains disconnected. The chooser lists tmux sessions
+after saving; choose Open terminal if that shell is absent. The chooser lists tmux sessions
 without optional agent metadata.
 
 Missing sessions show an error with **Reconnect** instead of starting a shell.
