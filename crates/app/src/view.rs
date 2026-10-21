@@ -85,13 +85,20 @@ fn is_monospaced(text_system: &TextSystem, appearance: &Appearance) -> bool {
 /// A view that draws the panes of one tmux window and sends typed keys to one
 /// of them.
 pub struct TerminalView {
-    panes: Arc<Panes>,
+    panes: Option<Arc<Panes>>,
     grid: Rc<RefCell<Grid>>,
-    // The configured destination stays fixed, including while another pane is zoomed.
+    // Input goes to this exact pane, changed only by an explicit visible-pane click.
     input: PaneId,
     focus: FocusHandle,
     failure_reported: bool,
+    embedded: bool,
+    input_queue: std::sync::mpsc::SyncSender<(PaneId, Vec<u8>)>,
+    input_error: Option<String>,
+    closed_reported: bool,
 }
+
+pub(crate) struct Disconnected;
+impl gpui::EventEmitter<Disconnected> for TerminalView {}
 
 /// What the grid draws, shared with the paint callback of each frame.
 struct Grid {
@@ -104,6 +111,9 @@ struct Grid {
     batch_ascii: bool,
     /// The terminal font, built once: building it allocates.
     font: Font,
+    bounds: Option<Bounds<Pixels>>,
+    original_cell: Size<Pixels>,
+    original_font_size: f32,
 }
 
 impl TerminalView {
@@ -115,21 +125,69 @@ impl TerminalView {
         layout: Vec<PaneLayout>,
         input: PaneId,
         appearance: Appearance,
-        mut woken: UnboundedReceiver<()>,
+        woken: UnboundedReceiver<()>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let view = Self::create(panes, layout, input, appearance, woken, false, cx);
+        window.focus(&view.focus, cx);
+        view
+    }
+
+    /// A terminal inside a workspace. It takes focus only on a click and a
+    /// detached session does not close the application.
+    pub(crate) fn embedded(
+        panes: Arc<Panes>,
+        layout: Vec<PaneLayout>,
+        input: PaneId,
+        appearance: Appearance,
+        woken: UnboundedReceiver<()>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self::create(panes, layout, input, appearance, woken, true, cx)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn create(
+        panes: Arc<Panes>,
+        layout: Vec<PaneLayout>,
+        input: PaneId,
+        appearance: Appearance,
+        mut woken: UnboundedReceiver<()>,
+        embedded: bool,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let focus = cx.focus_handle();
-        window.focus(&focus, cx);
+        cx.on_release(|view, cx| {
+            let panes = view.panes.take();
+            cx.background_executor()
+                .spawn(async move { drop(panes) })
+                .detach();
+        })
+        .detach();
+        let (input_queue, pending) = std::sync::mpsc::sync_channel::<(PaneId, Vec<u8>)>(64);
+        let writing = Arc::clone(&panes);
+        // Keep both pipe writes and the final connection join off the UI thread.
+        // Dropping the view closes this bounded queue; no hidden view keeps focus.
+        std::thread::spawn(move || {
+            while let Ok((pane, bytes)) = pending.recv() {
+                if writing.send_input(pane, &bytes).is_err() {
+                    break;
+                }
+            }
+        });
         // An update is taken when the next frame is drawn, so the worker
         // copies at most one update per frame.
         cx.spawn(async move |this, cx| {
             while woken.next().await.is_some() {
                 let closed = this.update(cx, |view, cx| {
-                    let closed = view.panes.is_finished();
+                    let closed = view.panes().is_finished();
                     if closed {
                         view.report_failure();
-                        cx.quit();
+                        if !view.embedded {
+                            cx.quit();
+                        }
+                        cx.notify();
                     } else {
                         cx.notify();
                     }
@@ -145,24 +203,35 @@ impl TerminalView {
         let batch_ascii = is_monospaced(cx.text_system(), &appearance);
         let font = terminal_font(&appearance.font_family);
         Self {
-            panes,
+            panes: Some(panes),
             grid: Rc::new(RefCell::new(Grid {
                 layout,
                 screens: HashMap::new(),
+                original_font_size: appearance.font_size,
                 appearance,
                 cell,
+                original_cell: cell,
+                bounds: None,
                 batch_ascii,
                 font,
             })),
             input,
             focus,
             failure_reported: false,
+            embedded,
+            input_queue,
+            input_error: None,
+            closed_reported: false,
         }
+    }
+
+    fn panes(&self) -> &Panes {
+        self.panes.as_deref().expect("terminal entity is alive")
     }
 
     fn report_failure(&mut self) {
         if !self.failure_reported
-            && let Some(error) = self.panes.failure()
+            && let Some(error) = self.panes().failure()
         {
             eprintln!("terminal connection: {error}");
             self.failure_reported = true;
@@ -170,7 +239,7 @@ impl TerminalView {
     }
 
     fn take_update(&mut self) {
-        let Some(update) = self.panes.take_update() else {
+        let Some(update) = self.panes().take_update() else {
             return;
         };
         let mut grid = self.grid.borrow_mut();
@@ -182,15 +251,30 @@ impl TerminalView {
             .into_iter()
             .filter_map(|(pane, screen)| grid.screens.insert(pane, screen))
             .collect();
-        self.panes.recycle(replaced);
+        self.panes().recycle(replaced);
     }
 
-    fn key_down(&mut self, event: &KeyDownEvent, _: &mut Window, _: &mut Context<Self>) {
+    fn key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
         let bytes = encode_key(&event.keystroke);
-        if !bytes.is_empty() {
-            // A failed write means the client has exited, which the next
-            // frame shows by closing the window.
-            let _ = self.panes.send_input(self.input, &bytes);
+        if !bytes.is_empty()
+            && self
+                .grid
+                .borrow()
+                .layout
+                .iter()
+                .any(|pane| pane.id == self.input)
+            && self.grid.borrow().screens.contains_key(&self.input)
+            && !self.panes().is_finished()
+        {
+            // Queue input without waiting for a pipe write on the UI thread.
+            self.input_error = self
+                .input_queue
+                .try_send((self.input, bytes))
+                .err()
+                .map(|_| "Terminal input is busy or disconnected; key was not sent.".into());
+            if self.input_error.is_some() {
+                cx.notify();
+            }
         }
     }
 }
@@ -198,30 +282,114 @@ impl TerminalView {
 impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.take_update();
-        if self.panes.is_finished() {
+        if self.panes().is_finished() {
             self.report_failure();
+            if self.embedded && !self.closed_reported {
+                self.closed_reported = true;
+                cx.emit(Disconnected);
+            }
             // The client has gone: close once this frame, which shows its last
             // output, has been drawn.
-            window.on_next_frame(|_, cx| cx.quit());
+            if !self.embedded {
+                window.on_next_frame(|_, cx| cx.quit());
+            }
         }
         let grid = Rc::clone(&self.grid);
         let background = self.grid.borrow().appearance.background;
+        let embedded = self.embedded;
+        let message = self.input_error.clone().or_else(|| {
+            self.panes().is_finished().then(|| {
+                self.panes()
+                    .failure()
+                    .unwrap_or_else(|| "Session disconnected.".into())
+            })
+        });
         div()
             .size_full()
+            .overflow_hidden()
+            .relative()
             .bg(background)
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::key_down))
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|view, event: &gpui::MouseDownEvent, window, cx| {
+                    let grid = view.grid.borrow();
+                    if let Some(bounds) = grid.bounds {
+                        let position = event.position - bounds.origin;
+                        let col = f32::from(position.x) / f32::from(grid.cell.width);
+                        let row = f32::from(position.y) / f32::from(grid.cell.height);
+                        if let Some(pane) = grid.layout.iter().find(|p| {
+                            col >= f32::from(p.left)
+                                && col < f32::from(p.left) + f32::from(p.cols)
+                                && row >= f32::from(p.top)
+                                && row < f32::from(p.top) + f32::from(p.rows)
+                        }) {
+                            view.input = pane.id;
+                            window.focus(&view.focus, cx);
+                        }
+                    }
+                }),
+            )
             .child(
                 canvas(
                     |_, _, _| (),
-                    move |bounds, (), window, cx| grid.borrow().paint(bounds, window, cx),
+                    move |bounds, (), window, cx| {
+                        let mut grid = grid.borrow_mut();
+                        if embedded {
+                            grid.fit(bounds);
+                        }
+                        grid.bounds = Some(bounds);
+                        grid.paint(bounds, window, cx);
+                    },
                 )
                 .size_full(),
             )
+            .when_some(message, |el, message| {
+                el.child(
+                    div()
+                        .absolute()
+                        .bottom_0()
+                        .left_0()
+                        .bg(gpui::rgb(0x402020))
+                        .text_color(gpui::rgb(0xffffff))
+                        .text_sm()
+                        .child(message),
+                )
+            })
     }
 }
 
 impl Grid {
+    fn fit(&mut self, bounds: Bounds<Pixels>) {
+        let cols = self
+            .layout
+            .iter()
+            .map(|p| u32::from(p.left) + u32::from(p.cols))
+            .max()
+            .unwrap_or(1)
+            .max(1);
+        let rows = self
+            .layout
+            .iter()
+            .map(|p| u32::from(p.top) + u32::from(p.rows))
+            .max()
+            .unwrap_or(1)
+            .max(1);
+        let scale = (f32::from(bounds.size.width)
+            / (f32::from(self.original_cell.width) * cols as f32))
+            .min(
+                f32::from(bounds.size.height)
+                    / (f32::from(self.original_cell.height) * rows as f32),
+            )
+            .clamp(0.01, 1.0);
+        self.cell = size(
+            self.original_cell.width * scale,
+            self.original_cell.height * scale,
+        );
+        self.appearance.font_size = self.original_font_size * scale;
+    }
+
     fn paint(&self, bounds: Bounds<Pixels>, window: &mut Window, cx: &mut App) {
         for pane in &self.layout {
             let Some(screen) = self.screens.get(&pane.id) else {
@@ -456,8 +624,8 @@ fn rgb(r: u8, g: u8, b: u8) -> Rgba {
 
 /// Returns the bytes a key sends to the pane, or none for keys the app keeps.
 ///
-/// This covers the keys the benchmarks type. The app's input path will use
-/// the terminal engine's key encoder, which follows the pane's modes
+/// This covers ordinary text, control letters and basic navigation keys. Full
+/// mode-aware input still requires the terminal engine's key encoder
 /// (`docs/decisions/0015-input-routing.md`).
 fn encode_key(keystroke: &Keystroke) -> Vec<u8> {
     let modifiers = &keystroke.modifiers;

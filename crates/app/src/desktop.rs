@@ -1,6 +1,6 @@
-//! Native, read-only browsing of the shared workspace library.
+//! Native workspace layout and existing tmux session connections.
 
-use std::{cell::RefCell, path::PathBuf, rc::Rc, sync::Arc};
+use std::{cell::RefCell, collections::HashMap, path::PathBuf, rc::Rc, sync::Arc};
 
 use futures::{StreamExt, channel::mpsc};
 use gpui::{
@@ -12,6 +12,8 @@ use gpui_platform::application;
 use tmux_workspaces_core::{Direction, Node};
 
 use crate::library::{Library, Update, WindowLayout};
+mod terminal;
+use terminal::{LiveTerminal, Target};
 
 actions!(
     library_browser,
@@ -21,9 +23,10 @@ actions!(
     ]
 );
 
-/// Open the native workspace browser. No tmux connection or database writer is
-/// started. An absent directory uses the shared library's normal path lookup.
+/// Open the native workspace window and connect its saved, existing sessions.
+/// An absent directory uses the shared library's normal path lookup.
 pub fn run(directory: Option<PathBuf>) -> Result<(), String> {
+    let source = crate::sessions::source_socket(None).map_err(|e| e.to_string());
     let failure = Rc::new(RefCell::new(None));
     let opened = Rc::clone(&failure);
     application().run(move |cx: &mut App| {
@@ -63,7 +66,11 @@ pub fn run(directory: Option<PathBuf>) -> Result<(), String> {
         };
         if let Err(error) = cx.open_window(options, |_, cx| {
             cx.new(|cx| {
-                let mut browser = Browser::default();
+                let mut browser = Browser {
+                    source: Some(source),
+                    navigation: Some(cx.focus_handle()),
+                    ..Browser::default()
+                };
                 browser.open(directory, cx);
                 browser
             })
@@ -80,15 +87,24 @@ pub fn run(directory: Option<PathBuf>) -> Result<(), String> {
 #[derive(Default)]
 struct Browser {
     library: Option<Library>,
+    directory: Option<PathBuf>,
+    source: Option<Result<PathBuf, String>>,
+    terminals: HashMap<String, gpui::Entity<LiveTerminal>>,
     layout: Option<WindowLayout>,
     error: Option<String>,
     loading: bool,
+    workspace_menu: bool,
+    reset_focus: bool,
+    navigation: Option<gpui::FocusHandle>,
     updates: Option<Task<()>>,
 }
 
 impl Browser {
     fn open(&mut self, directory: Option<PathBuf>, cx: &mut Context<Self>) {
         self.updates = None;
+        self.terminals.clear();
+        self.reset_focus = true;
+        self.directory = directory.clone();
         // A previous connection may be finishing a bounded SQLite read. Join its
         // worker off the UI thread so opening another library stays responsive.
         if let Some(previous) = self.library.take() {
@@ -136,10 +152,13 @@ impl Browser {
             if let Some(layout) = &mut self.layout {
                 match layout.refresh(document, "layouts.db".as_ref()) {
                     Ok(result) if result.conflict => {
+                        self.reset_focus = true;
                         self.error =
                             Some("The library changed. Showing the latest saved layout.".into());
                     }
-                    Ok(_) => {}
+                    Ok(result) => {
+                        self.reset_focus |= result.active_tree_changed;
+                    }
                     Err(error) => self.error = Some(error.to_string()),
                 }
             } else {
@@ -172,7 +191,12 @@ impl Browser {
         .detach();
     }
 
-    fn tree(node: &Node, focus: &str, cx: &mut Context<Self>) -> AnyElement {
+    fn tree(
+        node: &Node,
+        focus: &str,
+        terminals: &HashMap<String, gpui::Entity<LiveTerminal>>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         match node {
             Node::Leaf(leaf) => {
                 let id = leaf.id.clone();
@@ -194,12 +218,10 @@ impl Browser {
                     .overflow_hidden()
                     .flex()
                     .flex_col()
-                    .gap_2()
-                    .p_4()
-                    .rounded_md()
+                    .gap_0()
                     .bg(rgb(0x171d28))
                     .border_1()
-                    .border_color(rgb(if id == focus { 0x82aaff } else { 0x303b4d }))
+                    .border_color(rgb(if id == focus { 0x627a9c } else { 0x303b4d }))
                     .cursor_pointer()
                     .on_click(cx.listener(move |browser, _, _, cx| {
                         if let Some(layout) = &mut browser.layout {
@@ -207,17 +229,38 @@ impl Browser {
                             cx.notify();
                         }
                     }))
-                    .child(div().text_ellipsis().child(title))
                     .child(
                         div()
+                            .flex()
+                            .justify_between()
                             .text_xs()
-                            .text_color(rgb(0x9aa9bf))
-                            .child("Saved pane · not connected"),
+                            .px_1()
+                            .child(title)
+                            .child(
+                                div()
+                                    .id(SharedString::from(format!("zoom-{}", leaf.id)))
+                                    .cursor_pointer()
+                                    .child("⤢")
+                                    .on_click(cx.listener({
+                                        let id = leaf.id.clone();
+                                        move |browser, _, _, cx| {
+                                            if let Some(layout) = &mut browser.layout {
+                                                let model = layout.model_mut();
+                                                model.choose_pane(&id);
+                                                model.focus = !model.focus;
+                                                cx.notify();
+                                            }
+                                        }
+                                    })),
+                            ),
                     )
-                    .children(
-                        leaf.cwd
-                            .as_ref()
-                            .map(|cwd| div().text_sm().text_ellipsis().child(cwd.clone())),
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_h_0()
+                            .overflow_hidden()
+                            .children(terminals.get(&leaf.id).cloned())
+                            .when(leaf.empty, |el| el.child("Empty pane")),
                     )
                     .into_any_element()
             }
@@ -232,7 +275,7 @@ impl Browser {
                 .min_w_0()
                 .min_h_0()
                 .flex()
-                .gap_2()
+                .gap_0()
                 .when(*direction == Direction::Below, |el| el.flex_col())
                 .child(
                     div()
@@ -241,7 +284,7 @@ impl Browser {
                         .min_w_0()
                         .min_h_0()
                         .overflow_hidden()
-                        .child(Self::tree(first, focus, cx)),
+                        .child(Self::tree(first, focus, terminals, cx)),
                 )
                 .child(
                     div()
@@ -250,7 +293,7 @@ impl Browser {
                         .min_w_0()
                         .min_h_0()
                         .overflow_hidden()
-                        .child(Self::tree(second, focus, cx)),
+                        .child(Self::tree(second, focus, terminals, cx)),
                 )
                 .into_any_element(),
         }
@@ -258,148 +301,253 @@ impl Browser {
 }
 
 impl Render for Browser {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut sidebar = div()
-            .w(px(240.0))
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if std::mem::take(&mut self.reset_focus)
+            && let Some(focus) = &self.navigation
+        {
+            window.focus(focus, cx);
+        }
+        // A new entity owns each connection generation. Results from a removed
+        // leaf cannot install a view or accept keys in its replacement.
+        let leaves = self
+            .layout
+            .as_ref()
+            .and_then(|layout| layout.model().tab())
+            .map(|tab| {
+                tab.tree
+                    .leaves()
+                    .into_iter()
+                    .filter(|leaf| !leaf.empty)
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        self.terminals
+            .retain(|id, _| leaves.iter().any(|leaf| &leaf.id == id));
+        for leaf in leaves {
+            let target = Target {
+                leaf: leaf.clone(),
+                directory: self.directory.clone(),
+                source: self
+                    .source
+                    .clone()
+                    .unwrap_or_else(|| Err("Source socket unavailable".into())),
+            };
+            if !self
+                .terminals
+                .get(&leaf.id)
+                .is_some_and(|view| view.read(cx).target == target)
+            {
+                self.terminals
+                    .insert(leaf.id, cx.new(|cx| LiveTerminal::new(target, cx)));
+            }
+        }
+        let mut tabs = div().id("tabs").flex_1().min_h_0().overflow_y_scroll();
+        let mut heading = "Workspaces".to_owned();
+        let mut status = "Opening library…".to_owned();
+        let mut content = div().flex_1().min_w_0().h_full().overflow_hidden();
+        if let Some(layout) = &self.layout {
+            let model = layout.model();
+            if let Some(space) = model.workspace() {
+                heading = space.name.clone();
+                if self.workspace_menu {
+                    tabs = tabs.child(div().px_2().py_1().text_xs().child("WORKSPACES"));
+                    for space in &model.workspaces {
+                        let id = space.id.clone();
+                        tabs = tabs.child(
+                            div()
+                                .id(SharedString::from(format!("workspace-{id}")))
+                                .px_2()
+                                .py_1()
+                                .text_ellipsis()
+                                .cursor_pointer()
+                                .when(model.selected == id, |el| el.bg(rgb(0x2a3c58)))
+                                .hover(|el| el.bg(rgb(0x25334a)))
+                                .child(space.name.clone())
+                                .on_click(cx.listener(move |browser, _, window, cx| {
+                                    if let Some(layout) = &mut browser.layout {
+                                        layout.model_mut().choose_workspace(&id);
+                                    }
+                                    browser.workspace_menu = false;
+                                    if let Some(focus) = &browser.navigation {
+                                        window.focus(focus, cx);
+                                    }
+                                    cx.notify();
+                                })),
+                        );
+                    }
+                } else {
+                    tabs = tabs.child(
+                        div()
+                            .px_2()
+                            .py_1()
+                            .text_xs()
+                            .text_color(rgb(0x9aa9bf))
+                            .child("TABS"),
+                    );
+                    for (index, tab) in space.tabs.iter().enumerate() {
+                        let id = tab.id.clone();
+                        tabs = tabs.child(
+                            div()
+                                .id(SharedString::from(format!("tab-{id}")))
+                                .px_2()
+                                .py_1()
+                                .text_ellipsis()
+                                .cursor_pointer()
+                                .when(space.selected == id, |el| el.bg(rgb(0x2a3c58)))
+                                .hover(|el| el.bg(rgb(0x25334a)))
+                                .child(format!(
+                                    "{}  {}  {}",
+                                    index + 1,
+                                    tab.name,
+                                    "▮".repeat(tab.tree.leaves().len())
+                                ))
+                                .on_click(cx.listener(move |browser, _, window, cx| {
+                                    if let Some(layout) = &mut browser.layout {
+                                        layout.model_mut().choose_tab(&id);
+                                    }
+                                    if let Some(focus) = &browser.navigation {
+                                        window.focus(focus, cx);
+                                    }
+                                    cx.notify();
+                                })),
+                        );
+                    }
+                }
+                status = format!("{} · no tabs", space.name);
+            }
+            if let Some(tab) = model.tab() {
+                let leaves = tab.tree.leaves();
+                let selected = leaves
+                    .iter()
+                    .position(|leaf| leaf.id == tab.focus)
+                    .unwrap_or(0);
+                status = format!(
+                    "{} · {} · pane {}/{}",
+                    heading,
+                    tab.name,
+                    selected + 1,
+                    leaves.len()
+                );
+                let tree = if model.focus {
+                    leaves.get(selected).map(|leaf| Node::Leaf((*leaf).clone()))
+                } else {
+                    None
+                };
+                content = content.child(Self::tree(
+                    tree.as_ref().unwrap_or(&tab.tree),
+                    &tab.focus,
+                    &self.terminals,
+                    cx,
+                ));
+            }
+        } else if !self.loading {
+            content = content.child(
+                div()
+                    .p_4()
+                    .child("Open a folder containing layouts.db to use your saved workspaces."),
+            );
+            status = "No library open".into();
+        }
+        if let Some(error) = &self.error {
+            status = error.clone();
+        }
+        let sidebar = div()
+            .w(px(210.0))
             .flex_shrink_0()
             .h_full()
             .flex()
             .flex_col()
-            .p_4()
-            .gap_3()
             .bg(rgb(0x161e2b))
             .border_r_1()
             .border_color(rgb(0x303b4d))
-            .child(div().text_lg().child("tmux-workspaces"))
             .child(
                 div()
-                    .text_xs()
-                    .text_color(rgb(0x9aa9bf))
-                    .child("WORKSPACES"),
-            );
-        let mut spaces = div().id("workspaces").max_h(px(200.0)).overflow_y_scroll();
-        let mut tabs = div().id("tabs").flex_1().min_h_0().overflow_y_scroll();
-        let mut content = div()
-            .flex_1()
-            .min_w_0()
-            .h_full()
-            .flex()
-            .flex_col()
-            .p_6()
-            .gap_4();
-        if let Some(layout) = &self.layout {
-            let model = layout.model();
-            for space in &model.workspaces {
-                let id = space.id.clone();
-                spaces = spaces.child(
-                    div()
-                        .id(SharedString::from(format!("workspace-{id}")))
-                        .px_3()
-                        .py_2()
-                        .rounded_md()
-                        .cursor_pointer()
-                        .text_ellipsis()
-                        .when(model.selected == id, |el| el.bg(rgb(0x2a3c58)))
-                        .hover(|el| el.bg(rgb(0x25334a)))
-                        .child(space.name.clone())
-                        .on_click(cx.listener(move |browser, _, _, cx| {
-                            if let Some(layout) = &mut browser.layout {
-                                layout.model_mut().choose_workspace(&id);
-                                cx.notify();
-                            }
-                        })),
-                );
-            }
-            if let Some(space) = model.workspace() {
-                for tab in &space.tabs {
-                    let id = tab.id.clone();
-                    tabs = tabs.child(
-                        div()
-                            .id(SharedString::from(format!("tab-{id}")))
-                            .px_3()
-                            .py_2()
-                            .rounded_md()
-                            .cursor_pointer()
-                            .text_ellipsis()
-                            .when(space.selected == id, |el| el.bg(rgb(0x2a3c58)))
-                            .hover(|el| el.bg(rgb(0x25334a)))
-                            .child(tab.name.clone())
-                            .on_click(cx.listener(move |browser, _, _, cx| {
-                                if let Some(layout) = &mut browser.layout {
-                                    layout.model_mut().choose_tab(&id);
-                                    cx.notify();
-                                }
-                            })),
-                    );
-                }
-                content = content.child(
-                    div()
-                        .text_sm()
-                        .text_color(rgb(0x9aa9bf))
-                        .child(space.name.clone()),
-                );
-            }
-            if let Some(tab) = model.tab() {
-                content = content
-                    .child(div().text_xl().child(tab.name.clone()))
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(rgb(0x9aa9bf))
-                            .child("Saved layout · terminals are not connected"),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_h_0()
-                            .overflow_hidden()
-                            .child(Self::tree(&tab.tree, &tab.focus, cx)),
-                    );
-            } else {
-                content = content.child("This workspace has no tabs.");
-            }
-        } else {
-            content = content.child(div().text_xl().child(if self.loading { "Opening library…" } else { "Open a workspace library" }))
-                .child("Choose a folder containing layouts.db to browse its saved workspaces and tabs.");
-        }
-        if let Some(error) = &self.error {
-            content = content.child(
-                div()
-                    .text_sm()
-                    .text_color(rgb(0xffb4a5))
-                    .child(error.clone()),
-            );
-        }
-        sidebar = sidebar
-            .child(spaces)
-            .child(div().text_xs().text_color(rgb(0x9aa9bf)).child("TABS"))
+                    .id("workspace-menu")
+                    .px_2()
+                    .py_2()
+                    .text_ellipsis()
+                    .cursor_pointer()
+                    .bg(rgb(0x25334a))
+                    .child(format!("{heading}  ▾"))
+                    .on_click(cx.listener(|browser, _, window, cx| {
+                        browser.workspace_menu = !browser.workspace_menu;
+                        if let Some(focus) = &browser.navigation {
+                            window.focus(focus, cx);
+                        }
+                        cx.notify();
+                    })),
+            )
             .child(tabs)
             .child(
                 div()
                     .id("open-library")
-                    .px_3()
+                    .px_2()
                     .py_2()
-                    .rounded_md()
-                    .bg(rgb(0x2a3c58))
+                    .text_sm()
                     .cursor_pointer()
-                    .hover(|el| el.bg(rgb(0x344e73)))
+                    .hover(|el| el.bg(rgb(0x25334a)))
                     .child("Open library…")
                     .on_click(cx.listener(|browser, _, _, cx| browser.pick_library(cx))),
-            )
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(rgb(0x9aa9bf))
-                    .child("Read only · changes are not saved"),
             );
         div()
             .size_full()
             .flex()
+            .flex_col()
             .bg(rgb(0x101620))
             .text_color(rgb(0xe2e9f3))
             .font_family(Arc::<str>::from(".SystemUIFont"))
-            .child(sidebar)
-            .child(content)
+            .when_some(self.navigation.clone(), |el, focus| el.track_focus(&focus))
+            .capture_key_down(
+                cx.listener(|browser, event: &gpui::KeyDownEvent, window, cx| {
+                    if event.keystroke.modifiers.platform
+                        && let Ok(number @ 1..=9) = event.keystroke.key.parse::<usize>()
+                        && let Some(layout) = &mut browser.layout
+                    {
+                        let model = layout.model_mut();
+                        if event.keystroke.modifiers.alt {
+                            if let Some(id) = model
+                                .workspaces
+                                .get(number - 1)
+                                .map(|space| space.id.clone())
+                            {
+                                model.choose_workspace(&id);
+                            }
+                        } else if let Some(id) = model
+                            .workspace()
+                            .and_then(|space| space.tabs.get(number - 1))
+                            .map(|tab| tab.id.clone())
+                        {
+                            model.choose_tab(&id);
+                        }
+                        if let Some(focus) = &browser.navigation {
+                            window.focus(focus, cx);
+                        }
+                        browser.workspace_menu = false;
+                        cx.stop_propagation();
+                        cx.notify();
+                    }
+                }),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_1()
+                    .min_h_0()
+                    .child(sidebar)
+                    .child(content),
+            )
+            .child(
+                div()
+                    .px_2()
+                    .py_1()
+                    .text_xs()
+                    .text_color(rgb(0x9aa9bf))
+                    .bg(rgb(0x161e2b))
+                    .child(format!(
+                        "{status}    ⌘1–9 tabs · ⌘⌥1–9 workspaces · click terminal to type"
+                    )),
+            )
     }
 }
 
