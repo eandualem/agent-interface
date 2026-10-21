@@ -183,6 +183,27 @@ mod tests {
         assert!(result.conflict && !result.active_tree_changed);
         assert!(window.terminal_input().is_none());
 
+        peer.split(tmux_workspaces_core::Direction::Right, "/tmp".into(), false);
+        let second = peer.pane().unwrap().id.clone();
+        let result = window
+            .refresh(base.with_model(&peer, path).unwrap(), path)
+            .unwrap();
+        assert!(result.active_tree_changed && !result.conflict);
+        window.model_mut().choose_pane(&second);
+        assert!(window.focus_terminal());
+        assert_eq!(window.terminal_input().unwrap().id, second);
+        // A replacement tab can retain the same tree while its new identity
+        // causes navigation to fall back to the first leaf.
+        peer.workspaces[0].tabs[0].id = "aabbccddeeff".into();
+        peer.workspaces[0].selected = "aabbccddeeff".into();
+        let result = window
+            .refresh(base.with_model(&peer, path).unwrap(), path)
+            .unwrap();
+        assert!(!result.conflict);
+        assert!(result.active_tree_changed);
+        assert_ne!(window.model().pane().unwrap().id, second);
+        assert!(window.terminal_input().is_none());
+
         assert!(window.focus_terminal());
         window.focus_navigation();
         assert!(window.terminal_input().is_none());
