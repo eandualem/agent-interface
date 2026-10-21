@@ -19,7 +19,12 @@ its connection generation; a removed entity cannot receive a stale result.
 Failed connections show an error and a reconnect action. Disconnect retains the
 last screen and offers reconnect without closing the app. Keys require an
 explicit terminal click and a ready screen, and go to an exact visible pane.
-A bounded input queue keeps pipe writes off the UI thread. Navigation moves
+A bounded input queue keeps pipe writes off the UI thread. The terminal worker
+encodes keys and paste using each destination's current modes after preceding
+queued output. During capture recovery it waits for authoritative modes, with
+the capture timeout. Clipboard text is sanitized by the pinned engine and uses
+bracketed paste when enabled. Each operation is limited to 4 MiB and the UI queue
+holds at most 64 operations; rejected input is reported in the terminal view. Navigation moves
 focus back to the sidebar, as do structural changes from the shared library.
 
 Use the Python panel organization: workspace chooser in the heading, numbered
@@ -35,8 +40,8 @@ window would exercise a different path from saved workspaces. Reuse the chosen
 renderer in the product itself. No new dependencies or licences are introduced:
 GPUI (Apache-2.0), libghostty-vt (MIT) and tmux (ISC) retain their recorded pins.
 
-Grouped helper sessions, window switching, native scrollback/selection, paste,
-mouse reporting, tmux prefix compatibility and complete mode-aware key encoding
+Grouped helper sessions, window switching, native scrollback/selection, input
+methods, key-release events, mouse reporting and tmux prefix compatibility
 remain follow-up work under 0003 and 0015. The first connection observes the
 window selected at connection time; it does not promise independent tmux window
 navigation. Scaling preserves source geometry but is not final sizing parity.
@@ -48,4 +53,7 @@ existing pane screens, sends a marker to exactly the selected pane, preserves
 geometry and environment, and detaches without stopping the source. Exact-name
 lookup and absent sockets are checked without creating a server. The existing
 terminal recovery and transport tests remain applicable. This does not establish
-visual, keyboard-event or benchmark acceptance on a native desktop.
+visual, keyboard-event or benchmark acceptance on a native desktop. A private
+raw-terminal fixture also checks actual application-cursor key and bracketed-paste
+bytes delivered through the worker. Engine tests cover mode changes, extended
+keys, ordinary control keys and sanitization of pasted escape/control bytes.

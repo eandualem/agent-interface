@@ -328,10 +328,18 @@ mod tests {
             assert!(Instant::now() < deadline, "retired pane was not rejected");
             std::thread::sleep(Duration::from_millis(5));
         }
-        let queue = crate::view::input_queue(Arc::clone(panes));
-        queue.send((retired, b"discarded\r".to_vec())).unwrap();
+        let queue = crate::view::input_queue(Arc::clone(panes), |_| {});
         queue
-            .send((ready.input, b"surviving-input\r".to_vec()))
+            .send((
+                retired,
+                tmux_workspaces_term::input::Input::Paste("discarded\n".into()),
+            ))
+            .unwrap();
+        queue
+            .send((
+                ready.input,
+                tmux_workspaces_term::input::Input::Paste("surviving-input\n".into()),
+            ))
             .unwrap();
         wait(&mut screens, "surviving-input");
         drop(queue);

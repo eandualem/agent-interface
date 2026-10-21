@@ -17,7 +17,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use tmux_workspaces_term::{Screen, Terminal};
+use tmux_workspaces_term::{Screen, Terminal, input::Input};
 use tmux_workspaces_tmux::control::{Decoder, Message, PaneId};
 use tmux_workspaces_tmux::recovery::{Recovery, Reply, Snapshot, Step};
 use tmux_workspaces_tmux::{command, layout};
@@ -31,6 +31,9 @@ const READ_SIZE: usize = 64 * 1024;
 
 /// Keep send-keys arguments below tmux's parser stack limit.
 const INPUT_CHUNK: usize = 1024;
+
+/// Maximum bytes in one keyboard or clipboard operation.
+pub(crate) const INPUT_LIMIT: usize = QUEUE_LIMIT;
 
 /// A pane's place in its tmux window, in terminal cells.
 pub use tmux_workspaces_tmux::layout::Pane as PaneLayout;
@@ -89,6 +92,7 @@ enum Event {
     Reply(Reply),
     Layout(layout::Change),
     Geometry,
+    Encode(InputRequest),
 }
 
 impl Event {
@@ -98,8 +102,15 @@ impl Event {
             Self::Reply(reply) => reply.lines.iter().map(Vec::len).sum(),
             Self::Layout(change) => change.panes.len() * std::mem::size_of::<PaneLayout>(),
             Self::Geometry => 0,
+            Self::Encode(request) => request.input.size() + std::mem::size_of::<InputRequest>(),
         }
     }
+}
+
+struct InputRequest {
+    pane: PaneId,
+    input: Input,
+    reply: mpsc::Sender<Result<Vec<u8>, String>>,
 }
 
 #[derive(Clone, Copy)]
@@ -236,9 +247,38 @@ struct WindowState {
     geometry_changed: bool,
     settle_at: Option<Instant>,
     generation: u64,
+    inputs: Vec<InputRequest>,
 }
 
 impl WindowState {
+    fn encode_ready_inputs(&mut self) {
+        self.inputs.retain(|request| {
+            let terminal = self
+                .terminals
+                .iter()
+                .find(|(id, _)| *id == request.pane)
+                .filter(|(id, _)| self.layout.panes.iter().any(|pane| pane.id == *id));
+            if let Some((_, terminal)) = terminal {
+                // Output received during recovery has not yet been applied.
+                // Wait for its authoritative modes rather than guessing.
+                if terminal.needs_capture {
+                    return true;
+                }
+                let _ = request.reply.send(
+                    terminal
+                        .terminal
+                        .encode_input(&request.input)
+                        .map_err(|e| e.to_string()),
+                );
+            } else {
+                let _ = request
+                    .reply
+                    .send(Err("The input pane is no longer visible".into()));
+            }
+            false
+        });
+    }
+
     fn ready(&self) -> bool {
         !self.geometry_changed
             || self.layout.panes.iter().all(|pane| {
@@ -435,6 +475,34 @@ impl Panes {
         Ok(())
     }
 
+    /// Encode a key or paste using this pane's modes on its owning worker,
+    /// then deliver it as one ordered input operation. Call off the UI thread.
+    /// Recovery may delay encoding, bounded by the same capture deadline.
+    pub fn send_encoded_input(&self, pane: PaneId, input: Input) -> io::Result<()> {
+        if input.size() > INPUT_LIMIT {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Input exceeds the 4 MiB queue limit",
+            ));
+        }
+        let (reply, encoded) = mpsc::channel();
+        let event = Event::Encode(InputRequest { pane, input, reply });
+        {
+            let mut state = self.shared.lock();
+            if state.closed || state.cancelled || state.finished || state.failure.is_some() {
+                return Err(io::Error::other("Terminal connection is unavailable"));
+            }
+            state.queued += event.size();
+            state.queue.push_back(event);
+        }
+        self.shared.changed.notify_all();
+        let bytes = encoded
+            .recv_timeout(crate::seed::TIMEOUT)
+            .map_err(|error| io::Error::other(format!("Waiting for input encoding: {error}")))?
+            .map_err(io::Error::other)?;
+        self.send_input(pane, &bytes)
+    }
+
     /// Returns a terminal recovery or input transport failure.
     pub fn failure(&self) -> Option<String> {
         let state = self.shared.lock();
@@ -599,6 +667,7 @@ fn work(
         geometry_changed: false,
         settle_at: None,
         generation: 0,
+        inputs: Vec::new(),
     };
     let _ = ready.send(Ok(()));
     let mut recovering: Option<(Recovery, Instant, u64)> = None;
@@ -608,6 +677,11 @@ fn work(
     loop {
         if state.cancelled || state.failure.is_some() {
             break;
+        }
+        if !window.inputs.is_empty() {
+            drop(state);
+            window.encode_ready_inputs();
+            state = shared.lock();
         }
         if capture_unavailable && state.closed && state.queue.is_empty() && !window.ready() {
             // The new geometry cannot be verified without another capture.
@@ -817,6 +891,7 @@ fn apply(
 ) -> Result<Option<PaneId>, String> {
     let terminals = &mut window.terminals;
     match event {
+        Event::Encode(request) => window.inputs.push(request),
         Event::Layout(change) => {
             if change.window == window.layout.window {
                 window.change_layout(change, scrollback)?;
@@ -1576,6 +1651,61 @@ mod tests {
                 .is_some_and(|failure| failure.contains("timed out recovering")),
             "{failure:?}"
         );
+    }
+
+    #[test]
+    fn worker_encodes_application_keys_and_bracketed_paste_in_stream_order() {
+        use tmux_workspaces_term::input::KeyPress;
+        let server = TmuxServer::start().unwrap();
+        let script = "stty raw -echo; printf '\\033[?1h\\033[2J\\033[Harrow-ready'; arrow=$(dd bs=1 count=3 2>/dev/null | od -An -tx1 | tr -d '[:space:]'); printf '\\033[?2004h\\033[2J\\033[Hpaste-ready%s' \"$arrow\"; pasted=$(dd bs=1 count=15 2>/dev/null | od -An -tx1 | tr -d '[:space:]'); printf '\\033[2J\\033[Hpaste:%s' \"$pasted\"; exec cat";
+        server
+            .run(&[
+                "respawn-pane",
+                "-k",
+                "-t",
+                TmuxServer::SESSION,
+                "sh",
+                "-c",
+                script,
+            ])
+            .unwrap();
+        let layout = layout(&server);
+        let pane = layout.panes[0].id;
+        let client = server
+            .control(&[
+                "attach-session",
+                "-f",
+                "no-output,ignore-size,new-layouts",
+                "-t",
+                TmuxServer::SESSION,
+            ])
+            .unwrap();
+        let (wake, woken) = mpsc::channel();
+        let panes = Panes::start(client, &layout, 100, move || {
+            let _ = wake.send(());
+        })
+        .unwrap();
+        wait_for_row(&panes, &woken, pane, "arrow-ready");
+        panes
+            .send_encoded_input(
+                pane,
+                Input::Key(KeyPress {
+                    key: "up".into(),
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+        wait_for_row(&panes, &woken, pane, "paste-ready1b4f41");
+        panes
+            .send_encoded_input(pane, Input::Paste("ok\n".into()))
+            .unwrap();
+        wait_for_row(&panes, &woken, pane, "paste:1b5b3230307e6f6b0a1b5b3230317e");
+        assert!(
+            panes
+                .send_encoded_input(PaneId(u32::MAX), Input::Paste("wrong destination".into()))
+                .is_err()
+        );
+        assert_eq!(panes.failure(), None);
     }
 
     #[test]

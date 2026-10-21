@@ -15,6 +15,7 @@
 
 mod controls;
 mod del;
+pub mod input;
 mod rename;
 pub mod restore;
 mod screen;
