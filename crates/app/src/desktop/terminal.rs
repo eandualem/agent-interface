@@ -589,13 +589,13 @@ mod tests {
         }
         let queue = crate::view::input_queue(Arc::clone(panes), |_| {});
         queue
-            .send((
+            .try_send((
                 retired,
                 tmux_workspaces_term::input::Input::Paste("discarded\n".into()),
             ))
             .unwrap();
         queue
-            .send((
+            .try_send((
                 ready.input,
                 tmux_workspaces_term::input::Input::Paste("surviving-input\n".into()),
             ))

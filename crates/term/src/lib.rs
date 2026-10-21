@@ -55,6 +55,8 @@ pub struct Terminal {
     del: del::Del,
     extended_keys_csi_u: bool,
     wheel_owner: Option<(u64, bool)>,
+    last_mouse_motion: Vec<u8>,
+    mouse_button: Option<input::Button>,
     rename: rename::Rename,
 }
 
@@ -88,6 +90,8 @@ impl Terminal {
             del: del::Del::default(),
             extended_keys_csi_u: false,
             wheel_owner: None,
+            last_mouse_motion: Vec::new(),
+            mouse_button: None,
             rename: rename::Rename::default(),
         })
     }

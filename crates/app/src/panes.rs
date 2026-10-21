@@ -1049,7 +1049,9 @@ fn apply(
                                 .scrolled_row()
                                 .map_err(|e| e.to_string())?;
                             let mut restored = LivePane::restored(rebuilt.snapshot, scrollback)?;
-                            restored.terminal.inherit_wheel_gesture(&terminal.terminal);
+                            restored
+                                .terminal
+                                .inherit_pointer_gestures(&terminal.terminal);
                             *terminal = restored;
                             // A snapshot can observe an option-only resize before
                             // its once-per-second subscription notification. Do
@@ -1797,7 +1799,7 @@ mod tests {
 
     #[test]
     fn worker_encodes_application_keys_paste_and_mouse_in_stream_order() {
-        use tmux_workspaces_term::input::{Button, KeyPress, Pointer};
+        use tmux_workspaces_term::input::{Button, KeyPress, MouseAction, Pointer};
         let server = TmuxServer::start().unwrap();
         server
             .run(&["set-option", "-s", "extended-keys", "on"])
@@ -1805,7 +1807,7 @@ mod tests {
         server
             .run(&["set-option", "-s", "extended-keys-format", "csi-u"])
             .unwrap();
-        let script = "stty raw -echo; printf '\\033[>4;2m\\033[?1h\\033[2J\\033[Harrow-ready'; arrow=$(dd bs=1 count=3 2>/dev/null | od -An -tx1 | tr -d '[:space:]'); printf '\\033[2J\\033[Hextended-ready%s' \"$arrow\"; extended=$(dd bs=1 count=7 2>/dev/null | od -An -tx1 | tr -d '[:space:]'); printf '\\033[?2004h\\033[2J\\033[Hpaste-ready%s' \"$extended\"; pasted=$(dd bs=1 count=15 2>/dev/null | od -An -tx1 | tr -d '[:space:]'); printf '\\033[?1000h\\033[?1006h\\033[2J\\033[Hpaste:%s' \"$pasted\"; mouse=$(dd bs=1 count=28 2>/dev/null | od -An -tx1 | tr -d '[:space:]'); printf '\\033[2J\\033[Hmouse:%s' \"$mouse\"; exec cat";
+        let script = "stty raw -echo; printf '\\033[>4;2m\\033[?1h\\033[2J\\033[Harrow-ready'; arrow=$(dd bs=1 count=3 2>/dev/null | od -An -tx1 | tr -d '[:space:]'); printf '\\033[2J\\033[Hextended-ready%s' \"$arrow\"; extended=$(dd bs=1 count=7 2>/dev/null | od -An -tx1 | tr -d '[:space:]'); printf '\\033[?2004h\\033[2J\\033[Hpaste-ready%s' \"$extended\"; pasted=$(dd bs=1 count=15 2>/dev/null | od -An -tx1 | tr -d '[:space:]'); printf '\\033[?1000h\\033[?1006h\\033[2J\\033[Hpaste:%s' \"$pasted\"; mouse=$(dd bs=1 count=28 2>/dev/null | od -An -tx1 | tr -d '[:space:]'); printf '\\033[?1002h\\033[2J\\033[Hmouse:%s' \"$mouse\"; drag=$(dd bs=1 count=28 2>/dev/null | od -An -tx1 | tr -d '[:space:]'); printf '\\033[2J\\033[Hdrag:%s' \"$drag\"; exec cat";
         server
             .run(&[
                 "respawn-pane",
@@ -1880,6 +1882,31 @@ mod tests {
             &woken,
             pane,
             "mouse:1b5b3c303b333b344d1b5b3c303b333b346d1b5b3c36343b333b344d",
+        );
+        panes
+            .send_encoded_input(
+                pane,
+                Input::Mouse(pointer, MouseAction::Press(Button::Left)),
+            )
+            .unwrap();
+        let moved = Pointer { x: 4.5, ..pointer };
+        panes
+            .send_encoded_input(
+                pane,
+                Input::Mouse(moved, MouseAction::Move(Some(Button::Left))),
+            )
+            .unwrap();
+        panes
+            .send_encoded_input(
+                pane,
+                Input::Mouse(moved, MouseAction::Release(Button::Left)),
+            )
+            .unwrap();
+        wait_for_row(
+            &panes,
+            &woken,
+            pane,
+            "drag:1b5b3c303b333b344d1b5b3c33323b353b344d1b5b3c303b353b346d",
         );
         assert!(
             panes

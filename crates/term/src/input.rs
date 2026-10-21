@@ -72,6 +72,17 @@ pub enum Button {
     Right,
 }
 
+/// One phase of an application-owned pointer gesture.
+#[derive(Clone, Copy, Debug)]
+pub enum MouseAction {
+    /// Start a button gesture in the application.
+    Press(Button),
+    /// Move, with the held button or none for hover tracking.
+    Move(Option<Button>),
+    /// End a previously accepted button gesture.
+    Release(Button),
+}
+
 /// One ordered user input operation. App shortcuts are handled before this.
 #[derive(Clone, Debug)]
 pub enum Input {
@@ -86,6 +97,8 @@ pub enum Input {
     Wheel(Pointer, isize),
     /// A completed click; drag selection is handled locally before this.
     Click(Pointer, Button),
+    /// Pointer motion and button phases, encoded in order on the terminal worker.
+    Mouse(Pointer, MouseAction),
 }
 
 impl Input {
@@ -96,15 +109,16 @@ impl Input {
             Self::Paste(text) => text.len(),
             Self::Scroll(_) => 0,
             Self::Wheel(_, rows) => rows.unsigned_abs().saturating_mul(64),
-            Self::Click(_, _) => 64,
+            Self::Click(_, _) | Self::Mouse(_, _) => 64,
         }
     }
 }
 
 impl Terminal {
     /// Retain gesture ownership while replacing a terminal after capture recovery.
-    pub fn inherit_wheel_gesture(&mut self, previous: &Self) {
+    pub fn inherit_pointer_gestures(&mut self, previous: &Self) {
         self.wheel_owner = previous.wheel_owner;
+        self.mouse_button = previous.mouse_button;
     }
 
     /// Select the source server's extended-key wire format. False is xterm;
@@ -126,9 +140,10 @@ impl Terminal {
     }
 
     fn encode_mouse(
-        &self,
+        &mut self,
         pointer: &Pointer,
-        button: mouse::Button,
+        button: Option<mouse::Button>,
+        action: mouse::Action,
         count: usize,
         release: bool,
     ) -> Result<Vec<u8>, Error> {
@@ -148,6 +163,7 @@ impl Terminal {
         let mut encoder = mouse::Encoder::new().map_err(Error)?;
         encoder
             .set_options_from_terminal(&self.engine)
+            .set_any_button_pressed(self.mouse_button.is_some())
             .set_size(mouse::EncoderSize {
                 screen_width: u32::from(pointer.cols).saturating_mul(pointer.cell_width),
                 screen_height: u32::from(pointer.rows).saturating_mul(pointer.cell_height),
@@ -163,7 +179,7 @@ impl Terminal {
         mods.set(Mods::ALT, pointer.alt);
         let mut event = mouse::Event::new().map_err(Error)?;
         event
-            .set_button(Some(button))
+            .set_button(button)
             .set_mods(mods)
             .set_position(mouse::Position {
                 x: pointer.x * pointer.cell_width as f32,
@@ -171,12 +187,22 @@ impl Terminal {
             });
         let mut bytes = Vec::new();
         for _ in 0..count {
-            event.set_action(mouse::Action::Press);
+            event.set_action(action);
             encoder.encode_to_vec(&event, &mut bytes).map_err(Error)?;
             if release {
                 event.set_action(mouse::Action::Release);
                 encoder.encode_to_vec(&event, &mut bytes).map_err(Error)?;
             }
+        }
+        if action == mouse::Action::Motion {
+            // Applying terminal options resets libghostty's own last-cell cache.
+            // Compare the encoded report instead; pixel-mode positions remain distinct.
+            if bytes == self.last_mouse_motion {
+                return Ok(Vec::new());
+            }
+            self.last_mouse_motion.clone_from(&bytes);
+        } else {
+            self.last_mouse_motion.clear();
         }
         Ok(bytes)
     }
@@ -212,7 +238,13 @@ impl Terminal {
                 } else {
                     mouse::Button::Five
                 };
-                self.encode_mouse(pointer, button, rows.unsigned_abs(), false)
+                self.encode_mouse(
+                    pointer,
+                    Some(button),
+                    mouse::Action::Press,
+                    rows.unsigned_abs(),
+                    false,
+                )
             }
             Input::Click(pointer, button) => {
                 if pointer.shift
@@ -226,7 +258,49 @@ impl Terminal {
                     Button::Middle => mouse::Button::Middle,
                     Button::Right => mouse::Button::Right,
                 };
-                self.encode_mouse(pointer, button, 1, true)
+                self.encode_mouse(pointer, Some(button), mouse::Action::Press, 1, true)
+            }
+            Input::Mouse(pointer, action) => {
+                let mut pointer = *pointer;
+                let (button, action) = match *action {
+                    MouseAction::Press(button) => {
+                        if pointer.shift
+                            || self.scrolled_row()?.is_some()
+                            || !self.engine.is_mouse_tracking().map_err(Error)?
+                        {
+                            return Ok(Vec::new());
+                        }
+                        self.mouse_button = Some(button);
+                        (Some(button), mouse::Action::Press)
+                    }
+                    MouseAction::Move(button) => {
+                        if button != self.mouse_button
+                            || self.scrolled_row()?.is_some()
+                            || (button.is_none() && pointer.shift)
+                        {
+                            return Ok(Vec::new());
+                        }
+                        (button, mouse::Action::Motion)
+                    }
+                    MouseAction::Release(button) => {
+                        if self.mouse_button != Some(button) {
+                            return Ok(Vec::new());
+                        }
+                        self.mouse_button = None;
+                        // Release remains deliverable after a resize or entering history.
+                        pointer.cols = self.engine.cols().map_err(Error)?;
+                        pointer.rows = self.engine.rows().map_err(Error)?;
+                        pointer.x = pointer.x.clamp(0.0, f32::from(pointer.cols) - 0.001);
+                        pointer.y = pointer.y.clamp(0.0, f32::from(pointer.rows) - 0.001);
+                        (Some(button), mouse::Action::Release)
+                    }
+                };
+                let button = button.map(|button| match button {
+                    Button::Left => mouse::Button::Left,
+                    Button::Middle => mouse::Button::Middle,
+                    Button::Right => mouse::Button::Right,
+                });
+                self.encode_mouse(&pointer, button, action, 1, false)
             }
             Input::Scroll(scroll) => {
                 self.engine.scroll_viewport(match scroll {
@@ -456,6 +530,98 @@ mod tests {
     use super::*;
 
     #[test]
+    fn mouse_gestures_follow_tracking_modes_and_release_after_history_or_resize() {
+        let mut terminal = Terminal::new(80, 24, 100).unwrap();
+        for _ in 0..40 {
+            terminal.write(b"history\r\n");
+        }
+        let pointer = Pointer {
+            x: 2.5,
+            y: 3.5,
+            cols: 80,
+            rows: 24,
+            cell_width: 8,
+            cell_height: 16,
+            ..Default::default()
+        };
+        terminal.write(b"\x1b[?1000h\x1b[?1006h");
+        assert_eq!(
+            terminal
+                .encode_input(&Input::Mouse(pointer, MouseAction::Press(Button::Left)))
+                .unwrap(),
+            b"\x1b[<0;3;4M"
+        );
+        let moved = Pointer { x: 4.5, ..pointer };
+        assert!(
+            terminal
+                .encode_input(&Input::Mouse(moved, MouseAction::Move(Some(Button::Left))))
+                .unwrap()
+                .is_empty()
+        );
+        terminal.write(b"\x1b[?1002h");
+        assert_eq!(
+            terminal
+                .encode_input(&Input::Mouse(moved, MouseAction::Move(Some(Button::Left))))
+                .unwrap(),
+            b"\x1b[<32;5;4M"
+        );
+        assert!(
+            terminal
+                .encode_input(&Input::Mouse(moved, MouseAction::Move(Some(Button::Left))))
+                .unwrap()
+                .is_empty()
+        );
+        terminal.encode_input(&Input::Scroll(Scroll::Top)).unwrap();
+        // The worker keeps button ownership across capture recovery as well.
+        let mut restored = Terminal::new(40, 12, 100).unwrap();
+        restored.write(b"\x1b[?1002h\x1b[?1006h");
+        restored.inherit_pointer_gestures(&terminal);
+        assert_eq!(
+            restored
+                .encode_input(&Input::Mouse(moved, MouseAction::Release(Button::Left)))
+                .unwrap(),
+            b"\x1b[<0;5;4m"
+        );
+        assert_eq!(
+            terminal
+                .encode_input(&Input::Mouse(moved, MouseAction::Release(Button::Left)))
+                .unwrap(),
+            b"\x1b[<0;5;4m"
+        );
+        terminal
+            .encode_input(&Input::Scroll(Scroll::Bottom))
+            .unwrap();
+        assert!(
+            terminal
+                .encode_input(&Input::Mouse(
+                    Pointer {
+                        shift: true,
+                        ..pointer
+                    },
+                    MouseAction::Press(Button::Left)
+                ))
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            terminal
+                .encode_input(&Input::Mouse(moved, MouseAction::Move(Some(Button::Left))))
+                .unwrap()
+                .is_empty()
+        );
+        terminal.write(b"\x1b[?1003h");
+        assert_eq!(
+            terminal
+                .encode_input(&Input::Mouse(
+                    Pointer { x: 6.5, ..pointer },
+                    MouseAction::Move(None)
+                ))
+                .unwrap(),
+            b"\x1b[<35;7;4M"
+        );
+    }
+
+    #[test]
     fn mouse_clicks_and_wheels_follow_program_modes_with_local_history_fallback() {
         let mut terminal = Terminal::new(80, 24, 100).unwrap();
         for _ in 0..40 {
@@ -535,7 +701,7 @@ mod tests {
         );
         let mut recovered = Terminal::new(80, 24, 100).unwrap();
         recovered.write(b"\x1b[?1000h\x1b[?1006h");
-        recovered.inherit_wheel_gesture(&terminal);
+        recovered.inherit_pointer_gestures(&terminal);
         assert!(
             recovered
                 .encode_input(&Input::Wheel(gesture, 1))

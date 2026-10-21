@@ -45,8 +45,9 @@ Selection keeps its displayed text while new output arrives. Escape, typing or
 a new click outside the selection resumes the updated view. Copies from recovered
 screens currently retain their displayed row breaks, including wrapped lines.
 For programs with mouse reporting enabled, hold Shift to select text locally.
-Ordinary clicks and wheel gestures
-reach the program. Hold Shift to keep scrolling local to the native viewer.
+Ordinary clicks, drags, requested pointer motion and wheel gestures reach the
+program. Each drag stays with its original pane; only one held-button gesture is
+forwarded at a time. Hold Shift to keep scrolling local to the native viewer.
 **Open library…** chooses another folder containing `layouts.db`.
 
 Existing ordinary shells use the Python library's shell server; attachments use
@@ -64,7 +65,7 @@ terminal to view another existing tmux window without switching other clients.
 The chosen window is remembered locally when switching workspace tabs; reopening
 the library starts from the source's current window again.
 Refresh reloads that list. Custom tmux
-prefix bindings, terminal mouse motion reporting, selection across history pages, input methods
+prefix bindings, selection across history pages, input methods
 and key-release events are not yet wired into the product UI.
 
 Omit `--data-dir` to use the Python-compatible environment and default library

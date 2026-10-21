@@ -26,7 +26,9 @@ and reads the source server's `extended-keys-format` for modified keys. A source
 option subscription refreshes this setting after changes. During capture recovery
 it waits for authoritative modes, with the capture timeout. Clipboard text is sanitized by the pinned engine and uses
 bracketed paste when enabled. Each operation is limited to 4 MiB and the UI queue
-holds at most 64 operations; rejected input is reported in the terminal view.
+holds at most 64 ordinary operations plus one reserved mouse-release slot.
+Intermediate pointer motion may be dropped when full; key, paste, click and wheel
+rejection is reported in the terminal view.
 Queue and size rejection messages remain visible until a ready terminal is
 clicked, independently of earlier successful operations. Navigation moves
 focus back to the sidebar, as do structural changes from the shared library.
@@ -52,9 +54,16 @@ to drain into its latest screen while the selected copy stays visible. Dragging
 selects within that pane; double-click selects a word and triple-click selects
 a row. Native copy writes the selected text to the clipboard and keeps the
 highlight. Escape, typing, explicit scrolling or a new outside click clears it;
-layout changes may clear it too. Selection works on a retained disconnected screen. Completed primary, middle and
-secondary clicks and wheel gestures use the destination's mouse encoder when
-reporting is enabled. In a mouse-enabled live program, Shift starts local selection;
+layout changes may clear it too. Selection works on a retained disconnected screen. Primary, middle and secondary button phases, requested motion and wheel gestures
+use the destination's mouse encoder when reporting is enabled. A drag stays bound
+to its original pane, clamping to its edge outside that pane. One held-button
+gesture is forwarded at a time. Focus loss, deactivation, navigation or view
+release ends it. Hover reports use the element's hit testing so overlays can
+consume pointer movement. The worker retains accepted button ownership through
+capture recovery and can encode its release after resizing or entering history.
+Repeated identical motion reports are suppressed while pixel-mode positions stay
+distinct. The pinned encoder resets its motion cache when terminal options are
+applied, so the worker compares encoded reports instead. In a mouse-enabled live program, Shift starts local selection;
 unmodified multi-clicks belong to the program. Local selections never become
 application clicks, even if Shift is released or a drag returns to its anchor.
 Shift, or an already scrolled
@@ -68,7 +77,7 @@ history state cannot leak input across panes. Backends without start/end events 
 gap; after an end event this also bounds retained momentum. Every new gesture
 clears fractional rows from its predecessor. Discrete wheel ticks decide
 individually. A geometry change rejects stale mouse
-coordinates. Pointer motion reports remain pending.
+coordinates; an accepted gesture's release clamps to the current dimensions.
 
 ## Alternatives and limits
 
@@ -78,7 +87,7 @@ renderer in the product itself. No new dependencies or licences are introduced:
 GPUI (Apache-2.0), libghostty-vt (MIT) and tmux (ISC) retain their recorded pins.
 
 Selection across history pages, input
-methods, key-release events, mouse motion reporting and tmux prefix compatibility
+methods, key-release events and tmux prefix compatibility
 remain follow-up work under 0003 and 0015. Local tmux window navigation is
 implemented by [0026](0026-native-tmux-window-navigation.md), without grouped
 helpers or changing the source session’s selected window. Scaling preserves source geometry but is not final sizing parity. Selection
