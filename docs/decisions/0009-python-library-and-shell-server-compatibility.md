@@ -273,8 +273,8 @@ require input focus to return to navigation. The next merge base is the latest
 incoming document; the returned arrangement retains unsaved local edits.
 
 Reconciliation preserves JSON values, but may normalize numeric spellings and
-formatting. It performs no persistence. The transactional checks, mixed-writer
-tests, migration agreement and write gate above remain outstanding.
+formatting. Reconciliation itself performs no persistence. Transactional saving
+and its verified existing-library scope are described below.
 
 ## Verified existing-library saving
 
