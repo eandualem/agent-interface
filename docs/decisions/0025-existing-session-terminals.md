@@ -61,7 +61,9 @@ Shift, or an already scrolled
 history viewport, keeps wheel navigation local; mouse clicks in that viewport
 are not sent to the running program. Continuous pixel-wheel gestures retain local
 ownership through their remaining events and momentum, including capture recovery;
-a new platform start event begins a new gesture. Discrete wheel ticks decide
+a new platform start event begins a new gesture. Hit-test gaps and inner-pane
+crossings retain the gesture. Backends without start/end events use a 500 ms idle
+gap; after an end event this also bounds retained momentum. Discrete wheel ticks decide
 individually. A geometry change rejects stale mouse
 coordinates. Pointer motion reports remain pending.
 

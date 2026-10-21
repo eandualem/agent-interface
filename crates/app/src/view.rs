@@ -29,7 +29,9 @@ use tmux_workspaces_tmux::control::PaneId;
 
 use crate::panes::{PaneLayout, Panes};
 
+mod scroll;
 mod selection;
+use scroll::WheelGesture;
 use selection::Selection;
 
 /// The font and colours of the terminal grid.
@@ -106,7 +108,7 @@ pub struct TerminalView {
     wheel: Option<(PaneId, f32)>,
     secondary_press: Option<(PaneId, Button, bool)>,
     primary_click: Option<(PaneId, gpui::Point<Pixels>)>,
-    wheel_gesture: u64,
+    wheel_gesture: WheelGesture,
 }
 
 pub(crate) struct Disconnected;
@@ -250,7 +252,7 @@ impl TerminalView {
             wheel: None,
             secondary_press: None,
             primary_click: None,
-            wheel_gesture: 0,
+            wheel_gesture: WheelGesture::default(),
         }
     }
 
@@ -632,6 +634,8 @@ impl Render for TerminalView {
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::key_down))
             .on_scroll_wheel(cx.listener(|view, event: &gpui::ScrollWheelEvent, window, cx| {
+                let gesture = matches!(event.delta, gpui::ScrollDelta::Pixels(_))
+                    .then(|| view.wheel_gesture.update(event.touch_phase, std::time::Instant::now()));
                 let grid = view.grid.borrow();
                 let Some(pane) = grid.bounds.and_then(|bounds| {
                     hit_pane(
@@ -646,13 +650,11 @@ impl Render for TerminalView {
                     return;
                 };
                 let Some(mut pointer) = pointer_at(&grid, pane, event.position, window.scale_factor(), event.modifiers) else { return; };
-                if event.touch_phase == gpui::TouchPhase::Started || view.wheel.is_none_or(|(id, _)| id != pane) {
-                    view.wheel_gesture = view.wheel_gesture.wrapping_add(1);
-                    view.wheel = None;
+                pointer.gesture = gesture;
+                if gesture.is_some() {
+                    pointer.shift = view.wheel_gesture.keep_local(pointer.shift || !grid.screens[&pane].mouse_input());
                 }
-                if matches!(event.delta, gpui::ScrollDelta::Pixels(_)) {
-                    pointer.gesture = Some(view.wheel_gesture);
-                }
+                if event.touch_phase == gpui::TouchPhase::Started { view.wheel = None; }
                 let delta = match event.delta {
                     gpui::ScrollDelta::Pixels(delta) => {
                         f32::from(delta.y) / f32::from(grid.cell.height).max(1.0)
