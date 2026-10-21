@@ -230,3 +230,144 @@ fn ordinary_client_preserves_prefix_modes_and_session_identity() {
     );
     assert_eq!(std::fs::read(&input).unwrap(), b"PAYLOAD\x02AGAIN");
 }
+
+/// An outer terminal must answer tmux, while tmux answers the application.
+/// Use the engine directly here: the product wrapper intentionally drops
+/// replies for its existing control-mode pane stream.
+#[test]
+#[ignore = "opt-in protocol probe: clipboard crashes tmux 3.3a linked to ncurses 6.6"]
+fn ordinary_host_routes_replies_paste_mouse_and_clipboard() {
+    use std::cell::RefCell;
+
+    use libghostty_vt::terminal::{
+        ConformanceLevel, DeviceAttributes, DeviceType, Mode, Options, PrimaryDeviceAttributes,
+        SecondaryDeviceAttributes, Terminal as Host, TertiaryDeviceAttributes,
+    };
+    use libghostty_vt::{key, mouse};
+
+    let server = TmuxServer::start().unwrap();
+    let files = tempfile::tempdir().unwrap();
+    let input = files.path().join("input");
+    server.run(&["set-option", "-g", "status", "off"]).unwrap();
+    server.run(&["set-option", "-g", "mouse", "on"]).unwrap();
+    server
+        .run(&["set-option", "-g", "assume-paste-time", "0"])
+        .unwrap();
+    server.run(&["respawn-pane", "-k", "-t", "fixture:0", &format!(
+        "stty raw -echo; printf 'HOST_READY\\033[6n\\033[?2004h\\033[?1000h\\033[?1006h'; cat > {}",
+        quote(input.to_str().unwrap())
+    )]).unwrap();
+    let replies = RefCell::new(Vec::new());
+    let clipboard = RefCell::new(Vec::new());
+    let mut host = Host::new(Options {
+        cols: 80,
+        rows: 24,
+        max_scrollback: 0,
+    })
+    .unwrap();
+    host.on_pty_write(|_, data| replies.borrow_mut().extend_from_slice(data))
+        .unwrap();
+    host.on_device_attributes(|_| {
+        Some(DeviceAttributes {
+            primary: PrimaryDeviceAttributes::new(ConformanceLevel::VT220, &[]),
+            secondary: SecondaryDeviceAttributes {
+                device_type: DeviceType::VT220,
+                firmware_version: 0,
+                rom_cartridge: 0,
+            },
+            tertiary: TertiaryDeviceAttributes::default(),
+        })
+    })
+    .unwrap();
+    host.on_clipboard_write(|_, write| {
+        for content in write.contents() {
+            clipboard
+                .borrow_mut()
+                .push((content.mime.to_owned(), content.data.to_owned()));
+        }
+        Ok(())
+    })
+    .unwrap();
+    let client = Reference::attach(&server, "fixture", 80, 24).unwrap();
+    let mut offset = 0;
+    let mut returned = Vec::new();
+    let mut pump = |host: &mut Host<'_, '_>| {
+        let bytes = client.bytes_from(offset);
+        offset += bytes.len();
+        host.vt_write(&bytes);
+        let bytes = std::mem::take(&mut *replies.borrow_mut());
+        client.send(&bytes).unwrap();
+        returned.extend(bytes);
+    };
+    wait_for(|| {
+        pump(&mut host);
+        host.mode(Mode::BRACKETED_PASTE).unwrap() && host.mode(Mode::SGR_MOUSE).unwrap()
+    });
+    // The application asked once. Outer-terminal negotiation must not leak
+    // a second response (or any other bytes) into its raw input.
+    wait_for(|| std::fs::read(&input).unwrap_or_default() == b"\x1b[1;11R");
+
+    let mut pasted = *b"one\ntwo";
+    let mut encoded = [0; 64];
+    let size = libghostty_vt::paste::encode(
+        &mut pasted,
+        host.mode(Mode::BRACKETED_PASTE).unwrap(),
+        &mut encoded,
+    )
+    .unwrap();
+    client.send(&encoded[..size]).unwrap();
+    let mut expected = b"\x1b[1;11R\x1b[200~one\ntwo\x1b[201~".to_vec();
+    wait_for(|| std::fs::read(&input).unwrap() == expected);
+
+    // Protocol input only: no desktop mouse event or clipboard API is used.
+    let mut mouse = mouse::Encoder::new().unwrap();
+    mouse
+        .set_options_from_terminal(&host)
+        .set_size(mouse::EncoderSize {
+            screen_width: 800,
+            screen_height: 480,
+            cell_width: 10,
+            cell_height: 20,
+            padding_top: 0,
+            padding_bottom: 0,
+            padding_left: 0,
+            padding_right: 0,
+        });
+    let mut event = mouse::Event::new().unwrap();
+    event
+        .set_action(mouse::Action::Press)
+        .set_button(Some(mouse::Button::Left))
+        .set_position(mouse::Position { x: 20.0, y: 20.0 });
+    let size = mouse.encode(&event, &mut encoded).unwrap();
+    assert_eq!(&encoded[..size], b"\x1b[<0;3;2M");
+    client.send(&encoded[..size]).unwrap();
+    expected.extend_from_slice(b"\x1b[<0;3;2M");
+    wait_for(|| std::fs::read(&input).unwrap() == expected);
+    let mut keys = key::Encoder::new().unwrap();
+    keys.set_options_from_terminal(&host);
+    let mut event = key::Event::new().unwrap();
+    event
+        .set_action(key::Action::Press)
+        .set_key(key::Key::ArrowUp);
+    let size = keys.encode(&event, &mut encoded).unwrap();
+    client.send(&encoded[..size]).unwrap();
+    expected.extend_from_slice(b"\x1b[A");
+    wait_for(|| std::fs::read(&input).unwrap() == expected);
+    server
+        .run(&["set-buffer", "-w", "fixture clipboard"])
+        .unwrap();
+    wait_for(|| {
+        pump(&mut host);
+        clipboard
+            .borrow()
+            .iter()
+            .any(|(_, data)| data == "fixture clipboard")
+    });
+    assert!(
+        !returned.is_empty(),
+        "outer-terminal queries produced no replies"
+    );
+    client.send(b"END").unwrap();
+    expected.extend_from_slice(b"END");
+    wait_for(|| std::fs::read(&input).unwrap() == expected);
+}

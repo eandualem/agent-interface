@@ -5336,6 +5336,7 @@ dependencies = [
  "block2 0.6.2",
  "dispatch2",
  "libc",
+ "libghostty-vt",
  "objc2 0.6.5",
  "objc2-core-foundation",
  "objc2-core-graphics",
