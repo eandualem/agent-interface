@@ -23,7 +23,7 @@ use gpui::{
 };
 use tmux_workspaces_term::{
     Attributes, Color, Screen, Style, Underline, Width,
-    input::{Input, KeyPress, Scroll},
+    input::{Button, Input, KeyPress, Pointer, Scroll},
 };
 use tmux_workspaces_tmux::control::PaneId;
 
@@ -103,6 +103,7 @@ pub struct TerminalView {
     input_rejection: Option<String>,
     closed_reported: bool,
     wheel: Option<(PaneId, f32)>,
+    secondary_press: Option<(PaneId, Button)>,
 }
 
 pub(crate) struct Disconnected;
@@ -243,6 +244,7 @@ impl TerminalView {
             input_rejection: None,
             closed_reported: false,
             wheel: None,
+            secondary_press: None,
         }
     }
 
@@ -419,7 +421,12 @@ impl TerminalView {
         }
     }
 
-    fn selection_up(&mut self, event: &gpui::MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
+    fn selection_up(
+        &mut self,
+        event: &gpui::MouseUpEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let mut grid = self.grid.borrow_mut();
         let position = grid
             .selection
@@ -439,10 +446,108 @@ impl TerminalView {
             }
             selection.dragging = false;
         }
+        let click = grid
+            .selection
+            .as_ref()
+            .filter(|selection| {
+                selection.is_empty() && event.click_count == 1 && self.input == Some(selection.pane)
+            })
+            .and_then(|selection| {
+                pointer_at(
+                    &grid,
+                    selection.pane,
+                    event.position,
+                    window.scale_factor(),
+                    event.modifiers,
+                )
+                .map(|pointer| (selection.pane, pointer))
+            });
         if grid.selection.as_ref().is_some_and(Selection::is_empty) {
             grid.selection = None;
         }
+        drop(grid);
+        if let Some((pane, pointer)) = click {
+            self.send_click(pane, pointer, Button::Left, cx);
+        }
         cx.notify();
+    }
+
+    fn send_click(
+        &mut self,
+        pane: PaneId,
+        pointer: Pointer,
+        button: Button,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.panes().is_finished()
+            && self
+                .input_queue
+                .try_send((pane, Input::Click(pointer, button)))
+                .is_err()
+        {
+            self.input_rejection = Some("Click was not sent: terminal queue is busy or disconnected. Click the terminal to dismiss.".into());
+            cx.notify();
+        }
+    }
+
+    fn secondary_down(
+        &mut self,
+        event: &gpui::MouseDownEvent,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) {
+        let grid = self.grid.borrow();
+        let pane = grid.bounds.and_then(|bounds| {
+            hit_pane(
+                &grid.layout,
+                &grid.screens,
+                grid.cell,
+                bounds,
+                event.position,
+            )
+        });
+        let button = if event.button == gpui::MouseButton::Right {
+            Button::Right
+        } else {
+            Button::Middle
+        };
+        self.secondary_press = pane
+            .filter(|pane| {
+                !grid
+                    .selection
+                    .as_ref()
+                    .is_some_and(|selection| selection.pane == *pane && !selection.is_empty())
+            })
+            .map(|pane| (pane, button));
+    }
+
+    fn secondary_up(
+        &mut self,
+        event: &gpui::MouseUpEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((pane, button)) = self.secondary_press.take() else {
+            return;
+        };
+        let released = if event.button == gpui::MouseButton::Right {
+            Button::Right
+        } else {
+            Button::Middle
+        };
+        if released != button {
+            return;
+        }
+        let pointer = pointer_at(
+            &self.grid.borrow(),
+            pane,
+            event.position,
+            window.scale_factor(),
+            event.modifiers,
+        );
+        if let Some(pointer) = pointer {
+            self.send_click(pane, pointer, button, cx);
+        }
     }
 }
 
@@ -483,7 +588,7 @@ impl Render for TerminalView {
             .bg(background)
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::key_down))
-            .on_scroll_wheel(cx.listener(|view, event: &gpui::ScrollWheelEvent, _, cx| {
+            .on_scroll_wheel(cx.listener(|view, event: &gpui::ScrollWheelEvent, window, cx| {
                 let grid = view.grid.borrow();
                 let Some(pane) = grid.bounds.and_then(|bounds| {
                     hit_pane(
@@ -497,6 +602,7 @@ impl Render for TerminalView {
                     view.wheel = None;
                     return;
                 };
+                let Some(pointer) = pointer_at(&grid, pane, event.position, window.scale_factor(), event.modifiers) else { return; };
                 let delta = match event.delta {
                     gpui::ScrollDelta::Pixels(delta) => {
                         f32::from(delta.y) / f32::from(grid.cell.height).max(1.0)
@@ -515,7 +621,7 @@ impl Render for TerminalView {
                 if rows != 0
                     && view
                         .input_queue
-                        .try_send((pane, Input::Scroll(Scroll::Lines(rows))))
+                        .try_send((pane, Input::Wheel(pointer, rows)))
                         .is_err()
                 {
                     view.input_rejection = Some("Scroll was not applied: terminal queue is busy or disconnected. Click the terminal to dismiss.".into());
@@ -524,6 +630,12 @@ impl Render for TerminalView {
                 cx.stop_propagation();
             }))
             .capture_any_mouse_down(|_, window, _| window.prevent_default())
+            .on_mouse_down(gpui::MouseButton::Right, cx.listener(Self::secondary_down))
+            .on_mouse_down(gpui::MouseButton::Middle, cx.listener(Self::secondary_down))
+            .on_mouse_up(gpui::MouseButton::Right, cx.listener(Self::secondary_up))
+            .on_mouse_up_out(gpui::MouseButton::Right, cx.listener(Self::secondary_up))
+            .on_mouse_up(gpui::MouseButton::Middle, cx.listener(Self::secondary_up))
+            .on_mouse_up_out(gpui::MouseButton::Middle, cx.listener(Self::secondary_up))
             .on_mouse_up(gpui::MouseButton::Left, cx.listener(Self::selection_up))
             .on_mouse_up_out(gpui::MouseButton::Left, cx.listener(Self::selection_up))
             .on_mouse_down_out(cx.listener(|view, event: &gpui::MouseDownEvent, _, cx| { if event.button == gpui::MouseButton::Left { view.clear_selection(cx); } }))
@@ -644,6 +756,32 @@ fn hit_pane(
                 && row < f32::from(pane.top) + f32::from(pane.rows)
         })
         .map(|pane| pane.id)
+}
+
+fn pointer_at(
+    grid: &Grid,
+    id: PaneId,
+    position: gpui::Point<Pixels>,
+    scale: f32,
+    mods: gpui::Modifiers,
+) -> Option<Pointer> {
+    let bounds = grid.bounds?;
+    if hit_pane(&grid.layout, &grid.screens, grid.cell, bounds, position) != Some(id) {
+        return None;
+    }
+    let pane = grid.layout.iter().find(|pane| pane.id == id)?;
+    let position = position - bounds.origin;
+    Some(Pointer {
+        x: f32::from(position.x) / f32::from(grid.cell.width) - f32::from(pane.left),
+        y: f32::from(position.y) / f32::from(grid.cell.height) - f32::from(pane.top),
+        cols: pane.cols,
+        rows: pane.rows,
+        cell_width: (f32::from(grid.cell.width) * scale).round().max(1.0) as u32,
+        cell_height: (f32::from(grid.cell.height) * scale).round().max(1.0) as u32,
+        shift: mods.shift,
+        control: mods.control,
+        alt: mods.alt,
+    })
 }
 
 fn selection_point(

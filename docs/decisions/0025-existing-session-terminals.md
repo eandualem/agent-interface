@@ -46,7 +46,12 @@ to drain into its latest screen while the selected copy stays visible. Dragging
 selects within that pane; double-click selects a word and triple-click selects
 a row. Native copy writes the selected text to the clipboard and keeps the
 highlight. Escape, typing, explicit scrolling or a new outside click clears it;
-layout changes may clear it too. Selection works on a retained disconnected screen.
+layout changes may clear it too. Selection works on a retained disconnected screen. Completed primary, middle and
+secondary clicks and wheel gestures use the destination's mouse encoder when
+reporting is enabled. Drag selection stays local. Shift, or an already scrolled
+history viewport, keeps wheel navigation local; mouse clicks in that viewport
+are not sent to the running program. A geometry change rejects stale mouse
+coordinates. Pointer motion reports remain pending.
 
 ## Alternatives and limits
 
@@ -56,7 +61,7 @@ renderer in the product itself. No new dependencies or licences are introduced:
 GPUI (Apache-2.0), libghostty-vt (MIT) and tmux (ISC) retain their recorded pins.
 
 Grouped helper sessions, window switching, selection across history pages, input
-methods, key-release events, mouse reporting and tmux prefix compatibility
+methods, key-release events, mouse motion reporting and tmux prefix compatibility
 remain follow-up work under 0003 and 0015. The first connection observes the
 window selected at connection time; it does not promise independent tmux window
 navigation. Scaling preserves source geometry but is not final sizing parity. Selection

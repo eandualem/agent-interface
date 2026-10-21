@@ -40,6 +40,8 @@ and triple-click selects a row. Command-C copies it (Control-Shift-C on Linux).
 Selection keeps its displayed text while new output arrives. Escape, typing or
 a new click outside the selection resumes the updated view. Copies from recovered
 screens currently retain their displayed row breaks, including wrapped lines.
+For programs with mouse reporting enabled, ordinary clicks and wheel gestures
+reach the program. Hold Shift to keep scrolling local to the native viewer.
 **Open library…** chooses another folder containing `layouts.db`.
 
 Existing ordinary shells use the Python library's shell server; attachments use
@@ -52,7 +54,7 @@ scales down when the existing terminal is larger than its native pane.
 Changes saved by the Python app refresh automatically. Native navigation and
 pane expansion are local, and the app does not write saved layouts. Attached
 sessions currently show the window selected at connection time. Custom tmux
-prefix bindings, terminal mouse reporting, selection across history pages, input methods
+prefix bindings, terminal mouse motion reporting, selection across history pages, input methods
 and key-release events are not yet wired into the product UI.
 
 Omit `--data-dir` to use the Python-compatible environment and default library
