@@ -43,6 +43,14 @@ impl Selection {
         selection
     }
 
+    pub fn reselect(&self, row: u16, col: u16, clicks: usize) -> Self {
+        Self::new(self.pane, self.screen.clone(), row, col, clicks)
+    }
+
+    pub fn uses_boundaries(&self) -> bool {
+        matches!(self.unit, Unit::Character)
+    }
+
     pub fn extend(&mut self, row: u16, col: u16) {
         self.head = self.unit_at(row, col);
     }
@@ -189,7 +197,7 @@ mod tests {
         assert_eq!(wide.text(), "界");
         let word = Selection::new(PaneId(1), selection.screen.clone(), 2, 2, 2);
         assert_eq!(word.text(), "last");
-        let line = Selection::new(PaneId(1), selection.screen.clone(), 2, 2, 3);
+        let line = selection.reselect(2, 2, 3);
         assert_eq!(line.text(), "last");
         selection.extend(2, 4);
         assert_eq!(selection.text(), "ab界e\u{301}fg\nlast");

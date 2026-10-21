@@ -38,7 +38,7 @@ Shift-Home/End goes to the oldest output or the live screen. Typing or pasting
 returns to live output. Drag to select visible text; double-click selects a word
 and triple-click selects a row. Command-C copies it (Control-Shift-C on Linux).
 Selection keeps its displayed text while new output arrives. Escape, typing or
-a new click outside the selection returns to the live view. Copies from recovered
+a new click outside the selection resumes the updated view. Copies from recovered
 screens currently retain their displayed row breaks, including wrapped lines.
 **Open library…** chooses another folder containing `layouts.db`.
 
