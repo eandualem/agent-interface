@@ -24,6 +24,7 @@ pub struct Screen {
     /// Every cell's text, concatenated in row-major order.
     text: String,
     cursor: Cursor,
+    wrapped: Vec<bool>,
 }
 
 /// One cell of a [`Screen`]. Its text is read through [`Screen::cell`].
@@ -174,7 +175,7 @@ impl Screen {
     /// Returns the number of bytes this screen's display data takes: what a
     /// copy of it hands to the user interface.
     pub fn size_in_bytes(&self) -> usize {
-        self.cells.len() * size_of::<Cell>() + self.text.len()
+        self.cells.len() * size_of::<Cell>() + self.text.len() + self.wrapped.len()
     }
 
     /// Empties the screen and sets its size, keeping its allocations. Then
@@ -185,6 +186,8 @@ impl Screen {
         self.cells.clear();
         self.text.clear();
         self.cursor = Cursor::default();
+        self.wrapped.clear();
+        self.wrapped.resize(usize::from(rows), false);
     }
 
     /// Adds the next cell, after the cells already pushed.
@@ -197,6 +200,18 @@ impl Screen {
             style,
         });
         self.text.push_str(text);
+    }
+
+    /// Whether a row continues directly onto the next row without a line break.
+    pub fn row_wrapped(&self, row: u16) -> bool {
+        self.wrapped.get(usize::from(row)).copied().unwrap_or(false)
+    }
+
+    /// Records a row's soft-wrap flag when copying terminal display data.
+    pub fn set_row_wrapped(&mut self, row: u16, wrapped: bool) {
+        if let Some(value) = self.wrapped.get_mut(usize::from(row)) {
+            *value = wrapped;
+        }
     }
 
     /// Sets the cursor.

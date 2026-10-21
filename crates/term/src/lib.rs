@@ -142,7 +142,13 @@ impl Terminal {
             snapshot.rows().map_err(Error)?,
         );
         let mut rows = self.rows.update(&snapshot).map_err(Error)?;
+        let mut row_number = 0;
         while let Some(row) = rows.next() {
+            screen.set_row_wrapped(
+                row_number,
+                row.raw_row().map_err(Error)?.is_wrapped().map_err(Error)?,
+            );
+            row_number += 1;
             let mut cells = self.cells.update(row).map_err(Error)?;
             while let Some(cell) = cells.next() {
                 let raw = cell.raw_cell().map_err(Error)?;
