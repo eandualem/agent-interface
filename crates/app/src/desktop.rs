@@ -1231,8 +1231,11 @@ impl Render for Browser {
                             }
                             cx.stop_propagation();
                             cx.notify();
+                            return;
                         }
-                        return;
+                        if chooser.view.read(cx).composing(cx) {
+                            return;
+                        }
                     }
                     if key.modifiers.platform
                         && key.modifiers.shift
