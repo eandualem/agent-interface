@@ -6,9 +6,10 @@ terminal panes that the app draws itself. tmux runs every shell, and the app is
 a tmux client.
 
 This page describes the process model, crate boundaries and data flow. So far the code is the Cargo
-workspace, its build, its test fixtures, the first parts of the terminal path
-and the benchmark harness. Features come after the milestone-0
-measurements.
+workspace, its build, its test fixtures, the terminal path, the benchmark harness
+and a read-only native library browser.
+Terminal connection integration and milestone-0 performance acceptance remain
+unfinished.
 
 ## The design at a glance
 
@@ -68,7 +69,7 @@ The repository is a Cargo workspace. Each crate above is a package under
 | `crates/roster` | Crate documentation stating its responsibility; no code yet. |
 | `crates/tmux` | `control`, the decoder for a control-mode client's output: pane output with tmux's escaping removed, command replies and notifications. `layout`, which reads visible pane rectangles (including zoom) from layout notifications. `capture`, which reads a pane's rows and pending parser bytes from `capture-pane`, and `recovery`, the commands and reply handling that rebuild a pane's state. |
 | `crates/term` | `Terminal`, the wrapper around the terminal engine: it creates a terminal with grapheme clustering on, feeds it bytes, and copies the visible screen into a `Screen`, owned display data that any thread can hold. `restore`, which builds a terminal from a pane's state as tmux holds it. |
-| `crates/app` | The `tmux-workspaces` binary, which only prints its version, and a library with library path and shell identity lookup plus a read-only storage worker and per-window layout reconciliation and viewing history (`library`), and the terminal path: `panes` starts from captured pane state, keeps each terminal on a worker thread and hands over owned display data, and `view` draws it with GPUI. The `bench-window` example draws one tmux window with them for the benchmarks; there is no app window yet. Initial capture, right-margin recovery and recovery after visible layout changes are integrated. Driving tmux geometry from native window resizing, changing windows and retrying failed attachments still belong to the full connection lifecycle. |
+| `crates/app` | The `tmux-workspaces` binary opens a native read-only library browser (`desktop`), with workspace/tab navigation and saved split previews. The library provides library path and shell identity lookup plus a read-only storage worker and per-window layout reconciliation and viewing history (`library`), and the terminal path: `panes` starts from captured pane state, keeps each terminal on a worker thread and hands over owned display data, and `view` draws it with GPUI. The `bench-window` example draws one tmux window with them for the benchmarks; the product browser does not connect terminal sessions yet. Initial capture, right-margin recovery and recovery after visible layout changes are integrated. Driving tmux geometry from native window resizing, changing windows and retrying failed attachments still belong to the full connection lifecycle. |
 | `crates/test-support` | Development-only fixtures. `TmuxServer` starts the private tmux servers that tests use, and control-mode clients on them. |
 | `crates/bench`, `crates/bench-rio` | The development-only benchmark harness and its separate `rio-vt` program. |
 | `docs/` | Architecture, design and contributor documentation. |
