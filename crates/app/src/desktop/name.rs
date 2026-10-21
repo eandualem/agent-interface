@@ -50,8 +50,8 @@ impl Text {
             .collect();
         let end = range.start + inserted.len();
         self.value.replace_range(range.clone(), &inserted);
-        self.anchor = end;
-        self.cursor = end;
+        self.cursor = if marked { end } else { self.snap(end) };
+        self.anchor = self.cursor;
         self.marked = (marked && end > range.start).then_some(range.start..end);
         range.start..end
     }
@@ -68,6 +68,14 @@ impl Text {
             self.anchor = inserted.start + from_utf16(value, selection.start);
             self.cursor = inserted.start + from_utf16(value, selection.end);
         }
+    }
+
+    fn snap(&self, offset: usize) -> usize {
+        self.value
+            .grapheme_indices(true)
+            .map(|(i, _)| i)
+            .find(|i| *i >= offset)
+            .unwrap_or(self.value.len())
     }
 
     fn boundary(&self, right: bool) -> usize {
@@ -137,9 +145,9 @@ impl NameField {
 
     fn hit(&self, position: Point<Pixels>) -> usize {
         match (&self.line, self.bounds) {
-            (Some(line), Some(bounds)) if line.text.as_ref() == self.text.value => {
-                line.closest_index_for_x(position.x - bounds.left() + self.scroll)
-            }
+            (Some(line), Some(bounds)) if line.text.as_ref() == self.text.value => self
+                .text
+                .snap(line.closest_index_for_x(position.x - bounds.left() + self.scroll)),
             _ => self.text.cursor,
         }
     }
@@ -301,6 +309,8 @@ impl EntityInputHandler for NameField {
     }
     fn unmark_text(&mut self, _: &mut Window, cx: &mut Context<Self>) {
         self.text.marked = None;
+        self.text.anchor = self.text.snap(self.text.anchor);
+        self.text.cursor = self.text.snap(self.text.cursor);
         cx.notify();
     }
     fn replace_text_in_range(
@@ -386,12 +396,6 @@ impl Render for NameField {
                     cx.notify();
                 }),
             )
-            .on_mouse_move(cx.listener(|field, event: &gpui::MouseMoveEvent, _, cx| {
-                if field.dragging {
-                    field.text.cursor = field.hit(event.position);
-                    cx.notify();
-                }
-            }))
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|field, _, _, _| field.dragging = false),
@@ -411,6 +415,17 @@ impl Render for NameField {
                             cx,
                         );
                         entity.update(cx, |field, cx| field.paint(bounds, window, cx));
+                        let field = entity.downgrade();
+                        window.on_mouse_event(move |event: &gpui::MouseMoveEvent, phase, _, cx| {
+                            if phase == gpui::DispatchPhase::Capture {
+                                let _ = field.update(cx, |field, cx| {
+                                    if field.dragging {
+                                        field.text.cursor = field.hit(event.position);
+                                        cx.notify();
+                                    }
+                                });
+                            }
+                        });
                     },
                 )
                 .size_full(),
@@ -421,6 +436,29 @@ impl Render for NameField {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn insertion_snaps_to_the_end_of_a_joined_grapheme_except_during_composition() {
+        let mut text = Text {
+            value: "🇸".into(),
+            ..Text::default()
+        };
+        text.replace(None, "🇺", false);
+        assert_eq!(text.value, "🇺🇸");
+        assert_eq!(text.cursor, text.value.len());
+        text.anchor = text.boundary(false);
+        text.replace(None, "", false);
+        assert!(text.value.is_empty());
+
+        text.value = "🇸".into();
+        text.compose(None, "🇺", Some(2..2));
+        assert_eq!(
+            text.cursor, 4,
+            "IME offsets retain their exact insertion position"
+        );
+        text.replace(None, "🇺", false);
+        assert_eq!(text.cursor, 8);
+    }
 
     #[test]
     fn composition_selection_is_relative_to_inserted_text_in_utf16() {
