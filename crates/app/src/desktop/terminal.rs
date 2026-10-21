@@ -7,9 +7,10 @@ use crate::{
     view::{Appearance, TerminalView},
 };
 use futures::channel::mpsc::{self, UnboundedReceiver};
-use gpui::{Context, Entity, Render, Task, Window, div, prelude::*, rgb};
+use gpui::{Context, Entity, Render, SharedString, Task, Window, div, prelude::*, rgb};
 use std::{path::PathBuf, sync::Arc};
 use tmux_workspaces_core::Leaf;
+use tmux_workspaces_tmux::connection::SessionWindow;
 
 #[derive(Clone, PartialEq, Eq)]
 pub(super) struct Target {
@@ -22,6 +23,8 @@ struct Ready {
     panes: Option<Arc<Panes>>,
     layout: Option<tmux_workspaces_tmux::layout::Change>,
     input: tmux_workspaces_tmux::control::PaneId,
+    windows: Vec<SessionWindow>,
+    window: u32,
     updates: Option<UnboundedReceiver<()>>,
 }
 
@@ -36,6 +39,10 @@ impl Drop for Ready {
 }
 
 fn connect(target: Target) -> Result<Ready, String> {
+    connect_selected(target, None)
+}
+
+fn connect_selected(target: Target, selected: Option<SessionWindow>) -> Result<Ready, String> {
     let (socket, session) = if let Some(attachment) = &target.leaf.attachment {
         let socket = match &attachment.source_socket {
             Some(path) => {
@@ -54,8 +61,13 @@ fn connect(target: Target) -> Result<Ready, String> {
             library::ordinary_session(&target.leaf.id).ok_or("Invalid saved shell identity")?;
         (socket, session)
     };
-    let connection =
-        tmux_workspaces_tmux::connection::connect(&socket, &session).map_err(|e| e.to_string())?;
+    let connection = match selected {
+        Some(window) => {
+            tmux_workspaces_tmux::connection::connect_window(&socket, &session, &window)
+        }
+        None => tmux_workspaces_tmux::connection::connect(&socket, &session),
+    }
+    .map_err(|e| e.to_string())?;
     let (wake, updates) = mpsc::unbounded();
     let panes = Panes::start(connection.client, &connection.layout, 10_000, move || {
         let _ = wake.unbounded_send(());
@@ -63,6 +75,8 @@ fn connect(target: Target) -> Result<Ready, String> {
     .map_err(|e| e.to_string())?;
     Ok(Ready {
         panes: Some(Arc::new(panes)),
+        window: connection.layout.window,
+        windows: connection.windows,
         layout: Some(connection.layout),
         input: connection.input,
         updates: Some(updates),
@@ -74,6 +88,8 @@ pub(super) struct LiveTerminal {
     view: Option<Entity<TerminalView>>,
     error: Option<String>,
     connecting: bool,
+    windows: Vec<SessionWindow>,
+    selected_window: Option<u32>,
     task: Option<Task<()>>,
     closed: Option<gpui::Subscription>,
 }
@@ -91,6 +107,8 @@ impl LiveTerminal {
             view: None,
             error: None,
             connecting: false,
+            windows: Vec::new(),
+            selected_window: None,
             task: None,
             closed: None,
         };
@@ -99,20 +117,29 @@ impl LiveTerminal {
     }
 
     fn start(&mut self, cx: &mut Context<Self>) {
+        self.start_window(None, cx);
+    }
+
+    fn start_window(&mut self, selected: Option<SessionWindow>, cx: &mut Context<Self>) {
         self.closed = None;
         self.view = None;
         self.error = None;
         self.connecting = true;
         let target = self.target.clone();
-        let connection = cx
-            .background_executor()
-            .spawn(async move { connect(target) });
+        let connection = cx.background_executor().spawn(async move {
+            match selected {
+                Some(window) => connect_selected(target, Some(window)),
+                None => connect(target),
+            }
+        });
         self.task = Some(cx.spawn(async move |this, cx| {
             let result = connection.await;
             let _ = this.update(cx, |terminal, cx| {
                 terminal.connecting = false;
                 match result {
                     Ok(mut ready) => {
+                        terminal.windows = std::mem::take(&mut ready.windows);
+                        terminal.selected_window = Some(ready.window);
                         let view = cx.new(|cx| {
                             TerminalView::embedded(
                                 ready.panes.take().unwrap(),
@@ -142,6 +169,55 @@ impl LiveTerminal {
 
 impl Render for LiveTerminal {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let mut windows = div()
+            .id("tmux-windows")
+            .flex()
+            .overflow_x_scroll()
+            .text_xs();
+        for item in &self.windows {
+            let selected = item.clone();
+            let name: String = item
+                .name
+                .chars()
+                .map(|ch| if ch.is_control() { ' ' } else { ch })
+                .collect();
+            windows = windows.child(
+                div()
+                    .id(SharedString::from(format!("tmux-window-{}", item.id)))
+                    .px_2()
+                    .py_1()
+                    .flex_shrink_0()
+                    .cursor_pointer()
+                    .when(self.selected_window == Some(item.id), |el| {
+                        el.bg(rgb(0x2a3c58))
+                    })
+                    .child(format!("{}: {name}", item.index))
+                    .when(!self.connecting, |el| {
+                        el.on_click(cx.listener(move |terminal, _, _, cx| {
+                            terminal.start_window(Some(selected.clone()), cx);
+                        }))
+                    }),
+            );
+        }
+        windows = windows.child(
+            div()
+                .id("refresh-windows")
+                .px_2()
+                .py_1()
+                .flex_shrink_0()
+                .cursor_pointer()
+                .child("Refresh")
+                .when(!self.connecting, |el| {
+                    el.on_click(cx.listener(|terminal, _, _, cx| {
+                        let selected = terminal
+                            .windows
+                            .iter()
+                            .find(|window| Some(window.id) == terminal.selected_window)
+                            .cloned();
+                        terminal.start_window(selected, cx);
+                    }))
+                }),
+        );
         div()
             .size_full()
             .flex()
@@ -149,6 +225,7 @@ impl Render for LiveTerminal {
             .min_w_0()
             .min_h_0()
             .overflow_hidden()
+            .child(windows)
             .child(div().flex_1().min_h_0().children(self.view.clone()))
             .when(self.connecting, |el| el.child("Connecting…"))
             .when_some(self.error.clone(), |el, error| {
@@ -198,6 +275,117 @@ mod tests {
             .flat_map(|row| (0..screen.cols()).map(move |col| (row, col)))
             .filter_map(|(row, col)| screen.cell(row, col).map(|(text, _)| text))
             .collect()
+    }
+
+    #[test]
+    fn local_window_selection_streams_and_types_without_switching_the_source() {
+        let server = TmuxServer::start().unwrap();
+        server
+            .run(&[
+                "new-session",
+                "-d",
+                "-s",
+                "window-source",
+                "-x",
+                "80",
+                "-y",
+                "24",
+                "cat",
+            ])
+            .unwrap();
+        let second = server
+            .run(&[
+                "new-window",
+                "-d",
+                "-t",
+                "=window-source:",
+                "-n",
+                "second",
+                "-P",
+                "-F",
+                "#{window_id}",
+                "sh",
+                "-c",
+                "printf 'second-window-ready\\n'; exec cat",
+            ])
+            .unwrap();
+        let socket = server
+            .run(&["display-message", "-p", "#{socket_path}"])
+            .unwrap();
+        let current = || {
+            server
+                .run(&[
+                    "display-message",
+                    "-p",
+                    "-t",
+                    "=window-source:",
+                    "#{window_id}",
+                ])
+                .unwrap()
+        };
+        let original = current();
+        let target = Target {
+            leaf: Leaf {
+                id: "123456abcdef".into(),
+                cwd: None,
+                empty: false,
+                attachment: Some(Attachment {
+                    session: "window-source".into(),
+                    source_socket: Some(socket.trim().into()),
+                }),
+            },
+            directory: None,
+            source: Err("use explicit source".into()),
+        };
+        let first = connect(target.clone()).unwrap();
+        let selected = first
+            .windows
+            .iter()
+            .find(|window| format!("@{}", window.id) == second.trim())
+            .unwrap()
+            .clone();
+        drop(first);
+        let ready = connect_selected(target.clone(), Some(selected.clone())).unwrap();
+        assert_eq!(ready.window, selected.id);
+        let panes = ready.panes.as_ref().unwrap();
+        let wait = |marker: &str| {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                if let Some(update) = panes.take_update()
+                    && update
+                        .screens
+                        .iter()
+                        .any(|(_, screen)| text(screen).contains(marker))
+                {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "missing {marker}: {:?}",
+                    panes.failure()
+                );
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        };
+        wait("second-window-ready");
+        panes
+            .send_input(ready.input, b"selected-window-input\r")
+            .unwrap();
+        wait("selected-window-input");
+        assert_eq!(current(), original);
+        let original_text = server
+            .run(&["capture-pane", "-p", "-t", "=window-source:"])
+            .unwrap();
+        assert!(!original_text.contains("selected-window-input"));
+        drop(ready);
+        server.run(&["kill-window", "-t", second.trim()]).unwrap();
+        assert!(connect_selected(target, Some(selected)).is_err());
+        assert_eq!(current(), original);
+        assert!(
+            server
+                .run(&["has-session", "-t", "=window-source:"])
+                .is_ok()
+        );
     }
 
     #[test]

@@ -58,7 +58,10 @@ scales down when the existing terminal is larger than its native pane.
 
 Changes saved by the Python app refresh automatically. Native navigation and
 pane expansion are local, and the app does not write saved layouts. Attached
-sessions currently show the window selected at connection time. Custom tmux
+sessions start on the source’s current window. Use the window names above a
+terminal to view another existing tmux window without switching other clients.
+Refresh reloads that list; changing workspace tabs currently resets this local
+window choice. Custom tmux
 prefix bindings, terminal mouse motion reporting, selection across history pages, input methods
 and key-release events are not yet wired into the product UI.
 
