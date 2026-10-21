@@ -349,6 +349,7 @@ impl Browser {
         self.stop_reader(cx);
         self.saving = true;
         self.save_failed = false;
+        self.save_notice = None;
         self.error = None;
         // Closing this window does not cancel a save while the app is running.
         // SQLite and its busy timeout never run on the UI thread.
