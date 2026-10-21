@@ -29,6 +29,9 @@ use tmux_workspaces_tmux::control::PaneId;
 
 use crate::panes::{PaneLayout, Panes};
 
+mod selection;
+use selection::Selection;
+
 /// The font and colours of the terminal grid.
 #[derive(Clone, Debug)]
 pub struct Appearance {
@@ -119,6 +122,7 @@ struct Grid {
     bounds: Option<Bounds<Pixels>>,
     original_cell: Size<Pixels>,
     original_font_size: f32,
+    selection: Option<Selection>,
 }
 
 impl TerminalView {
@@ -228,6 +232,7 @@ impl TerminalView {
                 bounds: None,
                 batch_ascii,
                 font,
+                selection: None,
             })),
             input: (!embedded).then_some(input),
             focus,
@@ -259,6 +264,9 @@ impl TerminalView {
             return;
         };
         let mut grid = self.grid.borrow_mut();
+        if grid.layout != update.layout {
+            grid.selection = None;
+        }
         grid.layout = update.layout;
         let visible: Vec<_> = grid.layout.iter().map(|pane| pane.id).collect();
         grid.screens.retain(|id, _| visible.contains(id));
@@ -271,6 +279,41 @@ impl TerminalView {
     }
 
     fn key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+        let key = &event.keystroke;
+        let copy = (key.modifiers.platform
+            && !key.modifiers.control
+            && !key.modifiers.alt
+            && key.key == "c")
+            || (!cfg!(target_os = "macos")
+                && key.modifiers.control
+                && key.modifiers.shift
+                && !key.modifiers.alt
+                && key.key == "c");
+        if copy {
+            if let Some(selection) = self
+                .grid
+                .borrow()
+                .selection
+                .as_ref()
+                .filter(|selection| !selection.is_empty())
+            {
+                cx.write_to_clipboard(gpui::ClipboardItem::new_string(selection.text()));
+            }
+            cx.stop_propagation();
+            return;
+        }
+        if key.key == "escape"
+            && self
+                .grid
+                .borrow()
+                .selection
+                .as_ref()
+                .is_some_and(|selection| !selection.is_empty())
+        {
+            self.clear_selection(cx);
+            cx.stop_propagation();
+            return;
+        }
         let Some(input) = self.input.filter(|input| {
             self.grid
                 .borrow()
@@ -338,8 +381,51 @@ impl TerminalView {
             if self.input_queue.try_send((input, operation)).is_err() {
                 self.input_rejection = Some("Input was not sent: terminal queue is busy or disconnected. Click the terminal to dismiss.".into());
                 cx.notify();
+            } else {
+                self.clear_selection(cx);
             }
         }
+    }
+
+    fn clear_selection(&mut self, cx: &mut Context<Self>) {
+        if self.grid.borrow_mut().selection.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    fn selection_move(
+        &mut self,
+        event: &gpui::MouseMoveEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let mut grid = self.grid.borrow_mut();
+        let Some(selection) = grid
+            .selection
+            .as_ref()
+            .filter(|selection| selection.dragging)
+        else {
+            return;
+        };
+        if !event.dragging() {
+            return;
+        }
+        let pane = selection.pane;
+        if let Some((row, col)) = selection_point(&grid, pane, event.position, true) {
+            grid.selection.as_mut().unwrap().extend(row, col);
+            cx.notify();
+        }
+    }
+
+    fn selection_up(&mut self, _: &gpui::MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
+        let mut grid = self.grid.borrow_mut();
+        if let Some(selection) = &mut grid.selection {
+            selection.dragging = false;
+        }
+        if grid.selection.as_ref().is_some_and(Selection::is_empty) {
+            grid.selection = None;
+        }
+        cx.notify();
     }
 }
 
@@ -400,6 +486,7 @@ impl Render for TerminalView {
                     gpui::ScrollDelta::Lines(delta) => delta.y,
                 };
                 drop(grid);
+                view.clear_selection(cx);
                 let previous = view
                     .wheel
                     .filter(|(id, _)| *id == pane)
@@ -419,14 +506,18 @@ impl Render for TerminalView {
                 cx.stop_propagation();
             }))
             .capture_any_mouse_down(|_, window, _| window.prevent_default())
+            .on_mouse_move(cx.listener(Self::selection_move))
+            .on_mouse_up(gpui::MouseButton::Left, cx.listener(Self::selection_up))
+            .on_mouse_up_out(gpui::MouseButton::Left, cx.listener(Self::selection_up))
+            .on_mouse_down_out(cx.listener(|view, event: &gpui::MouseDownEvent, _, cx| { if event.button == gpui::MouseButton::Left { view.clear_selection(cx); } }))
             .on_mouse_down(
                 gpui::MouseButton::Left,
                 cx.listener(|view, event: &gpui::MouseDownEvent, window, cx| {
                     // track_focus otherwise focuses the entire div, including
                     // blank padding and separators. Only a ready cell can arm input.
                     window.prevent_default();
-                    let grid = view.grid.borrow();
-                    view.input = grid.bounds.and_then(|bounds| {
+                    let mut grid = view.grid.borrow_mut();
+                    let hit = grid.bounds.and_then(|bounds| {
                         hit_pane(
                             &grid.layout,
                             &grid.screens,
@@ -435,14 +526,24 @@ impl Render for TerminalView {
                             event.position,
                         )
                     });
-                    if view.input.is_some() && !view.panes().is_finished() {
+                    view.input = hit.filter(|_| !view.panes().is_finished());
+                    if let Some(pane) = hit {
+                        let (row, cell) = selection_point(&grid, pane, event.position, false).unwrap();
+                        let keep = event.click_count == 1 && grid.selection.as_ref().is_some_and(|selection| selection.pane == pane && selection.contains(row, cell));
+                        if keep {
+                            grid.selection.as_mut().unwrap().dragging = false;
+                        } else {
+                            let (row, col) = selection_point(&grid, pane, event.position, event.click_count < 2).unwrap();
+                            let screen = grid.screens[&pane].clone();
+                            grid.selection = Some(Selection::new(pane, screen, row, col, event.click_count));
+                        }
                         view.input_rejection = None;
-                        cx.notify();
                         window.focus(&view.focus, cx);
                     } else {
-                        view.input = None;
+                        grid.selection = None;
                         window.blur(cx);
                     }
+                    cx.notify();
                 }),
             )
             .child(
@@ -518,6 +619,27 @@ fn hit_pane(
         .map(|pane| pane.id)
 }
 
+fn selection_point(
+    grid: &Grid,
+    id: PaneId,
+    position: gpui::Point<Pixels>,
+    boundary: bool,
+) -> Option<(u16, u16)> {
+    let pane = grid
+        .layout
+        .iter()
+        .find(|pane| pane.id == id && pane.cols > 0 && pane.rows > 0)?;
+    let position = position - grid.bounds?.origin;
+    let x = f32::from(position.x) / f32::from(grid.cell.width) - f32::from(pane.left);
+    let y = f32::from(position.y) / f32::from(grid.cell.height) - f32::from(pane.top);
+    let row = y.floor().clamp(0.0, f32::from(pane.rows - 1)) as u16;
+    let col = (x + if boundary { 0.5 } else { 0.0 }).floor().clamp(
+        0.0,
+        f32::from(if boundary { pane.cols } else { pane.cols - 1 }),
+    ) as u16;
+    Some((row, col))
+}
+
 impl Grid {
     fn fit(&mut self, bounds: Bounds<Pixels>) {
         let cols = self
@@ -550,7 +672,14 @@ impl Grid {
 
     fn paint(&self, bounds: Bounds<Pixels>, window: &mut Window, cx: &mut App) {
         for pane in &self.layout {
-            let Some(screen) = self.screens.get(&pane.id) else {
+            let selection = self
+                .selection
+                .as_ref()
+                .filter(|selection| selection.pane == pane.id && !selection.is_empty());
+            let Some(screen) = selection
+                .map(|selection| &selection.screen)
+                .or_else(|| self.screens.get(&pane.id))
+            else {
                 continue;
             };
             let origin = bounds.origin
@@ -560,8 +689,9 @@ impl Grid {
                 );
             for row in 0..screen.rows() {
                 let y = origin.y + self.cell.height * f32::from(row);
-                self.paint_backgrounds(screen, row, origin.x, y, window);
-                self.paint_text(screen, row, origin.x, y, window, cx);
+                let selected = selection.map_or(0..0, |selection| selection.row_range(row));
+                self.paint_backgrounds(screen, row, origin.x, y, selected.clone(), window);
+                self.paint_text(screen, row, origin.x, y, selected, window, cx);
             }
         }
     }
@@ -573,6 +703,7 @@ impl Grid {
         row: u16,
         x: Pixels,
         y: Pixels,
+        selected: std::ops::Range<u16>,
         window: &mut Window,
     ) {
         let cursor = screen.cursor();
@@ -587,7 +718,9 @@ impl Grid {
                 let is_cursor = cursor.visible
                     && cursor.row == row
                     && (cursor.col..cursor.col + cursor_cols).contains(&col);
-                if is_cursor {
+                if selected.contains(&col) {
+                    Some(gpui::rgb(0x345b89).into())
+                } else if is_cursor {
                     Some(self.appearance.cursor.into())
                 } else {
                     self.colors(cell.style).1
@@ -609,12 +742,14 @@ impl Grid {
     }
 
     /// Shapes and paints the row's text at the cells' own columns.
+    #[allow(clippy::too_many_arguments)]
     fn paint_text(
         &self,
         screen: &Screen,
         row: u16,
         x: Pixels,
         y: Pixels,
+        selected: std::ops::Range<u16>,
         window: &mut Window,
         cx: &mut App,
     ) {
@@ -631,7 +766,9 @@ impl Grid {
             }
             let is_cursor = cursor.visible && cursor.row == row && cursor.col == col;
             let mut style = self.text_run(cell.style);
-            if is_cursor {
+            if selected.contains(&col) {
+                style.color = gpui::rgb(0xffffff).into();
+            } else if is_cursor {
                 style.color = self.appearance.background.into();
             }
             let text = if text.is_empty() { " " } else { text };

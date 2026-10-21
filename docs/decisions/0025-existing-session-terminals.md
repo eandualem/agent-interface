@@ -41,6 +41,13 @@ returns to live output. Capture recovery retains the local history row, clamped
 to the retained history; pruning or geometry changes can change its contents.
 Command-number tab and Command-Option-number workspace navigation run before terminal key handling.
 
+Selection owns a local copy of the selected pane's display. Live output continues
+to drain into its latest screen while the selected copy stays visible. Dragging
+selects within that pane; double-click selects a word and triple-click selects
+a row. Native copy writes the selected text to the clipboard and keeps the
+highlight. Escape, typing, explicit scrolling or a new outside click clears it;
+layout changes may clear it too. Selection works on a retained disconnected screen.
+
 ## Alternatives and limits
 
 Keeping placeholders cannot support terminal work. A separate demonstration
@@ -48,11 +55,14 @@ window would exercise a different path from saved workspaces. Reuse the chosen
 renderer in the product itself. No new dependencies or licences are introduced:
 GPUI (Apache-2.0), libghostty-vt (MIT) and tmux (ISC) retain their recorded pins.
 
-Grouped helper sessions, window switching, native text selection, input
+Grouped helper sessions, window switching, selection across history pages, input
 methods, key-release events, mouse reporting and tmux prefix compatibility
 remain follow-up work under 0003 and 0015. The first connection observes the
 window selected at connection time; it does not promise independent tmux window
-navigation. Scaling preserves source geometry but is not final sizing parity.
+navigation. Scaling preserves source geometry but is not final sizing parity. Selection
+retains graphemes and joins soft wraps known to the engine, but recovery captures
+currently omit soft-wrap flags (0021): copied recovered rows keep visual line
+breaks. Authoritative captured wrap metadata remains follow-up work.
 
 ## Verification
 
