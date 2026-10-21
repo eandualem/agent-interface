@@ -276,6 +276,39 @@ Reconciliation preserves JSON values, but may normalize numeric spellings and
 formatting. It performs no persistence. The transactional checks, mixed-writer
 tests, migration agreement and write gate above remain outstanding.
 
+## Existing-library save candidate
+
+`Store::open_existing_writable` opens an already initialized version-2 library
+without SQLite's create flag. It refuses missing tables/rows, malformed current
+documents and unexpected column/index/trigger definitions. `Store::save` validates
+local edits, takes `BEGIN IMMEDIATE`, rechecks the schema and current row, then
+reconciles and validates before replacing row 1. Success updates the caller's base
+only after commit. Conflict rolls back and returns the latest arrangement with
+local navigation retained; other errors leave the base and unsaved edits intact.
+The writer uses Python's five-second busy timeout and the reference runtime's
+connection-local foreign-key setting (off). Python leaves this at its SQLite build
+default; the fixture verifies that default rather than assuming every build agrees.
+Bundled SQLite otherwise enables foreign keys by default, allowing
+`REPLACE` to cascade deletions into unrelated extension tables. Journal mode and
+older table records remain unchanged. There is no initialization or legacy import.
+
+The app continues using `Store::open` read-only. This candidate is not wired into
+product editing, and the broader write gate above remains in force. The first
+mixed-process fixtures cover independent renames and conflicting renames with
+explicit retry, with Python and Rust each committing first. Both processes load
+before either saves; reopening in both validates the final record. To run against
+a clean checkout of the pinned Python reference:
+
+```sh
+python3 crates/store/tests/mixed_writers.py /path/to/tmux-workspaces
+```
+
+The script requires Python 3.11+, Cargo and rustc. It creates only temporary
+synthetic databases, never starts tmux, and does not modify the reference checkout.
+Rust tests also exercise malformed/missing current rows, schema changes and
+commit failure under a retained reader lock. Concurrent structural edits and the
+remaining write-gate cases still need mixed-process coverage before activation.
+
 ## Saved split geometry
 
 `core::Tab::pane_rectangles` calculates content rectangles without drawing or

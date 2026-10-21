@@ -33,6 +33,127 @@ fn database(directory: &Path, record: &str) -> Connection {
 }
 
 #[test]
+fn transactional_edits_merge_and_conflicts_reset_before_an_explicit_retry() {
+    let directory = tempfile::tempdir().unwrap();
+    let db = database(directory.path(), RECORD);
+    db.execute_batch("CREATE TABLE extension_row(parent INTEGER REFERENCES terminal_layout(id) ON DELETE CASCADE, value TEXT); INSERT INTO extension_row VALUES(1, 'retained')").unwrap();
+    let mut first = Store::open_existing_writable(directory.path()).unwrap();
+    let mut second = Store::open_existing_writable(directory.path()).unwrap();
+    let mut first_base = first.load().unwrap();
+    let mut second_base = second.load().unwrap();
+    let mut a = first_base.model().clone();
+    let mut b = second_base.model().clone();
+    a.workspaces[0].name = "Workspace edit".into();
+    b.workspaces[0].tabs[0].name = "Tab edit".into();
+    b.selected = b.workspaces[1].id.clone();
+    assert!(!first.save(&mut first_base, &a).unwrap().conflict);
+    let saved = second.save(&mut second_base, &b).unwrap();
+    assert!(!saved.conflict);
+    assert_eq!(saved.document.model().workspaces[0].name, "Workspace edit");
+    assert_eq!(
+        saved.document.model().workspaces[0].tabs[0].name,
+        "Tab edit"
+    );
+    assert_eq!(saved.document.model().selected, b.selected);
+    assert_eq!(second_base.raw_json(), second.load().unwrap().raw_json());
+
+    a.workspaces[0].name = "First conflicting edit".into();
+    assert!(!first.save(&mut first_base, &a).unwrap().conflict);
+    b = saved.document.model().clone();
+    b.workspaces[0].name = "Second conflicting edit".into();
+    let committed = first.load().unwrap();
+    let conflict = second.save(&mut second_base, &b).unwrap();
+    assert!(conflict.conflict);
+    assert_eq!(second_base.raw_json(), committed.raw_json());
+    assert_eq!(second.load().unwrap().raw_json(), committed.raw_json());
+    assert_eq!(conflict.document.model().selected, b.selected);
+    b = conflict.document.model().clone();
+    b.workspaces[0].name = "Explicit retry".into();
+    let retry = second.save(&mut second_base, &b).unwrap();
+    assert!(!retry.conflict);
+    assert_eq!(retry.document.model().workspaces[0].name, "Explicit retry");
+    let value: serde_json::Value = serde_json::from_str(second_base.raw_json()).unwrap();
+    assert_eq!(value["extension"]["nullable"], serde_json::Value::Null);
+    assert_eq!(
+        value["extension"]["large"].to_string(),
+        "123456789012345678901234567890"
+    );
+    assert!(!db.is_busy());
+    assert_eq!(
+        db.query_row("SELECT value FROM extension_row", [], |r| r
+            .get::<_, String>(0))
+            .unwrap(),
+        "retained"
+    );
+}
+
+#[test]
+fn writable_open_never_initializes_or_imports_and_save_rechecks_the_current_row() {
+    let directory = tempfile::tempdir().unwrap();
+    assert!(Store::open_existing_writable(directory.path()).is_err());
+    assert!(!directory.path().join("layouts.db").exists());
+    let db = database(directory.path(), RECORD);
+    db.execute_batch("CREATE TABLE layout(id INTEGER PRIMARY KEY, value TEXT); INSERT INTO layout VALUES(1, ' legacy text ')").unwrap();
+    let mut writer = Store::open_existing_writable(directory.path()).unwrap();
+    let mut base = writer.load().unwrap();
+    let original = base.raw_json().to_owned();
+    let mut local = base.model().clone();
+    local.workspaces[0].name = "Unsaved edit".into();
+    for invalid in ["{}", "null"] {
+        db.execute("UPDATE terminal_layout SET value=?1 WHERE id=1", [invalid])
+            .unwrap();
+        assert!(writer.save(&mut base, &local).is_err());
+        assert_eq!(base.raw_json(), original);
+        assert_eq!(local.workspaces[0].name, "Unsaved edit");
+        assert_eq!(
+            db.query_row("SELECT value FROM terminal_layout WHERE id=1", [], |r| {
+                r.get::<_, String>(0)
+            })
+            .unwrap(),
+            invalid
+        );
+    }
+    db.execute("DELETE FROM terminal_layout", []).unwrap();
+    assert!(writer.save(&mut base, &local).is_err());
+    assert!(Store::open_existing_writable(directory.path()).is_err());
+    db.execute("INSERT INTO terminal_layout VALUES(1, ?1)", [RECORD])
+        .unwrap();
+    db.execute_batch("ALTER TABLE terminal_layout ADD COLUMN extra TEXT DEFAULT 'retained'")
+        .unwrap();
+    assert!(writer.save(&mut base, &local).is_err());
+    assert!(Store::open_existing_writable(directory.path()).is_err());
+    assert_eq!(
+        db.query_row("SELECT value FROM layout", [], |r| r.get::<_, String>(0))
+            .unwrap(),
+        " legacy text "
+    );
+    assert_eq!(base.raw_json(), original);
+}
+
+#[test]
+fn failed_commit_preserves_base_and_unsaved_edits_and_releases_the_transaction() {
+    let directory = tempfile::tempdir().unwrap();
+    let db = database(directory.path(), RECORD);
+    let mut writer = Store::open_existing_writable(directory.path()).unwrap();
+    let mut base = writer.load().unwrap();
+    let mut local = base.model().clone();
+    local.workspaces[0].name = "Retry after reader closes".into();
+    db.execute_batch("BEGIN; SELECT value FROM terminal_layout")
+        .unwrap();
+    assert!(writer.save(&mut base, &local).is_err());
+    assert_eq!(base.raw_json(), RECORD);
+    assert_eq!(writer.load().unwrap().raw_json(), RECORD);
+    db.execute_batch("ROLLBACK").unwrap();
+    assert!(!writer.save(&mut base, &local).unwrap().conflict);
+    assert_eq!(writer.load().unwrap().model(), &local);
+    assert_eq!(
+        db.query_row("PRAGMA journal_mode", [], |r| r.get::<_, String>(0))
+            .unwrap(),
+        "delete"
+    );
+}
+
+#[test]
 fn schema_v2_keeps_order_attachments_navigation_and_original_json() {
     let document = parse(RECORD).unwrap();
     assert_eq!(document.raw_json(), RECORD);
