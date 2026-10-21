@@ -35,7 +35,8 @@ focus back to the sidebar, as do structural changes from the shared library.
 
 Use the Python panel organization: workspace chooser in the heading, numbered
 tabs with pane counts, saved split proportions and a compact bottom status row.
-The library reader and conflict handling remain unchanged; no database writer
+Native name editing is added by [0027](0027-native-name-editing.md). In this
+terminal integration, the library reader and conflict handling remain unchanged; no database writer
 or editing controls are enabled. History navigation uses the terminal engine's
 local viewport: wheel/trackpad and Shift-Page Up/Down/Home/End operate on the
 pointed or focused pane. It leaves the shared tmux copy mode unchanged. Typing

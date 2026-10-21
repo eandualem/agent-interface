@@ -9,10 +9,13 @@ use gpui::{
     size,
 };
 use gpui_platform::application;
-use tmux_workspaces_core::{Direction, Node};
+use tmux_workspaces_core::{Direction, NameEdit, Node, RenameOutcome};
+use tmux_workspaces_store::Store;
 
 use crate::library::{Library, Update, WindowLayout};
+mod name;
 mod terminal;
+use name::{NameEvent, NameField};
 use terminal::{LiveTerminal, Target};
 use tmux_workspaces_tmux::connection::SessionWindow;
 
@@ -115,6 +118,13 @@ fn open_browser(
     .map_err(|error| error.to_string())
 }
 
+struct EditingName {
+    target: NameEdit,
+    tab: bool,
+    field: gpui::Entity<NameField>,
+    _events: gpui::Subscription,
+}
+
 #[derive(Default)]
 struct Browser {
     library: Option<Library>,
@@ -129,6 +139,11 @@ struct Browser {
     reset_focus: bool,
     navigation: Option<gpui::FocusHandle>,
     updates: Option<Task<()>>,
+    editing: Option<EditingName>,
+    saving: bool,
+    save_failed: bool,
+    save_notice: Option<String>,
+    name_click: Option<(String, bool)>,
 }
 
 impl Browser {
@@ -143,22 +158,35 @@ impl Browser {
         }
     }
 
-    fn open(&mut self, directory: Option<PathBuf>, cx: &mut Context<Self>) {
+    fn stop_reader(&mut self, cx: &mut Context<Self>) {
         self.updates = None;
-        self.terminals.clear();
-        self.window_choices.clear();
-        self.reset_focus = true;
-        self.directory = directory.clone();
-        // A previous connection may be finishing a bounded SQLite read. Join its
-        // worker off the UI thread so opening another library stays responsive.
         if let Some(previous) = self.library.take() {
             cx.background_executor()
                 .spawn(async move { drop(previous) })
                 .detach();
         }
+    }
+
+    fn open(&mut self, directory: Option<PathBuf>, cx: &mut Context<Self>) {
+        if self.saving || self.save_failed {
+            return;
+        }
+        self.editing = None;
+        self.name_click = None;
+        self.save_notice = None;
+        self.stop_reader(cx);
+        self.terminals.clear();
+        self.window_choices.clear();
+        self.reset_focus = true;
+        self.directory = directory.clone();
         self.layout = None;
         self.error = None;
         self.loading = true;
+        self.start_reader(cx);
+    }
+
+    fn start_reader(&mut self, cx: &mut Context<Self>) {
+        let directory = self.directory.clone();
         let (wake, mut woken) = mpsc::unbounded();
         match Library::start(directory, move || {
             let _ = wake.unbounded_send(());
@@ -211,7 +239,163 @@ impl Browser {
         }
     }
 
+    fn begin_name(&mut self, tab: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.saving || self.save_failed || self.editing.is_some() {
+            return;
+        }
+        if let Some(update) = self.library.as_ref().and_then(Library::take_update) {
+            self.apply(update);
+        }
+        let target = self.layout.as_ref().and_then(|layout| {
+            if tab {
+                layout.model().edit_tab_name()
+            } else {
+                layout.model().edit_workspace_name()
+            }
+        });
+        let Some(target) = target else {
+            return;
+        };
+        let field = cx.new(|cx| NameField::new(target.name(), window, cx));
+        let events = cx.subscribe_in(
+            &field,
+            window,
+            |browser, field, event, window, cx| match event {
+                NameEvent::Save => browser.submit_name(window, cx),
+                NameEvent::Cancel => {
+                    if field.read(cx).focus.is_focused(window)
+                        && let Some(focus) = &browser.navigation
+                    {
+                        window.focus(focus, cx);
+                    }
+                    browser.editing = None;
+                    cx.notify();
+                }
+            },
+        );
+        self.workspace_menu = false;
+        self.reset_focus = false;
+        self.save_notice = None;
+        self.editing = Some(EditingName {
+            target,
+            tab,
+            field,
+            _events: events,
+        });
+        cx.notify();
+    }
+
+    fn submit_name(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(update) = self.library.as_ref().and_then(Library::take_update) {
+            self.apply(update);
+        }
+        let (Some(edit), Some(layout)) = (&self.editing, &mut self.layout) else {
+            return;
+        };
+        match edit
+            .target
+            .apply(layout.model_mut(), edit.field.read(cx).value())
+        {
+            RenameOutcome::Empty => return,
+            RenameOutcome::Changed => {
+                self.editing = None;
+                self.save_notice =
+                    Some("The name or selection changed. Rename it again to retry.".into());
+            }
+            RenameOutcome::Applied => {
+                self.editing = None;
+                self.save(cx);
+            }
+        }
+        if let Some(focus) = &self.navigation {
+            window.focus(focus, cx);
+        }
+        cx.notify();
+    }
+
+    fn save(&mut self, cx: &mut Context<Self>) {
+        if self.saving {
+            return;
+        }
+        let Some(layout) = &self.layout else {
+            return;
+        };
+        let (mut base, local) = layout.save_snapshot();
+        let directory = self.directory.clone();
+        // Discard all pending reads before saving. A fresh reader starts only
+        // after applying the result, so no older snapshot can undo the commit.
+        self.stop_reader(cx);
+        self.saving = true;
+        self.save_failed = false;
+        self.error = None;
+        // Closing this window does not cancel a save while the app is running.
+        // SQLite and its busy timeout never run on the UI thread.
+        let work = cx.background_executor().spawn(async move {
+            let result = crate::library::library_directory(directory.as_deref())
+                .and_then(|directory| Store::open_existing_writable(&directory))
+                .and_then(|mut store| store.save(&mut base, &local));
+            (base, result)
+        });
+        cx.spawn(async move |this, cx| {
+            let (base, result) = work.await;
+            let _ = this.update(cx, |browser, cx| {
+                browser.saving = false;
+                match result {
+                    Ok(result) => {
+                        if let Some(layout) = &mut browser.layout {
+                            browser.reset_focus |= layout.saved(base, &result);
+                        }
+                        browser.start_reader(cx);
+                        if result.conflict {
+                            browser.save_notice = Some("The library changed. Your rename was not saved; rename the latest item to retry.".into());
+                        }
+                    }
+                    Err(error) => {
+                        browser.save_failed = true;
+                        browser.error = Some(format!("Name not saved: {error}. Retry saving."));
+                    }
+                }
+                cx.notify();
+            });
+        }).detach();
+        cx.notify();
+    }
+
+    fn name_editor(&self, cx: &mut Context<Self>) -> AnyElement {
+        let field = self
+            .editing
+            .as_ref()
+            .expect("active name editor")
+            .field
+            .clone();
+        div()
+            .flex()
+            .flex_col()
+            .min_w_0()
+            .w_full()
+            .on_mouse_down_out(cx.listener(|browser, _, _, cx| {
+                browser.editing = None;
+                cx.notify();
+            }))
+            .child(field)
+            .child(
+                div()
+                    .id("save-name")
+                    .cursor_pointer()
+                    .text_xs()
+                    .child("Save name")
+                    .on_click(cx.listener(|browser, _, window, cx| {
+                        cx.stop_propagation();
+                        browser.submit_name(window, cx);
+                    })),
+            )
+            .into_any_element()
+    }
+
     fn pick_library(&mut self, cx: &mut Context<Self>) {
+        if self.saving || self.save_failed {
+            return;
+        }
         let paths = cx.prompt_for_paths(PathPromptOptions {
             files: false,
             directories: true,
@@ -467,12 +651,28 @@ impl Render for Browser {
                                 .cursor_pointer()
                                 .when(space.selected == id, |el| el.bg(rgb(0x2a3c58)))
                                 .hover(|el| el.bg(rgb(0x25334a)))
-                                .child(format!(
-                                    "{}  {}  {}",
-                                    index + 1,
-                                    tab.name,
-                                    "▮".repeat(tab.tree.leaves().len())
-                                ))
+                                .flex().gap_2()
+                                .child(format!("{}", index + 1))
+                                .child(if self.editing.as_ref().is_some_and(|edit| edit.tab) && space.selected == id {
+                                    self.name_editor(cx)
+                                } else {
+                                    let tab_id = id.clone();
+                                    div().id(SharedString::from(format!("tab-name-{id}"))).flex_1().min_w_0().text_ellipsis()
+                                        .child(tab.name.clone())
+                                        .on_click(cx.listener(move |browser, event: &gpui::ClickEvent, window, cx| {
+                                            cx.stop_propagation();
+                                            let active = browser.layout.as_ref().is_some_and(|layout| layout.model().tab().is_some_and(|tab| tab.id == tab_id));
+                                            if event.click_count() == 1 {
+                                                browser.name_click = Some((tab_id.clone(), active));
+                                            }
+                                            let edit = event.click_count() == 2 && browser.name_click.as_ref().is_some_and(|(id, active)| id == &tab_id && *active);
+                                            if let Some(layout) = &mut browser.layout { layout.model_mut().choose_tab(&tab_id); }
+                                            if edit { browser.begin_name(true, window, cx); }
+                                            else if let Some(focus) = &browser.navigation { window.focus(focus, cx); }
+                                            cx.notify();
+                                        })).into_any_element()
+                                })
+                                .child("▮".repeat(tab.tree.leaves().len()))
                                 .on_click(cx.listener(move |browser, _, window, cx| {
                                     if let Some(layout) = &mut browser.layout {
                                         layout.model_mut().choose_tab(&id);
@@ -520,6 +720,12 @@ impl Render for Browser {
             );
             status = "No library open".into();
         }
+        if self.saving {
+            status = "Saving name…".into();
+        }
+        if let Some(notice) = &self.save_notice {
+            status = notice.clone();
+        }
         if let Some(error) = &self.error {
             status = error.clone();
         }
@@ -532,24 +738,65 @@ impl Render for Browser {
             .bg(rgb(0x161e2b))
             .border_r_1()
             .border_color(rgb(0x303b4d))
-            .child(
+            .child(if self.editing.as_ref().is_some_and(|edit| !edit.tab) {
+                self.name_editor(cx)
+            } else {
                 div()
-                    .id("workspace-menu")
-                    .px_2()
-                    .py_2()
-                    .text_ellipsis()
-                    .cursor_pointer()
+                    .flex()
                     .bg(rgb(0x25334a))
-                    .child(format!("{heading}  ▾"))
-                    .on_click(cx.listener(|browser, _, window, cx| {
-                        browser.workspace_menu = !browser.workspace_menu;
-                        if let Some(focus) = &browser.navigation {
-                            window.focus(focus, cx);
-                        }
-                        cx.notify();
-                    })),
-            )
+                    .child(
+                        div()
+                            .id("workspace-name")
+                            .flex_1()
+                            .min_w_0()
+                            .px_2()
+                            .py_2()
+                            .text_ellipsis()
+                            .cursor_pointer()
+                            .child(heading.clone())
+                            .on_click(cx.listener(
+                                |browser, event: &gpui::ClickEvent, window, cx| {
+                                    if event.click_count() == 2 {
+                                        browser.begin_name(false, window, cx);
+                                    } else {
+                                        browser.workspace_menu = !browser.workspace_menu;
+                                        if let Some(focus) = &browser.navigation {
+                                            window.focus(focus, cx);
+                                        }
+                                    }
+                                    cx.notify();
+                                },
+                            )),
+                    )
+                    .child(
+                        div()
+                            .id("workspace-menu")
+                            .px_2()
+                            .py_2()
+                            .cursor_pointer()
+                            .child("▾")
+                            .on_click(cx.listener(|browser, _, window, cx| {
+                                browser.workspace_menu = !browser.workspace_menu;
+                                if let Some(focus) = &browser.navigation {
+                                    window.focus(focus, cx);
+                                }
+                                cx.notify();
+                            })),
+                    )
+                    .into_any_element()
+            })
             .child(tabs)
+            .when(self.save_failed, |el| {
+                el.child(
+                    div()
+                        .id("retry-save")
+                        .px_2()
+                        .py_2()
+                        .cursor_pointer()
+                        .child("Retry saving name")
+                        .on_click(cx.listener(|browser, _, _, cx| browser.save(cx))),
+                )
+            })
             .child(
                 div()
                     .id("open-library")
@@ -571,6 +818,9 @@ impl Render for Browser {
             .when_some(self.navigation.clone(), |el, focus| el.track_focus(&focus))
             .capture_key_down(
                 cx.listener(|browser, event: &gpui::KeyDownEvent, window, cx| {
+                    if browser.editing.is_some() {
+                        return;
+                    }
                     let key = &event.keystroke;
                     let sidebar = key.modifiers.platform
                         && !key.modifiers.control

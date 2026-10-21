@@ -5,7 +5,8 @@
 - **Date:** 2026-10-21
 
 The placeholder pane presentation is superseded by
-[0025](0025-existing-session-terminals.md). The library remains read-only.
+[0025](0025-existing-session-terminals.md). Native name editing supersedes the
+read-only UI in [0027](0027-native-name-editing.md).
 
 ## Context
 
