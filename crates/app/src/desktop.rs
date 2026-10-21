@@ -46,6 +46,18 @@ pub fn run(directory: Option<PathBuf>) -> Result<(), String> {
             KeyBinding::new("cmd-n", NewWindow, None),
         ]);
         cx.on_action(|_: &Quit, cx| cx.quit());
+        cx.on_action(|_: &NewWindow, cx| {
+            if let Some(window) = cx
+                .active_window()
+                .and_then(|window| window.downcast::<Browser>())
+            {
+                // Dispatch currently borrows the originating window. Open after it
+                // returns, retaining that window's identity even if focus changes.
+                cx.defer(move |cx| {
+                    let _ = window.update(cx, |browser, _, cx| browser.open_another(cx));
+                });
+            }
+        });
         cx.set_menus(vec![Menu {
             name: "tmux-workspaces".into(),
             items: vec![
@@ -120,6 +132,17 @@ struct Browser {
 }
 
 impl Browser {
+    fn open_another(&mut self, cx: &mut Context<Self>) {
+        let source = self
+            .source
+            .clone()
+            .unwrap_or_else(|| Err("Source socket unavailable".into()));
+        if let Err(error) = open_browser(self.directory.clone(), source, cx) {
+            self.error = Some(format!("Cannot open window: {error}"));
+            cx.notify();
+        }
+    }
+
     fn open(&mut self, directory: Option<PathBuf>, cx: &mut Context<Self>) {
         self.updates = None;
         self.terminals.clear();
@@ -546,16 +569,6 @@ impl Render for Browser {
             .text_color(rgb(0xe2e9f3))
             .font_family(Arc::<str>::from(".SystemUIFont"))
             .when_some(self.navigation.clone(), |el, focus| el.track_focus(&focus))
-            .on_action(cx.listener(|browser, _: &NewWindow, _, cx| {
-                let source = browser
-                    .source
-                    .clone()
-                    .unwrap_or_else(|| Err("Source socket unavailable".into()));
-                if let Err(error) = open_browser(browser.directory.clone(), source, cx) {
-                    browser.error = Some(format!("Cannot open window: {error}"));
-                    cx.notify();
-                }
-            }))
             .capture_key_down(
                 cx.listener(|browser, event: &gpui::KeyDownEvent, window, cx| {
                     let key = &event.keystroke;
