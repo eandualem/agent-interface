@@ -1,4 +1,4 @@
-//! Native single-line name input, including platform text composition.
+//! Native single-line input for names and session filters, including composition.
 
 use std::ops::Range;
 
@@ -12,14 +12,27 @@ use unicode_segmentation::UnicodeSegmentation;
 pub(super) enum NameEvent {
     Save,
     Cancel,
+    Changed(String),
 }
 
-#[derive(Default)]
 struct Text {
     value: String,
     anchor: usize,
     cursor: usize,
     marked: Option<Range<usize>>,
+    limit: usize,
+}
+
+impl Default for Text {
+    fn default() -> Self {
+        Self {
+            value: String::new(),
+            anchor: 0,
+            cursor: 0,
+            marked: None,
+            limit: 80,
+        }
+    }
 }
 
 impl Text {
@@ -46,7 +59,7 @@ impl Text {
         let inserted: String = text
             .chars()
             .filter(|ch| !ch.is_control())
-            .take(80usize.saturating_sub(remaining))
+            .take(self.limit.saturating_sub(remaining))
             .collect();
         let end = range.start + inserted.len();
         self.value.replace_range(range.clone(), &inserted);
@@ -114,6 +127,7 @@ pub(super) struct NameField {
     bounds: Option<Bounds<Pixels>>,
     scroll: Pixels,
     dragging: bool,
+    cancel_on_blur: bool,
     _blur: Subscription,
 }
 
@@ -122,7 +136,11 @@ impl EventEmitter<NameEvent> for NameField {}
 impl NameField {
     pub fn new(value: &str, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus = cx.focus_handle();
-        let blur = cx.on_blur(&focus, window, |_, _, cx| cx.emit(NameEvent::Cancel));
+        let blur = cx.on_blur(&focus, window, |field, _, cx| {
+            if field.cancel_on_blur {
+                cx.emit(NameEvent::Cancel);
+            }
+        });
         window.focus(&focus, cx);
         Self {
             text: Text {
@@ -135,8 +153,20 @@ impl NameField {
             bounds: None,
             scroll: px(0.),
             dragging: false,
+            cancel_on_blur: true,
             _blur: blur,
         }
+    }
+
+    pub fn search(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let mut field = Self::new("", window, cx);
+        field.text.limit = usize::MAX;
+        field.cancel_on_blur = false;
+        field
+    }
+
+    pub fn composing(&self) -> bool {
+        self.text.marked.is_some()
     }
 
     pub fn value(&self) -> &str {
@@ -164,6 +194,7 @@ impl NameField {
         } else {
             mods.control
         };
+        let before = self.text.value.clone();
         let range = self.text.selection();
         match key.key.as_str() {
             "escape" => cx.emit(NameEvent::Cancel),
@@ -209,6 +240,9 @@ impl NameField {
                 self.text.replace(None, "", false);
             }
             _ => return,
+        }
+        if self.text.value != before {
+            cx.emit(NameEvent::Changed(self.text.value.clone()));
         }
         window.prevent_default();
         cx.stop_propagation();
@@ -321,6 +355,7 @@ impl EntityInputHandler for NameField {
         cx: &mut Context<Self>,
     ) {
         self.text.replace(range, text, false);
+        cx.emit(NameEvent::Changed(self.text.value.clone()));
         cx.notify();
     }
     fn replace_and_mark_text_in_range(
@@ -332,6 +367,7 @@ impl EntityInputHandler for NameField {
         cx: &mut Context<Self>,
     ) {
         self.text.compose(range, text, selection);
+        cx.emit(NameEvent::Changed(self.text.value.clone()));
         cx.notify();
     }
     fn bounds_for_range(
@@ -467,6 +503,7 @@ mod tests {
             anchor: 6,
             cursor: 7,
             marked: None,
+            ..Text::default()
         };
         text.compose(None, "😀語", Some(2..3));
         assert_eq!(text.value, "prefix😀語");
@@ -507,5 +544,14 @@ mod tests {
         text.replace(None, "ab", false);
         assert!(text.value.starts_with("a😀"));
         assert_eq!(text.value.chars().count(), 80);
+        text.limit = usize::MAX;
+        text.anchor = 0;
+        text.cursor = text.value.len();
+        text.replace(None, &"query".repeat(20), false);
+        assert_eq!(
+            text.value.chars().count(),
+            100,
+            "search fields retain longer filters"
+        );
     }
 }
