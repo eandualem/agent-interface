@@ -76,6 +76,25 @@ it does not bypass or clear the separate cleanup regression. It disables
 classified as pasted text and bypass bindings. This is fixture setup, not a
 proposal to override user options in the product.
 
+### Late attachment and pane state
+
+The late-attachment fixture compares a new ordinary client with an uninterrupted
+client before and after more application output. It reuses nine Gate 5 fixtures
+that expose capture-recovery losses: erased background cells, tabs, moved tabs,
+wrapped hyperlinks, current style, partial UTF-8, saved cursor, active line-drawing
+charset and the saved primary screen after an alternate-screen resize. The initial
+reference bytes are saved before the second client attaches, so redrawing both
+clients cannot hide an initial difference. Cells and cursor must match without
+the capture-recovery loss allowances.
+
+All nine fixtures passed on macOS with tmux 3.3a, 3.4, 3.5a, 3.6b, 3.7c and 3.8.
+This supports the alternative for these state losses: tmux retains the pane's
+state and sends each client its composed display. Both streams use the same native
+decoder, so the comparison does not establish independent emulator fidelity.
+The resize case covers one 40-to-30-column shrink while the alternate screen is
+active, then a return to the primary screen. It decodes the reference from the
+resize redraw; it does not test a persistent native renderer through resizing.
+
 ### Outer-terminal protocol prototype
 
 A second fixture uses the pinned native engine directly, with in-memory reply
