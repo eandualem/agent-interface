@@ -9,7 +9,7 @@ use gpui::{
     size,
 };
 use gpui_platform::application;
-use tmux_workspaces_core::{Direction, NameEdit, Node, RenameOutcome};
+use tmux_workspaces_core::{Direction, NameEdit, Node, RenameOutcome, Tab};
 use tmux_workspaces_store::Store;
 
 use crate::library::{Library, Update, WindowLayout};
@@ -125,6 +125,25 @@ struct EditingName {
     _events: gpui::Subscription,
 }
 
+#[derive(Clone)]
+enum TabAction {
+    Rename,
+    Move(isize),
+    Transfer(String),
+}
+
+#[derive(Clone)]
+struct TabMenu {
+    workspace: String,
+    tab: Tab,
+}
+
+impl TabMenu {
+    fn current(&self, layout: &tmux_workspaces_core::Layout) -> bool {
+        layout.selected == self.workspace && layout.tab() == Some(&self.tab)
+    }
+}
+
 #[derive(Default)]
 struct Browser {
     library: Option<Library>,
@@ -144,6 +163,7 @@ struct Browser {
     save_failed: bool,
     save_notice: Option<String>,
     name_click: Option<(String, bool)>,
+    tab_menu: Option<TabMenu>,
 }
 
 impl Browser {
@@ -173,6 +193,7 @@ impl Browser {
         }
         self.editing = None;
         self.name_click = None;
+        self.tab_menu = None;
         self.save_notice = None;
         self.stop_reader(cx);
         self.terminals.clear();
@@ -274,6 +295,7 @@ impl Browser {
             },
         );
         self.workspace_menu = false;
+        self.tab_menu = None;
         self.reset_focus = false;
         self.save_notice = None;
         self.editing = Some(EditingName {
@@ -347,18 +369,126 @@ impl Browser {
                         }
                         browser.start_reader(cx);
                         if result.conflict {
-                            browser.save_notice = Some("The library changed. Your rename was not saved; rename the latest item to retry.".into());
+                            browser.save_notice = Some("The library changed. Your edit was not saved; repeat it on the latest layout to retry.".into());
                         }
                     }
                     Err(error) => {
                         browser.save_failed = true;
-                        browser.error = Some(format!("Name not saved: {error}. Retry saving."));
+                        browser.error = Some(format!("Changes not saved: {error}. Retry saving."));
                     }
                 }
                 cx.notify();
             });
         }).detach();
         cx.notify();
+    }
+
+    fn open_tab_menu(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.saving || self.save_failed {
+            return;
+        }
+        if let Some(update) = self.library.as_ref().and_then(Library::take_update) {
+            self.apply(update);
+        }
+        let Some(layout) = &mut self.layout else {
+            return;
+        };
+        let model = layout.model_mut();
+        if !model.choose_tab(id) {
+            return;
+        }
+        self.tab_menu = model.tab().cloned().map(|tab| TabMenu {
+            workspace: model.selected.clone(),
+            tab,
+        });
+        self.editing = None;
+        self.workspace_menu = false;
+        if let Some(focus) = &self.navigation {
+            window.focus(focus, cx);
+        }
+        cx.notify();
+    }
+
+    fn tab_action(&mut self, action: TabAction, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(menu) = self.tab_menu.take() else {
+            return;
+        };
+        if self.saving || self.save_failed {
+            return;
+        }
+        if let Some(update) = self.library.as_ref().and_then(Library::take_update) {
+            self.apply(update);
+        }
+        let Some(layout) = &mut self.layout else {
+            return;
+        };
+        if !menu.current(layout.model()) {
+            self.save_notice = Some("The tab changed. Open its options again to retry.".into());
+            cx.notify();
+            return;
+        }
+        match action {
+            TabAction::Rename => self.begin_name(true, window, cx),
+            TabAction::Move(offset) => {
+                layout.model_mut().move_tab(offset);
+                self.save(cx);
+            }
+            TabAction::Transfer(destination) => {
+                if layout.model_mut().transfer_tab(&destination) {
+                    self.save(cx);
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    fn tab_options(&self, cx: &mut Context<Self>) -> AnyElement {
+        let mut options = div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .p_2()
+            .on_mouse_down_out(cx.listener(|browser, _, _, cx| {
+                browser.tab_menu = None;
+                cx.notify();
+            }))
+            .child(div().text_xs().child("TAB OPTIONS"));
+        let mut actions = vec![("Rename tab".to_owned(), TabAction::Rename)];
+        if let (Some(menu), Some(layout)) = (&self.tab_menu, &self.layout) {
+            if let Some(space) = layout.model().workspace()
+                && let Some(index) = space.tabs.iter().position(|tab| tab.id == menu.tab.id)
+            {
+                if index > 0 {
+                    actions.push(("Move up".into(), TabAction::Move(-1)));
+                }
+                if index + 1 < space.tabs.len() {
+                    actions.push(("Move down".into(), TabAction::Move(1)));
+                }
+            }
+            for space in &layout.model().workspaces {
+                if space.id != menu.workspace {
+                    actions.push((
+                        format!("Move to {}", space.name),
+                        TabAction::Transfer(space.id.clone()),
+                    ));
+                }
+            }
+        }
+        for (index, (label, action)) in actions.into_iter().enumerate() {
+            options = options.child(
+                div()
+                    .id(("tab-action", index))
+                    .px_2()
+                    .py_1()
+                    .cursor_pointer()
+                    .hover(|el| el.bg(rgb(0x25334a)))
+                    .child(label)
+                    .on_click(cx.listener(move |browser, _, window, cx| {
+                        browser.tab_action(action.clone(), window, cx)
+                    })),
+            );
+        }
+        options.into_any_element()
     }
 
     fn name_editor(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -608,7 +738,20 @@ impl Render for Browser {
             let model = layout.model();
             if let Some(space) = model.workspace() {
                 heading = space.name.clone();
-                if self.workspace_menu {
+                if self.tab_menu.is_some() {
+                    tabs = tabs.child(self.tab_options(cx));
+                } else if self.workspace_menu {
+                    tabs = tabs.child(
+                        div()
+                            .id("rename-workspace")
+                            .px_2()
+                            .py_1()
+                            .cursor_pointer()
+                            .child("Rename workspace")
+                            .on_click(cx.listener(|browser, _, window, cx| {
+                                browser.begin_name(false, window, cx)
+                            })),
+                    );
                     tabs = tabs.child(div().px_2().py_1().text_xs().child("WORKSPACES"));
                     for space in &model.workspaces {
                         let id = space.id.clone();
@@ -648,6 +791,10 @@ impl Render for Browser {
                         tabs = tabs.child(
                             div()
                                 .id(SharedString::from(format!("tab-{id}")))
+                                .on_mouse_down(gpui::MouseButton::Right, cx.listener({
+                                    let id = id.clone();
+                                    move |browser, _, window, cx| browser.open_tab_menu(&id, window, cx)
+                                }))
                                 .px_2()
                                 .py_1()
                                 .text_ellipsis()
@@ -676,6 +823,13 @@ impl Render for Browser {
                                         })).into_any_element()
                                 })
                                 .child("▮".repeat(tab.tree.leaves().len()))
+                                .when(space.selected == id, |el| {
+                                    let id = id.clone();
+                                    el.child(div().id("tab-options").px_1().child("⋯")
+                                        .on_click(cx.listener(move |browser, _, window, cx| {
+                                            cx.stop_propagation(); browser.open_tab_menu(&id, window, cx);
+                                        })))
+                                })
                                 .on_click(cx.listener(move |browser, _, window, cx| {
                                     if let Some(layout) = &mut browser.layout {
                                         layout.model_mut().choose_tab(&id);
@@ -724,7 +878,7 @@ impl Render for Browser {
             status = "No library open".into();
         }
         if self.saving {
-            status = "Saving name…".into();
+            status = "Saving changes…".into();
         }
         if let Some(notice) = &self.save_notice {
             status = notice.clone();
@@ -762,6 +916,7 @@ impl Render for Browser {
                                     if event.click_count() == 2 {
                                         browser.begin_name(false, window, cx);
                                     } else {
+                                        browser.tab_menu = None;
                                         browser.workspace_menu = !browser.workspace_menu;
                                         if let Some(focus) = &browser.navigation {
                                             window.focus(focus, cx);
@@ -779,6 +934,7 @@ impl Render for Browser {
                             .cursor_pointer()
                             .child("▾")
                             .on_click(cx.listener(|browser, _, window, cx| {
+                                browser.tab_menu = None;
                                 browser.workspace_menu = !browser.workspace_menu;
                                 if let Some(focus) = &browser.navigation {
                                     window.focus(focus, cx);
@@ -796,7 +952,7 @@ impl Render for Browser {
                         .px_2()
                         .py_2()
                         .cursor_pointer()
-                        .child("Retry saving name")
+                        .child("Retry saving changes")
                         .on_click(cx.listener(|browser, _, _, cx| browser.save(cx))),
                 )
             })
@@ -825,6 +981,21 @@ impl Render for Browser {
                         return;
                     }
                     let key = &event.keystroke;
+                    if browser.tab_menu.is_some() && key.key == "escape" {
+                        browser.tab_menu = None;
+                        cx.stop_propagation();
+                        cx.notify();
+                        return;
+                    }
+                    if key.modifiers.platform
+                        && !key.modifiers.control
+                        && !key.modifiers.alt
+                        && key.key == "r"
+                    {
+                        browser.begin_name(!key.modifiers.shift, window, cx);
+                        cx.stop_propagation();
+                        return;
+                    }
                     let sidebar = key.modifiers.platform
                         && !key.modifiers.control
                         && !key.modifiers.alt
@@ -849,6 +1020,7 @@ impl Render for Browser {
                             terminal.update(cx, |terminal, cx| terminal.focus_terminal(window, cx));
                         }
                         browser.workspace_menu = false;
+                        browser.tab_menu = None;
                         cx.stop_propagation();
                         cx.notify();
                     }
@@ -940,6 +1112,34 @@ fn navigate_key(model: &mut tmux_workspaces_core::Layout, key: &gpui::Keystroke)
 mod tests {
     use super::*;
     use tmux_workspaces_store::{Document, Error};
+
+    #[test]
+    fn tab_options_reject_changed_targets_and_moves_keep_the_terminal_tree() {
+        let mut model = tmux_workspaces_core::Layout::initial("/tmp".into());
+        model.split(Direction::Right, "/tmp".into(), true);
+        let tab = model.tab().unwrap().clone();
+        let source = model.selected.clone();
+        let menu = TabMenu {
+            workspace: source.clone(),
+            tab: tab.clone(),
+        };
+        assert!(menu.current(&model));
+        model.rename_tab("Peer rename");
+        assert!(!menu.current(&model));
+        model.rename_tab(&tab.name);
+        model.add_tab(Some("Other".into()), "/tmp".into(), true);
+        assert!(!menu.current(&model));
+        model.choose_tab(&tab.id);
+        model.move_tab(1);
+        assert!(menu.current(&model));
+        assert_eq!(model.workspace().unwrap().tabs[1], tab);
+        model.add_workspace("Destination".into());
+        let destination = model.selected.clone();
+        model.choose_workspace(&source);
+        assert!(model.transfer_tab(&destination));
+        assert_eq!(model.tab(), Some(&tab));
+        assert!(!menu.current(&model));
+    }
 
     #[test]
     fn native_navigation_cycles_saved_selections_without_editing_the_tree() {

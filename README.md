@@ -64,9 +64,15 @@ scales down when the existing terminal is larger than its native pane.
 
 Changes saved by the Python app refresh automatically. Double-click the workspace
 name or the active tab's name to rename it. An inactive tab must first be selected.
+Command-R renames the active tab; Command-Shift-R renames the workspace. The tab's
+**⋯**, or right-clicking any tab, opens options to rename it, move it up/down or
+move its complete layout to another workspace. Workspace options also offer
+**Rename workspace**. A tab changed by another window must have its options
+opened again before editing it.
+
 The original name starts selected; Enter or **Save name** saves it, Escape or
 clicking elsewhere cancels, and Ctrl-U clears the field. Names are limited to 80
-characters. A failed save retains the edit and offers **Retry saving name**;
+characters. A failed save retains the edit and offers **Retry saving changes**;
 a conflicting peer edit refreshes the saved name and asks you to rename it again.
 Renaming requires an existing version-2 library and does not change tmux sessions.
 Navigation and pane expansion stay local. Attached

@@ -45,3 +45,16 @@ conflict and retry, and active-tab removal during a save. Text-state tests cover
 Unicode boundaries and the 80-character replacement limit. Existing mixed-process
 storage fixtures remain the Python compatibility evidence. These tests do not
 establish desktop focus, clipboard or input-method acceptance.
+
+## Tab options
+
+The selected tab's ellipsis and right-clicking any tab open native options.
+Rename tab is first; move up/down and move to another workspace operate on
+existing saved tabs. A captured tab and workspace identity guard these actions:
+refresh before applying, and cancel if the selected target or tab content changed.
+Moves save through the same asynchronous path and preserve the tab's pane
+identities and session references. Navigation may continue during the save;
+additional edits and library switching wait for completion or explicit retry.
+The workspace chooser also offers renaming. Command-R and Command-Shift-R open
+the tab and workspace name fields directly. Other tab-menu actions and keyboard
+menu navigation remain separate parity work.
