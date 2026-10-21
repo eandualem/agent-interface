@@ -32,6 +32,13 @@ fn main() {
         let command: Value = serde_json::from_str(&line.unwrap()).unwrap();
         match command["op"].as_str().unwrap() {
             "quit" => break,
+            "state" => {
+                local = Document::parse(command["state"].to_string(), Path::new("layouts.db"))
+                    .unwrap()
+                    .model()
+                    .clone();
+                emit("edited", &base, &local);
+            }
             "workspace_name" => {
                 let workspace = local
                     .workspaces

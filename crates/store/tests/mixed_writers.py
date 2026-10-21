@@ -3,6 +3,7 @@
 Usage: python3 crates/store/tests/mixed_writers.py /path/to/python/checkout
 Requires Python 3.11+, Cargo and rustc. Does not access tmux or a real library.
 """
+import copy
 import json
 import os
 from pathlib import Path
@@ -61,18 +62,85 @@ class Worker:
         assert self.process.returncode == 0, self.process.stderr.read()
 
 
-def run_case(binary, env, first, conflict):
+def scenarios():
+    record = {
+        "version": 2, "selected": "000000000001", "focus": False,
+        "extension": {"nullable": None, "number": 123456789012345678901234567890},
+        "workspaces": [{
+            "id": "000000000001", "name": "Workspace", "selected": "000000000002",
+            "tabs": [{"id": "000000000002", "name": "Tab", "focus": "000000000003",
+                      "tree": {"id": "000000000003", "agent": "editor", "source_socket": "/tmp/offline-example.sock"}},
+                     {"id": "000000000004", "name": "Second tab", "focus": "000000000005",
+                      "tree": {"id": "000000000005", "agent": None, "empty": True}}],
+        }, {"id": "000000000006", "name": "Other workspace", "selected": "", "tabs": []},
+           {"id": "000000000009", "name": "Third workspace", "selected": "", "tabs": []}],
+    }
+
+    def split(tab, identity, direction):
+        tab["tree"] = {"id": f"{identity:012x}", "direction": direction, "ratio": 0.5,
+                       "first": tab["tree"], "second": {"id": f"{identity + 1:012x}", "agent": None, "empty": True}}
+
+    def move(state, destination):
+        tab = state["workspaces"][0]["tabs"].pop(0)
+        state["workspaces"][0]["selected"] = "000000000004"
+        state["workspaces"][destination]["tabs"].append(tab)
+        state["workspaces"][destination]["selected"] = tab["id"]
+
+    cases = []
+    for name in ("independent-edits", "conflict-and-retry", "independent-splits", "conflicting-splits",
+                 "stale-delete", "move-and-rename", "conflicting-moves", "incompatible-reorder",
+                 "independent-additions", "navigation-fallback"):
+        a, b, expected = (copy.deepcopy(record) for _ in range(3))
+        conflict = name in ("conflict-and-retry", "conflicting-splits", "stale-delete", "conflicting-moves", "incompatible-reorder")
+        if name in ("independent-edits", "conflict-and-retry"):
+            a["workspaces"][0]["name"] = "First edit"
+            if conflict:
+                b["workspaces"][0]["name"] = "Second edit"
+            else:
+                b["workspaces"][0]["tabs"][0]["name"] = "Second edit"
+                expected["workspaces"][0]["name"] = "First edit"
+                expected["workspaces"][0]["tabs"][0]["name"] = "Second edit"
+        elif name in ("independent-splits", "conflicting-splits"):
+            split(a["workspaces"][0]["tabs"][0], 10, "right")
+            split(b["workspaces"][0]["tabs"][0 if conflict else 1], 12, "below")
+            expected["workspaces"][0]["tabs"] = [a["workspaces"][0]["tabs"][0], b["workspaces"][0]["tabs"][1]]
+        elif name == "stale-delete":
+            a["workspaces"][0]["tabs"][0]["name"] = "Peer rename"
+            b["workspaces"][0]["tabs"].pop(0)
+            b["workspaces"][0]["selected"] = "000000000004"
+        elif name in ("move-and-rename", "conflicting-moves"):
+            move(a, 1)
+            if conflict:
+                move(b, 2)
+            else:
+                b["workspaces"][2]["name"] = "Peer workspace name"
+                expected = copy.deepcopy(a)
+                expected["workspaces"][2]["name"] = "Peer workspace name"
+        elif name == "incompatible-reorder":
+            a["workspaces"] = [a["workspaces"][1], a["workspaces"][0], a["workspaces"][2]]
+            b["workspaces"] = [b["workspaces"][0], b["workspaces"][2], b["workspaces"][1]]
+        elif name == "independent-additions":
+            tab = {"id": "00000000000a", "name": "Added tab", "focus": "00000000000b",
+                   "tree": {"id": "00000000000b", "agent": None, "empty": True}}
+            workspace = {"id": "00000000000c", "name": "Added workspace", "tabs": [], "selected": ""}
+            a["workspaces"][0]["tabs"].append(tab)
+            b["workspaces"].append(workspace)
+            expected["workspaces"][0]["tabs"].append(tab)
+            expected["workspaces"].append(workspace)
+        elif name == "navigation-fallback":
+            a["workspaces"].pop(0)
+            a["selected"] = "000000000006"
+            b["workspaces"][2]["name"] = "Peer workspace name"
+            expected = copy.deepcopy(a)
+            expected["workspaces"][1]["name"] = "Peer workspace name"
+        cases.append((name, record, a, b, a if conflict else expected, conflict))
+    return cases
+
+
+def run_case(binary, env, first, scenario):
+    name, record, a, b, expected, conflict = scenario
     with tempfile.TemporaryDirectory(prefix="library-writer-") as temporary:
         directory = Path(temporary)
-        record = {
-            "version": 2, "selected": "000000000001", "focus": False,
-            "extension": {"nullable": None, "number": 123456789012345678901234567890},
-            "workspaces": [{
-                "id": "000000000001", "name": "Workspace", "selected": "000000000002",
-                "tabs": [{"id": "000000000002", "name": "Tab", "focus": "000000000003",
-                          "tree": {"id": "000000000003", "agent": "editor", "source_socket": "/tmp/offline-example.sock"}}],
-            }],
-        }
         with sqlite3.connect(directory / "layouts.db", timeout=1) as db:
             db.execute("CREATE TABLE terminal_layout(id INTEGER PRIMARY KEY, value TEXT)")
             db.execute("INSERT INTO terminal_layout VALUES(1, ?)", (json.dumps(record),))
@@ -91,10 +159,8 @@ def run_case(binary, env, first, conflict):
             assert loaded["python"]["foreign_keys"] == 0
             assert shared(loaded["rust"]["base"]) == shared(loaded["python"]["base"])
             second = "python" if first == "rust" else "rust"
-            assert workers[first].send({"op": "workspace_name", "id": "000000000001", "name": "First edit"})["status"] == "edited"
-            operation = "workspace_name" if conflict else "tab_name"
-            identity = "000000000001" if conflict else "000000000002"
-            assert workers[second].send({"op": operation, "id": identity, "name": "Second edit"})["status"] == "edited"
+            assert workers[first].send({"op": "state", "state": a})["status"] == "edited"
+            assert workers[second].send({"op": "state", "state": b})["status"] == "edited"
             committed = workers[first].send({"op": "save"})
             assert committed["status"] == "saved"
             with sqlite3.connect(directory / "layouts.db") as db:
@@ -106,15 +172,17 @@ def run_case(binary, env, first, conflict):
                     assert db.execute("SELECT value FROM terminal_layout WHERE id=1").fetchone()[0] == before
                 assert shared(result["state"]) == shared(committed["state"])
                 assert shared(result["base"]) == shared(committed["state"])
-                workers[second].send({"op": operation, "id": identity, "name": "Explicit retry"})
+                workers[second].send({"op": "workspace_name", "id": "000000000001", "name": "Explicit retry"})
                 result = workers[second].send({"op": "save"})
                 assert result["status"] == "saved"
-                assert result["state"]["workspaces"][0]["name"] == "Explicit retry"
-            else:
-                assert result["state"]["workspaces"][0]["name"] == "First edit"
-                assert result["state"]["workspaces"][0]["tabs"][0]["name"] == "Second edit"
-            assert result["state"]["extension"] == record["extension"]
-            assert result["state"]["workspaces"][0]["tabs"][0]["tree"] == record["workspaces"][0]["tabs"][0]["tree"]
+                expected = copy.deepcopy(expected)
+                next(space for space in expected["workspaces"] if space["id"] == "000000000001")["name"] = "Explicit retry"
+            assert shared(result["state"]) == shared(expected), (name, shared(result["state"]), shared(expected))
+            assert shared(result["base"]) == shared(expected), name
+            if name == "navigation-fallback":
+                assert result["state"]["selected"] == "000000000006"
+            if name == "move-and-rename":
+                assert result["state"]["workspaces"][0]["selected"] == "000000000004"
             with sqlite3.connect(directory / "layouts.db", timeout=1) as db:
                 # Waiting workers must not retain even a read transaction.
                 db.execute("BEGIN EXCLUSIVE")
@@ -132,7 +200,7 @@ def run_case(binary, env, first, conflict):
         finally:
             for worker in workers.values():
                 worker.close()
-    return {"first": first, "case": "conflict-and-retry" if conflict else "independent-edits", "passed": True,
+    return {"first": first, "case": name, "passed": True,
             "python_sqlite": loaded["python"]["sqlite_version"], "python_foreign_keys": loaded["python"]["foreign_keys"]}
 
 
@@ -161,8 +229,8 @@ def main():
         for name in ("tmux_workspaces_store", "tmux_workspaces_core", "serde_json"):
             command += ["--extern", name + "=" + libraries[name]]
         subprocess.run(command, check=True)
-        results = [run_case(binary, env, first, conflict)
-                   for first in ("python", "rust") for conflict in (False, True)]
+        results = [run_case(binary, env, first, scenario)
+                   for first in ("python", "rust") for scenario in scenarios()]
     print(json.dumps({"python_revision": head, "results": results}, indent=2))
 
 
