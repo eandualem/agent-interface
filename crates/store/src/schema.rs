@@ -177,8 +177,9 @@ fn read_layout(value: &Value, navigation: bool) -> Result<Layout> {
         .and_then(Value::as_array)
         .filter(|v| !v.is_empty())
         .ok_or("layout.workspaces: expected a nonempty list")?;
+    // Agents are shown unless the preference was turned off.
     let show_agents = match root.get("show_agents") {
-        None => false,
+        None => true,
         Some(Value::Bool(value)) => *value,
         _ => return Err("layout.show_agents: expected a boolean".into()),
     };
