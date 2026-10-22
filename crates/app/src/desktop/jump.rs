@@ -2,7 +2,8 @@
 //! workspace, and go to the chosen one.
 
 use gpui::{
-    Context, Entity, Pixels, Point, SharedString, Subscription, Window, div, prelude::*, px,
+    Context, Entity, Pixels, Point, ScrollHandle, SharedString, Subscription, Window, div,
+    prelude::*, px,
 };
 
 use super::{
@@ -19,7 +20,15 @@ pub(super) struct Jump {
     field: Entity<NameField>,
     query: String,
     index: usize,
+    scroll: ScrollHandle,
     _events: Subscription,
+}
+
+impl Jump {
+    /// Whether an input method is composing in the search field.
+    pub(super) fn composing(&self, cx: &gpui::App) -> bool {
+        self.field.read(cx).composing()
+    }
 }
 
 /// Where a result goes.
@@ -59,8 +68,7 @@ impl Browser {
         cx: &mut Context<Self>,
     ) {
         if self.jump.is_some() {
-            self.jump = None;
-            cx.notify();
+            self.close_jump(window, cx);
             return;
         }
         self.close_menus();
@@ -85,6 +93,7 @@ impl Browser {
             field,
             query: String::new(),
             index: 0,
+            scroll: ScrollHandle::new(),
             _events: events,
         });
         cx.notify();
@@ -100,11 +109,19 @@ impl Browser {
 
     /// Move the highlighted result.
     pub(super) fn jump_move(&mut self, step: isize, cx: &mut Context<Self>) {
-        let count = self.jump_hits().len();
+        let hits = self.jump_hits();
         if let Some(jump) = &mut self.jump
-            && count > 0
+            && !hits.is_empty()
         {
-            jump.index = (jump.index as isize + step).rem_euclid(count as isize) as usize;
+            jump.index = (jump.index as isize + step).rem_euclid(hits.len() as isize) as usize;
+            // Each group's heading is a row before its results; reveal the
+            // highlighted result's row.
+            let headings = hits[..=jump.index]
+                .iter()
+                .enumerate()
+                .filter(|(at, hit)| *at == 0 || hits[at - 1].group != hit.group)
+                .count();
+            jump.scroll.scroll_to_item(jump.index + headings);
             cx.notify();
         }
     }
@@ -147,9 +164,7 @@ impl Browser {
                                 group: "PANES",
                                 label: attachment.session.clone(),
                                 meta: format!("{} · {}", tab.name, space.name),
-                                agent: states
-                                    .as_ref()
-                                    .and_then(|states| states.get(&attachment.session).copied()),
+                                agent: self.attachment_state(attachment, states.as_ref()),
                                 target: Target::Pane {
                                     workspace: space.id.clone(),
                                     tab: tab.id.clone(),
@@ -249,7 +264,14 @@ impl Browser {
         let field = jump.field.clone();
         let index = jump.index;
         let hits = self.jump_hits();
-        let mut list = div().p(px(t.size.popover_padding)).flex().flex_col();
+        let mut list = div()
+            .id("jump-results")
+            .p(px(t.size.popover_padding))
+            .flex()
+            .flex_col()
+            .max_h(px(t.size.window_min_height - t.size.titlebar * 2.0))
+            .overflow_y_scroll()
+            .track_scroll(&jump.scroll);
         let mut group = "";
         for (position, hit) in hits.iter().enumerate() {
             if hit.group != group {

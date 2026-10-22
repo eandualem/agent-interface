@@ -723,10 +723,11 @@ impl SettingsWindow {
                             .when(!shown, |el| el.bg(c.line_strong))
                             .cursor_pointer()
                             .child(div().size(px(t.space.s16)).rounded_full().bg(gpui::white()))
-                            .on_click(cx.listener(|_, _, _, cx| {
-                                // Toggle in every window, so their libraries agree.
+                            .on_click(cx.listener(move |_, _, _, cx| {
+                                // One requested value for every window, so
+                                // their libraries agree with the switch.
                                 for window in cx.windows().into_iter().filter_map(|w| w.downcast::<Browser>()) {
-                                    let _ = window.update(cx, |browser, _, cx| browser.toggle_agents(cx));
+                                    let _ = window.update(cx, |browser, _, cx| browser.set_show_agents(!shown, cx));
                                 }
                                 cx.notify();
                             })),

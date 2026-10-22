@@ -26,16 +26,46 @@ impl Browser {
         )
     }
 
+    /// Whether a saved socket is this window's source server. Both must
+    /// resolve to the same path; two failures never match.
+    pub(super) fn is_window_source(&self, socket: Option<&str>) -> bool {
+        let resolve = |path: &std::path::Path| crate::library::location::resolve_path(path).ok();
+        let source = self
+            .source
+            .as_ref()
+            .and_then(|source| source.as_ref().ok())
+            .and_then(|path| resolve(path));
+        match socket {
+            None => source.is_some(),
+            Some(socket) => {
+                let saved = resolve(std::path::Path::new(socket));
+                saved.is_some() && saved == source
+            }
+        }
+    }
+
+    /// The state of the agent an attachment shows. Agent Backbone's agents
+    /// run on this window's source server, so another server's session with
+    /// the same name is not that agent.
+    pub(super) fn attachment_state(
+        &self,
+        attachment: &tmux_workspaces_core::Attachment,
+        states: Option<&HashMap<String, AgentState>>,
+    ) -> Option<AgentState> {
+        let state = states?.get(&attachment.session).copied()?;
+        self.is_window_source(attachment.source_socket.as_deref())
+            .then_some(state)
+    }
+
     /// Whether any pane of this tab shows an agent that needs you.
     pub(super) fn tab_needs_you(
+        &self,
         tab: &tmux_workspaces_core::Tab,
         states: Option<&HashMap<String, AgentState>>,
     ) -> bool {
-        states.is_some_and(|states| {
-            tab.tree.leaves().into_iter().any(|leaf| {
-                leaf.attachment.as_ref().is_some_and(|attachment| {
-                    states.get(&attachment.session) == Some(&AgentState::NeedsYou)
-                })
+        tab.tree.leaves().into_iter().any(|leaf| {
+            leaf.attachment.as_ref().is_some_and(|attachment| {
+                self.attachment_state(attachment, states) == Some(AgentState::NeedsYou)
             })
         })
     }
@@ -348,7 +378,7 @@ impl Browser {
                         .child((index + 1).to_string()),
                     )
                     .child(name)
-                    .when(Self::tab_needs_you(tab, states), |el| el.child(ui::dot(c.attention)))
+                    .when(self.tab_needs_you(tab, states), |el| el.child(ui::dot(c.attention)))
                     .when(!editing, |el| {
                         // The layout thumbnail gives way to the tab's options on hover.
                         el.child(
@@ -478,7 +508,9 @@ impl Browser {
             for space in &layout.model().workspaces {
                 for tab in &space.tabs {
                     for leaf in tab.tree.leaves() {
-                        if let Some(attachment) = &leaf.attachment {
+                        if let Some(attachment) = &leaf.attachment
+                            && self.is_window_source(attachment.source_socket.as_deref())
+                        {
                             tabs_by_session
                                 .entry(attachment.session.clone())
                                 .or_insert_with(|| tab.name.clone());
@@ -583,10 +615,7 @@ impl Browser {
             for (index, space) in model.workspaces.iter().take(shown).enumerate() {
                 let id = space.id.clone();
                 let current = model.selected == id;
-                let needs_you = space
-                    .tabs
-                    .iter()
-                    .any(|tab| Self::tab_needs_you(tab, states));
+                let needs_you = space.tabs.iter().any(|tab| self.tab_needs_you(tab, states));
                 let glyph = icons::workspace(space.symbol.as_deref(), space.icon.as_deref());
                 let color = if current { c.accent } else { c.muted };
                 let mut element = slot(SharedString::from(format!("workspace-slot-{id}")))
