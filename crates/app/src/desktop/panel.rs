@@ -1,5 +1,6 @@
 //! Native building blocks for the navigation panel: system-font rows, icon
-//! buttons and popover menus, in the theme's colors.
+//! buttons and popover menus, in the theme's colors. `docs/DESIGN.md` lists
+//! every component, its sizes and its states.
 
 use gpui::{Div, FontWeight, SharedString, Stateful, Svg, div, prelude::*, px, rgb, svg};
 

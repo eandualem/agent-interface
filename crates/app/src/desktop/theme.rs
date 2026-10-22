@@ -1,8 +1,6 @@
-//! The Python viewer's default theme and its terminal-cell grid.
-//!
-//! The source panel is a curses program in a tmux pane: every row is one
-//! terminal cell high and every position a whole number of cells. The native
-//! chrome uses the same font, grid and colors so that it lays out the same.
+//! Colour tokens for the Dark and Light themes, and the terminal-cell grid
+//! the status row and separators are laid out on. `docs/DESIGN.md` describes
+//! the design language these values belong to.
 
 use gpui::{Div, Pixels, Size, div, prelude::*, px, rgb};
 

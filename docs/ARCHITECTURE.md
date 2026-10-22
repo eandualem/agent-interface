@@ -94,6 +94,8 @@ tmux. `.github/workflows/ci.yml` shows every check a change must pass.
 
 ## Further reading
 
+- [Design language](DESIGN.md): the window layout, colour tokens, type,
+  spacing, components and icons, with where each lives in the code.
 - [Contributor guide](../CONTRIBUTING.md): setting up, building, testing and
   proposing changes.
 
