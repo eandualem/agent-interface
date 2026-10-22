@@ -22,6 +22,8 @@ use chooser::{Choice, SessionChooser};
 use layout_edit::{Create, Selection};
 mod icons;
 mod panel;
+mod settings;
+mod settings_window;
 mod split_resize;
 mod terminal;
 mod theme;
@@ -39,7 +41,11 @@ actions!(
         /// Open an independent native window on the current library.
         NewWindow,
         /// Choose another library folder for the active window.
-        OpenLibrary
+        OpenLibrary,
+        /// Show the Settings window.
+        OpenSettings,
+        /// Close the active window; its sessions keep running.
+        CloseWindow
     ]
 );
 
@@ -47,6 +53,7 @@ actions!(
 /// An absent directory uses the shared library's normal path lookup.
 pub fn run(directory: Option<PathBuf>) -> Result<(), String> {
     let source = crate::sessions::source_socket(None).map_err(|e| e.to_string());
+    settings::load().apply();
     let failure = Rc::new(RefCell::new(None));
     let opened = Rc::clone(&failure);
     application()
@@ -64,7 +71,17 @@ pub fn run(directory: Option<PathBuf>) -> Result<(), String> {
                 KeyBinding::new("cmd-q", Quit, None),
                 KeyBinding::new("cmd-n", NewWindow, None),
                 KeyBinding::new("cmd-o", OpenLibrary, None),
+                KeyBinding::new("cmd-,", OpenSettings, None),
+                KeyBinding::new("cmd-w", CloseWindow, None),
             ]);
+            cx.on_action(|_: &OpenSettings, cx| settings_window::show(cx));
+            cx.on_action(|_: &CloseWindow, cx| {
+                if let Some(window) = cx.active_window() {
+                    cx.defer(move |cx| {
+                        let _ = window.update(cx, |_, window, _| window.remove_window());
+                    });
+                }
+            });
             // The source chooses its library at launch; keep the native choice in
             // the application menu rather than in the panel.
             cx.on_action(|_: &OpenLibrary, cx| {
@@ -95,6 +112,8 @@ pub fn run(directory: Option<PathBuf>) -> Result<(), String> {
                 items: vec![
                     MenuItem::action("New Window", NewWindow),
                     MenuItem::action("Open Library…", OpenLibrary),
+                    MenuItem::action("Settings…", OpenSettings),
+                    MenuItem::action("Close Window", CloseWindow),
                     MenuItem::action("Quit tmux-workspaces", Quit),
                 ],
                 disabled: false,
@@ -183,7 +202,6 @@ impl Drop for Roster {
 #[derive(Clone, Copy)]
 enum Popover {
     Workspace,
-    Configure,
 }
 
 #[derive(Clone)]
@@ -314,7 +332,6 @@ struct Browser {
     error: Option<String>,
     loading: bool,
     workspace_menu: bool,
-    configure_menu: bool,
     icon_picker: bool,
     menu_at: Option<gpui::Point<gpui::Pixels>>,
     roster: Option<Roster>,
@@ -563,7 +580,6 @@ impl Browser {
             },
         );
         self.workspace_menu = false;
-        self.configure_menu = false;
         self.tab_menu = None;
         self.chooser = None;
         self.reset_focus = false;
@@ -631,7 +647,6 @@ impl Browser {
         };
         self.pending_save = Some(proposal);
         self.workspace_menu = false;
-        self.configure_menu = false;
         self.editing = None;
         self.tab_menu = None;
         self.chooser = None;
@@ -668,7 +683,6 @@ impl Browser {
         self.chooser = None;
         self.tab_menu = None;
         self.workspace_menu = false;
-        self.configure_menu = false;
         if let Some(focus) = &self.navigation {
             window.focus(focus, cx);
         }
@@ -790,7 +804,6 @@ impl Browser {
         self.editing = None;
         self.chooser = None;
         self.workspace_menu = false;
-        self.configure_menu = false;
         if let Some(focus) = &self.navigation {
             window.focus(focus, cx);
         }
@@ -934,7 +947,7 @@ impl Browser {
                     SharedString::from(format!("tab-action-{index}")),
                     None,
                     label,
-                    theme::NORMAL,
+                    theme::normal(),
                     key.map(str::to_owned),
                 )
                 .on_click(cx.listener(move |browser, _, window, cx| {
@@ -956,7 +969,6 @@ impl Browser {
         self.menu_at = Some(at);
         match menu {
             Popover::Workspace => self.workspace_menu = true,
-            Popover::Configure => self.configure_menu = true,
         }
         if let Some(focus) = &self.navigation {
             window.focus(focus, cx);
@@ -967,7 +979,6 @@ impl Browser {
     fn close_menus(&mut self) {
         self.tab_menu = None;
         self.workspace_menu = false;
-        self.configure_menu = false;
         self.icon_picker = false;
     }
 
@@ -988,13 +999,21 @@ impl Browser {
             menu = menu.child(
                 panel::menu_item(
                     SharedString::from(format!("workspace-{id}")),
-                    icons::workspace(space.symbol.as_deref(), space.icon.as_deref())
-                        .map(|name| (name, if current { theme::ACCENT } else { theme::MUTED })),
+                    icons::workspace(space.symbol.as_deref(), space.icon.as_deref()).map(|name| {
+                        (
+                            name,
+                            if current {
+                                theme::accent()
+                            } else {
+                                theme::muted()
+                            },
+                        )
+                    }),
                     space.name.clone(),
                     if current {
-                        theme::ACTIVE_TEXT
+                        theme::active_text()
                     } else {
-                        theme::NORMAL
+                        theme::normal()
                     },
                     Some(count),
                 )
@@ -1027,9 +1046,9 @@ impl Browser {
             .child(
                 panel::menu_item(
                     "rename-workspace",
-                    Some(("pencil", theme::MUTED)),
+                    Some(("pencil", theme::muted())),
                     "Rename",
-                    theme::NORMAL,
+                    theme::normal(),
                     Some("⌘⇧R".into()),
                 )
                 .on_click(cx.listener(|browser, _, window, cx| {
@@ -1040,9 +1059,9 @@ impl Browser {
             .child(
                 panel::menu_item(
                     "choose-icon",
-                    Some(("sparkles", theme::MUTED)),
+                    Some(("sparkles", theme::muted())),
                     "Choose icon…",
-                    theme::NORMAL,
+                    theme::normal(),
                     None,
                 )
                 .on_click(cx.listener(|browser, _, _, cx| {
@@ -1054,12 +1073,12 @@ impl Browser {
             .child(
                 panel::menu_item(
                     "delete-workspace",
-                    Some(("x", theme::MUTED)),
+                    Some(("x", theme::muted())),
                     "Delete",
                     if reason.is_some() {
-                        theme::MUTED
+                        theme::muted()
                     } else {
-                        theme::DANGER
+                        theme::danger()
                     },
                     reason.map(str::to_owned),
                 )
@@ -1074,9 +1093,9 @@ impl Browser {
             .child(
                 panel::menu_item(
                     "new-workspace",
-                    Some(("plus", theme::ACCENT)),
+                    Some(("plus", theme::accent())),
                     "New workspace",
-                    theme::NORMAL,
+                    theme::normal(),
                     Some("⌘⇧N".into()),
                 )
                 .on_click(cx.listener(|browser, _, window, cx| {
@@ -1110,12 +1129,16 @@ impl Browser {
                     .justify_center()
                     .rounded(px(6.0))
                     .cursor_pointer()
-                    .when(chosen, |el| el.bg(rgb(theme::ACTIVE)))
-                    .hover(|el| el.bg(rgb(theme::ACTIVE)))
+                    .when(chosen, |el| el.bg(rgb(theme::active())))
+                    .hover(|el| el.bg(rgb(theme::active())))
                     .child(panel::icon(
                         name,
                         16.0,
-                        if chosen { theme::ACCENT } else { theme::NORMAL },
+                        if chosen {
+                            theme::accent()
+                        } else {
+                            theme::normal()
+                        },
                     ))
                     .on_click(cx.listener(move |browser, _, _, cx| {
                         browser.set_symbol(Some(name), cx);
@@ -1131,7 +1154,7 @@ impl Browser {
                     "icon-number",
                     None,
                     "Show number instead",
-                    theme::NORMAL,
+                    theme::normal(),
                     None,
                 )
                 .on_click(cx.listener(|browser, _, _, cx| browser.set_symbol(None, cx))),
@@ -1367,7 +1390,6 @@ impl Browser {
             self.chooser = None;
             self.tab_menu = None;
             self.workspace_menu = false;
-            self.configure_menu = false;
             if let Some(focus) = &self.navigation {
                 window.focus(focus, cx);
             }
@@ -1451,7 +1473,7 @@ impl Browser {
                     .child(
                         div()
                             .pl(cells.width(1))
-                            .text_color(rgb(theme::MUTED))
+                            .text_color(rgb(theme::muted()))
                             .child("· what should it run?"),
                     ),
             )
@@ -1461,17 +1483,17 @@ impl Browser {
                     .row()
                     .id(SharedString::from(format!("open-terminal-{pane}")))
                     .cursor_pointer()
-                    .when(focused, |el| el.bg(rgb(theme::ACTIVE)))
+                    .when(focused, |el| el.bg(rgb(theme::active())))
                     .child(
                         div()
                             .w(cells.width(2))
-                            .text_color(rgb(theme::ACCENT))
+                            .text_color(rgb(theme::accent()))
                             .child(if focused { "▶" } else { "" }),
                     )
                     .child(
                         div()
                             .when(focused, |el| {
-                                el.text_color(rgb(theme::ACTIVE_TEXT))
+                                el.text_color(rgb(theme::active_text()))
                                     .font_weight(gpui::FontWeight::BOLD)
                             })
                             .child("Open terminal"),
@@ -1487,7 +1509,7 @@ impl Browser {
                     .row()
                     .id(SharedString::from(format!("attach-{pane}")))
                     .cursor_pointer()
-                    .text_color(rgb(theme::MUTED))
+                    .text_color(rgb(theme::muted()))
                     .child("ATTACH A SESSION")
                     .on_click(cx.listener(move |browser, _, window, cx| {
                         cx.stop_propagation();
@@ -1498,7 +1520,7 @@ impl Browser {
             .child(
                 cells
                     .row()
-                    .text_color(rgb(theme::MUTED))
+                    .text_color(rgb(theme::muted()))
                     .child("Nothing is created until you choose."),
             )
             .into_any_element()
@@ -1524,7 +1546,7 @@ impl Browser {
                     .min_w_0()
                     .min_h_0()
                     .overflow_hidden()
-                    .bg(rgb(theme::SURFACE))
+                    .bg(rgb(theme::surface()))
                     .on_click(cx.listener(move |browser, _, _, cx| {
                         if let Some(layout) = &mut browser.layout {
                             layout.model_mut().choose_pane(&id);
@@ -1583,18 +1605,18 @@ impl Browser {
                         .flex()
                         .justify_center()
                         .items_center()
-                        .bg(rgb(theme::SURFACE))
+                        .bg(rgb(theme::surface()))
                         .when(*direction == Direction::Right, |el| {
                             el.w(px(split_resize::DIVIDER))
                                 .h_full()
                                 .cursor(gpui::CursorStyle::ResizeLeftRight)
-                                .child(div().w(px(1.0)).h_full().bg(rgb(theme::OUTLINE)))
+                                .child(div().w(px(1.0)).h_full().bg(rgb(theme::outline())))
                         })
                         .when(*direction == Direction::Below, |el| {
                             el.h(px(split_resize::DIVIDER))
                                 .w_full()
                                 .cursor(gpui::CursorStyle::ResizeUpDown)
-                                .child(div().h(px(1.0)).w_full().bg(rgb(theme::OUTLINE)))
+                                .child(div().h(px(1.0)).w_full().bg(rgb(theme::outline())))
                         })
                         .on_mouse_down(
                             gpui::MouseButton::Left,
@@ -1781,7 +1803,7 @@ impl Render for Browser {
             .min_w_0()
             .h_full()
             .overflow_hidden()
-            .bg(rgb(theme::SURFACE));
+            .bg(rgb(theme::surface()));
         if let Some(layout) = &self.layout {
             let model = layout.model();
             if let Some(space) = model.workspace() {
@@ -1812,9 +1834,9 @@ impl Render for Browser {
                                     .flex_shrink_0()
                                     .text_size(px(12.0))
                                     .text_color(rgb(if active {
-                                        theme::ACCENT
+                                        theme::accent()
                                     } else {
-                                        theme::MUTED
+                                        theme::muted()
                                     }))
                                     .child((index + 1).to_string()),
                             )
@@ -1833,7 +1855,7 @@ impl Render for Browser {
                                     .overflow_hidden()
                                     .text_ellipsis()
                                     .when(active, |el| {
-                                        el.text_color(rgb(theme::ACTIVE_TEXT))
+                                        el.text_color(rgb(theme::active_text()))
                                             .font_weight(gpui::FontWeight::MEDIUM)
                                     })
                                     .child(tab.name.clone())
@@ -1870,16 +1892,16 @@ impl Render for Browser {
                             .child(div().flex().flex_shrink_0().gap(px(2.0)).children(
                                 (0..panes).map(|_| {
                                     panel::pane_mark(if active {
-                                        theme::NORMAL
+                                        theme::normal()
                                     } else {
-                                        theme::MUTED
+                                        theme::muted()
                                     })
                                 }),
                             ))
                             .when(active && !editing, |el| {
                                 let id = id.clone();
                                 el.child(
-                                    panel::icon_button("tab-options", "ellipsis", theme::MUTED)
+                                    panel::icon_button("tab-options", "ellipsis", theme::muted())
                                         .on_click(cx.listener(
                                             move |browser, event: &gpui::ClickEvent, window, cx| {
                                                 cx.stop_propagation();
@@ -1903,7 +1925,7 @@ impl Render for Browser {
                 if space.tabs.is_empty() {
                     list = list.child(
                         panel::row("no-tabs", false)
-                            .text_color(rgb(theme::MUTED))
+                            .text_color(rgb(theme::muted()))
                             .child("No tabs yet")
                             .on_click(cx.listener(|browser, _, window, cx| {
                                 browser.create(Create::Tab, window, cx)
@@ -1949,7 +1971,7 @@ impl Render for Browser {
                 div()
                     .p(px(16.0))
                     .font_family(panel::FONT)
-                    .text_color(rgb(theme::MUTED))
+                    .text_color(rgb(theme::muted()))
                     .child("Open a folder containing layouts.db with ⌘O."),
             );
             message = Some("No library open".into());
@@ -1981,15 +2003,15 @@ impl Render for Browser {
             .gap(px(8.0))
             .h(px(36.0))
             .px(px(12.0))
-            .bg(rgb(theme::HEADER))
+            .bg(rgb(theme::header()))
             .when(workspace_edit, |el| {
                 el.child(div().flex_1().min_w_0().child(self.name_editor(cx)))
             })
             .when(!workspace_edit, |el| {
                 el.cursor_pointer()
-                    .hover(|el| el.bg(rgb(theme::ACTIVE)))
+                    .hover(|el| el.bg(rgb(theme::active())))
                     .when_some(heading_icon, |el, name| {
-                        el.child(panel::icon(name, 16.0, theme::ACCENT))
+                        el.child(panel::icon(name, 16.0, theme::accent()))
                     })
                     .child(
                         div()
@@ -2001,7 +2023,7 @@ impl Render for Browser {
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                             .child(heading.clone()),
                     )
-                    .child(panel::icon("chevron-down", 14.0, theme::MUTED))
+                    .child(panel::icon("chevron-down", 14.0, theme::muted()))
                     .on_mouse_down(
                         gpui::MouseButton::Right,
                         cx.listener(|browser, event: &gpui::MouseDownEvent, window, cx| {
@@ -2052,18 +2074,26 @@ impl Render for Browser {
                         .justify_center()
                         .rounded(px(6.0))
                         .cursor_pointer()
-                        .when(current, |el| el.bg(rgb(theme::ACTIVE)))
-                        .when(!current, |el| el.hover(|el| el.bg(rgb(theme::HEADER))))
+                        .when(current, |el| el.bg(rgb(theme::active())))
+                        .when(!current, |el| el.hover(|el| el.bg(rgb(theme::header()))))
                         .map(|el| match glyph {
                             Some(name) => el.child(panel::icon(
                                 name,
                                 16.0,
-                                if current { theme::ACCENT } else { theme::MUTED },
+                                if current {
+                                    theme::accent()
+                                } else {
+                                    theme::muted()
+                                },
                             )),
                             None => el
                                 .text_size(px(12.0))
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
-                                .text_color(rgb(if current { theme::ACCENT } else { theme::MUTED }))
+                                .text_color(rgb(if current {
+                                    theme::accent()
+                                } else {
+                                    theme::muted()
+                                }))
                                 .child((index + 1).to_string()),
                         })
                         .on_mouse_down(
@@ -2098,7 +2128,7 @@ impl Render for Browser {
             }
             if overflow {
                 slots = slots.child(
-                    panel::icon_button("workspace-more", "ellipsis", theme::MUTED).on_click(
+                    panel::icon_button("workspace-more", "ellipsis", theme::muted()).on_click(
                         cx.listener(|browser, event: &gpui::ClickEvent, window, cx| {
                             browser.open_menu(Popover::Workspace, event.position(), window, cx);
                         }),
@@ -2143,7 +2173,7 @@ impl Render for Browser {
                             .h(px(panel::ROW))
                             .flex()
                             .items_center()
-                            .text_color(rgb(theme::MUTED))
+                            .text_color(rgb(theme::muted()))
                             .child(reason),
                     );
                 }
@@ -2154,16 +2184,16 @@ impl Render for Browser {
                             .h(px(panel::ROW))
                             .flex()
                             .items_center()
-                            .text_color(rgb(theme::MUTED))
+                            .text_color(rgb(theme::muted()))
                             .child("No active agents"),
                     );
                 }
                 Some(entries) => {
                     for (name, state) in entries {
                         let (color, filled) = match state.as_str() {
-                            "waiting_for_human" | "blocked" => (theme::DANGER, true),
-                            "busy" | "starting" => (theme::ACCENT, true),
-                            _ => (theme::MUTED, false),
+                            "waiting_for_human" | "blocked" => (theme::danger(), true),
+                            "busy" | "starting" => (theme::accent(), true),
+                            _ => (theme::muted(), false),
                         };
                         let agent = name.clone();
                         rows = rows.child(
@@ -2189,7 +2219,7 @@ impl Render for Browser {
                                     div()
                                         .flex_shrink_0()
                                         .text_size(px(11.0))
-                                        .text_color(rgb(theme::MUTED))
+                                        .text_color(rgb(theme::muted()))
                                         .child(match state.as_str() {
                                             "waiting_for_human" | "blocked" => "needs you",
                                             "busy" => "working",
@@ -2227,11 +2257,11 @@ impl Render for Browser {
             .h_full()
             .flex()
             .flex_col()
-            .bg(rgb(theme::PANEL))
+            .bg(rgb(theme::panel()))
             .font_family(panel::FONT)
             .text_size(px(13.0))
             .line_height(px(18.0))
-            .text_color(rgb(theme::NORMAL))
+            .text_color(rgb(theme::normal()))
             .child(header)
             .when(editing, |el| {
                 el.child(
@@ -2239,13 +2269,13 @@ impl Render for Browser {
                         .px(px(14.0))
                         .pt(px(6.0))
                         .text_size(px(11.0))
-                        .text_color(rgb(theme::ACCENT))
+                        .text_color(rgb(theme::accent()))
                         .child("Enter to save · Esc to cancel"),
                 )
             })
             .child(div().h(px(6.0)).flex_shrink_0())
             .child(panel::section("TABS").child(
-                panel::icon_button("new-tab", "plus", theme::ACCENT).on_click(
+                panel::icon_button("new-tab", "plus", theme::accent()).on_click(
                     cx.listener(|browser, _, window, cx| browser.create(Create::Tab, window, cx)),
                 ),
             ))
@@ -2253,33 +2283,27 @@ impl Render for Browser {
             .when(self.save_failed, |el| {
                 el.child(
                     panel::row("retry-save", false)
-                        .text_color(rgb(theme::ACCENT))
+                        .text_color(rgb(theme::accent()))
                         .child("Retry saving changes")
                         .on_click(cx.listener(|browser, _, _, cx| browser.save(cx))),
                 )
                 .child(
                     panel::row("discard-save", false)
-                        .text_color(rgb(theme::DANGER))
+                        .text_color(rgb(theme::danger()))
                         .child("Discard unsaved changes")
                         .on_click(cx.listener(|browser, _, _, cx| browser.discard_save(cx))),
                 )
             })
             .children(agents)
             .child(
-                panel::row("configure", self.configure_menu)
-                    .text_color(rgb(theme::MUTED))
-                    .child(panel::icon("settings", 14.0, theme::MUTED))
+                panel::row("configure", false)
+                    .text_color(rgb(theme::muted()))
+                    .child(panel::icon("settings", 14.0, theme::muted()))
                     .child("Settings")
-                    .on_click(
-                        cx.listener(|browser, event: &gpui::ClickEvent, window, cx| {
-                            if browser.configure_menu {
-                                browser.close_menus();
-                                cx.notify();
-                            } else {
-                                browser.open_menu(Popover::Configure, event.position(), window, cx);
-                            }
-                        }),
-                    ),
+                    .on_click(cx.listener(|browser, _, _, cx| {
+                        browser.close_menus();
+                        settings_window::show(cx);
+                    })),
             )
             .child(slots);
         // The open menu floats over the window at the point it was opened from.
@@ -2289,24 +2313,6 @@ impl Render for Browser {
             Some(self.tab_options(cx))
         } else if self.workspace_menu {
             Some(self.workspace_options(cx))
-        } else if self.configure_menu {
-            Some(
-                panel::menu()
-                    .child(panel::menu_heading(concat!(
-                        "tmux-workspaces ",
-                        env!("CARGO_PKG_VERSION")
-                    )))
-                    .child(
-                        panel::menu_item(
-                            "detach",
-                            Some(("x", theme::MUTED)),
-                            "Detach",
-                            theme::NORMAL,
-                            Some("sessions keep running".into()),
-                        )
-                        .on_click(|_, window, _| window.remove_window()),
-                    ),
-            )
         } else {
             None
         };
@@ -2360,13 +2366,13 @@ impl Render for Browser {
             .justify_between()
             .font_family(panel::FONT)
             .text_size(px(12.0))
-            .bg(rgb(theme::PANEL))
-            .text_color(rgb(theme::MUTED))
+            .bg(rgb(theme::panel()))
+            .text_color(rgb(theme::muted()))
             .child(
                 div()
                     .min_w_0()
                     .flex()
-                    .child(div().text_color(rgb(theme::NORMAL)).child(context.0))
+                    .child(div().text_color(rgb(theme::normal())).child(context.0))
                     .when_some(context.1, |el, detail| el.child(format!(" · {detail}"))),
             )
             .child(
@@ -2388,9 +2394,9 @@ impl Render for Browser {
                                 .id("toggle-agents")
                                 .cursor_pointer()
                                 .text_color(rgb(if show_agents {
-                                    theme::NORMAL
+                                    theme::normal()
                                 } else {
-                                    theme::MUTED
+                                    theme::muted()
                                 }))
                                 .child(if show_agents {
                                     "agents shown"
@@ -2411,9 +2417,9 @@ impl Render for Browser {
                         )
                     })
                     .child(if right.is_empty() {
-                        div().text_color(rgb(theme::OK)).child("●")
+                        div().text_color(rgb(theme::ok())).child("●")
                     } else {
-                        div().text_color(rgb(theme::ACCENT)).child(right)
+                        div().text_color(rgb(theme::accent())).child(right)
                     }),
             );
         div()
@@ -2444,8 +2450,8 @@ impl Render for Browser {
                 .absolute()
                 .size_full(),
             )
-            .bg(rgb(theme::PANEL))
-            .text_color(rgb(theme::NORMAL))
+            .bg(rgb(theme::panel()))
+            .text_color(rgb(theme::normal()))
             .font_family(terminal::appearance().font_family)
             .text_size(px(terminal::appearance().font_size))
             .line_height(cells.0.height)
@@ -2521,10 +2527,7 @@ impl Render for Browser {
                         cx.stop_propagation();
                         return;
                     }
-                    if (browser.tab_menu.is_some()
-                        || browser.workspace_menu
-                        || browser.configure_menu
-                        || browser.icon_picker)
+                    if (browser.tab_menu.is_some() || browser.workspace_menu || browser.icon_picker)
                         && key.key == "escape"
                     {
                         browser.close_menus();

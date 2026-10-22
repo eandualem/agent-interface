@@ -58,8 +58,9 @@ Reusing the one-character `icon` field would limit icons to glyphs.
 
 ## Limits
 
-Not yet native: a Settings window with theme and shortcut editing. No
-screenshot acceptance has been recorded.
+The Settings window is described in
+[0034](0034-native-settings-window.md). No screenshot acceptance has been
+recorded.
 
 ## Verification
 

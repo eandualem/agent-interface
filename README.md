@@ -62,8 +62,11 @@ current mode and a light while the saved arrangement is current. The bottom row
 of the panel switches workspaces with one click, showing each workspace's icon,
 or its number when it has none. Right-click one for its options, including
 **Choose icon…**; when the row is full, **⋯** opens the full list.
-**Settings** above it offers **Detach**, which closes the window and leaves
-every session running. With Agent Backbone installed, an **AGENTS** section
+**Settings** above it, or Command-comma, opens the Settings window: a dark or
+light theme and the terminal text size apply to every window at once and are
+saved in `~/.config/tmux-workspaces/settings.toml`; it also lists the shortcuts
+and shows the Agent Backbone connection. **Close Window** (Command-W) closes a
+window and leaves every session running. With Agent Backbone installed, an **AGENTS** section
 under the tabs lists active agents with their state: red needs you, amber is
 working. Click one to show the tab holding its session; **agents shown** in the
 status row hides the section.

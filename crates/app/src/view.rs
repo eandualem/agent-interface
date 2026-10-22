@@ -35,7 +35,7 @@ use scroll::WheelGesture;
 use selection::Selection;
 
 /// The font and colours of the terminal grid.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Appearance {
     /// The font family, such as `Menlo`.
     pub font_family: SharedString,
@@ -258,6 +258,38 @@ impl TerminalView {
             pointer_subscriptions: Vec::new(),
             wheel_gesture: WheelGesture::default(),
         }
+    }
+
+    /// Use another font or colours. A new font size changes the cell size, so
+    /// the session's size is declared again on the next frame.
+    pub(crate) fn set_appearance(&mut self, appearance: &Appearance, cx: &mut Context<Self>) {
+        let mut grid = self.grid.borrow_mut();
+        let same_font = grid.original_font_size == appearance.font_size
+            && grid.appearance.font_family == appearance.font_family;
+        let unchanged = same_font
+            && grid.appearance.foreground == appearance.foreground
+            && grid.appearance.background == appearance.background
+            && grid.appearance.cursor == appearance.cursor
+            && grid.appearance.palette == appearance.palette;
+        if unchanged {
+            return;
+        }
+        if !same_font {
+            let cell = cell_size(cx.text_system(), appearance);
+            grid.original_cell = cell;
+            grid.cell = cell;
+            grid.original_font_size = appearance.font_size;
+            grid.batch_ascii = is_monospaced(cx.text_system(), appearance);
+            grid.font = terminal_font(&appearance.font_family);
+            grid.requested = None;
+        }
+        let scaled = grid.appearance.font_size;
+        grid.appearance = appearance.clone();
+        if same_font {
+            grid.appearance.font_size = scaled;
+        }
+        drop(grid);
+        cx.notify();
     }
 
     fn panes(&self) -> &Panes {

@@ -277,7 +277,7 @@ impl NameField {
                         point(origin.x + line.x_for_index(range.start), bounds.top()),
                         point(origin.x + line.x_for_index(range.end), bounds.bottom()),
                     ),
-                    rgb(super::theme::OUTLINE),
+                    rgb(super::theme::outline()),
                 ));
             }
             let _ = line.paint(
@@ -297,7 +297,7 @@ impl NameField {
                         ),
                         point(origin.x + line.x_for_index(marked.end), bounds.bottom()),
                     ),
-                    rgb(super::theme::ACTIVE_TEXT),
+                    rgb(super::theme::active_text()),
                 ));
             }
             if range.is_empty() && self.focus.is_focused(window) {
@@ -306,7 +306,7 @@ impl NameField {
                         point(origin.x + caret, bounds.top()),
                         size(px(1.), bounds.size.height),
                     ),
-                    rgb(super::theme::ACTIVE_TEXT),
+                    rgb(super::theme::active_text()),
                 ));
             }
         });
@@ -415,13 +415,13 @@ impl Render for NameField {
             .min_w_0()
             .h(if search { px(24.) } else { px(22.) })
             .when(!search, |el| {
-                el.bg(rgb(super::theme::ACTIVE))
-                    .text_color(rgb(super::theme::ACTIVE_TEXT))
+                el.bg(rgb(super::theme::active()))
+                    .text_color(rgb(super::theme::active_text()))
             })
             .when(search, |el| {
-                el.bg(rgb(super::theme::SURFACE))
+                el.bg(rgb(super::theme::surface()))
                     .border_1()
-                    .border_color(rgb(super::theme::OUTLINE))
+                    .border_color(rgb(super::theme::outline()))
             })
             .id("name-field")
             .on_click(cx.listener(|_, _, _, cx| cx.stop_propagation()))
