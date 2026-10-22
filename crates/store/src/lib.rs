@@ -1,9 +1,11 @@
 //! Access to the Python-compatible schema-v2 `layouts.db` library.
 //! Opening is read-only by default. Explicit writable access requires an existing
-//! initialized library; no operation creates or migrates a database or starts a shell.
+//! initialized library. First-run creation is explicit and never replaces an
+//! existing database, migrates a library or starts a shell.
 
 #![forbid(unsafe_code)]
 
+mod initialize;
 mod json;
 mod project;
 mod reconcile;

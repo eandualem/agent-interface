@@ -150,9 +150,14 @@ The list follows tmux, checking every two seconds. Custom tmux
 prefix bindings, selection across history pages, terminal input methods
 and key-release events are not yet wired into the product UI.
 
-Omit `--data-dir` to use the Python-compatible environment and default library
-location. An absent or unreadable library shows an error and can be replaced
-through **Open Library…**; the browser never creates or repairs a library.
+Omit `--data-dir` to use `TMUX_WORKSPACES_DATA_DIR`, then
+`$XDG_DATA_HOME/tmux-workspaces`, or `~/.local/share/tmux-workspaces` by default.
+On first launch, an absent library is created with one empty workspace. Add a
+tab and choose **Open terminal** or **Attach a session** to start working; neither
+Python nor Agent Backbone is required. Existing libraries are opened without
+initialization or repair. An unreadable or invalid library shows an error and
+can be replaced through **Open Library…**. Keep its database and journal files
+for recovery; the app never overwrites them with an empty arrangement.
 `--help` and `--version` work without a display or tmux.
 
 ## Inspect a keymap
