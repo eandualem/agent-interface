@@ -4,6 +4,7 @@
 
 mod actions;
 mod geometry;
+pub mod keymap;
 pub mod merge;
 mod navigation;
 
