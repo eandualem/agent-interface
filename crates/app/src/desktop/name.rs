@@ -5,7 +5,7 @@ use std::ops::Range;
 use gpui::{
     Bounds, ClipboardItem, Context, ElementInputHandler, EntityInputHandler, EventEmitter,
     FocusHandle, MouseButton, Pixels, Point, ShapedLine, Subscription, TextRun, UTF16Selection,
-    Window, canvas, div, fill, point, prelude::*, px, rgb, size,
+    Window, canvas, div, fill, point, prelude::*, px, size,
 };
 use unicode_properties::{GeneralCategoryGroup, UnicodeGeneralCategory};
 use unicode_segmentation::UnicodeSegmentation;
@@ -266,7 +266,8 @@ impl NameField {
             None,
         );
         let caret = line.x_for_index(self.text.cursor);
-        let width = (bounds.size.width - px(2.)).max(px(1.));
+        let caret_width = px(super::design::tokens().size.caret);
+        let width = (bounds.size.width - caret_width * 2.0).max(caret_width);
         self.scroll = self.scroll.min(caret).max(caret - width).max(px(0.));
         let origin = point(bounds.left() - self.scroll, bounds.top());
         let range = self.text.selection();
@@ -277,7 +278,7 @@ impl NameField {
                         point(origin.x + line.x_for_index(range.start), bounds.top()),
                         point(origin.x + line.x_for_index(range.end), bounds.bottom()),
                     ),
-                    rgb(super::theme::outline()),
+                    super::design::colors().accent_soft,
                 ));
             }
             let _ = line.paint(
@@ -293,20 +294,20 @@ impl NameField {
                     Bounds::from_corners(
                         point(
                             origin.x + line.x_for_index(marked.start),
-                            bounds.bottom() - px(1.),
+                            bounds.bottom() - caret_width,
                         ),
                         point(origin.x + line.x_for_index(marked.end), bounds.bottom()),
                     ),
-                    rgb(super::theme::active_text()),
+                    super::design::colors().accent,
                 ));
             }
             if range.is_empty() && self.focus.is_focused(window) {
                 window.paint_quad(fill(
                     Bounds::new(
                         point(origin.x + caret, bounds.top()),
-                        size(px(1.), bounds.size.height),
+                        size(caret_width, bounds.size.height),
                     ),
-                    rgb(super::theme::active_text()),
+                    super::design::colors().accent,
                 ));
             }
         });
@@ -413,16 +414,17 @@ impl Render for NameField {
         div()
             .w_full()
             .min_w_0()
-            .h(if search { px(24.) } else { px(22.) })
-            .when(!search, |el| {
-                el.bg(rgb(super::theme::active()))
-                    .text_color(rgb(super::theme::active_text()))
-            })
-            .when(search, |el| {
-                el.bg(rgb(super::theme::surface()))
-                    .border_1()
-                    .border_color(rgb(super::theme::outline()))
-            })
+            .h(px(if search {
+                super::design::tokens().size.jump_field
+            } else {
+                super::design::tokens().size.row - super::design::tokens().space.s8
+            }))
+            .px(px(super::design::tokens().space.s6))
+            .rounded(px(super::design::tokens().radius.key))
+            .bg(super::design::colors().field)
+            .text_color(super::design::colors().text)
+            .border(px(super::design::tokens().size.hairline))
+            .border_color(super::design::colors().accent)
             .id("name-field")
             .on_click(cx.listener(|_, _, _, cx| cx.stop_propagation()))
             .track_focus(&self.focus)
