@@ -150,6 +150,24 @@ location. An absent or unreadable library shows an error and can be replaced
 through **Open Library…**; the browser never creates or repairs a library.
 `--help` and `--version` work without a display or tmux.
 
+## Inspect a keymap
+
+After the [source build setup](CONTRIBUTING.md#build-and-test), print the effective
+shortcuts or a complete compatible TOML configuration:
+
+```sh
+cargo run -p tmux-workspaces-app -- --print-keymap help
+cargo run -p tmux-workspaces-app -- --keymap ./keymap.toml --print-keymap toml
+cargo run -p tmux-workspaces-app -- --no-keymap --print-keymap toml
+```
+
+Selection follows `--keymap`, then `TMUX_WORKSPACES_KEYMAP`, then
+`$XDG_CONFIG_HOME/tmux-workspaces/keymap.toml` (or
+`~/.config/tmux-workspaces/keymap.toml`). `--no-keymap` uses shipped defaults.
+Only a missing implicit default is ignored; invalid or explicitly missing files
+report an error. These commands create no library, start no terminal and write
+no configuration. Native shortcut dispatch is not available yet.
+
 ## Licence
 
 MIT. See [LICENSE](LICENSE).

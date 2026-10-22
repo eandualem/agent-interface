@@ -5,6 +5,7 @@
 mod actions;
 mod choices;
 mod geometry;
+pub mod keymap;
 pub mod merge;
 mod navigation;
 pub mod theme;

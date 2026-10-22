@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 pub mod desktop;
+pub mod keymap;
 pub mod library;
 pub mod panes;
 mod restore;
