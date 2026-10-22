@@ -172,7 +172,7 @@ pub fn platform_key(mac: &str) -> &str {
         "cmd-n" => "ctrl-shift-n",
         "cmd-o" => "ctrl-shift-o",
         "cmd-w" => "ctrl-shift-w",
-        "cmd-," => "ctrl-shift-,",
+        "cmd-," => "ctrl-,",
         "cmd-c" => "ctrl-shift-c",
         "cmd-v" => "ctrl-shift-v",
         _ => mac,
@@ -629,6 +629,18 @@ mod tests {
             Bindings::from_entries(entries.iter().map(|(id, text)| (*id, text.as_str()))),
             saved
         );
+        if !cfg!(target_os = "macos") {
+            // XKB drops Shift from punctuation, retaining the produced glyph.
+            let event = gpui::Keystroke {
+                key: "}".into(),
+                key_char: None,
+                modifiers: gpui::Modifiers {
+                    control: true,
+                    ..Default::default()
+                },
+            };
+            assert_eq!(defaults.command_for(&event), Some(Command::NextPane));
+        }
         let (tab, workspace) = if cfg!(target_os = "macos") {
             ("cmd-2", "cmd-alt-2")
         } else {

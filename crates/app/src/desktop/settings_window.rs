@@ -36,7 +36,7 @@ const FIXED: &[(&str, &str)] = &[
     ("Paste", "Ctrl+Shift+V"),
     ("Scroll history", "Shift+PgUp  Shift+PgDn"),
     ("Select locally in mouse programs", "Shift+drag"),
-    ("Settings", "Ctrl+Shift+,"),
+    ("Settings", "Ctrl+,"),
     ("New window", "Ctrl+Shift+N"),
     ("Open library", "Ctrl+Shift+O"),
     ("Close window", "Ctrl+Shift+W"),
