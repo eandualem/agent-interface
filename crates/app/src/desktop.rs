@@ -371,6 +371,8 @@ struct Browser {
     library: Option<Library>,
     directory: Option<PathBuf>,
     source: Option<Result<PathBuf, String>>,
+    source_matches: sidebar::SourceMatches,
+    source_match_updates: Option<Task<()>>,
     terminals: HashMap<String, gpui::Entity<LiveTerminal>>,
     window_choices: HashMap<String, (Target, SessionWindow)>,
     layout: Option<WindowLayout>,
@@ -442,6 +444,8 @@ impl Browser {
         self.tab_menu = None;
         self.save_notice = None;
         self.stop_reader(cx);
+        self.source_match_updates = None;
+        self.source_matches = sidebar::SourceMatches::default();
         self.terminals.clear();
         self.window_choices.clear();
         self.reset_focus = true;
@@ -470,6 +474,7 @@ impl Browser {
                 let updated = this.update(cx, |browser, cx| {
                     if let Some(snapshot) = browser.roster.as_ref().and_then(Roster::take_update) {
                         browser.agents = Some(snapshot);
+                        browser.refresh_source_matches(cx);
                         cx.notify();
                     }
                 });
@@ -537,6 +542,7 @@ impl Browser {
                             browser.library.as_ref().and_then(Library::take_update)
                         {
                             browser.apply(update);
+                            browser.refresh_source_matches(cx);
                             cx.notify();
                         }
                     })

@@ -80,6 +80,7 @@ impl Browser {
                     if let Some(jump) = &mut browser.jump {
                         jump.query = query.clone();
                         jump.index = 0;
+                        jump.scroll = ScrollHandle::new();
                     }
                 }
                 NameEvent::Save => browser.jump_go(window, cx),

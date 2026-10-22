@@ -192,7 +192,8 @@ fn command(socket: &Path) -> Option<Command> {
         // -S is authoritative. Also keep temporary socket state in this explicit
         // namespace; fixture callers supply an existing private parent directory.
         .env("TMUX_TMPDIR", socket.parent()?)
-        .args(["-N", "-S"])
+        // These machine-readable replies are UTF-8, even in a POSIX locale.
+        .args(["-u", "-N", "-S"])
         .arg(socket);
     Some(command)
 }
@@ -350,6 +351,47 @@ mod tests {
             [" a ", "=leading", "café"]
         );
     }
+    #[test]
+    fn queries_preserve_utf8_and_newline_paths_in_a_posix_locale() {
+        let server = TmuxServer::start().unwrap();
+        let cwd = server.address().0.join("shell café path\n");
+        std::fs::create_dir(&cwd).unwrap();
+        let cwd = cwd.canonicalize().unwrap();
+        server
+            .run(&[
+                "new-session",
+                "-d",
+                "-s",
+                "café",
+                "-c",
+                cwd.to_str().unwrap(),
+                "sleep 60",
+            ])
+            .unwrap();
+        let socket = server
+            .run(&["display-message", "-p", "#{socket_path}"])
+            .unwrap();
+        let socket = Path::new(socket.trim_end());
+        let mut query = command(socket).unwrap();
+        query.env("LC_ALL", "C").args([
+            "display-message",
+            "-p",
+            "-t",
+            "=café:",
+            "#{session_name}:#{pane_current_path}",
+        ]);
+        let output = capture(query, TIMEOUT).unwrap();
+        assert!(output.status.success());
+        assert_eq!(
+            output.stdout,
+            format!("café:{}\n", cwd.display()).as_bytes()
+        );
+        assert_eq!(
+            read_session_directory(socket, "café").unwrap(),
+            cwd.to_str().unwrap()
+        );
+    }
+
     #[test]
     fn attachment_policy_reads_inherited_values_without_changing_the_source() {
         let server = TmuxServer::start().unwrap();
