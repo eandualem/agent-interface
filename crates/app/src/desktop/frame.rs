@@ -96,7 +96,6 @@ impl Browser {
             chooser: self.chooser.as_ref(),
             split_bounds: &self.split_bounds,
             leaf_states,
-            hovered: self.hovered_pane.as_deref(),
         };
         let node = tree
             .as_ref()
