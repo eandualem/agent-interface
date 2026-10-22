@@ -26,6 +26,7 @@ pub enum Command {
     NextWorkspace,
     PreviousWorkspace,
     FocusPanel,
+    Jump,
 }
 
 /// Every configurable command: its settings key, label, group and default.
@@ -134,6 +135,13 @@ pub const COMMANDS: &[(Command, &str, &str, &str, &str)] = &[
         "Focus the panel",
         "Workspaces",
         "cmd-b",
+    ),
+    (
+        Command::Jump,
+        "jump",
+        "Jump to tab, pane or agent",
+        "Workspaces",
+        "cmd-k",
     ),
 ];
 

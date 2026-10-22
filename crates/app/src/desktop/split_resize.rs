@@ -5,7 +5,10 @@ use gpui::{Bounds, Pixels, Point};
 use tmux_workspaces_core::{Direction, Layout, Node};
 use tmux_workspaces_store::Document;
 
-pub(super) const DIVIDER: f32 = 5.0;
+/// The gap between panes, which is also the resize handle.
+pub(super) fn divider() -> f32 {
+    super::design::tokens().size.pane_gap
+}
 
 pub(super) struct Drag {
     pub split: String,
@@ -87,7 +90,7 @@ impl Drag {
         f32::from(match self.direction {
             Direction::Right => self.bounds.size.width,
             Direction::Below => self.bounds.size.height,
-        }) - DIVIDER
+        }) - divider()
     }
 
     pub fn motion(&mut self, position: Point<Pixels>) {
@@ -149,7 +152,9 @@ mod tests {
             {
                 *saved = direction;
             }
-            let bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(205.0), px(205.0)));
+            // 200 px of panes plus the gap between them, from the design tokens.
+            let extent = px(200.0 + divider());
+            let bounds = Bounds::new(point(px(0.0), px(0.0)), size(extent, extent));
             let mut drag = Drag::begin(
                 window.model(),
                 "000000000003",

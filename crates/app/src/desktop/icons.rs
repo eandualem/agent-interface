@@ -1,5 +1,6 @@
 //! Bundled vector icons: a curated subset of Lucide 0.460.0 (ISC licence,
-//! `assets/icons/LICENSE-lucide`). GPUI draws each as a mask in the text color.
+//! `assets/icons/LICENSE-lucide`), plus this project's two `agent-*` shapes.
+//! GPUI draws each as a mask in the text color.
 
 use std::borrow::Cow;
 
@@ -73,6 +74,19 @@ icons!(
     "git-branch",
     "package",
     "layers",
+    "chevrons-up-down",
+    "search",
+    "sliders-horizontal",
+    "link-2",
+    "chevron-right",
+    "check",
+    "unplug",
+    "square-plus",
+    "folder-open",
+    "keyboard",
+    "circle-check",
+    "agent-arc",
+    "agent-play",
 );
 
 /// Icons a workspace can show, in the order the picker offers them.

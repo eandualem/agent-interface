@@ -1,184 +1,193 @@
 # Design language
 
-This page describes how the native app looks today and where each part of
-that look lives in the code. It is the starting point for design work: a new
-design can be specified against the tokens and components below, and then
-implemented by changing those same places.
+The native app's look is called **Quiet Instrument**: a calm, dark-first
+workspace where the terminals are the focus, state is shown by shape before
+colour, and the chrome stays out of the way. This page explains how the look
+is built, where each part lives, and how to change it.
 
-The app has two kinds of surface:
+## Where the design lives
 
-- **Chrome**: the navigation panel, menus, the status row and the Settings
-  window. These are native UI in the platform's interface font.
-- **Terminals**: the tmux panes. They are drawn on a character-cell grid in a
-  monospaced font, with terminal colours. Their layout follows tmux.
+| What | File | Change it to… |
+| --- | --- | --- |
+| Every colour, size, radius, type style and timing | [`crates/app/assets/design/tokens.toml`](../crates/app/assets/design/tokens.toml) | restyle the app without touching Rust |
+| The typed loader and its checks | `crates/app/src/desktop/design.rs` | add a new token |
+| Shared pieces (rows, buttons, keycaps, menus, agent symbols…) | `crates/app/src/desktop/components.rs` | change how a component is built |
+| The navigation panel | `desktop/sidebar.rs` | rearrange the panel |
+| Pane cards, headers, the empty pane | `desktop/pane_cards.rs` | change the panes |
+| Content area, empty states, popover placement | `desktop/frame.rs` | change empty states or where popovers open |
+| The status row | `desktop/status.rs` | change the bottom row |
+| Tab, workspace and icon menus | `desktop/menus.rs` | change menus |
+| Jump (Command-K) | `desktop/jump.rs` | change search results |
+| The Settings window | `desktop/settings_window.rs` | change Settings pages |
+| Icons | `crates/app/assets/icons/`, listed in `desktop/icons.rs` | add an icon |
+
+**The rule:** views use tokens and components, never their own values. A
+colour, pixel size, radius or font in a view is a bug: add or reuse a token
+instead. Tests check that the bundled `tokens.toml` is complete and well
+formed, so a missing or misspelt token fails the build's tests rather than
+the app.
+
+### Changing the look
+
+1. Edit `tokens.toml`. Colours are `#rrggbb` or `#rrggbbaa`; sizes are pixels.
+2. Run `cargo test -p tmux-workspaces-app design` to check the file.
+3. Run the app. Every window uses the new values.
+
+### Adding a token
+
+Add it to `tokens.toml` with a comment saying where it is used, add the field
+to its group in `design.rs` (the `group!` lists are in the same order as the
+file), then use it from a component or view.
+
+### Adding a component
+
+Write it in `components.rs` from tokens only, document it in the table below,
+and use it from the views. Prefer extending an existing component to drawing
+a similar one in a view.
 
 ## Window layout
 
 ```text
-┌─────────────────────┬─┬───────────────────────────────────────────────┐
-│ ◆ Workspace name  ⌄ │ │ attached-session name (attachments only)    │  header 36 px
-│                     │ │                                               │
-│ TABS             +  │ │                                               │  section 28 px
-│ 1  Editor   ▮▮   ⋯  │ │            terminal panes (tmux)              │  rows 26 px
-│ 2  Logs     ▮       │ │        split by 5 px dividers with a          │
-│ …                   │ │        1 px outline line                      │
-│                     │ │                                               │
-│ AGENTS           3  │ │                                               │
-│ ● reviewer  needs you│ │                                               │
-│ ● builder   working │ │                                               │
-│ ○ docs              │ │                                               │
-│ ⚙ Settings          │ │                                               │
-│ [◆][★][⌂][3][⋯]     │ │                                               │  slots 28 px in a 40 px row
-├─────────────────────┴─┴───────────────────────────────────────────────┤
-│ Workspace · Tab · pane 1/2      ⌘T new · ⌘D split …    agents shown ● │  status row, one cell high
-└───────────────────────────────────────────────────────────────────────┘
-  panel: 22 terminal cells by    separator: one cell of surface
-  default, draggable 140–600 px  with a 1 px outline line
+┌───────────────────────┬──────────────────────────────────────────────────┐
+│ ● ● ●                  │ ╭──────────────────╮ ╭────────────────────────╮  │  titlebar 44
+│ ┌──┐ Workspace     ⌃⌄ │ │ ▸ zsh  ~/project 1│ │ git  develop         2 │  │  pane header 28
+│ └──┘ 3 tabs            │ │                  │ ╰────────────────────────╯  │
+│ [⌕ Jump to…      ⌘K ]  │ │   focused pane   │ ╭────────────────────────╮  │  pane gap 6
+│ TABS               +   │ │   (accent ring)  │ │ ⚙ builder  ▸ working 3 │  │
+│ 1 native-app      ▣   │ │                  │ │   dimmed when unfocused│  │
+│ 2 roster      ●   ▥   │ ╰──────────────────╯ ╰────────────────────────╯  │
+│ ─────────────────────  │                                                  │
+│ AGENTS      2 need you │                                                  │
+│ ! reviewer      roster │                                                  │
+│ ◔ builder   native-app │                                                  │
+│ ─────────────────────  │                                                  │
+│ [◆][★][⌂] 4      [≡]   │                                                  │  switcher 52
+├────────────────────────┴──────────────────────────────────────────────────┤
+│ Workspace › native-app › pane 1 of 3   ⌘D split  ⌘⇧D below   shown ● Saved │  status 26
+└────────────────────────────────────────────────────────────────────────────┘
+   panel 232 (drag 140–600)
 ```
 
-- **Panel** (`crates/app/src/desktop.rs`, the `sidebar` element in
-  `Browser::render`). Width: 22 terminal cells, or the dragged
-  `sidebar_width`. Order from the top: workspace header, tabs section, tab
-  list (scrolls), agents section (when Agent Backbone is installed, at most
-  40 % of the window height), Settings row, workspace switcher.
-- **Separator**: one terminal cell of the surface colour with a 1 px outline
-  line (`theme::Cells::separator`); dragging it resizes the panel.
-- **Content**: the selected tab's split tree (`Browser::tree`). Split
-  dividers are 5 px of surface with a centred 1 px outline line
-  (`split_resize::DIVIDER`).
-- **Status row**: full width, one terminal cell high, panel colour, interface
-  font at 12 px. Left: workspace, tab and pane. Centre: keys for the current
-  mode, hidden when they would meet the sides. Right: the agents toggle, then
-  the saved-state light or a message.
-- **Popovers**: menus open where they were invoked (`anchored`), over
+- **Panel** (`sidebar.rs`): titlebar strip with the window controls, the
+  workspace block (icon tile, name, tab count, chooser), the jump field, the
+  tab list, the agents section (when Agent Backbone is installed) and the
+  workspace switcher with Settings. Its right edge drags to resize.
+- **Content** (`frame.rs`, `pane_cards.rs`): panes as rounded cards on the
+  window's `ground`, separated by `pane_gap`, which is also the resize handle.
+  The focused card has a `focus` border and a `focus_halo` glow; the others
+  have an `edge` border and their content dimmed to `pane_dim`. A pane whose
+  agent needs you has an `attention` border.
+- **Pane header**: what runs there, where, and the pane's number. Settings can
+  show it always, only on hover (overlaid), or never.
+- **Status row** (`status.rs`): breadcrumb on the left, the current mode's keys
+  as keycaps in the centre, the agents toggle and the saved state on the right.
+  A failed save shows its error with Retry saving and Discard.
+- **Popovers** (`frame.rs`): menus and Jump open where they were invoked, over
   everything, and close on Escape or a click outside.
-
-The Settings window (`crates/app/src/desktop/settings_window.rs`) is 680 by
-480 px (minimum 560 by 380): a 180 px navigation column on the panel colour,
-then a scrolling page on the surface colour with 20 px padding.
 
 ## Colour tokens
 
-Defined in `crates/app/src/desktop/theme.rs` as `theme::DARK` and
-`theme::LIGHT`; read at render time through `theme::panel()`,
-`theme::accent()` and so on, so every window repaints when the theme changes.
+Each theme defines the same names (`[color.dark]`, `[color.light]` in
+`tokens.toml`). Views read the current theme through `design::colors()`.
 
-| Token | Role | Dark | Light |
-| --- | --- | --- | --- |
-| `panel` | Panel, status row, Settings navigation | `#15171c` | `#f8f8f8` |
-| `surface` | Terminals, separators, Settings pages | `#1b1e24` | `#ffffff` |
-| `outline` | Separator lines, borders, menu rules | `#2a2e36` | `#e5e5e5` |
-| `header` | Workspace header, popover frames, row hover | `#1e2128` | `#ececec` |
-| `active` | Selected row, chosen slot, badges, hover in menus | `#262a33` | `#e8e8e8` |
-| `active_text` | Text on `active` | `#ffffff` | `#1f1f1f` |
-| `normal` | Body text | `#d4d6db` | `#3b3b3b` |
-| `muted` | Secondary text, labels, inactive icons | `#7d828c` | `#6e6e6e` |
-| `accent` | Selection markers, current workspace icon, add buttons, working state | `#e0a458` | `#b8651b` |
-| `danger` | Destructive items, "needs you" state, errors | `#e06c75` | `#c0392b` |
-| `ok` | Saved-state light | `#98c379` | `#2e7d32` |
-| `terminal_text` | Default terminal text and cursor | `#ffffff` | `#4d4d4c` |
-| `terminal[0..16]` | ANSI colours | Ghostty defaults | Tomorrow (light) |
+| Token | Role |
+| --- | --- |
+| `ground` | Window, behind and between the panes |
+| `panel` | Panel, status row, Settings navigation |
+| `surface` | Panes and Settings pages |
+| `field` | Inputs, keycaps, popovers |
+| `hover` | Row and button hover |
+| `selected` | Selected row, menu highlight |
+| `line`, `line_strong` | Hairlines and rules; field and keycap borders |
+| `edge` | Unfocused pane border |
+| `text`, `text_2` | Body and selected text; unselected rows and pane titles |
+| `muted` | Labels, meta, inactive icons |
+| `faint` | Shapes only (idle ring, thumbnails), never text |
+| `accent`, `accent_text`, `on_accent`, `accent_soft` | Selection, working and focus; as text; text on an accent fill; tint fills |
+| `focus`, `focus_halo` | Focused pane border and focus rings; glow around the focused pane |
+| `attention`, `attention_text`, `on_attention`, `attention_soft` | Needs you, destructive actions, errors |
+| `ok` | Saved light, connected |
+| `shadow` | Popover shadow |
+| `pane_dim` | Opacity of unfocused panes' content |
 
-## Typography
+Terminal defaults per theme (`[terminal.dark]`, `[terminal.light]`): the
+default text and cursor colours and the 16 ANSI colours. Dark keeps Ghostty's
+defaults; light is Tomorrow, darkened to pass 4.5:1.
 
-| Use | Font | Size | Weight |
-| --- | --- | --- | --- |
-| Panel rows, menus, Settings body | System UI (`panel::FONT`) | 13 px | Regular; selected tab Medium |
-| Workspace name in the header | System UI | 13 px | Semibold |
-| Section labels (TABS, AGENTS), menu headings | System UI | 11 px, uppercase | Semibold |
-| Tab numbers, agent state words | System UI | 12 / 11 px | Regular |
-| Status row | System UI | 12 px | Regular |
-| Settings page titles | System UI | 18 px | Semibold |
-| Terminals | Menlo | 13 pt default, 9 to 24 in Settings | Regular, bold from programs |
+## Type
 
-## Spacing and shape
+`[font]`: `ui` (the platform interface font), `mono` (keys, numbers,
+terminals) and the default terminal size. `[text.*]` styles, each a size and
+weight, applied with `components::text`:
 
-| Token | Value | Where |
-| --- | --- | --- |
-| Row height | 26 px (`panel::ROW`) | Tab, agent, Settings rows; menu items |
-| Header height | 36 px | Workspace header |
-| Section label height | 28 px | TABS, AGENTS |
-| Switcher | 28 px slots, 4 px gap, in a 40 px row | Workspace slots |
-| Row inset | 6 px outside, 8 px inside, 8 px gap | `panel::row` |
-| Label inset | 14 px | `panel::section` |
-| Radii | 5 px items, 6 px rows and slots, 8 px popovers, 10 px theme cards | |
-| Icon sizes | 14 px in rows and buttons, 16 px in the header, slots and picker | |
-| Icon button | 22 px square | `panel::icon_button` |
-| Popover | at least 220 px wide, 4 px padding, 1 px outline border, large shadow | `panel::menu` |
-| Pane marker | 3 by 10 px bar, 2 px gap, up to six | `panel::pane_mark` |
+| Style | Use |
+| --- | --- |
+| `page_title` | Settings page titles |
+| `workspace` | Workspace name in the panel |
+| `row`, `row_selected` | Rows and menus; the selected row |
+| `status` | Status row, pane headers |
+| `meta` | Secondary details on rows |
+| `label` | Uppercase section labels (TABS, AGENTS) |
+| `key` | Keycaps and numbers, in `mono` |
+| `empty_title`, `body` | Empty and error states; explanatory text |
+
+## Spacing, radii and sizes
+
+- `[space]`: a 2 px scale named by value (`s2` … `s24`). Views use these names.
+- `[radius]`: by use — `key`, `icon_button`, `menu_item`, `row`, `slot`,
+  `pane`, `popover`.
+- `[size]`: every component dimension, from `titlebar` and `panel_width` to
+  `row`, `pane_header`, `status_row`, `slot`, `keycap`, `hairline` and the
+  Settings window. Each is commented in `tokens.toml`.
+- `[motion]`: `spinner_ms`, one turn of the working-agent arc.
 
 ## Components
 
-Shared building blocks are in `crates/app/src/desktop/panel.rs`; assembled
-views are in `desktop.rs`, `desktop/terminal.rs` and
-`desktop/settings_window.rs`.
+All in `components.rs`; each takes its look from the tokens.
 
-| Component | Code | Anatomy and states |
-| --- | --- | --- |
-| Row | `panel::row` | Rounded row. Selected: `active` fill. Hover: `header` fill. |
-| Icon | `panel::icon` | Lucide SVG drawn as a mask in one colour. |
-| Icon button | `panel::icon_button` | Icon centred in 22 px; hover `active`. Used for +, ⋯. |
-| Section label | `panel::section` | Uppercase label with optional trailing control. |
-| Workspace header | `Browser::render` (`workspace-header`) | Icon (accent), name (semibold, ellipsis), chevron. Click opens the workspace menu; double-click renames in place; right-click opens the menu. |
-| Tab row | `Browser::render` (`tab-…`) | Number (muted; accent when selected), name (ellipsis; `active_text` medium when selected), pane markers, ⋯ when selected. Right-click opens the tab menu; double-click on the selected tab's name renames it. |
-| Agent row | `Browser::render` (`agent-…`) | 8 px dot: filled `danger` (needs you), filled `accent` (working, starting), `muted` ring (idle and others); name; state word. Click shows the agent's tab. |
-| Workspace slot | `Browser::render` (`workspace-slot-…`) | 28 px square with the workspace icon or number. Current: `active` fill and accent icon. Right-click opens its menu; overflow shows ⋯. |
-| Popover menu | `panel::menu`, `menu_item`, `menu_heading`, `menu_rule` | Frame on `header`; items with a 14 px icon slot, label, right-aligned key or value. Danger items in `danger`, unavailable items in `muted`. |
-| Icon picker | `Browser::icon_picker` | Eight-column grid of 28 px icon buttons in a popover; the chosen icon has the `active` fill. |
-| Status row | `Browser::render` (`status`) | See the layout above. |
-| Attachment header | `LiveTerminal::render` | One cell row on `panel`: window names (muted, current in `normal`, scrolls sideways) and the session name in `accent` on the right. |
-| Empty pane | `Browser::new_pane` | "New pane · what should it run?", Open terminal, ATTACH A SESSION, and a muted footer. |
-| Name field | `desktop/name.rs` | Inline text field on `active`, 22 px high; the chooser's filter has a 24 px outlined frame. |
-| Session chooser | `desktop/chooser.rs` | Filter field and a list of sessions inside the pane. |
-| Settings navigation | `SettingsWindow::render` | Rows with icon and label; the open page is selected. |
-| Theme card | `SettingsWindow::appearance` | 180 px card with a miniature of panel and terminal colours; the chosen card has an accent border. |
-| Stepper | `SettingsWindow::appearance` | 26 px − and + buttons around the value. |
-| Shortcut badge | `SettingsWindow::shortcuts` | Key label on `active`; while recording it reads "Press keys…" on `accent`. Reset link appears for changed keys. |
+| Component | Anatomy and states |
+| --- | --- |
+| `row` | Rounded row; `selected` fill when selected, `hover` fill on hover |
+| `section` | Uppercase label with an optional trailing control |
+| `icon`, `icon_button` | Lucide icon in one colour; square button, `selected` fill on hover |
+| `keycap`, `key_hint` | A key in a cap (status row, Jump field); a key at a row's end |
+| `button` | `Primary` (accent fill), `Secondary` (field with border), `Danger` (attention text) |
+| `dot` | Small filled mark: needs you on tabs and slots, the saved light |
+| `menu`, `menu_item`, `menu_heading`, `menu_rule` | Popover frame on `field` with shadow; item with mark slot, label and key; uppercase heading; rule |
+| `agent_symbol` | Needs you: filled `attention` circle with "!". Working: `accent` arc turning once per `spinner_ms`, with a play mark. Idle: `faint` ring. Unknown: dashed `muted` ring with "?" |
+| `minimap` | A tab's layout thumbnail: one frame, split once, or split twice |
+| `empty_tile`, `empty_state` | Icon tile, title, explanation and actions, centred |
+| `field_frame` | Text field frame, `accent` border when focused |
 
-## Icons
-
-Icons are a curated subset of [Lucide](https://lucide.dev) 0.460.0 (ISC
-licence), compiled into the binary from `crates/app/assets/icons/` and listed
-in `crates/app/src/desktop/icons.rs`. Interface icons: `chevron-down`, `plus`,
-`ellipsis`, `settings`, `x`, `pencil`, `sparkles`, `palette`, `terminal`,
-`bot`. Workspaces can choose from the 54 icons in `icons::WORKSPACE`; a
-workspace's choice is saved by name in its `symbol` field. To add an icon,
-copy its SVG from the same Lucide release into `assets/icons`, add its name to
-`icons!` (and to `WORKSPACE` if workspaces may use it).
+Agent states always pair a shape with a colour, so they read without colour.
+Backbone's states fold onto four (`AgentState::from_report`): needs you
+(`waiting_for_human`, `blocked`), working (`busy`, `starting`), idle (`idle`,
+`running`) and unknown (anything else).
 
 ## Interaction patterns
 
-- Menus open where they were invoked and take every pointer event over them.
-  Escape, a click outside, or choosing an item closes them.
-- Right-click opens the options for a tab, the workspace header or a slot.
-- Double-click renames the selected tab or the workspace in place; Enter
-  saves, Escape or clicking elsewhere cancels. The hint row says so.
-- Drag the panel separator or a split divider to resize; sizes are saved when
-  the drag ends.
-- Settings apply at once to every window and are saved in
-  `~/.config/tmux-workspaces/settings.toml`.
+- Right-click opens options for a tab, the workspace block or a slot. A tab's
+  layout thumbnail turns into its ⋯ on hover.
+- Double-click renames the selected tab or the workspace in place; the status
+  row shows the editing keys.
+- Command-K opens Jump: tabs, attached panes, agents and commands across every
+  workspace; Up and Down move, Enter goes, Escape closes.
+- Drag the panel's right edge or the gap between panes to resize; sizes are
+  saved when the drag ends.
+- Settings (Command-comma or the switcher's sliders) apply at once to every
+  window and are saved in `~/.config/tmux-workspaces/settings.toml`.
 
-## Known gaps for a redesign
+## Icons
 
-These are places where the current design is inconsistent or incomplete, and
-where a new design can make a decision:
+A curated subset of [Lucide](https://lucide.dev) 0.460.0 (ISC licence,
+`assets/icons/LICENSE-lucide`), plus this project's `agent-arc` and
+`agent-play` shapes. To add one, copy its SVG from the same Lucide release into
+`crates/app/assets/icons/` and add its name to `icons!` in `desktop/icons.rs`
+(and to `WORKSPACE` if workspaces may choose it).
 
-- Spacing and radii are written inline at each use rather than as named
-  tokens; only colours and the row height are centralised.
-- The status row and attachment header are laid out on the terminal-cell
-  grid, while the rest of the chrome uses pixels.
-- There are no tooltips, no keyboard movement inside menus, and no focus
-  rings on panel controls.
-- The light theme reuses the previous tool's paper colours and has had less
-  visual tuning than the dark one.
-- Agent states use colour plus a short word; there is no icon per state.
-- Empty states (no library, no tabs, no agents) are plain text.
+## Handing over a design
 
-## Handing over a new design
-
-A design is easiest to implement when it states, for each of the sections
-above: the colour tokens for each theme, the type scale, the spacing and
-radius scale, and each component's anatomy with its hover, selected,
-disabled, danger and focus states. New icons should name a Lucide icon where
-one fits. Screens for the main window with tabs, splits, agents and an open
-menu, the empty states, and each Settings page cover the current surface.
+A new direction is quickest to implement when it is expressed in these terms:
+token values per theme (new tokens named with their role), components with
+their states, and screens of the main window, menus, empty states and each
+Settings page. Values that already have a token should reuse its name.

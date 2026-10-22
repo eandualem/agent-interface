@@ -54,26 +54,26 @@ with independent navigation and terminal connections. Closing one leaves the
 other windows open. **Open Library…** in the application menu, or Command-O,
 chooses another folder containing `layouts.db`.
 
-The navigation panel on the left is native and resizable: drag the line between
-it and the terminals; the width is remembered. It shows the system font, the current
-workspace's icon and name at the top, its tabs below, and menus that open where
-you click. The terminals sit beside it on a slightly lighter surface, with a
-status row along the bottom naming the workspace, tab and pane, the keys for the
-current mode and a light while the saved arrangement is current. The bottom row
-of the panel switches workspaces with one click, showing each workspace's icon,
-or its number when it has none. Right-click one for its options, including
-**Choose icon…**; when the row is full, **⋯** opens the full list.
-**Settings** above it, or Command-comma, opens the Settings window: a dark or
-light theme and the terminal text size apply to every window at once and are
-saved in `~/.config/tmux-workspaces/settings.toml`. On its Shortcuts page,
-click a command's shortcut and press new keys to change it; menus and the
-status row follow. It also shows the Agent Backbone connection. **Close Window** (Command-W) closes a
-window and leaves every session running. With Agent Backbone installed, an **AGENTS** section
-under the tabs lists active agents with their state: red needs you, amber is
-working. Click one to show the tab holding its session; **agents shown** in the
-status row hides the section.
+The window follows the Quiet Instrument design ([design language](docs/DESIGN.md)).
+The navigation panel on the left shows the current workspace (click it for the
+workspace menu), a **Jump** field (Command-K) that finds tabs, panes, agents and
+commands across every workspace, the tabs with a thumbnail of each layout, and,
+with Agent Backbone installed, the **AGENTS** section: agents needing you first,
+each with a state symbol. Click an agent to show the tab holding its session.
+The bottom row switches workspaces with one click (right-click for options,
+including **Choose icon…**) and opens Settings. Drag the panel's right edge to
+resize it. Panes are cards with a header naming what runs there; the focused
+pane has an accent ring and the others are slightly dimmed. The status row
+names the workspace, tab and pane, shows the keys for the current mode and the
+saved state, and **agents shown** hides the agents section.
 
-Open the workspace menu by clicking or right-clicking the workspace heading.
+Settings (Command-comma) offers a dark or light theme, the terminal text size,
+whether panes show headers (always, on hover or never) and editable shortcuts;
+changes apply to every window at once and are saved in
+`~/.config/tmux-workspaces/settings.toml`. **Close Window** (Command-W) closes a
+window and leaves every session running.
+
+Open the workspace menu by clicking or right-clicking the workspace block.
 Choose **New workspace**, or press Command-Shift-N, and enter a name. Enter
 saves it; Escape cancels. New workspaces have no tabs or shells.
 Choose **Delete workspace** to remove an empty workspace; the last workspace and
