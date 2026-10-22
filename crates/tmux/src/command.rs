@@ -10,7 +10,18 @@ use crate::control::PaneId;
 /// `send-keys -H` delivers each byte as given to that exact pane, without
 /// tmux's key tables (`docs/decisions/0015-input-routing.md`).
 pub fn send_bytes(pane: PaneId, bytes: &[u8]) -> String {
-    let mut command = format!("send-keys -H -t %{}", pane.0);
+    append_bytes(format!("send-keys -H -t %{}", pane.0), bytes)
+}
+
+/// Types only while the pane belongs to this window and source session.
+pub fn send_bytes_in_session(session: u32, window: u32, pane: PaneId, bytes: &[u8]) -> String {
+    append_bytes(
+        format!("send-keys -H -t '${session}:@{window}.%{}'", pane.0),
+        bytes,
+    )
+}
+
+fn append_bytes(mut command: String, bytes: &[u8]) -> String {
     for byte in bytes {
         // Writing to a String cannot fail.
         let _ = write!(command, " {byte:02x}");

@@ -25,7 +25,7 @@ pub struct RosterSource {
 }
 
 impl RosterSource {
-    /// Read immediately, then five seconds after each completed attempt.
+    /// Read immediately, then two seconds after each completed attempt.
     ///
     /// The caller first decides whether the provider is enabled and resolves
     /// its directory. Configuration is re-read on every attempt, including after
@@ -49,7 +49,7 @@ impl RosterSource {
                         Some(snapshot.clone());
                     wake();
                     if !matches!(
-                        stopped.recv_timeout(Duration::from_secs(5)),
+                        stopped.recv_timeout(Duration::from_secs(2)),
                         Err(mpsc::RecvTimeoutError::Timeout)
                     ) {
                         break;

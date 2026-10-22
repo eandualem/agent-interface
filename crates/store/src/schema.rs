@@ -177,8 +177,9 @@ fn read_layout(value: &Value, navigation: bool) -> Result<Layout> {
         .and_then(Value::as_array)
         .filter(|v| !v.is_empty())
         .ok_or("layout.workspaces: expected a nonempty list")?;
+    // Agents are shown unless the preference was turned off.
     let show_agents = match root.get("show_agents") {
-        None => false,
+        None => true,
         Some(Value::Bool(value)) => *value,
         _ => return Err("layout.show_agents: expected a boolean".into()),
     };
@@ -197,6 +198,15 @@ fn read_layout(value: &Value, navigation: bool) -> Result<Layout> {
             _ => {
                 return Err(format!(
                     "{at}.icon: expected a printable icon of one or two characters"
+                ));
+            }
+        };
+        let symbol = match item.get("symbol") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(s)) if is_symbol(s) => Some(s.clone()),
+            _ => {
+                return Err(format!(
+                    "{at}.symbol: expected an icon name of lowercase letters, digits and hyphens"
                 ));
             }
         };
@@ -247,6 +257,7 @@ fn read_layout(value: &Value, navigation: bool) -> Result<Layout> {
             id,
             name,
             icon,
+            symbol,
             tabs,
             selected,
         });
@@ -272,4 +283,12 @@ fn read_layout(value: &Value, navigation: bool) -> Result<Layout> {
         focus,
         show_agents,
     })
+}
+
+/// A native icon name: 1 to 40 lowercase ASCII letters, digits and hyphens.
+fn is_symbol(value: &str) -> bool {
+    (1..=40).contains(&value.len())
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }

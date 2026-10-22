@@ -168,7 +168,7 @@ fn command(socket: &Path) -> Option<Command> {
     if !socket.is_absolute() {
         return None;
     }
-    let mut command = Command::new("tmux");
+    let mut command = Command::new(crate::connection::tmux_binary().ok()?);
     command
         .env_clear()
         .envs(std::env::vars_os().filter(|(key, _)| {
@@ -221,7 +221,7 @@ fn names(output: &str) -> Vec<String> {
 
 // Nonblocking socket pairs let the worker drain both streams while enforcing
 // one deadline, without reader threads that could outlive a failed query.
-pub(super) fn capture(mut command: Command, timeout: Duration) -> io::Result<Output> {
+pub(crate) fn capture(mut command: Command, timeout: Duration) -> io::Result<Output> {
     let deadline = Instant::now() + timeout;
     let (mut stdout, output) = UnixStream::pair()?;
     let (mut stderr, error) = UnixStream::pair()?;

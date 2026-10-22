@@ -1,5 +1,6 @@
-//! Read-only access to the Python-compatible schema-v2 `layouts.db` library.
-//! No operation creates, migrates or writes a database or starts a shell.
+//! Access to the Python-compatible schema-v2 `layouts.db` library.
+//! Opening is read-only by default. Explicit writable access requires an existing
+//! initialized library; no operation creates or migrates a database or starts a shell.
 
 #![forbid(unsafe_code)]
 
@@ -7,6 +8,7 @@ mod json;
 mod project;
 mod reconcile;
 pub use reconcile::Reconciliation;
+mod save;
 mod schema;
 
 use rusqlite::{Connection, OpenFlags, OptionalExtension, types::ValueRef};
@@ -30,7 +32,7 @@ pub struct Error {
 }
 
 /// A validated schema-v2 document and its independent in-memory model.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Document {
     raw: String,
     model: Layout,
@@ -80,7 +82,7 @@ impl Document {
     }
 }
 
-/// One persistent read-only connection. Statements finish before each call returns;
+/// One persistent connection, read-only by default. Statements finish before each call returns;
 /// a caller may keep this on its storage worker without holding a read lock.
 pub struct Store {
     connection: Connection,

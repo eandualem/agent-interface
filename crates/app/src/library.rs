@@ -12,7 +12,9 @@ pub(crate) mod location;
 mod shells;
 mod window;
 pub use location::library_directory;
-pub use shells::{existing_shell_socket, ordinary_session, remember_shell_directory};
+pub use shells::{
+    existing_shell_socket, ordinary_session, remember_shell_directory, shell_socket_for_creation,
+};
 pub use window::WindowLayout;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(250);

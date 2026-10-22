@@ -33,12 +33,231 @@ fn database(directory: &Path, record: &str) -> Connection {
 }
 
 #[test]
+fn transactional_edits_merge_and_conflicts_reset_before_an_explicit_retry() {
+    let directory = tempfile::tempdir().unwrap();
+    let db = database(directory.path(), RECORD);
+    db.execute_batch("CREATE TABLE extension_row(parent INTEGER REFERENCES terminal_layout(id) ON DELETE CASCADE, value TEXT); INSERT INTO extension_row VALUES(1, 'retained')").unwrap();
+    let mut first = Store::open_existing_writable(directory.path()).unwrap();
+    let mut second = Store::open_existing_writable(directory.path()).unwrap();
+    let mut first_base = first.load().unwrap();
+    let mut second_base = second.load().unwrap();
+    let mut a = first_base.model().clone();
+    let mut b = second_base.model().clone();
+    a.workspaces[0].name = "Workspace edit".into();
+    b.workspaces[0].tabs[0].name = "Tab edit".into();
+    b.selected = b.workspaces[1].id.clone();
+    assert!(!first.save(&mut first_base, &a).unwrap().conflict);
+    let saved = second.save(&mut second_base, &b).unwrap();
+    assert!(!saved.conflict);
+    assert_eq!(saved.document.model().workspaces[0].name, "Workspace edit");
+    assert_eq!(
+        saved.document.model().workspaces[0].tabs[0].name,
+        "Tab edit"
+    );
+    assert_eq!(saved.document.model().selected, b.selected);
+    assert_eq!(second_base.raw_json(), second.load().unwrap().raw_json());
+
+    a.workspaces[0].name = "First conflicting edit".into();
+    assert!(!first.save(&mut first_base, &a).unwrap().conflict);
+    b = saved.document.model().clone();
+    b.workspaces[0].name = "Second conflicting edit".into();
+    let committed = first.load().unwrap();
+    let conflict = second.save(&mut second_base, &b).unwrap();
+    assert!(conflict.conflict);
+    assert_eq!(second_base.raw_json(), committed.raw_json());
+    assert_eq!(second.load().unwrap().raw_json(), committed.raw_json());
+    assert_eq!(conflict.document.model().selected, b.selected);
+    b = conflict.document.model().clone();
+    b.workspaces[0].name = "Explicit retry".into();
+    let retry = second.save(&mut second_base, &b).unwrap();
+    assert!(!retry.conflict);
+    assert_eq!(retry.document.model().workspaces[0].name, "Explicit retry");
+    let value: serde_json::Value = serde_json::from_str(second_base.raw_json()).unwrap();
+    assert_eq!(value["extension"]["nullable"], serde_json::Value::Null);
+    assert_eq!(
+        value["extension"]["large"].to_string(),
+        "123456789012345678901234567890"
+    );
+    assert!(!db.is_busy());
+    assert_eq!(
+        db.query_row("SELECT value FROM extension_row", [], |r| r
+            .get::<_, String>(0))
+            .unwrap(),
+        "retained"
+    );
+}
+
+#[test]
+fn writable_open_never_initializes_or_imports_and_save_rechecks_the_current_row() {
+    let directory = tempfile::tempdir().unwrap();
+    assert!(Store::open_existing_writable(directory.path()).is_err());
+    assert!(!directory.path().join("layouts.db").exists());
+    let legacy_db = Connection::open(directory.path().join("layouts.db")).unwrap();
+    assert!(Store::open_existing_writable(directory.path()).is_err());
+    assert_eq!(
+        legacy_db
+            .query_row("SELECT count(*) FROM sqlite_schema", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    let legacy = format!(" {RECORD} ");
+    for table in ["layout", "shared_layout"] {
+        legacy_db
+            .execute_batch(&format!(
+                "CREATE TABLE {table}(id INTEGER PRIMARY KEY, value TEXT)"
+            ))
+            .unwrap();
+        legacy_db
+            .execute(&format!("INSERT INTO {table} VALUES(1, ?1)"), [&legacy])
+            .unwrap();
+        assert!(Store::open_existing_writable(directory.path()).is_err());
+    }
+    assert_eq!(
+        legacy_db
+            .query_row(
+                "SELECT count(*) FROM sqlite_schema WHERE name='terminal_layout'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+        0
+    );
+    drop(legacy_db);
+    let db = database(directory.path(), RECORD);
+    let mut writer = Store::open_existing_writable(directory.path()).unwrap();
+    let mut base = writer.load().unwrap();
+    let original = base.raw_json().to_owned();
+    let mut local = base.model().clone();
+    local.workspaces[0].name = "Unsaved edit".into();
+    for invalid in ["{}", "null"] {
+        db.execute("UPDATE terminal_layout SET value=?1 WHERE id=1", [invalid])
+            .unwrap();
+        assert!(writer.save(&mut base, &local).is_err());
+        assert!(Store::open_existing_writable(directory.path()).is_err());
+        assert_eq!(base.raw_json(), original);
+        assert_eq!(local.workspaces[0].name, "Unsaved edit");
+        assert_eq!(
+            db.query_row("SELECT value FROM terminal_layout WHERE id=1", [], |r| {
+                r.get::<_, String>(0)
+            })
+            .unwrap(),
+            invalid
+        );
+    }
+    db.execute("DELETE FROM terminal_layout", []).unwrap();
+    assert!(writer.save(&mut base, &local).is_err());
+    assert!(Store::open_existing_writable(directory.path()).is_err());
+    db.execute("INSERT INTO terminal_layout VALUES(1, ?1)", [RECORD])
+        .unwrap();
+    db.execute_batch("ALTER TABLE terminal_layout ADD COLUMN extra TEXT DEFAULT 'retained'")
+        .unwrap();
+    assert!(writer.save(&mut base, &local).is_err());
+    assert!(Store::open_existing_writable(directory.path()).is_err());
+    for table in ["layout", "shared_layout"] {
+        assert_eq!(
+            db.query_row(&format!("SELECT value FROM {table}"), [], |r| r
+                .get::<_, String>(0))
+                .unwrap(),
+            legacy
+        );
+    }
+    assert_eq!(base.raw_json(), original);
+}
+
+#[test]
+fn failed_commit_preserves_base_and_unsaved_edits_and_releases_the_transaction() {
+    let directory = tempfile::tempdir().unwrap();
+    let db = database(directory.path(), RECORD);
+    let mut writer = Store::open_existing_writable(directory.path()).unwrap();
+    let mut base = writer.load().unwrap();
+    let mut local = base.model().clone();
+    local.workspaces[0].name = "Retry after reader closes".into();
+    db.execute_batch("BEGIN; SELECT value FROM terminal_layout")
+        .unwrap();
+    assert!(writer.save(&mut base, &local).is_err());
+    assert_eq!(base.raw_json(), RECORD);
+    assert_eq!(writer.load().unwrap().raw_json(), RECORD);
+    db.execute_batch("ROLLBACK").unwrap();
+    assert!(!writer.save(&mut base, &local).unwrap().conflict);
+    assert_eq!(writer.load().unwrap().model(), &local);
+    assert_eq!(
+        db.query_row("PRAGMA journal_mode", [], |r| r.get::<_, String>(0))
+            .unwrap(),
+        "delete"
+    );
+}
+
+#[test]
+fn oversized_save_preserves_the_record_base_and_unsaved_edit() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut value: serde_json::Value = serde_json::from_str(RECORD).unwrap();
+    value["padding"] = "".into();
+    value["padding"] = "x"
+        .repeat(MAX_RECORD_BYTES - value.to_string().len() - 1)
+        .into();
+    let record = value.to_string();
+    let db = database(directory.path(), &record);
+    let mut writer = Store::open_existing_writable(directory.path()).unwrap();
+    let mut base = writer.load().unwrap();
+    let mut local = base.model().clone();
+    local.workspaces[0].name = "x".repeat(80);
+    assert!(
+        writer
+            .save(&mut base, &local)
+            .unwrap_err()
+            .detail
+            .contains("16 MiB")
+    );
+    assert_eq!(base.raw_json(), record);
+    assert_eq!(local.workspaces[0].name.len(), 80);
+    assert_eq!(writer.load().unwrap().raw_json(), record);
+    db.execute_batch("BEGIN EXCLUSIVE; ROLLBACK").unwrap();
+}
+
+#[test]
+fn oversized_merge_rolls_back_without_losing_the_peer_commit_or_local_edits() {
+    let directory = tempfile::tempdir().unwrap();
+    let db = database(directory.path(), RECORD);
+    let mut writer = Store::open_existing_writable(directory.path()).unwrap();
+    let mut peer = Store::open_existing_writable(directory.path()).unwrap();
+    let mut base = writer.load().unwrap();
+    let mut peer_base = peer.load().unwrap();
+    let mut local = base.model().clone();
+    let mut other = peer_base.model().clone();
+    local.workspaces[0].name = "a".repeat(9 * 1024 * 1024);
+    other.workspaces[1].name = "b".repeat(9 * 1024 * 1024);
+    assert!(base.with_model(&local, Path::new("layouts.db")).is_ok());
+    assert!(!peer.save(&mut peer_base, &other).unwrap().conflict);
+    assert!(
+        writer
+            .save(&mut base, &local)
+            .unwrap_err()
+            .detail
+            .contains("16 MiB")
+    );
+    assert_eq!(base.raw_json(), RECORD);
+    assert_eq!(local.workspaces[0].name.len(), 9 * 1024 * 1024);
+    assert_eq!(writer.load().unwrap().raw_json(), peer_base.raw_json());
+    db.execute_batch("BEGIN EXCLUSIVE; ROLLBACK").unwrap();
+    local.workspaces[0].name = "Smaller retry".into();
+    let saved = writer.save(&mut base, &local).unwrap();
+    assert!(!saved.conflict);
+    assert_eq!(saved.document.model().workspaces[0].name, "Smaller retry");
+    assert_eq!(
+        saved.document.model().workspaces[1].name,
+        other.workspaces[1].name
+    );
+}
+
+#[test]
 fn schema_v2_keeps_order_attachments_navigation_and_original_json() {
     let document = parse(RECORD).unwrap();
     assert_eq!(document.raw_json(), RECORD);
     let layout = document.model();
     assert_eq!(layout.selected, "000000000001");
-    assert!(!layout.show_agents);
+    // An absent preference shows the agents, as the previous tool did.
+    assert!(layout.show_agents);
     assert!(layout.workspaces[1].tabs.is_empty());
     let tab = &layout.workspaces[0].tabs[0];
     assert_eq!(tab.name, "Editor");
@@ -469,4 +688,29 @@ fn reconciliation_refreshes_invalid_combinations_but_preserves_oversized_edits()
     assert_eq!(local.workspaces[0].name.len(), 9 * 1024 * 1024);
     assert_eq!(latest.model(), &peer);
     assert_eq!(base.raw_json(), RECORD);
+}
+
+#[test]
+fn a_native_icon_name_round_trips_and_clearing_it_shows_the_number() {
+    let path = Path::new("layouts.db");
+    let document =
+        parse(&RECORD.replace("\"icon\": \"λ\"", "\"icon\": \"λ\", \"symbol\": \"rocket\""))
+            .unwrap();
+    assert_eq!(
+        document.model().workspaces[0].symbol.as_deref(),
+        Some("rocket")
+    );
+    assert!(parse(&RECORD.replace("\"icon\": \"λ\"", "\"symbol\": \"Rocket!\"")).is_err());
+    let mut model = document.model().clone();
+    assert!(model.set_workspace_symbol(Some("code")));
+    let saved: serde_json::Value =
+        serde_json::from_str(document.with_model(&model, path).unwrap().raw_json()).unwrap();
+    assert_eq!(saved["workspaces"][0]["symbol"], "code");
+    assert_eq!(saved["workspaces"][0]["icon"], "λ");
+    assert!(model.set_workspace_symbol(None));
+    assert!(!model.set_workspace_symbol(None));
+    let cleared: serde_json::Value =
+        serde_json::from_str(document.with_model(&model, path).unwrap().raw_json()).unwrap();
+    assert!(cleared["workspaces"][0]["symbol"].is_null());
+    assert!(cleared["workspaces"][0]["icon"].is_null());
 }

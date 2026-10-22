@@ -120,6 +120,8 @@ pub struct Modes {
     pub bracketed_paste: Option<bool>,
     /// The extended-keys mode; reported from tmux 3.5.
     pub extended_keys: Option<ExtendedKeys>,
+    /// Source server extended-key format: true for CSI-u, false for xterm.
+    pub extended_keys_csi_u: Option<bool>,
     /// Focus reporting (1004); reported from tmux 3.8.
     pub focus_events: Option<bool>,
 }
@@ -212,7 +214,7 @@ impl Recovery {
             replies: Vec::new(),
             held: Some(Vec::new()),
         };
-        (recovery, line(&[pane], &continue_command(pane)))
+        (recovery, line(&[pane], &continue_command(pane), None))
     }
 
     /// The pane being rebuilt.
@@ -242,7 +244,11 @@ impl Recovery {
             Waiting::Pause => {
                 self.waiting = Waiting::Line;
                 self.held = Some(Vec::new());
-                Ok(Step::Send(line(&[self.pane], &continue_command(self.pane))))
+                Ok(Step::Send(line(
+                    &[self.pane],
+                    &continue_command(self.pane),
+                    None,
+                )))
             }
             Waiting::Line => {
                 self.replies.push(reply);
@@ -278,7 +284,16 @@ pub struct Attach {
 impl Attach {
     /// Starts rebuilding `panes`, returning the line to send.
     pub fn new(panes: Vec<PaneId>) -> (Self, String) {
-        let command = line(&panes, "refresh-client -f '!no-output'");
+        Self::start(panes, None)
+    }
+
+    /// Rebuilds only panes still in the expected source session and window.
+    pub fn in_session(panes: Vec<PaneId>, session: u32, window: u32) -> (Self, String) {
+        Self::start(panes, Some((session, window)))
+    }
+
+    fn start(panes: Vec<PaneId>, source: Option<(u32, u32)>) -> (Self, String) {
+        let command = line(&panes, "refresh-client -f '!no-output'", source);
         let attach = Self {
             panes,
             replies: Vec::new(),
@@ -339,7 +354,7 @@ pub fn hooks_break_recovery<'a>(lines: impl IntoIterator<Item = &'a [u8]>) -> bo
 
 /// The formats each rebuild reads, one `display-message` each: some formats
 /// can contain a line end.
-const FORMATS: [&str; 27] = [
+const FORMATS: [&str; 28] = [
     "pane_width",
     "pane_height",
     "history_size",
@@ -364,6 +379,7 @@ const FORMATS: [&str; 27] = [
     "mouse_sgr_flag",
     "bracket_paste_flag",
     "pane_key_mode",
+    "extended-keys-format",
     "pane_private_modes",
     "pane_left",
     "pane_top",
@@ -388,10 +404,13 @@ fn continue_command(pane: PaneId) -> String {
 /// Returns one line that reads every pane's state and then runs `last`.
 /// None of its commands waits, so tmux reads no pane output while it runs
 /// them.
-fn line(panes: &[PaneId], last: &str) -> String {
+fn line(panes: &[PaneId], last: &str, source: Option<(u32, u32)>) -> String {
     let mut commands = Vec::new();
     for &pane in panes {
-        let target = target(pane);
+        let target = source.map_or_else(
+            || target(pane),
+            |(session, window)| format!("${session}:@{window}.%{}", pane.0),
+        );
         // The screen with all retained history, then the primary screen
         // saved while the alternate screen is on (empty otherwise).
         commands.push(format!("capture-pane -p -e -N -C -S - -E - -t '{target}'"));
@@ -524,6 +543,12 @@ fn pane_state(values: &[String]) -> Result<PaneState, Error> {
             mouse_sgr: flag("mouse_sgr_flag")?,
             bracketed_paste: optional_flag("bracket_paste_flag")?,
             extended_keys,
+            extended_keys_csi_u: match value("extended-keys-format") {
+                "" => None,
+                "xterm" => Some(false),
+                "csi-u" => Some(true),
+                _ => return Err(Error::Format("extended-keys-format")),
+            },
             focus_events,
         },
     })
@@ -552,7 +577,10 @@ mod tests {
                     "scroll_region_lower" => "23",
                     "pane_tabs" => "8,16",
                     "cursor_flag" | "wrap_flag" => "1",
-                    "bracket_paste_flag" | "pane_key_mode" | "pane_private_modes" => "",
+                    "bracket_paste_flag"
+                    | "pane_key_mode"
+                    | "pane_private_modes"
+                    | "extended-keys-format" => "",
                     _ => "0",
                 };
                 (name, value)
@@ -692,6 +720,21 @@ mod tests {
     #[test]
     fn modes_a_tmux_does_not_report_are_unknown() {
         let modes = with(&[]).unwrap().modes;
+        assert_eq!(modes.extended_keys_csi_u, None);
+        assert_eq!(
+            with(&[("extended-keys-format", "xterm")])
+                .unwrap()
+                .modes
+                .extended_keys_csi_u,
+            Some(false)
+        );
+        assert_eq!(
+            with(&[("extended-keys-format", "csi-u")])
+                .unwrap()
+                .modes
+                .extended_keys_csi_u,
+            Some(true)
+        );
         assert_eq!(
             (
                 modes.bracketed_paste,

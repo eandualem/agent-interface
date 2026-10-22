@@ -5464,6 +5464,9 @@ dependencies = [
  "tmux-workspaces-term",
  "tmux-workspaces-test-support",
  "tmux-workspaces-tmux",
+ "toml 0.8.23",
+ "unicode-properties",
+ "unicode-segmentation",
  "uzers",
 ]
 
@@ -5560,6 +5563,7 @@ dependencies = [
 name = "tmux-workspaces-tmux"
 version = "0.0.0"
 dependencies = [
+ "libc",
  "memchr",
  "rustix",
  "serde_json",
@@ -5567,6 +5571,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tmux-workspaces-test-support",
  "unicode-properties",
+ "uzers",
 ]
 
 [[package]]

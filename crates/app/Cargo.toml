@@ -23,6 +23,9 @@ gpui.workspace = true
 gpui_platform.workspace = true
 uzers.workspace = true
 sha2.workspace = true
+toml.workspace = true
+unicode-segmentation.workspace = true
+unicode-properties.workspace = true
 tmux-workspaces-core = { path = "../core" }
 tmux-workspaces-store = { path = "../store" }
 tmux-workspaces-roster = { path = "../roster" }

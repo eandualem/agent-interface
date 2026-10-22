@@ -10,7 +10,8 @@ use crate::{Document, Error, json, project, schema};
 #[must_use = "apply the document and handle conflicts and input-focus changes"]
 pub struct Reconciliation {
     /// Merged edits, or the latest shared arrangement after a conflict, with this
-    /// window's surviving navigation restored. Nothing has been saved.
+    /// window's surviving navigation restored. Pure reconciliation does not save;
+    /// `Store::save` commits this document only when `conflict` is false.
     pub document: Document,
     /// The caller must tell the user that the conflicting edit was refreshed and
     /// needs to be retried. Independent local edits are also discarded on conflict,
@@ -18,6 +19,7 @@ pub struct Reconciliation {
     pub conflict: bool,
     /// Move input focus to navigation and require a new pane selection before
     /// typing: the active tree or attachment changed, or the active tab disappeared.
+    /// Saved working-directory metadata alone does not require an input handoff.
     pub active_tree_changed: bool,
 }
 
