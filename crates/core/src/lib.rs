@@ -35,6 +35,8 @@ pub struct Workspace {
     pub name: String,
     /// Optional one- or two-character icon.
     pub icon: Option<String>,
+    /// Optional named native icon, which takes precedence over `icon`.
+    pub symbol: Option<String>,
     /// Tabs in saved order.
     pub tabs: Vec<Tab>,
     /// Initially selected tab, or the empty string for an empty workspace.

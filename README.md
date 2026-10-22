@@ -54,17 +54,18 @@ with independent navigation and terminal connections. Closing one leaves the
 other windows open. **Open Library…** in the application menu, or Command-O,
 chooses another folder containing `layouts.db`.
 
-The window follows the Python viewer's default look and layout: a 22-column
-navigation panel on the left in the terminal font, the terminals beside it on a
-slightly lighter surface, and a status row along the bottom naming the workspace,
-tab and pane, the keys for the current mode and a light while the saved
-arrangement is current. The bottom row of the panel switches workspaces with one
-click: each slot shows its icon, or its number when it has none, and the current
-one is filled. Right-click a slot for that workspace's options; when the row is
-full, its last slot, **…**, opens the full list. **Configure…** above it offers
-**Detach**, which closes the window and leaves every session running.
+The navigation panel on the left is native: the system font, the current
+workspace's icon and name at the top, its tabs below, and menus that open where
+you click. The terminals sit beside it on a slightly lighter surface, with a
+status row along the bottom naming the workspace, tab and pane, the keys for the
+current mode and a light while the saved arrangement is current. The bottom row
+of the panel switches workspaces with one click, showing each workspace's icon,
+or its number when it has none. Right-click one for its options, including
+**Choose icon…**; when the row is full, **⋯** opens the full list.
+**Settings** above it offers **Detach**, which closes the window and leaves
+every session running.
 
-Open the workspace chooser with **▾** or a right-click on the workspace heading.
+Open the workspace menu by clicking or right-clicking the workspace heading.
 Choose **New workspace**, or press Command-Shift-N, and enter a name. Enter
 saves it; Escape cancels. New workspaces have no tabs or shells.
 Choose **Delete workspace** to remove an empty workspace; the last workspace and

@@ -188,6 +188,15 @@ pub(crate) fn apply(raw: &str, model: &Layout) -> Result<String, String> {
         {
             optional(&mut item, "icon", space.icon.as_deref());
         }
+        if space.symbol.is_some()
+            || projection
+                .objects
+                .get(&space.id)
+                .and_then(|item| item.get("symbol"))
+                .is_some_and(|symbol| symbol.get() != "null")
+        {
+            optional(&mut item, "symbol", space.symbol.as_deref());
+        }
         let mut tabs = Vec::new();
         for tab in &space.tabs {
             let mut item = projection.object(&tab.id, &["tree"])?;

@@ -25,9 +25,10 @@ evidence, and say which.
 
 ## Product contract
 
-- Parity with the Python tool first. Its README, `docs/GUIDE.md` and
-  acceptance documents are the checklist. Then a better UX: a native,
-  clickable sidebar with workspaces, tabs and the agents roster.
+- This app replaces the Python tool entirely; nothing may depend on it.
+  Its layout and proportions were the reference for this app's window. The
+  navigation panel, menus and settings are native UI with real icons;
+  the terminals keep their terminal rendering.
 - Terminal panes are drawn natively, never in a web view. Targets: bulk
   output equal to Ghostty running tmux; typing latency and frame pacing
   equal to plain Ghostty. Speed claims are measured, with the method and
@@ -35,11 +36,11 @@ evidence, and say which.
 - tmux is the only process layer. The app is a client and runs no daemon of
   its own.
 - macOS first, Linux from the same code. Windows is optional.
-- Read-compatible with the Python tool's `layouts.db` (schema v2) and its
-  shell server. Write to that store only after implementing the same
-  conflict rules.
-- The core stays useful without Backbone. The agents roster is a read-only
-  adapter.
+- Existing libraries carry over: read and write `layouts.db` (schema v2)
+  and its shell server with the established conflict rules. New fields need
+  not stay readable by the Python tool.
+- The app works with Agent Backbone directly for the agents roster, and the
+  core stays useful without it.
 
 ## tmux isolation
 

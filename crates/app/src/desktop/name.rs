@@ -410,11 +410,10 @@ impl Render for NameField {
         // A name is edited in place, one cell high in the selection's colors,
         // as the source's inline editor is; the chooser's filter keeps a frame.
         let search = self.text.search;
-        let row = crate::view::cell_size(cx.text_system(), &super::terminal::appearance()).height;
         div()
             .w_full()
             .min_w_0()
-            .h(if search { px(24.) } else { row })
+            .h(if search { px(24.) } else { px(22.) })
             .when(!search, |el| {
                 el.bg(rgb(super::theme::ACTIVE))
                     .text_color(rgb(super::theme::ACTIVE_TEXT))

@@ -25,7 +25,7 @@ pub const DANGER: u32 = 0xe06c75;
 /// The status row's saved-state light.
 pub const OK: u32 = 0x98c379;
 
-/// The panel's width, in cells.
+/// The panel's width, in terminal cells, as in the source layout.
 pub const SIDEBAR_COLUMNS: usize = 22;
 
 /// One terminal cell of the chrome's font.
@@ -65,47 +65,5 @@ impl Cells {
             .justify_center()
             .bg(rgb(SURFACE))
             .child(div().w(px(1.0)).h_full().bg(rgb(OUTLINE)))
-    }
-}
-
-/// `text` cut to `room` cells, ending in an ellipsis when it was longer.
-pub fn fit(text: &str, room: usize) -> String {
-    if text.chars().count() <= room {
-        return text.to_owned();
-    }
-    let mut cut: String = text.chars().take(room.saturating_sub(1)).collect();
-    cut.push('…');
-    cut
-}
-
-/// A workspace slot's label: its icon, or its number when it has none.
-pub fn slot_label(icon: Option<&str>, index: usize) -> String {
-    let label = icon
-        .filter(|icon| !icon.is_empty() && !icon.chars().any(char::is_control))
-        .map_or_else(|| (index + 1).to_string(), str::to_owned);
-    label.chars().take(2).collect()
-}
-
-/// How many workspace slots fit in a panel `columns` wide: three cells and a
-/// gap each, inside one cell of inset.
-pub fn slot_count(columns: usize) -> usize {
-    (columns.saturating_sub(2) / 4).max(1)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn names_and_slots_follow_the_source_panel() {
-        assert_eq!(fit("Development", 20), "Development");
-        assert_eq!(fit("A very long workspace name", 10), "A very lo…");
-        assert_eq!(slot_label(None, 2), "3");
-        assert_eq!(slot_label(Some("★"), 0), "★");
-        assert_eq!(slot_label(Some("abc"), 0), "ab");
-        assert_eq!(slot_label(Some(""), 4), "5");
-        // A 22-column panel holds five slots; a sixth workspace overflows.
-        assert_eq!(slot_count(SIDEBAR_COLUMNS), 5);
-        assert_eq!(slot_count(3), 1);
     }
 }

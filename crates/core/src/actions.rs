@@ -143,6 +143,7 @@ impl Layout {
             id: identity(),
             name: "Workspace 1".into(),
             icon: None,
+            symbol: None,
             selected: tab.id.clone(),
             tabs: vec![tab],
         };
@@ -278,6 +279,21 @@ impl Layout {
             return false;
         };
         space.name = name;
+        true
+    }
+
+    /// Set the selected workspace's named native icon, or clear it together
+    /// with any older one-glyph icon so the workspace shows its number.
+    /// Returns whether anything changed; names are validated by persistence.
+    pub fn set_workspace_symbol(&mut self, symbol: Option<&str>) -> bool {
+        let Some(space) = self.workspace_mut() else {
+            return false;
+        };
+        let cleared = symbol.is_none() && space.icon.take().is_some();
+        if space.symbol.as_deref() == symbol {
+            return cleared;
+        }
+        space.symbol = symbol.map(str::to_owned);
         true
     }
 
@@ -426,6 +442,7 @@ impl Layout {
             id: identity(),
             name,
             icon: None,
+            symbol: None,
             tabs: vec![],
             selected: String::new(),
         };
