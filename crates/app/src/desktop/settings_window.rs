@@ -1,18 +1,19 @@
 //! The native Settings window: appearance applies to every open window at
-//! once and is saved in the settings file.
+//! once and is saved in the settings file. Built from the design components.
 
 use gpui::{
-    App, Bounds, Context, FontWeight, Global, SharedString, TitlebarOptions, Window, WindowBounds,
-    WindowHandle, WindowOptions, div, prelude::*, px, rgb, size,
+    App, Bounds, Context, Global, SharedString, TitlebarOptions, Window, WindowBounds,
+    WindowHandle, WindowOptions, div, point, prelude::*, px, size,
 };
 
 use super::{
-    panel,
-    settings::{self, Settings},
-    shortcuts, theme,
+    Browser, components as ui,
+    design::{self, colors, tokens},
+    settings::{self, PaneHeaders, Settings},
+    shortcuts,
 };
 
-/// Keys that stay fixed, shown under the configurable ones.
+#[cfg(target_os = "macos")]
 const FIXED: &[(&str, &str)] = &[
     ("Select tab 1–9", "⌘1–9"),
     ("Select workspace 1–9", "⌥⌘1–9"),
@@ -25,6 +26,21 @@ const FIXED: &[(&str, &str)] = &[
     ("Open library", "⌘O"),
     ("Close window", "⌘W"),
     ("Quit", "⌘Q"),
+];
+
+#[cfg(not(target_os = "macos"))]
+const FIXED: &[(&str, &str)] = &[
+    ("Select tab 1–9", "Alt+1–9"),
+    ("Select workspace 1–9", "Ctrl+Alt+1–9"),
+    ("Copy selection", "Ctrl+Shift+C"),
+    ("Paste", "Ctrl+Shift+V"),
+    ("Scroll history", "Shift+PgUp  Shift+PgDn"),
+    ("Select locally in mouse programs", "Shift+drag"),
+    ("Settings", "Ctrl+,"),
+    ("New window", "Ctrl+Shift+N"),
+    ("Open library", "Ctrl+Shift+O"),
+    ("Close window", "Ctrl+Shift+W"),
+    ("Quit", "Ctrl+Shift+Q"),
 ];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -58,16 +74,24 @@ pub fn show(cx: &mut App) {
     {
         return;
     }
+    let t = tokens();
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
             None,
-            size(px(680.0), px(480.0)),
+            size(px(t.size.settings_width), px(t.size.settings_height)),
             cx,
         ))),
-        window_min_size: Some(size(px(560.0), px(380.0))),
+        window_min_size: Some(size(
+            px(t.size.settings_width - t.size.panel_width / 2.0),
+            px(t.size.settings_height - t.size.panel_width / 2.0),
+        )),
         titlebar: Some(TitlebarOptions {
             title: Some("Settings".into()),
-            ..Default::default()
+            appears_transparent: true,
+            traffic_light_position: Some(point(
+                px(t.size.window_controls_x),
+                px(t.size.window_controls_y),
+            )),
         }),
         ..Default::default()
     };
@@ -127,146 +151,6 @@ impl SettingsWindow {
         cx.refresh_windows();
     }
 
-    fn heading(text: &'static str) -> gpui::Div {
-        div()
-            .pt(px(4.0))
-            .pb(px(10.0))
-            .text_size(px(18.0))
-            .font_weight(FontWeight::SEMIBOLD)
-            .child(text)
-    }
-
-    fn label(text: impl Into<SharedString>) -> gpui::Div {
-        div()
-            .pt(px(14.0))
-            .pb(px(6.0))
-            .text_size(px(11.0))
-            .font_weight(FontWeight::SEMIBOLD)
-            .text_color(rgb(theme::muted()))
-            .child(text.into())
-    }
-
-    fn appearance(&self, cx: &mut Context<Self>) -> gpui::Div {
-        let current = Settings::current();
-        let card = |id: &'static str, name: &'static str, palette: &theme::Palette, light: bool| {
-            let chosen = current.light == light;
-            div()
-                .id(id)
-                .flex()
-                .flex_col()
-                .gap(px(8.0))
-                .p(px(8.0))
-                .w(px(180.0))
-                .rounded(px(10.0))
-                .border_2()
-                .border_color(rgb(if chosen {
-                    theme::accent()
-                } else {
-                    theme::outline()
-                }))
-                .cursor_pointer()
-                .child(
-                    div()
-                        .h(px(84.0))
-                        .flex()
-                        .rounded(px(6.0))
-                        .overflow_hidden()
-                        .border_1()
-                        .border_color(rgb(palette.outline))
-                        .child(
-                            div()
-                                .w(px(52.0))
-                                .bg(rgb(palette.panel))
-                                .p(px(6.0))
-                                .flex()
-                                .flex_col()
-                                .gap(px(4.0))
-                                .child(div().h(px(6.0)).rounded(px(3.0)).bg(rgb(palette.accent)))
-                                .child(div().h(px(6.0)).rounded(px(3.0)).bg(rgb(palette.active)))
-                                .child(div().h(px(6.0)).rounded(px(3.0)).bg(rgb(palette.outline))),
-                        )
-                        .child(
-                            div()
-                                .flex_1()
-                                .bg(rgb(palette.surface))
-                                .p(px(6.0))
-                                .flex()
-                                .flex_col()
-                                .gap(px(4.0))
-                                .child(div().w(px(70.0)).h(px(4.0)).bg(rgb(palette.terminal_text)))
-                                .child(div().w(px(46.0)).h(px(4.0)).bg(rgb(palette.terminal[2])))
-                                .child(div().w(px(58.0)).h(px(4.0)).bg(rgb(palette.terminal[4]))),
-                        ),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .justify_center()
-                        .when(chosen, |el| el.font_weight(FontWeight::SEMIBOLD))
-                        .child(name),
-                )
-                .on_click(cx.listener(move |view, _, _, cx| {
-                    view.change(|settings| settings.light = light, cx)
-                }))
-        };
-        let size = current.font_size as u32;
-        let stepper = |id: &'static str, glyph: &'static str, next: u32| {
-            div()
-                .id(id)
-                .size(px(26.0))
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(px(6.0))
-                .border_1()
-                .border_color(rgb(theme::outline()))
-                .when(settings::FONT_SIZES.contains(&next), |el| {
-                    el.cursor_pointer()
-                        .hover(|el| el.bg(rgb(theme::active())))
-                        .on_click(cx.listener(move |view, _, _, cx| {
-                            view.change(|settings| settings.font_size = next as f32, cx)
-                        }))
-                })
-                .when(!settings::FONT_SIZES.contains(&next), |el| {
-                    el.text_color(rgb(theme::muted()))
-                })
-                .child(glyph)
-        };
-        div()
-            .flex()
-            .flex_col()
-            .child(Self::heading("Appearance"))
-            .child(Self::label("THEME"))
-            .child(
-                div()
-                    .flex()
-                    .gap(px(14.0))
-                    .child(card("theme-dark", "Dark", &theme::DARK, false))
-                    .child(card("theme-light", "Light", &theme::LIGHT, true)),
-            )
-            .child(Self::label("TERMINAL TEXT SIZE"))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(10.0))
-                    .child(stepper("smaller", "−", size.saturating_sub(1)))
-                    .child(
-                        div()
-                            .w(px(48.0))
-                            .flex()
-                            .justify_center()
-                            .child(format!("{size} pt")),
-                    )
-                    .child(stepper("larger", "+", size + 1))
-                    .child(
-                        div()
-                            .text_color(rgb(theme::muted()))
-                            .child("Terminals resize their sessions to fit."),
-                    ),
-            )
-    }
-
     /// While a shortcut is recording, the next key press becomes its chord.
     /// Returns whether the key press was taken.
     fn record(&mut self, key: &gpui::Keystroke, cx: &mut Context<Self>) -> bool {
@@ -301,50 +185,374 @@ impl SettingsWindow {
         true
     }
 
-    fn shortcuts(&self, cx: &mut Context<Self>) -> gpui::Div {
-        let bindings = shortcuts::current();
-        let defaults = shortcuts::Bindings::default();
-        let badge = |text: String, strong: bool| {
+    fn heading(label: &'static str) -> gpui::Div {
+        let t = tokens();
+        ui::text(
+            div().pb(px(t.space.s16)).text_color(colors().text),
+            &t.text.page_title,
+        )
+        .child(label)
+    }
+
+    fn label(label: impl Into<SharedString>) -> gpui::Div {
+        let t = tokens();
+        ui::text(
+            div().pb(px(t.space.s8)).text_color(colors().muted),
+            &t.text.label,
+        )
+        .child(label.into())
+    }
+
+    fn note(text: impl Into<SharedString>) -> gpui::Div {
+        let t = tokens();
+        ui::text(div().text_color(colors().muted), &t.text.status).child(text.into())
+    }
+
+    /// A read-only value in a field frame.
+    fn value(text: impl Into<SharedString>) -> gpui::Div {
+        let (t, c) = (tokens(), colors());
+        ui::text(
             div()
-                .px(px(8.0))
-                .h(px(22.0))
+                .flex_1()
+                .min_w_0()
+                .h(px(t.size.button))
+                .px(px(t.space.s10))
                 .flex()
                 .items_center()
-                .rounded(px(5.0))
-                .bg(rgb(if strong {
-                    theme::accent()
-                } else {
-                    theme::active()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .rounded(px(t.radius.row))
+                .bg(c.field)
+                .border(px(t.size.hairline))
+                .border_color(c.line)
+                .font_family(t.font.mono.clone())
+                .text_color(c.text_2),
+            &t.text.status,
+        )
+        .child(text.into())
+    }
+
+    fn section(children: impl IntoIterator<Item = gpui::AnyElement>) -> gpui::Div {
+        let t = tokens();
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(t.space.s8))
+            .pb(px(t.space.s20))
+            .children(children)
+    }
+
+    fn general(&self) -> gpui::Div {
+        let t = tokens();
+        let library = crate::library::library_directory(None)
+            .map_or_else(|error| error.to_string(), |path| path.display().to_string());
+        let file = settings::path().map_or_else(
+            || "unavailable".to_owned(),
+            |path| path.display().to_string(),
+        );
+        div()
+            .flex()
+            .flex_col()
+            .child(Self::heading("General"))
+            .child(Self::section([
+                Self::label("DEFAULT LIBRARY").into_any_element(),
+                div()
+                    .flex()
+                    .gap(px(t.space.s8))
+                    .child(Self::value(library))
+                    .child(
+                        ui::button("open-library", "Open another", ui::Button::Secondary)
+                            .child(ui::key_hint(
+                                shortcuts::Chord::parse(shortcuts::platform_key("cmd-o"))
+                                    .unwrap()
+                                    .label(),
+                            ))
+                            .on_click(|_, window, cx| {
+                                window.dispatch_action(Box::new(super::OpenLibrary), cx)
+                            }),
+                    )
+                    .into_any_element(),
+                Self::note(
+                    "The folder that holds layouts.db. Each window can open a different one.",
+                )
+                .into_any_element(),
+            ]))
+            .child(Self::section([
+                Self::label("SETTINGS FILE").into_any_element(),
+                Self::value(file).into_any_element(),
+            ]))
+            .child(Self::section([
+                Self::label("VERSION").into_any_element(),
+                div()
+                    .text_color(colors().text_2)
+                    .child(concat!("tmux-workspaces ", env!("CARGO_PKG_VERSION")))
+                    .into_any_element(),
+            ]))
+    }
+
+    fn appearance(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let (t, c) = (tokens(), colors());
+        let current = Settings::current();
+        let card = |id: &'static str,
+                    name: &'static str,
+                    colours: &'static design::Colors,
+                    light: bool| {
+            let chosen = current.light == light;
+            let bar = |fill: gpui::Rgba, width: f32| {
+                div()
+                    .h(px(t.space.s4))
+                    .w(gpui::relative(width))
+                    .rounded(px(t.space.s2))
+                    .bg(fill)
+            };
+            div()
+                .id(id)
+                .w(px(t.size.theme_card))
+                .flex()
+                .flex_col()
+                .gap(px(t.space.s8))
+                .p(px(t.space.s6))
+                .rounded(px(t.radius.popover))
+                .border(px(t.size.focus_ring))
+                .border_color(if chosen { c.accent } else { c.line })
+                .cursor_pointer()
+                .child(
+                    div()
+                        .h(px(t.size.empty_icon * 1.85))
+                        .flex()
+                        .rounded(px(t.radius.row))
+                        .overflow_hidden()
+                        .bg(colours.ground)
+                        .border(px(t.size.hairline))
+                        .border_color(colours.edge)
+                        .child(
+                            div()
+                                .w(px(t.size.empty_icon - t.space.s6))
+                                .bg(colours.panel)
+                                .flex()
+                                .flex_col()
+                                .gap(px(t.space.s4))
+                                .px(px(t.space.s4))
+                                .py(px(t.space.s8))
+                                .child(bar(colours.accent, 0.7))
+                                .child(bar(colours.line_strong, 1.0))
+                                .child(bar(colours.line_strong, 0.8)),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .flex()
+                                .gap(px(t.space.s2))
+                                .p(px(t.space.s4))
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .rounded(px(t.space.s2))
+                                        .bg(colours.surface)
+                                        .border(px(t.size.hairline))
+                                        .border_color(colours.focus),
+                                )
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(t.space.s2))
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .rounded(px(t.space.s2))
+                                                .bg(colours.surface),
+                                        )
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .rounded(px(t.space.s2))
+                                                .bg(colours.surface),
+                                        ),
+                                ),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .px(px(t.space.s2))
+                        .when(chosen, |el| el.font_weight(t.text.row_selected.weight()))
+                        .child(name)
+                        .when(chosen, |el| {
+                            el.child(ui::icon("check", t.size.icon, c.accent))
+                        }),
+                )
+                .on_click(cx.listener(move |view, _, _, cx| {
+                    view.change(|settings| settings.light = light, cx)
                 }))
-                .text_color(rgb(if strong {
-                    theme::panel()
-                } else {
-                    theme::active_text()
-                }))
-                .child(text)
         };
+        let size = current.font_size as u32;
+        let step = |id: &'static str, glyph: &'static str, next: u32, allowed: bool| {
+            div()
+                .id(id)
+                .w(px(t.size.button))
+                .h(px(t.size.button - t.space.s2))
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_color(if allowed { c.text_2 } else { c.faint })
+                .when(allowed, |el| {
+                    el.cursor_pointer()
+                        .hover(|el| el.bg(colors().hover))
+                        .on_click(cx.listener(move |view, _, _, cx| {
+                            view.change(|settings| settings.font_size = next as f32, cx)
+                        }))
+                })
+                .child(glyph)
+        };
+        let (min, max) = (9, 24);
+        let mut modes = div()
+            .flex()
+            .gap(px(t.space.s2))
+            .p(px(t.space.s2))
+            .rounded(px(t.radius.slot))
+            .bg(c.panel)
+            .border(px(t.size.hairline))
+            .border_color(c.line);
+        for (mode, _, label) in PaneHeaders::ALL {
+            let chosen = current.pane_headers == mode;
+            modes = modes.child(
+                ui::text(
+                    div()
+                        .id(SharedString::from(format!("pane-headers-{label}")))
+                        .h(px(t.size.button - t.space.s4))
+                        .px(px(t.space.s12))
+                        .flex()
+                        .items_center()
+                        .rounded(px(t.radius.icon_button))
+                        .cursor_pointer()
+                        .text_color(if chosen { c.text } else { c.muted })
+                        .when(chosen, |el| {
+                            el.bg(c.field)
+                                .border(px(t.size.hairline))
+                                .border_color(c.line_strong)
+                        }),
+                    &t.text.body,
+                )
+                .child(label)
+                .on_click(cx.listener(move |view, _, _, cx| {
+                    view.change(|settings| settings.pane_headers = mode, cx)
+                })),
+            );
+        }
+        div()
+            .flex()
+            .flex_col()
+            .child(Self::heading("Appearance"))
+            .child(Self::section([
+                Self::label("THEME").into_any_element(),
+                div()
+                    .flex()
+                    .gap(px(t.space.s12))
+                    .child(card("theme-dark", "Dark", &design::tokens().dark, false))
+                    .child(card("theme-light", "Light", &design::tokens().light, true))
+                    .into_any_element(),
+            ]))
+            .child(Self::section([
+                Self::label("TERMINAL TEXT SIZE").into_any_element(),
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(t.space.s14))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .rounded(px(t.radius.row))
+                            .border(px(t.size.hairline))
+                            .border_color(c.line_strong)
+                            .bg(c.field)
+                            .child(step("smaller", "−", size.saturating_sub(1), size > min))
+                            .child(
+                                div()
+                                    .w(px(t.size.button + t.space.s10))
+                                    .flex()
+                                    .justify_center()
+                                    .child(size.to_string()),
+                            )
+                            .child(step("larger", "+", size + 1, size < max)),
+                    )
+                    .child(Self::note(
+                        "Terminals resize their sessions to fit. 9 to 24 pt.",
+                    ))
+                    .into_any_element(),
+            ]))
+            .child(Self::section([
+                Self::label("PANE HEADERS").into_any_element(),
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(t.space.s14))
+                    .child(modes)
+                    .child(Self::note(format!(
+                        "Off gives each pane its {} px back.",
+                        t.size.pane_header
+                    )))
+                    .into_any_element(),
+            ]))
+    }
+
+    fn shortcuts(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let (t, c) = (tokens(), colors());
+        let bindings = shortcuts::current();
+        let defaults = shortcuts::Bindings::default();
         let mut page = div()
             .flex()
             .flex_col()
             .child(Self::heading("Shortcuts"))
             .child(
-                div()
-                    .text_color(rgb(theme::muted()))
-                    .child("Click a shortcut, then press the new keys. Escape cancels."),
+                Self::note("Click a shortcut, then press the new keys. Escape cancels.")
+                    .pb(px(t.space.s12)),
             )
             .when_some(self.refusal.clone(), |el, refusal| {
                 el.child(
-                    div()
-                        .pt(px(8.0))
-                        .text_color(rgb(theme::danger()))
-                        .child(refusal),
+                    ui::text(
+                        div().pb(px(t.space.s12)).text_color(c.attention_text),
+                        &t.text.status,
+                    )
+                    .child(refusal),
                 )
             });
+        let keycap = |label: String, recording: bool| {
+            ui::text(
+                div()
+                    .min_w(px(t.size.icon_button * 2.0 - t.space.s4))
+                    .h(px(t.size.button - t.space.s8))
+                    .px(px(t.space.s6))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(t.radius.key + 1.0))
+                    .border(px(t.size.hairline))
+                    .font_family(t.font.mono.clone())
+                    .when(recording, |el| {
+                        el.bg(c.accent)
+                            .border_color(c.accent)
+                            .text_color(c.on_accent)
+                    })
+                    .when(!recording, |el| {
+                        el.bg(c.field)
+                            .border_color(c.line_strong)
+                            .text_color(c.text_2)
+                    }),
+                &t.text.key,
+            )
+            .child(label)
+        };
         let mut group = "";
         for (command, id, label, section, _) in shortcuts::COMMANDS {
             if *section != group {
                 group = section;
-                page = page.child(Self::label(section.to_uppercase()));
+                page = page.child(Self::label(section.to_uppercase()).pt(px(t.space.s8)));
             }
             let command = *command;
             let recording = self.recording == Some(command);
@@ -353,20 +561,23 @@ impl SettingsWindow {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(10.0))
-                    .h(px(30.0))
-                    .border_b_1()
-                    .border_color(rgb(theme::outline()))
-                    .child(div().flex_1().child(*label))
+                    .gap(px(t.space.s10))
+                    .h(px(t.size.slot))
+                    .border_b(px(t.size.hairline))
+                    .border_color(c.line)
+                    .child(div().flex_1().text_color(c.text_2).child(*label))
                     .when(changed && !recording, |el| {
                         el.child(
-                            div()
-                                .id(SharedString::from(format!("reset-{id}")))
-                                .cursor_pointer()
-                                .text_color(rgb(theme::muted()))
-                                .hover(|el| el.text_color(rgb(theme::normal())))
-                                .child("Reset")
-                                .on_click(cx.listener(move |view, _, _, cx| {
+                            ui::text(
+                                div()
+                                    .id(SharedString::from(format!("reset-{id}")))
+                                    .cursor_pointer()
+                                    .text_color(c.accent_text),
+                                &t.text.status,
+                            )
+                            .child("Reset")
+                            .on_click(cx.listener(
+                                move |view, _, _, cx| {
                                     let mut bindings = shortcuts::current();
                                     let chord =
                                         shortcuts::Bindings::default().chord(command).clone();
@@ -383,14 +594,15 @@ impl SettingsWindow {
                                             cx.notify();
                                         }
                                     }
-                                })),
+                                },
+                            )),
                         )
                     })
                     .child(
                         div()
                             .id(SharedString::from(format!("shortcut-{id}")))
                             .cursor_pointer()
-                            .child(badge(
+                            .child(keycap(
                                 if recording {
                                     "Press keys…".into()
                                 } else {
@@ -408,20 +620,20 @@ impl SettingsWindow {
             );
         }
         page = page.child(
-            div().pt(px(12.0)).child(
-                div()
-                    .id("restore-shortcuts")
-                    .cursor_pointer()
-                    .text_color(rgb(theme::accent()))
-                    .child("Restore default shortcuts")
-                    .on_click(cx.listener(|view, _, _, cx| {
-                        view.recording = None;
-                        view.refusal = None;
-                        view.change(
-                            |settings| settings.shortcuts = shortcuts::Bindings::default(),
-                            cx,
-                        );
-                    })),
+            div().pt(px(t.space.s12)).pb(px(t.space.s20)).child(
+                ui::button(
+                    "restore-shortcuts",
+                    "Restore default shortcuts",
+                    ui::Button::Secondary,
+                )
+                .on_click(cx.listener(|view, _, _, cx| {
+                    view.recording = None;
+                    view.refusal = None;
+                    view.change(
+                        |settings| settings.shortcuts = shortcuts::Bindings::default(),
+                        cx,
+                    );
+                })),
             ),
         );
         page = page.child(Self::label("FIXED"));
@@ -430,93 +642,170 @@ impl SettingsWindow {
                 div()
                     .flex()
                     .items_center()
-                    .h(px(30.0))
-                    .border_b_1()
-                    .border_color(rgb(theme::outline()))
-                    .child(
-                        div()
-                            .flex_1()
-                            .text_color(rgb(theme::muted()))
-                            .child(*action),
-                    )
-                    .child(badge((*key).into(), false)),
+                    .h(px(t.size.slot))
+                    .border_b(px(t.size.hairline))
+                    .border_color(c.line)
+                    .child(div().flex_1().text_color(c.muted).child(*action))
+                    .child(keycap((*key).into(), false)),
             );
         }
         page
     }
 
-    fn general(&self) -> gpui::Div {
-        let library = crate::library::library_directory(None)
-            .map_or_else(|error| error.to_string(), |path| path.display().to_string());
-        let file = settings::path().map_or_else(
-            || "unavailable".to_owned(),
-            |path| path.display().to_string(),
-        );
-        div()
-            .flex()
-            .flex_col()
-            .child(Self::heading("General"))
-            .child(Self::label("DEFAULT LIBRARY"))
-            .child(library)
-            .child(
-                div()
-                    .text_color(rgb(theme::muted()))
-                    .child("Open another library from the menu bar with ⌘O."),
-            )
-            .child(Self::label("SETTINGS FILE"))
-            .child(file)
-            .child(Self::label("VERSION"))
-            .child(concat!("tmux-workspaces ", env!("CARGO_PKG_VERSION")))
-    }
-
-    fn agents(&self) -> gpui::Div {
-        let state = match crate::roster::provider_directory(None, None, None, false) {
-            Ok(Some(path)) => format!("Connected through {}", path.display()),
-            Ok(None) => "Agent Backbone is not installed; the panel has no agents section.".into(),
-            Err(error) => format!("Unavailable: {error}"),
+    fn agents(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let (t, c) = (tokens(), colors());
+        let (connected, detail) = match crate::roster::provider_directory(None, None, None, false) {
+            Ok(Some(path)) => (true, path.display().to_string()),
+            Ok(None) => (
+                false,
+                "Agent Backbone is not installed; the panel has no agents section.".into(),
+            ),
+            Err(error) => (false, format!("Unavailable: {error}")),
+        };
+        // The preference lives with each window's library; show the first's.
+        let shown = cx
+            .windows()
+            .into_iter()
+            .filter_map(|window| window.downcast::<Browser>())
+            .find_map(|window| {
+                window.read(cx).ok().and_then(|browser| {
+                    browser
+                        .layout
+                        .as_ref()
+                        .map(|layout| layout.model().show_agents)
+                })
+            })
+            .unwrap_or(true);
+        let legend = |state: ui::AgentState| {
+            div()
+                .flex()
+                .items_center()
+                .gap(px(t.space.s8))
+                .child(ui::agent_symbol(
+                    state,
+                    SharedString::from(format!("legend-{}", state.word())),
+                ))
+                .child(state.word())
         };
         div()
             .flex()
             .flex_col()
             .child(Self::heading("Agents"))
-            .child(Self::label("AGENT BACKBONE"))
-            .child(state)
-            .child(div().pt(px(8.0)).text_color(rgb(theme::muted())).child(
-                "States refresh every two seconds. Show or hide the section with \
-                         \"agents shown\" in a window's status row.",
-            ))
+            .child(Self::section([
+                Self::label("AGENT BACKBONE").into_any_element(),
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(t.space.s6))
+                    .px(px(t.space.s14))
+                    .py(px(t.space.s12))
+                    .rounded(px(t.radius.pane))
+                    .bg(c.panel)
+                    .border(px(t.size.hairline))
+                    .border_color(c.line)
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(t.space.s8))
+                            .font_weight(t.text.row_selected.weight())
+                            .child(ui::dot(if connected { c.ok } else { c.faint }))
+                            .child(if connected { "Connected" } else { "Not connected" }),
+                    )
+                    .child(ui::text(div().text_color(c.muted), &t.text.meta).child(detail))
+                    .into_any_element(),
+                Self::note("States refresh every two seconds. The app only reads from Agent Backbone.").into_any_element(),
+            ]))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(t.space.s14))
+                    .pb(px(t.space.s20))
+                    .child(
+                        div()
+                            .flex_1()
+                            .flex()
+                            .flex_col()
+                            .gap(px(t.space.s2))
+                            .child("Show agents in the panel")
+                            .child(Self::note("Same as \"agents shown\" in the status row. Saved with the library.")),
+                    )
+                    .child(
+                        div()
+                            .id("show-agents")
+                            .w(px(t.size.slot + t.space.s4))
+                            .h(px(t.space.s20))
+                            .p(px(t.space.s2))
+                            .rounded_full()
+                            .flex()
+                            .when(shown, |el| el.justify_end().bg(c.accent))
+                            .when(!shown, |el| el.bg(c.line_strong))
+                            .cursor_pointer()
+                            .child(div().size(px(t.space.s16)).rounded_full().bg(gpui::white()))
+                            .on_click(cx.listener(move |_, _, _, cx| {
+                                // One requested value for every window, so
+                                // their libraries agree with the switch.
+                                for window in cx.windows().into_iter().filter_map(|w| w.downcast::<Browser>()) {
+                                    let _ = window.update(cx, |browser, _, cx| browser.set_show_agents(!shown, cx));
+                                }
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .child(Self::section([
+                Self::label("STATES").into_any_element(),
+                div()
+                    .flex()
+                    .gap(px(t.space.s20))
+                    .child(legend(ui::AgentState::NeedsYou))
+                    .child(legend(ui::AgentState::Working))
+                    .child(legend(ui::AgentState::Idle))
+                    .child(legend(ui::AgentState::Unknown))
+                    .into_any_element(),
+            ]))
     }
 }
 
 impl Render for SettingsWindow {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let (t, c) = (tokens(), colors());
         let pages = [
             (Page::General, "General", "settings"),
             (Page::Appearance, "Appearance", "palette"),
-            (Page::Shortcuts, "Shortcuts", "terminal"),
+            (Page::Shortcuts, "Shortcuts", "keyboard"),
             (Page::Agents, "Agents", "bot"),
         ];
         let mut nav = div()
-            .w(px(180.0))
+            .w(px(t.size.settings_nav))
             .flex_shrink_0()
             .h_full()
-            .pt(px(10.0))
             .flex()
             .flex_col()
-            .gap(px(2.0))
-            .bg(rgb(theme::panel()));
+            .gap(px(t.size.hairline))
+            .px(px(t.space.s8))
+            .bg(c.panel)
+            .border_r(px(t.size.hairline))
+            .border_color(c.line)
+            .child(
+                div()
+                    .id("settings-titlebar")
+                    .h(px(t.size.titlebar))
+                    .flex_shrink_0()
+                    .on_mouse_down(gpui::MouseButton::Left, |_, window, _| {
+                        window.start_window_move()
+                    }),
+            );
         for (page, name, icon) in pages {
             let chosen = self.page == page;
             nav = nav.child(
-                panel::row(SharedString::from(name), chosen)
-                    .child(panel::icon(
+                ui::row(SharedString::from(name), chosen)
+                    .text_color(if chosen { c.text } else { c.text_2 })
+                    .when(chosen, |el| el.font_weight(t.text.row_selected.weight()))
+                    .child(ui::icon(
                         icon,
-                        14.0,
-                        if chosen {
-                            theme::accent()
-                        } else {
-                            theme::muted()
-                        },
+                        t.size.icon,
+                        if chosen { c.accent } else { c.muted },
                     ))
                     .child(name)
                     .on_click(cx.listener(move |view, _, _, cx| {
@@ -531,34 +820,38 @@ impl Render for SettingsWindow {
             Page::General => self.general(),
             Page::Appearance => self.appearance(cx),
             Page::Shortcuts => self.shortcuts(cx),
-            Page::Agents => self.agents(),
+            Page::Agents => self.agents(cx),
         };
-        div()
-            .size_full()
-            .flex()
-            .track_focus(&self.focus)
-            .bg(rgb(theme::surface()))
-            .text_color(rgb(theme::normal()))
-            .font_family(panel::FONT)
-            .text_size(px(13.0))
-            .child(nav)
-            .child(
-                div()
-                    .id("settings-page")
-                    .flex_1()
-                    .min_w_0()
-                    .h_full()
-                    .p(px(20.0))
-                    .overflow_y_scroll()
-                    .child(content)
-                    .when_some(self.error.clone(), |el, error| {
-                        el.child(
-                            div()
-                                .pt(px(12.0))
-                                .text_color(rgb(theme::danger()))
-                                .child(error),
+        ui::text(
+            div()
+                .size_full()
+                .flex()
+                .track_focus(&self.focus)
+                .bg(c.surface)
+                .text_color(c.text)
+                .font_family(t.font.ui.clone()),
+            &t.text.row,
+        )
+        .child(nav)
+        .child(
+            div()
+                .id("settings-page")
+                .flex_1()
+                .min_w_0()
+                .h_full()
+                .pt(px(t.size.titlebar - t.space.s24))
+                .px(px(t.space.s24))
+                .overflow_y_scroll()
+                .child(content)
+                .when_some(self.error.clone(), |el, error| {
+                    el.child(
+                        ui::text(
+                            div().pb(px(t.space.s12)).text_color(c.attention_text),
+                            &t.text.status,
                         )
-                    }),
-            )
+                        .child(error),
+                    )
+                }),
+        )
     }
 }

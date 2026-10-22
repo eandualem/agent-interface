@@ -1,4 +1,4 @@
-//! Read-only library polling on the app's storage worker.
+//! First-run initialization and read-only library polling on the storage worker.
 
 use std::io;
 use std::path::PathBuf;
@@ -40,9 +40,10 @@ pub struct Library {
 }
 
 impl Library {
-    /// Start reading a library without blocking on path lookup or SQLite in the
-    /// calling thread. None uses the Python tool's environment/default path
-    /// precedence. `wake` runs after an update is published.
+    /// Open or create a library without blocking on path lookup or SQLite in the
+    /// calling thread. None uses the shared environment/default path precedence.
+    /// An absent database starts with an empty workspace; existing files are
+    /// never initialized or repaired. `wake` runs after an update is published.
     ///
     /// An initial open failure is published and ends the worker. Once opened,
     /// read failures are retried, with unchanged errors reported only once.
@@ -53,8 +54,8 @@ impl Library {
         let worker = thread::Builder::new()
             .name("storage worker".into())
             .spawn(move || {
-                let store = match library_directory(directory.as_deref())
-                    .and_then(|directory| Store::open(&directory))
+                let store = match location::library_location(directory.as_deref())
+                    .and_then(|directory| Store::open_or_create(&directory))
                 {
                     Ok(store) => store,
                     Err(error) => {
@@ -145,6 +146,52 @@ mod tests {
     use super::*;
     use rusqlite::Connection;
     use std::cell::Cell;
+
+    #[test]
+    fn first_launch_without_provider_or_existing_library() {
+        let home = tempfile::tempdir().unwrap();
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "library::tests::clean_first_launch_child",
+                "--nocapture",
+            ])
+            .env_clear()
+            .env("HOME", home.path())
+            .env("TWS_FIRST_LAUNCH_FIXTURE", "1")
+            .status()
+            .unwrap();
+        assert!(status.success());
+        assert!(
+            home.path()
+                .join(".local/share/tmux-workspaces/layouts.db")
+                .is_file()
+        );
+        assert!(!home.path().join(".local/share/agent-backbone").exists());
+    }
+
+    #[test]
+    fn clean_first_launch_child() {
+        if std::env::var_os("TWS_FIRST_LAUNCH_FIXTURE").is_none() {
+            return;
+        }
+        assert!(
+            crate::roster::provider_directory(None, None, None, false)
+                .unwrap()
+                .is_none()
+        );
+        let (wake, woken) = mpsc::channel();
+        let library = Library::start(None, move || {
+            let _ = wake.send(());
+        })
+        .unwrap();
+        woken.recv_timeout(Duration::from_secs(5)).unwrap();
+        let update = library.take_update().unwrap();
+        assert!(update.error.is_none());
+        let document = update.document.unwrap();
+        assert_eq!(document.model().workspaces.len(), 1);
+        assert!(document.model().workspaces[0].tabs.is_empty());
+    }
 
     #[test]
     fn observes_peer_writes_preserves_valid_pending_data_and_reports_open_failure() {
@@ -263,12 +310,13 @@ mod tests {
         .unwrap();
         woken.recv_timeout(Duration::from_secs(5)).unwrap();
         let update = library.take_update().unwrap();
-        assert!(update.document.is_none());
-        assert!(update.error.is_some());
-        drop(library);
         assert!(
-            !missing.exists(),
-            "the worker must not initialize a library"
+            update.document.unwrap().model().workspaces[0]
+                .tabs
+                .is_empty()
         );
+        assert!(update.error.is_none());
+        drop(library);
+        assert!(missing.join("layouts.db").is_file());
     }
 }

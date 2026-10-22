@@ -5,9 +5,9 @@ workspaces, tabs and an optional agents roster; the rest of the window shows
 terminal panes that the app draws itself. tmux runs every shell, and the app is
 a tmux client.
 
-This page describes the process model, crate boundaries and data flow. So far the code is the Cargo
-workspace, its build, its test fixtures, the terminal path, the benchmark harness
-and a native workspace window with existing-session terminal connections. Full connection/input parity
+This page describes the process model, crate boundaries and data flow. The workspace includes native
+workspace editing, ordinary-shell creation, existing-session connections,
+settings, optional roster integration and a benchmark harness. Full connection/input parity
 and performance verification remain unfinished.
 
 ## The design at a glance
@@ -22,12 +22,19 @@ ordinary shell on the library's shell server, or an attached session. The app
 keeps one control-mode connection per attachment and shows the session's
 selected window with that window's own panes.
 
-**Crates.** Six crates with a one-way dependency direction:
+Only leaves in the selected workspace tab keep live connections. Switching away
+drops their clients; returning creates clients and recovers the tmux screen.
+The selected tmux window is remembered locally, but native text selection is not.
+Ordinary shells keep running. An attached source's own lifetime rules, including
+`destroy-unattached`, still apply. Native viewports participate in tmux window
+sizing, so resizing can affect geometry seen by another client of the same window.
+
+**Crates.** Six product crates with a one-way dependency direction:
 
 | Crate | Responsibility |
 | --- | --- |
 | `core` | Workspace, tab and layout model, validation, merge rules and read-only theme data |
-| `store` | Reading `layouts.db`, the library shared with the Python tool |
+| `store` | Initializing, reading and transactionally saving `layouts.db` |
 | `tmux` | Control-mode protocol and connections |
 | `term` | Terminal state for each pane, around the terminal engine |
 | `roster` | Optional, read-only agents roster |
@@ -49,9 +56,11 @@ natively; other input is encoded for the pane and sent to tmux as literal bytes
 for an exact pane. After a navigation, input waits until the destination is
 ready.
 
-**The shared library.** A storage worker reads `layouts.db` read-only and
-watches it for changes made by the Python tool. Native renames, tab moves and attachment choices save on a background worker
-using the shared merge and conflict rules. Attachment proposals remain detached
+**The shared library.** An absent `layouts.db` is initialized with one empty
+workspace; existing databases are opened without repair. A storage worker polls
+for shared changes. Native creation, renames, moves, splits, attachments and
+settings stored with the layout save on a background worker using the shared
+merge and conflict rules. Attachment proposals remain detached
 from the displayed model until commit. The reader restarts after a save
 so a pending older read cannot replace its result.
 
@@ -66,11 +75,11 @@ The repository is a Cargo workspace. Each crate above is a package under
 | `rust-toolchain.toml` | The pinned Rust toolchain. |
 | `deny.toml` | The allowed licences, the advisory and source checks, and the dependency direction between the crates. |
 | `crates/core` | Workspace, tab, split, leaf and attachment types; in-memory create/rename/split/attach/close operations, workspace/tab navigation and tab moves, local navigation retention, cell rectangles with focused-pane fallback, and shared-document three-way merging, independent of storage and rendering. `keymap` holds immutable validated shortcut configuration and print-only help/TOML output. |
-| `crates/store` | Read-only schema-v2 SQLite access by default, bounded JSON validation, original-document preservation, model projection and shared-edit reconciliation. An explicit existing-library writer implements transactional saves for native layout edits. No migration or shell creation. |
+| `crates/store` | Read-only schema-v2 SQLite access by default, bounded JSON validation, original-document preservation, model projection and shared-edit reconciliation. An explicit writer implements transactional saves for native layout edits. The initializer publishes a new database only when none exists. No migration or shell creation. |
 | `crates/roster` | Validated roster snapshots, stale-state retention, attention ordering, bounded loopback HTTP reads, and lazy read-only settings and credential lookup. |
 | `crates/tmux` | Read-only executable preflight and server version validation (`preflight`). `control`, the decoder for a control-mode client's output: pane output with tmux's escaping removed, command replies and notifications. `layout`, which reads visible pane rectangles (including zoom) from layout notifications. `capture`, which reads a pane's rows and pending parser bytes from `capture-pane`, and `recovery`, the commands and reply handling that rebuild a pane's state. |
 | `crates/term` | `Terminal`, the wrapper around the terminal engine: it creates a terminal with grapheme clustering on, feeds it bytes, and copies the visible screen into a `Screen`, owned display data that any thread can hold. `restore`, which builds a terminal from a pane's state as tmux holds it. |
-| `crates/app` | The `tmux-workspaces` binary opens a native workspace window (`desktop`) and can print the effective keymap, with workspace/tab navigation and renaming, tab moves, a source-session chooser, saved splits and live existing-session terminals. The library provides read-only keymap loading (`keymap`), library path and shell identity lookup plus a read-only storage worker and per-window layout reconciliation and viewing history (`library`), independent session discovery (`sessions`) and optional-provider resolution and explicit roster polling (`roster`), and the terminal path: `panes` starts from captured pane state, keeps each terminal on a worker thread and hands over owned display data, and `view` draws it with GPUI. The `bench-window` example draws one tmux window with them for the benchmarks; the product window reuses the same renderer and terminal worker for its visible saved leaves. Connected-server version validation, initial capture, right-margin recovery and recovery after visible layout changes are integrated. Each displayed pane declares its size to tmux. Attached-window navigation is local to each native leaf. Failed connections have a native reconnect action. |
+| `crates/app` | The `tmux-workspaces` binary opens a native workspace window (`desktop`) and can print the effective keymap, with workspace/tab creation, navigation and renaming, tab moves, a source-session chooser, saved splits, ordinary-shell creation and live terminals. `desktop/settings` persists native appearance and shortcuts, while `desktop/design` loads the shared design tokens. The library provides read-only keymap loading (`keymap`), library path and shell identity lookup plus background storage readers/writers and per-window layout reconciliation and viewing history (`library`), independent session discovery (`sessions`) and optional-provider resolution and explicit roster polling (`roster`), and the terminal path: `panes` starts from captured pane state, keeps each terminal on a worker thread and hands over owned display data, and `view` draws it with GPUI. The `bench-window` example draws one tmux window with them for the benchmarks; the product window reuses the same renderer and terminal worker for its visible saved leaves. Connected-server version validation, initial capture, right-margin recovery and recovery after visible layout changes are integrated. Each displayed pane declares its size to tmux. Attached-window navigation is local to each native leaf. Failed connections have a native reconnect action. |
 | `crates/test-support` | Development-only fixtures. `TmuxServer` starts the private tmux servers that tests use, and control-mode clients on them. |
 | `crates/bench`, `crates/bench-rio` | The development-only benchmark harness and its separate `rio-vt` program. |
 | `docs/` | Architecture, design and contributor documentation. |
@@ -104,5 +113,6 @@ tmux. `.github/workflows/ci.yml` shows every check a change must pass.
 `core::theme` validates the shared theme format and retains all six presets,
 ordered fallbacks and ground inheritance. `app::theme::load` performs bounded
 read-only loading and returns the chosen path and any diagnostic alongside the
-valid or retained working theme. Native colour resolution and window activation
-remain separate.
+valid or retained working theme. This compatibility reader does not activate native appearance. Native appearance
+uses `desktop/settings` and `desktop/design`, with tokens in
+`crates/app/assets/design/tokens.toml`.

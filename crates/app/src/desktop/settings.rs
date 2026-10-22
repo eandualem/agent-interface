@@ -9,13 +9,49 @@ use std::{
 
 /// Terminal text sizes the settings accept, in points.
 pub const FONT_SIZES: std::ops::RangeInclusive<u32> = 9..=24;
-const DEFAULT_FONT_SIZE: f32 = 13.0;
-
-static FONT_SIZE: AtomicU32 = AtomicU32::new(DEFAULT_FONT_SIZE.to_bits());
-/// Navigation panel widths the settings accept, in pixels.
-pub const SIDEBAR_WIDTHS: std::ops::RangeInclusive<u32> = 140..=600;
+static FONT_SIZE: AtomicU32 = AtomicU32::new(0);
+/// Navigation panel widths the settings accept, from the design tokens.
+fn sidebar_widths() -> std::ops::RangeInclusive<u32> {
+    let size = &super::design::tokens().size;
+    size.panel_min as u32..=size.panel_max as u32
+}
 /// The dragged panel width, or zero for the default of 22 terminal cells.
 static SIDEBAR_WIDTH: AtomicU32 = AtomicU32::new(0);
+
+/// Whether panes show their header.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PaneHeaders {
+    #[default]
+    Always,
+    Hover,
+    Off,
+}
+
+impl PaneHeaders {
+    pub const ALL: [(Self, &'static str, &'static str); 3] = [
+        (Self::Always, "always", "Always"),
+        (Self::Hover, "hover", "On hover"),
+        (Self::Off, "off", "Off"),
+    ];
+
+    fn name(self) -> &'static str {
+        Self::ALL
+            .iter()
+            .find(|(mode, ..)| *mode == self)
+            .map_or("always", |(_, name, _)| name)
+    }
+}
+
+static PANE_HEADERS: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// How panes show their header now.
+pub fn pane_headers() -> PaneHeaders {
+    match PANE_HEADERS.load(Ordering::Relaxed) {
+        1 => PaneHeaders::Hover,
+        2 => PaneHeaders::Off,
+        _ => PaneHeaders::Always,
+    }
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Settings {
@@ -24,15 +60,17 @@ pub struct Settings {
     pub shortcuts: super::shortcuts::Bindings,
     /// The navigation panel's width in pixels, when it was dragged.
     pub sidebar_width: Option<u32>,
+    pub pane_headers: PaneHeaders,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Self {
             light: false,
-            font_size: DEFAULT_FONT_SIZE,
+            font_size: super::design::tokens().font.terminal_size,
             shortcuts: super::shortcuts::Bindings::default(),
             sidebar_width: None,
+            pane_headers: PaneHeaders::Always,
         }
     }
 }
@@ -55,9 +93,14 @@ impl Settings {
         }
         if let Some(width) = table.get("sidebar_width").and_then(toml::Value::as_integer)
             && let Ok(width) = u32::try_from(width)
-            && SIDEBAR_WIDTHS.contains(&width)
+            && sidebar_widths().contains(&width)
         {
             settings.sidebar_width = Some(width);
+        }
+        if let Some(mode) = table.get("pane_headers").and_then(toml::Value::as_str)
+            && let Some((mode, ..)) = PaneHeaders::ALL.iter().find(|(_, name, _)| *name == mode)
+        {
+            settings.pane_headers = *mode;
         }
         if let Some(shortcuts) = table.get("shortcuts").and_then(toml::Value::as_table) {
             settings.shortcuts = super::shortcuts::Bindings::from_entries(
@@ -75,6 +118,12 @@ impl Settings {
             if self.light { "light" } else { "dark" },
             self.font_size as u32
         );
+        if self.pane_headers != PaneHeaders::Always {
+            text.push_str(&format!(
+                "pane_headers = \"{}\"\n",
+                self.pane_headers.name()
+            ));
+        }
         if let Some(width) = self.sidebar_width {
             text.push_str(&format!("sidebar_width = {width}\n"));
         }
@@ -90,7 +139,8 @@ impl Settings {
 
     /// Make these the settings every window draws with.
     pub fn apply(&self) {
-        super::theme::set_light(self.light);
+        super::design::set_light(self.light);
+        PANE_HEADERS.store(self.pane_headers as u8, Ordering::Relaxed);
         FONT_SIZE.store(self.font_size.to_bits(), Ordering::Relaxed);
         super::shortcuts::set(self.shortcuts.clone());
         SIDEBAR_WIDTH.store(self.sidebar_width.unwrap_or(0), Ordering::Relaxed);
@@ -99,10 +149,11 @@ impl Settings {
     /// The settings windows are drawing with now.
     pub fn current() -> Self {
         Self {
-            light: super::theme::is_light(),
+            light: super::design::is_light(),
             font_size: font_size(),
             shortcuts: super::shortcuts::current(),
             sidebar_width: sidebar_width(),
+            pane_headers: pane_headers(),
         }
     }
 }
@@ -115,14 +166,17 @@ pub fn sidebar_width() -> Option<u32> {
 /// Use a dragged panel width now, without saving it.
 pub fn set_sidebar_width(width: u32) {
     SIDEBAR_WIDTH.store(
-        width.clamp(*SIDEBAR_WIDTHS.start(), *SIDEBAR_WIDTHS.end()),
+        width.clamp(*sidebar_widths().start(), *sidebar_widths().end()),
         Ordering::Relaxed,
     );
 }
 
-/// The terminal text size, in points.
+/// The terminal text size, in points: the saved size, else the design's.
 pub fn font_size() -> f32 {
-    f32::from_bits(FONT_SIZE.load(Ordering::Relaxed))
+    match FONT_SIZE.load(Ordering::Relaxed) {
+        0 => super::design::tokens().font.terminal_size,
+        bits => f32::from_bits(bits),
+    }
 }
 
 /// `$XDG_CONFIG_HOME/tmux-workspaces/settings.toml`, else under `~/.config`.
@@ -268,6 +322,7 @@ mod tests {
             font_size: 16.0,
             shortcuts,
             sidebar_width: Some(260),
+            pane_headers: PaneHeaders::Hover,
         };
         assert_eq!(Settings::parse(&light.to_toml()), light);
         // Shortcuts are global; other tests rely on the defaults.

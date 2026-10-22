@@ -10,20 +10,27 @@ feature parity first, then a better interface. tmux is meant to stay the
 process layer, so shells keep running when the app closes and existing
 sessions can be attached.
 
-**Status:** early development. The native app opens the Python library's saved
-workspaces, tabs and split layouts and connects to their existing tmux sessions.
-It displays live terminal output and sends typed keys to the selected ready pane.
-Editing, full input parity and performance acceptance remain unfinished; it is not yet a replacement for the Python app.
+**Status:** early development. The app creates and edits workspaces, tabs and
+split layouts, starts ordinary login shells, and attaches existing tmux sessions.
+It works without Python or Agent Backbone at runtime and can also open existing
+schema-v2 libraries. Full input parity and performance acceptance remain unfinished.
 
 Targets macOS first and Linux from the same code. Windows is optional.
 
 ## Run the app
 
-Follow the [build prerequisites](CONTRIBUTING.md#set-up), then run:
+Complete the [source build setup](CONTRIBUTING.md#build-and-test), including
+native-source preparation and the build-mode environment variable, then run:
 
 ```sh
-cargo run -p tmux-workspaces-app --bin tmux-workspaces -- --data-dir /path/to/library
+cargo run -p tmux-workspaces-app --bin tmux-workspaces
 ```
+
+If no library exists, the first launch creates one empty workspace. Add a tab,
+then choose **Open
+terminal** or **Attach a session**. To use a specific library, append
+`-- --data-dir /path/to/library` to the command. tmux 3.3 or newer must be in
+`PATH` to use terminals; opening an empty workspace does not start a shell.
 
 Use the workspace heading to choose a workspace, then choose a tab. The saved
 split layout contains actual sessions; click a terminal before typing. Command-1
@@ -54,26 +61,28 @@ with independent navigation and terminal connections. Closing one leaves the
 other windows open. **Open Library…** in the application menu, or Command-O,
 chooses another folder containing `layouts.db`.
 
-The navigation panel on the left is native and resizable: drag the line between
-it and the terminals; the width is remembered. It shows the system font, the current
-workspace's icon and name at the top, its tabs below, and menus that open where
-you click. The terminals sit beside it on a slightly lighter surface, with a
-status row along the bottom naming the workspace, tab and pane, the keys for the
-current mode and a light while the saved arrangement is current. The bottom row
-of the panel switches workspaces with one click, showing each workspace's icon,
-or its number when it has none. Right-click one for its options, including
-**Choose icon…**; when the row is full, **⋯** opens the full list.
-**Settings** above it, or Command-comma, opens the Settings window: a dark or
-light theme and the terminal text size apply to every window at once and are
-saved in `~/.config/tmux-workspaces/settings.toml`. On its Shortcuts page,
-click a command's shortcut and press new keys to change it; menus and the
-status row follow. It also shows the Agent Backbone connection. **Close Window** (Command-W) closes a
-window and leaves every session running. With Agent Backbone installed, an **AGENTS** section
-under the tabs lists active agents with their state: red needs you, amber is
-working. Click one to show the tab holding its session; **agents shown** in the
-status row hides the section.
+The window follows the Quiet Instrument design ([design language](docs/DESIGN.md)).
+The navigation panel on the left shows the current workspace (click it for the
+workspace menu), a **Jump** field (Command-K) that finds tabs, panes, agents and
+commands across every workspace, the tabs with a thumbnail of each layout, and,
+with Agent Backbone installed, the **AGENTS** section: agents needing you first,
+each with a state symbol. Click an agent to show the tab holding its session.
+The bottom row switches workspaces with one click (right-click for options,
+including **Choose icon…**) and opens Settings. Drag the panel's right edge to
+resize it. Panes are cards with a header naming what runs there; the focused
+pane has an accent ring and the others are slightly dimmed. The status row
+names the workspace, tab and pane, shows the keys for the current mode and the
+saved state, and **agents shown** hides the agents section.
 
-Open the workspace menu by clicking or right-clicking the workspace heading.
+Settings (Command-comma) offers a dark or light theme, the terminal text size,
+whether panes show headers (always, on hover or never) and editable shortcuts;
+changes apply to every window at once and are saved in
+`$XDG_CONFIG_HOME/tmux-workspaces/settings.toml`, or
+`~/.config/tmux-workspaces/settings.toml` when that variable is unset.
+**Close Window** (Command-W) detaches that window's clients. Ordinary shells
+keep running; external sessions retain their own tmux lifetime policy.
+
+Open the workspace menu by clicking or right-clicking the workspace block.
 Choose **New workspace**, or press Command-Shift-N, and enter a name. Enter
 saves it; Escape cancels. New workspaces have no tabs or shells.
 Choose **Delete workspace** to remove an empty workspace; the last workspace and
@@ -90,8 +99,9 @@ otherwise the new tab or pane is selected.
 
 Drag the divider between native panes to adjust their relative sizes. Release
 saves the ratio; Escape or switching to another window during a drag cancels it.
-This changes the native viewport without resizing other tmux clients. A changed
-tab or split tree cancels the gesture. Save errors offer the usual Retry or Discard.
+This declares the native viewport's size to tmux. Its `window-size` policy
+can change the shared window geometry seen by other clients. A changed tab or
+split tree cancels the gesture. Save errors offer the usual Retry or Discard.
 
 Choose **Open terminal** in an empty pane or tab options to start its
 login shell, or reuse it if already running. The pane is saved before its shell
@@ -101,7 +111,7 @@ and environment. Navigating away before saving finishes cancels pending startup;
 choose Open terminal again when returning. Exited shells retain their output and
 are not restarted by this action.
 
-Existing ordinary shells use the Python library's shell server; attachments use
+Ordinary shells use the library's persistent tmux shell server; attachments use
 their saved source socket, or the source resolved from the launch environment.
 Use **Attach a session** in an empty pane, **Attach session** in tab options, or
 Command-Shift-A, to
@@ -150,15 +160,47 @@ The list follows tmux, checking every two seconds. Custom tmux
 prefix bindings, selection across history pages, terminal input methods
 and key-release events are not yet wired into the product UI.
 
-Omit `--data-dir` to use the Python-compatible environment and default library
-location. An absent or unreadable library shows an error and can be replaced
-through **Open Library…**; the browser never creates or repairs a library.
+Omit `--data-dir` to use `TMUX_WORKSPACES_DATA_DIR`, then
+`$XDG_DATA_HOME/tmux-workspaces`, or `~/.local/share/tmux-workspaces` by default.
+On first launch, an absent library is created with one empty workspace. Add a
+tab and choose **Open terminal** or **Attach a session** to start working; neither
+Python nor Agent Backbone is required. Existing libraries are opened without
+initialization or repair. An unreadable or invalid library shows an error and
+can be replaced through **Open Library…**. Keep its database and journal files
+for recovery; the app never overwrites them with an empty arrangement.
 `--help` and `--version` work without a display or tmux.
 
-## Inspect a keymap
+## Linux keyboard shortcuts
+
+Linux uses the same commands and shortcut editor, with these defaults. Ordinary
+Control keys such as Ctrl-C, Ctrl-D and Ctrl-R still reach the terminal.
+
+| Command | Linux default |
+|---|---|
+| New tab | Ctrl+Shift+T |
+| Split right / below | Ctrl+Shift+D / Ctrl+Shift+E |
+| Attach session | Ctrl+Shift+A |
+| Rename tab | Ctrl+Shift+R |
+| Previous / next pane | Ctrl+Shift+[ / Ctrl+Shift+] |
+| Previous / next tab | Ctrl+Page Up / Ctrl+Page Down |
+| Expand or restore pane | Ctrl+Shift+Enter |
+| New / rename workspace | Ctrl+Alt+Shift+N / Ctrl+Alt+Shift+R |
+| Previous / next workspace | Ctrl+Shift+Page Up / Ctrl+Shift+Page Down |
+| Focus panel / Jump | Ctrl+Shift+B / Ctrl+Shift+K |
+| Select tab / workspace 1–9 | Alt+1–9 / Ctrl+Alt+1–9 |
+| Copy / paste | Ctrl+Shift+C / Ctrl+Shift+V |
+| New / close window | Ctrl+Shift+N / Ctrl+Shift+W |
+| Open library / Settings / Quit | Ctrl+Shift+O / Ctrl+, / Ctrl+Shift+Q |
+
+The defaults avoid Super keys and Ctrl+Alt+arrow keys commonly used by the desktop.
+A customized desktop may reserve other combinations; use Settings to change the
+configurable commands. Saved shortcut strings keep their literal meaning:
+`cmd` means Command on macOS and Super on Linux. macOS defaults are unchanged.
+
+## Inspect a legacy keymap
 
 After the [source build setup](CONTRIBUTING.md#build-and-test), print the effective
-shortcuts or a complete compatible TOML configuration:
+legacy keymap or a complete compatible TOML configuration:
 
 ```sh
 cargo run -p tmux-workspaces-app -- --print-keymap help
@@ -171,7 +213,10 @@ Selection follows `--keymap`, then `TMUX_WORKSPACES_KEYMAP`, then
 `~/.config/tmux-workspaces/keymap.toml`). `--no-keymap` uses shipped defaults.
 Only a missing implicit default is ignored; invalid or explicitly missing files
 report an error. These commands create no library, start no terminal and write
-no configuration. Native shortcut dispatch is not available yet.
+no configuration. These options inspect the Python-compatible `keymap.toml`;
+they do not configure the native desktop. Use **Settings → Shortcuts** for native
+bindings, which are saved separately in `settings.toml`. The legacy prefix is not
+dispatched by the desktop.
 
 ## Licence
 

@@ -5,10 +5,13 @@ use std::path::PathBuf;
 use futures::{StreamExt, channel::mpsc};
 use gpui::{
     Context, Entity, EventEmitter, ScrollHandle, SharedString, Subscription, Task, Window, div,
-    prelude::*, rgb,
+    prelude::*, px,
 };
 
-use super::name::{NameEvent, NameField};
+use super::{
+    components as ui, design,
+    name::{NameEvent, NameField},
+};
 use crate::sessions::SessionSource;
 use tmux_workspaces_core::SessionChoices;
 
@@ -125,34 +128,34 @@ impl Drop for SessionChooser {
 
 impl Render for SessionChooser {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let (t, c) = (design::tokens(), design::colors());
         self.choices.presented();
         let names = self.choices.rows().to_vec();
         let status = if let Some(error) = &self.error {
-            error.clone()
+            Some(error.clone())
         } else if self.loading {
-            "Loading sessions…".into()
+            Some("Loading sessions…".into())
         } else if names.is_empty() {
-            "No matching sessions".into()
+            Some("No session matches the filter".into())
         } else {
-            "Type to filter · ↑↓ choose · Enter attach · Escape cancel".into()
+            None
         };
         let mut rows = div()
             .id("session-rows")
             .flex_1()
             .min_h_0()
+            .flex()
+            .flex_col()
+            .gap(px(t.size.hairline))
+            .p(px(t.space.s8))
             .overflow_y_scroll()
             .track_scroll(&self.scroll);
         for (index, name) in names.into_iter().enumerate() {
+            let chosen = Some(index) == self.choices.index();
             rows = rows.child(
-                div()
-                    .id(SharedString::from(format!("session-{name}")))
-                    .px_2()
-                    .py_1()
-                    .cursor_pointer()
-                    .when(Some(index) == self.choices.index(), |el| {
-                        el.bg(rgb(super::theme::active()))
-                    })
-                    .hover(|el| el.bg(rgb(super::theme::active())))
+                ui::row(SharedString::from(format!("session-{name}")), chosen)
+                    .font_family(t.font.mono.clone())
+                    .text_color(c.text)
                     .child(name.clone())
                     .on_click(cx.listener(move |chooser, _, _, cx| {
                         cx.stop_propagation();
@@ -160,14 +163,27 @@ impl Render for SessionChooser {
                     })),
             );
         }
+        if let Some(status) = status {
+            rows = rows.child(
+                ui::text(
+                    div()
+                        .px(px(t.space.s10))
+                        .h(px(t.size.row))
+                        .flex()
+                        .items_center()
+                        .text_color(c.muted),
+                    &t.text.body,
+                )
+                .child(status),
+            );
+        }
         div()
             .size_full()
             .min_w_0()
             .flex()
             .flex_col()
-            .gap_2()
-            .p_2()
-            .bg(rgb(super::theme::surface()))
+            .bg(c.surface)
+            .font_family(t.font.ui.clone())
             // Keep the filter focused during a row's mouse-down, until its
             // click can submit the choice. Otherwise blur cancels it first.
             .on_mouse_down(gpui::MouseButton::Left, |_, window, _| {
@@ -193,23 +209,63 @@ impl Render for SessionChooser {
                 cx.notify();
             }))
             .child(
+                ui::text(
+                    div()
+                        .h(px(t.size.pane_header))
+                        .flex_shrink_0()
+                        .flex()
+                        .items_center()
+                        .gap(px(t.space.s8))
+                        .px(px(t.space.s12))
+                        .border_b(px(t.size.hairline))
+                        .border_color(c.line)
+                        .text_color(c.muted),
+                    &t.text.status,
+                )
+                .child(
+                    div()
+                        .text_color(c.text)
+                        .font_weight(t.text.row_selected.weight())
+                        .child("Attach session"),
+                )
+                .child("from the source tmux server"),
+            )
+            .child(
+                div().px(px(t.space.s12)).pt(px(t.space.s12)).child(
+                    ui::field_frame(true)
+                        .child(ui::icon("search", t.size.icon, c.muted))
+                        .child(div().flex_1().min_w_0().child(self.field.clone())),
+                ),
+            )
+            .child(rows)
+            .child(
                 div()
                     .flex()
-                    .justify_between()
-                    .child("Attach session")
+                    .flex_shrink_0()
+                    .items_center()
+                    .justify_end()
+                    .gap(px(t.space.s8))
+                    .h(px(t.size.button + t.space.s16))
+                    .px(px(t.space.s12))
+                    .border_t(px(t.size.hairline))
+                    .border_color(c.line)
                     .child(
-                        div()
-                            .id("cancel-attach")
-                            .cursor_pointer()
-                            .child("Cancel")
-                            .on_click(cx.listener(|_, _, _, cx| {
+                        ui::button("cancel-attach", "Cancel", ui::Button::Secondary).on_click(
+                            cx.listener(|_, _, _, cx| {
                                 cx.stop_propagation();
                                 cx.emit(Choice::Cancel);
+                            }),
+                        ),
+                    )
+                    .child(
+                        ui::button("confirm-attach", "Attach session", ui::Button::Primary)
+                            .on_click(cx.listener(|chooser, _, _, cx| {
+                                cx.stop_propagation();
+                                if let Some(name) = chooser.choices.choice().map(str::to_owned) {
+                                    chooser.choose(&name, cx);
+                                }
                             })),
                     ),
             )
-            .child(self.field.clone())
-            .child(div().text_xs().child(status))
-            .child(rows)
     }
 }
