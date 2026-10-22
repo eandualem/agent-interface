@@ -85,6 +85,21 @@ CPU targeting.
   window name and never draw it, while `libghostty-vt` prints the name as
   text. The filter finds escapes with `memchr` 2.8.3 (Unlicense OR MIT), so
   plain text is written as fast as without it.
+- Horizontal cursor positioning (`CSI G` and `CSI ` followed by a backtick)
+  leaves the row unchanged in tmux, even in origin mode. The pinned engine
+  instead adds the top margin to that row. The existing sequence-boundary
+  filter marks only the final command byte; `term` temporarily clears the
+  engine's origin bit for that byte and restores it immediately. The engine's
+  mode API changes only the bit, without the cursor reset that a mode escape
+  would cause. This keeps fragmented input and subsequent origin-relative
+  movement intact. A dependency/toolchain upgrade or a second sequence parser
+  is unnecessary for this correction; no dependency or licence changes.
+- tmux 3.3a through 3.8 ignore horizontal and vertical position-relative
+  commands (`CSI a` and `CSI e`); the engine applies them. The same boundary
+  filter cancels these commands at their final byte with CAN, so already-fed
+  parameters cannot consume following text. Cursor position, pending wrap and
+  the last character available to `REP` stay unchanged, as in tmux. Strings and
+  ordinary text pass through. No buffering or additional parser is needed.
 - The benchmark harness depends on `rio-vt` and `alacritty_terminal`, pinned
   exactly, for decisions 3 and 4; they are never product dependencies
   ([0017](0017-benchmark-harness.md)).
