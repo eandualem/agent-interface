@@ -147,6 +147,8 @@ described in [0001](decisions/0001-record-architecture-decisions.md).
 
 - [Architecture research](research/README.md): the evidence behind the
   records, with the alternatives and licences examined.
+- [Design language](DESIGN.md): the window layout, colour tokens, type,
+  spacing, components and icons, with where each lives in the code.
 - [Parity checklist](PARITY.md): every behaviour of the Python tool and what
   this app does with it.
 - [Contributor guide](../CONTRIBUTING.md): setting up, building, testing and
