@@ -128,7 +128,7 @@ impl Layout {
             .map(|space| space.id.clone())
             .unwrap_or_default();
         self.focus = previous.focus;
-        self.tab().map(|tab| &tab.tree) != previous.tab().map(|tab| &tab.tree)
+        self.tab().map(|tab| (&tab.id, &tab.tree)) != previous.tab().map(|tab| (&tab.id, &tab.tree))
     }
 }
 
