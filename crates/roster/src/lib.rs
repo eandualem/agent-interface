@@ -10,6 +10,8 @@ use std::time::Instant;
 
 use serde_json::value::RawValue;
 
+mod transport;
+
 const RESPONSE_LIMIT: usize = 1024 * 1024;
 const UNAVAILABLE: &str = "Backbone unavailable; states stale";
 
@@ -29,6 +31,40 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
+    /// Active `(name, state)` entries in Python's roster order. None means the
+    /// roster is unavailable, distinct from a successful empty list. Cached
+    /// states remain available in `states`, but must not appear as current rows.
+    ///
+    /// Waiting/blocked agents precede working/starting agents, then everyone
+    /// else. Each group sorts by case-insensitive name, then exact name. Names
+    /// are validated ASCII, so ASCII folding matches Python's case folding.
+    /// Offline entries are omitted; empty states are presented as `unknown`.
+    pub fn active_entries(&self) -> Option<Vec<(&str, &str)>> {
+        if self.error.is_some() {
+            return None;
+        }
+        let mut entries: Vec<_> = self
+            .states
+            .iter()
+            .filter(|(_, state)| state.as_str() != "offline")
+            .map(|(name, state)| {
+                (
+                    name.as_str(),
+                    if state.is_empty() { "unknown" } else { state },
+                )
+            })
+            .collect();
+        entries.sort_by_cached_key(|&(name, state)| {
+            let priority = match state {
+                "waiting_for_human" | "blocked" => 0,
+                "busy" | "starting" => 1,
+                _ => 2,
+            };
+            (priority, name.to_ascii_lowercase(), name)
+        });
+        Some(entries)
+    }
+
     /// Apply one response from the agents endpoint. Invalid or oversized JSON
     /// marks the previous snapshot stale without exposing response contents.
     /// A successful empty list clears old names and any earlier error.
@@ -143,6 +179,52 @@ fn truthy(value: &RawValue) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn active_entries_follow_attention_order_and_hide_stale_rows_without_losing_cache() {
+        let mut snapshot = Snapshot::default();
+        snapshot.update(
+            br#"{"items":[
+            {"name":"z-worker","state":"busy"},
+            {"name":"a-starting","state":"starting"},
+            {"name":"z-waiting","state":"waiting_for_human"},
+            {"name":"a-blocked","state":"blocked"},
+            {"name":"alpha","state":"idle"},
+            {"name":"Alpha","state":"unknown"},
+            {"name":"empty","state":""},
+            {"name":"unlisted","state":"new-state"},
+            {"name":"offline","state":"offline"}
+        ]}"#,
+        );
+        assert_eq!(
+            snapshot.active_entries().unwrap(),
+            [
+                ("a-blocked", "blocked"),
+                ("z-waiting", "waiting_for_human"),
+                ("a-starting", "starting"),
+                ("z-worker", "busy"),
+                ("Alpha", "unknown"),
+                ("alpha", "idle"),
+                ("empty", "unknown"),
+                ("unlisted", "new-state"),
+            ]
+        );
+        let cached = snapshot.states.clone();
+        let observed = snapshot.observed_at;
+        snapshot.unavailable();
+        assert!(snapshot.active_entries().is_none());
+        assert_eq!(snapshot.states, cached);
+        assert_eq!(snapshot.observed_at, observed);
+        snapshot.update(
+            br#"{"items":[{"name":"alpha","state":"blocked"},{"name":"Alpha","state":"idle"}]}"#,
+        );
+        assert_eq!(
+            snapshot.active_entries().unwrap(),
+            [("alpha", "blocked"), ("Alpha", "idle")]
+        );
+        snapshot.update(br#"{"items":[]}"#);
+        assert_eq!(snapshot.active_entries(), Some(Vec::new()));
+    }
 
     #[test]
     fn observations_filter_metadata_keep_stale_states_and_recover() {
