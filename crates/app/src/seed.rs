@@ -30,7 +30,7 @@ pub(crate) enum Event {
 /// Reads the attach reply, checks recovery hooks and server version, then
 /// captures before enabling output. The client must use no-output,ignore-size.
 /// A deadline bounds startup even if the control client stops replying.
-pub(crate) fn attach(client: &mut Child, window: u32) -> io::Result<Seed> {
+pub(crate) fn attach(client: &mut Child, window: u32, session: Option<u32>) -> io::Result<Seed> {
     let stdin = client
         .stdin
         .take()
@@ -43,7 +43,7 @@ pub(crate) fn attach(client: &mut Child, window: u32) -> io::Result<Seed> {
     let reader = thread::Builder::new()
         .name("pane snapshot".into())
         .spawn(move || {
-            let _ = send.send(capture(stdin, stdout, window));
+            let _ = send.send(capture(stdin, stdout, window, session));
         })?;
     let result = receive
         .recv_timeout(TIMEOUT)
@@ -63,7 +63,17 @@ pub(crate) fn attach(client: &mut Child, window: u32) -> io::Result<Seed> {
     result
 }
 
-fn capture<I: Write, O: Read>(mut stdin: I, mut stdout: O, window: u32) -> io::Result<Seed<I, O>> {
+fn capture<I: Write, O: Read>(
+    mut stdin: I,
+    mut stdout: O,
+    window: u32,
+    session: Option<u32>,
+) -> io::Result<Seed<I, O>> {
+    let target = session.map_or_else(
+        || format!("@{window}"),
+        |session| format!("${session}:@{window}"),
+    );
+    let removed = format!("%unlinked-window-close @{window}");
     let mut attach = None;
     let mut layout = None;
     let mut decoder = Decoder::new();
@@ -130,7 +140,7 @@ fn capture<I: Write, O: Read>(mut stdin: I, mut stdout: O, window: u32) -> io::R
                                         let version = std::str::from_utf8(line).map_err(|_| io::Error::other("invalid tmux server version reply"))?;
                                         tmux_workspaces_tmux::preflight::check_server_version(version)?;
                                         Some(format!(
-                                            "display-message -p -t @{window} '#{{window_id}} #{{window_layout}} #{{window_visible_layout}} #{{window_raw_flags}}'\n"
+                                            "display-message -p -t '{target}' '#{{window_id}} #{{window_layout}} #{{window_visible_layout}} #{{window_raw_flags}}'\n"
                                         ))
                                     }
                                     1 => {
@@ -143,7 +153,11 @@ fn capture<I: Write, O: Read>(mut stdin: I, mut stdout: O, window: u32) -> io::R
                                         if current.window != window {
                                             return Err(io::Error::other("initial window layout target changed"));
                                         }
-                                        let (capture, commands) = Attach::new(current.panes.iter().map(|p| p.id).collect());
+                                        let panes = current.panes.iter().map(|p| p.id).collect();
+                                        let (capture, commands) = match session {
+                                            Some(session) => Attach::in_session(panes, session, window),
+                                            None => Attach::new(panes),
+                                        };
                                         attach = Some(capture);
                                         layout = Some(current);
                                         // This query supersedes layout notifications that
@@ -180,6 +194,16 @@ fn capture<I: Write, O: Read>(mut stdin: I, mut stdout: O, window: u32) -> io::R
                         }
                         Message::Notification(line) if line.starts_with(b"%layout-change ") => {
                             events.push(Event::Layout(line.to_vec()));
+                        }
+                        Message::Notification(line) if line == removed.as_bytes() => {
+                            return Err(io::Error::other("selected window left the source session during capture"));
+                        }
+                        Message::Notification(line) if line.starts_with(b"%session-changed ") && session.is_some() => {
+                            let actual = line.split(|byte| *byte == b' ').nth(1)
+                                .and_then(|id| id.strip_prefix(b"$"))
+                                .and_then(|id| std::str::from_utf8(id).ok())
+                                .and_then(|id| id.parse::<u32>().ok());
+                            if actual != session { return Err(io::Error::other("source session changed during capture")); }
                         }
                         Message::Notification(line)
                             if line.starts_with(b"%exit") && snapshots.is_none() =>
@@ -219,13 +243,69 @@ mod tests {
     use super::*;
 
     #[test]
+    fn window_moved_after_layout_reply_cannot_be_captured() {
+        use tmux_workspaces_test_support::TmuxServer;
+        struct MoveOnCapture<'a> {
+            stdin: ChildStdin,
+            server: &'a TmuxServer,
+            window: String,
+        }
+        impl Write for MoveOnCapture<'_> {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                if bytes.starts_with(b"capture-pane ") {
+                    self.server
+                        .run(&["move-window", "-s", &self.window, "-t", "=fixture:1"])?;
+                }
+                self.stdin.write(bytes)
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                self.stdin.flush()
+            }
+        }
+        let server = TmuxServer::start().unwrap();
+        server
+            .run(&["new-session", "-d", "-s", "capture-source", "cat"])
+            .unwrap();
+        server
+            .run(&["new-window", "-d", "-t", "=capture-source:", "cat"])
+            .unwrap();
+        let socket = server
+            .run(&["display-message", "-p", "#{socket_path}"])
+            .unwrap();
+        let mut connection = tmux_workspaces_tmux::connection::connect(
+            std::path::Path::new(socket.trim()),
+            "capture-source",
+        )
+        .unwrap();
+        let stdin = MoveOnCapture {
+            stdin: connection.client.stdin.take().unwrap(),
+            server: &server,
+            window: format!("@{}", connection.layout.window),
+        };
+        let result = capture(
+            stdin,
+            connection.client.stdout.take().unwrap(),
+            connection.layout.window,
+            Some(connection.session),
+        );
+        let _ = connection.client.kill();
+        let _ = connection.client.wait();
+        assert!(
+            result.is_err(),
+            "captured a window after it left the source"
+        );
+    }
+
+    #[test]
     fn unsupported_servers_stop_before_layout_capture_or_input_is_enabled() {
         for version in ["3.2a", "next", "", "3.3\nextra"] {
             let wire = format!(
                 "%begin 1 0 0\n%end 1 0 0\n%begin 1 1 1\n%end 1 1 1\n%begin 1 2 1\n%end 1 2 1\n%begin 1 3 1\n{version}\n%end 1 3 1\n"
             );
             let mut commands = Vec::new();
-            let error = capture(&mut commands, wire.as_bytes(), 1).err().unwrap();
+            let error = capture(&mut commands, wire.as_bytes(), 1, None)
+                .err()
+                .unwrap();
             assert!(error.to_string().contains("server"), "{error}");
             assert_eq!(
                 commands,
@@ -248,7 +328,7 @@ mod tests {
         ];
         replies.extend([
             "80", "24", "0", "0", "0", "0", "6", "0", "1", "0", "23", "8,16", "0", "0", "0", "1",
-            "0", "0", "0", "0", "0", "0", "", "", "",
+            "0", "0", "0", "0", "0", "0", "", "", "xterm", "",
         ]);
         // Pending bytes and the command enabling output.
         replies.extend(["0", "0", "", ""]);
@@ -262,7 +342,7 @@ mod tests {
         wire.push_str("%output %7 more\n");
         let mut exited = wire.clone();
         exited.push_str("%exit\n");
-        let seed = capture(Vec::new(), exited.as_bytes(), 1).unwrap();
+        let seed = capture(Vec::new(), exited.as_bytes(), 1, None).unwrap();
         assert_eq!(seed.snapshots[0].state.cursor, (6, 0));
         assert_eq!(seed.layout.panes[0].id, PaneId(7));
         assert_eq!(seed.events, [Event::Output(PaneId(7), b"more".to_vec())]);
@@ -272,7 +352,7 @@ mod tests {
             "{wire}{}\n%output %7 later\n",
             String::from_utf8_lossy(layout)
         );
-        let seeded = capture(Vec::new(), with_layout.as_bytes(), 1).unwrap();
+        let seeded = capture(Vec::new(), with_layout.as_bytes(), 1, None).unwrap();
         assert_eq!(
             seeded.events,
             [
@@ -282,7 +362,7 @@ mod tests {
             ]
         );
         wire.push_str("%output %7 par");
-        let mut seed = capture(Vec::new(), wire.as_bytes(), 1).unwrap();
+        let mut seed = capture(Vec::new(), wire.as_bytes(), 1, None).unwrap();
         assert_eq!(seed.events, [Event::Output(PaneId(7), b"more".to_vec())]);
         seed.decoder
             .decode(b"tial\n", |message| {

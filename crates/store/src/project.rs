@@ -188,6 +188,15 @@ pub(crate) fn apply(raw: &str, model: &Layout) -> Result<String, String> {
         {
             optional(&mut item, "icon", space.icon.as_deref());
         }
+        if space.symbol.is_some()
+            || projection
+                .objects
+                .get(&space.id)
+                .and_then(|item| item.get("symbol"))
+                .is_some_and(|symbol| symbol.get() != "null")
+        {
+            optional(&mut item, "symbol", space.symbol.as_deref());
+        }
         let mut tabs = Vec::new();
         for tab in &space.tabs {
             let mut item = projection.object(&tab.id, &["tree"])?;
@@ -202,7 +211,7 @@ pub(crate) fn apply(raw: &str, model: &Layout) -> Result<String, String> {
     root.insert("workspaces".into(), Field::Array(spaces));
     root.insert("selected".into(), value(model.selected.clone()));
     root.insert("focus".into(), value(model.focus));
-    if model.show_agents || root.contains_key("show_agents") {
+    if !model.show_agents || root.contains_key("show_agents") {
         root.insert("show_agents".into(), value(model.show_agents));
     }
     let mut output = Limited(Vec::new());

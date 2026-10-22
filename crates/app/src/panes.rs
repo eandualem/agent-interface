@@ -17,7 +17,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use tmux_workspaces_term::{Screen, Terminal};
+use tmux_workspaces_term::{Screen, Terminal, input::Input};
 use tmux_workspaces_tmux::control::{Decoder, Message, PaneId};
 use tmux_workspaces_tmux::recovery::{Recovery, Reply, Snapshot, Step};
 use tmux_workspaces_tmux::{command, layout};
@@ -31,6 +31,9 @@ const READ_SIZE: usize = 64 * 1024;
 
 /// Keep send-keys arguments below tmux's parser stack limit.
 const INPUT_CHUNK: usize = 1024;
+
+/// Maximum bytes in one keyboard or clipboard operation.
+pub(crate) const INPUT_LIMIT: usize = QUEUE_LIMIT;
 
 /// A pane's place in its tmux window, in terminal cells.
 pub use tmux_workspaces_tmux::layout::Pane as PaneLayout;
@@ -51,6 +54,7 @@ pub struct Panes {
     shared: Arc<Shared>,
     control: Arc<Control>,
     input: Mutex<()>,
+    source: Option<(u32, u32)>,
     client: Child,
     threads: Vec<JoinHandle<()>>,
 }
@@ -89,6 +93,7 @@ enum Event {
     Reply(Reply),
     Layout(layout::Change),
     Geometry,
+    Encode(InputRequest),
 }
 
 impl Event {
@@ -98,8 +103,15 @@ impl Event {
             Self::Reply(reply) => reply.lines.iter().map(Vec::len).sum(),
             Self::Layout(change) => change.panes.len() * std::mem::size_of::<PaneLayout>(),
             Self::Geometry => 0,
+            Self::Encode(request) => request.input.size() + std::mem::size_of::<InputRequest>(),
         }
     }
+}
+
+struct InputRequest {
+    pane: PaneId,
+    input: Input,
+    reply: mpsc::Sender<Result<Vec<u8>, String>>,
 }
 
 #[derive(Clone, Copy)]
@@ -107,6 +119,8 @@ enum ReplyOwner {
     Input(PaneId),
     Recovery,
     GeometrySubscription,
+    SourceSubscription,
+    Size,
 }
 
 struct Control {
@@ -196,7 +210,8 @@ impl LivePane {
             restore.cursor_visible = false;
             restore.pending.clear();
         }
-        let terminal = Terminal::restored(&restore, scrollback).map_err(|e| e.to_string())?;
+        let mut terminal = Terminal::restored(&restore, scrollback).map_err(|e| e.to_string())?;
+        terminal.set_extended_keys_csi_u(snapshot.state.modes.extended_keys_csi_u.unwrap_or(false));
         Ok(Self {
             size: (snapshot.state.width, snapshot.state.height),
             offset: (snapshot.state.left, snapshot.state.top),
@@ -236,9 +251,42 @@ struct WindowState {
     geometry_changed: bool,
     settle_at: Option<Instant>,
     generation: u64,
+    inputs: Vec<InputRequest>,
 }
 
 impl WindowState {
+    fn encode_ready_inputs(&mut self, changed: &mut Vec<PaneId>) {
+        self.inputs.retain(|request| {
+            let terminal = self
+                .terminals
+                .iter_mut()
+                .find(|(id, _)| *id == request.pane)
+                .filter(|(id, _)| self.layout.panes.iter().any(|pane| pane.id == *id));
+            if let Some((_, terminal)) = terminal {
+                // Output received during recovery has not yet been applied.
+                // Wait for its authoritative modes rather than guessing.
+                if terminal.needs_capture {
+                    return true;
+                }
+                let before = terminal.terminal.scrolled_row();
+                let result = terminal
+                    .terminal
+                    .encode_input(&request.input)
+                    .map_err(|e| e.to_string());
+                let after = terminal.terminal.scrolled_row();
+                if before.ok() != after.ok() && !changed.contains(&request.pane) {
+                    changed.push(request.pane);
+                }
+                let _ = request.reply.send(result);
+            } else {
+                let _ = request
+                    .reply
+                    .send(Err("The input pane is no longer visible".into()));
+            }
+            false
+        });
+    }
+
     fn ready(&self) -> bool {
         !self.geometry_changed
             || self.layout.panes.iter().all(|pane| {
@@ -289,12 +337,34 @@ impl Panes {
     /// `wake` is called on the worker thread whenever an update is ready, and
     /// once more when the worker has finished.
     pub fn start(
-        mut client: Child,
+        client: Child,
         layout: &layout::Change,
         scrollback: usize,
         wake: impl Fn() + Send + 'static,
     ) -> io::Result<Self> {
-        let seed = match crate::seed::attach(&mut client, layout.window) {
+        Self::start_checked(client, layout, None, scrollback, wake)
+    }
+
+    /// Starts a product connection whose selected window must still belong to
+    /// the verified source session when capture begins on that client.
+    pub fn start_in_session(
+        client: Child,
+        layout: &layout::Change,
+        session: u32,
+        scrollback: usize,
+        wake: impl Fn() + Send + 'static,
+    ) -> io::Result<Self> {
+        Self::start_checked(client, layout, Some(session), scrollback, wake)
+    }
+
+    fn start_checked(
+        mut client: Child,
+        layout: &layout::Change,
+        session: Option<u32>,
+        scrollback: usize,
+        wake: impl Fn() + Send + 'static,
+    ) -> io::Result<Self> {
+        let seed = match crate::seed::attach(&mut client, layout.window, session) {
             Ok(seed) => seed,
             Err(error) => {
                 let _ = client.kill();
@@ -347,6 +417,7 @@ impl Panes {
                 pending: Mutex::new(VecDeque::new()),
             }),
             input: Mutex::new(()),
+            source: session.map(|session| (session, layout.window)),
             client,
             threads: Vec::new(),
         };
@@ -365,7 +436,7 @@ impl Panes {
         let reader = spawn("tmux reader", {
             let shared = Arc::clone(&panes.shared);
             let window = layout.window;
-            move || read(&shared, stdout, decoder, window)
+            move || read(&shared, stdout, decoder, window, session)
         });
         match reader {
             Ok(reader) => panes.threads.push(reader),
@@ -377,11 +448,18 @@ impl Panes {
         }
         // tmux does not emit layout-change for every content-geometry change
         // (for example, switching top to bottom pane border status). Its format
-        // subscriptions report these changes, at most once per second.
+        // subscriptions report these changes, at most once per second. Also
+        // refresh the source server's extended-key format when it changes.
         panes.control.send(&format!(
-            "refresh-client -B 'content-geometry:@{}:#{{P:#{{pane_id}}/#{{pane_left}}/#{{pane_top}}/#{{pane_width}}/#{{pane_height}};}}'\n",
+            "refresh-client -B 'content-geometry:@{}:#{{P:#{{pane_id}}/#{{pane_left}}/#{{pane_top}}/#{{pane_width}}/#{{pane_height}};}}/#{{extended-keys-format}}'\n",
             layout.window,
         ), ReplyOwner::GeometrySubscription)?;
+        if session.is_some() {
+            panes.control.send(
+                "refresh-client -B 'source-window::#{session_id}/#{W:#{window_id};}'\n",
+                ReplyOwner::SourceSubscription,
+            )?;
+        }
         let (ready, initialized) = mpsc::channel();
         panes.threads.push(spawn("terminal worker", {
             let shared = Arc::clone(&panes.shared);
@@ -430,10 +508,57 @@ impl Panes {
             if let Some(failure) = self.failure() {
                 return Err(io::Error::other(failure));
             }
-            self.control
-                .send(&command::send_bytes(pane, chunk), ReplyOwner::Input(pane))?;
+            let line = match self.source {
+                Some((session, window)) => {
+                    command::send_bytes_in_session(session, window, pane, chunk)
+                }
+                None => command::send_bytes(pane, chunk),
+            };
+            self.control.send(&line, ReplyOwner::Input(pane))?;
         }
         Ok(())
+    }
+
+    /// Encode a key or paste using this pane's modes on its owning worker,
+    /// then deliver it as one ordered input operation. Call off the UI thread.
+    /// Recovery may delay encoding, bounded by the same capture deadline.
+    pub fn send_encoded_input(&self, pane: PaneId, input: Input) -> io::Result<()> {
+        if input.size() > INPUT_LIMIT {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Input exceeds the 4 MiB queue limit",
+            ));
+        }
+        let (reply, encoded) = mpsc::channel();
+        let event = Event::Encode(InputRequest { pane, input, reply });
+        {
+            let mut state = self.shared.lock();
+            if state.closed || state.cancelled || state.finished || state.failure.is_some() {
+                return Err(io::Error::other("Terminal connection is unavailable"));
+            }
+            state.queued += event.size();
+            state.queue.push_back(event);
+        }
+        self.shared.changed.notify_all();
+        let bytes = encoded
+            .recv_timeout(crate::seed::TIMEOUT)
+            .map_err(|error| io::Error::other(format!("Waiting for input encoding: {error}")))?
+            .map_err(io::Error::other)?;
+        self.send_input(pane, &bytes)
+    }
+
+    /// Declares this client's size, as an ordinary tmux client in a terminal
+    /// of `cols` by `rows` would. tmux then sizes the session's windows by its
+    /// `window-size` option, counting this client from now on.
+    pub fn set_size(&self, cols: u16, rows: u16) -> io::Result<()> {
+        self.control.send(
+            &format!(
+                "refresh-client -f '!ignore-size' -C {}x{}\n",
+                cols.max(1),
+                rows.max(1)
+            ),
+            ReplyOwner::Size,
+        )
     }
 
     /// Returns a terminal recovery or input transport failure.
@@ -490,8 +615,15 @@ fn spawn(name: &str, body: impl FnOnce() + Send + 'static) -> io::Result<JoinHan
 
 /// Reads and decodes the client's output, queueing each pane's output for the
 /// worker, until the client exits.
-fn read(shared: &Shared, mut stdout: ChildStdout, mut decoder: Decoder, window: u32) {
+fn read(
+    shared: &Shared,
+    mut stdout: ChildStdout,
+    mut decoder: Decoder,
+    window: u32,
+    session: Option<u32>,
+) {
     let layout_prefix = format!("%layout-change @{window} ");
+    let removed = format!("%unlinked-window-close @{window}");
     let mut buffer = vec![0; READ_SIZE];
     let mut reply = Reply::default();
     let mut from_client = false;
@@ -532,7 +664,29 @@ fn read(shared: &Shared, mut stdout: ChildStdout, mut decoder: Decoder, window: 
             {
                 batch.push(Event::Geometry);
             }
+            Message::Notification(line)
+                if session.is_some()
+                    && line.starts_with(b"%subscription-changed source-window ") =>
+            {
+                let value = std::str::from_utf8(line)
+                    .ok()
+                    .and_then(|line| line.split_once(" : "));
+                let member = value
+                    .and_then(|(_, value)| value.split_once('/'))
+                    .is_some_and(|(source, windows)| {
+                        source == format!("${}", session.unwrap())
+                            && windows.split(';').any(|id| id == format!("@{window}"))
+                    });
+                if !member {
+                    shared.lock().failure = Some("Selected window left the source session".into());
+                    exited = true;
+                }
+            }
             Message::Notification(line) if line.starts_with(b"%exit") => exited = true,
+            Message::Notification(line) if line == removed.as_bytes() => {
+                shared.lock().failure = Some("Selected window left the source session".into());
+                exited = true;
+            }
             _ => {}
         });
         if decoded.is_err() {
@@ -600,6 +754,7 @@ fn work(
         geometry_changed: false,
         settle_at: None,
         generation: 0,
+        inputs: Vec::new(),
     };
     let _ = ready.send(Ok(()));
     let mut recovering: Option<(Recovery, Instant, u64)> = None;
@@ -609,6 +764,11 @@ fn work(
     loop {
         if state.cancelled || state.failure.is_some() {
             break;
+        }
+        if !window.inputs.is_empty() {
+            drop(state);
+            window.encode_ready_inputs(&mut changed);
+            state = shared.lock();
         }
         if capture_unavailable && state.closed && state.queue.is_empty() && !window.ready() {
             // The new geometry cannot be verified without another capture.
@@ -818,6 +978,7 @@ fn apply(
 ) -> Result<Option<PaneId>, String> {
     let terminals = &mut window.terminals;
     match event {
+        Event::Encode(request) => window.inputs.push(request),
         Event::Layout(change) => {
             if change.window == window.layout.window {
                 window.change_layout(change, scrollback)?;
@@ -871,6 +1032,16 @@ fn apply(
                         return Err("tmux rejected the content geometry subscription".into());
                     }
                 }
+                Some(ReplyOwner::SourceSubscription) => {
+                    pending.pop_front();
+                    if !reply.ok {
+                        return Err("tmux rejected the source window subscription".into());
+                    }
+                }
+                // A rejected size leaves the window as it was; the view scales.
+                Some(ReplyOwner::Size) => {
+                    pending.pop_front();
+                }
                 Some(ReplyOwner::Recovery) => {
                     let (recovery, _, generation) =
                         recovering.as_mut().ok_or("reply without a pane recovery")?;
@@ -893,12 +1064,23 @@ fn apply(
                                 .ok_or("recovery completed for an unknown pane")?;
                             let deadline = terminal.recovery_deadline;
                             let geometry = (terminal.size, terminal.offset);
-                            *terminal = LivePane::restored(rebuilt.snapshot, scrollback)?;
+                            let scrolled = terminal
+                                .terminal
+                                .scrolled_row()
+                                .map_err(|e| e.to_string())?;
+                            let mut restored = LivePane::restored(rebuilt.snapshot, scrollback)?;
+                            restored
+                                .terminal
+                                .inherit_pointer_gestures(&terminal.terminal);
+                            *terminal = restored;
                             // A snapshot can observe an option-only resize before
                             // its once-per-second subscription notification. Do
                             // not join this screen to an older waiting rectangle.
                             window.geometry_changed |= geometry != (terminal.size, terminal.offset);
                             terminal.resume_after_recovery(&rebuilt.output, deadline)?;
+                            if let Some(row) = scrolled {
+                                terminal.terminal.restore_scrolled_row(row);
+                            }
                             if *generation != window.generation {
                                 terminal.needs_capture = true;
                                 terminal.recovery_deadline = deadline;
@@ -1052,7 +1234,7 @@ mod tests {
                 TmuxServer::SESSION,
             ])
             .unwrap();
-        let seed = crate::seed::attach(&mut client, layout.window).unwrap();
+        let seed = crate::seed::attach(&mut client, layout.window, None).unwrap();
         let snapshots = seed.snapshots.clone();
         let mut margin_snapshot = snapshots[0].clone();
         margin_snapshot.state.cursor.0 = margin_snapshot.state.width;
@@ -1580,6 +1762,181 @@ mod tests {
     }
 
     #[test]
+    fn local_history_scroll_survives_capture_and_typing_returns_to_live_output() {
+        use tmux_workspaces_term::input::Scroll;
+        let server = TmuxServer::start().unwrap();
+        let script = "stty raw -echo; printf 'history-first\\r\\n'; i=0; while [ \"$i\" -lt 60 ]; do printf 'history-%02d\\r\\n' \"$i\"; i=$((i+1)); done; printf '\\033[2J\\033[Hlive-ready'; exec cat";
+        server
+            .run(&[
+                "respawn-pane",
+                "-k",
+                "-t",
+                TmuxServer::SESSION,
+                "sh",
+                "-c",
+                script,
+            ])
+            .unwrap();
+        let layout = layout(&server);
+        let pane = layout.panes[0].id;
+        let client = server
+            .control(&[
+                "attach-session",
+                "-f",
+                "no-output,ignore-size,new-layouts",
+                "-t",
+                TmuxServer::SESSION,
+            ])
+            .unwrap();
+        let (wake, woken) = mpsc::channel();
+        let panes = Panes::start(client, &layout, 100, move || {
+            let _ = wake.send(());
+        })
+        .unwrap();
+        wait_for_row(&panes, &woken, pane, "live-ready");
+        panes
+            .send_encoded_input(pane, Input::Scroll(Scroll::Top))
+            .unwrap();
+        wait_for_row(&panes, &woken, pane, "history-first");
+        // Another private-fixture client produces a wrapping line while this
+        // viewer reads history. Its capture recovery must keep the local view.
+        server
+            .run(&[
+                "send-keys",
+                "-l",
+                "-t",
+                &format!("%{}", pane.0),
+                &"x".repeat(usize::from(layout.panes[0].cols) + 5),
+            ])
+            .unwrap();
+        wait_for_row(&panes, &woken, pane, "history-first");
+        panes
+            .send_encoded_input(pane, Input::Paste("typed".into()))
+            .unwrap();
+        wait_for_row(&panes, &woken, pane, "live-readyxxx");
+        assert_eq!(panes.failure(), None);
+    }
+
+    #[test]
+    fn worker_encodes_application_keys_paste_and_mouse_in_stream_order() {
+        use tmux_workspaces_term::input::{Button, KeyPress, MouseAction, Pointer};
+        let server = TmuxServer::start().unwrap();
+        server
+            .run(&["set-option", "-s", "extended-keys", "on"])
+            .unwrap();
+        server
+            .run(&["set-option", "-s", "extended-keys-format", "csi-u"])
+            .unwrap();
+        let script = "stty raw -echo; printf '\\033[>4;2m\\033[?1h\\033[2J\\033[Harrow-ready'; arrow=$(dd bs=1 count=3 2>/dev/null | od -An -tx1 | tr -d '[:space:]'); printf '\\033[2J\\033[Hextended-ready%s' \"$arrow\"; extended=$(dd bs=1 count=7 2>/dev/null | od -An -tx1 | tr -d '[:space:]'); printf '\\033[?2004h\\033[2J\\033[Hpaste-ready%s' \"$extended\"; pasted=$(dd bs=1 count=15 2>/dev/null | od -An -tx1 | tr -d '[:space:]'); printf '\\033[?1000h\\033[?1006h\\033[2J\\033[Hpaste:%s' \"$pasted\"; mouse=$(dd bs=1 count=28 2>/dev/null | od -An -tx1 | tr -d '[:space:]'); printf '\\033[?1002h\\033[2J\\033[Hmouse:%s' \"$mouse\"; drag=$(dd bs=1 count=28 2>/dev/null | od -An -tx1 | tr -d '[:space:]'); printf '\\033[2J\\033[Hdrag:%s' \"$drag\"; exec cat";
+        server
+            .run(&[
+                "respawn-pane",
+                "-k",
+                "-t",
+                TmuxServer::SESSION,
+                "sh",
+                "-c",
+                script,
+            ])
+            .unwrap();
+        let layout = layout(&server);
+        let pane = layout.panes[0].id;
+        let client = server
+            .control(&[
+                "attach-session",
+                "-f",
+                "no-output,ignore-size,new-layouts",
+                "-t",
+                TmuxServer::SESSION,
+            ])
+            .unwrap();
+        let (wake, woken) = mpsc::channel();
+        let panes = Panes::start(client, &layout, 100, move || {
+            let _ = wake.send(());
+        })
+        .unwrap();
+        wait_for_row(&panes, &woken, pane, "arrow-ready");
+        panes
+            .send_encoded_input(
+                pane,
+                Input::Key(KeyPress {
+                    key: "up".into(),
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+        wait_for_row(&panes, &woken, pane, "extended-ready1b4f41");
+        panes
+            .send_encoded_input(
+                pane,
+                Input::Key(KeyPress {
+                    key: "h".into(),
+                    control: true,
+                    shift: true,
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+        wait_for_row(&panes, &woken, pane, "paste-ready1b5b37323b3675");
+        panes
+            .send_encoded_input(pane, Input::Paste("ok\n".into()))
+            .unwrap();
+        wait_for_row(&panes, &woken, pane, "paste:1b5b3230307e6f6b0a1b5b3230317e");
+        let pointer = Pointer {
+            x: 2.5,
+            y: 3.5,
+            cols: layout.panes[0].cols,
+            rows: layout.panes[0].rows,
+            cell_width: 8,
+            cell_height: 16,
+            ..Default::default()
+        };
+        panes
+            .send_encoded_input(pane, Input::Click(pointer, Button::Left))
+            .unwrap();
+        panes
+            .send_encoded_input(pane, Input::Wheel(pointer, -1))
+            .unwrap();
+        wait_for_row(
+            &panes,
+            &woken,
+            pane,
+            "mouse:1b5b3c303b333b344d1b5b3c303b333b346d1b5b3c36343b333b344d",
+        );
+        panes
+            .send_encoded_input(
+                pane,
+                Input::Mouse(pointer, MouseAction::Press(Button::Left)),
+            )
+            .unwrap();
+        let moved = Pointer { x: 4.5, ..pointer };
+        panes
+            .send_encoded_input(
+                pane,
+                Input::Mouse(moved, MouseAction::Move(Some(Button::Left))),
+            )
+            .unwrap();
+        panes
+            .send_encoded_input(
+                pane,
+                Input::Mouse(moved, MouseAction::Release(Button::Left)),
+            )
+            .unwrap();
+        wait_for_row(
+            &panes,
+            &woken,
+            pane,
+            "drag:1b5b3c303b333b344d1b5b3c33323b353b344d1b5b3c303b353b346d",
+        );
+        assert!(
+            panes
+                .send_encoded_input(PaneId(u32::MAX), Input::Paste("wrong destination".into()))
+                .is_err()
+        );
+        assert_eq!(panes.failure(), None);
+    }
+
+    #[test]
     fn a_pane_removed_during_recovery_does_not_stop_its_neighbor() {
         let server = TmuxServer::start().unwrap();
         let session = TmuxServer::SESSION;
@@ -1759,7 +2116,7 @@ mod tests {
         drop(client.stdin.take());
         // Read on another thread, so that a client that never exits fails
         // the test instead of hanging it: killing the client ends the read.
-        let reader = std::thread::spawn(move || read(&shared, stdout, Decoder::new(), 0));
+        let reader = std::thread::spawn(move || read(&shared, stdout, Decoder::new(), 0, None));
 
         let deadline = Instant::now() + Duration::from_secs(10);
         while client.try_wait().unwrap().is_none() {

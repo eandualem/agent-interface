@@ -198,7 +198,6 @@ surface only when distinct. Consequently presets with both grounds `default`
 inherit matching backgrounds from panel. This model reproduces the existing
 configuration interpretation; it does not settle the native visual contract.
 Native mapping and those documented visual expectations remain pending.
->>>>>>> 2d8171a (feat: read shared theme configuration without activating it)
 
 **Leave the Python tool's runtime alone.** Never create, change or delete the
 Python tool's `windows/<instance>/` runtime directories, viewer sockets or
@@ -322,8 +321,51 @@ require input focus to return to navigation. The next merge base is the latest
 incoming document; the returned arrangement retains unsaved local edits.
 
 Reconciliation preserves JSON values, but may normalize numeric spellings and
-formatting. It performs no persistence. The transactional checks, mixed-writer
-tests, migration agreement and write gate above remain outstanding.
+formatting. Reconciliation itself performs no persistence. Transactional saving
+and its verified existing-library scope are described below.
+
+## Verified existing-library saving
+
+`Store::open_existing_writable` opens an already initialized version-2 library
+without SQLite's create flag. It refuses missing tables/rows, malformed current
+documents and unexpected column/index/trigger definitions. `Store::save` validates
+local edits, takes `BEGIN IMMEDIATE`, rechecks the schema and current row, then
+reconciles and validates before replacing row 1. Success updates the caller's base
+only after commit. Conflict rolls back and returns the latest arrangement with
+local navigation retained; other errors leave the base and unsaved edits intact.
+The writer uses Python's five-second busy timeout and the reference runtime's
+connection-local foreign-key setting (off). Python leaves this at its SQLite build
+default; the fixture verifies that default rather than assuming every build agrees.
+Bundled SQLite otherwise enables foreign keys by default, allowing
+`REPLACE` to cascade deletions into unrelated extension tables. Journal mode and
+older table records remain unchanged. There is no initialization or legacy import.
+
+The app uses `Store::open` for polling and the explicit existing-library writer
+for native renames ([0027](0027-native-name-editing.md)).
+The storage gate is satisfied for already initialized version-2 libraries:
+the merge differential tests, mixed-process fixtures and agreed refusal of
+initialization and legacy import cover this bounded path. Use the Python tool
+to initialize a library or import older tables. An importer would require its
+own compatibility evidence; it is not a prerequisite for saving an existing
+version-2 row. The mixed-process fixtures cover independent renames, additions and split edits;
+conflicting renames, splits, moves, reorders and stale deletion; tab moves and
+navigation fallback after workspace removal. Conflicts are retried explicitly,
+with Python and Rust each committing first. Both processes load
+before either saves; reopening in both validates the final record. To run against
+a clean checkout of the pinned Python reference:
+
+```sh
+python3 crates/store/tests/mixed_writers.py /path/to/tmux-workspaces
+```
+
+The script requires Python 3.11+, Cargo and rustc. It creates only temporary
+synthetic databases, never starts tmux, and does not modify the reference checkout.
+Rust tests also exercise empty/legacy-only refusal, malformed/missing current rows
+beside valid legacy data, schema changes, oversized local and merged edits, and
+commit failure under a retained reader lock. Product integration must apply save
+and conflict results, show errors and retry, preserve unsaved edits on other
+failures, retain local navigation and honor `active_tree_changed` before input.
+Storage acceptance does not cover shell creation or change its separate gate.
 
 ## Saved split geometry
 

@@ -13,7 +13,7 @@ work fully without it, and a roster failure must never affect terminals
 The Python tool's adapter reads Backbone's API address from Backbone's settings
 database (read-only) and its API key from the environment or Backbone's `.env`
 file, then polls
-`/api/agents` every five seconds. It accepts only loopback HTTP endpoints,
+`/api/agents` every two seconds. It accepts only loopback HTTP endpoints,
 refuses redirects, ignores proxy settings, and sends the key only after the
 endpoint passes those checks.
 
@@ -44,7 +44,7 @@ roster entries onto tmux sessions and tabs.
 - **Endpoint checks, before any network access.** The scheme is `http`, the
   host is `localhost`, `127.0.0.1` or `::1`, and there is no user information,
   query string or fragment.
-- **Requests.** `GET /api/agents` every five seconds. Never follow a redirect,
+- **Requests.** `GET /api/agents` every two seconds, so a state change shows within a few seconds. Never follow a redirect,
   even to another local address, and ignore proxy environment variables.
 - **Credential.** Take the API key from the `BACKBONE_API_KEY` environment
   variable, or, when that is empty, from the same variable in Backbone's
@@ -155,7 +155,7 @@ The small named-key parser follows the required Python behavior without loading 
 general environment file.
 
 `app::roster::RosterSource` starts only on an explicit call. Its dedicated worker
-reads immediately, then five seconds after each attempt, and publishes one
+reads immediately, then two seconds after each attempt, and publishes one
 coalesced snapshot. Failures replace unread successes with stale metadata; repairs
 are retried without affecting the separate tmux-discovery worker. Dropping the
 handle interrupts the polling wait and joins after the current read finishes.

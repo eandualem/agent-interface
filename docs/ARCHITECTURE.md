@@ -7,9 +7,10 @@ a tmux client.
 
 This page describes the design decided so far, with the decision record behind
 each part, and then the code that exists today. So far the code is the Cargo
-workspace, its build, its test fixtures, the first parts of the terminal path
-and the benchmark harness. Features come after the milestone-0
-measurements ([0018](decisions/0018-milestone-0-benchmark-method-revised.md)).
+workspace, its build, its test fixtures, the terminal path, the benchmark harness
+and a native workspace window with existing-session terminal connections
+([0025](decisions/0025-existing-session-terminals.md)). Full connection/input parity
+and milestone-0 performance acceptance remain unfinished ([0018](decisions/0018-milestone-0-benchmark-method-revised.md)).
 
 ## The design at a glance
 
@@ -58,9 +59,12 @@ ready ([0007](decisions/0007-threads-ownership-and-event-ordering.md),
 [0015](decisions/0015-input-routing.md)).
 
 **The shared library.** A storage worker reads `layouts.db` read-only and
-watches it for changes made by the Python tool. Writing waits until the Python
-tool's merge and conflict rules are ported and tested
-([0009](decisions/0009-python-library-and-shell-server-compatibility.md)).
+watches it for changes made by the Python tool. Native renames, tab moves and attachment choices save on a background worker
+using the shared merge and conflict rules. Attachment proposals remain detached
+from the displayed model until commit. The reader restarts after a save
+so a pending older read cannot replace its result
+([0009](decisions/0009-python-library-and-shell-server-compatibility.md),
+[0027](decisions/0027-native-name-editing.md)).
 
 ## The code today
 
@@ -73,11 +77,11 @@ The repository is a Cargo workspace. Each crate above is a package under
 | `rust-toolchain.toml` | The pinned Rust toolchain ([0011](decisions/0011-toolchain-and-dependency-policy.md)). |
 | `deny.toml` | The allowed licences, the advisory and source checks, and the dependency direction between the crates. |
 | `crates/core` | Workspace, tab, split, leaf and attachment types; in-memory create/rename/split/attach/close operations, workspace/tab navigation and tab moves, local navigation retention, cell rectangles with focused-pane fallback, and shared-document three-way merging, independent of storage and rendering. `keymap` holds immutable validated shortcut configuration and print-only help/TOML output. |
-| `crates/store` | Read-only schema-v2 SQLite access, bounded JSON validation, original-document preservation and pure model-to-document projection that retains extension fields, and shared-edit reconciliation with local navigation. No database writes, migration or shell creation yet. |
+| `crates/store` | Read-only schema-v2 SQLite access by default, bounded JSON validation, original-document preservation, model projection and shared-edit reconciliation. An explicit existing-library writer implements transactional saves for native layout edits. No migration or shell creation. |
 | `crates/roster` | Validated roster snapshots, stale-state retention, attention ordering, bounded loopback HTTP reads, and lazy read-only settings and credential lookup. |
 | `crates/tmux` | Read-only executable preflight and server version validation (`preflight`). `control`, the decoder for a control-mode client's output: pane output with tmux's escaping removed, command replies and notifications. `layout`, which reads visible pane rectangles (including zoom) from layout notifications. `capture`, which reads a pane's rows and pending parser bytes from `capture-pane`, and `recovery`, the commands and reply handling that rebuild a pane's state ([0021](decisions/0021-pane-state-recovery.md)). |
 | `crates/term` | `Terminal`, the wrapper around the terminal engine: it creates a terminal with grapheme clustering on, feeds it bytes, and copies the visible screen into a `Screen`, owned display data that any thread can hold. `restore`, which builds a terminal from a pane's state as tmux holds it ([0021](decisions/0021-pane-state-recovery.md)). |
-| `crates/app` | The `tmux-workspaces` binary, which can print the effective keymap, and a library with read-only keymap loading (`keymap`), library path and shell identity lookup plus a read-only storage worker and per-window layout reconciliation and viewing history (`library`), independent session discovery (`sessions`) and optional-provider resolution and explicit roster polling (`roster`), and the terminal path: `panes` starts from captured pane state, keeps each terminal on a worker thread and hands over owned display data, and `view` draws it with GPUI. The `bench-window` example draws one tmux window with them for the benchmarks ([0019](decisions/0019-benchmark-window.md)); there is no app window yet. Connected-server version validation, initial capture, right-margin recovery and recovery after visible layout changes are integrated. Driving tmux geometry from native window resizing, changing windows and retrying failed attachments still belong to the full connection lifecycle. |
+| `crates/app` | The `tmux-workspaces` binary opens a native workspace window (`desktop`) and can print the effective keymap, with workspace/tab navigation and renaming, tab moves, a source-session chooser, saved splits and live existing-session terminals. The library provides read-only keymap loading (`keymap`), library path and shell identity lookup plus a read-only storage worker and per-window layout reconciliation and viewing history (`library`), independent session discovery (`sessions`) and optional-provider resolution and explicit roster polling (`roster`), and the terminal path: `panes` starts from captured pane state, keeps each terminal on a worker thread and hands over owned display data, and `view` draws it with GPUI. The `bench-window` example draws one tmux window with them for the benchmarks ([0019](decisions/0019-benchmark-window.md)); the product window reuses the same renderer and terminal worker for its visible saved leaves. Connected-server version validation, initial capture, right-margin recovery and recovery after visible layout changes are integrated. Each displayed pane declares its size to tmux ([0032](decisions/0032-source-equivalent-chrome-and-sizing.md)). Attached-window navigation is local to each native leaf ([0026](decisions/0026-native-tmux-window-navigation.md)). Failed connections have a native reconnect action. |
 | `crates/test-support` | Development-only fixtures. `TmuxServer` starts the private tmux servers that tests use, and control-mode clients on them ([0012](decisions/0012-testing-strategy-and-tmux-isolation.md)). |
 | `crates/bench`, `crates/bench-rio` | The development-only milestone-0 benchmark harness and its separate `rio-vt` program ([0017](decisions/0017-benchmark-harness.md)). |
 | `docs/` | This page, the decision records, the research, the parity checklist and the [benchmark results](benchmarks/README.md). |
@@ -133,6 +137,11 @@ described in [0001](decisions/0001-record-architecture-decisions.md).
 | [0020. Benchmark launch context](decisions/0020-benchmark-launch-context.md) | Accepted |
 | [0021. Pane state recovery and the control-mode fidelity harness](decisions/0021-pane-state-recovery.md) | Accepted |
 | [0022. vtebench in gate 2](decisions/0022-vtebench-in-gate-2.md) | Proposed |
+| [0025. Existing-session terminals](decisions/0025-existing-session-terminals.md) | Accepted for development; acceptance pending |
+| [0026. Native tmux window navigation](decisions/0026-native-tmux-window-navigation.md) | Accepted for development; acceptance pending |
+| [0027. Native name editing](decisions/0027-native-name-editing.md) | Accepted for development; desktop acceptance pending |
+| [0028. Native existing-session chooser](decisions/0028-native-session-chooser.md) | Accepted for development; desktop acceptance pending |
+| [0024. Native read-only library browser](decisions/0024-read-only-library-browser.md) | Accepted for development; acceptance pending |
 
 ## Further reading
 

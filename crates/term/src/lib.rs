@@ -14,6 +14,7 @@
 #![forbid(unsafe_code)]
 
 mod controls;
+pub mod input;
 mod rename;
 pub mod restore;
 mod screen;
@@ -50,6 +51,10 @@ pub struct Terminal {
     /// The text of the cell being copied: the engine overwrites the buffer it
     /// is given.
     grapheme: String,
+    extended_keys_csi_u: bool,
+    wheel_owner: Option<(u64, bool)>,
+    last_mouse_motion: Vec<u8>,
+    mouse_button: Option<input::Button>,
     rename: rename::Rename,
 }
 
@@ -80,6 +85,10 @@ impl Terminal {
             rows: RowIterator::new().map_err(Error)?,
             cells: CellIterator::new().map_err(Error)?,
             grapheme: String::new(),
+            extended_keys_csi_u: false,
+            wheel_owner: None,
+            last_mouse_motion: Vec::new(),
+            mouse_button: None,
             rename: rename::Rename::default(),
         })
     }
@@ -128,13 +137,22 @@ impl Terminal {
     /// This updates the engine's render state, then copies every cell, so the
     /// result does not depend on what earlier reads copied.
     pub fn read_screen(&mut self, screen: &mut Screen) -> Result<(), Error> {
+        let mouse_input =
+            self.engine.is_mouse_tracking().map_err(Error)? && self.scrolled_row()?.is_none();
         let snapshot = self.render.update(&self.engine).map_err(Error)?;
         screen.clear(
             snapshot.cols().map_err(Error)?,
             snapshot.rows().map_err(Error)?,
         );
+        screen.mouse_input = mouse_input;
         let mut rows = self.rows.update(&snapshot).map_err(Error)?;
+        let mut row_number = 0;
         while let Some(row) = rows.next() {
+            screen.set_row_wrapped(
+                row_number,
+                row.raw_row().map_err(Error)?.is_wrapped().map_err(Error)?,
+            );
+            row_number += 1;
             let mut cells = self.cells.update(row).map_err(Error)?;
             while let Some(cell) = cells.next() {
                 let raw = cell.raw_cell().map_err(Error)?;

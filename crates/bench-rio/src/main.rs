@@ -13,6 +13,7 @@
 #[path = "../../bench/src/child.rs"]
 mod child;
 #[path = "../../term/src/screen.rs"]
+#[allow(dead_code)] // This renderer benchmark does not use native selection metadata.
 mod display;
 #[path = "../../bench/src/dump.rs"]
 mod dump;

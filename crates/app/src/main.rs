@@ -1,7 +1,4 @@
-//! The tmux-workspaces desktop app.
-//!
-//! There is no window yet: the terminal path is measured first, against the
-//! milestone-0 gates in `docs/decisions/0013-milestone-0-benchmark-method.md`.
+//! Start the native workspace and terminal window.
 
 #![forbid(unsafe_code)]
 
@@ -12,73 +9,134 @@ use std::{
     process::ExitCode,
 };
 
+const USAGE: &str = "Usage: tmux-workspaces [--data-dir PATH]\n       tmux-workspaces [--keymap PATH | --no-keymap] --print-keymap <help|toml>\n\nOpen saved workspaces and connect their existing tmux sessions, or print the\neffective keymap without opening a window.\n";
+
 fn main() -> ExitCode {
-    match run(std::env::args_os().skip(1).collect()) {
-        Ok(text) => match io::stdout().lock().write_all(text.as_bytes()) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(error) if error.kind() == io::ErrorKind::BrokenPipe => ExitCode::SUCCESS,
-            Err(error) => {
-                eprintln!("tmux-workspaces: {error}");
-                ExitCode::FAILURE
+    match options(std::env::args_os().skip(1)) {
+        Ok(Options::Open(directory)) => {
+            if let Err(error) = tmux_workspaces_app::desktop::run(directory) {
+                eprintln!("tmux-workspaces: {}", error.escape_debug());
+                return ExitCode::FAILURE;
             }
-        },
+        }
+        Ok(Options::Keymap {
+            path,
+            disabled,
+            toml,
+        }) => {
+            let text = match tmux_workspaces_app::keymap::load(path.as_deref(), disabled) {
+                Ok(map) if toml => map.to_toml(),
+                Ok(map) => map.help(),
+                Err(error) => {
+                    eprintln!("tmux-workspaces: {}", error.to_string().escape_debug());
+                    return ExitCode::FAILURE;
+                }
+            };
+            match io::stdout().lock().write_all(text.as_bytes()) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::BrokenPipe => {}
+                Err(error) => {
+                    eprintln!("tmux-workspaces: {error}");
+                    return ExitCode::FAILURE;
+                }
+            }
+        }
+        Ok(Options::Help) => print!("{USAGE}"),
+        Ok(Options::Version) => println!("tmux-workspaces {}", env!("CARGO_PKG_VERSION")),
         Err(error) => {
-            // Paths and unexpected arguments can contain control characters too.
-            eprintln!("tmux-workspaces: {}", error.escape_debug());
-            ExitCode::FAILURE
+            eprintln!("tmux-workspaces: {}\n{USAGE}", error.escape_debug());
+            return ExitCode::FAILURE;
         }
     }
+    ExitCode::SUCCESS
 }
 
-fn run(arguments: Vec<OsString>) -> Result<String, String> {
-    if arguments.is_empty() {
-        return Ok(format!(
-            "tmux-workspaces {}: no window yet, see docs/ARCHITECTURE.md",
-            env!("CARGO_PKG_VERSION")
-        ) + "\n");
-    }
-    let (mut path, mut disabled, mut format) = (None, false, None);
-    let mut args = arguments.into_iter();
-    while let Some(argument) = args.next() {
+#[derive(Debug, PartialEq, Eq)]
+enum Options {
+    Open(Option<PathBuf>),
+    Keymap {
+        path: Option<PathBuf>,
+        disabled: bool,
+        toml: bool,
+    },
+    Help,
+    Version,
+}
+
+fn options(mut arguments: impl Iterator<Item = OsString>) -> Result<Options, String> {
+    use std::os::unix::ffi::{OsStrExt, OsStringExt};
+    let mut directory = None;
+    let (mut keymap, mut disabled, mut format) = (None, false, None);
+    while let Some(argument) = arguments.next() {
         if argument == "--help" || argument == "-h" {
-            return Ok("Usage: tmux-workspaces [--keymap PATH | --no-keymap] --print-keymap <help|toml>\n\nRead and print the effective keymap without opening a window or starting terminals.\n".into());
+            return Ok(Options::Help);
+        }
+        if argument == "--version" || argument == "-V" {
+            return Ok(Options::Version);
         }
         if argument == "--no-keymap" {
             disabled = true;
-            continue;
-        }
-        if argument == "--keymap" {
-            path = Some(PathBuf::from(
-                args.next().ok_or("--keymap requires a path")?,
+        } else if argument == "--keymap" {
+            keymap = Some(PathBuf::from(
+                arguments.next().ok_or("--keymap requires a path")?,
             ));
-            continue;
-        }
-        if argument == "--print-keymap" {
-            format = Some(args.next().ok_or("--print-keymap requires help or toml")?);
-            continue;
-        }
-        // Split native bytes, so --keymap=PATH also preserves non-UTF-8 paths.
-        use std::os::unix::ffi::{OsStrExt, OsStringExt};
-        if let Some(value) = argument.as_bytes().strip_prefix(b"--keymap=") {
-            path = Some(PathBuf::from(OsString::from_vec(value.to_vec())));
+        } else if argument == "--print-keymap" {
+            format = Some(
+                arguments
+                    .next()
+                    .ok_or("--print-keymap requires help or toml")?,
+            );
+        } else if let Some(value) = argument.as_bytes().strip_prefix(b"--keymap=") {
+            // Split native bytes, so --keymap=PATH preserves non-UTF-8 paths.
+            keymap = Some(PathBuf::from(OsString::from_vec(value.to_vec())));
         } else if let Some(value) = argument.as_bytes().strip_prefix(b"--print-keymap=") {
             format = Some(OsString::from_vec(value.to_vec()));
-        } else {
-            return Err(format!(
-                "unrecognized argument: {}",
-                argument.to_string_lossy()
+        } else if argument == "--data-dir" {
+            directory = Some(PathBuf::from(
+                arguments.next().ok_or("--data-dir needs a path")?,
             ));
+        } else if let Some(path) = argument.as_encoded_bytes().strip_prefix(b"--data-dir=") {
+            directory = Some(PathBuf::from(std::ffi::OsStr::from_bytes(path)));
+        } else {
+            return Err(format!("unknown argument: {}", argument.to_string_lossy()));
         }
     }
-    let format = format.ok_or("no app window is available yet; use --print-keymap help or toml")?;
-    if format != "help" && format != "toml" {
-        return Err("--print-keymap requires help or toml".into());
+    if let Some(format) = format {
+        if format != "help" && format != "toml" {
+            return Err("--print-keymap requires help or toml".into());
+        }
+        return Ok(Options::Keymap {
+            path: keymap,
+            disabled,
+            toml: format == "toml",
+        });
     }
-    let map =
-        tmux_workspaces_app::keymap::load(path.as_deref(), disabled).map_err(|e| e.to_string())?;
-    Ok(if format == "toml" {
-        map.to_toml()
-    } else {
-        map.help()
-    })
+    if keymap.is_some() || disabled {
+        return Err("--keymap and --no-keymap need --print-keymap".into());
+    }
+    Ok(Options::Open(directory))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn library_paths_and_diagnostics_do_not_need_a_terminal() {
+        let parse = |args: &[&str]| options(args.iter().map(OsString::from));
+        assert_eq!(parse(&[]), Ok(Options::Open(None)));
+        assert_eq!(parse(&["--help"]), Ok(Options::Help));
+        assert_eq!(parse(&["--version"]), Ok(Options::Version));
+        for args in [
+            vec!["--data-dir", "library with spaces"],
+            vec!["--data-dir=library with spaces"],
+        ] {
+            assert_eq!(
+                parse(&args),
+                Ok(Options::Open(Some("library with spaces".into())))
+            );
+        }
+        assert!(parse(&["--data-dir"]).is_err());
+        assert!(parse(&["--unknown"]).is_err());
+    }
 }
