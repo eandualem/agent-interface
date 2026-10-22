@@ -119,6 +119,10 @@ fn connect_selected(
     let (source, text) = text
         .split_once(' ')
         .ok_or_else(|| io::Error::other("invalid source identity"))?;
+    // A restarted server can reuse the resolved session ID for another session.
+    if source.split('/').next() != Some(resolved.server_pid.to_string().as_str()) {
+        return Err(io::Error::other("Session changed while connecting"));
+    }
     if selected.is_some_and(|window| window.source != source) {
         if reopened {
             selected = None;

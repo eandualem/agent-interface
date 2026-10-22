@@ -180,6 +180,16 @@ fn open_browser(
             };
             browser.open(directory, cx);
             browser.start_roster(cx);
+            // Stopping the library joins its storage worker, which can wait on
+            // a locked database; keep that off the UI thread when the window closes.
+            cx.on_release(|browser, cx| {
+                if let Some(library) = browser.library.take() {
+                    cx.background_executor()
+                        .spawn(async move { drop(library) })
+                        .detach();
+                }
+            })
+            .detach();
             browser
         })
     })
