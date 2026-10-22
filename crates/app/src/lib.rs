@@ -14,4 +14,5 @@ pub mod roster;
 mod seed;
 pub mod sessions;
 mod stream;
+pub mod theme;
 pub mod view;

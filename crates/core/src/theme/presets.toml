@@ -1,0 +1,238 @@
+# Preset data from tmux-workspaces 51de6757cd0aeda3c19fe68fa4ec5b93ab206804.
+# Copyright (c) 2026 agent-backbone contributors
+# Copyright (c) 2026 tmux-workspaces contributors
+# MIT License; see the permission notice in the repository LICENSE.
+
+[default]
+panel = "#15171c"
+surface = "#1b1e24"
+
+[default.normal]
+foreground = ["#d4d6db", "252", "white"]
+background = ["#15171c", "233", "black"]
+attributes = []
+
+[default.active]
+foreground = ["#ffffff", "231", "white"]
+background = ["#262a33", "238", "blue"]
+attributes = []
+
+[default.accent]
+foreground = ["#e0a458", "179", "yellow"]
+background = ["#15171c", "233", "black"]
+attributes = []
+
+[default.muted]
+foreground = ["#7d828c", "244", "white"]
+background = ["#15171c", "233", "black"]
+attributes = []
+
+[default.outline]
+foreground = ["#2a2e36", "236", "white"]
+background = ["#15171c", "233", "black"]
+attributes = []
+
+[default.header]
+foreground = ["#d4d6db", "252", "white"]
+background = ["#1e2128", "234", "black"]
+attributes = []
+
+[default.danger]
+foreground = ["#e06c75", "167", "red"]
+background = ["#15171c", "233", "black"]
+attributes = []
+
+[plain]
+panel = "default"
+surface = "default"
+
+[plain.normal]
+foreground = ["#d4d6db", "252", "white"]
+background = ["default"]
+attributes = []
+
+[plain.active]
+foreground = ["#ffffff", "231", "white"]
+background = ["#262a33", "238", "blue"]
+attributes = []
+
+[plain.accent]
+foreground = ["#e0a458", "179", "yellow"]
+background = ["default"]
+attributes = []
+
+[plain.muted]
+foreground = ["#7d828c", "244", "white"]
+background = ["default"]
+attributes = []
+
+[plain.outline]
+foreground = ["#2a2e36", "236", "white"]
+background = ["default"]
+attributes = []
+
+[plain.header]
+foreground = ["#d4d6db", "252", "white"]
+background = ["default"]
+attributes = []
+
+[plain.danger]
+foreground = ["#e06c75", "167", "red"]
+background = ["default"]
+attributes = []
+
+[forest]
+panel = "default"
+surface = "default"
+
+[forest.normal]
+foreground = ["default"]
+background = ["default"]
+attributes = []
+
+[forest.active]
+foreground = ["231", "white"]
+background = ["238", "blue"]
+attributes = []
+
+[forest.accent]
+foreground = ["108", "cyan"]
+background = ["default"]
+attributes = []
+
+[forest.muted]
+foreground = ["245", "white"]
+background = ["default"]
+attributes = []
+
+[forest.outline]
+foreground = ["238", "white"]
+background = ["default"]
+attributes = []
+
+[forest.header]
+foreground = ["default"]
+background = ["default"]
+attributes = []
+
+[forest.danger]
+foreground = ["167", "red"]
+background = ["default"]
+attributes = []
+
+[paper]
+panel = "#f8f8f8"
+surface = "#ffffff"
+
+[paper.normal]
+foreground = ["#3b3b3b", "237", "black"]
+background = ["#f8f8f8", "255", "white"]
+attributes = []
+
+[paper.active]
+foreground = ["#3b3b3b", "237", "black"]
+background = ["#e8e8e8", "254", "cyan"]
+attributes = []
+
+[paper.accent]
+foreground = ["#b8651b", "130", "yellow"]
+background = ["#f8f8f8", "255", "white"]
+attributes = []
+
+[paper.muted]
+foreground = ["#6e6e6e", "243", "black"]
+background = ["#f8f8f8", "255", "white"]
+attributes = []
+
+[paper.outline]
+foreground = ["#e5e5e5", "254", "black"]
+background = ["#f8f8f8", "255", "white"]
+attributes = []
+
+[paper.header]
+foreground = ["#3b3b3b", "237", "black"]
+background = ["#ececec", "255", "white"]
+attributes = []
+
+[paper.danger]
+foreground = ["#c0392b", "160", "red"]
+background = ["#f8f8f8", "255", "white"]
+attributes = []
+
+[mono]
+panel = "default"
+surface = "default"
+
+[mono.normal]
+foreground = ["default"]
+background = ["default"]
+attributes = []
+
+[mono.active]
+foreground = ["default"]
+background = ["default"]
+attributes = ["reverse"]
+
+[mono.accent]
+foreground = ["default"]
+background = ["default"]
+attributes = ["bold"]
+
+[mono.muted]
+foreground = ["default"]
+background = ["default"]
+attributes = ["dim"]
+
+[mono.outline]
+foreground = ["default"]
+background = ["default"]
+attributes = ["dim"]
+
+[mono.header]
+foreground = ["default"]
+background = ["default"]
+attributes = ["bold"]
+
+[mono.danger]
+foreground = ["default"]
+background = ["default"]
+attributes = ["bold", "underline"]
+
+[debug]
+panel = "#7b1fa2"
+surface = "#1565c0"
+
+[debug.normal]
+foreground = ["#ffffff", "231", "white"]
+background = ["#7b1fa2", "92", "magenta"]
+attributes = []
+
+[debug.active]
+foreground = ["#ffffff", "231", "white"]
+background = ["#2e7d32", "28", "green"]
+attributes = []
+
+[debug.accent]
+foreground = ["#00e5ff", "51", "cyan"]
+background = ["#7b1fa2", "92", "magenta"]
+attributes = []
+
+[debug.muted]
+foreground = ["#ffe082", "222", "yellow"]
+background = ["#7b1fa2", "92", "magenta"]
+attributes = []
+
+[debug.outline]
+foreground = ["#ff1744", "197", "red"]
+background = ["#7b1fa2", "92", "magenta"]
+attributes = []
+
+[debug.header]
+foreground = ["#000000", "16", "black"]
+background = ["#f9a825", "214", "yellow"]
+attributes = []
+
+[debug.danger]
+foreground = ["#ff6d00", "208", "red"]
+background = ["#7b1fa2", "92", "magenta"]
+attributes = []

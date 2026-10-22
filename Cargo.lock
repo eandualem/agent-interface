@@ -5454,6 +5454,7 @@ dependencies = [
  "futures",
  "gpui-pre",
  "gpui-pre-platform",
+ "libc",
  "rusqlite",
  "sha2",
  "tempfile",
@@ -5506,6 +5507,7 @@ version = "0.0.0"
 dependencies = [
  "caseless",
  "serde_json",
+ "toml 0.8.23",
  "unicode-properties",
  "uuid",
 ]
