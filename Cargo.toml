@@ -67,6 +67,8 @@ toml = "=0.8.23"
 serde_json = { version = "=1.0.154", features = ["raw_value", "arbitrary_precision"] }
 rustix = { version = "=1.1.5", features = ["fs"] }
 unicode-properties = { version = "=0.1.4", default-features = false, features = ["general-category"] }
+# Full Unicode case folding for attachment filters (decision record 0024).
+caseless = "=0.2.2"
 uzers = { version = "=0.12.2", default-features = false }
 sha2 = "=0.10.9"
 http = "=1.5.0"

@@ -3,6 +3,7 @@
 #![forbid(unsafe_code)]
 
 mod actions;
+mod choices;
 mod geometry;
 pub mod keymap;
 pub mod merge;
@@ -10,6 +11,7 @@ mod navigation;
 pub mod theme;
 
 pub use actions::{AttachmentTarget, NameEdit, RenameOutcome, WORKSPACE_ICONS};
+pub use choices::SessionChoices;
 pub use geometry::PaneRect;
 
 /// An arrangement loaded from a library. Navigation values seed a new window;
