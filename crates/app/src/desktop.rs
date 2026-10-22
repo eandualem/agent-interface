@@ -435,6 +435,7 @@ impl Browser {
         if self.saving || self.save_failed {
             return;
         }
+        self.jump = None;
         self.editing = None;
         self.chooser = None;
         self.shell_after_save = None;
@@ -1556,6 +1557,28 @@ impl Render for Browser {
                         _ => false,
                     };
                     if handled {
+                        cx.stop_propagation();
+                        return;
+                    }
+                    if command.is_none()
+                        && key.key == "enter"
+                        && !key.modifiers.modified()
+                        && browser.chooser.is_none()
+                        && browser.tab_menu.is_none()
+                        && !browser.workspace_menu
+                        && !browser.icon_picker
+                        && browser
+                            .navigation
+                            .as_ref()
+                            .is_some_and(|focus| focus.is_focused(window))
+                        && let Some(pane) = browser
+                            .layout
+                            .as_ref()
+                            .and_then(|layout| layout.model().pane())
+                            .filter(|leaf| leaf.empty && leaf.attachment.is_none())
+                            .map(|leaf| leaf.id.clone())
+                    {
+                        browser.open_terminal(&pane, window, cx);
                         cx.stop_propagation();
                         return;
                     }

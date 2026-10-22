@@ -35,11 +35,18 @@ impl Browser {
                     ui::empty_state(
                         ui::empty_tile("folder-open", c.selected, c.text_2),
                         "No library open",
-                        "Choose a folder that holds layouts.db. The app never creates or repairs a library.",
+                        "Choose a folder with layouts.db, or select a new folder to create an empty library.",
                     )
                     .child(
                         ui::button("open-library", "Open Library…", ui::Button::Primary)
-                            .child(ui::key_hint(shortcuts::Chord::parse(shortcuts::platform_key("cmd-o")).unwrap().label()).text_color(c.on_accent))
+                            .child(
+                                ui::key_hint(
+                                    shortcuts::Chord::parse(shortcuts::platform_key("cmd-o"))
+                                        .unwrap()
+                                        .label(),
+                                )
+                                .text_color(c.on_accent),
+                            )
                             .on_click(cx.listener(|browser, _, _, cx| browser.pick_library(cx))),
                     ),
                 )
