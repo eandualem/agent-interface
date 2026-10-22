@@ -74,11 +74,11 @@ pub fn run(directory: Option<PathBuf>) -> Result<(), String> {
                 return;
             }
             cx.bind_keys([
-                KeyBinding::new("cmd-q", Quit, None),
-                KeyBinding::new("cmd-n", NewWindow, None),
-                KeyBinding::new("cmd-o", OpenLibrary, None),
-                KeyBinding::new("cmd-,", OpenSettings, None),
-                KeyBinding::new("cmd-w", CloseWindow, None),
+                KeyBinding::new(shortcuts::platform_key("cmd-q"), Quit, None),
+                KeyBinding::new(shortcuts::platform_key("cmd-n"), NewWindow, None),
+                KeyBinding::new(shortcuts::platform_key("cmd-o"), OpenLibrary, None),
+                KeyBinding::new(shortcuts::platform_key("cmd-,"), OpenSettings, None),
+                KeyBinding::new(shortcuts::platform_key("cmd-w"), CloseWindow, None),
             ]);
             // Defer: a window that is dispatching this action cannot be updated
             // until dispatch returns.
@@ -1451,9 +1451,13 @@ impl Render for Browser {
                     // shortcut that moves focus elsewhere closes Jump first.
                     if let Some(jump) = &browser.jump {
                         let command = shortcuts::command_for(key);
-                        let numbered = key.modifiers.platform
-                            && !key.modifiers.control
-                            && key.key.parse::<u8>().is_ok();
+                        let numbered = if cfg!(target_os = "macos") {
+                            key.modifiers.platform
+                                && !key.modifiers.control
+                                && key.key.parse::<u8>().is_ok()
+                        } else {
+                            shortcuts::numbered(key).is_some()
+                        };
                         if command == Some(shortcuts::Command::Jump) {
                             // Falls through: the command closes Jump again.
                         } else if command.is_some() || numbered {
@@ -1624,16 +1628,9 @@ fn agent_destination(
 // Navigation changes this window's selection only. An unavailable terminal keeps
 // focus on navigation; no keys are queued for a future connection.
 fn navigate_key(model: &mut tmux_workspaces_core::Layout, key: &gpui::Keystroke) -> bool {
-    let mods = key.modifiers;
-    // Numbered selection is fixed: Command selects a tab, Command-Option a
-    // workspace. Every other navigation key comes from the shortcut table.
-    if mods.platform
-        && !mods.control
-        && !mods.function
-        && !mods.shift
-        && let Ok(number @ 1..=9) = key.key.parse::<usize>()
-    {
-        let id = if mods.alt {
+    // Numbered selection stays fixed; other navigation comes from settings.
+    if let Some((number, workspace)) = shortcuts::numbered(key) {
+        let id = if workspace {
             model
                 .workspaces
                 .get(number - 1)
@@ -1645,7 +1642,7 @@ fn navigate_key(model: &mut tmux_workspaces_core::Layout, key: &gpui::Keystroke)
                 .map(|tab| tab.id.clone())
         };
         if let Some(id) = id {
-            if mods.alt {
+            if workspace {
                 model.choose_workspace(&id);
             } else {
                 model.choose_tab(&id);
@@ -1950,6 +1947,23 @@ mod tests {
     }
 
     #[test]
+    fn settings_binding_matches_the_platform_event() {
+        // Linux XKB reports an unshifted comma with Control unchanged. Avoid
+        // Shift-comma: punctuation loses its Shift flag and arrives as `<`.
+        let event = gpui::Keystroke {
+            key: ",".into(),
+            key_char: None,
+            modifiers: gpui::Modifiers {
+                control: !cfg!(target_os = "macos"),
+                platform: cfg!(target_os = "macos"),
+                ..Default::default()
+            },
+        };
+        let binding = KeyBinding::new(shortcuts::platform_key("cmd-,"), OpenSettings, None);
+        assert_eq!(binding.match_keystrokes(&[event]), Some(false));
+    }
+
+    #[test]
     fn native_navigation_cycles_saved_selections_without_editing_the_tree() {
         let mut model = tmux_workspaces_core::Layout::initial("/tmp".into());
         let first = model.pane().unwrap().id.clone();
@@ -1957,20 +1971,26 @@ mod tests {
         let second = model.pane().unwrap().id.clone();
         let tree = model.tab().unwrap().tree.clone();
         let key = |value| gpui::Keystroke::parse(value).unwrap();
-        assert!(navigate_key(&mut model, &key("cmd-]")));
+        assert!(navigate_key(
+            &mut model,
+            &key(shortcuts::platform_key("cmd-]"))
+        ));
         assert_eq!(model.pane().unwrap().id, first);
-        assert!(navigate_key(&mut model, &key("cmd-[")));
+        assert!(navigate_key(
+            &mut model,
+            &key(shortcuts::platform_key("cmd-["))
+        ));
         assert_eq!(model.pane().unwrap().id, second);
-        navigate_key(&mut model, &key("cmd-shift-enter"));
+        navigate_key(&mut model, &key(shortcuts::platform_key("cmd-shift-enter")));
         assert!(model.focus);
         assert_eq!(model.tab().unwrap().tree, tree);
         let tab = model.tab().unwrap().id.clone();
         model.add_tab(None, "/tmp".into(), true);
-        navigate_key(&mut model, &key("cmd-}"));
+        navigate_key(&mut model, &key(shortcuts::platform_key("cmd-shift-]")));
         assert_eq!(model.tab().unwrap().id, tab);
         let workspace = model.selected.clone();
         model.add_workspace("Other".into());
-        navigate_key(&mut model, &key("cmd-alt-right"));
+        navigate_key(&mut model, &key(shortcuts::platform_key("cmd-alt-right")));
         assert_eq!(model.selected, workspace);
         let before = model.clone();
         assert!(!navigate_key(&mut model, &key("ctrl-]")));
