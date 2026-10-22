@@ -21,8 +21,8 @@
 //! tmux keeps these controls as data, CAN and SUB included, while the engine
 //! gets NUL in their place and ends the string at a CAN or SUB. And at each
 //! of them tmux forgets the character `REP` repeats, while the engine keeps
-//! it. DEL is handled separately by the stateful `del` filter, which leaves
-//! string payloads unchanged.
+//! it. The native stream ignores DEL in ground state before UTF-8 decoding,
+//! without interrupting a partial character or changing string payload handling.
 
 const NUL: u8 = 0x00;
 const CAN: u8 = 0x18;
@@ -150,5 +150,71 @@ mod tests {
         assert_eq!(text(&screen, 0), "ab€cdefghi");
         assert_eq!(text(&screen, 1), "j");
         assert_eq!((screen.cursor().col, screen.cursor().row), (1, 1));
+
+        // tmux keeps cancellation inside DCS data. Although the native parser
+        // exits DCS, later DEL bytes must not create spurious visible cells.
+        let screen = drawn(&[
+            0x1b, b'P', b'q', 0x18, 0x7f, 0x1b, b'x', 0x7f, 0x1b, b'\\', 0x7f, b'a',
+        ]);
+        assert_eq!(text(&screen, 0), "a");
+        assert_eq!((screen.cursor().col, screen.cursor().row), (1, 0));
+    }
+    #[test]
+    fn horizontal_position_keeps_the_row_and_origin_mode_across_writes() {
+        use crate::Terminal;
+        for origin in [false, true] {
+            for final_byte in ['G', '`'] {
+                for (column, expected) in [("", 0), ("0", 0), ("1", 0), ("5", 4), ("999", 9)] {
+                    let input = format!(
+                        "\x1b[3;8r\x1b[?6{}\x1b[2;2H\x1b[{column}{final_byte}",
+                        if origin { 'h' } else { 'l' }
+                    );
+                    for split in 0..=input.len() {
+                        let mut terminal = Terminal::new(10, 10, 0).unwrap();
+                        terminal.write(&input.as_bytes()[..split]);
+                        terminal.write(&input.as_bytes()[split..]);
+                        let row = if origin { 3 } else { 1 };
+                        assert_eq!(
+                            terminal.cursor().unwrap(),
+                            (expected, row),
+                            "{input:?} split{split}"
+                        );
+                        assert_eq!(terminal.modes().unwrap().origin, origin);
+                        terminal.write(b"\x1b[2;2H");
+                        assert_eq!(terminal.cursor().unwrap(), (1, row));
+                    }
+                }
+            }
+        }
+    }
+    #[test]
+    fn unsupported_relative_position_preserves_cursor_wrap_and_repeat() {
+        use crate::{Screen, Terminal};
+        // Normal position, origin mode and a pending wrap at the right edge.
+        for setup in ["\x1b[2;2HX", "\x1b[3;8r\x1b[?6h\x1b[2;2HX", "\x1b[1;10HX"] {
+            for command in ["\x1b[a", "\x1b[2e", "\x1b[0a\x1b[999e"] {
+                let input = format!("{setup}{command}");
+                for split in 0..=input.len() {
+                    let mut actual = Terminal::new(10, 10, 0).unwrap();
+                    let mut expected = Terminal::new(10, 10, 0).unwrap();
+                    actual.write(&input.as_bytes()[..split]);
+                    actual.write(&input.as_bytes()[split..]);
+                    expected.write(setup.as_bytes());
+                    assert_eq!(actual.cursor().unwrap(), expected.cursor().unwrap());
+                    assert_eq!(
+                        actual.cursor_pending_wrap().unwrap(),
+                        expected.cursor_pending_wrap().unwrap()
+                    );
+                    assert_eq!(actual.modes().unwrap(), expected.modes().unwrap());
+                    // Neither ignored command clears the preceding character.
+                    actual.write(b"\x1b[bY");
+                    expected.write(b"\x1b[bY");
+                    let mut screens = [Screen::default(), Screen::default()];
+                    actual.read_screen(&mut screens[0]).unwrap();
+                    expected.read_screen(&mut screens[1]).unwrap();
+                    assert_eq!(screens[0], screens[1], "{input:?} split{split}");
+                }
+            }
+        }
     }
 }
