@@ -7,7 +7,11 @@
 //! The gate runs on the tmux found first on `PATH`, and reports for that
 //! version. Every server is private, through `tmux-workspaces-test-support`.
 
+#[cfg(test)]
+mod attachment_pty;
 mod candidate;
+#[cfg(test)]
+mod coexistence;
 mod compare;
 mod connection;
 mod fixtures;

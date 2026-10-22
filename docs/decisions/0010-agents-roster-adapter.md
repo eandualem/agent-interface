@@ -58,9 +58,39 @@ roster entries onto tmux sessions and tabs.
   continues, and terminals and tmux discovery are unaffected (AG-17, AG-25). A
   roster state can never make a missing tmux session attachable (AG-18).
 
-This record does not choose an HTTP client library. Whichever is used must let
-the adapter turn off redirects and proxy settings, and its licence is recorded
-when it is added ([0011](0011-toolchain-and-dependency-policy.md)).
+The HTTP client is exact-pinned `reqwest` 0.13.5 (MIT OR Apache-2.0), with
+only its `blocking` feature and no default features. It provides explicit proxy,
+redirect and connection-logging controls. Each request has a three-second total
+deadline, including its body, and the reader stops after 1 MiB plus one overflow
+byte. The decoder accepts exactly 1 MiB and rejects larger bodies.
+
+`ureq` 3.4.2 was considered for its smaller blocking implementation, but its
+protocol dependency traces serialized authorization bytes even when the header
+is marked sensitive. Disabling all application trace logging or maintaining a
+patched HTTP stack would impose unrelated costs. A handwritten client would
+duplicate framing and deadline handling. `reqwest` uses an internal Tokio runtime
+behind its blocking API; no runtime type escapes the roster crate. This choice
+does not settle the separate child-process runtime comparison in [0008](0008-background-io-runtime.md).
+TLS, compression and system-proxy support are disabled for this HTTP-only adapter.
+The accepted hostname `localhost` resolves only to IPv4 and IPv6 loopback literals
+through a client override. No system DNS task can outlive the request deadline
+and delay client shutdown.
+
+The existing `http` 1.5.0 (MIT OR Apache-2.0) is exact-pinned for strict URI
+validation before the client's URL normalization; malformed explicit ports are
+rejected. Test-only `log` 0.4.34 (MIT OR Apache-2.0) captures enabled trace output
+to verify credentials remain absent. Newly locked HTTP/runtime dependencies are:
+
+| Purpose | Dependencies and versions | Licence |
+| --- | --- | --- |
+| HTTP bodies, framing and connection support | http-body-util 0.1.5, hyper 1.12.0, hyper-util 0.1.21, want 0.3.2, try-lock 0.2.5 | MIT |
+| Request middleware | tower 0.5.3, tower-http 0.6.11, tower-layer 0.3.3, tower-service 0.3.3 | MIT |
+| Socket readiness | mio 1.2.4 | MIT |
+| Header parsing and address/socket support | httparse 1.10.1, ipnet 2.12.2, socket2 0.6.5 | MIT OR Apache-2.0 |
+| Thread-safe request storage | sync_wrapper 1.0.2 | Apache-2.0 |
+
+See the [client controls](https://docs.rs/reqwest/0.13.5/reqwest/blocking/struct.ClientBuilder.html)
+and [total request timeout](https://docs.rs/reqwest/0.13.5/reqwest/blocking/struct.RequestBuilder.html#method.timeout).
 
 ## Consequences
 
@@ -88,7 +118,7 @@ The `roster::Snapshot` response model retains only validated agent names and
 reported states. Failed decoding or a caller-reported transport failure retains
 the last states and observation time with a fixed stale diagnostic. A successful
 response replaces the entire list, including an empty list, and clears the error.
-It does not load configuration, read credentials or issue requests.
+Decoding does not load configuration, read credentials or issue requests.
 
 The decoder uses exact-pinned `serde_json` 1.0.154 (MIT OR Apache-2.0), already
 used by the workspace, to parse the endpoint's `items` array. It limits responses
@@ -103,8 +133,39 @@ changing either observation. Only successful discovery supplies `online`; a
 metadata failure cannot remove live ordinary sessions. Metadata names absent
 from discovery stay as offline references. The combined timestamp is the oldest
 observation only when all participating providers have one. The separate roster
-snapshot remains the input for future roster display. HTTP transport, polling
-and product controls remain separate work.
+snapshot remains the input for future roster display. `Snapshot::fetch` reads one
+response using an explicit address and key. It validates the address before
+constructing a request, disables proxies and redirects, limits the complete call
+to three seconds and the body to 1 MiB, and exposes only the fixed stale error.
+Credentials are never retained in the snapshot. `Snapshot::fetch_configured`
+re-reads configuration on each attempt for an already-enabled provider. It opens
+`backbone.db` read-only, queries only the host and port settings and waits at most
+250 ms for a database lock. A missing database uses defaults without creating it.
+An explicit URL bypasses the settings database. A nonempty environment key bypasses
+`.env`; otherwise only `BACKBONE_API_KEY` assignments are parsed. Quoting and comments
+match the pinned Python reader, including last-assignment precedence and rejection
+of malformed trailing words. No shell expression is evaluated or exported.
+
+Configuration reads reuse the workspace's exact-pinned `rusqlite` 0.40.2 (MIT;
+[0009](0009-python-library-and-shell-server-compatibility.md)). Existing `tempfile`
+3.27.0 (MIT OR Apache-2.0) supplies test fixtures; no new package versions are added.
+The shell lexer `shlex` 2.0.1 was considered but not used: it differs from Python's
+reader for comments inside words and backslashes before dollar signs and backticks.
+The small named-key parser follows the required Python behavior without loading a
+general environment file.
+
+`app::roster::RosterSource` starts only on an explicit call. Its dedicated worker
+reads immediately, then five seconds after each attempt, and publishes one
+coalesced snapshot. Failures replace unread successes with stale metadata; repairs
+are retried without affecting the separate tmux-discovery worker. Dropping the
+handle interrupts the polling wait and joins after the current read finishes.
+`app::roster::provider_directory` separately resolves the launch decision and
+path. Explicit disable and demo return before resolving provider environment or
+files; conflicting options are rejected. Unrequested enablement checks database
+existence only. An explicit directory, URL or enable request allows a missing
+database, leaving settings and credential validation to the worker. Directory
+selection reuses the app's home and symlink resolution without creating files.
+Product startup wiring and controls remain separate work.
 
 Typed object/array reads and borrowed raw field values preserve literal JSON
 types even when the workspace enables serde_json's raw-value and arbitrary-

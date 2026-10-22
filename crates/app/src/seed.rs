@@ -27,8 +27,8 @@ pub(crate) enum Event {
     Layout(Vec<u8>),
 }
 
-/// Reads the attach reply, checks recovery hooks and captures before enabling
-/// output. The process must have been started with no-output,ignore-size.
+/// Reads the attach reply, checks recovery hooks and server version, then
+/// captures before enabling output. The client must use no-output,ignore-size.
 /// A deadline bounds startup even if the control client stops replying.
 pub(crate) fn attach(client: &mut Child, window: u32) -> io::Result<Seed> {
     let stdin = client
@@ -70,8 +70,8 @@ fn capture<I: Write, O: Read>(mut stdin: I, mut stdout: O, window: u32) -> io::R
     let mut buffer = [0; 64 * 1024];
     let mut reply = Reply::default();
     let mut expected_reply = false;
-    // The initial attach, two hook checks, then the attached layout query.
-    let mut preliminary = 4;
+    // Attach, two hook checks, server version, then the attached layout query.
+    let mut preliminary = 5;
     let mut snapshots = None;
     let mut events = Vec::new();
     loop {
@@ -94,7 +94,7 @@ fn capture<I: Write, O: Read>(mut stdin: I, mut stdout: O, window: u32) -> io::R
                             reply = Reply::default();
                             // The command-line attach has no control flag;
                             // subsequent requests do. Ignore hook replies.
-                            expected_reply = preliminary == 4 || flags & 1 != 0;
+                            expected_reply = preliminary == 5 || flags & 1 != 0;
                         }
                         Message::ReplyLine(line) if expected_reply => {
                             reply.lines.push(line.to_vec())
@@ -111,7 +111,7 @@ fn capture<I: Write, O: Read>(mut stdin: I, mut stdout: O, window: u32) -> io::R
                                 ));
                             }
                             if preliminary > 0 {
-                                if matches!(preliminary, 2 | 3)
+                                if matches!(preliminary, 3 | 4)
                                     && recovery::hooks_break_recovery(
                                         reply.lines.iter().map(Vec::as_slice),
                                     )
@@ -121,10 +121,18 @@ fn capture<I: Write, O: Read>(mut stdin: I, mut stdout: O, window: u32) -> io::R
                                     ));
                                 }
                                 let send = match preliminary {
-                                    4 => Some("show-hooks -g ; show-hooks\n".to_owned()),
-                                    2 => Some(format!(
-                                        "display-message -p -t @{window} '#{{window_id}} #{{window_layout}} #{{window_visible_layout}} #{{window_raw_flags}}'\n"
-                                    )),
+                                    5 => Some("show-hooks -g ; show-hooks\n".to_owned()),
+                                    3 => Some("display-message -p '#{version}'\n".to_owned()),
+                                    2 => {
+                                        let [line] = reply.lines.as_slice() else {
+                                            return Err(io::Error::other("invalid tmux server version reply"));
+                                        };
+                                        let version = std::str::from_utf8(line).map_err(|_| io::Error::other("invalid tmux server version reply"))?;
+                                        tmux_workspaces_tmux::preflight::check_server_version(version)?;
+                                        Some(format!(
+                                            "display-message -p -t @{window} '#{{window_id}} #{{window_layout}} #{{window_visible_layout}} #{{window_raw_flags}}'\n"
+                                        ))
+                                    }
                                     1 => {
                                         let [line] = reply.lines.as_slice() else {
                                             return Err(io::Error::other("invalid initial window layout reply"));
@@ -211,12 +219,29 @@ mod tests {
     use super::*;
 
     #[test]
+    fn unsupported_servers_stop_before_layout_capture_or_input_is_enabled() {
+        for version in ["3.2a", "next", "", "3.3\nextra"] {
+            let wire = format!(
+                "%begin 1 0 0\n%end 1 0 0\n%begin 1 1 1\n%end 1 1 1\n%begin 1 2 1\n%end 1 2 1\n%begin 1 3 1\n{version}\n%end 1 3 1\n"
+            );
+            let mut commands = Vec::new();
+            let error = capture(&mut commands, wire.as_bytes(), 1).err().unwrap();
+            assert!(error.to_string().contains("server"), "{error}");
+            assert_eq!(
+                commands,
+                b"show-hooks -g ; show-hooks\ndisplay-message -p '#{version}'\n"
+            );
+        }
+    }
+
+    #[test]
     fn completed_capture_keeps_coalesced_output_and_decoder_tail_even_at_exit() {
-        // Attach, two hook checks, the current layout, then an 80x24 snapshot.
+        // Attach, two hook checks, version, layout, then an 80x24 snapshot.
         let mut replies = vec![
             "",
             "",
             "",
+            "3.3a",
             "@1 abcd,80x24,0,0,7 abcd,80x24,0,0,7 *",
             "SEEDED",
             "",
@@ -229,7 +254,7 @@ mod tests {
         replies.extend(["0", "0", "", ""]);
         let mut wire = String::new();
         for (id, reply) in replies.iter().enumerate() {
-            if id == 3 {
+            if id == 4 {
                 wire.push_str("%layout-change @1 abcd,80x24,0,0,8 abcd,80x24,0,0,8 *\n");
             }
             wire.push_str(&format!("%begin 1 {id} 1\n{reply}\n%end 1 {id} 1\n"));

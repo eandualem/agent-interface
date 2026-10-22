@@ -72,8 +72,12 @@ expand environment variables inside these paths.
 
 **Reading `layouts.db`.**
 
-- Open with `SQLITE_OPEN_READONLY` (`mode=ro`), never creating or migrating
-  anything. Keep one connection open on the storage worker
+- Open with `SQLITE_OPEN_READONLY` (`mode=ro`), never creating a database,
+  migrating its schema or changing its records. SQLite may create or update the
+  `-shm` shared-memory sidecar to coordinate WAL readers, while stored records
+  remain unchanged. See SQLite’s
+  [read-only WAL requirements](https://www.sqlite.org/wal.html#read_only_databases).
+  Keep one connection open on the storage worker
   ([0007](0007-threads-ownership-and-event-ordering.md)) and poll
   `PRAGMA data_version` on it.
 - Finish or reset every statement before returning to the poll loop; never hold
@@ -148,8 +152,28 @@ Python hashes the UTF-8 path text; read-only database access still preserves
 native path bytes.
 
 **Theme and keymap files.** Read `theme.toml` and `keymap.toml` from the same
-XDG paths for parity, with `toml` (0.9.8, MIT OR Apache-2.0). Do not write them
-until a write contract matching the Python tool's conflict checks is agreed.
+XDG paths for parity, with a TOML parser. Do not write them until a write contract matching the Python
+tool's conflict checks is agreed.
+
+The read-only keymap implementation uses exact-pinned `toml` 0.8.23 (MIT OR
+Apache-2.0), already in the lockfile, instead of the initially proposed 0.9.8.
+It accepts TOML 1.0, matching the Python 3.11 reader, without another package
+version. The pure `core::keymap` model validates action names, canonical keys,
+per-action overrides and collisions once. It retains the Python defaults and
+legacy yielding rules, including disabled actions when printing a complete map.
+`app::keymap` follows the Python path precedence, reads at most 64 KiB plus one
+byte, and opens with `O_NONBLOCK` before checking the file handle is regular.
+Dotfile symlinks remain usable; FIFO paths cannot wait for a writer. The flag
+comes from the existing `libc` 0.2.191 dependency (MIT OR Apache-2.0), with no
+unsafe code. No new package versions are introduced.
+
+`--print-keymap help` and `--print-keymap toml` read and print the effective map
+without opening a window, creating a library or contacting tmux. Help describes
+native direct shortcuts; Ghostty profile generation is intentionally dropped
+(KM-15). Native shortcut dispatch and configuration writes remain separate.
+The defaults and compatibility rules follow the MIT-licensed Python tool at
+[51de675](https://github.com/eandualem/tmux-workspaces/tree/51de6757cd0aeda3c19fe68fa4ec5b93ab206804),
+including its `integrations/keymap.toml`, `keymap.py` and keymap tests.
 
 **Leave the Python tool's runtime alone.** Never create, change or delete the
 Python tool's `windows/<instance>/` runtime directories, viewer sockets or
