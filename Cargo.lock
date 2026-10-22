@@ -5547,7 +5547,9 @@ dependencies = [
 name = "tmux-workspaces-tmux"
 version = "0.0.0"
 dependencies = [
+ "rustix",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.21",
  "tmux-workspaces-test-support",
  "unicode-properties",
