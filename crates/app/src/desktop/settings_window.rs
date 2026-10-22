@@ -110,12 +110,20 @@ impl SettingsWindow {
         let mut next = Settings::current();
         update(&mut next);
         next.apply();
-        self.error = match settings::path() {
-            Some(path) => settings::save(&next, &path)
-                .err()
-                .map(|error| format!("Not saved: {error}")),
-            None => Some("Not saved: no home directory".into()),
-        };
+        // Apply at once; save on a worker and report the outcome when it ends.
+        let (done, saved) = futures::channel::oneshot::channel();
+        settings::save_in_background(next, move |result| {
+            let _ = done.send(result);
+        });
+        cx.spawn(async move |this, cx| {
+            if let Ok(result) = saved.await {
+                let _ = this.update(cx, |view, cx| {
+                    view.error = result.err().map(|error| format!("Not saved: {error}"));
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
         cx.refresh_windows();
     }
 
