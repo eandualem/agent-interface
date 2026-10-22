@@ -5464,6 +5464,7 @@ dependencies = [
  "tmux-workspaces-term",
  "tmux-workspaces-test-support",
  "tmux-workspaces-tmux",
+ "toml 0.8.23",
  "unicode-properties",
  "unicode-segmentation",
  "uzers",

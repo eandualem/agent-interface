@@ -292,7 +292,12 @@ impl LiveTerminal {
 
 impl Render for LiveTerminal {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let cells = Cells(crate::view::cell_size(cx.text_system(), &appearance()));
+        // Settings changes apply to terminals that are already connected.
+        let current = appearance();
+        if let Some(view) = &self.view {
+            view.update(cx, |view, cx| view.set_appearance(&current, cx));
+        }
+        let cells = Cells(crate::view::cell_size(cx.text_system(), &current));
         // The Python viewer gives an attached session one row along the top
         // naming it on the right; an ordinary shell has none. Native window
         // choices share that row when the session has more than one window.
@@ -301,8 +306,8 @@ impl Render for LiveTerminal {
         let mut header = cells
             .row()
             .gap(cells.width(1))
-            .bg(rgb(theme::PANEL))
-            .text_color(rgb(theme::MUTED));
+            .bg(rgb(theme::panel()))
+            .text_color(rgb(theme::muted()));
         // Window names scroll sideways when they outgrow the pane.
         let mut choices = div()
             .id("tmux-windows")
@@ -331,7 +336,7 @@ impl Render for LiveTerminal {
                         )))
                         .flex_shrink_0()
                         .cursor_pointer()
-                        .when(current, |el| el.text_color(rgb(theme::NORMAL)))
+                        .when(current, |el| el.text_color(rgb(theme::normal())))
                         .child(format!("{}:{name}", item.index))
                         .when(!self.connecting, |el| {
                             el.on_click(cx.listener(move |terminal, _, _, cx| {
@@ -346,7 +351,7 @@ impl Render for LiveTerminal {
             header = header.child(
                 div()
                     .flex_shrink_0()
-                    .text_color(rgb(theme::ACCENT))
+                    .text_color(rgb(theme::accent()))
                     .child(attachment.session.clone()),
             );
         }
@@ -357,8 +362,8 @@ impl Render for LiveTerminal {
             .min_w_0()
             .min_h_0()
             .overflow_hidden()
-            .bg(rgb(theme::SURFACE))
-            .text_color(rgb(theme::NORMAL))
+            .bg(rgb(theme::surface()))
+            .text_color(rgb(theme::normal()))
             .when(attachment.is_some() || several, |el| el.child(header))
             .child(
                 div()
@@ -370,12 +375,12 @@ impl Render for LiveTerminal {
                 el.child(
                     cells
                         .row()
-                        .text_color(rgb(theme::MUTED))
+                        .text_color(rgb(theme::muted()))
                         .child("Connecting…"),
                 )
             })
             .when_some(self.error.clone(), |el, error| {
-                el.child(cells.row().text_color(rgb(theme::ACCENT)).child(error))
+                el.child(cells.row().text_color(rgb(theme::accent())).child(error))
             })
             .when(!self.connecting && self.error.is_some(), |el| {
                 el.child(
@@ -390,20 +395,16 @@ impl Render for LiveTerminal {
     }
 }
 
-// The Python viewer leaves the font and program colours to Ghostty and paints
-// content panes on its theme's surface. Use Ghostty's macOS defaults on it.
+/// The terminal font and colours from the current settings and palette.
 pub(super) fn appearance() -> Appearance {
+    let palette = theme::current();
     Appearance {
         font_family: "Menlo".into(),
-        font_size: 13.0,
-        foreground: rgb(0xffffff),
-        background: rgb(super::theme::SURFACE),
-        cursor: rgb(0xffffff),
-        palette: [
-            0x1d1f21, 0xcc6666, 0xb5bd68, 0xf0c674, 0x81a2be, 0xb294bb, 0x8abeb7, 0xc5c8c6,
-            0x666666, 0xd54e53, 0xb9ca4a, 0xe7c547, 0x7aa6da, 0xc397d8, 0x70c0b1, 0xeaeaea,
-        ]
-        .map(rgb),
+        font_size: super::settings::font_size(),
+        foreground: rgb(palette.terminal_text),
+        background: rgb(palette.surface),
+        cursor: rgb(palette.terminal_text),
+        palette: palette.terminal.map(rgb),
     }
 }
 

@@ -30,7 +30,7 @@ pub fn icon_button(id: impl Into<SharedString>, name: &str, color: u32) -> State
         .justify_center()
         .rounded(px(5.0))
         .cursor_pointer()
-        .hover(|el| el.bg(rgb(theme::ACTIVE)))
+        .hover(|el| el.bg(rgb(theme::active())))
         .child(icon(name, 14.0, color))
 }
 
@@ -49,8 +49,8 @@ pub fn row(id: impl Into<SharedString>, active: bool) -> Stateful<Div> {
         .overflow_hidden()
         .whitespace_nowrap()
         .cursor_pointer()
-        .when(active, |el| el.bg(rgb(theme::ACTIVE)))
-        .when(!active, |el| el.hover(|el| el.bg(rgb(theme::HEADER))))
+        .when(active, |el| el.bg(rgb(theme::active())))
+        .when(!active, |el| el.hover(|el| el.bg(rgb(theme::header()))))
 }
 
 /// A small uppercase heading over a group of rows.
@@ -64,7 +64,7 @@ pub fn section(label: &'static str) -> Div {
         .px(px(14.0))
         .text_size(px(11.0))
         .font_weight(FontWeight::SEMIBOLD)
-        .text_color(rgb(theme::MUTED))
+        .text_color(rgb(theme::muted()))
         .child(label)
 }
 
@@ -80,14 +80,14 @@ pub fn menu() -> Div {
         .flex_col()
         .min_w(px(220.0))
         .p(px(4.0))
-        .bg(rgb(theme::HEADER))
+        .bg(rgb(theme::header()))
         .border_1()
-        .border_color(rgb(theme::OUTLINE))
+        .border_color(rgb(theme::outline()))
         .rounded(px(8.0))
         .shadow_lg()
         .font_family(FONT)
         .text_size(px(13.0))
-        .text_color(rgb(theme::NORMAL))
+        .text_color(rgb(theme::normal()))
 }
 
 /// One menu choice: an optional icon, the label and a shortcut or value.
@@ -107,7 +107,7 @@ pub fn menu_item(
         .px(px(8.0))
         .rounded(px(5.0))
         .cursor_pointer()
-        .hover(|el| el.bg(rgb(theme::ACTIVE)))
+        .hover(|el| el.bg(rgb(theme::active())))
         .child(
             div()
                 .w(px(14.0))
@@ -130,7 +130,7 @@ pub fn menu_item(
             el.child(
                 div()
                     .flex_shrink_0()
-                    .text_color(rgb(theme::MUTED))
+                    .text_color(rgb(theme::muted()))
                     .child(right),
             )
         })
@@ -145,11 +145,11 @@ pub fn menu_heading(label: impl Into<SharedString>) -> Div {
         .items_center()
         .text_size(px(11.0))
         .font_weight(FontWeight::SEMIBOLD)
-        .text_color(rgb(theme::MUTED))
+        .text_color(rgb(theme::muted()))
         .child(label.into())
 }
 
 /// A thin rule between menu groups.
 pub fn menu_rule() -> Div {
-    div().my(px(4.0)).h(px(1.0)).bg(rgb(theme::OUTLINE))
+    div().my(px(4.0)).h(px(1.0)).bg(rgb(theme::outline()))
 }
