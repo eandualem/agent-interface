@@ -5543,6 +5543,8 @@ dependencies = [
  "libghostty-vt",
  "libghostty-vt-sys",
  "memchr",
+ "serde_json",
+ "sha2",
  "thiserror 2.0.21",
 ]
 
