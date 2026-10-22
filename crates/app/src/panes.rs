@@ -120,6 +120,7 @@ enum ReplyOwner {
     Recovery,
     GeometrySubscription,
     SourceSubscription,
+    Size,
 }
 
 struct Control {
@@ -543,6 +544,20 @@ impl Panes {
             .map_err(|error| io::Error::other(format!("Waiting for input encoding: {error}")))?
             .map_err(io::Error::other)?;
         self.send_input(pane, &bytes)
+    }
+
+    /// Declares this client's size, as an ordinary tmux client in a terminal
+    /// of `cols` by `rows` would. tmux then sizes the session's windows by its
+    /// `window-size` option, counting this client from now on.
+    pub fn set_size(&self, cols: u16, rows: u16) -> io::Result<()> {
+        self.control.send(
+            &format!(
+                "refresh-client -f '!ignore-size' -C {}x{}\n",
+                cols.max(1),
+                rows.max(1)
+            ),
+            ReplyOwner::Size,
+        )
     }
 
     /// Returns a terminal recovery or input transport failure.
@@ -1021,6 +1036,10 @@ fn apply(
                     if !reply.ok {
                         return Err("tmux rejected the source window subscription".into());
                     }
+                }
+                // A rejected size leaves the window as it was; the view scales.
+                Some(ReplyOwner::Size) => {
+                    pending.pop_front();
                 }
                 Some(ReplyOwner::Recovery) => {
                     let (recovery, _, generation) =

@@ -36,8 +36,8 @@ pub struct Connection {
 }
 
 /// Connect to an exact existing session on an explicit socket. This uses `-E`
-/// to preserve the session environment and `ignore-size` to leave other clients'
-/// geometry alone. It never creates a helper, session, window or pane.
+/// to preserve the session environment and `ignore-size`, so the session keeps
+/// its geometry until the caller declares a size. It never creates a helper, session, window or pane.
 /// Call on a worker: each discovery query is bounded to three seconds.
 pub fn connect(socket: &Path, session: &str) -> io::Result<Connection> {
     connect_selected(socket, session, None, false)
@@ -62,6 +62,31 @@ pub fn connect_reopened(
     window: &SessionWindow,
 ) -> io::Result<Connection> {
     connect_selected(socket, session, Some(window), true)
+}
+
+/// List the current windows of the session that listed `window`, rejecting a
+/// replaced server or session. Call on a worker: the query is bounded to three
+/// seconds.
+pub fn session_windows(socket: &Path, window: &SessionWindow) -> io::Result<Vec<SessionWindow>> {
+    let identity = window
+        .source
+        .rsplit('/')
+        .next()
+        .filter(|id| id.starts_with('$'))
+        .ok_or_else(|| io::Error::other("invalid session identity"))?;
+    let mut query = command(socket)?;
+    query.args([
+        "list-windows",
+        "-t",
+        identity,
+        "-F",
+        "#{pid}/#{session_created}/#{session_id} #{window_id} #{window_index} #{q:window_name}",
+    ]);
+    let result = crate::discovery::capture(query, Duration::from_secs(3))?;
+    if !result.status.success() {
+        return Err(io::Error::other("Window list unavailable"));
+    }
+    parse_windows(&result.stdout, &window.source)
 }
 
 fn connect_selected(
@@ -329,6 +354,33 @@ fn command(socket: &Path) -> io::Result<Command> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_windows_follow_changes_but_reject_a_replaced_session() {
+        let server = tmux_workspaces_test_support::TmuxServer::start().unwrap();
+        server
+            .run(&["new-session", "-d", "-s", "listed", "cat"])
+            .unwrap();
+        let socket = server
+            .run(&["display-message", "-p", "#{socket_path}"])
+            .unwrap();
+        let socket = Path::new(socket.trim());
+        let mut connection = connect(socket, "listed").unwrap();
+        let listed = connection.windows[0].clone();
+        server
+            .run(&["new-window", "-d", "-t", "=listed:", "-n", "added", "cat"])
+            .unwrap();
+        let windows = session_windows(socket, &listed).unwrap();
+        assert_eq!(windows.len(), 2);
+        assert!(windows.iter().any(|window| window.name == "added"));
+        let _ = connection.client.kill();
+        let _ = connection.client.wait();
+        server.run(&["kill-session", "-t", "=listed:"]).unwrap();
+        server
+            .run(&["new-session", "-d", "-s", "listed", "cat"])
+            .unwrap();
+        assert!(session_windows(socket, &listed).is_err());
+    }
 
     #[test]
     fn explicit_reopen_keeps_live_selection_but_discards_replaced_session_identity() {

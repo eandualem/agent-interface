@@ -35,7 +35,7 @@ an already connected destination; if it is still connecting, click it when ready
 Command-V pastes clipboard text (Control-Shift-V on Linux), using
 bracketed paste when the pane requests it. Keys follow the destination pane's
 application cursor and extended-key modes. Paste is limited to 4 MiB per operation.
-The pane header's expand control toggles the selected pane's view. Scroll over a
+**Focus one pane** in tab options toggles the selected pane's view. Scroll over a
 terminal to read its retained history. Shift-Page Up/Down moves a page;
 Shift-Home/End goes to the oldest output or the live screen. Typing or pasting
 returns to live output. Drag to select visible text; double-click selects a word
@@ -51,18 +51,30 @@ simultaneous left/right button chords are unsupported.
 Hold Shift to keep scrolling local to the native viewer.
 Command-N or **New Window** opens another native window on the current library,
 with independent navigation and terminal connections. Closing one leaves the
-other windows open. **Open library…** chooses another folder containing `layouts.db`.
+other windows open. **Open Library…** in the application menu, or Command-O,
+chooses another folder containing `layouts.db`.
+
+The window follows the Python viewer's default look and layout: a 22-column
+navigation panel on the left in the terminal font, the terminals beside it on a
+slightly lighter surface, and a status row along the bottom naming the workspace,
+tab and pane, the keys for the current mode and a light while the saved
+arrangement is current. The bottom row of the panel switches workspaces with one
+click: each slot shows its icon, or its number when it has none, and the current
+one is filled. Right-click a slot for that workspace's options; when the row is
+full, its last slot, **…**, opens the full list. **Configure…** above it offers
+**Detach**, which closes the window and leaves every session running.
 
 Open the workspace chooser with **▾** or a right-click on the workspace heading.
-Choose **New workspace**, or press Command-Shift-N, and enter a name. Enter or
-Create workspace saves it; Escape cancels. New workspaces have no tabs or shells.
+Choose **New workspace**, or press Command-Shift-N, and enter a name. Enter
+saves it; Escape cancels. New workspaces have no tabs or shells.
 Choose **Delete workspace** to remove an empty workspace; the last workspace and
 workspaces with tabs cannot be deleted. Deleting selects the first remaining
 workspace and leaves its tabs and sessions intact.
 
 Click **+** beside TABS or press Command-T to add an empty tab. Command-D splits
 right; Command-Shift-D splits below. Both split actions are also in tab options.
-The existing pane remains intact and the new pane offers Open terminal or Attach session. New tabs
+The existing pane remains intact and the new pane asks what it should run: Open
+terminal, or Attach a session. New tabs
 use the launch directory; splits inherit the ordinary shell’s remembered directory.
 The new arrangement appears after saving. Navigation made while saving stays local;
 otherwise the new tab or pane is selected.
@@ -72,7 +84,7 @@ saves the ratio; Escape or switching to another window during a drag cancels it.
 This changes the native viewport without resizing other tmux clients. A changed
 tab or split tree cancels the gesture. Save errors offer the usual Retry or Discard.
 
-Choose **Open terminal** in an ordinary pane header or tab options to start its
+Choose **Open terminal** in an empty pane or tab options to start its
 login shell, or reuse it if already running. The pane is saved before its shell
 starts; a save error offers Retry or Discard. The new shell uses its saved directory
 and the creating window's allowed environment. Existing shells retain their process
@@ -82,7 +94,8 @@ are not restarted by this action.
 
 Existing ordinary shells use the Python library's shell server; attachments use
 their saved source socket, or the source resolved from the launch environment.
-Use **Attach session** in a pane header or tab options, or Command-Shift-A, to
+Use **Attach a session** in an empty pane, **Attach session** in tab options, or
+Command-Shift-A, to
 choose an existing source session. Type to filter names, use Up/Down and Enter,
 or click a row. Escape or Cancel closes the chooser. It retains its destination
 when focus moves within the tab; a changed or hidden empty destination must be
@@ -97,8 +110,9 @@ without optional agent metadata.
 Missing sessions show an error with **Reconnect** instead of starting a shell.
 Changing tabs or closing the app detaches its clients; the source’s existing
 session-lifetime policy still applies. Connections preserve
-the session environment and do not participate in resizing other clients; text
-scales down when the existing terminal is larger than its native pane.
+the session environment. Like the Python viewer's own tmux clients, a displayed
+terminal sizes its session to the pane under tmux's `window-size` option; text
+scales down only while another client keeps the window larger.
 
 Changes saved by the Python app refresh automatically. Double-click the workspace
 name or the active tab's name to rename it. An inactive tab must first be selected.
@@ -108,7 +122,7 @@ move its complete layout to another workspace. Workspace options also offer
 **Rename workspace**. A tab changed by another window must have its options
 opened again before editing it.
 
-The original name starts selected; Enter or **Save name** saves it, Escape or
+The original name starts selected; Enter saves it, Escape or
 clicking elsewhere cancels, and Ctrl-U clears the field. Names are limited to 80
 characters. A failed save retains the edit and offers **Retry saving changes** or
 **Discard unsaved changes**. Discard restores the last shared arrangement and
@@ -118,17 +132,18 @@ A conflicting peer edit refreshes the saved arrangement and asks you to repeat
 the edit.
 Renaming requires an existing version-2 library and does not change tmux sessions.
 Navigation and pane expansion stay local. Attached
-sessions start on the source’s current window. Use the window names above a
-terminal to view another existing tmux window without switching other clients.
+sessions start on the source’s current window. An attached session has one row
+above its terminal naming it on the right. When it has several windows, their
+names share that row: click one to view it without switching other clients.
 The chosen window is remembered locally when switching workspace tabs; reopening
 the library starts from the source's current window again.
-Refresh reloads that list. Custom tmux
+The list follows tmux, checking every two seconds. Custom tmux
 prefix bindings, selection across history pages, terminal input methods
 and key-release events are not yet wired into the product UI.
 
 Omit `--data-dir` to use the Python-compatible environment and default library
 location. An absent or unreadable library shows an error and can be replaced
-through **Open library…**; the browser never creates or repairs a library.
+through **Open Library…**; the browser never creates or repairs a library.
 `--help` and `--version` work without a display or tmux.
 
 ## Licence
