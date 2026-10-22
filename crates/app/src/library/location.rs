@@ -18,7 +18,7 @@ pub fn library_directory(explicit: Option<&Path>) -> Result<PathBuf, Error> {
     resolve(explicit, &|name| std::env::var_os(name), &user_home)
 }
 
-fn user_home(name: Option<&OsStr>) -> Option<PathBuf> {
+pub(crate) fn user_home(name: Option<&OsStr>) -> Option<PathBuf> {
     let user = match name {
         Some(name) => uzers::get_user_by_name(name),
         None => uzers::get_user_by_uid(uzers::get_current_uid()),
@@ -167,7 +167,7 @@ pub(crate) fn resolve_path(path: &Path) -> io::Result<PathBuf> {
     Ok(result)
 }
 
-fn expand_home(
+pub(crate) fn expand_home(
     path: &Path,
     env: &impl Fn(&str) -> Option<OsString>,
     user_home: &impl Fn(Option<&OsStr>) -> Option<PathBuf>,
