@@ -119,7 +119,14 @@ impl Environment {
     }
 
     fn run(&self, socket: &Path, args: &[OsString]) -> io::Result<std::process::Output> {
-        let mut command = Command::new("tmux");
+        // Search the captured PATH first, then the standard macOS locations a
+        // Finder launch's PATH omits. The command keeps its captured environment.
+        let path = self
+            .variables
+            .get(OsStr::new("PATH"))
+            .cloned()
+            .unwrap_or_default();
+        let mut command = Command::new(crate::connection::tmux_binary_on(&path)?);
         command.env_clear();
         for (name, value) in &self.variables {
             if COMMAND_ENV.iter().any(|allowed| name == allowed)

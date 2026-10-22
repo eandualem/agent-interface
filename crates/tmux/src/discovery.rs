@@ -168,7 +168,7 @@ fn command(socket: &Path) -> Option<Command> {
     if !socket.is_absolute() {
         return None;
     }
-    let mut command = Command::new("tmux");
+    let mut command = Command::new(crate::connection::tmux_binary().ok()?);
     command
         .env_clear()
         .envs(std::env::vars_os().filter(|(key, _)| {

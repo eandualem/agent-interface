@@ -101,7 +101,11 @@ fn connect_selected(
             "invalid session address",
         ));
     }
-    let target = format!("={session}:");
+    // tmux can read an ID-shaped name such as `$0` as an ID even after `=`.
+    // Resolve the literal name by listing first, then target its numeric ID.
+    let resolved = crate::discovery::read_attachment_policy(socket, session)
+        .map_err(|_| io::Error::other("Session unavailable"))?;
+    let target = format!("${}:", resolved.session_id);
     let mut query = command(socket)?;
     query.args(["display-message", "-p", "-t", &target,
         "#{pid}/#{session_created}/#{session_id} #{session_id} #{pane_id} #{window_id} #{window_layout} #{window_visible_layout} #{window_raw_flags}"]);
@@ -294,12 +298,17 @@ fn parse_windows(bytes: &[u8], source: &str) -> io::Result<Vec<SessionWindow>> {
     Ok(windows)
 }
 
-fn command(socket: &Path) -> io::Result<Command> {
-    // Finder launches do not normally inherit the shell's Homebrew PATH.
-    // Honour PATH first, then the two standard macOS installation locations.
+/// The tmux executable. Finder launches do not normally inherit the shell's
+/// Homebrew PATH, so honour PATH first, then the two standard macOS
+/// installation locations.
+pub(crate) fn tmux_binary() -> io::Result<std::path::PathBuf> {
+    tmux_binary_on(&std::env::var_os("PATH").unwrap_or_default())
+}
+
+/// The tmux executable on `path`, else at the standard macOS locations.
+pub(crate) fn tmux_binary_on(path: &std::ffi::OsStr) -> io::Result<std::path::PathBuf> {
     use std::os::unix::fs::PermissionsExt;
-    let path = std::env::var_os("PATH").unwrap_or_default();
-    let candidates = std::env::split_paths(&path).map(|directory| directory.join("tmux"));
+    let candidates = std::env::split_paths(path).map(|directory| directory.join("tmux"));
     let fallbacks = if cfg!(target_os = "macos") {
         vec![
             "/opt/homebrew/bin/tmux".into(),
@@ -308,7 +317,7 @@ fn command(socket: &Path) -> io::Result<Command> {
     } else {
         Vec::new()
     };
-    let binary = candidates
+    candidates
         .chain(fallbacks)
         .find(|path| {
             path.metadata().is_ok_and(|metadata| {
@@ -320,7 +329,11 @@ fn command(socket: &Path) -> io::Result<Command> {
                 io::ErrorKind::NotFound,
                 "tmux is not installed or is not on PATH",
             )
-        })?;
+        })
+}
+
+fn command(socket: &Path) -> io::Result<Command> {
+    let binary = tmux_binary()?;
     let mut command = Command::new(binary);
     command
         .env_clear()
@@ -354,6 +367,36 @@ fn command(socket: &Path) -> io::Result<Command> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_id_shaped_session_name_connects_to_that_session_only() {
+        let server = tmux_workspaces_test_support::TmuxServer::start().unwrap();
+        server
+            .run(&["new-session", "-d", "-s", "first", "cat"])
+            .unwrap();
+        server
+            .run(&["new-session", "-d", "-s", "$0", "cat"])
+            .unwrap();
+        let sessions = server
+            .run(&["list-sessions", "-F", "#{session_id} #{session_name}"])
+            .unwrap();
+        let id = |name: &str| -> u32 {
+            sessions
+                .lines()
+                .find_map(|line| line.split_once(' ').filter(|(_, n)| *n == name))
+                .and_then(|(id, _)| id.strip_prefix('$')?.parse().ok())
+                .unwrap()
+        };
+        // Another session holds ID `$0`; the name must not be read as that ID.
+        assert_ne!(id("$0"), 0);
+        let socket = server
+            .run(&["display-message", "-p", "#{socket_path}"])
+            .unwrap();
+        let mut connection = connect(Path::new(socket.trim()), "$0").unwrap();
+        assert_eq!(connection.session, id("$0"));
+        let _ = connection.client.kill();
+        let _ = connection.client.wait();
+    }
 
     #[test]
     fn session_windows_follow_changes_but_reject_a_replaced_session() {
