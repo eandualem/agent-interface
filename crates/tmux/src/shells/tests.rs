@@ -114,7 +114,7 @@ fn ordinary_shell_creation_is_isolated_and_reuses_sessions() {
         .unwrap();
     let socket = Path::new(socket.trim_end());
     let root = server.address().0;
-    let cwd = root.join("ordinary path;");
+    let cwd = root.join("ordinary #{session_name} ## path;");
     let home = root.join("home");
     std::fs::create_dir(&cwd).unwrap();
     std::fs::create_dir(&home).unwrap();
