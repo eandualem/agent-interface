@@ -5445,6 +5445,7 @@ dependencies = [
  "futures",
  "gpui-pre",
  "gpui-pre-platform",
+ "libc",
  "rusqlite",
  "sha2",
  "tempfile",
@@ -5494,6 +5495,7 @@ name = "tmux-workspaces-core"
 version = "0.0.0"
 dependencies = [
  "serde_json",
+ "toml 0.8.23",
  "unicode-properties",
  "uuid",
 ]
