@@ -24,6 +24,7 @@ mod icons;
 mod panel;
 mod settings;
 mod settings_window;
+mod shortcuts;
 mod split_resize;
 mod terminal;
 mod theme;
@@ -891,21 +892,25 @@ impl Browser {
         let mut options = panel::menu();
         // The source's order: naming and pane actions, then reordering.
         let mut actions = vec![
-            (Some("Rename tab".to_owned()), TabAction::Rename, Some("⌘R")),
+            (
+                Some("Rename tab".to_owned()),
+                TabAction::Rename,
+                Some(shortcuts::label(shortcuts::Command::RenameTab)),
+            ),
             (
                 Some("Split right".to_owned()),
                 TabAction::Split(Direction::Right),
-                Some("⌘D"),
+                Some(shortcuts::label(shortcuts::Command::SplitRight)),
             ),
             (
                 Some("Split below".to_owned()),
                 TabAction::Split(Direction::Below),
-                Some("⌘⇧D"),
+                Some(shortcuts::label(shortcuts::Command::SplitBelow)),
             ),
             (
                 Some("Attach session".to_owned()),
                 TabAction::Attach,
-                Some("⌘⇧A"),
+                Some(shortcuts::label(shortcuts::Command::Attach)),
             ),
         ];
         if let (Some(menu), Some(layout)) = (&self.tab_menu, &self.layout) {
@@ -928,7 +933,7 @@ impl Browser {
                     .into(),
                 ),
                 TabAction::Focus,
-                Some("⌘⇧↩"),
+                Some(shortcuts::label(shortcuts::Command::FocusPane)),
             ));
             actions.push((None, TabAction::Focus, None));
             if let Some(space) = layout.model().workspace()
@@ -962,7 +967,7 @@ impl Browser {
                     None,
                     label,
                     theme::normal(),
-                    key.map(str::to_owned),
+                    key,
                 )
                 .on_click(cx.listener(move |browser, _, window, cx| {
                     browser.tab_action(action.clone(), window, cx)
@@ -1063,7 +1068,7 @@ impl Browser {
                     Some(("pencil", theme::muted())),
                     "Rename",
                     theme::normal(),
-                    Some("⌘⇧R".into()),
+                    Some(shortcuts::label(shortcuts::Command::RenameWorkspace)),
                 )
                 .on_click(cx.listener(|browser, _, window, cx| {
                     browser.close_menus();
@@ -1110,7 +1115,7 @@ impl Browser {
                     Some(("plus", theme::accent())),
                     "New workspace",
                     theme::normal(),
-                    Some("⌘⇧N".into()),
+                    Some(shortcuts::label(shortcuts::Command::NewWorkspace)),
                 )
                 .on_click(cx.listener(|browser, _, window, cx| {
                     browser.close_menus();
@@ -1810,7 +1815,7 @@ impl Render for Browser {
         let mut heading = "Workspaces".to_owned();
         let mut heading_icon: Option<&'static str> = None;
         let mut context: (String, Option<String>) = (heading.clone(), None);
-        let mut hints: Vec<&str> = Vec::new();
+        let mut hints: Vec<String> = Vec::new();
         let mut message: Option<String> = None;
         let mut content = div()
             .flex_1()
@@ -1824,7 +1829,10 @@ impl Render for Browser {
                 heading = space.name.clone();
                 heading_icon = icons::workspace(space.symbol.as_deref(), space.icon.as_deref());
                 context = (space.name.clone(), Some("no tabs".into()));
-                hints = vec!["⌘T new", "⌘⇧A attach"];
+                hints = vec![
+                    format!("{} new", shortcuts::label(shortcuts::Command::NewTab)),
+                    format!("{} attach", shortcuts::label(shortcuts::Command::Attach)),
+                ];
                 for (index, tab) in space.tabs.iter().enumerate() {
                     let id = tab.id.clone();
                     let active = space.selected == id;
@@ -1962,7 +1970,12 @@ impl Render for Browser {
                         leaves.len()
                     )),
                 );
-                hints = vec!["⌘T new", "⌘D split", "⌘⇧A attach", "⌘⇧↩ focus"];
+                hints = vec![
+                    format!("{} new", shortcuts::label(shortcuts::Command::NewTab)),
+                    format!("{} split", shortcuts::label(shortcuts::Command::SplitRight)),
+                    format!("{} attach", shortcuts::label(shortcuts::Command::Attach)),
+                    format!("{} focus", shortcuts::label(shortcuts::Command::FocusPane)),
+                ];
                 let tree = if model.focus {
                     leaves.get(selected).map(|leaf| Node::Leaf((*leaf).clone()))
                 } else {
@@ -2003,10 +2016,12 @@ impl Render for Browser {
         }
         if self.editing.is_some() {
             context = ("Rename".into(), Some("type a new name".into()));
-            hints = vec!["⏎ save", "esc cancel"];
+            hints = vec!["⏎ save".into(), "esc cancel".into()];
         } else if self.chooser.is_some() {
             context = ("Attach session".into(), None);
-            hints = vec!["type to filter", "↑↓ move", "⏎ open", "esc back"];
+            hints = ["type to filter", "↑↓ move", "⏎ open", "esc back"]
+                .map(String::from)
+                .to_vec();
         }
         let workspace_edit = self.editing.as_ref().is_some_and(|edit| !edit.tab);
         let header = div()
@@ -2498,49 +2513,6 @@ impl Render for Browser {
                             return;
                         }
                     }
-                    if key.modifiers.platform
-                        && key.modifiers.shift
-                        && !key.modifiers.control
-                        && !key.modifiers.alt
-                        && key.key == "n"
-                    {
-                        browser.begin_workspace(window, cx);
-                        cx.stop_propagation();
-                        return;
-                    }
-                    if key.modifiers.platform && !key.modifiers.control && !key.modifiers.alt {
-                        let action = match key.key.as_str() {
-                            "t" if !key.modifiers.shift => Some(Create::Tab),
-                            "d" => Some(Create::Split(if key.modifiers.shift {
-                                Direction::Below
-                            } else {
-                                Direction::Right
-                            })),
-                            _ => None,
-                        };
-                        if let Some(action) = action {
-                            browser.create(action, window, cx);
-                            cx.stop_propagation();
-                            return;
-                        }
-                    }
-                    if key.modifiers.platform
-                        && key.modifiers.shift
-                        && !key.modifiers.control
-                        && !key.modifiers.alt
-                        && key.key == "a"
-                    {
-                        if let Some(pane) = browser
-                            .layout
-                            .as_ref()
-                            .and_then(|layout| layout.model().pane())
-                            .map(|pane| pane.id.clone())
-                        {
-                            browser.open_attach(&pane, window, cx);
-                        }
-                        cx.stop_propagation();
-                        return;
-                    }
                     if (browser.tab_menu.is_some() || browser.workspace_menu || browser.icon_picker)
                         && key.key == "escape"
                     {
@@ -2549,20 +2521,50 @@ impl Render for Browser {
                         cx.notify();
                         return;
                     }
-                    if key.modifiers.platform
-                        && !key.modifiers.control
-                        && !key.modifiers.alt
-                        && key.key == "r"
-                    {
-                        browser.begin_name(!key.modifiers.shift, window, cx);
+                    let command = shortcuts::command_for(key);
+                    let handled = match command {
+                        Some(shortcuts::Command::NewWorkspace) => {
+                            browser.begin_workspace(window, cx);
+                            true
+                        }
+                        Some(shortcuts::Command::NewTab) => {
+                            browser.create(Create::Tab, window, cx);
+                            true
+                        }
+                        Some(shortcuts::Command::SplitRight) => {
+                            browser.create(Create::Split(Direction::Right), window, cx);
+                            true
+                        }
+                        Some(shortcuts::Command::SplitBelow) => {
+                            browser.create(Create::Split(Direction::Below), window, cx);
+                            true
+                        }
+                        Some(shortcuts::Command::Attach) => {
+                            if let Some(pane) = browser
+                                .layout
+                                .as_ref()
+                                .and_then(|layout| layout.model().pane())
+                                .map(|pane| pane.id.clone())
+                            {
+                                browser.open_attach(&pane, window, cx);
+                            }
+                            true
+                        }
+                        Some(shortcuts::Command::RenameTab) => {
+                            browser.begin_name(true, window, cx);
+                            true
+                        }
+                        Some(shortcuts::Command::RenameWorkspace) => {
+                            browser.begin_name(false, window, cx);
+                            true
+                        }
+                        _ => false,
+                    };
+                    if handled {
                         cx.stop_propagation();
                         return;
                     }
-                    let sidebar = key.modifiers.platform
-                        && !key.modifiers.control
-                        && !key.modifiers.alt
-                        && !key.modifiers.shift
-                        && key.key == "b";
+                    let sidebar = command == Some(shortcuts::Command::FocusPanel);
                     let navigated = browser
                         .layout
                         .as_mut()
@@ -2639,10 +2641,12 @@ fn agent_destination(
 // focus on navigation; no keys are queued for a future connection.
 fn navigate_key(model: &mut tmux_workspaces_core::Layout, key: &gpui::Keystroke) -> bool {
     let mods = key.modifiers;
-    if !mods.platform || mods.control || mods.function {
-        return false;
-    }
-    if !mods.shift
+    // Numbered selection is fixed: Command selects a tab, Command-Option a
+    // workspace. Every other navigation key comes from the shortcut table.
+    if mods.platform
+        && !mods.control
+        && !mods.function
+        && !mods.shift
         && let Ok(number @ 1..=9) = key.key.parse::<usize>()
     {
         let id = if mods.alt {
@@ -2665,27 +2669,26 @@ fn navigate_key(model: &mut tmux_workspaces_core::Layout, key: &gpui::Keystroke)
         }
         return true;
     }
-    match (mods.alt, mods.shift, key.key.as_str()) {
-        (false, false, "]") => {
+    match shortcuts::command_for(key) {
+        Some(shortcuts::Command::NextPane) => {
             model.next_pane(1);
         }
-        (false, false, "[") => {
+        Some(shortcuts::Command::PreviousPane) => {
             model.next_pane(-1);
         }
-        // macOS normalizes shifted punctuation to its resulting character.
-        (false, true, "]") | (false, false, "}") => {
+        Some(shortcuts::Command::NextTab) => {
             model.next_tab(1);
         }
-        (false, true, "[") | (false, false, "{") => {
+        Some(shortcuts::Command::PreviousTab) => {
             model.next_tab(-1);
         }
-        (true, false, "right") => {
+        Some(shortcuts::Command::NextWorkspace) => {
             model.next_workspace(1);
         }
-        (true, false, "left") => {
+        Some(shortcuts::Command::PreviousWorkspace) => {
             model.next_workspace(-1);
         }
-        (false, true, "enter") => {
+        Some(shortcuts::Command::FocusPane) => {
             if model.pane().is_some() {
                 model.focus = !model.focus;
             }

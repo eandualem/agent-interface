@@ -64,8 +64,9 @@ or its number when it has none. Right-click one for its options, including
 **Choose icon…**; when the row is full, **⋯** opens the full list.
 **Settings** above it, or Command-comma, opens the Settings window: a dark or
 light theme and the terminal text size apply to every window at once and are
-saved in `~/.config/tmux-workspaces/settings.toml`; it also lists the shortcuts
-and shows the Agent Backbone connection. **Close Window** (Command-W) closes a
+saved in `~/.config/tmux-workspaces/settings.toml`. On its Shortcuts page,
+click a command's shortcut and press new keys to change it; menus and the
+status row follow. It also shows the Agent Backbone connection. **Close Window** (Command-W) closes a
 window and leaves every session running. With Agent Backbone installed, an **AGENTS** section
 under the tabs lists active agents with their state: red needs you, amber is
 working. Click one to show the tab holding its session; **agents shown** in the

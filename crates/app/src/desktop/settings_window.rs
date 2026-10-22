@@ -9,53 +9,22 @@ use gpui::{
 use super::{
     panel,
     settings::{self, Settings},
-    theme,
+    shortcuts, theme,
 };
 
-/// The keys the app handles natively, as shown on the Shortcuts page.
-const SHORTCUTS: &[(&str, &[(&str, &str)])] = &[
-    (
-        "Tabs and panes",
-        &[
-            ("New tab", "⌘T"),
-            ("Split right", "⌘D"),
-            ("Split below", "⌘⇧D"),
-            ("Attach session", "⌘⇧A"),
-            ("Rename tab", "⌘R"),
-            ("Select tab 1–9", "⌘1–9"),
-            ("Previous / next pane", "⌘[  ⌘]"),
-            ("Previous / next tab", "⌘⇧[  ⌘⇧]"),
-            ("Focus one pane / restore", "⌘⇧↩"),
-        ],
-    ),
-    (
-        "Workspaces",
-        &[
-            ("New workspace", "⌘⇧N"),
-            ("Rename workspace", "⌘⇧R"),
-            ("Select workspace 1–9", "⌘⌥1–9"),
-            ("Previous / next workspace", "⌘⌥←  ⌘⌥→"),
-            ("Focus the panel", "⌘B"),
-        ],
-    ),
-    (
-        "Terminal",
-        &[
-            ("Copy selection", "⌘C"),
-            ("Paste", "⌘V"),
-            ("Scroll history", "⇧PgUp  ⇧PgDn"),
-            ("Select locally in mouse programs", "⇧ drag"),
-        ],
-    ),
-    (
-        "Application",
-        &[
-            ("Settings", "⌘,"),
-            ("New window", "⌘N"),
-            ("Open library", "⌘O"),
-            ("Quit", "⌘Q"),
-        ],
-    ),
+/// Keys that stay fixed, shown under the configurable ones.
+const FIXED: &[(&str, &str)] = &[
+    ("Select tab 1–9", "⌘1–9"),
+    ("Select workspace 1–9", "⌥⌘1–9"),
+    ("Copy selection", "⌘C"),
+    ("Paste", "⌘V"),
+    ("Scroll history", "⇧PgUp  ⇧PgDn"),
+    ("Select locally in mouse programs", "⇧ drag"),
+    ("Settings", "⌘,"),
+    ("New window", "⌘N"),
+    ("Open library", "⌘O"),
+    ("Close window", "⌘W"),
+    ("Quit", "⌘Q"),
 ];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -69,6 +38,10 @@ enum Page {
 pub struct SettingsWindow {
     page: Page,
     error: Option<String>,
+    focus: gpui::FocusHandle,
+    /// The command waiting for its new keys, and why the last keys were refused.
+    recording: Option<shortcuts::Command>,
+    refusal: Option<String>,
 }
 
 struct Open(WindowHandle<SettingsWindow>);
@@ -98,9 +71,12 @@ pub fn show(cx: &mut App) {
         ..Default::default()
     };
     if let Ok(handle) = cx.open_window(options, |_, cx| {
-        cx.new(|_| SettingsWindow {
+        cx.new(|cx| SettingsWindow {
             page: Page::Appearance,
             error: None,
+            focus: cx.focus_handle(),
+            recording: None,
+            refusal: None,
         })
     }) {
         cx.set_global(Open(handle));
@@ -114,7 +90,7 @@ impl SettingsWindow {
         update(&mut next);
         next.apply();
         self.error = match settings::path() {
-            Some(path) => settings::save(next, &path)
+            Some(path) => settings::save(&next, &path)
                 .err()
                 .map(|error| format!("Not saved: {error}")),
             None => Some("Not saved: no home directory".into()),
@@ -262,37 +238,178 @@ impl SettingsWindow {
             )
     }
 
-    fn shortcuts(&self) -> gpui::Div {
-        let mut page = div().flex().flex_col().child(Self::heading("Shortcuts"));
-        for (group, keys) in SHORTCUTS {
-            page = page.child(Self::label(group.to_uppercase()));
-            for (action, key) in *keys {
+    /// While a shortcut is recording, the next key press becomes its chord.
+    fn key_down(&mut self, event: &gpui::KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(command) = self.recording else {
+            return;
+        };
+        cx.stop_propagation();
+        let key = &event.keystroke;
+        if key.key == "escape" && !key.modifiers.modified() {
+            self.recording = None;
+            self.refusal = None;
+            cx.notify();
+            return;
+        }
+        let Some(chord) = shortcuts::Chord::from_keystroke(key) else {
+            return;
+        };
+        let mut bindings = shortcuts::current();
+        match bindings.assign(command, chord) {
+            Ok(()) => {
+                self.recording = None;
+                self.refusal = None;
+                self.change(|settings| settings.shortcuts = bindings, cx);
+            }
+            Err(reason) => {
+                self.refusal = Some(reason);
+                cx.notify();
+            }
+        }
+    }
+
+    fn shortcuts(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let bindings = shortcuts::current();
+        let defaults = shortcuts::Bindings::default();
+        let badge = |text: String, strong: bool| {
+            div()
+                .px(px(8.0))
+                .h(px(22.0))
+                .flex()
+                .items_center()
+                .rounded(px(5.0))
+                .bg(rgb(if strong {
+                    theme::accent()
+                } else {
+                    theme::active()
+                }))
+                .text_color(rgb(if strong {
+                    theme::panel()
+                } else {
+                    theme::active_text()
+                }))
+                .child(text)
+        };
+        let mut page = div()
+            .flex()
+            .flex_col()
+            .child(Self::heading("Shortcuts"))
+            .child(
+                div()
+                    .text_color(rgb(theme::muted()))
+                    .child("Click a shortcut, then press the new keys. Escape cancels."),
+            );
+        let mut group = "";
+        for (command, id, label, section, _) in shortcuts::COMMANDS {
+            if *section != group {
+                group = section;
+                page = page.child(Self::label(section.to_uppercase()));
+            }
+            let command = *command;
+            let recording = self.recording == Some(command);
+            let changed = bindings.chord(command) != defaults.chord(command);
+            page = page.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(10.0))
+                    .h(px(30.0))
+                    .border_b_1()
+                    .border_color(rgb(theme::outline()))
+                    .child(div().flex_1().child(*label))
+                    .when(changed && !recording, |el| {
+                        el.child(
+                            div()
+                                .id(SharedString::from(format!("reset-{id}")))
+                                .cursor_pointer()
+                                .text_color(rgb(theme::muted()))
+                                .hover(|el| el.text_color(rgb(theme::normal())))
+                                .child("Reset")
+                                .on_click(cx.listener(move |view, _, _, cx| {
+                                    let mut bindings = shortcuts::current();
+                                    let chord =
+                                        shortcuts::Bindings::default().chord(command).clone();
+                                    match bindings.assign(command, chord) {
+                                        Ok(()) => {
+                                            view.refusal = None;
+                                            view.change(
+                                                |settings| settings.shortcuts = bindings,
+                                                cx,
+                                            );
+                                        }
+                                        Err(reason) => {
+                                            view.refusal = Some(reason);
+                                            cx.notify();
+                                        }
+                                    }
+                                })),
+                        )
+                    })
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("shortcut-{id}")))
+                            .cursor_pointer()
+                            .child(badge(
+                                if recording {
+                                    "Press keys…".into()
+                                } else {
+                                    bindings.chord(command).label()
+                                },
+                                recording,
+                            ))
+                            .on_click(cx.listener(move |view, _, window, cx| {
+                                view.recording = Some(command);
+                                view.refusal = None;
+                                window.focus(&view.focus, cx);
+                                cx.notify();
+                            })),
+                    ),
+            );
+            if recording && let Some(refusal) = &self.refusal {
                 page = page.child(
                     div()
-                        .flex()
-                        .justify_between()
-                        .h(px(26.0))
-                        .items_center()
-                        .border_b_1()
-                        .border_color(rgb(theme::outline()))
-                        .child(*action)
-                        .child(
-                            div()
-                                .px(px(6.0))
-                                .rounded(px(4.0))
-                                .bg(rgb(theme::active()))
-                                .text_color(rgb(theme::active_text()))
-                                .child(*key),
-                        ),
+                        .py(px(4.0))
+                        .text_color(rgb(theme::danger()))
+                        .child(refusal.clone()),
                 );
             }
         }
-        page.child(
-            div()
-                .pt(px(12.0))
-                .text_color(rgb(theme::muted()))
-                .child("Changing shortcuts is not available yet."),
-        )
+        page = page.child(
+            div().pt(px(12.0)).child(
+                div()
+                    .id("restore-shortcuts")
+                    .cursor_pointer()
+                    .text_color(rgb(theme::accent()))
+                    .child("Restore default shortcuts")
+                    .on_click(cx.listener(|view, _, _, cx| {
+                        view.recording = None;
+                        view.refusal = None;
+                        view.change(
+                            |settings| settings.shortcuts = shortcuts::Bindings::default(),
+                            cx,
+                        );
+                    })),
+            ),
+        );
+        page = page.child(Self::label("FIXED"));
+        for (action, key) in FIXED {
+            page = page.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .h(px(30.0))
+                    .border_b_1()
+                    .border_color(rgb(theme::outline()))
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_color(rgb(theme::muted()))
+                            .child(*action),
+                    )
+                    .child(badge((*key).into(), false)),
+            );
+        }
+        page
     }
 
     fn general(&self) -> gpui::Div {
@@ -371,6 +488,8 @@ impl Render for SettingsWindow {
                     .child(name)
                     .on_click(cx.listener(move |view, _, _, cx| {
                         view.page = page;
+                        view.recording = None;
+                        view.refusal = None;
                         cx.notify();
                     })),
             );
@@ -378,12 +497,14 @@ impl Render for SettingsWindow {
         let content = match self.page {
             Page::General => self.general(),
             Page::Appearance => self.appearance(cx),
-            Page::Shortcuts => self.shortcuts(),
+            Page::Shortcuts => self.shortcuts(cx),
             Page::Agents => self.agents(),
         };
         div()
             .size_full()
             .flex()
+            .track_focus(&self.focus)
+            .on_key_down(cx.listener(Self::key_down))
             .bg(rgb(theme::surface()))
             .text_color(rgb(theme::normal()))
             .font_family(panel::FONT)
