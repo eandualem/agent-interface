@@ -383,6 +383,7 @@ struct Browser {
     agents: Option<tmux_workspaces_roster::Snapshot>,
     roster_updates: Option<Task<()>>,
     jump: Option<jump::Jump>,
+    hovered_pane: Option<String>,
     /// A navigation panel drag: where it started and the width then.
     sidebar_drag: Option<(gpui::Pixels, gpui::Pixels)>,
     reset_focus: bool,
@@ -1446,16 +1447,27 @@ impl Render for Browser {
                         return;
                     }
                     let key = &event.keystroke;
-                    // The jump field keeps typing; arrows move its highlight.
-                    if browser.jump.is_some() && !key.modifiers.modified() {
-                        let step = match key.key.as_str() {
-                            "up" => -1,
-                            "down" => 1,
-                            _ => return,
-                        };
-                        browser.jump_move(step, cx);
-                        cx.stop_propagation();
-                        return;
+                    // The jump field keeps typing; arrows move its highlight
+                    // unless an input method is composing. A shortcut that
+                    // moves focus elsewhere closes Jump first.
+                    if let Some(jump) = &browser.jump {
+                        if key.modifiers.modified() {
+                            if shortcuts::command_for(key) != Some(shortcuts::Command::Jump) {
+                                browser.close_jump(window, cx);
+                            }
+                        } else {
+                            if jump.composing(cx) {
+                                return;
+                            }
+                            let step = match key.key.as_str() {
+                                "up" => -1,
+                                "down" => 1,
+                                _ => return,
+                            };
+                            browser.jump_move(step, cx);
+                            cx.stop_propagation();
+                            return;
+                        }
                     }
                     if let Some(chooser) = &browser.chooser {
                         if key.key == "escape" && !chooser.view.read(cx).composing(cx) {

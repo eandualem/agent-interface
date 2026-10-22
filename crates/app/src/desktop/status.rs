@@ -12,12 +12,24 @@ use super::{
 impl Browser {
     /// Show or hide the agents section; saved with the library.
     pub(super) fn toggle_agents(&mut self, cx: &mut Context<Self>) {
+        if let Some(shown) = self
+            .layout
+            .as_ref()
+            .map(|layout| layout.model().show_agents)
+        {
+            self.set_show_agents(!shown, cx);
+        }
+    }
+
+    /// Show the agents section or not; saved with the library when it changes.
+    pub(super) fn set_show_agents(&mut self, shown: bool, cx: &mut Context<Self>) {
         if self.saving || self.save_failed {
             return;
         }
-        if let Some(layout) = &mut self.layout {
-            let model = layout.model_mut();
-            model.show_agents = !model.show_agents;
+        if let Some(layout) = &mut self.layout
+            && layout.model().show_agents != shown
+        {
+            layout.model_mut().show_agents = shown;
             self.save(cx);
         }
         cx.notify();

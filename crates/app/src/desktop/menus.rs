@@ -130,7 +130,7 @@ impl Browser {
             let needs_you = space
                 .tabs
                 .iter()
-                .any(|tab| Self::tab_needs_you(tab, states.as_ref()));
+                .any(|tab| self.tab_needs_you(tab, states.as_ref()));
             let key = (index < 9).then(|| format!("⌥⌘{}", index + 1));
             menu = menu.child(
                 ui::menu_item(

@@ -79,13 +79,24 @@ impl Browser {
             .map(|leaf| leaf.id.clone())
             .collect::<Vec<_>>();
         let states = self.agent_states();
+        let leaf_states = leaves
+            .iter()
+            .filter_map(|leaf| {
+                let attachment = leaf.attachment.as_ref()?;
+                Some((
+                    leaf.id.clone(),
+                    self.attachment_state(attachment, states.as_ref())?,
+                ))
+            })
+            .collect();
         let cards = super::pane_cards::Cards {
             focus: &tab.focus,
             numbers: &numbers,
             terminals: &self.terminals,
             chooser: self.chooser.as_ref(),
             split_bounds: &self.split_bounds,
-            states: states.as_ref(),
+            leaf_states,
+            hovered: self.hovered_pane.as_deref(),
         };
         let node = tree
             .as_ref()
