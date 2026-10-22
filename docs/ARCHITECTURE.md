@@ -142,6 +142,7 @@ described in [0001](decisions/0001-record-architecture-decisions.md).
 | [0027. Native name editing](decisions/0027-native-name-editing.md) | Accepted for development; desktop acceptance pending |
 | [0028. Native existing-session chooser](decisions/0028-native-session-chooser.md) | Accepted for development; desktop acceptance pending |
 | [0024. Native read-only library browser](decisions/0024-read-only-library-browser.md) | Accepted for development; acceptance pending |
+| [0035. Standalone first-run library initialization](decisions/0035-standalone-library-initialization.md) | Accepted |
 
 ## Further reading
 
