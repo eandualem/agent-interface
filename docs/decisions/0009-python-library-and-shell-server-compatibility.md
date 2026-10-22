@@ -148,8 +148,35 @@ Python hashes the UTF-8 path text; read-only database access still preserves
 native path bytes.
 
 **Theme and keymap files.** Read `theme.toml` and `keymap.toml` from the same
-XDG paths for parity, with `toml` (0.9.8, MIT OR Apache-2.0). Do not write them
-until a write contract matching the Python tool's conflict checks is agreed.
+XDG paths for parity. The read-only theme model uses `toml` 0.8.23
+(MIT OR Apache-2.0), pinned exactly and already in the dependency graph. It
+implements the TOML 1.0 syntax used by Python's `tomllib`; a newer parser adds
+no required syntax. Do not write these files until a write contract matching
+the Python tool's conflict checks is agreed.
+
+`core::theme::Theme::parse` validates at most 16 KiB of UTF-8, the six presets,
+two grounds and seven roles, retaining ordered colour fallbacks, attributes and
+background inheritance. The preset data comes from the pinned MIT-licensed
+Python tool; its copyright notices are retained with the data. Unknown sections/options and invalid values are errors.
+It preserves symbolic `default`; native palette resolution remains open (TH-9).
+`app::theme::load` selects the explicit path, environment override, XDG path or
+home default once per call, without resolving symlinks. It follows dotfile
+links, opens nonblocking and checks the opened handle is a regular file before
+reading at most the size limit plus one byte. The `libc` 0.2.191 constant
+(MIT OR Apache-2.0, already pinned) supplies `O_NONBLOCK`; no local unsafe code
+or new package version is needed. Missing files silently retain the supplied
+working theme or shipped default; invalid/unreadable files retain it with a
+reason-first diagnostic and escaped path last. There are no file writes,
+startup integration, editor or native rendering in this layer.
+
+Two source/documentation differences at the pinned Python commit are retained
+explicitly: the `paper` accent is `#b8651b` in code, while THEMES documents
+`#005fb8`; outline backgrounds inherit the panel in code, while THEMES says
+surface. Inheritance follows the preset's first background: panel first, then
+surface only when distinct. Consequently presets with both grounds `default`
+inherit matching backgrounds from panel. This model reproduces the existing
+configuration interpretation; it does not settle the native visual contract.
+Native mapping and those documented visual expectations remain pending.
 
 **Leave the Python tool's runtime alone.** Never create, change or delete the
 Python tool's `windows/<instance>/` runtime directories, viewer sockets or

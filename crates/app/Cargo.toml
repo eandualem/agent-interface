@@ -17,6 +17,7 @@ path = "src/main.rs"
 workspace = true
 
 [dependencies]
+libc.workspace = true
 futures.workspace = true
 gpui.workspace = true
 gpui_platform.workspace = true
