@@ -448,7 +448,7 @@ Prefix keys are pressed after `Ctrl-g`. Direct keys are written in
 | KB-26 | `select-tab-1` to `select-tab-9`: no prefix key; direct `Command-1` to `Command-9`. | [keymap.toml][km], [SHORTCUTS][sc-tabs] | Keep | | Not started |
 | KB-27 | `select-workspace-1` to `select-workspace-9`: no prefix key; direct `Command-Option-1` to `Command-Option-9`. | [keymap.toml][km], [SHORTCUTS][sc-ws] | Keep | | Not started |
 | KB-28 | `Command-N` opens another window running the same viewer and library. It is a Ghostty action, not a keymap entry. | [SHORTCUTS][sc-ws] | Change | A native New Window command. | Not started |
-| KB-29 | Direct keys are written with `super`, which is Command on macOS; for example `super+alt+t` is `Command-Option-T`. | [keymap.toml][km], [SHORTCUTS][sc-keymaps] | Open | Decide the Linux defaults. Desktop environments often reserve Super, so Linux may need another modifier. | Not started |
+| KB-29 | Direct keys are written with `super`, which is Command on macOS; for example `super+alt+t` is `Command-Option-T`. | [keymap.toml][km], [SHORTCUTS][sc-keymaps] | Change | Native Linux defaults use Ctrl+Shift for most commands, Ctrl+Page Up/Down for tabs and Alt+numbers for selection. See the [Linux key table](../README.md#linux-keyboard-shortcuts). Saved native cmd chords mean Command on macOS and Super on Linux. | In progress: platform defaults and labels implemented; Linux runtime acceptance pending. |
 
 ## Status row and visual layout
 
@@ -637,24 +637,22 @@ Prefix keys are pressed after `Ctrl-g`. Direct keys are written in
 6. **TH-27**: Where do font family, size, fallback glyphs and the terminal
    colour palette live, given that `theme.toml` must stay readable by the
    Python tool?
-7. **KB-29**: Which modifier do direct shortcuts use by default on Linux, where
-    Super is often reserved?
-8. **SU-2**: Does tmux 3.3 support every control-mode feature the app needs?
-9. **SU-5**: How does the app find tmux when it is started without the user's
+7. **SU-2**: Does tmux 3.3 support every control-mode feature the app needs?
+8. **SU-5**: How does the app find tmux when it is started without the user's
     `PATH`?
-10. **RM-1**: Are remote hosts supported through tmux control mode over SSH, or
+9. **RM-1**: Are remote hosts supported through tmux control mode over SSH, or
     left to the Python tool for now?
-11. **RM-6**: How is remote use verified, if it is supported? Depends on RM-1.
-12. **RM-7**: Is WSL a target?
-13. **LP-2**: How can the Rust app and the Python tool be installed side by
+10. **RM-6**: How is remote use verified, if it is supported? Depends on RM-1.
+11. **RM-7**: Is WSL a target?
+12. **LP-2**: How can the Rust app and the Python tool be installed side by
     side when both use the command name `tmux-workspaces`?
-14. **LP-4**: Should the app read the user's terminal settings, such as
+13. **LP-4**: Should the app read the user's terminal settings, such as
     Ghostty's font and colours?
-15. **LP-8**: What does the TPM launch key do for a native app: open it on the
+14. **LP-8**: What does the TPM launch key do for a native app: open it on the
     same library, or is TPM support dropped?
-16. **LP-9**: Do the `@tmux-workspaces-key` and `@tmux-workspaces-data-dir`
+15. **LP-9**: Do the `@tmux-workspaces-key` and `@tmux-workspaces-data-dir`
     options stay? Depends on LP-8.
-17. **LP-10**: Does a TPM launch still read sessions from the hosting server
+16. **LP-10**: Does a TPM launch still read sessions from the hosting server
     and share the standalone library? Depends on LP-8.
 
 [rd-top]: https://github.com/eandualem/tmux-workspaces/blob/51de6757cd0aeda3c19fe68fa4ec5b93ab206804/README.md#tmux-workspaces

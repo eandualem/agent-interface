@@ -39,7 +39,7 @@ impl Browser {
                     )
                     .child(
                         ui::button("open-library", "Open Library…", ui::Button::Primary)
-                            .child(ui::key_hint("⌘O").text_color(c.on_accent))
+                            .child(ui::key_hint(shortcuts::Chord::parse(shortcuts::platform_key("cmd-o")).unwrap().label()).text_color(c.on_accent))
                             .on_click(cx.listener(|browser, _, _, cx| browser.pick_library(cx))),
                     ),
                 )
