@@ -256,7 +256,8 @@ fn schema_v2_keeps_order_attachments_navigation_and_original_json() {
     assert_eq!(document.raw_json(), RECORD);
     let layout = document.model();
     assert_eq!(layout.selected, "000000000001");
-    assert!(!layout.show_agents);
+    // An absent preference shows the agents, as the previous tool did.
+    assert!(layout.show_agents);
     assert!(layout.workspaces[1].tabs.is_empty());
     let tab = &layout.workspaces[0].tabs[0];
     assert_eq!(tab.name, "Editor");
