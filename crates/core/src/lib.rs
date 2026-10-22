@@ -10,7 +10,7 @@ pub mod merge;
 mod navigation;
 pub mod theme;
 
-pub use actions::{AttachmentTarget, NameEdit, RenameOutcome};
+pub use actions::{AttachmentTarget, NameEdit, RenameOutcome, WORKSPACE_ICONS};
 pub use choices::SessionChoices;
 pub use geometry::PaneRect;
 

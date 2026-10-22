@@ -14,7 +14,6 @@
 #![forbid(unsafe_code)]
 
 mod controls;
-mod del;
 pub mod input;
 mod rename;
 pub mod restore;
@@ -52,7 +51,6 @@ pub struct Terminal {
     /// The text of the cell being copied: the engine overwrites the buffer it
     /// is given.
     grapheme: String,
-    del: del::Del,
     extended_keys_csi_u: bool,
     wheel_owner: Option<(u64, bool)>,
     last_mouse_motion: Vec<u8>,
@@ -87,7 +85,6 @@ impl Terminal {
             rows: RowIterator::new().map_err(Error)?,
             cells: CellIterator::new().map_err(Error)?,
             grapheme: String::new(),
-            del: del::Del::default(),
             extended_keys_csi_u: false,
             wheel_owner: None,
             last_mouse_motion: Vec::new(),
@@ -104,10 +101,8 @@ impl Terminal {
     pub fn write(&mut self, bytes: &[u8]) {
         let engine = &mut self.engine;
         let rename = &mut self.rename;
-        self.del.filter(bytes, |part| {
-            rename.filter(part, |part| {
-                controls::filter(part, |part| engine.vt_write(part));
-            });
+        rename.filter(bytes, |part| {
+            controls::filter(part, |part| engine.vt_write(part));
         });
     }
 
@@ -174,6 +169,7 @@ impl Terminal {
                 };
                 // A cell erased with a background colour keeps the colour in
                 // the cell rather than in its style.
+                self.grapheme.clear();
                 match raw.content_tag().map_err(Error)? {
                     CellContentTag::BgColorPalette => {
                         style.background = Color::Palette(raw.bg_color_palette().map_err(Error)?.0);
@@ -182,11 +178,20 @@ impl Terminal {
                         let rgb = raw.bg_color_rgb().map_err(Error)?;
                         style.background = Color::Rgb(rgb.r, rgb.g, rgb.b);
                     }
-                    CellContentTag::Codepoint | CellContentTag::CodepointGrapheme => {}
-                }
-                self.grapheme.clear();
-                if raw.has_text().map_err(Error)? {
-                    cell.graphemes_utf8(&mut self.grapheme).map_err(Error)?;
+                    CellContentTag::Codepoint => {
+                        // Zero is an empty cell. Simple text needs no lookup
+                        // or encoding through the engine's grapheme buffer.
+                        let codepoint = raw.codepoint().map_err(Error)?;
+                        if codepoint != 0 {
+                            self.grapheme.push(
+                                char::from_u32(codepoint)
+                                    .ok_or(Error(libghostty_vt::Error::InvalidValue))?,
+                            );
+                        }
+                    }
+                    CellContentTag::CodepointGrapheme => {
+                        cell.graphemes_utf8(&mut self.grapheme).map_err(Error)?;
+                    }
                 }
                 screen.push(&self.grapheme, width, style);
             }
@@ -304,6 +309,8 @@ pub struct EngineBuild {
     pub optimize: String,
     /// Whether the engine's SIMD code paths are enabled.
     pub simd: bool,
+    /// SHA-256 of the repository's required native patch.
+    pub patch_sha256: &'static str,
 }
 
 /// Returns how the terminal engine was built.
@@ -312,6 +319,7 @@ pub fn engine_build() -> Result<EngineBuild, Error> {
         version: build_info::version_string().map_err(Error)?,
         optimize: format!("{:?}", build_info::optimize_mode().map_err(Error)?),
         simd: build_info::supports_simd().map_err(Error)?,
+        patch_sha256: env!("TMUX_GHOSTTY_PATCH_SHA256"),
     })
 }
 
@@ -326,6 +334,29 @@ mod tests {
         assert_eq!(terminal.cursor().unwrap(), (5, 0));
         terminal.write(b"\r\nab");
         assert_eq!(terminal.cursor().unwrap(), (2, 1));
+    }
+
+    #[test]
+    fn soft_wrap_scroll_defaults_blanks_but_explicit_newline_keeps_background() {
+        let mut terminal = Terminal::new(5, 2, 10).unwrap();
+        terminal.write(b"\x1b[2;1H\x1b[46mabcdef");
+        let mut screen = Screen::default();
+        terminal.read_screen(&mut screen).unwrap();
+        assert_eq!(screen.cell(1, 0).unwrap().0, "f");
+        assert_eq!(
+            screen.cell(1, 0).unwrap().1.style.background,
+            Color::Palette(6)
+        );
+        assert_eq!(
+            screen.cell(1, 1).unwrap().1.style.background,
+            Color::Default
+        );
+        terminal.write(b"\r\n");
+        terminal.read_screen(&mut screen).unwrap();
+        assert_eq!(
+            screen.cell(1, 1).unwrap().1.style.background,
+            Color::Palette(6)
+        );
     }
 
     #[test]
@@ -422,5 +453,31 @@ mod tests {
             visible: true,
         });
         assert_eq!(screen, expected);
+    }
+
+    #[test]
+    fn screen_copy_keeps_codepoints_clusters_and_empty_background_cells() {
+        let mut terminal = Terminal::new(10, 2, 0).unwrap();
+        terminal.write("Aé界🙂e\u{301}\r\n\x1b[48;2;3;4;5m\x1b[2K".as_bytes());
+        let mut screen = Screen::default();
+        terminal.read_screen(&mut screen).unwrap();
+        for (column, text, width) in [
+            (0, "A", Width::Narrow),
+            (1, "é", Width::Narrow),
+            (2, "界", Width::Wide),
+            (3, "", Width::Spacer),
+            (4, "🙂", Width::Wide),
+            (5, "", Width::Spacer),
+            (6, "e\u{301}", Width::Narrow),
+            (7, "", Width::Narrow),
+        ] {
+            let (actual, cell) = screen.cell(0, column).unwrap();
+            assert_eq!((actual, cell.width), (text, width));
+        }
+        for column in 0..10 {
+            let (text, cell) = screen.cell(1, column).unwrap();
+            assert_eq!(text, "");
+            assert_eq!(cell.style.background, Color::Rgb(3, 4, 5));
+        }
     }
 }

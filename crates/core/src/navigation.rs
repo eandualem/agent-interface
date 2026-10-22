@@ -130,7 +130,9 @@ impl Layout {
             .unwrap_or_default();
         self.focus = previous.focus;
         match (self.tab(), previous.tab()) {
-            (Some(current), Some(old)) => !same_input_tree(&current.tree, &old.tree),
+            (Some(current), Some(old)) => {
+                current.id != old.id || !same_input_tree(&current.tree, &old.tree)
+            }
             (None, None) => false,
             _ => true,
         }
