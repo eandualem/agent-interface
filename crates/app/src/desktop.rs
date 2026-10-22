@@ -145,6 +145,7 @@ fn open_browser(
                 ..Browser::default()
             };
             browser.open(directory, cx);
+            browser.start_roster(cx);
             browser
         })
     })
@@ -296,6 +297,10 @@ struct Browser {
     configure_menu: bool,
     icon_picker: bool,
     menu_at: Option<gpui::Point<gpui::Pixels>>,
+    roster: Option<crate::roster::RosterSource>,
+    agents: Option<tmux_workspaces_roster::Snapshot>,
+    hide_agents: bool,
+    roster_updates: Option<Task<()>>,
     reset_focus: bool,
     navigation: Option<gpui::FocusHandle>,
     updates: Option<Task<()>>,
@@ -361,6 +366,68 @@ impl Browser {
         self.error = None;
         self.loading = true;
         self.start_reader(cx);
+    }
+
+    /// Poll Agent Backbone for agent states when it is installed. Without it
+    /// the panel has no agents section.
+    fn start_roster(&mut self, cx: &mut Context<Self>) {
+        let Ok(Some(directory)) = crate::roster::provider_directory(None, None, None, false) else {
+            return;
+        };
+        let (wake, mut woken) = mpsc::unbounded();
+        let Ok(roster) = crate::roster::RosterSource::start(directory, None, move || {
+            let _ = wake.unbounded_send(());
+        }) else {
+            return;
+        };
+        self.roster = Some(roster);
+        self.roster_updates = Some(cx.spawn(async move |this, cx| {
+            while woken.next().await.is_some() {
+                let updated = this.update(cx, |browser, cx| {
+                    if let Some(snapshot) = browser
+                        .roster
+                        .as_ref()
+                        .and_then(crate::roster::RosterSource::take_update)
+                    {
+                        browser.agents = Some(snapshot);
+                        cx.notify();
+                    }
+                });
+                if updated.is_err() {
+                    break;
+                }
+            }
+        }));
+    }
+
+    /// Show the tab holding this agent's session: the current tab if it does,
+    /// else the first in saved order. Nothing is attached or started.
+    fn go_to_agent(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let source = self
+            .source
+            .as_ref()
+            .and_then(|source| source.as_ref().ok())
+            .and_then(|path| std::fs::canonicalize(path).ok());
+        let Some(layout) = &mut self.layout else {
+            return;
+        };
+        let model = layout.model_mut();
+        let found = agent_destination(model, name, |socket| {
+            socket.is_none_or(|socket| std::fs::canonicalize(socket).ok() == source)
+        });
+        if let Some((space, tab, pane)) = found {
+            model.choose_workspace(&space);
+            model.choose_tab(&tab);
+            model.choose_pane(&pane);
+            self.save_notice = None;
+        } else {
+            self.save_notice = Some(format!("No tab shows {name}"));
+        }
+        self.close_menus();
+        if let Some(focus) = &self.navigation {
+            window.focus(focus, cx);
+        }
+        cx.notify();
     }
 
     fn start_reader(&mut self, cx: &mut Context<Self>) {
@@ -2017,6 +2084,116 @@ impl Render for Browser {
                 );
             }
         }
+        // Agents from Agent Backbone, under the tabs: needing you first, then
+        // working, then the rest, each with its state as a colored dot.
+        let agents = (self.roster.is_some() && !self.hide_agents).then(|| {
+            let snapshot = self.agents.clone().unwrap_or_default();
+            let entries: Option<Vec<(String, String)>> =
+                self.agents.as_ref().and_then(|snapshot| {
+                    snapshot.active_entries().map(|entries| {
+                        entries
+                            .into_iter()
+                            .map(|(name, state)| (name.to_owned(), state.to_owned()))
+                            .collect()
+                    })
+                });
+            let mut rows = div()
+                .id("agents")
+                .flex()
+                .flex_col()
+                .gap(px(1.0))
+                .max_h(window.viewport_size().height * 0.4)
+                .overflow_y_scroll();
+            match &entries {
+                None => {
+                    let reason = if self.agents.is_none() {
+                        "Loading agents…"
+                    } else {
+                        snapshot.error.unwrap_or("Agent Backbone unavailable")
+                    };
+                    rows = rows.child(
+                        div()
+                            .px(px(14.0))
+                            .h(px(panel::ROW))
+                            .flex()
+                            .items_center()
+                            .text_color(rgb(theme::MUTED))
+                            .child(reason),
+                    );
+                }
+                Some(entries) if entries.is_empty() => {
+                    rows = rows.child(
+                        div()
+                            .px(px(14.0))
+                            .h(px(panel::ROW))
+                            .flex()
+                            .items_center()
+                            .text_color(rgb(theme::MUTED))
+                            .child("No active agents"),
+                    );
+                }
+                Some(entries) => {
+                    for (name, state) in entries {
+                        let (color, filled) = match state.as_str() {
+                            "waiting_for_human" | "blocked" => (theme::DANGER, true),
+                            "busy" | "starting" => (theme::ACCENT, true),
+                            _ => (theme::MUTED, false),
+                        };
+                        let agent = name.clone();
+                        rows = rows.child(
+                            panel::row(SharedString::from(format!("agent-{name}")), false)
+                                .child(
+                                    div()
+                                        .size(px(8.0))
+                                        .flex_shrink_0()
+                                        .rounded_full()
+                                        .border_1()
+                                        .border_color(rgb(color))
+                                        .when(filled, |el| el.bg(rgb(color))),
+                                )
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .overflow_hidden()
+                                        .text_ellipsis()
+                                        .child(name.clone()),
+                                )
+                                .child(
+                                    div()
+                                        .flex_shrink_0()
+                                        .text_size(px(11.0))
+                                        .text_color(rgb(theme::MUTED))
+                                        .child(match state.as_str() {
+                                            "waiting_for_human" | "blocked" => "needs you",
+                                            "busy" => "working",
+                                            "starting" => "starting",
+                                            _ => "",
+                                        }),
+                                )
+                                .on_click(cx.listener(move |browser, _, window, cx| {
+                                    browser.go_to_agent(&agent, window, cx)
+                                })),
+                        );
+                    }
+                }
+            }
+            div()
+                .flex()
+                .flex_col()
+                .flex_shrink_0()
+                .pb(px(4.0))
+                .child(
+                    panel::section("AGENTS").child(
+                        div().px(px(4.0)).child(
+                            entries
+                                .as_ref()
+                                .map_or(String::new(), |entries| entries.len().to_string()),
+                        ),
+                    ),
+                )
+                .child(rows)
+        });
         let sidebar = div()
             .id("sidebar")
             .w(sidebar_width)
@@ -2061,6 +2238,7 @@ impl Render for Browser {
                         .on_click(cx.listener(|browser, _, _, cx| browser.discard_save(cx))),
                 )
             })
+            .children(agents)
             .child(
                 panel::row("configure", self.configure_menu)
                     .text_color(rgb(theme::MUTED))
@@ -2138,11 +2316,12 @@ impl Render for Browser {
                 .as_ref()
                 .map_or(0, |detail| detail.chars().count() + 3);
         let right = message.unwrap_or_default();
-        let right_cells = if right.is_empty() {
-            1
-        } else {
-            right.chars().count()
-        };
+        let right_cells = if self.roster.is_some() { 14 } else { 0 }
+            + if right.is_empty() {
+                1
+            } else {
+                right.chars().count()
+            };
         let centre = hints.join(" · ");
         let centre = if 2 * left_cells.max(right_cells) + centre.chars().count() + 6 > row_columns {
             String::new()
@@ -2173,11 +2352,37 @@ impl Render for Browser {
                     .items_center()
                     .child(centre),
             )
-            .child(if right.is_empty() {
-                div().text_color(rgb(theme::OK)).child("●")
-            } else {
-                div().text_color(rgb(theme::ACCENT)).child(right)
-            });
+            .child(
+                div()
+                    .flex()
+                    .gap(px(12.0))
+                    .when(self.roster.is_some(), |el| {
+                        el.child(
+                            div()
+                                .id("toggle-agents")
+                                .cursor_pointer()
+                                .text_color(rgb(if self.hide_agents {
+                                    theme::MUTED
+                                } else {
+                                    theme::NORMAL
+                                }))
+                                .child(if self.hide_agents {
+                                    "agents hidden"
+                                } else {
+                                    "agents shown"
+                                })
+                                .on_click(cx.listener(|browser, _, _, cx| {
+                                    browser.hide_agents = !browser.hide_agents;
+                                    cx.notify();
+                                })),
+                        )
+                    })
+                    .child(if right.is_empty() {
+                        div().text_color(rgb(theme::OK)).child("●")
+                    } else {
+                        div().text_color(rgb(theme::ACCENT)).child(right)
+                    }),
+            );
         div()
             .relative()
             .size_full()
@@ -2354,6 +2559,30 @@ impl Render for Browser {
             .child(status)
             .children(overlay)
     }
+}
+
+/// The workspace, tab and pane showing an agent's session from this window's
+/// source: the current tab if it shows one, else the first in saved order.
+fn agent_destination(
+    model: &tmux_workspaces_core::Layout,
+    name: &str,
+    same_source: impl Fn(Option<&str>) -> bool,
+) -> Option<(String, String, String)> {
+    let current = model.tab().map(|tab| tab.id.clone());
+    let mut found = Vec::new();
+    for space in &model.workspaces {
+        for tab in &space.tabs {
+            for leaf in tab.tree.leaves() {
+                if leaf.attachment.as_ref().is_some_and(|attachment| {
+                    attachment.session == name && same_source(attachment.source_socket.as_deref())
+                }) {
+                    found.push((space.id.clone(), tab.id.clone(), leaf.id.clone()));
+                }
+            }
+        }
+    }
+    found.sort_by_key(|(_, tab, _)| Some(tab) != current.as_ref());
+    found.into_iter().next()
 }
 
 // Navigation changes this window's selection only. An unavailable terminal keeps
@@ -2652,6 +2881,35 @@ mod tests {
         assert!(model.transfer_tab(&destination));
         assert_eq!(model.tab(), Some(&tab));
         assert!(!menu.current(&model));
+    }
+
+    #[test]
+    fn an_agent_goes_to_the_current_tab_showing_it_else_the_first() {
+        let mut model = tmux_workspaces_core::Layout::initial("/tmp".into());
+        let session = |name: &str, socket: Option<&str>| {
+            Some(Attachment {
+                session: name.into(),
+                source_socket: socket.map(Into::into),
+            })
+        };
+        assert!(model.attach(session("reviewer", None)));
+        let first = model.tab().unwrap().id.clone();
+        assert!(model.add_tab(None, "/tmp".into(), false));
+        assert!(model.attach(session("reviewer", Some("/elsewhere"))));
+        let other_source = model.tab().unwrap().id.clone();
+        assert!(model.add_tab(None, "/tmp".into(), false));
+        assert!(model.attach(session("reviewer", None)));
+        let current = model.tab().unwrap().clone();
+        let local = |socket: Option<&str>| socket.is_none();
+        let found = agent_destination(&model, "reviewer", local).unwrap();
+        assert_eq!(found.1, current.id);
+        assert_eq!(found.2, current.focus);
+        assert!(model.choose_tab(&other_source));
+        assert_eq!(
+            agent_destination(&model, "reviewer", local).unwrap().1,
+            first
+        );
+        assert!(agent_destination(&model, "absent", local).is_none());
     }
 
     #[test]

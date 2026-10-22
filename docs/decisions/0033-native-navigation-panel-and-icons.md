@@ -40,6 +40,15 @@ as their native counterparts (for example `★` as `star`). While the Python
 viewer may still read the same library, it keeps unknown fields and ignores
 `symbol`; clearing the icon clears both fields.
 
+**Agents.** When Agent Backbone is installed (its data directory exists, or it
+is configured as decision 0010 describes), each window polls it with the roster
+provider and shows an AGENTS section between the tabs and Settings: agents
+needing you first, then working agents, then the rest, each with a coloured dot
+(red, amber, or a grey ring) and a short state word. Clicking an agent shows the
+tab holding its session, preferring the current tab; nothing is attached or
+started. The status row's **agents shown** toggle hides the section. Without
+Backbone there is no section or toggle.
+
 ## Alternatives
 
 Platform symbol fonts (SF Symbols) are macOS-only and their licence restricts
@@ -49,12 +58,12 @@ Reusing the one-character `icon` field would limit icons to glyphs.
 
 ## Limits
 
-Not yet native: a Settings window with theme and shortcut editing, and the
-agents section, which needs the roster provider to be merged first. No
+Not yet native: a Settings window with theme and shortcut editing. No
 screenshot acceptance has been recorded.
 
 ## Verification
 
 Tests check that every offered icon is bundled, that older glyphs map to icons,
 and that a `symbol` saves, rejects invalid names and clears together with the
-older icon.
+older icon. A unit test checks that an agent resolves to the current tab
+showing it, else the first, and only for this window's source.
