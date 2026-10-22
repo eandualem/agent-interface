@@ -214,14 +214,20 @@ impl Chord {
             ctrl: false,
             alt: false,
             shift: unshifted.is_some(),
-            key: unshifted.unwrap_or(key).to_lowercase(),
+            // Only ASCII letters fold: other layouts can report a shifted and
+            // an unshifted key as distinct characters without a Shift flag.
+            key: unshifted.unwrap_or(key).to_ascii_lowercase(),
         })
     }
 
-    /// The chord a key press stands for.
+    /// The chord a key press stands for. Fn combinations have none: they
+    /// cannot be saved, so they never run a command.
     pub fn from_keystroke(keystroke: &gpui::Keystroke) -> Option<Self> {
-        let mut chord = Self::from_key(&keystroke.key)?;
         let modifiers = keystroke.modifiers;
+        if modifiers.function {
+            return None;
+        }
+        let mut chord = Self::from_key(&keystroke.key)?;
         chord.cmd = modifiers.platform;
         chord.ctrl = modifiers.control;
         chord.alt = modifiers.alt;
@@ -270,7 +276,7 @@ impl Chord {
             "space" => "Space",
             "backspace" => "⌫",
             "delete" => "⌦",
-            key => return label + &key.to_uppercase(),
+            key => return label + &key.to_ascii_uppercase(),
         });
         label
     }
@@ -440,6 +446,10 @@ mod tests {
         assert_eq!(bindings.command_for(&key), Some(Command::NextTab));
         let key = gpui::Keystroke::parse("cmd-t").unwrap();
         assert_eq!(bindings.command_for(&key), Some(Command::NewTab));
+        let key = gpui::Keystroke::parse("cmd-fn-t").unwrap();
+        assert_eq!(bindings.command_for(&key), None);
+        // A layout's shifted letter stays distinct from its unshifted one.
+        assert_ne!(Chord::parse("cmd-Ö"), Chord::parse("cmd-ö"));
     }
 
     #[test]

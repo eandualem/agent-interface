@@ -42,6 +42,7 @@ pub struct SettingsWindow {
     /// The command waiting for its new keys, and why the last keys were refused.
     recording: Option<shortcuts::Command>,
     refusal: Option<String>,
+    _keys: gpui::Subscription,
 }
 
 struct Open(WindowHandle<SettingsWindow>);
@@ -70,13 +71,33 @@ pub fn show(cx: &mut App) {
         }),
         ..Default::default()
     };
-    if let Ok(handle) = cx.open_window(options, |_, cx| {
-        cx.new(|cx| SettingsWindow {
-            page: Page::Appearance,
-            error: None,
-            focus: cx.focus_handle(),
-            recording: None,
-            refusal: None,
+    if let Ok(handle) = cx.open_window(options, |window, cx| {
+        let id = window.window_handle().window_id();
+        cx.new(|cx| {
+            // Record before shortcut dispatch, so keys such as Command-W are
+            // refused instead of closing the window.
+            let view = cx.entity().downgrade();
+            let keys = cx.intercept_keystrokes(move |event, window, cx| {
+                if window.window_handle().window_id() != id {
+                    return;
+                }
+                let recorded = view
+                    .update(cx, |view: &mut SettingsWindow, cx| {
+                        view.record(&event.keystroke, cx)
+                    })
+                    .unwrap_or(false);
+                if recorded {
+                    cx.stop_propagation();
+                }
+            });
+            SettingsWindow {
+                page: Page::Appearance,
+                error: None,
+                focus: cx.focus_handle(),
+                recording: None,
+                refusal: None,
+                _keys: keys,
+            }
         })
     }) {
         cx.set_global(Open(handle));
@@ -239,20 +260,23 @@ impl SettingsWindow {
     }
 
     /// While a shortcut is recording, the next key press becomes its chord.
-    fn key_down(&mut self, event: &gpui::KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+    /// Returns whether the key press was taken.
+    fn record(&mut self, key: &gpui::Keystroke, cx: &mut Context<Self>) -> bool {
         let Some(command) = self.recording else {
-            return;
+            return false;
         };
-        cx.stop_propagation();
-        let key = &event.keystroke;
         if key.key == "escape" && !key.modifiers.modified() {
             self.recording = None;
             self.refusal = None;
             cx.notify();
-            return;
+            return true;
         }
         let Some(chord) = shortcuts::Chord::from_keystroke(key) else {
-            return;
+            if key.modifiers.function {
+                self.refusal = Some("Fn combinations are not supported".into());
+                cx.notify();
+            }
+            return true;
         };
         let mut bindings = shortcuts::current();
         match bindings.assign(command, chord) {
@@ -266,6 +290,7 @@ impl SettingsWindow {
                 cx.notify();
             }
         }
+        true
     }
 
     fn shortcuts(&self, cx: &mut Context<Self>) -> gpui::Div {
@@ -298,7 +323,15 @@ impl SettingsWindow {
                 div()
                     .text_color(rgb(theme::muted()))
                     .child("Click a shortcut, then press the new keys. Escape cancels."),
-            );
+            )
+            .when_some(self.refusal.clone(), |el, refusal| {
+                el.child(
+                    div()
+                        .pt(px(8.0))
+                        .text_color(rgb(theme::danger()))
+                        .child(refusal),
+                )
+            });
         let mut group = "";
         for (command, id, label, section, _) in shortcuts::COMMANDS {
             if *section != group {
@@ -365,14 +398,6 @@ impl SettingsWindow {
                             })),
                     ),
             );
-            if recording && let Some(refusal) = &self.refusal {
-                page = page.child(
-                    div()
-                        .py(px(4.0))
-                        .text_color(rgb(theme::danger()))
-                        .child(refusal.clone()),
-                );
-            }
         }
         page = page.child(
             div().pt(px(12.0)).child(
@@ -504,7 +529,6 @@ impl Render for SettingsWindow {
             .size_full()
             .flex()
             .track_focus(&self.focus)
-            .on_key_down(cx.listener(Self::key_down))
             .bg(rgb(theme::surface()))
             .text_color(rgb(theme::normal()))
             .font_family(panel::FONT)
