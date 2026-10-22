@@ -14,7 +14,6 @@
 #![forbid(unsafe_code)]
 
 mod controls;
-mod del;
 mod rename;
 pub mod restore;
 mod screen;
@@ -51,7 +50,6 @@ pub struct Terminal {
     /// The text of the cell being copied: the engine overwrites the buffer it
     /// is given.
     grapheme: String,
-    del: del::Del,
     rename: rename::Rename,
 }
 
@@ -82,7 +80,6 @@ impl Terminal {
             rows: RowIterator::new().map_err(Error)?,
             cells: CellIterator::new().map_err(Error)?,
             grapheme: String::new(),
-            del: del::Del::default(),
             rename: rename::Rename::default(),
         })
     }
@@ -95,25 +92,8 @@ impl Terminal {
     pub fn write(&mut self, bytes: &[u8]) {
         let engine = &mut self.engine;
         let rename = &mut self.rename;
-        self.del.filter(bytes, |part, horizontal| {
-            // The pinned engine routes CHA/HPA through a two-axis cursor move,
-            // incorrectly adding the top margin to the unchanged row. Its mode
-            // API only changes the bit, unlike sending DECRST/DECSET (which homes
-            // the cursor). Keep the original mode for every subsequent byte.
-            let origin = horizontal && engine.mode(Mode::ORIGIN).expect("valid origin mode");
-            if origin {
-                engine
-                    .set_mode(Mode::ORIGIN, false)
-                    .expect("valid origin mode");
-            }
-            rename.filter(part, |part| {
-                controls::filter(part, |part| engine.vt_write(part));
-            });
-            if origin {
-                engine
-                    .set_mode(Mode::ORIGIN, true)
-                    .expect("valid origin mode");
-            }
+        rename.filter(bytes, |part| {
+            controls::filter(part, |part| engine.vt_write(part));
         });
     }
 
@@ -311,6 +291,8 @@ pub struct EngineBuild {
     pub optimize: String,
     /// Whether the engine's SIMD code paths are enabled.
     pub simd: bool,
+    /// SHA-256 of the repository's required native patch.
+    pub patch_sha256: &'static str,
 }
 
 /// Returns how the terminal engine was built.
@@ -319,6 +301,7 @@ pub fn engine_build() -> Result<EngineBuild, Error> {
         version: build_info::version_string().map_err(Error)?,
         optimize: format!("{:?}", build_info::optimize_mode().map_err(Error)?),
         simd: build_info::supports_simd().map_err(Error)?,
+        patch_sha256: env!("TMUX_GHOSTTY_PATCH_SHA256"),
     })
 }
 
@@ -333,6 +316,29 @@ mod tests {
         assert_eq!(terminal.cursor().unwrap(), (5, 0));
         terminal.write(b"\r\nab");
         assert_eq!(terminal.cursor().unwrap(), (2, 1));
+    }
+
+    #[test]
+    fn soft_wrap_scroll_defaults_blanks_but_explicit_newline_keeps_background() {
+        let mut terminal = Terminal::new(5, 2, 10).unwrap();
+        terminal.write(b"\x1b[2;1H\x1b[46mabcdef");
+        let mut screen = Screen::default();
+        terminal.read_screen(&mut screen).unwrap();
+        assert_eq!(screen.cell(1, 0).unwrap().0, "f");
+        assert_eq!(
+            screen.cell(1, 0).unwrap().1.style.background,
+            Color::Palette(6)
+        );
+        assert_eq!(
+            screen.cell(1, 1).unwrap().1.style.background,
+            Color::Default
+        );
+        terminal.write(b"\r\n");
+        terminal.read_screen(&mut screen).unwrap();
+        assert_eq!(
+            screen.cell(1, 1).unwrap().1.style.background,
+            Color::Palette(6)
+        );
     }
 
     #[test]

@@ -13,3 +13,5 @@
 *.trace
 *.log
 .DS_Store
+# Prepared pinned native source (decision record 0025)
+/.native/

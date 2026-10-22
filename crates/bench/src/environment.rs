@@ -34,6 +34,10 @@ pub fn describe(tmux_version: &str) -> Vec<(&'static str, String)> {
             ("libghostty-vt", engine.version.to_owned()),
             ("libghostty-vt optimisation", engine.optimize),
             ("libghostty-vt SIMD", engine.simd.to_string()),
+            (
+                "libghostty-vt patch SHA-256",
+                engine.patch_sha256.to_owned(),
+            ),
         ]),
         Err(error) => values.push(("libghostty-vt", error.to_string())),
     }

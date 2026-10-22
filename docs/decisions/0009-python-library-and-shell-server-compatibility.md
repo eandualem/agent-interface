@@ -175,6 +175,31 @@ The defaults and compatibility rules follow the MIT-licensed Python tool at
 [51de675](https://github.com/eandualem/tmux-workspaces/tree/51de6757cd0aeda3c19fe68fa4ec5b93ab206804),
 including its `integrations/keymap.toml`, `keymap.py` and keymap tests.
 
+`core::theme::Theme::parse` validates at most 16 KiB of UTF-8, the six presets,
+two grounds and seven roles, retaining ordered colour fallbacks, attributes and
+background inheritance. The preset data comes from the pinned MIT-licensed
+Python tool; its copyright notices are retained with the data. Unknown sections/options and invalid values are errors.
+It preserves symbolic `default`; native palette resolution remains open (TH-9).
+`app::theme::load` selects the explicit path, environment override, XDG path or
+home default once per call, without resolving symlinks. It follows dotfile
+links, opens nonblocking and checks the opened handle is a regular file before
+reading at most the size limit plus one byte. The `libc` 0.2.191 constant
+(MIT OR Apache-2.0, already pinned) supplies `O_NONBLOCK`; no local unsafe code
+or new package version is needed. Missing files silently retain the supplied
+working theme or shipped default; invalid/unreadable files retain it with a
+reason-first diagnostic and escaped path last. There are no file writes,
+startup integration, editor or native rendering in this layer.
+
+Two source/documentation differences at the pinned Python commit are retained
+explicitly: the `paper` accent is `#b8651b` in code, while THEMES documents
+`#005fb8`; outline backgrounds inherit the panel in code, while THEMES says
+surface. Inheritance follows the preset's first background: panel first, then
+surface only when distinct. Consequently presets with both grounds `default`
+inherit matching backgrounds from panel. This model reproduces the existing
+configuration interpretation; it does not settle the native visual contract.
+Native mapping and those documented visual expectations remain pending.
+>>>>>>> 2d8171a (feat: read shared theme configuration without activating it)
+
 **Leave the Python tool's runtime alone.** Never create, change or delete the
 Python tool's `windows/<instance>/` runtime directories, viewer sockets or
 action sockets (PE-24).
