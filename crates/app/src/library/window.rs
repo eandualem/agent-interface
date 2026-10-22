@@ -1,6 +1,6 @@
 use std::{collections::HashMap, io, path::Path};
 
-use tmux_workspaces_core::Layout;
+use tmux_workspaces_core::{Layout, Leaf};
 use tmux_workspaces_store::{Document, Error, Reconciliation};
 
 /// One window's local model and the shared document on which its edits are based.
@@ -16,6 +16,7 @@ pub struct WindowLayout {
     model: Layout,
     tab_uses: HashMap<String, u64>,
     use_clock: u64,
+    terminal_focused: bool,
 }
 
 impl WindowLayout {
@@ -26,6 +27,7 @@ impl WindowLayout {
             base: document,
             tab_uses: HashMap::new(),
             use_clock: 0,
+            terminal_focused: false,
         }
     }
 
@@ -36,8 +38,33 @@ impl WindowLayout {
 
     /// Apply local model operations. Changes are in memory only and must remain
     /// schema-valid; an invalid model is rejected by the next refresh.
+    /// Editing returns input focus to navigation. After displaying the resulting
+    /// selection, explicitly focus its terminal if that is the user's intent.
     pub fn model_mut(&mut self) -> &mut Layout {
+        self.focus_navigation();
         &mut self.model
+    }
+
+    /// The selected pane eligible for terminal input, or None while navigation
+    /// has focus. This does not establish that a connection is ready or send keys.
+    pub fn terminal_input(&self) -> Option<&Leaf> {
+        self.model
+            .pane()
+            .filter(|pane| self.terminal_focused && !pane.empty)
+    }
+
+    /// Explicitly move input focus to the selected terminal. The caller must
+    /// first check that it is displayed and ready. An empty workspace or chooser
+    /// stays in navigation. This state is local and never saved in layouts.db.
+    pub fn focus_terminal(&mut self) -> bool {
+        self.terminal_focused = self.model.pane().is_some_and(|pane| !pane.empty);
+        self.terminal_focused
+    }
+
+    /// Return input focus to navigation without changing pane selection or the
+    /// separate display mode that shows only one pane.
+    pub fn focus_navigation(&mut self) {
+        self.terminal_focused = false;
     }
 
     /// Record the current tab only after it has actually been shown. Selecting
@@ -54,9 +81,16 @@ impl WindowLayout {
     /// Choose an existing attachment using this window's actual viewing history.
     /// Refresh the shared arrangement first and pass the captured window source.
     /// This reads source paths only and changes model selection, not terminal input.
+    /// A selected attachment or a lookup error returns input focus to navigation.
+    /// No match leaves the current focus unchanged.
     /// Call [`Self::record_shown_tab`] after the chosen tab is actually displayed.
     pub fn choose_attached_session(&mut self, name: &str, source: &Path) -> io::Result<bool> {
-        crate::sessions::choose_attached_session(&mut self.model, name, &self.tab_uses, source)
+        let result =
+            crate::sessions::choose_attached_session(&mut self.model, name, &self.tab_uses, source);
+        if !matches!(&result, Ok(false)) {
+            self.focus_navigation();
+        }
+        result
     }
 
     /// Apply a validated library replacement and return its conflict/input flags.
@@ -66,11 +100,15 @@ impl WindowLayout {
     /// recognizes unsaved local edits. A conflict adopts the latest arrangement
     /// and requires the caller to ask for a retry. An error leaves both this model
     /// and its merge base unchanged. `path` is used only for error diagnostics.
-    /// The caller must honor `active_tree_changed` before forwarding more input.
+    /// An active-tree change or conflict returns input focus to navigation. A
+    /// subsequent unchanged refresh cannot restore it; require an explicit choice.
     pub fn refresh(&mut self, latest: Document, path: &Path) -> Result<Reconciliation, Error> {
         let result = self.base.reconcile(&self.model, &latest, path)?;
         self.model = result.document.model().clone();
         self.base = latest;
+        if result.active_tree_changed || result.conflict {
+            self.focus_navigation();
+        }
         Ok(result)
     }
 }
@@ -79,6 +117,134 @@ impl WindowLayout {
 mod tests {
     use super::*;
     use tmux_workspaces_core::Attachment;
+
+    #[test]
+    fn failed_session_navigation_disarms_input_without_changing_the_layout() {
+        let path = Path::new("layouts.db");
+        let raw = r#"{"version":2,"workspaces":[{"id":"000000000001","name":"Workspace","tabs":[{"id":"000000000002","name":"Editor","tree":{"id":"000000000003","agent":null},"focus":"000000000003"}],"selected":"000000000002"}],"selected":"000000000001","focus":false}"#;
+        let mut window = WindowLayout::new(Document::parse(raw.into(), path).unwrap());
+        let before = window.model().clone();
+        assert!(window.focus_terminal());
+        let error = window
+            .choose_attached_session("worker", Path::new("invalid\0source"))
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(window.terminal_input().is_none());
+        assert_eq!(window.model(), &before);
+
+        // An unchanged library refresh cannot silently re-enable terminal input.
+        let result = window
+            .refresh(Document::parse(raw.into(), path).unwrap(), path)
+            .unwrap();
+        assert!(!result.conflict && !result.active_tree_changed);
+        assert!(window.terminal_input().is_none());
+        assert!(window.focus_terminal());
+        assert!(
+            !window
+                .choose_attached_session("missing", Path::new("/fixture/source"))
+                .unwrap()
+        );
+        assert!(window.terminal_input().is_some());
+    }
+
+    #[test]
+    fn changed_shared_panes_require_explicit_window_local_input_focus() {
+        let path = Path::new("layouts.db");
+        let raw = r#"{"version":2,"workspaces":[{"id":"000000000001","name":"Workspace","tabs":[{"id":"000000000002","name":"Editor","tree":{"id":"000000000003","agent":null},"focus":"000000000003"}],"selected":"000000000002"}],"selected":"000000000001","focus":true}"#;
+        let base = Document::parse(raw.into(), path).unwrap();
+        let mut window = WindowLayout::new(Document::parse(raw.into(), path).unwrap());
+        let mut other = WindowLayout::new(Document::parse(raw.into(), path).unwrap());
+        assert!(window.terminal_input().is_none());
+        assert!(window.model().focus); // Display zoom is not keyboard focus.
+        assert!(window.focus_terminal());
+        assert!(other.focus_terminal());
+        assert_eq!(window.terminal_input().unwrap().id, "000000000003");
+
+        let mut peer = base.model().clone();
+        peer.rename_tab("Renamed");
+        let result = window
+            .refresh(base.with_model(&peer, path).unwrap(), path)
+            .unwrap();
+        assert!(!result.active_tree_changed && !result.conflict);
+        assert!(window.terminal_input().is_some());
+
+        peer.attach(Some(Attachment {
+            session: "worker".into(),
+            source_socket: None,
+        }));
+        let result = window
+            .refresh(base.with_model(&peer, path).unwrap(), path)
+            .unwrap();
+        assert!(result.active_tree_changed);
+        assert!(window.terminal_input().is_none());
+        assert!(other.terminal_input().is_some());
+        let result = window
+            .refresh(base.with_model(&peer, path).unwrap(), path)
+            .unwrap();
+        assert!(!result.active_tree_changed);
+        assert!(window.terminal_input().is_none());
+        assert!(window.focus_terminal());
+        assert_eq!(
+            window
+                .terminal_input()
+                .unwrap()
+                .attachment
+                .as_ref()
+                .unwrap()
+                .session,
+            "worker"
+        );
+        assert!(
+            window
+                .choose_attached_session("worker", Path::new("/fixture/source"))
+                .unwrap()
+        );
+        assert!(window.terminal_input().is_none());
+
+        window.model_mut().rename_tab("Local name");
+        assert!(window.focus_terminal());
+        peer.rename_tab("Peer name");
+        let result = window
+            .refresh(base.with_model(&peer, path).unwrap(), path)
+            .unwrap();
+        assert!(result.conflict && !result.active_tree_changed);
+        assert!(window.terminal_input().is_none());
+
+        peer.split(tmux_workspaces_core::Direction::Right, "/tmp".into(), false);
+        let second = peer.pane().unwrap().id.clone();
+        let result = window
+            .refresh(base.with_model(&peer, path).unwrap(), path)
+            .unwrap();
+        assert!(result.active_tree_changed && !result.conflict);
+        window.model_mut().choose_pane(&second);
+        assert!(window.focus_terminal());
+        assert_eq!(window.terminal_input().unwrap().id, second);
+        // A replacement tab can retain the same tree while its new identity
+        // causes navigation to fall back to the first leaf.
+        peer.workspaces[0].tabs[0].id = "aabbccddeeff".into();
+        peer.workspaces[0].selected = "aabbccddeeff".into();
+        let result = window
+            .refresh(base.with_model(&peer, path).unwrap(), path)
+            .unwrap();
+        assert!(!result.conflict);
+        assert!(result.active_tree_changed);
+        assert_ne!(window.model().pane().unwrap().id, second);
+        assert!(window.terminal_input().is_none());
+
+        assert!(window.focus_terminal());
+        window.focus_navigation();
+        assert!(window.terminal_input().is_none());
+        assert!(window.model().focus);
+        assert!(window.focus_terminal());
+        window.model_mut().add_tab(None, "/tmp".into(), true);
+        assert!(window.terminal_input().is_none());
+        assert!(!window.focus_terminal()); // The new pane is a chooser.
+        while window.model().tab().is_some() {
+            window.model_mut().close_tab();
+        }
+        assert!(!window.focus_terminal());
+        assert!(window.terminal_input().is_none());
+    }
 
     #[test]
     fn repeated_refreshes_retain_local_edits_and_advance_the_base_only_after_success() {

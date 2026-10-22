@@ -34,8 +34,11 @@ pub(crate) struct Del {
 }
 
 impl Del {
-    /// Passes every byte through except DEL in ground state.
-    pub(crate) fn filter(&mut self, bytes: &[u8], mut write: impl FnMut(&[u8])) {
+    /// Passes every byte through except DEL in ground state. Marks the final
+    /// byte of horizontal-position CSI commands so the caller can compensate
+    /// for the engine applying origin mode to their unchanged row. Relative
+    /// position commands (`CSI a/e`) are cancelled: tmux ignores them.
+    pub(crate) fn filter(&mut self, bytes: &[u8], mut write: impl FnMut(&[u8], bool)) {
         let mut start = 0;
         let mut index = 0;
         while index < bytes.len() {
@@ -48,7 +51,7 @@ impl Del {
                 index += offset;
                 if bytes[index] == DEL {
                     if start < index {
-                        write(&bytes[start..index]);
+                        write(&bytes[start..index], false);
                     }
                     index += 1;
                     start = index;
@@ -65,12 +68,28 @@ impl Del {
                     break;
                 };
                 index += offset;
+                if matches!(bytes[index], b'G' | b'`') {
+                    if start < index {
+                        write(&bytes[start..index], false);
+                    }
+                    write(&bytes[index..index + 1], true);
+                    start = index + 1;
+                } else if matches!(bytes[index], b'a' | b'e') {
+                    if start < index {
+                        write(&bytes[start..index], false);
+                    }
+                    // The prefix may already be in the engine's parser. CAN
+                    // ends it without a cursor move; dropping only the final
+                    // byte would let following text complete the sequence.
+                    write(b"\x18", false);
+                    start = index + 1;
+                }
             }
             self.state = self.state.next(bytes[index]);
             index += 1;
         }
         if start < bytes.len() {
-            write(&bytes[start..]);
+            write(&bytes[start..], false);
         }
     }
 }
@@ -119,8 +138,8 @@ mod tests {
         for split in 0..=input.len() {
             let mut filter = Del::default();
             let mut actual = Vec::new();
-            filter.filter(&input[..split], |part| actual.extend_from_slice(part));
-            filter.filter(&input[split..], |part| actual.extend_from_slice(part));
+            filter.filter(&input[..split], |part, _| actual.extend_from_slice(part));
+            filter.filter(&input[split..], |part, _| actual.extend_from_slice(part));
             assert_eq!(actual, expected, "split at {split}");
         }
     }
@@ -145,5 +164,95 @@ mod tests {
             b"\x1bP1\x18\x7fa\x1bP:q\x1a\x7fb\x1bP1?q\x18\x7fc",
             b"\x1bP1\x18a\x1bP:q\x1ab\x1bP1?q\x18c",
         );
+    }
+
+    #[test]
+    fn horizontal_position_keeps_the_row_and_origin_mode_across_writes() {
+        use crate::Terminal;
+        for origin in [false, true] {
+            for final_byte in ['G', '`'] {
+                for (column, expected) in [("", 0), ("0", 0), ("1", 0), ("5", 4), ("999", 9)] {
+                    let input = format!(
+                        "\x1b[3;8r\x1b[?6{}\x1b[2;2H\x1b[{column}{final_byte}",
+                        if origin { 'h' } else { 'l' }
+                    );
+                    for split in 0..=input.len() {
+                        let mut terminal = Terminal::new(10, 10, 0).unwrap();
+                        terminal.write(&input.as_bytes()[..split]);
+                        terminal.write(&input.as_bytes()[split..]);
+                        let row = if origin { 3 } else { 1 };
+                        assert_eq!(
+                            terminal.cursor().unwrap(),
+                            (expected, row),
+                            "{input:?} split{split}"
+                        );
+                        assert_eq!(terminal.modes().unwrap().origin, origin);
+                        terminal.write(b"\x1b[2;2H");
+                        assert_eq!(terminal.cursor().unwrap(), (1, row));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn horizontal_markers_ignore_text_strings_and_cancelled_sequences() {
+        let input = b"G`\x1b]title[G\x07\x1bPqG`\x1b\\\x1b[1\x18G\x1b[5G\x1b[2`";
+        for split in 0..=input.len() {
+            let mut filter = Del::default();
+            let mut marked = Vec::new();
+            let mut actual = Vec::new();
+            for part in [&input[..split], &input[split..]] {
+                filter.filter(part, |bytes, horizontal| {
+                    actual.extend_from_slice(bytes);
+                    if horizontal {
+                        marked.extend_from_slice(bytes);
+                    }
+                });
+            }
+            assert_eq!(actual, input);
+            assert_eq!(marked, b"G`", "split{split}");
+        }
+    }
+
+    #[test]
+    fn unsupported_relative_position_preserves_cursor_wrap_and_repeat() {
+        use crate::{Screen, Terminal};
+        // Normal position, origin mode and a pending wrap at the right edge.
+        for setup in ["\x1b[2;2HX", "\x1b[3;8r\x1b[?6h\x1b[2;2HX", "\x1b[1;10HX"] {
+            for command in ["\x1b[a", "\x1b[2e", "\x1b[0a\x1b[999e"] {
+                let input = format!("{setup}{command}");
+                for split in 0..=input.len() {
+                    let mut actual = Terminal::new(10, 10, 0).unwrap();
+                    let mut expected = Terminal::new(10, 10, 0).unwrap();
+                    actual.write(&input.as_bytes()[..split]);
+                    actual.write(&input.as_bytes()[split..]);
+                    expected.write(setup.as_bytes());
+                    assert_eq!(actual.cursor().unwrap(), expected.cursor().unwrap());
+                    assert_eq!(
+                        actual.cursor_pending_wrap().unwrap(),
+                        expected.cursor_pending_wrap().unwrap()
+                    );
+                    assert_eq!(actual.modes().unwrap(), expected.modes().unwrap());
+                    // Neither ignored command clears the preceding character.
+                    actual.write(b"\x1b[bY");
+                    expected.write(b"\x1b[bY");
+                    let mut screens = [Screen::default(), Screen::default()];
+                    actual.read_screen(&mut screens[0]).unwrap();
+                    expected.read_screen(&mut screens[1]).unwrap();
+                    assert_eq!(screens[0], screens[1], "{input:?} split{split}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn relative_position_filter_keeps_strings_text_and_cancellation_boundaries() {
+        check(
+            b"ae\x1b]title[2a\x07\x1bPq[2e\x1b\\",
+            b"ae\x1b]title[2a\x07\x1bPq[2e\x1b\\",
+        );
+        check(b"\x1b[2\x18a\x1b[2\x1be", b"\x1b[2\x18a\x1b[2\x1be");
+        check(b"\x1b[2aZ\x1b[2eY", b"\x1b[2\x18Z\x1b[2\x18Y");
     }
 }
