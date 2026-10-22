@@ -383,7 +383,6 @@ struct Browser {
     agents: Option<tmux_workspaces_roster::Snapshot>,
     roster_updates: Option<Task<()>>,
     jump: Option<jump::Jump>,
-    hovered_pane: Option<String>,
     /// A navigation panel drag: where it started and the width then.
     sidebar_drag: Option<(gpui::Pixels, gpui::Pixels)>,
     reset_focus: bool,
@@ -1447,25 +1446,30 @@ impl Render for Browser {
                         return;
                     }
                     let key = &event.keystroke;
-                    // The jump field keeps typing; arrows move its highlight
-                    // unless an input method is composing. A shortcut that
-                    // moves focus elsewhere closes Jump first.
+                    // The jump field keeps typing and editing; arrows move its
+                    // highlight unless an input method is composing. Only a
+                    // shortcut that moves focus elsewhere closes Jump first.
                     if let Some(jump) = &browser.jump {
-                        if key.modifiers.modified() {
-                            if shortcuts::command_for(key) != Some(shortcuts::Command::Jump) {
-                                browser.close_jump(window, cx);
-                            }
+                        let command = shortcuts::command_for(key);
+                        let numbered = key.modifiers.platform
+                            && !key.modifiers.control
+                            && key.key.parse::<u8>().is_ok();
+                        if command == Some(shortcuts::Command::Jump) {
+                            // Falls through: the command closes Jump again.
+                        } else if command.is_some() || numbered {
+                            browser.close_jump(window, cx);
                         } else {
-                            if jump.composing(cx) {
-                                return;
+                            if !key.modifiers.modified() && !jump.composing(cx) {
+                                let step = match key.key.as_str() {
+                                    "up" => Some(-1),
+                                    "down" => Some(1),
+                                    _ => None,
+                                };
+                                if let Some(step) = step {
+                                    browser.jump_move(step, cx);
+                                    cx.stop_propagation();
+                                }
                             }
-                            let step = match key.key.as_str() {
-                                "up" => -1,
-                                "down" => 1,
-                                _ => return,
-                            };
-                            browser.jump_move(step, cx);
-                            cx.stop_propagation();
                             return;
                         }
                     }

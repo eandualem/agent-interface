@@ -27,8 +27,6 @@ pub(super) struct Cards<'a> {
     pub split_bounds: &'a Rc<RefCell<HashMap<String, Bounds<Pixels>>>>,
     /// The agent state shown in each pane, by leaf.
     pub leaf_states: HashMap<String, AgentState>,
-    /// The pane under the pointer, for hover headers.
-    pub hovered: Option<&'a str>,
 }
 
 impl Browser {
@@ -113,6 +111,7 @@ impl Browser {
         let id = leaf.id.clone();
         let focused = leaf.id == cards.focus;
         let state = cards.leaf_states.get(&leaf.id).copied();
+        let group: SharedString = format!("pane-group-{id}").into();
         let border = if state == Some(AgentState::NeedsYou) {
             c.attention
         } else if focused {
@@ -138,6 +137,7 @@ impl Browser {
         };
         div()
             .id(SharedString::from(format!("pane-{id}")))
+            .group(group.clone())
             .relative()
             .size_full()
             .min_w_0()
@@ -198,35 +198,24 @@ impl Browser {
                     .when(!focused, |el| el.opacity(c.pane_dim))
                     .child(body),
             )
-            // In hover mode the header overlays the top of the hovered pane and
-            // takes the pointer there, so clicks never reach the terminal below.
-            .children(
-                overlay
-                    .filter(|_| cards.hovered == Some(leaf.id.as_str()))
-                    .map(|header| {
-                        div()
-                            .id(SharedString::from(format!("pane-hover-header-{id}")))
-                            .absolute()
-                            .top_0()
-                            .left_0()
-                            .right_0()
-                            .occlude()
-                            .child(header)
-                    }),
-            )
-            .on_hover(cx.listener({
-                let id = id.clone();
-                move |browser, hovered: &bool, _, cx| {
-                    let before = browser.hovered_pane.clone();
-                    if *hovered {
-                        browser.hovered_pane = Some(id.clone());
-                    } else if browser.hovered_pane.as_deref() == Some(id.as_str()) {
-                        browser.hovered_pane = None;
-                    }
-                    if browser.hovered_pane != before {
-                        cx.notify();
-                    }
-                }
+            // In hover mode the header overlays the top of the pane while it is
+            // hovered. The pointer is always over the pane when it is over the
+            // header, so the header is visible whenever it takes the pointer;
+            // it stops pointer events there, so none reach the terminal below.
+            .children(overlay.map(|header| {
+                div()
+                    .id(SharedString::from(format!("pane-hover-header-{id}")))
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .right_0()
+                    .opacity(0.0)
+                    .group_hover(group, |style| style.opacity(1.0))
+                    .on_any_mouse_down(|_, _, cx| cx.stop_propagation())
+                    .on_mouse_up(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+                    .on_mouse_move(|_, _, cx| cx.stop_propagation())
+                    .child(header)
             }))
             .into_any_element()
     }
