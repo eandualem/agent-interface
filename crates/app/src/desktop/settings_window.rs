@@ -13,6 +13,7 @@ use super::{
     shortcuts,
 };
 
+#[cfg(target_os = "macos")]
 const FIXED: &[(&str, &str)] = &[
     ("Select tab 1–9", "⌘1–9"),
     ("Select workspace 1–9", "⌥⌘1–9"),
@@ -25,6 +26,21 @@ const FIXED: &[(&str, &str)] = &[
     ("Open library", "⌘O"),
     ("Close window", "⌘W"),
     ("Quit", "⌘Q"),
+];
+
+#[cfg(not(target_os = "macos"))]
+const FIXED: &[(&str, &str)] = &[
+    ("Select tab 1–9", "Alt+1–9"),
+    ("Select workspace 1–9", "Ctrl+Alt+1–9"),
+    ("Copy selection", "Ctrl+Shift+C"),
+    ("Paste", "Ctrl+Shift+V"),
+    ("Scroll history", "Shift+PgUp  Shift+PgDn"),
+    ("Select locally in mouse programs", "Shift+drag"),
+    ("Settings", "Ctrl+Shift+,"),
+    ("New window", "Ctrl+Shift+N"),
+    ("Open library", "Ctrl+Shift+O"),
+    ("Close window", "Ctrl+Shift+W"),
+    ("Quit", "Ctrl+Shift+Q"),
 ];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -247,7 +263,11 @@ impl SettingsWindow {
                     .child(Self::value(library))
                     .child(
                         ui::button("open-library", "Open another", ui::Button::Secondary)
-                            .child(ui::key_hint("⌘O"))
+                            .child(ui::key_hint(
+                                shortcuts::Chord::parse(shortcuts::platform_key("cmd-o"))
+                                    .unwrap()
+                                    .label(),
+                            ))
                             .on_click(|_, window, cx| {
                                 window.dispatch_action(Box::new(super::OpenLibrary), cx)
                             }),

@@ -131,7 +131,13 @@ impl Browser {
                 .tabs
                 .iter()
                 .any(|tab| self.tab_needs_you(tab, states.as_ref()));
-            let key = (index < 9).then(|| format!("⌥⌘{}", index + 1));
+            let key = (index < 9).then(|| {
+                if cfg!(target_os = "macos") {
+                    format!("⌥⌘{}", index + 1)
+                } else {
+                    format!("Ctrl+Alt+{}", index + 1)
+                }
+            });
             menu = menu.child(
                 ui::menu_item(
                     SharedString::from(format!("workspace-{id}")),

@@ -171,6 +171,33 @@ can be replaced through **Open Library…**. Keep its database and journal files
 for recovery; the app never overwrites them with an empty arrangement.
 `--help` and `--version` work without a display or tmux.
 
+## Linux keyboard shortcuts
+
+Linux uses the same commands and shortcut editor, with these defaults. Ordinary
+Control keys such as Ctrl-C, Ctrl-D and Ctrl-R still reach the terminal.
+
+| Command | Linux default |
+|---|---|
+| New tab | Ctrl+Shift+T |
+| Split right / below | Ctrl+Shift+D / Ctrl+Shift+E |
+| Attach session | Ctrl+Shift+A |
+| Rename tab | Ctrl+Shift+R |
+| Previous / next pane | Ctrl+Shift+[ / Ctrl+Shift+] |
+| Previous / next tab | Ctrl+Page Up / Ctrl+Page Down |
+| Expand or restore pane | Ctrl+Shift+Enter |
+| New / rename workspace | Ctrl+Alt+Shift+N / Ctrl+Alt+Shift+R |
+| Previous / next workspace | Ctrl+Shift+Page Up / Ctrl+Shift+Page Down |
+| Focus panel / Jump | Ctrl+Shift+B / Ctrl+Shift+K |
+| Select tab / workspace 1–9 | Alt+1–9 / Ctrl+Alt+1–9 |
+| Copy / paste | Ctrl+Shift+C / Ctrl+Shift+V |
+| New / close window | Ctrl+Shift+N / Ctrl+Shift+W |
+| Open library / Settings / Quit | Ctrl+Shift+O / Ctrl+Shift+, / Ctrl+Shift+Q |
+
+The defaults avoid Super keys and Ctrl+Alt+arrow keys commonly used by the desktop.
+A customized desktop may reserve other combinations; use Settings to change the
+configurable commands. Saved shortcut strings keep their literal meaning:
+`cmd` means Command on macOS and Super on Linux. macOS defaults are unchanged.
+
 ## Inspect a legacy keymap
 
 After the [source build setup](CONTRIBUTING.md#build-and-test), print the effective

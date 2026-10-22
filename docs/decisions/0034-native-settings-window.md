@@ -15,7 +15,7 @@ application menu or Command-comma. It has four pages:
   the panel, menus, status row and terminal colours repaint, and terminals with
   a new text size declare their new cell size to tmux
   ([0032](0032-source-equivalent-chrome-and-sizing.md)).
-- **Shortcuts:** fifteen workspace commands (new tab, splits, attach, rename,
+- **Shortcuts:** sixteen workspace commands (new tab, splits, attach, rename,
   pane, tab and workspace navigation, focus) are configurable: click one and
   press the new keys. A chord needs ⌘, ⌃ or ⌥ so terminal typing is
   unaffected; keys owned by copy, paste, the application menu or numbered
@@ -45,6 +45,23 @@ and keymap are not changed.
 
 **Closing a window.** The panel's old Detach entry becomes the standard Close
 Window command (Command-W) in the application menu; sessions keep running.
+
+### Linux defaults
+
+Linux uses Ctrl+Shift for most commands and Ctrl+Page Up/Down for tabs;
+Alt+1–9 selects tabs. These follow familiar
+[GNOME Terminal bindings](https://help.gnome.org/gnome-terminal/adv-keyboard-shortcuts.html).
+Workspace navigation uses Ctrl+Shift+Page Up/Down. New and rename workspace
+use Ctrl+Alt+Shift+N/R to remain distinct from New Window and Rename Tab.
+The full table is in the [README](../../README.md#linux-keyboard-shortcuts).
+
+Keeping Command mapped to Super was rejected because desktop environments own
+many Super combinations. Translating workspace navigation to Ctrl+Alt+arrows
+was also rejected: [GNOME reserves those for desktop workspaces](https://help.gnome.org/gnome-help/shell-workspaces-switch.html).
+These references were checked on 22 October 2026; customized desktop bindings
+may still conflict. Existing configurable commands remain editable. Linux labels
+spell out Ctrl, Alt, Shift and Super, and saved chords are not translated.
+macOS defaults and labels stay unchanged. This adds no dependency.
 
 ## Limits
 
