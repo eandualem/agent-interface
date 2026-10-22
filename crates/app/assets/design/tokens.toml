@@ -1,0 +1,205 @@
+# Design tokens: the single source of the app's look ("Quiet Instrument").
+#
+# Every colour, size, radius, type style and timing the native chrome uses
+# is defined here and read through `crates/app/src/desktop/design.rs`.
+# Views never write a colour or a pixel value of their own: change the look
+# by editing this file. `docs/DESIGN.md` explains each token and where it is
+# used. A test checks that every token is present and well formed.
+#
+# Colours are "#rrggbb" or "#rrggbbaa" (alpha last). Sizes are pixels.
+
+# ---------------------------------------------------------------- colours
+
+[color.dark]
+ground = "#0f1012"          # window, behind and between the panes
+panel = "#141518"           # navigation panel, status row, Settings navigation
+surface = "#18191d"         # panes and Settings pages
+field = "#1b1d21"           # inputs, keycaps, popovers
+hover = "#1c1e22"           # row and button hover
+selected = "#222429"        # selected row, menu highlight
+line = "#222428"            # hairlines and rules
+line_strong = "#2d3036"     # field and keycap borders
+edge = "#232529"            # unfocused pane border
+text = "#e7e8eb"            # body and selected text
+text_2 = "#c4c7cd"          # unselected rows, pane titles
+muted = "#8c9099"           # labels, meta, inactive icons
+faint = "#5c6069"           # shapes only (idle ring, minimaps), never text
+accent = "#e8a85f"          # selection, working, focus
+accent_text = "#e8a85f"     # accent used as text
+on_accent = "#1d1206"       # text on an accent fill
+accent_soft = "#e8a85f24"   # accent tint fills (14 %)
+focus = "#e8a85f73"         # focused pane border, focus rings (45 %)
+focus_halo = "#e8a85f14"    # glow around the focused pane (8 %)
+attention = "#f2785c"       # needs you, destructive, errors
+attention_text = "#f2785c"  # attention used as text
+on_attention = "#1c0d08"    # text on an attention fill
+attention_soft = "#f2785c1f" # attention tint fills (12 %)
+ok = "#8bc48a"              # saved light, connected
+shadow = "#00000073"        # popover shadow
+pane_dim = 0.72             # opacity of unfocused panes' content
+
+[color.light]
+ground = "#e9e8e5"
+panel = "#f3f2ef"
+surface = "#ffffff"
+field = "#ffffff"
+hover = "#eae9e5"
+selected = "#e4e2dd"
+line = "#e2e0db"
+line_strong = "#d3d0ca"
+edge = "#dcd9d3"
+text = "#1b1c1e"
+text_2 = "#3d3f44"
+muted = "#676a71"
+faint = "#a5a7ac"
+accent = "#a35a16"
+accent_text = "#8f4e12"
+on_accent = "#ffffff"
+accent_soft = "#a35a161f"
+focus = "#a35a168c"
+focus_halo = "#a35a161a"
+attention = "#c2410c"
+attention_text = "#b23c0b"
+on_attention = "#ffffff"
+attention_soft = "#c2410c1a"
+ok = "#2e7d32"
+shadow = "#281e1424"
+pane_dim = 0.8
+
+# Terminal defaults per theme: text, cursor and the 16 ANSI colours.
+# Dark keeps Ghostty's defaults; light is Tomorrow, darkened to pass 4.5:1.
+[terminal.dark]
+text = "#ffffff"
+cursor = "#e8a85f"
+palette = [
+  "#1d1f21", "#cc6666", "#b5bd68", "#f0c674", "#81a2be", "#b294bb", "#8abeb7", "#c5c8c6",
+  "#666666", "#d54e53", "#b9ca4a", "#e7c547", "#7aa6da", "#c397d8", "#70c0b1", "#eaeaea",
+]
+
+[terminal.light]
+text = "#2f3033"
+cursor = "#a35a16"
+palette = [
+  "#2f3033", "#c82829", "#5b7a00", "#8a6000", "#3b67a6", "#7f4fa0", "#2f7f86", "#d6d6d6",
+  "#7a7c80", "#c82829", "#5b7a00", "#8a6000", "#3b67a6", "#7f4fa0", "#2f7f86", "#1b1c1e",
+]
+
+# ---------------------------------------------------------------- type
+
+[font]
+ui = ".SystemUIFont"        # the platform interface font
+mono = "Menlo"              # keys, numbers and terminals
+terminal_size = 13.0        # default terminal size; Settings allows 9 to 24
+
+# Each style: size in pixels, weight 100 to 900.
+[text.page_title]
+size = 18.0
+weight = 600
+[text.workspace]
+size = 13.5
+weight = 600
+[text.row]
+size = 13.0
+weight = 400
+[text.row_selected]
+size = 13.0
+weight = 500
+[text.status]
+size = 12.0
+weight = 400
+[text.meta]
+size = 11.5
+weight = 400
+[text.label]                # uppercase section labels (TABS, AGENTS)
+size = 11.0
+weight = 600
+[text.key]                  # keycaps and tab numbers, in the mono font
+size = 10.5
+weight = 500
+[text.empty_title]          # empty and error states
+size = 14.0
+weight = 600
+[text.body]                 # explanatory text in empty states and Settings
+size = 12.5
+weight = 400
+
+# ---------------------------------------------------------------- spacing
+
+# A 2 px base. Views use these names, never raw numbers.
+[space]
+s2 = 2.0
+s4 = 4.0
+s6 = 6.0
+s8 = 8.0
+s10 = 10.0
+s12 = 12.0
+s14 = 14.0
+s16 = 16.0
+s18 = 18.0
+s20 = 20.0
+s24 = 24.0
+
+[radius]
+key = 4.0                   # keycaps, chips
+icon_button = 6.0
+menu_item = 6.0
+row = 7.0                   # rows, fields, buttons
+slot = 8.0                  # workspace slots, tiles
+pane = 9.0
+popover = 10.0              # popovers, cards
+
+# ---------------------------------------------------------------- sizes
+
+[size]
+titlebar = 44.0             # top of the panel, beside the window controls
+window_controls_x = 16.0    # where macOS draws the window controls
+window_controls_y = 16.0
+panel_width = 232.0         # default; dragging allows panel_min to panel_max
+panel_min = 140.0
+panel_max = 600.0
+workspace_tile = 30.0       # icon tile in the workspace block
+row = 30.0                  # tab, agent, menu item and Settings rows
+section_label = 32.0
+jump_field = 30.0
+slot = 32.0                 # workspace switcher slot
+slot_row = 52.0
+icon_button = 24.0
+icon = 14.0                 # icons in rows and buttons
+icon_large = 16.0           # header, slots and picker
+pane_header = 28.0
+pane_gap = 6.0              # between panes, and between panes and the panel
+window_inset = 8.0          # content inset from the window edge
+status_row = 26.0
+popover_min_width = 240.0
+popover_padding = 4.0
+popover_shadow_blur = 40.0
+popover_shadow_offset = 16.0
+button = 30.0               # buttons in empty states and Settings
+agent_symbol = 16.0
+dot = 6.0                   # needs-you dots on tabs and slots
+minimap_width = 18.0        # tab layout thumbnail
+minimap_height = 12.0
+focus_ring = 2.0            # keyboard focus ring and selected-card border
+focus_halo = 3.0            # glow around the focused pane
+window_width = 1040.0       # a new window's size and its minimum
+window_height = 700.0
+window_min_width = 640.0
+window_min_height = 420.0
+caret = 1.0                 # text caret and composition underline
+settings_width = 680.0
+settings_height = 480.0
+settings_nav = 180.0
+theme_card = 140.0
+empty_icon = 40.0           # tile above empty and error messages
+empty_width = 300.0         # text width in empty and error states
+menu_heading = 26.0         # heading inside a menu
+keycap = 16.0               # keycap line height
+hairline = 1.0              # rules, borders and separators
+minimap_stroke = 1.0        # tab layout thumbnail lines
+workspace_block_padding = 8.0
+pane_number_width = 8.0     # tab and pane numbers
+
+# ---------------------------------------------------------------- motion
+
+[motion]
+spinner_ms = 1100           # one turn of the working-agent arc

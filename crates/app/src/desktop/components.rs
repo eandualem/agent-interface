@@ -1,0 +1,462 @@
+//! Reusable pieces of the chrome, drawn only from the design tokens.
+//!
+//! Views compose these rather than styling elements themselves, so a change
+//! to `assets/design/tokens.toml` reaches every use. `docs/DESIGN.md` lists
+//! each component and its states.
+
+use std::time::Duration;
+
+use gpui::{
+    Animation, AnimationExt, BoxShadow, Div, Rgba, SharedString, Stateful, Svg, Transformation,
+    div, percentage, point, prelude::*, px, svg,
+};
+
+use super::{
+    design::{TextStyle, colors, tokens},
+    icons,
+};
+
+/// Apply a type style.
+pub fn text<E: Styled>(element: E, style: &TextStyle) -> E {
+    element.text_size(style.size()).font_weight(style.weight())
+}
+
+/// An icon in one colour.
+pub fn icon(name: &str, size: f32, color: Rgba) -> Svg {
+    svg()
+        .path(icons::path(name))
+        .size(px(size))
+        .flex_shrink_0()
+        .text_color(color)
+}
+
+/// A square button showing one icon; `label` names it for its tooltip.
+pub fn icon_button(id: impl Into<SharedString>, name: &str) -> Stateful<Div> {
+    let (t, c) = (tokens(), colors());
+    div()
+        .id(id.into())
+        .flex_shrink_0()
+        .size(px(t.size.icon_button))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(t.radius.icon_button))
+        .cursor_pointer()
+        .text_color(c.muted)
+        .hover(|el| el.bg(colors().selected).text_color(colors().text))
+        .child(icon(name, t.size.icon, c.muted))
+}
+
+/// A list row in the panel: rounded, filled when selected or hovered.
+pub fn row(id: impl Into<SharedString>, selected: bool) -> Stateful<Div> {
+    let (t, c) = (tokens(), colors());
+    text(
+        div()
+            .id(id.into())
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .gap(px(t.space.s10))
+            .h(px(t.size.row))
+            .px(px(t.space.s10))
+            .rounded(px(t.radius.row))
+            .overflow_hidden()
+            .whitespace_nowrap()
+            .cursor_pointer(),
+        &t.text.row,
+    )
+    .when(selected, |el| el.bg(c.selected))
+    .when(!selected, |el| el.hover(|el| el.bg(colors().hover)))
+}
+
+/// An uppercase section label with an optional trailing control.
+pub fn section(label: &'static str) -> Div {
+    let (t, c) = (tokens(), colors());
+    text(
+        div()
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .justify_between()
+            .h(px(t.size.section_label))
+            .pl(px(t.space.s18))
+            .pr(px(t.space.s10))
+            .text_color(c.muted),
+        &t.text.label,
+    )
+    .child(label)
+}
+
+/// A key or shortcut in a keycap.
+pub fn keycap(label: impl Into<SharedString>) -> Div {
+    let (t, c) = (tokens(), colors());
+    text(
+        div()
+            .flex_shrink_0()
+            .px(px(t.space.s4))
+            .h(px(t.size.keycap))
+            .flex()
+            .items_center()
+            .rounded(px(t.radius.key))
+            .border(px(t.size.hairline))
+            .border_color(c.line_strong)
+            .bg(c.field)
+            .font_family(t.font.mono.clone())
+            .text_color(c.text_2),
+        &t.text.key,
+    )
+    .child(label.into())
+}
+
+/// A key in the mono key style without a cap, as shown at a row's end.
+pub fn key_hint(label: impl Into<SharedString>) -> Div {
+    let (t, c) = (tokens(), colors());
+    text(
+        div()
+            .flex_shrink_0()
+            .font_family(t.font.mono.clone())
+            .text_color(c.muted),
+        &t.text.key,
+    )
+    .child(label.into())
+}
+
+/// The kinds of text button.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Button {
+    Primary,
+    Secondary,
+    Danger,
+}
+
+/// A text button.
+pub fn button(
+    id: impl Into<SharedString>,
+    label: impl Into<SharedString>,
+    kind: Button,
+) -> Stateful<Div> {
+    let (t, c) = (tokens(), colors());
+    let base = text(
+        div()
+            .id(id.into())
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .gap(px(t.space.s8))
+            .h(px(t.size.button))
+            .px(px(t.space.s14))
+            .rounded(px(t.radius.row))
+            .cursor_pointer(),
+        &t.text.row,
+    );
+    match kind {
+        Button::Primary => base
+            .bg(c.accent)
+            .text_color(c.on_accent)
+            .font_weight(t.text.row_selected.weight()),
+        Button::Secondary => base
+            .bg(c.field)
+            .border(px(t.size.hairline))
+            .border_color(c.line_strong)
+            .text_color(c.text)
+            .hover(|el| el.bg(colors().hover)),
+        Button::Danger => base
+            .text_color(c.attention_text)
+            .hover(|el| el.bg(colors().attention_soft)),
+    }
+    .child(label.into())
+}
+
+/// A small filled dot, such as the needs-you mark on a tab or slot.
+pub fn dot(color: Rgba) -> Div {
+    let t = tokens();
+    div()
+        .flex_shrink_0()
+        .size(px(t.size.dot))
+        .rounded_full()
+        .bg(color)
+}
+
+/// The frame of a popover menu.
+pub fn menu() -> Div {
+    let (t, c) = (tokens(), colors());
+    text(
+        div()
+            .flex()
+            .flex_col()
+            .min_w(px(t.size.popover_min_width))
+            .p(px(t.size.popover_padding))
+            .bg(c.field)
+            .border(px(t.size.hairline))
+            .border_color(c.line_strong)
+            .rounded(px(t.radius.popover))
+            .shadow(vec![BoxShadow {
+                color: c.shadow.into(),
+                offset: point(px(0.0), px(t.size.popover_shadow_offset)),
+                blur_radius: px(t.size.popover_shadow_blur),
+                spread_radius: px(0.0),
+                inset: false,
+            }])
+            .font_family(t.font.ui.clone())
+            .text_color(c.text),
+        &t.text.row,
+    )
+}
+
+/// A menu choice: a mark or icon slot, the label, and a key or value.
+pub fn menu_item(
+    id: impl Into<SharedString>,
+    mark: Option<Svg>,
+    label: impl Into<SharedString>,
+    right: Option<String>,
+) -> Stateful<Div> {
+    let t = tokens();
+    div()
+        .id(id.into())
+        .flex()
+        .items_center()
+        .gap(px(t.space.s10))
+        .h(px(t.size.row))
+        .px(px(t.space.s10))
+        .rounded(px(t.radius.menu_item))
+        .cursor_pointer()
+        .hover(|el| el.bg(colors().selected))
+        .child(div().w(px(t.size.icon)).flex_shrink_0().children(mark))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .child(label.into()),
+        )
+        .children(right.map(key_hint))
+}
+
+/// A heading inside a menu.
+pub fn menu_heading(label: impl Into<SharedString>) -> Div {
+    let (t, c) = (tokens(), colors());
+    text(
+        div()
+            .h(px(t.size.menu_heading))
+            .px(px(t.space.s10))
+            .flex()
+            .items_center()
+            .text_color(c.muted),
+        &t.text.label,
+    )
+    .child(label.into())
+}
+
+/// A rule between menu groups.
+pub fn menu_rule() -> Div {
+    let (t, c) = (tokens(), colors());
+    div().my(px(t.space.s4)).h(px(t.size.hairline)).bg(c.line)
+}
+
+/// How an agent is doing, as Agent Backbone reports it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AgentState {
+    NeedsYou,
+    Working,
+    Idle,
+    Unknown,
+}
+
+impl AgentState {
+    /// Fold a reported state onto the four the design shows.
+    pub fn from_report(state: &str) -> Self {
+        match state {
+            "waiting_for_human" | "blocked" => Self::NeedsYou,
+            "busy" | "starting" => Self::Working,
+            "idle" | "running" => Self::Idle,
+            _ => Self::Unknown,
+        }
+    }
+
+    /// The short word shown beside a working or needs-you agent.
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::NeedsYou => "needs you",
+            Self::Working => "working",
+            Self::Idle => "idle",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+/// An agent's state symbol: shape first, colour second.
+pub fn agent_symbol(state: AgentState, id: impl Into<SharedString>) -> Div {
+    let (t, c) = (tokens(), colors());
+    let size = t.size.agent_symbol;
+    let frame = div()
+        .flex_shrink_0()
+        .size(px(size))
+        .relative()
+        .flex()
+        .items_center()
+        .justify_center();
+    let mark = |glyph: &'static str, color: Rgba| {
+        text(div().text_color(color), &t.text.key)
+            .font_weight(gpui::FontWeight::BOLD)
+            .child(glyph)
+    };
+    match state {
+        AgentState::NeedsYou => frame
+            .rounded_full()
+            .bg(c.attention)
+            .child(mark("!", c.on_attention)),
+        AgentState::Working => {
+            let turn = Duration::from_millis(t.motion.spinner_ms as u64);
+            frame
+                .child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .rounded_full()
+                        .border(px(t.size.minimap_stroke * 1.5))
+                        .border_color(c.accent_soft),
+                )
+                .child(div().absolute().inset_0().child(
+                    icon("agent-arc", size, c.accent).with_animation(
+                        id.into(),
+                        Animation::new(turn).repeat(),
+                        |arc, delta| {
+                            arc.with_transformation(Transformation::rotate(percentage(delta)))
+                        },
+                    ),
+                ))
+                .child(icon("agent-play", size, c.accent))
+        }
+        AgentState::Idle => frame.child(
+            div()
+                .size(px(size - t.space.s4))
+                .rounded_full()
+                .border(px(t.size.minimap_stroke * 1.5))
+                .border_color(c.faint),
+        ),
+        AgentState::Unknown => frame
+            .rounded_full()
+            .border(px(t.size.minimap_stroke * 1.5))
+            .border_dashed()
+            .border_color(c.muted)
+            .child(mark("?", c.muted)),
+    }
+}
+
+/// A tab's layout thumbnail: one frame, split once or more.
+pub fn minimap(panes: usize, color: Rgba) -> Div {
+    let t = tokens();
+    let line = |vertical: bool| {
+        let el = div().flex_shrink_0().bg(color);
+        if vertical {
+            el.w(px(t.size.minimap_stroke)).h_full()
+        } else {
+            el.h(px(t.size.minimap_stroke)).w_full()
+        }
+    };
+    let frame = div()
+        .flex_shrink_0()
+        .w(px(t.size.minimap_width))
+        .h(px(t.size.minimap_height))
+        .rounded(px(t.radius.key / 2.0))
+        .border(px(t.size.minimap_stroke))
+        .border_color(color)
+        .flex();
+    match panes {
+        0 | 1 => frame,
+        2 => frame
+            .child(div().flex_1())
+            .child(line(true))
+            .child(div().flex_1()),
+        _ => frame.child(div().flex_1()).child(line(true)).child(
+            div()
+                .flex_1()
+                .flex()
+                .flex_col()
+                .child(div().flex_1())
+                .child(line(false))
+                .child(div().flex_1()),
+        ),
+    }
+}
+
+/// An icon tile above an empty or error message.
+pub fn empty_tile(name: &str, fill: Rgba, color: Rgba) -> Div {
+    let t = tokens();
+    div()
+        .flex_shrink_0()
+        .size(px(t.size.empty_icon))
+        .rounded(px(t.radius.popover))
+        .bg(fill)
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(icon(name, t.size.icon_large + t.space.s2, color))
+}
+
+/// A centred empty or error state: tile, title, explanation, actions.
+pub fn empty_state(tile: Div, title: impl Into<SharedString>, body: impl IntoElement) -> Div {
+    let (t, c) = (tokens(), colors());
+    div()
+        .size_full()
+        .flex()
+        .flex_col()
+        .items_center()
+        .justify_center()
+        .gap(px(t.space.s10))
+        .p(px(t.space.s24))
+        .text_center()
+        .child(tile)
+        .child(text(div().text_color(c.text), &t.text.empty_title).child(title.into()))
+        .child(
+            text(
+                div().max_w(px(t.size.empty_width)).text_color(c.muted),
+                &t.text.body,
+            )
+            .child(body),
+        )
+}
+
+/// A text field's frame, outlined in the accent while it has focus.
+pub fn field_frame(focused: bool) -> Div {
+    let (t, c) = (tokens(), colors());
+    text(
+        div()
+            .flex()
+            .items_center()
+            .gap(px(t.space.s8))
+            .h(px(t.size.jump_field))
+            .px(px(t.space.s10))
+            .rounded(px(t.radius.row))
+            .bg(c.field)
+            .border(px(t.size.hairline))
+            .text_color(c.muted),
+        &t.text.body,
+    )
+    .when(focused, |el| el.border_color(c.accent))
+    .when(!focused, |el| el.border_color(c.line))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AgentState;
+
+    #[test]
+    fn reported_states_fold_onto_the_four_the_design_shows() {
+        assert_eq!(
+            AgentState::from_report("waiting_for_human"),
+            AgentState::NeedsYou
+        );
+        assert_eq!(AgentState::from_report("blocked"), AgentState::NeedsYou);
+        assert_eq!(AgentState::from_report("busy"), AgentState::Working);
+        assert_eq!(AgentState::from_report("starting"), AgentState::Working);
+        assert_eq!(AgentState::from_report("idle"), AgentState::Idle);
+        assert_eq!(AgentState::from_report(""), AgentState::Unknown);
+        assert_eq!(
+            AgentState::from_report("something new"),
+            AgentState::Unknown
+        );
+    }
+}

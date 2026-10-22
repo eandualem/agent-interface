@@ -4,13 +4,13 @@ use std::{cell::RefCell, collections::HashMap, path::PathBuf, rc::Rc};
 
 use futures::{StreamExt, channel::mpsc};
 use gpui::{
-    AnyElement, App, Bounds, Context, KeyBinding, Menu, MenuItem, PathPromptOptions, SharedString,
-    Task, TitlebarOptions, Window, WindowBounds, WindowOptions, actions, div, prelude::*, px, rgb,
+    AnyElement, App, Bounds, Context, KeyBinding, Menu, MenuItem, PathPromptOptions, Task,
+    TitlebarOptions, Window, WindowBounds, WindowOptions, actions, div, point, prelude::*, px,
     size,
 };
 use gpui_platform::application;
 use tmux_workspaces_core::{
-    Attachment, AttachmentTarget, Direction, Layout, Leaf, NameEdit, Node, RenameOutcome, Tab,
+    Attachment, AttachmentTarget, Direction, Layout, Leaf, NameEdit, RenameOutcome, Tab,
 };
 use tmux_workspaces_store::Document;
 
@@ -20,15 +20,20 @@ mod layout_edit;
 mod name;
 use chooser::{Choice, SessionChooser};
 use layout_edit::{Create, Selection};
+mod components;
+mod design;
+mod frame;
 mod icons;
-mod panel;
+mod jump;
+mod menus;
+mod pane_cards;
 mod settings;
 mod settings_window;
 mod shortcuts;
+mod sidebar;
 mod split_resize;
+mod status;
 mod terminal;
-mod theme;
-use theme::Cells;
 mod workspace;
 use name::{NameEvent, NameField};
 use terminal::{LiveTerminal, Target};
@@ -161,13 +166,24 @@ fn open_browser(
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
             None,
-            size(px(1040.0), px(700.0)),
+            size(
+                px(design::tokens().size.window_width),
+                px(design::tokens().size.window_height),
+            ),
             cx,
         ))),
-        window_min_size: Some(size(px(640.0), px(420.0))),
+        window_min_size: Some(size(
+            px(design::tokens().size.window_min_width),
+            px(design::tokens().size.window_min_height),
+        )),
         titlebar: Some(TitlebarOptions {
             title: Some("tmux-workspaces".into()),
-            ..Default::default()
+            // The window controls sit in the panel's top strip.
+            appears_transparent: true,
+            traffic_light_position: Some(point(
+                px(design::tokens().size.window_controls_x),
+                px(design::tokens().size.window_controls_y),
+            )),
         }),
         ..Default::default()
     };
@@ -366,6 +382,7 @@ struct Browser {
     roster: Option<Roster>,
     agents: Option<tmux_workspaces_roster::Snapshot>,
     roster_updates: Option<Task<()>>,
+    jump: Option<jump::Jump>,
     /// A navigation panel drag: where it started and the width then.
     sidebar_drag: Option<(gpui::Pixels, gpui::Pixels)>,
     reset_focus: bool,
@@ -904,95 +921,6 @@ impl Browser {
         cx.notify();
     }
 
-    fn tab_options(&self, cx: &mut Context<Self>) -> gpui::Div {
-        let mut options = panel::menu();
-        // The source's order: naming and pane actions, then reordering.
-        let mut actions = vec![
-            (
-                Some("Rename tab".to_owned()),
-                TabAction::Rename,
-                Some(shortcuts::label(shortcuts::Command::RenameTab)),
-            ),
-            (
-                Some("Split right".to_owned()),
-                TabAction::Split(Direction::Right),
-                Some(shortcuts::label(shortcuts::Command::SplitRight)),
-            ),
-            (
-                Some("Split below".to_owned()),
-                TabAction::Split(Direction::Below),
-                Some(shortcuts::label(shortcuts::Command::SplitBelow)),
-            ),
-            (
-                Some("Attach session".to_owned()),
-                TabAction::Attach,
-                Some(shortcuts::label(shortcuts::Command::Attach)),
-            ),
-        ];
-        if let (Some(menu), Some(layout)) = (&self.tab_menu, &self.layout) {
-            if menu.shell.is_some() {
-                actions.push((
-                    Some("Return to shell".into()),
-                    TabAction::ReturnToShell,
-                    None,
-                ));
-            } else {
-                actions.push((Some("Open terminal".into()), TabAction::OpenTerminal, None));
-            }
-            actions.push((
-                Some(
-                    if layout.model().focus {
-                        "Restore layout"
-                    } else {
-                        "Focus one pane"
-                    }
-                    .into(),
-                ),
-                TabAction::Focus,
-                Some(shortcuts::label(shortcuts::Command::FocusPane)),
-            ));
-            actions.push((None, TabAction::Focus, None));
-            if let Some(space) = layout.model().workspace()
-                && let Some(index) = space.tabs.iter().position(|tab| tab.id == menu.tab.id)
-            {
-                if index > 0 {
-                    actions.push((Some("Move up".into()), TabAction::Move(-1), None));
-                }
-                if index + 1 < space.tabs.len() {
-                    actions.push((Some("Move down".into()), TabAction::Move(1), None));
-                }
-            }
-            for space in &layout.model().workspaces {
-                if space.id != menu.workspace {
-                    actions.push((
-                        Some(format!("Move to {}", space.name)),
-                        TabAction::Transfer(space.id.clone()),
-                        None,
-                    ));
-                }
-            }
-        }
-        for (index, (label, action, key)) in actions.into_iter().enumerate() {
-            let Some(label) = label else {
-                options = options.child(panel::menu_rule());
-                continue;
-            };
-            options = options.child(
-                panel::menu_item(
-                    SharedString::from(format!("tab-action-{index}")),
-                    None,
-                    label,
-                    theme::normal(),
-                    key,
-                )
-                .on_click(cx.listener(move |browser, _, window, cx| {
-                    browser.tab_action(action.clone(), window, cx)
-                })),
-            );
-        }
-        options
-    }
-
     fn open_menu(
         &mut self,
         menu: Popover,
@@ -1015,185 +943,6 @@ impl Browser {
         self.tab_menu = None;
         self.workspace_menu = false;
         self.icon_picker = false;
-    }
-
-    /// Switch workspaces, then act on the current one.
-    fn workspace_options(&self, cx: &mut Context<Self>) -> gpui::Div {
-        let mut menu = panel::menu().child(panel::menu_heading("Workspaces"));
-        let Some(model) = self.layout.as_ref().map(WindowLayout::model) else {
-            return menu;
-        };
-        for space in &model.workspaces {
-            let id = space.id.clone();
-            let current = model.selected == id;
-            let count = match space.tabs.len() {
-                0 => "empty".to_owned(),
-                1 => "1 tab".to_owned(),
-                count => format!("{count} tabs"),
-            };
-            menu = menu.child(
-                panel::menu_item(
-                    SharedString::from(format!("workspace-{id}")),
-                    icons::workspace(space.symbol.as_deref(), space.icon.as_deref()).map(|name| {
-                        (
-                            name,
-                            if current {
-                                theme::accent()
-                            } else {
-                                theme::muted()
-                            },
-                        )
-                    }),
-                    space.name.clone(),
-                    if current {
-                        theme::active_text()
-                    } else {
-                        theme::normal()
-                    },
-                    Some(count),
-                )
-                .when(current, |el| el.font_weight(gpui::FontWeight::SEMIBOLD))
-                .on_click(cx.listener(move |browser, _, window, cx| {
-                    if let Some(layout) = &mut browser.layout {
-                        layout.model_mut().choose_workspace(&id);
-                    }
-                    browser.close_menus();
-                    if let Some(focus) = &browser.navigation {
-                        window.focus(focus, cx);
-                    }
-                    cx.notify();
-                })),
-            );
-        }
-        let Some(space) = model.workspace() else {
-            return menu;
-        };
-        let reason = if !space.tabs.is_empty() {
-            Some("has tabs")
-        } else if model.workspaces.len() == 1 {
-            Some("last one")
-        } else {
-            None
-        };
-        let expected = space.id.clone();
-        menu.child(panel::menu_rule())
-            .child(panel::menu_heading("This workspace"))
-            .child(
-                panel::menu_item(
-                    "rename-workspace",
-                    Some(("pencil", theme::muted())),
-                    "Rename",
-                    theme::normal(),
-                    Some(shortcuts::label(shortcuts::Command::RenameWorkspace)),
-                )
-                .on_click(cx.listener(|browser, _, window, cx| {
-                    browser.close_menus();
-                    browser.begin_name(false, window, cx)
-                })),
-            )
-            .child(
-                panel::menu_item(
-                    "choose-icon",
-                    Some(("sparkles", theme::muted())),
-                    "Choose icon…",
-                    theme::normal(),
-                    None,
-                )
-                .on_click(cx.listener(|browser, _, _, cx| {
-                    browser.workspace_menu = false;
-                    browser.icon_picker = true;
-                    cx.notify();
-                })),
-            )
-            .child(
-                panel::menu_item(
-                    "delete-workspace",
-                    Some(("x", theme::muted())),
-                    "Delete",
-                    if reason.is_some() {
-                        theme::muted()
-                    } else {
-                        theme::danger()
-                    },
-                    reason.map(str::to_owned),
-                )
-                .when(reason.is_none(), |el| {
-                    el.on_click(cx.listener(move |browser, _, window, cx| {
-                        browser.close_menus();
-                        browser.delete_workspace(&expected, window, cx);
-                    }))
-                }),
-            )
-            .child(panel::menu_rule())
-            .child(
-                panel::menu_item(
-                    "new-workspace",
-                    Some(("plus", theme::accent())),
-                    "New workspace",
-                    theme::normal(),
-                    Some(shortcuts::label(shortcuts::Command::NewWorkspace)),
-                )
-                .on_click(cx.listener(|browser, _, window, cx| {
-                    browser.close_menus();
-                    browser.begin_workspace(window, cx)
-                })),
-            )
-    }
-
-    /// A grid of icons for the current workspace, and the plain number.
-    fn icon_picker(&self, cx: &mut Context<Self>) -> gpui::Div {
-        let current = self
-            .layout
-            .as_ref()
-            .and_then(|layout| layout.model().workspace())
-            .and_then(|space| icons::workspace(space.symbol.as_deref(), space.icon.as_deref()));
-        let mut grid = div()
-            .flex()
-            .flex_wrap()
-            .gap(px(4.0))
-            .w(px(8.0 * 32.0))
-            .p(px(4.0));
-        for name in icons::WORKSPACE {
-            let chosen = current == Some(*name);
-            grid = grid.child(
-                div()
-                    .id(SharedString::from(format!("icon-{name}")))
-                    .size(px(28.0))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded(px(6.0))
-                    .cursor_pointer()
-                    .when(chosen, |el| el.bg(rgb(theme::active())))
-                    .hover(|el| el.bg(rgb(theme::active())))
-                    .child(panel::icon(
-                        name,
-                        16.0,
-                        if chosen {
-                            theme::accent()
-                        } else {
-                            theme::normal()
-                        },
-                    ))
-                    .on_click(cx.listener(move |browser, _, _, cx| {
-                        browser.set_symbol(Some(name), cx);
-                    })),
-            );
-        }
-        panel::menu()
-            .child(panel::menu_heading("Choose icon"))
-            .child(grid)
-            .child(panel::menu_rule())
-            .child(
-                panel::menu_item(
-                    "icon-number",
-                    None,
-                    "Show number instead",
-                    theme::normal(),
-                    None,
-                )
-                .on_click(cx.listener(|browser, _, _, cx| browser.set_symbol(None, cx))),
-            )
     }
 
     fn set_symbol(&mut self, symbol: Option<&str>, cx: &mut Context<Self>) {
@@ -1525,232 +1274,6 @@ impl Browser {
         cx.stop_propagation();
         cx.notify();
     }
-
-    /// The Python viewer's prompt in an empty pane: nothing is created until
-    /// a choice is made.
-    fn new_pane(pane: &str, focused: bool, cells: Cells, cx: &mut Context<Self>) -> AnyElement {
-        let terminal = pane.to_owned();
-        let attach = pane.to_owned();
-        div()
-            .size_full()
-            .flex()
-            .flex_col()
-            .child(
-                cells
-                    .row()
-                    .child(div().font_weight(gpui::FontWeight::BOLD).child("New pane"))
-                    .child(
-                        div()
-                            .pl(cells.width(1))
-                            .text_color(rgb(theme::muted()))
-                            .child("· what should it run?"),
-                    ),
-            )
-            .child(cells.blank())
-            .child(
-                cells
-                    .row()
-                    .id(SharedString::from(format!("open-terminal-{pane}")))
-                    .cursor_pointer()
-                    .when(focused, |el| el.bg(rgb(theme::active())))
-                    .child(
-                        div()
-                            .w(cells.width(2))
-                            .text_color(rgb(theme::accent()))
-                            .child(if focused { "▶" } else { "" }),
-                    )
-                    .child(
-                        div()
-                            .when(focused, |el| {
-                                el.text_color(rgb(theme::active_text()))
-                                    .font_weight(gpui::FontWeight::BOLD)
-                            })
-                            .child("Open terminal"),
-                    )
-                    .on_click(cx.listener(move |browser, _, window, cx| {
-                        cx.stop_propagation();
-                        browser.open_terminal(&terminal, window, cx);
-                    })),
-            )
-            .child(cells.blank())
-            .child(
-                cells
-                    .row()
-                    .id(SharedString::from(format!("attach-{pane}")))
-                    .cursor_pointer()
-                    .text_color(rgb(theme::muted()))
-                    .child("ATTACH A SESSION")
-                    .on_click(cx.listener(move |browser, _, window, cx| {
-                        cx.stop_propagation();
-                        browser.open_attach(&attach, window, cx);
-                    })),
-            )
-            .child(div().flex_1())
-            .child(
-                cells
-                    .row()
-                    .text_color(rgb(theme::muted()))
-                    .child("Nothing is created until you choose."),
-            )
-            .into_any_element()
-    }
-
-    fn tree(
-        node: &Node,
-        focus: &str,
-        terminals: &HashMap<String, gpui::Entity<LiveTerminal>>,
-        chooser: Option<&Attaching>,
-        split_bounds: &Rc<RefCell<HashMap<String, Bounds<gpui::Pixels>>>>,
-        cells: Cells,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        match node {
-            Node::Leaf(leaf) => {
-                let id = leaf.id.clone();
-                // No title bar or focus border: the source shows only the
-                // terminal, and the cursor marks the focused pane.
-                div()
-                    .id(SharedString::from(format!("pane-{id}")))
-                    .size_full()
-                    .min_w_0()
-                    .min_h_0()
-                    .overflow_hidden()
-                    .bg(rgb(theme::surface()))
-                    // A left click selects the pane. A right or middle click
-                    // selects it only if the terminal took keyboard focus (a
-                    // mouse-enabled program accepts those clicks), so pane
-                    // commands always follow the terminal that receives typing.
-                    .capture_any_mouse_down(cx.listener(
-                        move |browser, event: &gpui::MouseDownEvent, window, cx| {
-                            let leaf = id.clone();
-                            let id = id.clone();
-                            let select = move |browser: &mut Self, cx: &mut Context<Self>| {
-                                if let Some(layout) = &mut browser.layout
-                                    && layout.model().tab().is_some_and(|tab| tab.focus != id)
-                                {
-                                    layout.model_mut().choose_pane(&id);
-                                    cx.notify();
-                                }
-                            };
-                            if event.button == gpui::MouseButton::Left {
-                                select(browser, cx);
-                            } else {
-                                cx.defer_in(window, move |browser, window, cx| {
-                                    if browser.terminals.get(&leaf).is_some_and(|terminal| {
-                                        terminal.read(cx).has_focus(window, cx)
-                                    }) {
-                                        select(browser, cx);
-                                    }
-                                });
-                            }
-                        },
-                    ))
-                    .child(
-                        if let Some(chooser) =
-                            chooser.filter(|chooser| chooser.destination.pane == leaf.id)
-                        {
-                            chooser.view.clone().into_any_element()
-                        } else if let Some(terminal) = terminals.get(&leaf.id) {
-                            terminal.clone().into_any_element()
-                        } else {
-                            Self::new_pane(&leaf.id, leaf.id == focus, cells, cx)
-                        },
-                    )
-                    .into_any_element()
-            }
-            Node::Split {
-                id,
-                direction,
-                ratio,
-                first,
-                second,
-                ..
-            } => div()
-                .relative()
-                .size_full()
-                .min_w_0()
-                .min_h_0()
-                .flex()
-                .gap_0()
-                .when(*direction == Direction::Below, |el| el.flex_col())
-                .child(
-                    div()
-                        .flex_basis(px(0.0))
-                        .flex_grow(*ratio as f32)
-                        .min_w_0()
-                        .min_h_0()
-                        .overflow_hidden()
-                        .child(Self::tree(
-                            first,
-                            focus,
-                            terminals,
-                            chooser,
-                            split_bounds,
-                            cells,
-                            cx,
-                        )),
-                )
-                .child(
-                    div()
-                        .id(SharedString::from(format!("divider-{id}")))
-                        .flex_shrink_0()
-                        .flex()
-                        .justify_center()
-                        .items_center()
-                        .bg(rgb(theme::surface()))
-                        .when(*direction == Direction::Right, |el| {
-                            el.w(px(split_resize::DIVIDER))
-                                .h_full()
-                                .cursor(gpui::CursorStyle::ResizeLeftRight)
-                                .child(div().w(px(1.0)).h_full().bg(rgb(theme::outline())))
-                        })
-                        .when(*direction == Direction::Below, |el| {
-                            el.h(px(split_resize::DIVIDER))
-                                .w_full()
-                                .cursor(gpui::CursorStyle::ResizeUpDown)
-                                .child(div().h(px(1.0)).w_full().bg(rgb(theme::outline())))
-                        })
-                        .on_mouse_down(
-                            gpui::MouseButton::Left,
-                            cx.listener({
-                                let id = id.clone();
-                                move |browser, event: &gpui::MouseDownEvent, window, cx| {
-                                    browser.begin_resize(&id, event.position, window, cx);
-                                }
-                            }),
-                        ),
-                )
-                .child(
-                    div()
-                        .flex_basis(px(0.0))
-                        .flex_grow((1.0 - ratio) as f32)
-                        .min_w_0()
-                        .min_h_0()
-                        .overflow_hidden()
-                        .child(Self::tree(
-                            second,
-                            focus,
-                            terminals,
-                            chooser,
-                            split_bounds,
-                            cells,
-                            cx,
-                        )),
-                )
-                .child(
-                    gpui::canvas(|_, _, _| (), {
-                        let id = id.clone();
-                        let bounds = Rc::clone(split_bounds);
-                        move |area, (), _, _| {
-                            bounds.borrow_mut().insert(id.clone(), area);
-                        }
-                    })
-                    .absolute()
-                    .size_full(),
-                )
-                .into_any_element(),
-        }
-    }
 }
 
 impl Render for Browser {
@@ -1871,662 +1394,11 @@ impl Render for Browser {
                 terminal.open_shell(leaf, environment, cx)
             });
         }
-        let cells = Cells(crate::view::cell_size(
-            cx.text_system(),
-            &terminal::appearance(),
-        ));
-        let sidebar_width = settings::sidebar_width()
-            .map(|width| px(width as f32))
-            .unwrap_or_else(|| cells.width(theme::SIDEBAR_COLUMNS))
-            .min((window.viewport_size().width - px(240.0)).max(px(140.0)));
-        let mut list = div()
-            .id("tabs")
-            .flex_1()
-            .min_h_0()
-            .flex()
-            .flex_col()
-            .gap(px(1.0))
-            .overflow_y_scroll()
-            .track_scroll(&self.tabs_scroll);
-        let mut heading = "Workspaces".to_owned();
-        let mut heading_icon: Option<&'static str> = None;
-        let mut context: (String, Option<String>) = (heading.clone(), None);
-        let mut hints: Vec<String> = Vec::new();
-        let mut message: Option<String> = None;
-        let mut content = div()
-            .flex_1()
-            .min_w_0()
-            .h_full()
-            .overflow_hidden()
-            .bg(rgb(theme::surface()));
-        if let Some(layout) = &self.layout {
-            let model = layout.model();
-            if let Some(space) = model.workspace() {
-                heading = space.name.clone();
-                heading_icon = icons::workspace(space.symbol.as_deref(), space.icon.as_deref());
-                context = (space.name.clone(), Some("no tabs".into()));
-                hints = vec![
-                    format!("{} new", shortcuts::label(shortcuts::Command::NewTab)),
-                    format!("{} attach", shortcuts::label(shortcuts::Command::Attach)),
-                ];
-                for (index, tab) in space.tabs.iter().enumerate() {
-                    let id = tab.id.clone();
-                    let active = space.selected == id;
-                    let editing = active && self.editing.as_ref().is_some_and(|edit| edit.tab);
-                    let panes = tab.tree.leaves().len().min(6);
-                    list = list.child(
-                        panel::row(SharedString::from(format!("tab-{id}")), active)
-                            .on_mouse_down(
-                                gpui::MouseButton::Right,
-                                cx.listener({
-                                    let id = id.clone();
-                                    move |browser, event: &gpui::MouseDownEvent, window, cx| {
-                                        browser.menu_at = Some(event.position);
-                                        browser.open_tab_menu(&id, window, cx)
-                                    }
-                                }),
-                            )
-                            .child(
-                                div()
-                                    .w(px(14.0))
-                                    .flex_shrink_0()
-                                    .text_size(px(12.0))
-                                    .text_color(rgb(if active {
-                                        theme::accent()
-                                    } else {
-                                        theme::muted()
-                                    }))
-                                    .child((index + 1).to_string()),
-                            )
-                            .child(if editing {
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .child(self.name_editor(cx))
-                                    .into_any_element()
-                            } else {
-                                let tab_id = id.clone();
-                                div()
-                                    .id(SharedString::from(format!("tab-name-{id}")))
-                                    .flex_1()
-                                    .min_w_0()
-                                    .overflow_hidden()
-                                    .text_ellipsis()
-                                    .when(active, |el| {
-                                        el.text_color(rgb(theme::active_text()))
-                                            .font_weight(gpui::FontWeight::MEDIUM)
-                                    })
-                                    .child(tab.name.clone())
-                                    .on_click(cx.listener(
-                                        move |browser, event: &gpui::ClickEvent, window, cx| {
-                                            cx.stop_propagation();
-                                            let active =
-                                                browser.layout.as_ref().is_some_and(|layout| {
-                                                    layout
-                                                        .model()
-                                                        .tab()
-                                                        .is_some_and(|tab| tab.id == tab_id)
-                                                });
-                                            if event.click_count() == 1 {
-                                                browser.name_click = Some((tab_id.clone(), active));
-                                            }
-                                            let edit = event.click_count() == 2
-                                                && browser.name_click.as_ref().is_some_and(
-                                                    |(id, active)| id == &tab_id && *active,
-                                                );
-                                            if let Some(layout) = &mut browser.layout {
-                                                layout.model_mut().choose_tab(&tab_id);
-                                            }
-                                            if edit {
-                                                browser.begin_name(true, window, cx);
-                                            } else if let Some(focus) = &browser.navigation {
-                                                window.focus(focus, cx);
-                                            }
-                                            cx.notify();
-                                        },
-                                    ))
-                                    .into_any_element()
-                            })
-                            .child(div().flex().flex_shrink_0().gap(px(2.0)).children(
-                                (0..panes).map(|_| {
-                                    panel::pane_mark(if active {
-                                        theme::normal()
-                                    } else {
-                                        theme::muted()
-                                    })
-                                }),
-                            ))
-                            .when(active && !editing, |el| {
-                                let id = id.clone();
-                                el.child(
-                                    panel::icon_button("tab-options", "ellipsis", theme::muted())
-                                        .on_click(cx.listener(
-                                            move |browser, event: &gpui::ClickEvent, window, cx| {
-                                                cx.stop_propagation();
-                                                browser.menu_at = Some(event.position());
-                                                browser.open_tab_menu(&id, window, cx);
-                                            },
-                                        )),
-                                )
-                            })
-                            .on_click(cx.listener(move |browser, _, window, cx| {
-                                if let Some(layout) = &mut browser.layout {
-                                    layout.model_mut().choose_tab(&id);
-                                }
-                                if let Some(focus) = &browser.navigation {
-                                    window.focus(focus, cx);
-                                }
-                                cx.notify();
-                            })),
-                    );
-                }
-                if space.tabs.is_empty() {
-                    list = list.child(
-                        panel::row("no-tabs", false)
-                            .text_color(rgb(theme::muted()))
-                            .child("No tabs yet")
-                            .on_click(cx.listener(|browser, _, window, cx| {
-                                browser.create(Create::Tab, window, cx)
-                            })),
-                    );
-                }
-            }
-            if let Some(tab) = model.tab() {
-                let leaves = tab.tree.leaves();
-                let selected = leaves
-                    .iter()
-                    .position(|leaf| leaf.id == tab.focus)
-                    .unwrap_or(0);
-                context = (
-                    heading.clone(),
-                    Some(format!(
-                        "{} · pane {}/{}",
-                        tab.name,
-                        selected + 1,
-                        leaves.len()
-                    )),
-                );
-                hints = vec![
-                    format!("{} new", shortcuts::label(shortcuts::Command::NewTab)),
-                    format!("{} split", shortcuts::label(shortcuts::Command::SplitRight)),
-                    format!("{} attach", shortcuts::label(shortcuts::Command::Attach)),
-                    format!("{} focus", shortcuts::label(shortcuts::Command::FocusPane)),
-                ];
-                let tree = if model.focus {
-                    leaves.get(selected).map(|leaf| Node::Leaf((*leaf).clone()))
-                } else {
-                    None
-                };
-                content = content.child(Self::tree(
-                    tree.as_ref()
-                        .or_else(|| self.resize.as_ref().map(split_resize::Drag::tree))
-                        .unwrap_or(&tab.tree),
-                    &tab.focus,
-                    &self.terminals,
-                    self.chooser.as_ref(),
-                    &self.split_bounds,
-                    cells,
-                    cx,
-                ));
-            }
-        } else if !self.loading {
-            content = content.child(
-                div()
-                    .p(px(16.0))
-                    .font_family(panel::FONT)
-                    .text_color(rgb(theme::muted()))
-                    .child("Open a folder containing layouts.db with ⌘O."),
-            );
-            message = Some("No library open".into());
-        } else {
-            message = Some("Opening library…".into());
-        }
-        if self.saving {
-            message = Some("Saving changes…".into());
-        }
-        if let Some(notice) = &self.save_notice {
-            message = Some(notice.clone());
-        }
-        if let Some(error) = &self.error {
-            message = Some(error.clone());
-        }
-        if self.editing.is_some() {
-            context = ("Rename".into(), Some("type a new name".into()));
-            hints = vec!["⏎ save".into(), "esc cancel".into()];
-        } else if self.chooser.is_some() {
-            context = ("Attach session".into(), None);
-            hints = ["type to filter", "↑↓ move", "⏎ open", "esc back"]
-                .map(String::from)
-                .to_vec();
-        }
-        let workspace_edit = self.editing.as_ref().is_some_and(|edit| !edit.tab);
-        let header = div()
-            .id("workspace-header")
-            .flex()
-            .flex_shrink_0()
-            .items_center()
-            .gap(px(8.0))
-            .h(px(36.0))
-            .px(px(12.0))
-            .bg(rgb(theme::header()))
-            .when(workspace_edit, |el| {
-                el.child(div().flex_1().min_w_0().child(self.name_editor(cx)))
-            })
-            .when(!workspace_edit, |el| {
-                el.cursor_pointer()
-                    .hover(|el| el.bg(rgb(theme::active())))
-                    .when_some(heading_icon, |el, name| {
-                        el.child(panel::icon(name, 16.0, theme::accent()))
-                    })
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .overflow_hidden()
-                            .whitespace_nowrap()
-                            .text_ellipsis()
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .child(heading.clone()),
-                    )
-                    .child(panel::icon("chevron-down", 14.0, theme::muted()))
-                    .on_mouse_down(
-                        gpui::MouseButton::Right,
-                        cx.listener(|browser, event: &gpui::MouseDownEvent, window, cx| {
-                            browser.open_menu(Popover::Workspace, event.position, window, cx);
-                            cx.stop_propagation();
-                        }),
-                    )
-                    .on_click(
-                        cx.listener(|browser, event: &gpui::ClickEvent, window, cx| {
-                            if event.click_count() == 2 {
-                                browser.close_menus();
-                                browser.begin_name(false, window, cx);
-                            } else if browser.workspace_menu {
-                                browser.close_menus();
-                            } else {
-                                browser.open_menu(Popover::Workspace, event.position(), window, cx);
-                            }
-                            cx.notify();
-                        }),
-                    )
-            });
-        let editing = self.editing.is_some();
-        // One-click workspace switching along the bottom, as before, now with
-        // each workspace's icon.
-        let mut slots = div()
-            .flex()
-            .flex_shrink_0()
-            .items_center()
-            .gap(px(4.0))
-            .h(px(40.0))
-            .px(px(6.0));
-        if let Some(layout) = &self.layout {
-            let model = layout.model();
-            let capacity = ((f32::from(sidebar_width) - 12.0) / 32.0).floor().max(1.0) as usize;
-            let overflow = model.workspaces.len() > capacity;
-            let shown = if overflow { capacity - 1 } else { capacity };
-            for (index, space) in model.workspaces.iter().take(shown).enumerate() {
-                let id = space.id.clone();
-                let current = model.selected == id;
-                let glyph = icons::workspace(space.symbol.as_deref(), space.icon.as_deref());
-                slots = slots.child(
-                    div()
-                        .id(SharedString::from(format!("workspace-slot-{id}")))
-                        .flex_shrink_0()
-                        .size(px(28.0))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .rounded(px(6.0))
-                        .cursor_pointer()
-                        .when(current, |el| el.bg(rgb(theme::active())))
-                        .when(!current, |el| el.hover(|el| el.bg(rgb(theme::header()))))
-                        .map(|el| match glyph {
-                            Some(name) => el.child(panel::icon(
-                                name,
-                                16.0,
-                                if current {
-                                    theme::accent()
-                                } else {
-                                    theme::muted()
-                                },
-                            )),
-                            None => el
-                                .text_size(px(12.0))
-                                .font_weight(gpui::FontWeight::SEMIBOLD)
-                                .text_color(rgb(if current {
-                                    theme::accent()
-                                } else {
-                                    theme::muted()
-                                }))
-                                .child((index + 1).to_string()),
-                        })
-                        .on_mouse_down(
-                            gpui::MouseButton::Right,
-                            cx.listener({
-                                let id = id.clone();
-                                move |browser, event: &gpui::MouseDownEvent, window, cx| {
-                                    if let Some(layout) = &mut browser.layout {
-                                        layout.model_mut().choose_workspace(&id);
-                                    }
-                                    browser.open_menu(
-                                        Popover::Workspace,
-                                        event.position,
-                                        window,
-                                        cx,
-                                    );
-                                    cx.stop_propagation();
-                                }
-                            }),
-                        )
-                        .on_click(cx.listener(move |browser, _, window, cx| {
-                            if let Some(layout) = &mut browser.layout {
-                                layout.model_mut().choose_workspace(&id);
-                            }
-                            browser.close_menus();
-                            if let Some(focus) = &browser.navigation {
-                                window.focus(focus, cx);
-                            }
-                            cx.notify();
-                        })),
-                );
-            }
-            if overflow {
-                slots = slots.child(
-                    panel::icon_button("workspace-more", "ellipsis", theme::muted()).on_click(
-                        cx.listener(|browser, event: &gpui::ClickEvent, window, cx| {
-                            browser.open_menu(Popover::Workspace, event.position(), window, cx);
-                        }),
-                    ),
-                );
-            }
-        }
-        // Agents from Agent Backbone, under the tabs: needing you first, then
-        // working, then the rest, each with its state as a colored dot.
-        let show_agents = self
-            .layout
-            .as_ref()
-            .is_some_and(|layout| layout.model().show_agents);
-        let agents = (self.roster.is_some() && show_agents).then(|| {
-            let snapshot = self.agents.clone().unwrap_or_default();
-            let entries: Option<Vec<(String, String)>> =
-                self.agents.as_ref().and_then(|snapshot| {
-                    snapshot.active_entries().map(|entries| {
-                        entries
-                            .into_iter()
-                            .map(|(name, state)| (name.to_owned(), state.to_owned()))
-                            .collect()
-                    })
-                });
-            let mut rows = div()
-                .id("agents")
-                .flex()
-                .flex_col()
-                .gap(px(1.0))
-                .max_h(window.viewport_size().height * 0.4)
-                .overflow_y_scroll();
-            match &entries {
-                None => {
-                    let reason = if self.agents.is_none() {
-                        "Loading agents…"
-                    } else {
-                        snapshot.error.unwrap_or("Agent Backbone unavailable")
-                    };
-                    rows = rows.child(
-                        div()
-                            .px(px(14.0))
-                            .h(px(panel::ROW))
-                            .flex()
-                            .items_center()
-                            .text_color(rgb(theme::muted()))
-                            .child(reason),
-                    );
-                }
-                Some(entries) if entries.is_empty() => {
-                    rows = rows.child(
-                        div()
-                            .px(px(14.0))
-                            .h(px(panel::ROW))
-                            .flex()
-                            .items_center()
-                            .text_color(rgb(theme::muted()))
-                            .child("No active agents"),
-                    );
-                }
-                Some(entries) => {
-                    for (name, state) in entries {
-                        let (color, filled) = match state.as_str() {
-                            "waiting_for_human" | "blocked" => (theme::danger(), true),
-                            "busy" | "starting" => (theme::accent(), true),
-                            _ => (theme::muted(), false),
-                        };
-                        let agent = name.clone();
-                        rows = rows.child(
-                            panel::row(SharedString::from(format!("agent-{name}")), false)
-                                .child(
-                                    div()
-                                        .size(px(8.0))
-                                        .flex_shrink_0()
-                                        .rounded_full()
-                                        .border_1()
-                                        .border_color(rgb(color))
-                                        .when(filled, |el| el.bg(rgb(color))),
-                                )
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .overflow_hidden()
-                                        .text_ellipsis()
-                                        .child(name.clone()),
-                                )
-                                .child(
-                                    div()
-                                        .flex_shrink_0()
-                                        .text_size(px(11.0))
-                                        .text_color(rgb(theme::muted()))
-                                        .child(match state.as_str() {
-                                            "waiting_for_human" | "blocked" => "needs you",
-                                            "busy" => "working",
-                                            "starting" => "starting",
-                                            _ => "",
-                                        }),
-                                )
-                                .on_click(cx.listener(move |browser, _, window, cx| {
-                                    browser.go_to_agent(&agent, window, cx)
-                                })),
-                        );
-                    }
-                }
-            }
-            div()
-                .flex()
-                .flex_col()
-                .flex_shrink_0()
-                .pb(px(4.0))
-                .child(
-                    panel::section("AGENTS").child(
-                        div().px(px(4.0)).child(
-                            entries
-                                .as_ref()
-                                .map_or(String::new(), |entries| entries.len().to_string()),
-                        ),
-                    ),
-                )
-                .child(rows)
-        });
-        let sidebar = div()
-            .id("sidebar")
-            .w(sidebar_width)
-            .flex_shrink_0()
-            .h_full()
-            .flex()
-            .flex_col()
-            .bg(rgb(theme::panel()))
-            .font_family(panel::FONT)
-            .text_size(px(13.0))
-            .line_height(px(18.0))
-            .text_color(rgb(theme::normal()))
-            .child(header)
-            .when(editing, |el| {
-                el.child(
-                    div()
-                        .px(px(14.0))
-                        .pt(px(6.0))
-                        .text_size(px(11.0))
-                        .text_color(rgb(theme::accent()))
-                        .child("Enter to save · Esc to cancel"),
-                )
-            })
-            .child(div().h(px(6.0)).flex_shrink_0())
-            .child(panel::section("TABS").child(
-                panel::icon_button("new-tab", "plus", theme::accent()).on_click(
-                    cx.listener(|browser, _, window, cx| browser.create(Create::Tab, window, cx)),
-                ),
-            ))
-            .child(list)
-            .when(self.save_failed, |el| {
-                el.child(
-                    panel::row("retry-save", false)
-                        .text_color(rgb(theme::accent()))
-                        .child("Retry saving changes")
-                        .on_click(cx.listener(|browser, _, _, cx| browser.save(cx))),
-                )
-                .child(
-                    panel::row("discard-save", false)
-                        .text_color(rgb(theme::danger()))
-                        .child("Discard unsaved changes")
-                        .on_click(cx.listener(|browser, _, _, cx| browser.discard_save(cx))),
-                )
-            })
-            .children(agents)
-            .child(
-                panel::row("configure", false)
-                    .text_color(rgb(theme::muted()))
-                    .child(panel::icon("settings", 14.0, theme::muted()))
-                    .child("Settings")
-                    .on_click(cx.listener(|browser, _, _, cx| {
-                        browser.close_menus();
-                        cx.defer(settings_window::show);
-                    })),
-            )
-            .child(slots);
-        // The open menu floats over the window at the point it was opened from.
-        let menu_body = if self.icon_picker {
-            Some(self.icon_picker(cx))
-        } else if self.tab_menu.is_some() {
-            Some(self.tab_options(cx))
-        } else if self.workspace_menu {
-            Some(self.workspace_options(cx))
-        } else {
-            None
-        };
-        // A menu taller than the window scrolls; it also takes every pointer
-        // event over it, so nothing underneath reacts to its clicks.
-        let menu_height = window.viewport_size().height - px(16.0);
-        let overlay = menu_body.map(|body| {
-            let body = body
-                .id("popover")
-                .max_h(menu_height)
-                .overflow_y_scroll()
-                .occlude();
-            gpui::deferred(
-                gpui::anchored()
-                    .position(
-                        self.menu_at
-                            .unwrap_or_else(|| gpui::point(px(8.0), px(40.0))),
-                    )
-                    .snap_to_window_with_margin(px(8.0))
-                    .child(body.on_mouse_down_out(cx.listener(|browser, _, _, cx| {
-                        browser.close_menus();
-                        cx.notify();
-                    }))),
-            )
-            .with_priority(1)
-        });
-        // The source drops the centre hints where they would meet the sides.
-        let row_columns =
-            (f32::from(window.viewport_size().width) / f32::from(cells.0.width)) as usize;
-        let left_cells = context.0.chars().count()
-            + context
-                .1
-                .as_ref()
-                .map_or(0, |detail| detail.chars().count() + 3);
-        let right = message.unwrap_or_default();
-        let right_cells = if self.roster.is_some() { 14 } else { 0 }
-            + if right.is_empty() {
-                1
-            } else {
-                right.chars().count()
-            };
-        let centre = hints.join(" · ");
-        let centre = if 2 * left_cells.max(right_cells) + centre.chars().count() + 6 > row_columns {
-            String::new()
-        } else {
-            centre
-        };
-        let status = cells
-            .row()
-            .relative()
-            .justify_between()
-            .font_family(panel::FONT)
-            .text_size(px(12.0))
-            .bg(rgb(theme::panel()))
-            .text_color(rgb(theme::muted()))
-            .child(
-                div()
-                    .min_w_0()
-                    .flex()
-                    .child(div().text_color(rgb(theme::normal())).child(context.0))
-                    .when_some(context.1, |el, detail| el.child(format!(" · {detail}"))),
-            )
-            .child(
-                div()
-                    .absolute()
-                    .inset_0()
-                    .flex()
-                    .justify_center()
-                    .items_center()
-                    .child(centre),
-            )
-            .child(
-                div()
-                    .flex()
-                    .gap(px(12.0))
-                    .when(self.roster.is_some(), |el| {
-                        el.child(
-                            div()
-                                .id("toggle-agents")
-                                .cursor_pointer()
-                                .text_color(rgb(if show_agents {
-                                    theme::normal()
-                                } else {
-                                    theme::muted()
-                                }))
-                                .child(if show_agents {
-                                    "agents shown"
-                                } else {
-                                    "agents hidden"
-                                })
-                                .on_click(cx.listener(|browser, _, _, cx| {
-                                    if browser.saving || browser.save_failed {
-                                        return;
-                                    }
-                                    if let Some(layout) = &mut browser.layout {
-                                        let model = layout.model_mut();
-                                        model.show_agents = !model.show_agents;
-                                        browser.save(cx);
-                                    }
-                                    cx.notify();
-                                })),
-                        )
-                    })
-                    .child(if right.is_empty() {
-                        div().text_color(rgb(theme::ok())).child("●")
-                    } else {
-                        div().text_color(rgb(theme::accent())).child(right)
-                    }),
-            );
+        let sidebar = self.sidebar(window, cx);
+        let content = self.content(cx);
+        let status = self.status_bar(window, cx);
+        let overlay = self.popover(window, cx);
+        let t = design::tokens();
         div()
             .relative()
             .size_full()
@@ -2555,11 +1427,10 @@ impl Render for Browser {
                 .absolute()
                 .size_full(),
             )
-            .bg(rgb(theme::panel()))
-            .text_color(rgb(theme::normal()))
-            .font_family(terminal::appearance().font_family)
-            .text_size(px(terminal::appearance().font_size))
-            .line_height(cells.0.height)
+            .bg(design::colors().ground)
+            .text_color(design::colors().text)
+            .font_family(t.font.ui.clone())
+            .text_size(t.text.row.size())
             .when_some(self.navigation.clone(), |el, focus| el.track_focus(&focus))
             .capture_key_down(
                 cx.listener(|browser, event: &gpui::KeyDownEvent, window, cx| {
@@ -2575,6 +1446,17 @@ impl Render for Browser {
                         return;
                     }
                     let key = &event.keystroke;
+                    // The jump field keeps typing; arrows move its highlight.
+                    if browser.jump.is_some() && !key.modifiers.modified() {
+                        let step = match key.key.as_str() {
+                            "up" => -1,
+                            "down" => 1,
+                            _ => return,
+                        };
+                        browser.jump_move(step, cx);
+                        cx.stop_propagation();
+                        return;
+                    }
                     if let Some(chooser) = &browser.chooser {
                         if key.key == "escape" && !chooser.view.read(cx).composing(cx) {
                             browser.chooser = None;
@@ -2634,6 +1516,17 @@ impl Render for Browser {
                             browser.begin_name(false, window, cx);
                             true
                         }
+                        Some(shortcuts::Command::Jump) => {
+                            // Open under the panel's jump field.
+                            let t = design::tokens();
+                            let below = t.size.titlebar
+                                + t.size.workspace_tile
+                                + t.size.workspace_block_padding * 2.0
+                                + t.space.s8
+                                + t.size.jump_field;
+                            browser.open_jump(point(px(t.space.s12), px(below)), window, cx);
+                            true
+                        }
                         _ => false,
                     };
                     if handled {
@@ -2681,21 +1574,6 @@ impl Render for Browser {
                     .flex_1()
                     .min_h_0()
                     .child(sidebar)
-                    .child(
-                        div()
-                            .id("sidebar-separator")
-                            .h_full()
-                            .flex_shrink_0()
-                            .cursor(gpui::CursorStyle::ResizeLeftRight)
-                            .child(cells.separator())
-                            .on_mouse_down(
-                                gpui::MouseButton::Left,
-                                cx.listener(move |browser, event: &gpui::MouseDownEvent, _, cx| {
-                                    browser.sidebar_drag = Some((event.position.x, sidebar_width));
-                                    cx.stop_propagation();
-                                }),
-                            ),
-                    )
                     .child(content),
             )
             .child(status)
