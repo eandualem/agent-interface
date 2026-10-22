@@ -212,7 +212,16 @@ impl Browser {
                     .right_0()
                     .opacity(0.0)
                     .group_hover(group, |style| style.opacity(1.0))
-                    .on_any_mouse_down(|_, _, cx| cx.stop_propagation())
+                    .on_any_mouse_down(cx.listener(
+                        |browser, event: &gpui::MouseDownEvent, window, cx| {
+                            if event.button == gpui::MouseButton::Left
+                                && let Some(focus) = &browser.navigation
+                            {
+                                window.focus(focus, cx);
+                            }
+                            cx.stop_propagation();
+                        },
+                    ))
                     .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
                     .child(header)
             }))
@@ -252,51 +261,52 @@ impl Browser {
         );
         let icon_color = if focused { c.accent } else { c.muted };
         let title_color = if focused { c.text } else { c.text_2 };
+        let windows = terminal
+            .map(|terminal| terminal.read(cx).windows_for_header())
+            .unwrap_or_default();
+        let several = windows.len() > 1;
+        if several {
+            // The session's windows scroll sideways when they outgrow the pane.
+            let mut choices = div()
+                .id(SharedString::from(format!("tmux-windows-{}", leaf.id)))
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .gap(px(t.space.s8))
+                .overflow_x_scroll();
+            for (window, current) in windows {
+                let terminal = terminal.cloned();
+                choices = choices.child(
+                    div()
+                        .id(SharedString::from(format!(
+                            "tmux-window-{}-{}",
+                            leaf.id, window.id
+                        )))
+                        .cursor_pointer()
+                        .text_color(if current { title_color } else { c.muted })
+                        .hover(|el| el.text_color(colors().text))
+                        .child(
+                            window
+                                .name
+                                .chars()
+                                .map(|ch| if ch.is_control() { ' ' } else { ch })
+                                .collect::<String>(),
+                        )
+                        .on_click(move |_, _, cx| {
+                            if let Some(terminal) = &terminal {
+                                terminal.update(cx, |terminal, cx| {
+                                    terminal.select_window(window.clone(), cx)
+                                });
+                            }
+                        }),
+                );
+            }
+            row = row.child(choices);
+        }
         match &leaf.attachment {
             Some(attachment) => {
                 // An attached session: its tmux windows, its name on the right.
-                let windows = terminal
-                    .map(|terminal| terminal.read(cx).windows_for_header())
-                    .unwrap_or_default();
-                let several = windows.len() > 1;
-                if several {
-                    // The session's windows scroll sideways when they outgrow the pane.
-                    let mut choices = div()
-                        .id(SharedString::from(format!("tmux-windows-{}", leaf.id)))
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .gap(px(t.space.s8))
-                        .overflow_x_scroll();
-                    for (window, current) in windows {
-                        let terminal = terminal.cloned();
-                        choices = choices.child(
-                            div()
-                                .id(SharedString::from(format!(
-                                    "tmux-window-{}-{}",
-                                    leaf.id, window.id
-                                )))
-                                .cursor_pointer()
-                                .text_color(if current { title_color } else { c.muted })
-                                .hover(|el| el.text_color(colors().text))
-                                .child(
-                                    window
-                                        .name
-                                        .chars()
-                                        .map(|ch| if ch.is_control() { ' ' } else { ch })
-                                        .collect::<String>(),
-                                )
-                                .on_click(move |_, _, cx| {
-                                    if let Some(terminal) = &terminal {
-                                        terminal.update(cx, |terminal, cx| {
-                                            terminal.select_window(window.clone(), cx)
-                                        });
-                                    }
-                                }),
-                        );
-                    }
-                    row = row.child(choices);
-                } else {
+                if !several {
                     row = row
                         .child(ui::icon(
                             if state.is_some() { "bot" } else { "link-2" },
@@ -349,8 +359,10 @@ impl Browser {
                     } else {
                         "Terminal"
                     }))
-                    .child(div().min_w_0().overflow_hidden().text_ellipsis().child(cwd))
-                    .child(div().flex_1());
+                    .child(div().min_w_0().overflow_hidden().text_ellipsis().child(cwd));
+                if !several {
+                    row = row.child(div().flex_1());
+                }
             }
         }
         row.child(

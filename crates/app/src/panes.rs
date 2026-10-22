@@ -1824,9 +1824,18 @@ mod tests {
         server
             .run(&["set-option", "-s", "extended-keys", "on"])
             .unwrap();
-        server
-            .run(&["set-option", "-s", "extended-keys-format", "csi-u"])
-            .unwrap();
+        // tmux 3.3 and 3.4 already emit CSI-u. Newer versions expose a
+        // format option; select CSI-u there without skipping any input checks.
+        if server
+            .run(&["show-options", "-s"])
+            .unwrap()
+            .lines()
+            .any(|line| line.starts_with("extended-keys-format "))
+        {
+            server
+                .run(&["set-option", "-s", "extended-keys-format", "csi-u"])
+                .unwrap();
+        }
         let script = "stty raw -echo; printf '\\033[>4;2m\\033[?1h\\033[2J\\033[Harrow-ready'; arrow=$(dd bs=1 count=3 2>/dev/null | od -An -tx1 | tr -d '[:space:]'); printf '\\033[2J\\033[Hextended-ready%s' \"$arrow\"; extended=$(dd bs=1 count=7 2>/dev/null | od -An -tx1 | tr -d '[:space:]'); printf '\\033[?2004h\\033[2J\\033[Hpaste-ready%s' \"$extended\"; pasted=$(dd bs=1 count=15 2>/dev/null | od -An -tx1 | tr -d '[:space:]'); printf '\\033[?1000h\\033[?1006h\\033[2J\\033[Hpaste:%s' \"$pasted\"; mouse=$(dd bs=1 count=28 2>/dev/null | od -An -tx1 | tr -d '[:space:]'); printf '\\033[?1002h\\033[2J\\033[Hmouse:%s' \"$mouse\"; drag=$(dd bs=1 count=28 2>/dev/null | od -An -tx1 | tr -d '[:space:]'); printf '\\033[2J\\033[Hdrag:%s' \"$drag\"; exec cat";
         server
             .run(&[
