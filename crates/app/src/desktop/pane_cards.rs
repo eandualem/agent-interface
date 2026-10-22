@@ -347,7 +347,11 @@ impl Browser {
                 }
             }
             None => {
-                let cwd = leaf.cwd.as_deref().map(home_relative).unwrap_or_default();
+                let cwd = leaf
+                    .cwd
+                    .as_deref()
+                    .map(|path| home_relative(path, std::env::var("HOME").ok().as_deref()))
+                    .unwrap_or_default();
                 row = row
                     .child(ui::icon(
                         "terminal",
@@ -479,11 +483,30 @@ impl Browser {
 }
 
 /// `path` with the home directory shown as `~`.
-fn home_relative(path: &str) -> String {
-    match std::env::var("HOME") {
-        Ok(home) if !home.is_empty() && path.starts_with(&home) => {
-            format!("~{}", &path[home.len()..])
-        }
-        _ => path.to_owned(),
+fn home_relative(path: &str, home: Option<&str>) -> String {
+    let Some(home) = home.filter(|home| !home.is_empty()) else {
+        return path.to_owned();
+    };
+    match std::path::Path::new(path).strip_prefix(home) {
+        Ok(relative) if relative.as_os_str().is_empty() => "~".to_owned(),
+        Ok(relative) => format!("~/{}", relative.display()),
+        Err(_) => path.to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::home_relative;
+
+    #[test]
+    fn home_abbreviation_respects_directory_boundaries() {
+        let home = Some("/home/user");
+        assert_eq!(home_relative("/home/user", home), "~");
+        assert_eq!(home_relative("/home/user/project", home), "~/project");
+        assert_eq!(
+            home_relative("/home/user2/project", home),
+            "/home/user2/project"
+        );
+        assert_eq!(home_relative("/work", Some("")), "/work");
     }
 }
