@@ -280,7 +280,8 @@ impl Panes {
     /// Starts keeping the panes in `layout` up to date from `client`, a
     /// control-mode client (`tmux -C`) with piped standard input and output,
     /// freshly attached with `-f no-output,ignore-size,new-layouts`. Its initial reply
-    /// must not have been read. Refreshes visible membership on that connection,
+    /// must not have been read. Requires a numbered server version >=3.3,
+    /// refreshes visible membership on that connection,
     /// then captures existing contents before enabling
     /// live output; startup is bounded by a ten-second capture deadline.
     /// Each pane keeps about `scrollback` lines of history.

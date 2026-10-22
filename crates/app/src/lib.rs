@@ -7,9 +7,11 @@
 
 #![forbid(unsafe_code)]
 
+pub mod keymap;
 pub mod library;
 pub mod panes;
 mod restore;
+pub mod roster;
 mod seed;
 pub mod sessions;
 mod stream;

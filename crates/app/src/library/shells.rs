@@ -67,6 +67,23 @@ pub fn ordinary_session(leaf_id: &str) -> Option<String> {
     .then(|| format!("terminal-{leaf_id}"))
 }
 
+/// Refresh one leaf's saved cwd from its ordinary shell, even when that shell
+/// is parked behind an external attachment. `socket` is the existing library
+/// shell socket, never the attachment's server. Call this on a worker before
+/// splitting so the new leaf can inherit the ordinary shell's current directory.
+/// Only this in-memory field changes, and only after a successful read. No shell
+/// is created, no client attaches, and nothing is persisted.
+pub fn remember_shell_directory(
+    leaf: &mut tmux_workspaces_core::Leaf,
+    socket: &Path,
+) -> io::Result<()> {
+    let session = ordinary_session(&leaf.id)
+        .ok_or_else(|| io::Error::other("Working directory unavailable"))?;
+    let directory = tmux_workspaces_tmux::discovery::read_session_directory(socket, &session)?;
+    leaf.cwd = Some(directory);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -74,6 +91,61 @@ mod tests {
     use std::os::unix::ffi::OsStrExt;
     use std::os::unix::fs::PermissionsExt;
     use std::os::unix::net::UnixListener;
+
+    #[test]
+    fn directory_refresh_uses_the_exact_ordinary_shell_and_preserves_newline_paths() {
+        use tmux_workspaces_core::{Attachment, Leaf};
+        use tmux_workspaces_test_support::TmuxServer;
+
+        let server = TmuxServer::start().unwrap();
+        let socket = server
+            .run(&["display-message", "-p", "#{socket_path}"])
+            .unwrap();
+        let socket = Path::new(socket.trim_end());
+        let directory = server.address().0.join("shell café path\n");
+        std::fs::create_dir(&directory).unwrap();
+        let directory = directory.canonicalize().unwrap();
+        let mut leaf = Leaf {
+            id: "0123456789ab".into(),
+            attachment: Some(Attachment {
+                session: "external".into(),
+                source_socket: None,
+            }),
+            cwd: Some("/previous".into()),
+            empty: false,
+        };
+        // A longer session name cannot stand in for this ordinary shell.
+        server
+            .run(&[
+                "new-session",
+                "-d",
+                "-s",
+                "terminal-0123456789ab-extra",
+                "sleep 60",
+            ])
+            .unwrap();
+        assert!(remember_shell_directory(&mut leaf, socket).is_err());
+        assert_eq!(leaf.cwd.as_deref(), Some("/previous"));
+        server
+            .run(&[
+                "new-session",
+                "-d",
+                "-s",
+                "terminal-0123456789ab",
+                "-c",
+                directory.to_str().unwrap(),
+                "sleep 60",
+            ])
+            .unwrap();
+        remember_shell_directory(&mut leaf, socket).unwrap();
+        assert_eq!(leaf.cwd.as_deref(), directory.to_str());
+        assert_eq!(leaf.attachment.as_ref().unwrap().session, "external");
+        assert!(server.run(&["list-clients"]).unwrap().is_empty());
+        let absent = server.address().0.join("absent.sock");
+        assert!(remember_shell_directory(&mut leaf, &absent).is_err());
+        assert_eq!(leaf.cwd.as_deref(), directory.to_str());
+        assert!(!absent.exists());
+    }
 
     #[test]
     fn shell_lookup_matches_python_and_only_reads_private_socket_metadata() {

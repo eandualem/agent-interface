@@ -95,10 +95,25 @@ impl Terminal {
     pub fn write(&mut self, bytes: &[u8]) {
         let engine = &mut self.engine;
         let rename = &mut self.rename;
-        self.del.filter(bytes, |part| {
+        self.del.filter(bytes, |part, horizontal| {
+            // The pinned engine routes CHA/HPA through a two-axis cursor move,
+            // incorrectly adding the top margin to the unchanged row. Its mode
+            // API only changes the bit, unlike sending DECRST/DECSET (which homes
+            // the cursor). Keep the original mode for every subsequent byte.
+            let origin = horizontal && engine.mode(Mode::ORIGIN).expect("valid origin mode");
+            if origin {
+                engine
+                    .set_mode(Mode::ORIGIN, false)
+                    .expect("valid origin mode");
+            }
             rename.filter(part, |part| {
                 controls::filter(part, |part| engine.vt_write(part));
             });
+            if origin {
+                engine
+                    .set_mode(Mode::ORIGIN, true)
+                    .expect("valid origin mode");
+            }
         });
     }
 
@@ -156,6 +171,7 @@ impl Terminal {
                 };
                 // A cell erased with a background colour keeps the colour in
                 // the cell rather than in its style.
+                self.grapheme.clear();
                 match raw.content_tag().map_err(Error)? {
                     CellContentTag::BgColorPalette => {
                         style.background = Color::Palette(raw.bg_color_palette().map_err(Error)?.0);
@@ -164,11 +180,20 @@ impl Terminal {
                         let rgb = raw.bg_color_rgb().map_err(Error)?;
                         style.background = Color::Rgb(rgb.r, rgb.g, rgb.b);
                     }
-                    CellContentTag::Codepoint | CellContentTag::CodepointGrapheme => {}
-                }
-                self.grapheme.clear();
-                if raw.has_text().map_err(Error)? {
-                    cell.graphemes_utf8(&mut self.grapheme).map_err(Error)?;
+                    CellContentTag::Codepoint => {
+                        // Zero is an empty cell. Simple text needs no lookup
+                        // or encoding through the engine's grapheme buffer.
+                        let codepoint = raw.codepoint().map_err(Error)?;
+                        if codepoint != 0 {
+                            self.grapheme.push(
+                                char::from_u32(codepoint)
+                                    .ok_or(Error(libghostty_vt::Error::InvalidValue))?,
+                            );
+                        }
+                    }
+                    CellContentTag::CodepointGrapheme => {
+                        cell.graphemes_utf8(&mut self.grapheme).map_err(Error)?;
+                    }
                 }
                 screen.push(&self.grapheme, width, style);
             }
@@ -404,5 +429,31 @@ mod tests {
             visible: true,
         });
         assert_eq!(screen, expected);
+    }
+
+    #[test]
+    fn screen_copy_keeps_codepoints_clusters_and_empty_background_cells() {
+        let mut terminal = Terminal::new(10, 2, 0).unwrap();
+        terminal.write("Aé界🙂e\u{301}\r\n\x1b[48;2;3;4;5m\x1b[2K".as_bytes());
+        let mut screen = Screen::default();
+        terminal.read_screen(&mut screen).unwrap();
+        for (column, text, width) in [
+            (0, "A", Width::Narrow),
+            (1, "é", Width::Narrow),
+            (2, "界", Width::Wide),
+            (3, "", Width::Spacer),
+            (4, "🙂", Width::Wide),
+            (5, "", Width::Spacer),
+            (6, "e\u{301}", Width::Narrow),
+            (7, "", Width::Narrow),
+        ] {
+            let (actual, cell) = screen.cell(0, column).unwrap();
+            assert_eq!((actual, cell.width), (text, width));
+        }
+        for column in 0..10 {
+            let (text, cell) = screen.cell(1, column).unwrap();
+            assert_eq!(text, "");
+            assert_eq!(cell.style.background, Color::Rgb(3, 4, 5));
+        }
     }
 }

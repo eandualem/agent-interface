@@ -4,11 +4,12 @@
 
 mod actions;
 mod geometry;
+pub mod keymap;
 pub mod merge;
 mod navigation;
 pub mod theme;
 
-pub use actions::{AttachmentTarget, NameEdit, RenameOutcome};
+pub use actions::{AttachmentTarget, NameEdit, RenameOutcome, WORKSPACE_ICONS};
 pub use geometry::PaneRect;
 
 /// An arrangement loaded from a library. Navigation values seed a new window;
