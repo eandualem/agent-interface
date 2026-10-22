@@ -160,6 +160,7 @@ pub fn load() -> Settings {
 }
 
 static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static PENDING: AtomicU32 = AtomicU32::new(0);
 static WRITTEN: std::sync::Mutex<u64> = std::sync::Mutex::new(0);
 
 /// Save these settings on a background thread, so slow storage never blocks
@@ -167,7 +168,9 @@ static WRITTEN: std::sync::Mutex<u64> = std::sync::Mutex::new(0);
 /// newer one. `done` receives the outcome.
 pub fn save_in_background(settings: Settings, done: impl FnOnce(io::Result<()>) + Send + 'static) {
     let generation = GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
+    PENDING.fetch_add(1, Ordering::SeqCst);
     std::thread::spawn(move || {
+        let _pending = Pending;
         let mut written = WRITTEN.lock().unwrap_or_else(|error| error.into_inner());
         if *written > generation {
             return done(Ok(()));
@@ -180,6 +183,23 @@ pub fn save_in_background(settings: Settings, done: impl FnOnce(io::Result<()>) 
         }
         done(result);
     });
+}
+
+struct Pending;
+
+impl Drop for Pending {
+    fn drop(&mut self) {
+        PENDING.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Before the process exits, let background saves finish, waiting at most
+/// `limit`; a detached save thread would otherwise end mid-write.
+pub fn finish_saves(limit: std::time::Duration) {
+    let deadline = std::time::Instant::now() + limit;
+    while PENDING.load(Ordering::SeqCst) > 0 && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
 }
 
 /// Save atomically: write a sibling file, then rename it over the old one.
