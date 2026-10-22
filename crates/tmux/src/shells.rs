@@ -262,6 +262,15 @@ pub fn ensure(socket: &Path, requests: &[Request], environment: &Environment) ->
         } else {
             &environment.home
         };
+        // tmux expands formats in -c even though this is a separate argv value.
+        // Quote its marker while retaining non-UTF-8 Unix path bytes.
+        let mut literal_cwd = Vec::new();
+        for &byte in cwd.as_os_str().as_bytes() {
+            literal_cwd.push(byte);
+            if byte == b'#' {
+                literal_cwd.push(byte);
+            }
+        }
         let created = environment.run(
             socket,
             &[
@@ -272,7 +281,7 @@ pub fn ensure(socket: &Path, requests: &[Request], environment: &Environment) ->
                 "-s".into(),
                 name.clone().into(),
                 "-c".into(),
-                cwd.as_os_str().to_owned(),
+                OsString::from_vec(literal_cwd),
                 environment.shell_command(),
             ],
         )?;
