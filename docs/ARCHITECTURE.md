@@ -93,8 +93,8 @@ and `cargo deny check` fails when a project crate depends on one that
 may depend on it.
 
 **Native build.** `term` depends on `libghostty-vt` 0.2.2, whose build script
-compiles Ghostty's terminal core with Zig 0.15.2
-([0004](decisions/0004-terminal-emulation-core.md)). The
+compiles Ghostty's terminal core with Zig 0.15.2 and the verified repository
+patch ([0025](decisions/0025-patched-terminal-source.md)). The
 [contributor guide](../CONTRIBUTING.md#the-terminal-engines-native-build)
 covers its build modes, CPU targets and offline builds.
 

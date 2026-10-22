@@ -65,9 +65,9 @@ CPU targeting.
 
 ## Consequences
 
-- Building the project needs Zig 0.15.2 and a C toolchain, and by default
-  fetches Ghostty's source at build time. Offline builds use
-  `GHOSTTY_SOURCE_DIR` with a pre-fetched copy.
+- Building the project needs Zig 0.15.2 and a C toolchain. The source preparation
+  and repository patches are specified in [0025](0025-patched-terminal-source.md);
+  offline builds reuse that prepared source.
 - The native inputs (Ghostty's core; simdutf and Highway when SIMD is enabled;
   uucode and its Unicode data; Wuffs when graphics support is enabled) need
   their own licence notices, because `cargo-deny` does not see them. The Wuffs archive could not be inspected during research
