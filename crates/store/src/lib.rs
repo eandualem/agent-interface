@@ -88,7 +88,9 @@ pub struct Store {
 }
 
 impl Store {
-    /// Open `directory/layouts.db` without creating directories, tables or files.
+    /// Open the existing `directory/layouts.db` without creating or changing its
+    /// tables or records. SQLite may create or update a WAL shared-memory
+    /// sidecar to coordinate readers, while stored records remain unchanged.
     pub fn open(directory: &Path) -> Result<Self, Error> {
         let path = directory.join("layouts.db");
         let connection = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY)
