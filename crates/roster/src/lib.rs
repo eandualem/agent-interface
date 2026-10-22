@@ -10,6 +10,7 @@ use std::time::Instant;
 
 use serde_json::value::RawValue;
 
+mod configuration;
 mod transport;
 
 const RESPONSE_LIMIT: usize = 1024 * 1024;
