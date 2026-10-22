@@ -200,8 +200,9 @@ impl Browser {
             )
             // In hover mode the header overlays the top of the pane while it is
             // hovered. The pointer is always over the pane when it is over the
-            // header, so the header is visible whenever it takes the pointer;
-            // it stops pointer events there, so none reach the terminal below.
+            // header, so the header is visible whenever it takes the pointer.
+            // Presses and scrolling there stay with the header; releases and
+            // moves pass on, so a gesture begun in the terminal still ends.
             .children(overlay.map(|header| {
                 div()
                     .id(SharedString::from(format!("pane-hover-header-{id}")))
@@ -212,9 +213,7 @@ impl Browser {
                     .opacity(0.0)
                     .group_hover(group, |style| style.opacity(1.0))
                     .on_any_mouse_down(|_, _, cx| cx.stop_propagation())
-                    .on_mouse_up(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
-                    .on_mouse_move(|_, _, cx| cx.stop_propagation())
                     .child(header)
             }))
             .into_any_element()
