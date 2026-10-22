@@ -772,14 +772,7 @@ impl Browser {
     }
 
     fn tab_options(&self, cx: &mut Context<Self>) -> gpui::Div {
-        let mut options =
-            div()
-                .flex()
-                .flex_col()
-                .on_mouse_down_out(cx.listener(|browser, _, _, cx| {
-                    browser.tab_menu = None;
-                    cx.notify();
-                }));
+        let mut options = panel::menu();
         // The source's order: naming and pane actions, then reordering.
         let mut actions = vec![
             (Some("Rename tab".to_owned()), TabAction::Rename, Some("⌘R")),
@@ -2113,7 +2106,15 @@ impl Render for Browser {
         } else {
             None
         };
+        // A menu taller than the window scrolls; it also takes every pointer
+        // event over it, so nothing underneath reacts to its clicks.
+        let menu_height = window.viewport_size().height - px(16.0);
         let overlay = menu_body.map(|body| {
+            let body = body
+                .id("popover")
+                .max_h(menu_height)
+                .overflow_y_scroll()
+                .occlude();
             gpui::deferred(
                 gpui::anchored()
                     .position(
