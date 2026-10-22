@@ -1,6 +1,6 @@
 //! Connect each saved leaf to its actual existing tmux session.
 
-use super::theme::{self, Cells};
+use super::{components as ui, design};
 use crate::{
     library,
     panes::Panes,
@@ -8,7 +8,7 @@ use crate::{
     view::{Appearance, TerminalView},
 };
 use futures::channel::mpsc::{self, UnboundedReceiver};
-use gpui::{Context, Entity, Render, SharedString, Task, Window, div, prelude::*, rgb};
+use gpui::{Context, Entity, Render, Task, Window, div, prelude::*};
 use std::{path::PathBuf, sync::Arc};
 use tmux_workspaces_core::Leaf;
 use tmux_workspaces_tmux::connection::SessionWindow;
@@ -297,6 +297,29 @@ impl LiveTerminal {
     }
 }
 
+impl LiveTerminal {
+    /// The session's windows and which one is shown, for the pane header.
+    pub fn windows_for_header(&self) -> Vec<(SessionWindow, bool)> {
+        self.windows
+            .iter()
+            .map(|window| {
+                let current = self
+                    .selected_window
+                    .as_ref()
+                    .is_some_and(|selected| selected.id == window.id);
+                (window.clone(), current)
+            })
+            .collect()
+    }
+
+    /// Show another of the session's windows.
+    pub fn select_window(&mut self, window: SessionWindow, cx: &mut Context<Self>) {
+        if !self.connecting {
+            self.start_window(Some(window), None, cx);
+        }
+    }
+}
+
 impl Render for LiveTerminal {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Settings changes apply to terminals that are already connected.
@@ -304,64 +327,18 @@ impl Render for LiveTerminal {
         if let Some(view) = &self.view {
             view.update(cx, |view, cx| view.set_appearance(&current, cx));
         }
-        let cells = Cells(crate::view::cell_size(cx.text_system(), &current));
-        // The Python viewer gives an attached session one row along the top
-        // naming it on the right; an ordinary shell has none. Native window
-        // choices share that row when the session has more than one window.
-        let attachment = self.target.leaf.attachment.as_ref();
-        let several = self.windows.len() > 1;
-        let mut header = cells
-            .row()
-            .gap(cells.width(1))
-            .bg(rgb(theme::panel()))
-            .text_color(rgb(theme::muted()));
-        // Window names scroll sideways when they outgrow the pane.
-        let mut choices = div()
-            .id("tmux-windows")
-            .flex_1()
-            .min_w_0()
-            .flex()
-            .gap(cells.width(1))
-            .overflow_x_scroll();
-        if several {
-            for item in &self.windows {
-                let selected = item.clone();
-                let name: String = item
-                    .name
-                    .chars()
-                    .map(|ch| if ch.is_control() { ' ' } else { ch })
-                    .collect();
-                let current = self
-                    .selected_window
-                    .as_ref()
-                    .is_some_and(|window| window.id == item.id);
-                choices = choices.child(
-                    div()
-                        .id(SharedString::from(format!(
-                            "tmux-window-{}-{}",
-                            item.id, item.index
-                        )))
-                        .flex_shrink_0()
-                        .cursor_pointer()
-                        .when(current, |el| el.text_color(rgb(theme::normal())))
-                        .child(format!("{}:{name}", item.index))
-                        .when(!self.connecting, |el| {
-                            el.on_click(cx.listener(move |terminal, _, _, cx| {
-                                terminal.start_window(Some(selected.clone()), None, cx);
-                            }))
-                        }),
-                );
-            }
-        }
-        header = header.child(choices);
-        if let Some(attachment) = attachment {
-            header = header.child(
+        let (t, c) = (design::tokens(), design::colors());
+        let line = |text: String, color: gpui::Rgba| {
+            ui::text(
                 div()
-                    .flex_shrink_0()
-                    .text_color(rgb(theme::accent()))
-                    .child(attachment.session.clone()),
-            );
-        }
+                    .px(gpui::px(t.space.s12))
+                    .py(gpui::px(t.space.s8))
+                    .text_color(color),
+                &t.text.body,
+            )
+            .font_family(t.font.ui.clone())
+            .child(text)
+        };
         div()
             .size_full()
             .flex()
@@ -369,9 +346,7 @@ impl Render for LiveTerminal {
             .min_w_0()
             .min_h_0()
             .overflow_hidden()
-            .bg(rgb(theme::surface()))
-            .text_color(rgb(theme::normal()))
-            .when(attachment.is_some() || several, |el| el.child(header))
+            .bg(c.surface)
             .child(
                 div()
                     .flex_1()
@@ -379,39 +354,35 @@ impl Render for LiveTerminal {
                     .children((!self.connecting).then(|| self.view.clone()).flatten()),
             )
             .when(self.connecting, |el| {
-                el.child(
-                    cells
-                        .row()
-                        .text_color(rgb(theme::muted()))
-                        .child("Connecting…"),
-                )
+                el.child(line("Connecting…".into(), c.muted))
             })
             .when_some(self.error.clone(), |el, error| {
-                el.child(cells.row().text_color(rgb(theme::accent())).child(error))
+                el.child(line(error, c.attention_text))
             })
             .when(!self.connecting && self.error.is_some(), |el| {
                 el.child(
-                    cells
-                        .row()
-                        .id("reconnect")
-                        .cursor_pointer()
-                        .child("Reconnect")
-                        .on_click(cx.listener(|terminal, _, _, cx| terminal.start(cx))),
+                    div()
+                        .px(gpui::px(t.space.s12))
+                        .pb(gpui::px(t.space.s8))
+                        .child(
+                            ui::button("reconnect", "Reconnect", ui::Button::Secondary)
+                                .on_click(cx.listener(|terminal, _, _, cx| terminal.start(cx))),
+                        ),
                 )
             })
     }
 }
 
-/// The terminal font and colours from the current settings and palette.
+/// The terminal font and colours from the current settings and design tokens.
 pub(super) fn appearance() -> Appearance {
-    let palette = theme::current();
+    let (tokens, colors, terminal) = (design::tokens(), design::colors(), design::terminal());
     Appearance {
-        font_family: "Menlo".into(),
+        font_family: tokens.font.mono.clone().into(),
         font_size: super::settings::font_size(),
-        foreground: rgb(palette.terminal_text),
-        background: rgb(palette.surface),
-        cursor: rgb(palette.terminal_text),
-        palette: palette.terminal.map(rgb),
+        foreground: terminal.text,
+        background: colors.surface,
+        cursor: terminal.cursor,
+        palette: terminal.palette,
     }
 }
 
