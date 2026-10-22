@@ -359,7 +359,16 @@ impl Browser {
                     } else {
                         "Terminal"
                     }))
-                    .child(div().min_w_0().overflow_hidden().text_ellipsis().child(cwd));
+                    .child(
+                        div()
+                            .min_w_0()
+                            // Share remaining space with the window choices;
+                            // a long directory must not collapse their width.
+                            .when(several, |el| el.flex_1())
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .child(cwd),
+                    );
                 if !several {
                     row = row.child(div().flex_1());
                 }
