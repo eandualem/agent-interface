@@ -24,7 +24,7 @@ impl Snapshot {
     }
 }
 
-fn endpoint(url: &str) -> Option<Uri> {
+pub(super) fn endpoint(url: &str) -> Option<Uri> {
     let uri: Uri = url.parse().ok()?;
     let authority = uri.authority()?;
     if uri.scheme_str() != Some("http")
@@ -83,7 +83,7 @@ fn response(url: &str, key: &str) -> Option<Vec<u8>> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use std::io::{Read, Write};
     use std::net::TcpListener;
@@ -93,7 +93,7 @@ mod tests {
 
     const BODY: &str = r#"{"items":[{"name":"worker","state":"busy"}]}"#;
 
-    fn server(reply: String, pause: Duration) -> (String, thread::JoinHandle<String>) {
+    pub(crate) fn server(reply: String, pause: Duration) -> (String, thread::JoinHandle<String>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         listener.set_nonblocking(true).unwrap();
@@ -135,7 +135,7 @@ mod tests {
         (url, thread)
     }
 
-    fn ok(body: &str) -> String {
+    pub(crate) fn ok(body: &str) -> String {
         format!(
             "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
