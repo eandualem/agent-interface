@@ -145,6 +145,61 @@ pub const COMMANDS: &[(Command, &str, &str, &str, &str)] = &[
     ),
 ];
 
+/// Shipped Linux equivalents only. Saved chords keep their literal meaning.
+/// Avoid Super and Ctrl-Alt-arrow keys owned by common desktop environments.
+pub fn platform_key(mac: &str) -> &str {
+    if cfg!(target_os = "macos") {
+        return mac;
+    }
+    match mac {
+        "cmd-t" => "ctrl-shift-t",
+        "cmd-d" => "ctrl-shift-d",
+        "cmd-shift-d" => "ctrl-shift-e",
+        "cmd-shift-a" => "ctrl-shift-a",
+        "cmd-r" => "ctrl-shift-r",
+        "cmd-]" => "ctrl-shift-]",
+        "cmd-[" => "ctrl-shift-[",
+        "cmd-shift-]" => "ctrl-pagedown",
+        "cmd-shift-[" => "ctrl-pageup",
+        "cmd-shift-enter" => "ctrl-shift-enter",
+        "cmd-shift-n" => "ctrl-alt-shift-n",
+        "cmd-shift-r" => "ctrl-alt-shift-r",
+        "cmd-alt-right" => "ctrl-shift-pagedown",
+        "cmd-alt-left" => "ctrl-shift-pageup",
+        "cmd-b" => "ctrl-shift-b",
+        "cmd-k" => "ctrl-shift-k",
+        "cmd-q" => "ctrl-shift-q",
+        "cmd-n" => "ctrl-shift-n",
+        "cmd-o" => "ctrl-shift-o",
+        "cmd-w" => "ctrl-shift-w",
+        "cmd-," => "ctrl-shift-,",
+        "cmd-c" => "ctrl-shift-c",
+        "cmd-v" => "ctrl-shift-v",
+        _ => mac,
+    }
+}
+
+/// Fixed numbered selection: the number and whether it selects a workspace.
+pub fn numbered(key: &gpui::Keystroke) -> Option<(usize, bool)> {
+    let mods = key.modifiers;
+    if mods.function || mods.shift {
+        return None;
+    }
+    let workspace = if cfg!(target_os = "macos") {
+        if !mods.platform || mods.control {
+            return None;
+        }
+        mods.alt
+    } else {
+        if !mods.alt || mods.platform {
+            return None;
+        }
+        mods.control
+    };
+    let number = key.key.parse().ok()?;
+    (1..=9).contains(&number).then_some((number, workspace))
+}
+
 /// Keys a command may not take, because something else always owns them.
 const RESERVED: &[&str] = &[
     "cmd-c",
@@ -263,6 +318,24 @@ impl Chord {
     /// The menu spelling, such as `⌘⇧]`.
     pub fn label(&self) -> String {
         let mut label = String::new();
+        if !cfg!(target_os = "macos") {
+            for (on, name) in [
+                (self.ctrl, "Ctrl+"),
+                (self.alt, "Alt+"),
+                (self.shift, "Shift+"),
+                (self.cmd, "Super+"),
+            ] {
+                if on {
+                    label.push_str(name);
+                }
+            }
+            match self.key.as_str() {
+                "pageup" => label.push_str("PgUp"),
+                "pagedown" => label.push_str("PgDn"),
+                key => label.push_str(&key.to_ascii_uppercase()),
+            }
+            return label;
+        }
         for (on, glyph) in [
             (self.ctrl, "⌃"),
             (self.alt, "⌥"),
@@ -292,18 +365,33 @@ impl Chord {
     /// Why this chord cannot be a command's shortcut, if it cannot.
     pub fn unusable(&self) -> Option<&'static str> {
         if !self.cmd && !self.ctrl && !self.alt {
-            return Some("Use ⌘, ⌃ or ⌥ so typing in terminals is not affected");
+            return Some(if cfg!(target_os = "macos") {
+                "Use ⌘, ⌃ or ⌥ so typing in terminals is not affected"
+            } else {
+                "Use Ctrl, Alt or Super so typing in terminals is not affected"
+            });
         }
-        if RESERVED.contains(&self.to_text().as_str()) {
+        if RESERVED
+            .iter()
+            .any(|reserved| *reserved == self.to_text() || platform_key(reserved) == self.to_text())
+        {
             return Some("That key belongs to copy, paste or the application menu");
         }
-        if self.cmd
-            && !self.ctrl
+        let numbered_modifiers = if cfg!(target_os = "macos") {
+            self.cmd && !self.ctrl
+        } else {
+            self.alt && !self.cmd
+        };
+        if numbered_modifiers
             && !self.shift
             && self.key.len() == 1
             && self.key.as_bytes()[0].is_ascii_digit()
         {
-            return Some("⌘ and ⌘⌥ with a number select tabs and workspaces");
+            return Some(if cfg!(target_os = "macos") {
+                "⌘ and ⌘⌥ with a number select tabs and workspaces"
+            } else {
+                "Alt and Ctrl+Alt with a number select tabs and workspaces"
+            });
         }
         None
     }
@@ -321,7 +409,7 @@ impl Default for Bindings {
                 .map(|(command, _, _, _, default)| {
                     (
                         *command,
-                        Chord::parse(default).expect("valid default shortcut"),
+                        Chord::parse(platform_key(default)).expect("valid default shortcut"),
                     )
                 })
                 .collect(),
@@ -445,14 +533,22 @@ mod tests {
             let chord = Chord::parse(default).unwrap();
             assert_eq!(Chord::parse(&chord.to_text()), Some(chord));
         }
-        assert_eq!(Chord::parse("cmd-shift-]").unwrap().label(), "⇧⌘]");
+        assert_eq!(
+            Chord::parse("cmd-shift-]").unwrap().label(),
+            if cfg!(target_os = "macos") {
+                "⇧⌘]"
+            } else {
+                "Shift+Super+]"
+            }
+        );
         assert_eq!(Chord::parse("cmd--").unwrap().key, "-");
         assert!(Chord::parse("hyper-x").is_none());
         let bindings = Bindings::default();
         // macOS reports Command-Shift-] as `}` with Shift held.
-        let key = gpui::Keystroke::parse("cmd-shift-}").unwrap();
+        let key = gpui::Keystroke::parse(platform_key("cmd-shift-]")).unwrap();
         assert_eq!(bindings.command_for(&key), Some(Command::NextTab));
-        let key = gpui::Keystroke::parse("cmd-t").unwrap();
+        assert_eq!(Chord::parse("cmd-shift-}"), Chord::parse("cmd-shift-]"));
+        let key = gpui::Keystroke::parse(platform_key("cmd-t")).unwrap();
         assert_eq!(bindings.command_for(&key), Some(Command::NewTab));
         let key = gpui::Keystroke::parse("cmd-fn-t").unwrap();
         assert_eq!(bindings.command_for(&key), None);
@@ -464,10 +560,25 @@ mod tests {
     fn assignments_refuse_clashes_and_reserved_keys_and_save_only_changes() {
         let mut bindings = Bindings::default();
         let chord = |text| Chord::parse(text).unwrap();
-        assert!(bindings.assign(Command::NewTab, chord("cmd-d")).is_err());
+        assert!(
+            bindings
+                .assign(Command::NewTab, chord(platform_key("cmd-d")))
+                .is_err()
+        );
         assert!(bindings.assign(Command::NewTab, chord("cmd-c")).is_err());
         assert!(bindings.assign(Command::NewTab, chord("x")).is_err());
-        assert!(bindings.assign(Command::NewTab, chord("cmd-3")).is_err());
+        assert!(
+            bindings
+                .assign(
+                    Command::NewTab,
+                    chord(if cfg!(target_os = "macos") {
+                        "cmd-3"
+                    } else {
+                        "alt-3"
+                    })
+                )
+                .is_err()
+        );
         assert!(
             bindings
                 .assign(Command::NewTab, chord("ctrl-alt-t"))
@@ -480,11 +591,59 @@ mod tests {
         let restored = Bindings::from_entries([("new-tab", "ctrl-alt-t"), ("unknown", "cmd-k")]);
         assert_eq!(restored, bindings);
         assert_eq!(
-            Bindings::from_entries([("split-right", "cmd-t")]),
+            Bindings::from_entries([("split-right", platform_key("cmd-t"))]),
             Bindings::default()
         );
         let swapped = Bindings::from_entries([("new-tab", "cmd-d"), ("split-right", "cmd-t")]);
         assert_eq!(swapped.chord(Command::NewTab), &chord("cmd-d"));
         assert_eq!(swapped.chord(Command::SplitRight), &chord("cmd-t"));
+    }
+
+    #[test]
+    fn platform_defaults_leave_terminal_control_keys_and_preserve_saved_chords() {
+        let defaults = Bindings::default();
+        for (command, ..) in COMMANDS {
+            let chord = defaults.chord(*command);
+            assert!(chord.unusable().is_none(), "{}", chord.to_text());
+            let event = gpui::Keystroke::parse(&chord.to_text()).unwrap();
+            assert_eq!(defaults.command_for(&event), Some(*command));
+        }
+        for text in [
+            "ctrl-c",
+            "ctrl-d",
+            "ctrl-z",
+            "ctrl-l",
+            "ctrl-r",
+            "ctrl-alt-left",
+            "ctrl-alt-right",
+        ] {
+            assert_eq!(
+                defaults.command_for(&gpui::Keystroke::parse(text).unwrap()),
+                None
+            );
+        }
+        let saved = Bindings::from_entries([("new-tab", "ctrl-alt-t")]);
+        assert_eq!(saved.chord(Command::NewTab).to_text(), "ctrl-alt-t");
+        let entries = saved.changed();
+        assert_eq!(
+            Bindings::from_entries(entries.iter().map(|(id, text)| (*id, text.as_str()))),
+            saved
+        );
+        let (tab, workspace) = if cfg!(target_os = "macos") {
+            ("cmd-2", "cmd-alt-2")
+        } else {
+            ("alt-2", "ctrl-alt-2")
+        };
+        assert_eq!(
+            numbered(&gpui::Keystroke::parse(tab).unwrap()),
+            Some((2, false))
+        );
+        assert_eq!(
+            numbered(&gpui::Keystroke::parse(workspace).unwrap()),
+            Some((2, true))
+        );
+        for key in ["2", "ctrl-2", "alt-shift-2", "cmd-fn-2"] {
+            assert_eq!(numbered(&gpui::Keystroke::parse(key).unwrap()), None);
+        }
     }
 }

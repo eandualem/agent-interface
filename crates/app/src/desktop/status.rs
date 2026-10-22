@@ -66,7 +66,15 @@ impl Browser {
             keys = vec![
                 ("↵".into(), "save"),
                 ("esc".into(), "cancel"),
-                ("⌃U".into(), "clear"),
+                (
+                    if cfg!(target_os = "macos") {
+                        "⌃U"
+                    } else {
+                        "Ctrl+U"
+                    }
+                    .into(),
+                    "clear",
+                ),
             ];
         } else if self.chooser.is_some() {
             left = left.child(div().text_color(c.text).child("Attach session"));
