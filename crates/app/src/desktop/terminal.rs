@@ -1,5 +1,6 @@
 //! Connect each saved leaf to its actual existing tmux session.
 
+use super::theme::{self, Cells};
 use crate::{
     library,
     panes::Panes,
@@ -34,6 +35,7 @@ impl Target {
 }
 
 struct Ready {
+    socket: PathBuf,
     panes: Option<Arc<Panes>>,
     layout: Option<tmux_workspaces_tmux::layout::Change>,
     input: tmux_workspaces_tmux::control::PaneId,
@@ -101,6 +103,7 @@ fn connect_selected(
     )
     .map_err(|e| e.to_string())?;
     Ok(Ready {
+        socket,
         panes: Some(Arc::new(panes)),
         window: connection.layout.window,
         windows: connection.windows,
@@ -117,8 +120,10 @@ pub(super) struct LiveTerminal {
     connecting: bool,
     windows: Vec<SessionWindow>,
     selected_window: Option<SessionWindow>,
+    socket: Option<PathBuf>,
     task: Option<Task<()>>,
     closed: Option<gpui::Subscription>,
+    _windows: Task<()>,
 }
 
 impl LiveTerminal {
@@ -155,8 +160,47 @@ impl LiveTerminal {
             connecting: false,
             windows: Vec::new(),
             selected_window: selected.clone(),
+            socket: None,
             task: None,
             closed: None,
+            _windows: cx.spawn(async |this, cx| {
+                // tmux shows a session's windows live. Follow additions,
+                // removals and renames without a refresh control.
+                loop {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_secs(2))
+                        .await;
+                    let Ok(query) = this.update(cx, |terminal, _| {
+                        (!terminal.connecting)
+                            .then(|| {
+                                terminal
+                                    .socket
+                                    .clone()
+                                    .zip(terminal.selected_window.clone())
+                            })
+                            .flatten()
+                    }) else {
+                        break;
+                    };
+                    let Some((socket, window)) = query else {
+                        continue;
+                    };
+                    let listed = cx
+                        .background_executor()
+                        .spawn(async move {
+                            tmux_workspaces_tmux::connection::session_windows(&socket, &window)
+                        })
+                        .await;
+                    if let Ok(windows) = listed {
+                        let _ = this.update(cx, |terminal, cx| {
+                            if !terminal.connecting && terminal.windows != windows {
+                                terminal.windows = windows;
+                                cx.notify();
+                            }
+                        });
+                    }
+                }
+            }),
         };
         terminal.start_window(selected, None, cx);
         terminal
@@ -212,6 +256,7 @@ impl LiveTerminal {
                 terminal.connecting = false;
                 match result {
                     Ok(mut ready) => {
+                        terminal.socket = Some(ready.socket.clone());
                         terminal.windows = std::mem::take(&mut ready.windows);
                         terminal.selected_window = terminal
                             .windows
@@ -247,57 +292,59 @@ impl LiveTerminal {
 
 impl Render for LiveTerminal {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut windows = div()
+        let cells = Cells(crate::view::cell_size(cx.text_system(), &appearance()));
+        // The Python viewer gives an attached session one row along the top
+        // naming it on the right; an ordinary shell has none. Native window
+        // choices share that row when the session has more than one window.
+        let attachment = self.target.leaf.attachment.as_ref();
+        let several = self.windows.len() > 1;
+        let mut header = cells
+            .row()
             .id("tmux-windows")
-            .flex()
-            .overflow_x_scroll()
-            .text_xs();
-        for item in &self.windows {
-            let selected = item.clone();
-            let name: String = item
-                .name
-                .chars()
-                .map(|ch| if ch.is_control() { ' ' } else { ch })
-                .collect();
-            windows = windows.child(
+            .gap(cells.width(1))
+            .bg(rgb(theme::PANEL))
+            .text_color(rgb(theme::MUTED));
+        if several {
+            for item in &self.windows {
+                let selected = item.clone();
+                let name: String = item
+                    .name
+                    .chars()
+                    .map(|ch| if ch.is_control() { ' ' } else { ch })
+                    .collect();
+                let current = self
+                    .selected_window
+                    .as_ref()
+                    .is_some_and(|window| window.id == item.id);
+                header = header.child(
+                    div()
+                        .id(SharedString::from(format!(
+                            "tmux-window-{}-{}",
+                            item.id, item.index
+                        )))
+                        .flex_shrink_0()
+                        .cursor_pointer()
+                        .when(current, |el| el.text_color(rgb(theme::NORMAL)))
+                        .child(format!("{}:{name}", item.index))
+                        .when(!self.connecting, |el| {
+                            el.on_click(cx.listener(move |terminal, _, _, cx| {
+                                terminal.start_window(Some(selected.clone()), None, cx);
+                            }))
+                        }),
+                );
+            }
+        }
+        if let Some(attachment) = attachment {
+            header = header.child(
                 div()
-                    .id(SharedString::from(format!(
-                        "tmux-window-{}-{}",
-                        item.id, item.index
-                    )))
-                    .px_2()
-                    .py_1()
-                    .flex_shrink_0()
-                    .cursor_pointer()
-                    .when(
-                        self.selected_window
-                            .as_ref()
-                            .is_some_and(|window| window.id == item.id),
-                        |el| el.bg(rgb(0x2a3c58)),
-                    )
-                    .child(format!("{}: {name}", item.index))
-                    .when(!self.connecting, |el| {
-                        el.on_click(cx.listener(move |terminal, _, _, cx| {
-                            terminal.start_window(Some(selected.clone()), None, cx);
-                        }))
-                    }),
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .justify_end()
+                    .text_color(rgb(theme::ACCENT))
+                    .child(attachment.session.clone()),
             );
         }
-        windows = windows.child(
-            div()
-                .id("refresh-windows")
-                .px_2()
-                .py_1()
-                .flex_shrink_0()
-                .cursor_pointer()
-                .child("Refresh")
-                .when(!self.connecting, |el| {
-                    el.on_click(cx.listener(|terminal, _, _, cx| {
-                        let selected = terminal.selected_window.clone();
-                        terminal.start_window(selected, None, cx);
-                    }))
-                }),
-        );
         div()
             .size_full()
             .flex()
@@ -305,22 +352,31 @@ impl Render for LiveTerminal {
             .min_w_0()
             .min_h_0()
             .overflow_hidden()
-            .child(windows)
+            .bg(rgb(theme::SURFACE))
+            .text_color(rgb(theme::NORMAL))
+            .when(attachment.is_some() || several, |el| el.child(header))
             .child(
                 div()
                     .flex_1()
                     .min_h_0()
                     .children((!self.connecting).then(|| self.view.clone()).flatten()),
             )
-            .when(self.connecting, |el| el.child("Connecting…"))
+            .when(self.connecting, |el| {
+                el.child(
+                    cells
+                        .row()
+                        .text_color(rgb(theme::MUTED))
+                        .child("Connecting…"),
+                )
+            })
             .when_some(self.error.clone(), |el, error| {
-                el.child(div().p_2().text_sm().child(error))
+                el.child(cells.row().text_color(rgb(theme::ACCENT)).child(error))
             })
             .when(!self.connecting && self.error.is_some(), |el| {
                 el.child(
-                    div()
+                    cells
+                        .row()
                         .id("reconnect")
-                        .p_2()
                         .cursor_pointer()
                         .child("Reconnect")
                         .on_click(cx.listener(|terminal, _, _, cx| terminal.start(cx))),
@@ -329,16 +385,18 @@ impl Render for LiveTerminal {
     }
 }
 
-fn appearance() -> Appearance {
+// The Python viewer leaves the font and program colours to Ghostty and paints
+// content panes on its theme's surface. Use Ghostty's macOS defaults on it.
+pub(super) fn appearance() -> Appearance {
     Appearance {
         font_family: "Menlo".into(),
-        font_size: 14.0,
-        foreground: rgb(0xe2e9f3),
-        background: rgb(0x101620),
-        cursor: rgb(0xe2e9f3),
+        font_size: 13.0,
+        foreground: rgb(0xffffff),
+        background: rgb(super::theme::SURFACE),
+        cursor: rgb(0xffffff),
         palette: [
-            0x000000, 0xcd0000, 0x00cd00, 0xcdcd00, 0x0000ee, 0xcd00cd, 0x00cdcd, 0xe5e5e5,
-            0x7f7f7f, 0xff0000, 0x00ff00, 0xffff00, 0x5c5cff, 0xff00ff, 0x00ffff, 0xffffff,
+            0x1d1f21, 0xcc6666, 0xb5bd68, 0xf0c674, 0x81a2be, 0xb294bb, 0x8abeb7, 0xc5c8c6,
+            0x666666, 0xd54e53, 0xb9ca4a, 0xe7c547, 0x7aa6da, 0xc397d8, 0x70c0b1, 0xeaeaea,
         ]
         .map(rgb),
     }
@@ -514,6 +572,81 @@ mod tests {
                 .run(&["has-session", "-t", "=window-source:"])
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn a_declared_size_resizes_the_session_like_an_ordinary_client() {
+        let server = TmuxServer::start().unwrap();
+        server
+            .run(&[
+                "new-session",
+                "-d",
+                "-s",
+                "sized",
+                "-x",
+                "100",
+                "-y",
+                "30",
+                "cat",
+            ])
+            .unwrap();
+        server
+            .run(&["new-window", "-d", "-t", "=sized:", "cat"])
+            .unwrap();
+        let socket = server
+            .run(&["display-message", "-p", "#{socket_path}"])
+            .unwrap();
+        let sizes = || {
+            server
+                .run(&[
+                    "list-windows",
+                    "-t",
+                    "=sized:",
+                    "-F",
+                    "#{window_width}x#{window_height}",
+                ])
+                .unwrap()
+        };
+        let ready = connect(Target {
+            leaf: Leaf {
+                id: "abcdef123456".into(),
+                cwd: None,
+                empty: false,
+                attachment: Some(Attachment {
+                    session: "sized".into(),
+                    source_socket: Some(socket.trim().into()),
+                }),
+            },
+            directory: None,
+            source: Err("use explicit source".into()),
+        })
+        .unwrap();
+        // Connecting alone leaves the session's geometry alone.
+        assert_eq!(sizes().trim(), "100x30\n100x30");
+        let panes = ready.panes.as_ref().unwrap();
+        panes.set_size(60, 20).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Some(update) = panes.take_update()
+                && update
+                    .layout
+                    .iter()
+                    .any(|pane| pane.cols == 60 && pane.rows == 20)
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "layout not resized: {:?}",
+                panes.failure()
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        // As with the source's nested clients, every window of the session
+        // follows the client under tmux's default window-size policy.
+        assert_eq!(sizes().trim(), "60x20\n60x20");
+        drop(ready);
+        assert!(server.run(&["has-session", "-t", "=sized:"]).is_ok());
     }
 
     #[test]

@@ -12,7 +12,8 @@ attachment uses its saved source socket, falling back to the window's captured
 source. Query the exact session name, then attach to its numeric identity using
 `-E` and `ignore-size`. Do not start a server, create a shell, change source
 options or resize other clients. The initial window's visible panes render at
-reported geometry, scaled down if needed. A pane can be expanded locally.
+reported geometry, scaled down if needed; [0032](0032-source-equivalent-chrome-and-sizing.md)
+then sizes the session to the pane. A pane can be expanded locally.
 
 Connection discovery and capture run in the background. Each leaf entity owns
 its connection generation; a removed entity cannot receive a stale result.

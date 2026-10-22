@@ -277,7 +277,7 @@ impl NameField {
                         point(origin.x + line.x_for_index(range.start), bounds.top()),
                         point(origin.x + line.x_for_index(range.end), bounds.bottom()),
                     ),
-                    rgb(0x365b85),
+                    rgb(super::theme::OUTLINE),
                 ));
             }
             let _ = line.paint(
@@ -297,7 +297,7 @@ impl NameField {
                         ),
                         point(origin.x + line.x_for_index(marked.end), bounds.bottom()),
                     ),
-                    rgb(0xe2e9f3),
+                    rgb(super::theme::ACTIVE_TEXT),
                 ));
             }
             if range.is_empty() && self.focus.is_focused(window) {
@@ -306,7 +306,7 @@ impl NameField {
                         point(origin.x + caret, bounds.top()),
                         size(px(1.), bounds.size.height),
                     ),
-                    rgb(0xe2e9f3),
+                    rgb(super::theme::ACTIVE_TEXT),
                 ));
             }
         });
@@ -407,13 +407,23 @@ impl EntityInputHandler for NameField {
 impl Render for NameField {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let entity = cx.entity();
+        // A name is edited in place, one cell high in the selection's colors,
+        // as the source's inline editor is; the chooser's filter keeps a frame.
+        let search = self.text.search;
+        let row = crate::view::cell_size(cx.text_system(), &super::terminal::appearance()).height;
         div()
             .w_full()
             .min_w_0()
-            .h(px(24.))
-            .bg(rgb(0x101620))
-            .border_1()
-            .border_color(rgb(0x85aaff))
+            .h(if search { px(24.) } else { row })
+            .when(!search, |el| {
+                el.bg(rgb(super::theme::ACTIVE))
+                    .text_color(rgb(super::theme::ACTIVE_TEXT))
+            })
+            .when(search, |el| {
+                el.bg(rgb(super::theme::SURFACE))
+                    .border_1()
+                    .border_color(rgb(super::theme::OUTLINE))
+            })
             .id("name-field")
             .on_click(cx.listener(|_, _, _, cx| cx.stop_propagation()))
             .track_focus(&self.focus)

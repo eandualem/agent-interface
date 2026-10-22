@@ -150,9 +150,9 @@ impl Render for SessionChooser {
                     .py_1()
                     .cursor_pointer()
                     .when(Some(index) == self.choices.index(), |el| {
-                        el.bg(rgb(0x2a3c58))
+                        el.bg(rgb(super::theme::ACTIVE))
                     })
-                    .hover(|el| el.bg(rgb(0x25334a)))
+                    .hover(|el| el.bg(rgb(super::theme::ACTIVE)))
                     .child(name.clone())
                     .on_click(cx.listener(move |chooser, _, _, cx| {
                         cx.stop_propagation();
@@ -167,7 +167,7 @@ impl Render for SessionChooser {
             .flex_col()
             .gap_2()
             .p_2()
-            .bg(rgb(0x161e2b))
+            .bg(rgb(super::theme::SURFACE))
             // Keep the filter focused during a row's mouse-down, until its
             // click can submit the choice. Otherwise blur cancels it first.
             .on_mouse_down(gpui::MouseButton::Left, |_, window, _| {

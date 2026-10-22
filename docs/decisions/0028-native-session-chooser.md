@@ -5,7 +5,7 @@
 
 ## Decision
 
-Open Attach session from a pane header, tab options or Command-Shift-A. Show the
+Open Attach session from an empty pane, tab options or Command-Shift-A. Show the
 existing source-session poller's results in a native pane chooser, with
 case-insensitive filtering, arrow selection and Enter or a row click to confirm.
 The source socket is captured by the window at launch. New references store its

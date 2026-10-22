@@ -129,6 +129,8 @@ struct Grid {
     original_cell: Size<Pixels>,
     original_font_size: f32,
     selection: Option<Selection>,
+    /// The size last declared to tmux for an embedded view, in cells.
+    requested: Option<(u16, u16)>,
 }
 
 impl TerminalView {
@@ -240,6 +242,7 @@ impl TerminalView {
                 batch_ascii,
                 font,
                 selection: None,
+                requested: None,
             })),
             input: (!embedded).then_some(input),
             initial_input: input,
@@ -697,6 +700,7 @@ impl Render for TerminalView {
         let selection_move = Rc::new(cx.listener(Self::selection_move));
         let background = self.grid.borrow().appearance.background;
         let embedded = self.embedded;
+        let panes = self.panes.clone();
         let message = self
             .input_rejection
             .clone()
@@ -833,6 +837,16 @@ impl Render for TerminalView {
                     move |bounds, (), window, cx| {
                         let mut grid = grid.borrow_mut();
                         if embedded {
+                            // Size the session to this leaf as a terminal of
+                            // these bounds would, then scale only until tmux
+                            // reports the new layout.
+                            let size = grid.cells_in(bounds);
+                            if grid.requested != Some(size)
+                                && let Some(panes) = &panes
+                                && panes.set_size(size.0, size.1).is_ok()
+                            {
+                                grid.requested = Some(size);
+                            }
                             grid.fit(bounds);
                         }
                         grid.bounds = Some(bounds);
@@ -1038,6 +1052,19 @@ fn selection_column(x: f32, cols: u16, boundary: bool) -> u16 {
 }
 
 impl Grid {
+    /// The whole cells of the unscaled font that fit in `bounds`.
+    fn cells_in(&self, bounds: Bounds<Pixels>) -> (u16, u16) {
+        let count = |length: Pixels, cell: Pixels| {
+            (f32::from(length) / f32::from(cell))
+                .floor()
+                .clamp(1.0, f32::from(u16::MAX)) as u16
+        };
+        (
+            count(bounds.size.width, self.original_cell.width),
+            count(bounds.size.height, self.original_cell.height),
+        )
+    }
+
     fn fit(&mut self, bounds: Bounds<Pixels>) {
         let cols = self
             .layout

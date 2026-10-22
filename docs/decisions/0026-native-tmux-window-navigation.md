@@ -10,8 +10,8 @@ terminal. Selecting one replaces only that leaf's control connection and capture
 window. During a switch, the old client remains attached with input disabled
 and its view hidden until the replacement is ready. This avoids an unattached
 interval for sources with automatic destruction policies. A failed switch retains
-the old view, requiring a ready-pane click before typing resumes. It never invokes `select-window` on the source session. Refresh reloads
-the list and reconnects the selected window. An unavailable or changed target
+the old view, requiring a ready-pane click before typing resumes. It never invokes `select-window` on the source session. The list follows
+tmux by polling (see [0032](0032-source-equivalent-chrome-and-sizing.md)). An unavailable or changed target
 shows an error and offers reconnect to the source's current window.
 
 A listed window carries its server PID, session creation time and numeric
@@ -36,8 +36,7 @@ each saved leaf through resizing and workspace/tab switches. Hidden leaves relea
 their clients and renderers; returning reconnects the last successfully selected
 window, with the same source-identity and membership validation. Changed or removed
 leaves discard their remembered choice. Opening a library clears all remembered
-choices. No choice is written to the database. Lists refresh on connection, selection or explicit Refresh,
-not continuously. Missing sessions/windows are never created. Saved layouts,
+choices. No choice is written to the database. Lists refresh on connection, selection and every two seconds while connected. Missing sessions/windows are never created. Saved layouts,
 source selection, environment and geometry remain unchanged.
 
 ## Alternatives and evidence
