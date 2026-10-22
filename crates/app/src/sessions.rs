@@ -10,6 +10,9 @@ use tmux_workspaces_tmux::discovery::read_sessions;
 
 pub use crate::library::location::source_socket;
 
+mod attachment;
+pub use attachment::{AttachmentStatus, attachment_status};
+
 mod metadata;
 pub use metadata::{CombinedObservation, Origin, Session, with_roster};
 mod navigation;

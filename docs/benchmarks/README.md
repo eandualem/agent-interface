@@ -28,6 +28,7 @@ distributable configuration: release profile, the engine's core in Zig's
 default.
 
 ```sh
+python3 scripts/prepare-native.py
 LIBGHOSTTY_VT_SYS_OPTIMIZE=ReleaseFast \
   cargo build --release --locked -p tmux-workspaces-bench -p tmux-workspaces-bench-rio
 ./target/release/tmux-workspaces-bench gate1 --out results
@@ -167,6 +168,7 @@ commands, then run each gate, giving gate 2 the vtebench checkout with
 `--vtebench`:
 
 ```sh
+python3 scripts/prepare-native.py
 LIBGHOSTTY_VT_SYS_OPTIMIZE=ReleaseFast cargo build --release --locked -p tmux-workspaces-bench
 LIBGHOSTTY_VT_SYS_OPTIMIZE=ReleaseFast cargo build --release --locked -p tmux-workspaces-app --example bench-window
 ./target/release/tmux-workspaces-bench gate2 --vtebench /path/to/vtebench --out results/gate2
@@ -284,6 +286,7 @@ are installed. It needs no display and opens no window. It runs on the first
 version, putting each version's directory first on `PATH`:
 
 ```sh
+python3 scripts/prepare-native.py
 LIBGHOSTTY_VT_SYS_OPTIMIZE=ReleaseFast cargo build --release --locked -p tmux-workspaces-bench
 ./target/release/tmux-workspaces-bench gate5 --out results/gate5-3.7
 PATH=/path/to/tmux-3.3a:$PATH ./target/release/tmux-workspaces-bench gate5 --out results/gate5-3.3

@@ -73,7 +73,10 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             target
-          key: cargo-${{ runner.os }}-${{ runner.arch }}-zig-${{ env.ZIG_VERSION }}-cpu-${{ env.LIBGHOSTTY_VT_SYS_CPU }}-mode-${{ env.LIBGHOSTTY_VT_SYS_OPTIMIZE }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+          key: cargo-${{ runner.os }}-${{ runner.arch }}-zig-${{ env.ZIG_VERSION }}-cpu-${{ env.LIBGHOSTTY_VT_SYS_CPU }}-mode-${{ env.LIBGHOSTTY_VT_SYS_OPTIMIZE }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'native/ghostty.json') }}
+
+      - name: Prepare patched terminal source
+        run: python3 scripts/prepare-native.py
 
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings

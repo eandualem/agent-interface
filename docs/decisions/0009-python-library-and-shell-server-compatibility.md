@@ -72,8 +72,12 @@ expand environment variables inside these paths.
 
 **Reading `layouts.db`.**
 
-- Open with `SQLITE_OPEN_READONLY` (`mode=ro`), never creating or migrating
-  anything. Keep one connection open on the storage worker
+- Open with `SQLITE_OPEN_READONLY` (`mode=ro`), never creating a database,
+  migrating its schema or changing its records. SQLite may create or update the
+  `-shm` shared-memory sidecar to coordinate WAL readers, while stored records
+  remain unchanged. See SQLite’s
+  [read-only WAL requirements](https://www.sqlite.org/wal.html#read_only_databases).
+  Keep one connection open on the storage worker
   ([0007](0007-threads-ownership-and-event-ordering.md)) and poll
   `PRAGMA data_version` on it.
 - Finish or reset every statement before returning to the poll loop; never hold
@@ -194,7 +198,6 @@ surface only when distinct. Consequently presets with both grounds `default`
 inherit matching backgrounds from panel. This model reproduces the existing
 configuration interpretation; it does not settle the native visual contract.
 Native mapping and those documented visual expectations remain pending.
->>>>>>> 2d8171a (feat: read shared theme configuration without activating it)
 
 **Leave the Python tool's runtime alone.** Never create, change or delete the
 Python tool's `windows/<instance>/` runtime directories, viewer sockets or

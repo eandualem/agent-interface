@@ -5,6 +5,23 @@
 use crate::{Attachment, Direction, Layout, Leaf, Node, Tab, Workspace};
 use unicode_properties::{GeneralCategoryGroup, UnicodeGeneralCategory};
 
+/// Workspace icon picker choices as (glyph, label), in the Python tool's order.
+/// Choosing Number clears the icon instead of storing a numeric glyph.
+pub const WORKSPACE_ICONS: &[(&str, &str)] = &[
+    ("◆", "Diamond"),
+    ("●", "Circle"),
+    ("▲", "Triangle"),
+    ("■", "Square"),
+    ("★", "Star"),
+    ("✦", "Spark"),
+    ("◈", "Gem"),
+    ("⚑", "Flag"),
+    ("⌂", "House"),
+    ("✎", "Pencil"),
+    ("⚙", "Gear"),
+    ("♪", "Note"),
+];
+
 /// The destination and attachment captured when a session chooser opens.
 #[derive(Clone, Debug)]
 pub struct AttachmentTarget {
@@ -304,6 +321,40 @@ impl Layout {
             return false;
         };
         tab.name = name;
+        true
+    }
+
+    /// Set the current workspace's icon, even when it has no tabs. None selects
+    /// Number. A supplied value must be a validated one- or two-character icon;
+    /// the picker uses [`WORKSPACE_ICONS`]. This changes no selection or shell.
+    pub fn set_workspace_icon(&mut self, icon: Option<&str>) -> bool {
+        let Some(space) = self.workspace_mut() else {
+            return false;
+        };
+        space.icon = icon.map(str::to_owned);
+        true
+    }
+
+    /// Select a workspace by its one-based position in saved order. Zero or a
+    /// missing position does nothing. Each workspace keeps its tab and pane focus.
+    pub fn choose_workspace_number(&mut self, number: usize) -> bool {
+        let Some(space) = number.checked_sub(1).and_then(|i| self.workspaces.get(i)) else {
+            return false;
+        };
+        self.selected = space.id.clone();
+        true
+    }
+
+    /// Select a tab by its one-based position in the current workspace. Zero or
+    /// a missing position does nothing. This retains the tab's focused pane.
+    pub fn choose_tab_number(&mut self, number: usize) -> bool {
+        let Some(space) = self.workspace_mut() else {
+            return false;
+        };
+        let Some(tab) = number.checked_sub(1).and_then(|i| space.tabs.get(i)) else {
+            return false;
+        };
+        space.selected = tab.id.clone();
         true
     }
 
@@ -866,5 +917,51 @@ mod tests {
                     .bytes()
                     .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
         }));
+    }
+
+    #[test]
+    fn numbered_choices_and_icons_preserve_layouts_and_focus() {
+        let mut model = Layout::initial("/tmp".into());
+        model.split(Direction::Right, "/tmp".into(), false);
+        let first_tab = model.tab().unwrap().clone();
+        model.add_tab(Some("Second".into()), "/tmp".into(), true);
+        let second_tab = model.tab().unwrap().clone();
+        model.add_workspace("Empty".into());
+        let empty_workspace = model.selected.clone();
+        let before = model.clone();
+        assert!(!model.choose_tab_number(1));
+        for number in [0, 3, usize::MAX] {
+            assert!(!model.choose_workspace_number(number));
+            assert!(!model.choose_tab_number(number));
+        }
+        assert_eq!(model, before);
+        for &(glyph, _) in WORKSPACE_ICONS {
+            assert!(model.set_workspace_icon(Some(glyph)));
+            assert_eq!(model.workspace().unwrap().icon.as_deref(), Some(glyph));
+        }
+        assert!(model.set_workspace_icon(None));
+        assert_eq!(model, before);
+        assert!(model.set_workspace_icon(Some("◆")));
+        assert!(model.choose_workspace_number(1));
+        assert_eq!(model.tab().unwrap(), &second_tab);
+        assert!(model.workspace().unwrap().icon.is_none());
+        assert!(model.choose_tab_number(1));
+        assert_eq!(model.tab().unwrap(), &first_tab);
+        let before = model.clone();
+        for number in [0, 3, usize::MAX] {
+            assert!(!model.choose_tab_number(number));
+        }
+        assert_eq!(model, before);
+        assert!(model.choose_workspace_number(2));
+        assert_eq!(model.selected, empty_workspace);
+        assert_eq!(model.workspace().unwrap().icon.as_deref(), Some("◆"));
+        assert!(model.choose_workspace_number(1));
+        assert_eq!(model.tab().unwrap(), &first_tab);
+        model.workspaces.clear();
+        let empty = model.clone();
+        assert!(!model.set_workspace_icon(None));
+        assert!(!model.choose_workspace_number(1));
+        assert!(!model.choose_tab_number(1));
+        assert_eq!(model, empty);
     }
 }

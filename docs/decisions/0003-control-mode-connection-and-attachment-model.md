@@ -1,7 +1,7 @@
 # 0003. Control-mode connection and attachment model
 
-- **Status:** Proposed. Waits on milestone-0 gate 5 and the coexistence tests
-  described under **Accept when**.
+- **Status:** Proposed. Fidelity requirements and coexistence evidence are
+  recorded under **Accept when**.
 - **Date:** 2026-10-17
 
 ## Context
@@ -146,13 +146,20 @@ both of these pass on disposable fixtures:
   [spike list](../research/tmux-control-mode.md#spikes-needed-before-selecting-the-final-contract):
   ordinary and control clients on one session, grouped helpers, every sizing
   policy, detach, helper cleanup and reconnect, without killing source
-  sessions.
+  sessions. The [coexistence results](../benchmarks/tmux-coexistence.md) record
+  geometry checks on macOS with tmux 3.3a through 3.8 and an unresolved helper
+  cleanup crash on tmux 3.7c. Coexistence acceptance remains pending; these
+  results do not enable product attachments or settle external-session sizing.
 
 If those tests show that control mode cannot reproduce pane state well enough
 for parity, compare an ordinary tmux client for attached sessions in a
 superseding record.
 
 ## Evidence
+
+The control-mode decoder uses `memchr` (locked to 2.8.3,
+Unlicense OR MIT) to find line endings and octal escape introducers without
+scanning ordinary output one byte at a time. Parsing and error rules are unchanged.
 
 - [Decisions that materially change the architecture](../research/tmux-control-mode.md#decisions-that-materially-change-the-architecture)
   and [existing shell-server compatibility](../research/tmux-control-mode.md#existing-shell-server-compatibility).

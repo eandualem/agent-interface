@@ -8,7 +8,15 @@ use std::path::Path;
 use std::process::Command;
 
 /// The paths whose contents the benchmark programs are built from.
-const SOURCES: [&str; 4] = ["crates", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml"];
+const SOURCES: [&str; 7] = [
+    "crates",
+    "Cargo.toml",
+    "Cargo.lock",
+    "rust-toolchain.toml",
+    "native",
+    ".cargo/config.toml",
+    "scripts/prepare-native.py",
+];
 
 fn main() {
     // The revision the programs were built from, so that a report names the

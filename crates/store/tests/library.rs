@@ -374,6 +374,43 @@ fn readonly_connection_does_not_hold_locks_or_change_saved_data() {
 }
 
 #[test]
+fn wal_reads_keep_committed_data_and_observe_later_writes() {
+    let directory = tempfile::tempdir().unwrap();
+    let db = database(directory.path(), RECORD);
+    db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0")
+        .unwrap();
+    let changed = RECORD.replace("Development", "WAL commit");
+    db.execute("UPDATE terminal_layout SET value=?1", [&changed])
+        .unwrap();
+
+    // The only writer is idle and stays open, so no write or checkpoint races
+    // these copies. The separate fixture deliberately has no shared-memory file.
+    let copy = tempfile::tempdir().unwrap();
+    let names = ["layouts.db", "layouts.db-wal"];
+    let before = names.map(|name| {
+        let bytes = std::fs::read(directory.path().join(name)).unwrap();
+        std::fs::write(copy.path().join(name), &bytes).unwrap();
+        bytes
+    });
+    assert!(!copy.path().join("layouts.db-shm").exists());
+    let copied = Store::open(copy.path()).unwrap();
+    assert_eq!(copied.load().unwrap().raw_json(), changed);
+    assert!(copy.path().join("layouts.db-shm").exists());
+    drop(copied);
+    for (name, expected) in names.into_iter().zip(before) {
+        assert_eq!(std::fs::read(copy.path().join(name)).unwrap(), expected);
+    }
+
+    let store = Store::open(directory.path()).unwrap();
+    let version = store.data_version().unwrap();
+    assert_eq!(store.load().unwrap().raw_json(), changed);
+    db.execute("UPDATE terminal_layout SET value=?1", [RECORD])
+        .unwrap();
+    assert_ne!(store.data_version().unwrap(), version);
+    assert_eq!(store.load().unwrap().raw_json(), RECORD);
+}
+
+#[test]
 fn missing_legacy_malformed_and_oversized_databases_are_not_initialized_or_repaired() {
     let directory = tempfile::tempdir().unwrap();
     assert!(Store::open(directory.path()).is_err());

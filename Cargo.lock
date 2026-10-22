@@ -5478,6 +5478,7 @@ dependencies = [
  "block2 0.6.2",
  "dispatch2",
  "libc",
+ "libghostty-vt",
  "objc2 0.6.5",
  "objc2-core-foundation",
  "objc2-core-graphics",
@@ -5545,6 +5546,8 @@ dependencies = [
  "libghostty-vt",
  "libghostty-vt-sys",
  "memchr",
+ "serde_json",
+ "sha2",
  "thiserror 2.0.21",
 ]
 
@@ -5561,7 +5564,10 @@ name = "tmux-workspaces-tmux"
 version = "0.0.0"
 dependencies = [
  "libc",
+ "memchr",
+ "rustix",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.21",
  "tmux-workspaces-test-support",
  "unicode-properties",
