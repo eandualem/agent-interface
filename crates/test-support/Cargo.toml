@@ -1,0 +1,15 @@
+[package]
+name = "tmux-workspaces-test-support"
+description = "Test fixtures for tmux-workspaces, including the private tmux server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+signal-hook.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

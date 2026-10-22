@@ -1,0 +1,81 @@
+# The crates and the dependencies each may use are set out in
+# docs/decisions/0006-workspace-and-crate-layout.md; deny.toml enforces the
+# direction between them.
+[workspace]
+resolver = "3"
+members = [
+    "crates/core",
+    "crates/store",
+    "crates/tmux",
+    "crates/term",
+    "crates/roster",
+    "crates/app",
+    "crates/test-support",
+    "crates/bench",
+    "crates/bench-rio",
+]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/eandualem/tmux-workspaces-rs"
+publish = false
+
+[workspace.dependencies]
+# The benchmark's comparison engines, pinned exactly like the engine they are
+# compared with (decision record 0004). rio-vt's default feature adds a
+# pseudo-terminal driver the benchmark does not use.
+alacritty_terminal = "=0.26.0"
+futures = "0.3.34"
+# The UI framework, one package family pinned exactly (decision records 0005
+# and 0019). Its Metal shaders are compiled when the window opens, so building
+# on macOS needs only the Command Line Tools, not Xcode.
+gpui = { package = "gpui-pre", version = "=0.3.9" }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.9", features = ["font-kit", "runtime_shaders", "wayland", "x11"] }
+rio-vt = { version = "=0.5.28", default-features = false }
+libc = "0.2.191"
+memchr = "2.8.3"
+# Exact pins: the terminal engine's API is explicitly unstable, and the -sys
+# crate fixes the Ghostty source commit and the Zig version (decision record 0004).
+libghostty-vt = "=0.2.2"
+libghostty-vt-sys = "=0.2.2"
+# macOS bindings for the display measurements of gates 2 to 4: ScreenCaptureKit,
+# Core Graphics window lists and key events, Core Media and Core Video. They
+# are the versions GPUI's macOS backend uses, so they add no second copies
+# (decision record 0018).
+block2 = "0.6.2"
+dispatch2 = { version = "0.3.1", default-features = false, features = ["std", "block2", "objc2"] }
+objc2 = "0.6.5"
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFArray", "CFCGTypes", "CFDictionary", "CFString"] }
+objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "libc", "objc2", "CGDirectDisplay", "CGDisplayConfiguration", "CGError", "CGEvent", "CGEventTypes", "CGRemoteOperation", "CGSession", "CGWindow", "CGWindowLevel"] }
+objc2-core-media = { version = "0.3.2", default-features = false, features = ["std", "objc2", "objc2-core-video", "CMSampleBuffer", "CMTime"] }
+objc2-core-video = { version = "0.3.2", default-features = false, features = ["std", "objc2", "CVBase", "CVBuffer", "CVImageBuffer", "CVPixelBuffer", "CVReturn"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSDictionary", "NSEnumerator", "NSError", "NSObject", "NSString", "NSValue"] }
+objc2-screen-capture-kit = { version = "0.3.2", default-features = false, features = ["std", "block2", "dispatch2", "libc", "objc2-core-foundation", "objc2-core-graphics", "objc2-core-media", "SCShareableContent", "SCStream"] }
+# Lets the private tmux servers of tests and benchmarks be stopped on an
+# interrupt (decision record 0012). alacritty_terminal already uses it.
+signal-hook = "0.4.5"
+tempfile = "3.27.0"
+thiserror = "2.0.21"
+# tmux 3.8 layout protocol (decision record 0023).
+
+# Read-only schema-v2 library access (decision record 0009).
+rusqlite = { version = "=0.40.2", features = ["bundled"] }
+serde = "=1.0.229"
+toml = "=0.8.23"
+serde_json = { version = "=1.0.154", features = ["raw_value", "arbitrary_precision"] }
+unicode-segmentation = "=1.13.3"
+rustix = { version = "=1.1.5", features = ["fs"] }
+unicode-properties = { version = "=0.1.4", default-features = false, features = ["general-category"] }
+# Full Unicode case folding for attachment filters (decision record 0024).
+caseless = "=0.2.2"
+uzers = { version = "=0.12.2", default-features = false }
+sha2 = "=0.10.9"
+http = "=1.5.0"
+reqwest = { version = "=0.13.5", default-features = false, features = ["blocking"] }
+
+uuid = { version = "=1.28.0", features = ["v4"] }
+
+[workspace.lints.rust]
+missing_docs = "warn"

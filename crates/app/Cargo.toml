@@ -1,0 +1,43 @@
+[package]
+name = "tmux-workspaces-app"
+description = "The tmux-workspaces desktop app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+# The benchmark's build script, so the benchmark window can state its build.
+build = "../bench/build.rs"
+
+[[bin]]
+name = "tmux-workspaces"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+libc.workspace = true
+futures.workspace = true
+gpui.workspace = true
+gpui_platform.workspace = true
+uzers.workspace = true
+sha2.workspace = true
+toml.workspace = true
+unicode-segmentation.workspace = true
+unicode-properties.workspace = true
+tmux-workspaces-core = { path = "../core" }
+tmux-workspaces-store = { path = "../store" }
+tmux-workspaces-roster = { path = "../roster" }
+tmux-workspaces-term = { path = "../term" }
+tmux-workspaces-tmux = { path = "../tmux" }
+
+[dev-dependencies]
+rusqlite.workspace = true
+tempfile.workspace = true
+tmux-workspaces-test-support = { path = "../test-support" }
+
+# Benchmark scaffolding, not product UI (decision record 0019).
+[[example]]
+name = "bench-window"
+path = "examples/bench-window.rs"

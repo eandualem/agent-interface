@@ -1,0 +1,115 @@
+# Builds, lints, tests and audits the workspace on macOS and Linux
+# (decision record 0012). It builds and tests only; it never publishes.
+# Every Action is pinned by full commit SHA, with its tag and licence beside it.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [develop, main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # The terminal engine's native build needs exactly this Zig (decision record 0011).
+  ZIG_VERSION: 0.15.2
+  # The portable CPU target that distributed builds use (decision record 0011).
+  LIBGHOSTTY_VT_SYS_CPU: baseline
+  # Keep runtime safety checks without Debug's full-page integrity scans.
+  LIBGHOSTTY_VT_SYS_OPTIMIZE: ReleaseSafe
+
+jobs:
+  build:
+    name: Build and test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1, MIT
+        with:
+          persist-credentials: false
+
+      - name: Install Rust from rust-toolchain.toml
+        run: rustup toolchain install
+
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1, MIT
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      # tmux, and the libraries GPUI's Wayland and X11 backends build against
+      # (decision record 0019).
+      - name: Install tmux and GPUI's libraries (Linux)
+        if: runner.os == 'Linux'
+        run: >-
+          sudo apt-get update && sudo apt-get install -y tmux pkg-config
+          libfontconfig-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev
+          libx11-xcb-dev
+
+      - name: Install tmux (macOS)
+        if: runner.os == 'macOS'
+        run: brew install tmux
+
+      - name: Show tool versions
+        run: |
+          rustc -Vv
+          cargo -V
+          zig version
+          tmux -V
+          cc --version
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0, MIT
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: cargo-${{ runner.os }}-${{ runner.arch }}-zig-${{ env.ZIG_VERSION }}-cpu-${{ env.LIBGHOSTTY_VT_SYS_CPU }}-mode-${{ env.LIBGHOSTTY_VT_SYS_OPTIMIZE }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'native/ghostty.json') }}
+
+      - name: Prepare patched terminal source
+        run: python3 scripts/prepare-native.py
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Build
+        run: cargo build --workspace --locked
+
+      - name: Test
+        run: cargo test --workspace --locked
+
+      - name: Docs
+        run: cargo doc --workspace --no-deps --locked
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  checks:
+    name: Format and dependency audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1, MIT
+        with:
+          persist-credentials: false
+
+      - name: Install Rust from rust-toolchain.toml
+        run: rustup toolchain install
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22, Apache-2.0 OR MIT
+        with:
+          tool: cargo-deny@0.20.2
+
+      - name: Licences, advisories, bans and sources
+        run: cargo deny --locked check

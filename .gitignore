@@ -1,0 +1,17 @@
+# Local agent state stays out of the repository
+.backbone/
+.agents/
+.claude/skills/
+.claude/settings.local.json
+.codex/
+# Build output
+/target/
+# Secrets come from the environment only
+.env
+.env.*
+# Local benchmark and profiling output
+*.trace
+*.log
+.DS_Store
+# Prepared pinned native source (decision record 0025)
+/.native/

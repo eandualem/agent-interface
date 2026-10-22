@@ -1,0 +1,445 @@
+diff --git a/src/terminal/PageList.zig b/src/terminal/PageList.zig
+index 79aa96f..8e8840d 100644
+--- a/src/terminal/PageList.zig
++++ b/src/terminal/PageList.zig
+@@ -3515,7 +3515,20 @@ pub fn grow(self: *PageList) Allocator.Error!?*List.Node {
+ 
+     // Get the layout first so our failable work is done early.
+     // We'll need this for both paths.
+-    const cap = initialCapacity(self.cols);
++    var cap = initialCapacity(self.cols);
++    // Diagnostic prototype: predict from live styles, not historical capacity.
++    const requested_styles = std.math.ceilPowerOfTwoAssert(usize, @max(1, stylepkg.Set.capacityForCount(last.page().styles.count())));
++    if (requested_styles > cap.styles and requested_styles <= std.math.maxInt(size.StyleCountInt)) {
++        var predicted = cap;
++        predicted.styles = @intCast(requested_styles);
++        if (Page.layout(predicted).total_size <= size.max_page_size) cap = predicted;
++    }
++    const allocation_size = @max(Page.layout(cap).total_size, PagePool.item_size);
++    const fits_pool = allocation_size == PagePool.item_size;
++    const projected_size = self.page_size + allocation_size;
++    // Reserve a larger buffer before pruning: allocation failure must leave
++    // the old page available to cover the active area.
++    const reserved = if (!fits_pool) try self.createPage(.{ .cap = cap }) else null;
+ 
+     // If allocation would exceed our max size, we prune the first page.
+     // We don't need to reallocate because we can simply reuse that first
+@@ -3527,7 +3540,7 @@ pub fn grow(self: *PageList) Allocator.Error!?*List.Node {
+     // initial allocation.
+     if (self.pages.first != null and
+         self.pages.first != self.pages.last and
+-        self.page_size + PagePool.item_size > self.maxSize())
++        projected_size > self.maxSize())
+     prune: {
+         const first = self.pages.popFirst().?;
+         assert(first != last);
+@@ -3586,6 +3599,11 @@ pub fn grow(self: *PageList) Allocator.Error!?*List.Node {
+             },
+         }
+ 
++        if (!fits_pool) {
++            self.destroyNode(first);
++            break :prune;
++        }
++
+         // Reset our memory
+         const buf = first.restore(.discard).memory;
+         @memset(buf, 0);
+@@ -3613,7 +3631,7 @@ pub fn grow(self: *PageList) Allocator.Error!?*List.Node {
+     }
+ 
+     // We need to allocate a new memory buffer.
+-    const next_node = try self.createPage(.{ .cap = cap });
++    const next_node = reserved orelse try self.createPage(.{ .cap = cap });
+     // we don't errdefer this because we've added it to the linked
+     // list and its fine to have dangling unused pages.
+     self.pages.append(next_node);
+@@ -17514,3 +17532,75 @@ test "PageList split preserves hyperlinks" {
+         try testing.expectEqualStrings("https://example.com", link.uri.slice(second_page.memory));
+     }
+ }
++
++test "PageList grow predicts live styles and returns to default capacity" {
++    const testing = std.testing;
++    var pages = try init(testing.allocator, 200, 2, 3 * std_size);
++    defer pages.deinit();
++
++    // Keep a pooled page before the styled page so prediction must prune it.
++    const initial = pages.pages.last.?;
++    while (initial.rows() < initial.capacity().rows) _ = try pages.grow();
++    _ = try pages.grow();
++
++    const first = try pages.increaseCapacity(pages.pages.last.?, .styles);
++    const page = first.page();
++    const row = page.getRow(0);
++    row.styled = true;
++    for (page.getCells(row), 0..) |*cell, i| {
++        const id = try page.styles.add(page.memory, .{
++            .fg_color = .{ .palette = @intCast(i) },
++        });
++        cell.* = .{
++            .content_tag = .codepoint,
++            .content = .{ .codepoint = 'x' },
++            .style_id = id,
++        };
++    }
++    page.assertIntegrity();
++    while (first.rows() < first.capacity().rows) _ = try pages.grow();
++    const predicted = (try pages.grow()).?;
++    try testing.expectEqual(first.capacity().styles, predicted.capacity().styles);
++    try testing.expectEqual(@as(usize, 0), predicted.page().styles.count());
++    try testing.expect(pages.pages.first.? == first);
++    try testing.expect(predicted.owned == .heap);
++
++    // A following plain page must not retain obsolete style capacity.
++    while (predicted.rows() < predicted.capacity().rows) _ = try pages.grow();
++    const plain = (try pages.grow()).?;
++    try testing.expectEqual(initialCapacity(pages.cols).styles, plain.capacity().styles);
++}
++
++test "PageList grow allocation failure preserves active rows" {
++    const testing = std.testing;
++    const cap = initialCapacity(200);
++    var pages = try init(testing.allocator, 200, cap.rows + 1, 0);
++    defer pages.deinit();
++    const last = try pages.increaseCapacity(pages.pages.last.?, .styles);
++    const page = last.page();
++    const row = page.getRow(0);
++    row.styled = true;
++    for (page.getCells(row), 0..) |*cell, i| {
++        cell.* = .{
++            .content_tag = .codepoint,
++            .content = .{ .codepoint = 'x' },
++            .style_id = try page.styles.add(page.memory, .{
++                .fg_color = .{ .palette = @intCast(i) },
++            }),
++        };
++    }
++    while (last.rows() < last.capacity().rows) _ = try pages.grow();
++    const original_rows = pages.total_rows;
++    const original_first = pages.pages.first.?;
++    try testing.expect(original_first.owned == .pool);
++
++    const page_allocator = pages.pool.pages.arena.child_allocator;
++    var failing = testing.FailingAllocator.init(page_allocator, .{ .fail_index = 0 });
++    pages.pool.pages.arena.child_allocator = failing.allocator();
++    defer pages.pool.pages.arena.child_allocator = page_allocator;
++    try testing.expectError(error.OutOfMemory, pages.grow());
++    try testing.expect(failing.has_induced_failure);
++    try testing.expectEqual(original_rows, pages.total_rows);
++    try testing.expect(pages.pages.first.? == original_first);
++    _ = pages.getTopLeft(.active);
++}
+diff --git a/src/terminal/Screen.zig b/src/terminal/Screen.zig
+index 6c4db32..ffe65e3 100644
+--- a/src/terminal/Screen.zig
++++ b/src/terminal/Screen.zig
+@@ -2062,6 +2062,36 @@ pub fn setAttribute(
+         };
+     }
+ 
++    self.applyAttribute(attr);
++
++    // If the attribute didn't change our style then we can skip the
++    // style update entirely: our current style ID is already correct.
++    // This is a common case in the wild where programs re-assert the
++    // same style repeatedly (e.g. per span or per line).
++    if (self.cursor.style.eql(old_style)) return;
++
++    try self.manualStyleUpdate();
++}
++
++/// Apply one parsed SGR sequence without storing its intermediate styles.
++/// If allocation fails, restore the old style and use per-attribute recovery.
++pub fn setAttributes(self: *Screen, parser: *sgr.Parser) void {
++    const original = parser.*;
++    const old_style = self.cursor.style;
++    while (parser.next()) |attr| self.applyAttribute(attr);
++    if (self.cursor.style.eql(old_style)) return;
++    self.manualStyleUpdate() catch {
++        self.cursor.style = old_style;
++        self.manualStyleUpdate() catch {
++            self.cursor.style = .{};
++            self.manualStyleUpdate() catch unreachable;
++        };
++        var retry = original;
++        while (retry.next()) |attr| self.setAttribute(attr) catch {};
++    };
++}
++
++fn applyAttribute(self: *Screen, attr: sgr.Attribute) void {
+     switch (attr) {
+         .unset => {
+             self.cursor.style = .{};
+@@ -2199,14 +2229,6 @@ pub fn setAttribute(
+ 
+         .unknown => return,
+     }
+-
+-    // If the attribute didn't change our style then we can skip the
+-    // style update entirely: our current style ID is already correct.
+-    // This is a common case in the wild where programs re-assert the
+-    // same style repeatedly (e.g. per span or per line).
+-    if (self.cursor.style.eql(old_style)) return;
+-
+-    try self.manualStyleUpdate();
+ }
+ 
+ /// Call this whenever you manually change the cursor style.
+@@ -11221,3 +11243,55 @@ test "Screen: promptClickMove click right of input cursor on last char" {
+     try testing.expectEqual(@as(usize, 1), result.right);
+     try testing.expectEqual(@as(usize, 0), result.left);
+ }
++
++test "Screen batched SGR matches individual attributes" {
++    const testing = std.testing;
++    var batch = try Screen.init(testing.allocator, .{ .cols = 80, .rows = 24, .max_scrollback = 1000 });
++    defer batch.deinit();
++    var reference = try Screen.init(testing.allocator, .{ .cols = 80, .rows = 24, .max_scrollback = 1000 });
++    defer reference.deinit();
++    const sequences = [_][]const u16{
++        &.{ 1, 3, 38, 2, 17, 39, 102, 48, 5, 126 },
++        &.{ 22, 23, 48, 2, 189, 248, 122, 40 },
++        &.{ 4, 7, 9, 58, 2, 10, 20, 30 },
++        &.{ 999, 0, 1, 22 },
++        &.{ 3, 38, 2, 1 },
++        &.{},
++    };
++    for (sequences) |params| {
++        var parser: sgr.Parser = .{ .params = params };
++        var single = parser;
++        batch.setAttributes(&parser);
++        while (single.next()) |attr| try reference.setAttribute(attr);
++        try testing.expect(batch.cursor.style.eql(reference.cursor.style));
++        try testing.expectEqual(single.idx, parser.idx);
++        try batch.testWriteString("x");
++        try reference.testWriteString("x");
++        batch.assertIntegrity();
++        reference.assertIntegrity();
++    }
++}
++
++test "Screen batched SGR retries individual attributes on allocation failure" {
++    const testing = std.testing;
++    var s = try Screen.init(testing.allocator, .{ .cols = 10, .rows = 5, .max_scrollback = 10 });
++    defer s.deinit();
++    const page = s.cursor.page_pin.node.page();
++    // Keep a reusable bold style, then exhaust capacity with other living styles.
++    _ = try page.styles.add(page.memory, .{ .flags = .{ .bold = true } });
++    var n: usize = 1;
++    while (n < page.styles.layout.cap) : (n += 1) {
++        _ = page.styles.add(page.memory, .{ .bg_color = .{ .rgb = @bitCast(@as(u24, @intCast(n))) } }) catch break;
++    }
++    const original_allocator = s.pages.pool.pages.arena.child_allocator;
++    var failing = testing.FailingAllocator.init(original_allocator, .{ .fail_index = 0 });
++    s.pages.pool.pages.arena.child_allocator = failing.allocator();
++    defer s.pages.pool.pages.arena.child_allocator = original_allocator;
++    var parser: sgr.Parser = .{ .params = &.{ 1, 3 } };
++    s.setAttributes(&parser);
++    try testing.expect(failing.has_induced_failure);
++    try testing.expect(s.cursor.style.flags.bold);
++    try testing.expect(!s.cursor.style.flags.italic);
++    try testing.expect(s.cursor.style_id != style.default_id);
++    s.assertIntegrity();
++}
+diff --git a/src/terminal/Terminal.zig b/src/terminal/Terminal.zig
+index 0892012..e95a26c 100644
+--- a/src/terminal/Terminal.zig
++++ b/src/terminal/Terminal.zig
+@@ -1421,8 +1421,26 @@ fn printWrap(self: *Terminal) !void {
+     const old_semantic = cursor.semantic_content;
+     const old_semantic_clear = cursor.semantic_content_clear_eol;
+ 
+-    // Move to the next line
++    // tmux scrolls a soft-wrapped line with the default background, unlike
++    // an explicit index/linefeed which uses the current background. index()
++    // has already released managed cells in the newly exposed row; replace
++    // only those blank cells, keeping the cursor's style for subsequent text.
++    const scrolled = cursor.y == self.scrolling_region.bottom and
++        cursor.x >= self.scrolling_region.left and
++        cursor.x <= self.scrolling_region.right;
+     try self.index();
++    if (scrolled and cursor.style.bg_color != .none) {
++        const page = cursor.page_pin.node.page();
++        const cells = page.getCells(cursor.page_row);
++        const blanks = cells[self.scrolling_region.left .. self.scrolling_region.right + 1];
++        if (comptime std.debug.runtime_safety) {
++            for (blanks) |cell| {
++                assert(cell.style_id == style.default_id);
++                assert(!cell.hasGrapheme() and !cell.hyperlink);
++            }
++        }
++        @memset(blanks, .{});
++    }
+     self.screens.active.cursorHorizontalAbsolute(self.scrolling_region.left);
+ 
+     // Our pointer should never move
+@@ -14398,3 +14416,41 @@ test "Terminal: glyph APC stores session glossary entries" {
+     t.fullReset();
+     try testing.expect(!t.glyph_glossary.contains(0xE0A0));
+ }
++
++test "Terminal: soft-wrap scroll uses tmux default background without changing SGR" {
++    const alloc = testing.allocator;
++    for ([_]bool{ false, true }) |fragmented| {
++        for ([_]bool{ false, true }) |region| {
++            var t = try init(alloc, .{ .rows = 5, .cols = 5 });
++            defer t.deinit(alloc);
++            var stream = t.vtStream();
++            defer stream.deinit();
++            if (region) stream.nextSlice("\x1b[2;4r\x1b[4;1H") else stream.nextSlice("\x1b[5;1H");
++            const input = "\x1b[46mabcdef";
++            if (fragmented) {
++                for (input) |byte| stream.next(byte);
++            } else stream.nextSlice(input);
++            const y: size.CellCountInt = if (region) 3 else 4;
++            for (1..5) |x| {
++                const cell = t.screens.active.pages.getCell(.{ .active = .{
++                    .x = @intCast(x),
++                    .y = y,
++                } }).?.cell;
++                try testing.expectEqual(style.default_id, cell.style_id);
++                try testing.expectEqual(Cell.ContentTag.codepoint, cell.content_tag);
++                try testing.expectEqual(@as(u21, 0), cell.content.codepoint);
++            }
++            try testing.expectEqual(@as(u8, 6), t.screens.active.cursor.style.bg_color.palette);
++            // An explicit newline still fills the newly exposed row with SGR.
++            stream.nextSlice("\r\n");
++            for (0..5) |x| {
++                const cell = t.screens.active.pages.getCell(.{ .active = .{
++                    .x = @intCast(x),
++                    .y = y,
++                } }).?.cell;
++                try testing.expectEqual(Cell.ContentTag.bg_color_palette, cell.content_tag);
++                try testing.expectEqual(@as(u8, 6), cell.content.color_palette);
++            }
++        }
++    }
++}
+diff --git a/src/terminal/stream.zig b/src/terminal/stream.zig
+index efb06ec..a13ad55 100644
+--- a/src/terminal/stream.zig
++++ b/src/terminal/stream.zig
+@@ -528,7 +528,14 @@ pub fn Stream(comptime H: type) type {
+             var i: usize = 0;
+             while (true) {
+                 const len = @min(cp_buf.len, input.len - i);
+-                self.nextSliceCapped(input[i .. i + len], &cp_buf);
++                const chunk = input[i .. i + len];
++                var start: usize = 0;
++                while (std.mem.indexOfScalarPos(u8, chunk, start, 0x7F)) |del| {
++                    self.nextSliceCapped(chunk[start..del], &cp_buf);
++                    if (self.parser.state != .ground) self.nextNonUtf8(0x7F);
++                    start = del + 1;
++                }
++                self.nextSliceCapped(chunk[start..], &cp_buf);
+                 i += len;
+                 if (i >= input.len) break;
+             }
+@@ -842,6 +849,9 @@ pub fn Stream(comptime H: type) type {
+         inline fn nextUtf8(self: *Self, c: u8) void {
+             assert(self.parser.state == .ground);
+ 
++            // DEL is ignored without interrupting a partial UTF-8 character.
++            if (c == 0x7F) return;
++
+             const res = self.utf8decoder.next(c);
+             const consumed = res[1];
+             if (res[0]) |codepoint| {
+@@ -1728,9 +1738,12 @@ pub fn Stream(comptime H: type) type {
+                                 .params = input.params,
+                                 .params_sep = input.params_sep,
+                             };
+-                            while (p.next()) |attr| {
+-                                // log.info("SGR attribute: {}", .{attr});
+-                                self.handler.vt(.set_attribute, attr);
++                            if (comptime @hasDecl(T, "vtSgr")) {
++                                self.handler.vtSgr(&p);
++                            } else {
++                                while (p.next()) |attr| {
++                                    self.handler.vt(.set_attribute, attr);
++                                }
+                             }
+                         },
+ 
+@@ -3958,3 +3971,37 @@ test "stream: apc vector boundaries match scalar path" {
+         );
+     };
+ }
++
++test "stream: DEL preserves partial UTF-8 and APC payloads" {
++    const H = struct {
++        printed: std.ArrayList(u32) = .empty,
++        payload: std.ArrayList(u8) = .empty,
++        pub fn deinit(self: *@This()) void {
++            self.printed.deinit(testing.allocator);
++            self.payload.deinit(testing.allocator);
++        }
++        pub fn vt(self: *@This(), comptime action: Action.Tag, value: Action.Value(action)) void {
++            switch (action) {
++                .print => self.printed.append(testing.allocator, value.cp) catch unreachable,
++                .print_slice => self.printed.appendSlice(testing.allocator, value.cps) catch unreachable,
++                .apc_put => self.payload.append(testing.allocator, value) catch unreachable,
++                .apc_put_slice => self.payload.appendSlice(testing.allocator, value.bytes) catch unreachable,
++                else => {},
++            }
++        }
++    };
++    const input = "\x7fa\xe2\x7f\x82\x7f\xac\x1b_hello\x7fworld\x1b\\\x7fb";
++    for (0..input.len + 1) |split| {
++        var s: Stream(H) = .init(.{});
++        defer s.deinit();
++        s.nextSlice(input[0..split]);
++        s.nextSlice(input[split..]);
++        try testing.expectEqualSlices(u32, &.{ 'a', 0x20ac, 'b' }, s.handler.printed.items);
++        try testing.expectEqualStrings("hello\x7fworld", s.handler.payload.items);
++    }
++    var scalar: Stream(H) = .init(.{});
++    defer scalar.deinit();
++    for (input) |c| scalar.next(c);
++    try testing.expectEqualSlices(u32, &.{ 'a', 0x20ac, 'b' }, scalar.handler.printed.items);
++    try testing.expectEqualStrings("hello\x7fworld", scalar.handler.payload.items);
++}
+diff --git a/src/terminal/stream_terminal.zig b/src/terminal/stream_terminal.zig
+index 91cfb21..cf076db 100644
+--- a/src/terminal/stream_terminal.zig
++++ b/src/terminal/stream_terminal.zig
+@@ -31,6 +31,11 @@ pub const Stream = stream.Stream(Handler);
+ /// You can manually set various effects callbacks in the `effects` field
+ /// to implement certain effects such as bells, titles, clipboard, etc.
+ pub const Handler = struct {
++    /// Store only the final style of a complete SGR sequence.
++    pub fn vtSgr(self: *Handler, parser: *@import("sgr.zig").Parser) void {
++        self.terminal.screens.active.setAttributes(parser);
++    }
++
+     /// The terminal state to modify.
+     terminal: *Terminal,
+ 
+@@ -171,16 +176,17 @@ pub const Handler = struct {
+             .cursor_left => self.terminal.cursorLeft(value.value),
+             .cursor_right => self.terminal.cursorRight(value.value),
+             .cursor_pos => self.terminal.setCursorPos(value.row, value.col),
+-            .cursor_col => self.terminal.setCursorPos(self.terminal.screens.active.cursor.y + 1, value.value),
++            .cursor_col => {
++                // tmux CHA/HPA address the column without applying origin mode
++                // to the unchanged row. Set the bit directly to avoid homing.
++                const origin = self.terminal.modes.get(.origin);
++                self.terminal.modes.set(.origin, false);
++                defer self.terminal.modes.set(.origin, origin);
++                self.terminal.setCursorPos(self.terminal.screens.active.cursor.y + 1, value.value);
++            },
+             .cursor_row => self.terminal.setCursorPos(value.value, self.terminal.screens.active.cursor.x + 1),
+-            .cursor_col_relative => self.terminal.setCursorPos(
+-                self.terminal.screens.active.cursor.y + 1,
+-                self.terminal.screens.active.cursor.x + 1 +| value.value,
+-            ),
+-            .cursor_row_relative => self.terminal.setCursorPos(
+-                self.terminal.screens.active.cursor.y + 1 +| value.value,
+-                self.terminal.screens.active.cursor.x + 1,
+-            ),
++            // tmux ignores HPR/VPR, including their effect on pending wrap and REP.
++            .cursor_col_relative, .cursor_row_relative => {},
+             .cursor_style => {
+                 self.default_cursor = false;
+ 
