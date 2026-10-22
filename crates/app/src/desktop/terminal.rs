@@ -300,10 +300,17 @@ impl Render for LiveTerminal {
         let several = self.windows.len() > 1;
         let mut header = cells
             .row()
-            .id("tmux-windows")
             .gap(cells.width(1))
             .bg(rgb(theme::PANEL))
             .text_color(rgb(theme::MUTED));
+        // Window names scroll sideways when they outgrow the pane.
+        let mut choices = div()
+            .id("tmux-windows")
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .gap(cells.width(1))
+            .overflow_x_scroll();
         if several {
             for item in &self.windows {
                 let selected = item.clone();
@@ -316,7 +323,7 @@ impl Render for LiveTerminal {
                     .selected_window
                     .as_ref()
                     .is_some_and(|window| window.id == item.id);
-                header = header.child(
+                choices = choices.child(
                     div()
                         .id(SharedString::from(format!(
                             "tmux-window-{}-{}",
@@ -334,13 +341,11 @@ impl Render for LiveTerminal {
                 );
             }
         }
+        header = header.child(choices);
         if let Some(attachment) = attachment {
             header = header.child(
                 div()
-                    .flex_1()
-                    .min_w_0()
-                    .flex()
-                    .justify_end()
+                    .flex_shrink_0()
                     .text_color(rgb(theme::ACCENT))
                     .child(attachment.session.clone()),
             );

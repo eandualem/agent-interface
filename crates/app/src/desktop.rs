@@ -462,6 +462,7 @@ impl Browser {
             },
         );
         self.workspace_menu = false;
+        self.configure_menu = false;
         self.tab_menu = None;
         self.chooser = None;
         self.reset_focus = false;
@@ -529,6 +530,7 @@ impl Browser {
         };
         self.pending_save = Some(proposal);
         self.workspace_menu = false;
+        self.configure_menu = false;
         self.editing = None;
         self.tab_menu = None;
         self.chooser = None;
@@ -565,6 +567,7 @@ impl Browser {
         self.chooser = None;
         self.tab_menu = None;
         self.workspace_menu = false;
+        self.configure_menu = false;
         if let Some(focus) = &self.navigation {
             window.focus(focus, cx);
         }
@@ -619,7 +622,7 @@ impl Browser {
                                 browser.reset_focus = true;
                                 if let Some(space) = layout.model().workspace()
                                     && let Some(index) = space.tabs.iter().position(|tab| tab.id == space.selected)
-                                { browser.tabs_scroll.scroll_to_item(index + 1); }
+                                { browser.tabs_scroll.scroll_to_item(index); }
                             }
                         }
                         browser.creation_from = None;
@@ -686,6 +689,7 @@ impl Browser {
         self.editing = None;
         self.chooser = None;
         self.workspace_menu = false;
+        self.configure_menu = false;
         if let Some(focus) = &self.navigation {
             window.focus(focus, cx);
         }
@@ -1065,6 +1069,7 @@ impl Browser {
             self.chooser = None;
             self.tab_menu = None;
             self.workspace_menu = false;
+            self.configure_menu = false;
             if let Some(focus) = &self.navigation {
                 window.focus(focus, cx);
             }
