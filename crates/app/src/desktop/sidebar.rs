@@ -1,7 +1,10 @@
 //! The navigation panel: workspace block, jump field, tabs, agents and the
 //! workspace switcher. Layout and colours come from the design tokens.
 
-use std::collections::HashMap;
+use std::{
+    collections::{HashMap, HashSet},
+    path::PathBuf,
+};
 
 use gpui::{AnyElement, Context, SharedString, Window, div, prelude::*, px};
 
@@ -12,6 +15,31 @@ use super::{
 };
 use crate::desktop::layout_edit::Create;
 use ui::AgentState;
+
+/// Socket identities resolved by a background worker, never while drawing.
+#[derive(Default)]
+pub(super) struct SourceMatches {
+    inherited: bool,
+    explicit: HashSet<String>,
+}
+
+impl SourceMatches {
+    fn resolve(source: Option<PathBuf>, sockets: HashSet<String>) -> Self {
+        let resolve = |path: &std::path::Path| crate::library::location::resolve_path(path).ok();
+        let source = source.as_deref().and_then(resolve);
+        Self {
+            inherited: source.is_some(),
+            explicit: sockets
+                .into_iter()
+                .filter(|socket| source.is_some() && resolve(socket.as_ref()) == source)
+                .collect(),
+        }
+    }
+
+    pub(super) fn contains(&self, socket: Option<&str>) -> bool {
+        socket.map_or(self.inherited, |socket| self.explicit.contains(socket))
+    }
+}
 
 impl Browser {
     /// Each agent's state, or none while Agent Backbone is unreachable.
@@ -26,22 +54,41 @@ impl Browser {
         )
     }
 
-    /// Whether a saved socket is this window's source server. Both must
-    /// resolve to the same path; two failures never match.
-    pub(super) fn is_window_source(&self, socket: Option<&str>) -> bool {
-        let resolve = |path: &std::path::Path| crate::library::location::resolve_path(path).ok();
+    /// Refresh identities after library or roster updates. Keep at most one
+    /// lookup running; a later roster poll picks up changes made while it ran.
+    pub(super) fn refresh_source_matches(&mut self, cx: &mut Context<Self>) {
+        if self.roster.is_none() || self.source_match_updates.is_some() {
+            return;
+        }
         let source = self
             .source
             .as_ref()
             .and_then(|source| source.as_ref().ok())
-            .and_then(|path| resolve(path));
-        match socket {
-            None => source.is_some(),
-            Some(socket) => {
-                let saved = resolve(std::path::Path::new(socket));
-                saved.is_some() && saved == source
-            }
-        }
+            .cloned();
+        let sockets = self
+            .layout
+            .iter()
+            .flat_map(|layout| &layout.model().workspaces)
+            .flat_map(|space| &space.tabs)
+            .flat_map(|tab| tab.tree.leaves())
+            .filter_map(|leaf| leaf.attachment.as_ref()?.source_socket.clone())
+            .collect();
+        let work = cx
+            .background_executor()
+            .spawn(async move { SourceMatches::resolve(source, sockets) });
+        self.source_match_updates = Some(cx.spawn(async move |this, cx| {
+            let matches = work.await;
+            let _ = this.update(cx, |browser, cx| {
+                browser.source_matches = matches;
+                browser.source_match_updates = None;
+                cx.notify();
+            });
+        }));
+    }
+
+    /// Both sockets must have resolved successfully to the same path.
+    pub(super) fn is_window_source(&self, socket: Option<&str>) -> bool {
+        self.source_matches.contains(socket)
     }
 
     /// The state of the agent an attachment shows. Agent Backbone's agents
@@ -698,5 +745,31 @@ impl Browser {
                     })),
             )
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SourceMatches;
+
+    #[test]
+    fn socket_matches_cache_aliases_and_never_match_failed_resolutions() {
+        let root = tempfile::tempdir().unwrap();
+        let socket = root.path().join("source");
+        let alias = root.path().join("alias");
+        std::os::unix::fs::symlink(&socket, &alias).unwrap();
+        let alias = alias.to_str().unwrap().to_owned();
+        let invalid = "invalid\0socket".to_owned();
+        let paths = [alias.clone(), invalid.clone(), "/other/socket".into()].into();
+        let matches = SourceMatches::resolve(Some(socket), paths);
+        // Rendering needs only the snapshot, even if the alias is gone later.
+        std::fs::remove_file(&alias).unwrap();
+        assert!(matches.contains(None));
+        assert!(matches.contains(Some(&alias)));
+        assert!(!matches.contains(Some(&invalid)));
+        assert!(!matches.contains(Some("/other/socket")));
+        let failed = SourceMatches::resolve(Some(invalid.clone().into()), [invalid.clone()].into());
+        assert!(!failed.contains(None));
+        assert!(!failed.contains(Some(&invalid)));
     }
 }
