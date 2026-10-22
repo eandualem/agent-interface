@@ -352,6 +352,8 @@ struct Browser {
     roster: Option<Roster>,
     agents: Option<tmux_workspaces_roster::Snapshot>,
     roster_updates: Option<Task<()>>,
+    /// A navigation panel drag: where it started and the width then.
+    sidebar_drag: Option<(gpui::Pixels, gpui::Pixels)>,
     reset_focus: bool,
     navigation: Option<gpui::FocusHandle>,
     updates: Option<Task<()>>,
@@ -1417,12 +1419,35 @@ impl Browser {
         }
     }
 
+    /// Keep a dragged panel width: save it and repaint every window.
+    fn finish_sidebar_drag(&mut self, cx: &mut Context<Self>) {
+        self.sidebar_drag = None;
+        let current = settings::Settings::current();
+        if let Some(path) = settings::path()
+            && let Err(error) = settings::save(&current, &path)
+        {
+            self.save_notice = Some(format!("Panel width not saved: {error}"));
+        }
+        cx.refresh_windows();
+    }
+
     fn resize_motion(
         &mut self,
         event: &gpui::MouseMoveEvent,
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if let Some((start, width)) = self.sidebar_drag {
+            if event.dragging() {
+                let width = f32::from(width + event.position.x - start).round();
+                settings::set_sidebar_width(width.max(0.0) as u32);
+            } else {
+                self.finish_sidebar_drag(cx);
+            }
+            cx.stop_propagation();
+            cx.notify();
+            return;
+        }
         let Some(drag) = &mut self.resize else {
             return;
         };
@@ -1451,6 +1476,10 @@ impl Browser {
         cx: &mut Context<Self>,
     ) {
         if event.button != gpui::MouseButton::Left {
+            return;
+        }
+        if self.sidebar_drag.is_some() {
+            self.finish_sidebar_drag(cx);
             return;
         }
         let Some(drag) = &mut self.resize else {
@@ -1802,7 +1831,10 @@ impl Render for Browser {
             cx.text_system(),
             &terminal::appearance(),
         ));
-        let sidebar_width = cells.width(theme::SIDEBAR_COLUMNS);
+        let sidebar_width = settings::sidebar_width()
+            .map(|width| px(width as f32))
+            .unwrap_or_else(|| cells.width(theme::SIDEBAR_COLUMNS))
+            .min((window.viewport_size().width - px(240.0)).max(px(140.0)));
         let mut list = div()
             .id("tabs")
             .flex_1()
@@ -2605,7 +2637,21 @@ impl Render for Browser {
                     .flex_1()
                     .min_h_0()
                     .child(sidebar)
-                    .child(cells.separator())
+                    .child(
+                        div()
+                            .id("sidebar-separator")
+                            .h_full()
+                            .flex_shrink_0()
+                            .cursor(gpui::CursorStyle::ResizeLeftRight)
+                            .child(cells.separator())
+                            .on_mouse_down(
+                                gpui::MouseButton::Left,
+                                cx.listener(move |browser, event: &gpui::MouseDownEvent, _, cx| {
+                                    browser.sidebar_drag = Some((event.position.x, sidebar_width));
+                                    cx.stop_propagation();
+                                }),
+                            ),
+                    )
                     .child(content),
             )
             .child(status)

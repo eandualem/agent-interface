@@ -54,7 +54,8 @@ with independent navigation and terminal connections. Closing one leaves the
 other windows open. **Open Library…** in the application menu, or Command-O,
 chooses another folder containing `layouts.db`.
 
-The navigation panel on the left is native: the system font, the current
+The navigation panel on the left is native and resizable: drag the line between
+it and the terminals; the width is remembered. It shows the system font, the current
 workspace's icon and name at the top, its tabs below, and menus that open where
 you click. The terminals sit beside it on a slightly lighter surface, with a
 status row along the bottom naming the workspace, tab and pane, the keys for the

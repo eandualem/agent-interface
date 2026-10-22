@@ -33,7 +33,8 @@ which has no meaning once this app is the terminal.
 
 **Storage.** `$XDG_CONFIG_HOME/tmux-workspaces/settings.toml`, else
 `~/.config/tmux-workspaces/settings.toml`, with `theme = "dark" | "light"` and
-`font_size`, and a `[shortcuts]` table holding only the commands changed
+`font_size`, `sidebar_width` once the navigation panel has been dragged
+(140 to 600 pixels; the default stays 22 terminal cells), and a `[shortcuts]` table holding only the commands changed
 from their defaults (for example `new-tab = "ctrl-alt-t"`). Saved entries load
 together, so two commands may swap keys; an unknown command or an unusable or
 clashing chord keeps its default. It is read at startup with the existing `toml` dependency

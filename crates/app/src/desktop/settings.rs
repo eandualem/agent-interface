@@ -12,12 +12,18 @@ pub const FONT_SIZES: std::ops::RangeInclusive<u32> = 9..=24;
 const DEFAULT_FONT_SIZE: f32 = 13.0;
 
 static FONT_SIZE: AtomicU32 = AtomicU32::new(DEFAULT_FONT_SIZE.to_bits());
+/// Navigation panel widths the settings accept, in pixels.
+pub const SIDEBAR_WIDTHS: std::ops::RangeInclusive<u32> = 140..=600;
+/// The dragged panel width, or zero for the default of 22 terminal cells.
+static SIDEBAR_WIDTH: AtomicU32 = AtomicU32::new(0);
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Settings {
     pub light: bool,
     pub font_size: f32,
     pub shortcuts: super::shortcuts::Bindings,
+    /// The navigation panel's width in pixels, when it was dragged.
+    pub sidebar_width: Option<u32>,
 }
 
 impl Default for Settings {
@@ -26,6 +32,7 @@ impl Default for Settings {
             light: false,
             font_size: DEFAULT_FONT_SIZE,
             shortcuts: super::shortcuts::Bindings::default(),
+            sidebar_width: None,
         }
     }
 }
@@ -46,6 +53,12 @@ impl Settings {
         {
             settings.font_size = size as f32;
         }
+        if let Some(width) = table.get("sidebar_width").and_then(toml::Value::as_integer)
+            && let Ok(width) = u32::try_from(width)
+            && SIDEBAR_WIDTHS.contains(&width)
+        {
+            settings.sidebar_width = Some(width);
+        }
         if let Some(shortcuts) = table.get("shortcuts").and_then(toml::Value::as_table) {
             settings.shortcuts = super::shortcuts::Bindings::from_entries(
                 shortcuts
@@ -62,6 +75,9 @@ impl Settings {
             if self.light { "light" } else { "dark" },
             self.font_size as u32
         );
+        if let Some(width) = self.sidebar_width {
+            text.push_str(&format!("sidebar_width = {width}\n"));
+        }
         let changed = self.shortcuts.changed();
         if !changed.is_empty() {
             text.push_str("\n[shortcuts]\n");
@@ -77,6 +93,7 @@ impl Settings {
         super::theme::set_light(self.light);
         FONT_SIZE.store(self.font_size.to_bits(), Ordering::Relaxed);
         super::shortcuts::set(self.shortcuts.clone());
+        SIDEBAR_WIDTH.store(self.sidebar_width.unwrap_or(0), Ordering::Relaxed);
     }
 
     /// The settings windows are drawing with now.
@@ -85,8 +102,22 @@ impl Settings {
             light: super::theme::is_light(),
             font_size: font_size(),
             shortcuts: super::shortcuts::current(),
+            sidebar_width: sidebar_width(),
         }
     }
+}
+
+/// The dragged navigation panel width in pixels, if any.
+pub fn sidebar_width() -> Option<u32> {
+    Some(SIDEBAR_WIDTH.load(Ordering::Relaxed)).filter(|width| *width > 0)
+}
+
+/// Use a dragged panel width now, without saving it.
+pub fn set_sidebar_width(width: u32) {
+    SIDEBAR_WIDTH.store(
+        width.clamp(*SIDEBAR_WIDTHS.start(), *SIDEBAR_WIDTHS.end()),
+        Ordering::Relaxed,
+    );
 }
 
 /// The terminal text size, in points.
@@ -140,6 +171,7 @@ mod tests {
             light: true,
             font_size: 16.0,
             shortcuts,
+            sidebar_width: Some(260),
         };
         assert_eq!(Settings::parse(&light.to_toml()), light);
         // Shortcuts are global; other tests rely on the defaults.
@@ -152,7 +184,8 @@ mod tests {
         Settings::default().apply();
         assert_eq!(Settings::current(), Settings::default());
         assert_eq!(Settings::parse("not toml ["), Settings::default());
-        let odd = Settings::parse("theme = \"sepia\"\nfont_size = 99\nother = 1\n");
+        let odd =
+            Settings::parse("theme = \"sepia\"\nfont_size = 99\nsidebar_width = 9000\nother = 1\n");
         assert_eq!(odd, Settings::default());
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("nested/settings.toml");
