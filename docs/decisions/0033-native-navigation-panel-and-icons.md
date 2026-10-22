@@ -46,7 +46,7 @@ provider and shows an AGENTS section between the tabs and Settings: agents
 needing you first, then working agents, then the rest, each with a coloured dot
 (red, amber, or a grey ring) and a short state word. Clicking an agent shows the
 tab holding its session, preferring the current tab; nothing is attached or
-started. The status row's **agents shown** toggle hides the section. Without
+started. The status row's **agents shown** toggle shows or hides the section and is saved with the library, like the previous tool's setting. Without
 Backbone there is no section or toggle.
 
 ## Alternatives

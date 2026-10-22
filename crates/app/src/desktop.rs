@@ -160,6 +160,26 @@ struct EditingName {
     _events: gpui::Subscription,
 }
 
+/// A window's roster poller. Stopping it joins a worker that may be inside a
+/// bounded request, so a closing window stops it off the UI thread.
+struct Roster(Option<crate::roster::RosterSource>);
+
+impl Roster {
+    fn take_update(&self) -> Option<tmux_workspaces_roster::Snapshot> {
+        self.0
+            .as_ref()
+            .and_then(crate::roster::RosterSource::take_update)
+    }
+}
+
+impl Drop for Roster {
+    fn drop(&mut self) {
+        if let Some(source) = self.0.take() {
+            std::thread::spawn(move || drop(source));
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 enum Popover {
     Workspace,
@@ -297,9 +317,8 @@ struct Browser {
     configure_menu: bool,
     icon_picker: bool,
     menu_at: Option<gpui::Point<gpui::Pixels>>,
-    roster: Option<crate::roster::RosterSource>,
+    roster: Option<Roster>,
     agents: Option<tmux_workspaces_roster::Snapshot>,
-    hide_agents: bool,
     roster_updates: Option<Task<()>>,
     reset_focus: bool,
     navigation: Option<gpui::FocusHandle>,
@@ -380,15 +399,11 @@ impl Browser {
         }) else {
             return;
         };
-        self.roster = Some(roster);
+        self.roster = Some(Roster(Some(roster)));
         self.roster_updates = Some(cx.spawn(async move |this, cx| {
             while woken.next().await.is_some() {
                 let updated = this.update(cx, |browser, cx| {
-                    if let Some(snapshot) = browser
-                        .roster
-                        .as_ref()
-                        .and_then(crate::roster::RosterSource::take_update)
-                    {
+                    if let Some(snapshot) = browser.roster.as_ref().and_then(Roster::take_update) {
                         browser.agents = Some(snapshot);
                         cx.notify();
                     }
@@ -407,13 +422,20 @@ impl Browser {
             .source
             .as_ref()
             .and_then(|source| source.as_ref().ok())
-            .and_then(|path| std::fs::canonicalize(path).ok());
+            .and_then(|path| crate::library::location::resolve_path(path).ok());
         let Some(layout) = &mut self.layout else {
             return;
         };
         let model = layout.model_mut();
-        let found = agent_destination(model, name, |socket| {
-            socket.is_none_or(|socket| std::fs::canonicalize(socket).ok() == source)
+        // A saved socket matches only when both resolve to the same path; two
+        // failures never match.
+        let found = agent_destination(model, name, |socket| match socket {
+            None => source.is_some(),
+            Some(socket) => {
+                let saved =
+                    crate::library::location::resolve_path(std::path::Path::new(socket)).ok();
+                saved.is_some() && saved == source
+            }
         });
         if let Some((space, tab, pane)) = found {
             model.choose_workspace(&space);
@@ -2086,7 +2108,11 @@ impl Render for Browser {
         }
         // Agents from Agent Backbone, under the tabs: needing you first, then
         // working, then the rest, each with its state as a colored dot.
-        let agents = (self.roster.is_some() && !self.hide_agents).then(|| {
+        let show_agents = self
+            .layout
+            .as_ref()
+            .is_some_and(|layout| layout.model().show_agents);
+        let agents = (self.roster.is_some() && show_agents).then(|| {
             let snapshot = self.agents.clone().unwrap_or_default();
             let entries: Option<Vec<(String, String)>> =
                 self.agents.as_ref().and_then(|snapshot| {
@@ -2361,18 +2387,25 @@ impl Render for Browser {
                             div()
                                 .id("toggle-agents")
                                 .cursor_pointer()
-                                .text_color(rgb(if self.hide_agents {
-                                    theme::MUTED
-                                } else {
+                                .text_color(rgb(if show_agents {
                                     theme::NORMAL
-                                }))
-                                .child(if self.hide_agents {
-                                    "agents hidden"
                                 } else {
+                                    theme::MUTED
+                                }))
+                                .child(if show_agents {
                                     "agents shown"
+                                } else {
+                                    "agents hidden"
                                 })
                                 .on_click(cx.listener(|browser, _, _, cx| {
-                                    browser.hide_agents = !browser.hide_agents;
+                                    if browser.saving || browser.save_failed {
+                                        return;
+                                    }
+                                    if let Some(layout) = &mut browser.layout {
+                                        let model = layout.model_mut();
+                                        model.show_agents = !model.show_agents;
+                                        browser.save(cx);
+                                    }
                                     cx.notify();
                                 })),
                         )
