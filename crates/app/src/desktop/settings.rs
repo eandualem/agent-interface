@@ -147,11 +147,27 @@ pub fn save(settings: &Settings, path: &Path) -> io::Result<()> {
         .parent()
         .ok_or_else(|| io::Error::other("settings path has no directory"))?;
     std::fs::create_dir_all(directory)?;
-    let temporary = directory.join(".settings.toml.new");
-    let mut file = std::fs::File::create(&temporary)?;
-    file.write_all(settings.to_toml().as_bytes())?;
-    file.sync_all()?;
-    std::fs::rename(&temporary, path)
+    // Each save writes its own new file, so concurrent saves from other
+    // processes never share or truncate one another's temporary file.
+    static SAVES: AtomicU32 = AtomicU32::new(0);
+    let temporary = directory.join(format!(
+        ".settings.toml.{}.{}.new",
+        std::process::id(),
+        SAVES.fetch_add(1, Ordering::Relaxed)
+    ));
+    let written = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)
+        .and_then(|mut file| {
+            file.write_all(settings.to_toml().as_bytes())?;
+            file.sync_all()
+        })
+        .and_then(|()| std::fs::rename(&temporary, path));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    written
 }
 
 #[cfg(test)]
