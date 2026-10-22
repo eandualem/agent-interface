@@ -88,7 +88,7 @@ impl Decoder {
         mut on_message: impl FnMut(Message<'_>),
     ) -> Result<(), Error> {
         if !self.partial.is_empty() {
-            let Some(end) = bytes.iter().position(|&byte| byte == b'\n') else {
+            let Some(end) = memchr::memchr(b'\n', bytes) else {
                 self.partial.extend_from_slice(bytes);
                 return Ok(());
             };
@@ -101,7 +101,7 @@ impl Decoder {
             self.partial.clear();
             decoded?;
         }
-        while let Some(end) = bytes.iter().position(|&byte| byte == b'\n') {
+        while let Some(end) = memchr::memchr(b'\n', bytes) {
             self.line(&bytes[..end], &mut on_message)?;
             bytes = &bytes[end + 1..];
         }
@@ -201,7 +201,7 @@ fn parse_number(digits: &[u8]) -> Option<u64> {
 fn unescape(escaped: &[u8], out: &mut Vec<u8>) -> Result<(), Error> {
     out.clear();
     let mut rest = escaped;
-    while let Some(backslash) = rest.iter().position(|&byte| byte == b'\\') {
+    while let Some(backslash) = memchr::memchr(b'\\', rest) {
         out.extend_from_slice(&rest[..backslash]);
         let value = match rest.get(backslash + 1..backslash + 4) {
             Some(&[a, b, c]) if [a, b, c].iter().all(|digit| (b'0'..=b'7').contains(digit)) => {

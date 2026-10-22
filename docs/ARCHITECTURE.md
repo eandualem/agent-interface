@@ -26,7 +26,7 @@ selected window with that window's own panes.
 
 | Crate | Responsibility |
 | --- | --- |
-| `core` | Workspace, tab and layout model, validation and merge rules |
+| `core` | Workspace, tab and layout model, validation, merge rules and read-only theme data |
 | `store` | Reading `layouts.db`, the library shared with the Python tool |
 | `tmux` | Control-mode protocol and connections |
 | `term` | Terminal state for each pane, around the terminal engine |
@@ -94,3 +94,11 @@ tmux. `.github/workflows/ci.yml` shows every check a change must pass.
 
 - [Contributor guide](../CONTRIBUTING.md): setting up, building, testing and
   proposing changes.
+
+### Read-only theme configuration
+
+`core::theme` validates the shared theme format and retains all six presets,
+ordered fallbacks and ground inheritance. `app::theme::load` performs bounded
+read-only loading and returns the chosen path and any diagnostic alongside the
+valid or retained working theme. Native colour resolution and window activation
+remain separate.
