@@ -190,7 +190,7 @@ Control keys such as Ctrl-C, Ctrl-D and Ctrl-R still reach the terminal.
 | Select tab / workspace 1–9 | Alt+1–9 / Ctrl+Alt+1–9 |
 | Copy / paste | Ctrl+Shift+C / Ctrl+Shift+V |
 | New / close window | Ctrl+Shift+N / Ctrl+Shift+W |
-| Open library / Settings / Quit | Ctrl+Shift+O / Ctrl+Shift+, / Ctrl+Shift+Q |
+| Open library / Settings / Quit | Ctrl+Shift+O / Ctrl+, / Ctrl+Shift+Q |
 
 The defaults avoid Super keys and Ctrl+Alt+arrow keys commonly used by the desktop.
 A customized desktop may reserve other combinations; use Settings to change the

@@ -1947,6 +1947,23 @@ mod tests {
     }
 
     #[test]
+    fn settings_binding_matches_the_platform_event() {
+        // Linux XKB reports an unshifted comma with Control unchanged. Avoid
+        // Shift-comma: punctuation loses its Shift flag and arrives as `<`.
+        let event = gpui::Keystroke {
+            key: ",".into(),
+            key_char: None,
+            modifiers: gpui::Modifiers {
+                control: !cfg!(target_os = "macos"),
+                platform: cfg!(target_os = "macos"),
+                ..Default::default()
+            },
+        };
+        let binding = KeyBinding::new(shortcuts::platform_key("cmd-,"), OpenSettings, None);
+        assert_eq!(binding.match_keystrokes(&[event]), Some(false));
+    }
+
+    #[test]
     fn native_navigation_cycles_saved_selections_without_editing_the_tree() {
         let mut model = tmux_workspaces_core::Layout::initial("/tmp".into());
         let first = model.pane().unwrap().id.clone();
