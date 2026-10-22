@@ -15,6 +15,15 @@ use tmux_workspaces_store::Error;
 /// anything. A missing directory is an error in this read-only phase. Paths are
 /// kept as native OS strings, including non-UTF-8 Unix paths.
 pub fn library_directory(explicit: Option<&Path>) -> Result<PathBuf, Error> {
+    let path = library_location(explicit)?;
+    path.canonicalize().map_err(|error| Error {
+        path: path.join("layouts.db"),
+        detail: error.to_string(),
+    })
+}
+
+/// Select a library location before first-run creation; perform no writes.
+pub(super) fn library_location(explicit: Option<&Path>) -> Result<PathBuf, Error> {
     resolve(explicit, &|name| std::env::var_os(name), &user_home)
 }
 
@@ -100,7 +109,11 @@ fn resolve(
         detail: "cannot resolve the home directory in the library path".into(),
     })?;
     resolve_path(&expanded)
-        .and_then(|path| path.canonicalize())
+        .and_then(|path| match path.canonicalize() {
+            Ok(path) => Ok(path),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(path),
+            Err(error) => Err(error),
+        })
         .map_err(|error| Error {
             path: expanded.join("layouts.db"),
             detail: error.to_string(),
@@ -330,7 +343,8 @@ mod tests {
             std::env::current_dir().unwrap().canonicalize().unwrap()
         );
         let missing = root.join("missing");
-        assert!(locate(Some(&missing), &settings).is_err());
+        assert_eq!(locate(Some(&missing), &settings).unwrap(), missing);
+        assert!(library_directory(Some(&missing)).is_err());
         assert!(!missing.exists());
         assert_eq!(
             locate(Some(&missing.join("../explicit library")), &settings).unwrap(),
