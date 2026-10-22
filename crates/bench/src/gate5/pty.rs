@@ -28,7 +28,7 @@ impl Reference {
     /// `cols` by `rows` cells that understands `xterm-256color`.
     pub fn attach(server: &TmuxServer, session: &str, cols: u16, rows: u16) -> io::Result<Self> {
         let (master, slave) = open(cols, rows)?;
-        let line = server.shell_command(&["attach-session", "-t", session]);
+        let line = server.shell_command(&["attach-session", "-E", "-t", session]);
         let mut command = Command::new("/bin/sh");
         command
             .args(["-c", &format!("exec {line}")])
@@ -80,6 +80,13 @@ impl Reference {
             bytes,
             reader: Some(reader),
         })
+    }
+
+    /// Write fixture input through the ordinary client's terminal, not send-keys.
+    #[cfg(test)]
+    pub fn send(&self, bytes: &[u8]) -> io::Result<()> {
+        use std::io::Write;
+        (&self.master).write_all(bytes)
     }
 
     /// Returns how many bytes the client has written so far.
