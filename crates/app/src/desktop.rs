@@ -20,6 +20,8 @@ mod layout_edit;
 mod name;
 use chooser::{Choice, SessionChooser};
 use layout_edit::{Create, Selection};
+mod icons;
+mod panel;
 mod split_resize;
 mod terminal;
 mod theme;
@@ -47,67 +49,69 @@ pub fn run(directory: Option<PathBuf>) -> Result<(), String> {
     let source = crate::sessions::source_socket(None).map_err(|e| e.to_string());
     let failure = Rc::new(RefCell::new(None));
     let opened = Rc::clone(&failure);
-    application().run(move |cx: &mut App| {
-        if cfg!(target_os = "linux") && cx.graphical_environment().is_none() {
-            *opened.borrow_mut() =
-                Some("the workspace browser requires a graphical desktop".into());
-            // Linux's event loop resets its stop flag when run() begins, after
-            // this launch callback. Request exit on its first dispatched task.
-            cx.spawn(async |cx| cx.update(|cx| cx.quit())).detach();
-            return;
-        }
-        cx.bind_keys([
-            KeyBinding::new("cmd-q", Quit, None),
-            KeyBinding::new("cmd-n", NewWindow, None),
-            KeyBinding::new("cmd-o", OpenLibrary, None),
-        ]);
-        // The source chooses its library at launch; keep the native choice in
-        // the application menu rather than in the panel.
-        cx.on_action(|_: &OpenLibrary, cx| {
-            if let Some(window) = cx
-                .active_window()
-                .and_then(|window| window.downcast::<Browser>())
-            {
-                cx.defer(move |cx| {
-                    let _ = window.update(cx, |browser, _, cx| browser.pick_library(cx));
-                });
+    application()
+        .with_assets(icons::Assets)
+        .run(move |cx: &mut App| {
+            if cfg!(target_os = "linux") && cx.graphical_environment().is_none() {
+                *opened.borrow_mut() =
+                    Some("the workspace browser requires a graphical desktop".into());
+                // Linux's event loop resets its stop flag when run() begins, after
+                // this launch callback. Request exit on its first dispatched task.
+                cx.spawn(async |cx| cx.update(|cx| cx.quit())).detach();
+                return;
             }
+            cx.bind_keys([
+                KeyBinding::new("cmd-q", Quit, None),
+                KeyBinding::new("cmd-n", NewWindow, None),
+                KeyBinding::new("cmd-o", OpenLibrary, None),
+            ]);
+            // The source chooses its library at launch; keep the native choice in
+            // the application menu rather than in the panel.
+            cx.on_action(|_: &OpenLibrary, cx| {
+                if let Some(window) = cx
+                    .active_window()
+                    .and_then(|window| window.downcast::<Browser>())
+                {
+                    cx.defer(move |cx| {
+                        let _ = window.update(cx, |browser, _, cx| browser.pick_library(cx));
+                    });
+                }
+            });
+            cx.on_action(|_: &Quit, cx| cx.quit());
+            cx.on_action(|_: &NewWindow, cx| {
+                if let Some(window) = cx
+                    .active_window()
+                    .and_then(|window| window.downcast::<Browser>())
+                {
+                    // Dispatch currently borrows the originating window. Open after it
+                    // returns, retaining that window's identity even if focus changes.
+                    cx.defer(move |cx| {
+                        let _ = window.update(cx, |browser, _, cx| browser.open_another(cx));
+                    });
+                }
+            });
+            cx.set_menus(vec![Menu {
+                name: "tmux-workspaces".into(),
+                items: vec![
+                    MenuItem::action("New Window", NewWindow),
+                    MenuItem::action("Open Library…", OpenLibrary),
+                    MenuItem::action("Quit tmux-workspaces", Quit),
+                ],
+                disabled: false,
+            }]);
+            cx.on_window_closed(|cx, _| {
+                if cx.windows().is_empty() {
+                    cx.quit();
+                }
+            })
+            .detach();
+            if let Err(error) = open_browser(directory, source, cx) {
+                *opened.borrow_mut() = Some(format!("cannot open window: {error}"));
+                cx.spawn(async |cx| cx.update(|cx| cx.quit())).detach();
+                return;
+            }
+            cx.activate(true);
         });
-        cx.on_action(|_: &Quit, cx| cx.quit());
-        cx.on_action(|_: &NewWindow, cx| {
-            if let Some(window) = cx
-                .active_window()
-                .and_then(|window| window.downcast::<Browser>())
-            {
-                // Dispatch currently borrows the originating window. Open after it
-                // returns, retaining that window's identity even if focus changes.
-                cx.defer(move |cx| {
-                    let _ = window.update(cx, |browser, _, cx| browser.open_another(cx));
-                });
-            }
-        });
-        cx.set_menus(vec![Menu {
-            name: "tmux-workspaces".into(),
-            items: vec![
-                MenuItem::action("New Window", NewWindow),
-                MenuItem::action("Open Library…", OpenLibrary),
-                MenuItem::action("Quit tmux-workspaces", Quit),
-            ],
-            disabled: false,
-        }]);
-        cx.on_window_closed(|cx, _| {
-            if cx.windows().is_empty() {
-                cx.quit();
-            }
-        })
-        .detach();
-        if let Err(error) = open_browser(directory, source, cx) {
-            *opened.borrow_mut() = Some(format!("cannot open window: {error}"));
-            cx.spawn(async |cx| cx.update(|cx| cx.quit())).detach();
-            return;
-        }
-        cx.activate(true);
-    });
     failure.borrow_mut().take().map_or(Ok(()), Err)
 }
 
@@ -153,6 +157,12 @@ struct EditingName {
     tab: bool,
     field: gpui::Entity<NameField>,
     _events: gpui::Subscription,
+}
+
+#[derive(Clone, Copy)]
+enum Popover {
+    Workspace,
+    Configure,
 }
 
 #[derive(Clone)]
@@ -284,6 +294,8 @@ struct Browser {
     loading: bool,
     workspace_menu: bool,
     configure_menu: bool,
+    icon_picker: bool,
+    menu_at: Option<gpui::Point<gpui::Pixels>>,
     reset_focus: bool,
     navigation: Option<gpui::FocusHandle>,
     updates: Option<Task<()>>,
@@ -759,7 +771,7 @@ impl Browser {
         cx.notify();
     }
 
-    fn tab_options(&self, cells: Cells, cx: &mut Context<Self>) -> AnyElement {
+    fn tab_options(&self, cx: &mut Context<Self>) -> gpui::Div {
         let mut options =
             div()
                 .flex()
@@ -832,17 +844,11 @@ impl Browser {
         }
         for (index, (label, action, key)) in actions.into_iter().enumerate() {
             let Some(label) = label else {
-                options = options.child(
-                    cells
-                        .row()
-                        .text_color(rgb(theme::OUTLINE))
-                        .child("─".repeat(theme::SIDEBAR_COLUMNS - 2)),
-                );
+                options = options.child(panel::menu_rule());
                 continue;
             };
             options = options.child(
-                menu_row(
-                    cells,
+                panel::menu_item(
                     SharedString::from(format!("tab-action-{index}")),
                     None,
                     label,
@@ -854,7 +860,217 @@ impl Browser {
                 })),
             );
         }
-        options.into_any_element()
+        options
+    }
+
+    fn open_menu(
+        &mut self,
+        menu: Popover,
+        at: gpui::Point<gpui::Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.close_menus();
+        self.menu_at = Some(at);
+        match menu {
+            Popover::Workspace => self.workspace_menu = true,
+            Popover::Configure => self.configure_menu = true,
+        }
+        if let Some(focus) = &self.navigation {
+            window.focus(focus, cx);
+        }
+        cx.notify();
+    }
+
+    fn close_menus(&mut self) {
+        self.tab_menu = None;
+        self.workspace_menu = false;
+        self.configure_menu = false;
+        self.icon_picker = false;
+    }
+
+    /// Switch workspaces, then act on the current one.
+    fn workspace_options(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let mut menu = panel::menu().child(panel::menu_heading("Workspaces"));
+        let Some(model) = self.layout.as_ref().map(WindowLayout::model) else {
+            return menu;
+        };
+        for space in &model.workspaces {
+            let id = space.id.clone();
+            let current = model.selected == id;
+            let count = match space.tabs.len() {
+                0 => "empty".to_owned(),
+                1 => "1 tab".to_owned(),
+                count => format!("{count} tabs"),
+            };
+            menu = menu.child(
+                panel::menu_item(
+                    SharedString::from(format!("workspace-{id}")),
+                    icons::workspace(space.symbol.as_deref(), space.icon.as_deref())
+                        .map(|name| (name, if current { theme::ACCENT } else { theme::MUTED })),
+                    space.name.clone(),
+                    if current {
+                        theme::ACTIVE_TEXT
+                    } else {
+                        theme::NORMAL
+                    },
+                    Some(count),
+                )
+                .when(current, |el| el.font_weight(gpui::FontWeight::SEMIBOLD))
+                .on_click(cx.listener(move |browser, _, window, cx| {
+                    if let Some(layout) = &mut browser.layout {
+                        layout.model_mut().choose_workspace(&id);
+                    }
+                    browser.close_menus();
+                    if let Some(focus) = &browser.navigation {
+                        window.focus(focus, cx);
+                    }
+                    cx.notify();
+                })),
+            );
+        }
+        let Some(space) = model.workspace() else {
+            return menu;
+        };
+        let reason = if !space.tabs.is_empty() {
+            Some("has tabs")
+        } else if model.workspaces.len() == 1 {
+            Some("last one")
+        } else {
+            None
+        };
+        let expected = space.id.clone();
+        menu.child(panel::menu_rule())
+            .child(panel::menu_heading("This workspace"))
+            .child(
+                panel::menu_item(
+                    "rename-workspace",
+                    Some(("pencil", theme::MUTED)),
+                    "Rename",
+                    theme::NORMAL,
+                    Some("⌘⇧R".into()),
+                )
+                .on_click(cx.listener(|browser, _, window, cx| {
+                    browser.close_menus();
+                    browser.begin_name(false, window, cx)
+                })),
+            )
+            .child(
+                panel::menu_item(
+                    "choose-icon",
+                    Some(("sparkles", theme::MUTED)),
+                    "Choose icon…",
+                    theme::NORMAL,
+                    None,
+                )
+                .on_click(cx.listener(|browser, _, _, cx| {
+                    browser.workspace_menu = false;
+                    browser.icon_picker = true;
+                    cx.notify();
+                })),
+            )
+            .child(
+                panel::menu_item(
+                    "delete-workspace",
+                    Some(("x", theme::MUTED)),
+                    "Delete",
+                    if reason.is_some() {
+                        theme::MUTED
+                    } else {
+                        theme::DANGER
+                    },
+                    reason.map(str::to_owned),
+                )
+                .when(reason.is_none(), |el| {
+                    el.on_click(cx.listener(move |browser, _, window, cx| {
+                        browser.close_menus();
+                        browser.delete_workspace(&expected, window, cx);
+                    }))
+                }),
+            )
+            .child(panel::menu_rule())
+            .child(
+                panel::menu_item(
+                    "new-workspace",
+                    Some(("plus", theme::ACCENT)),
+                    "New workspace",
+                    theme::NORMAL,
+                    Some("⌘⇧N".into()),
+                )
+                .on_click(cx.listener(|browser, _, window, cx| {
+                    browser.close_menus();
+                    browser.begin_workspace(window, cx)
+                })),
+            )
+    }
+
+    /// A grid of icons for the current workspace, and the plain number.
+    fn icon_picker(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let current = self
+            .layout
+            .as_ref()
+            .and_then(|layout| layout.model().workspace())
+            .and_then(|space| icons::workspace(space.symbol.as_deref(), space.icon.as_deref()));
+        let mut grid = div()
+            .flex()
+            .flex_wrap()
+            .gap(px(4.0))
+            .w(px(8.0 * 32.0))
+            .p(px(4.0));
+        for name in icons::WORKSPACE {
+            let chosen = current == Some(*name);
+            grid = grid.child(
+                div()
+                    .id(SharedString::from(format!("icon-{name}")))
+                    .size(px(28.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(6.0))
+                    .cursor_pointer()
+                    .when(chosen, |el| el.bg(rgb(theme::ACTIVE)))
+                    .hover(|el| el.bg(rgb(theme::ACTIVE)))
+                    .child(panel::icon(
+                        name,
+                        16.0,
+                        if chosen { theme::ACCENT } else { theme::NORMAL },
+                    ))
+                    .on_click(cx.listener(move |browser, _, _, cx| {
+                        browser.set_symbol(Some(name), cx);
+                    })),
+            );
+        }
+        panel::menu()
+            .child(panel::menu_heading("Choose icon"))
+            .child(grid)
+            .child(panel::menu_rule())
+            .child(
+                panel::menu_item(
+                    "icon-number",
+                    None,
+                    "Show number instead",
+                    theme::NORMAL,
+                    None,
+                )
+                .on_click(cx.listener(|browser, _, _, cx| browser.set_symbol(None, cx))),
+            )
+    }
+
+    fn set_symbol(&mut self, symbol: Option<&str>, cx: &mut Context<Self>) {
+        self.close_menus();
+        if self.saving || self.save_failed {
+            return;
+        }
+        if let Some(update) = self.library.as_ref().and_then(Library::take_update) {
+            self.apply(update);
+        }
+        let Some(layout) = &mut self.layout else {
+            return;
+        };
+        if layout.model_mut().set_workspace_symbol(symbol) {
+            self.save(cx);
+        }
+        cx.notify();
     }
 
     fn open_terminal(&mut self, pane: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -1463,294 +1679,154 @@ impl Render for Browser {
             cx.text_system(),
             &terminal::appearance(),
         ));
-        let columns = theme::SIDEBAR_COLUMNS;
+        let sidebar_width = cells.width(theme::SIDEBAR_COLUMNS);
         let mut list = div()
             .id("tabs")
             .flex_1()
             .min_h_0()
             .flex()
             .flex_col()
+            .gap(px(1.0))
             .overflow_y_scroll()
             .track_scroll(&self.tabs_scroll);
         let mut heading = "Workspaces".to_owned();
+        let mut heading_icon: Option<&'static str> = None;
         let mut context: (String, Option<String>) = (heading.clone(), None);
         let mut hints: Vec<&str> = Vec::new();
         let mut message: Option<String> = None;
-        let mut title: Option<String> = None;
         let mut content = div()
             .flex_1()
             .min_w_0()
             .h_full()
             .overflow_hidden()
             .bg(rgb(theme::SURFACE));
-        let menu_open = self.tab_menu.is_some() || self.workspace_menu || self.configure_menu;
         if let Some(layout) = &self.layout {
             let model = layout.model();
             if let Some(space) = model.workspace() {
                 heading = space.name.clone();
+                heading_icon = icons::workspace(space.symbol.as_deref(), space.icon.as_deref());
                 context = (space.name.clone(), Some("no tabs".into()));
                 hints = vec!["⌘T new", "⌘⇧A attach"];
-                if self.tab_menu.is_some() {
-                    list = list.child(self.tab_options(cells, cx));
-                    if let Some(menu) = &self.tab_menu {
-                        let number = space
-                            .tabs
-                            .iter()
-                            .position(|tab| tab.id == menu.tab.id)
-                            .map_or(0, |index| index + 1);
-                        title = Some(format!("{number} {}", menu.tab.name));
-                    }
-                } else if self.configure_menu {
-                    list = list
-                        .child(
-                            cells
-                                .row()
-                                .text_color(rgb(theme::OUTLINE))
-                                .child("─".repeat(columns - 2)),
-                        )
-                        .child(
-                            menu_row(
-                                cells,
-                                "detach".into(),
-                                None,
-                                "Detach".into(),
-                                theme::NORMAL,
-                                None,
-                            )
-                            .on_click(|_, window, _| window.remove_window()),
-                        );
-                } else if self.workspace_menu {
-                    for (index, space) in model.workspaces.iter().enumerate() {
-                        let id = space.id.clone();
-                        let current = model.selected == id;
-                        let count = match space.tabs.len() {
-                            0 => "empty".to_owned(),
-                            1 => "1 tab".to_owned(),
-                            count => format!("{count} tabs"),
-                        };
-                        list = list.child(
-                            menu_row(
-                                cells,
-                                SharedString::from(format!("workspace-{id}")),
-                                Some((
-                                    theme::slot_label(space.icon.as_deref(), index),
-                                    if current { theme::ACCENT } else { theme::MUTED },
-                                )),
-                                space.name.clone(),
-                                theme::NORMAL,
-                                Some(count),
-                            )
-                            .when(current, |el| el.font_weight(gpui::FontWeight::BOLD))
-                            .on_click(cx.listener(
-                                move |browser, _, window, cx| {
-                                    if let Some(layout) = &mut browser.layout {
-                                        layout.model_mut().choose_workspace(&id);
+                for (index, tab) in space.tabs.iter().enumerate() {
+                    let id = tab.id.clone();
+                    let active = space.selected == id;
+                    let editing = active && self.editing.as_ref().is_some_and(|edit| edit.tab);
+                    let panes = tab.tree.leaves().len().min(6);
+                    list = list.child(
+                        panel::row(SharedString::from(format!("tab-{id}")), active)
+                            .on_mouse_down(
+                                gpui::MouseButton::Right,
+                                cx.listener({
+                                    let id = id.clone();
+                                    move |browser, event: &gpui::MouseDownEvent, window, cx| {
+                                        browser.menu_at = Some(event.position);
+                                        browser.open_tab_menu(&id, window, cx)
                                     }
-                                    browser.workspace_menu = false;
-                                    if let Some(focus) = &browser.navigation {
-                                        window.focus(focus, cx);
-                                    }
-                                    cx.notify();
-                                },
-                            )),
-                        );
-                    }
-                    list = list.child(
-                        cells
-                            .row()
-                            .text_color(rgb(theme::MUTED))
-                            .child("THIS WORKSPACE"),
-                    );
-                    list = list.child(
-                        menu_row(
-                            cells,
-                            "rename-workspace".into(),
-                            None,
-                            "Rename".into(),
-                            theme::NORMAL,
-                            Some("⌘⇧R".into()),
-                        )
-                        .on_click(cx.listener(|browser, _, window, cx| {
-                            browser.begin_name(false, window, cx)
-                        })),
-                    );
-                    let reason = if !space.tabs.is_empty() {
-                        Some("has tabs")
-                    } else if model.workspaces.len() == 1 {
-                        Some("last one")
-                    } else {
-                        None
-                    };
-                    let expected = space.id.clone();
-                    list = list.child(
-                        menu_row(
-                            cells,
-                            "delete-workspace".into(),
-                            None,
-                            "Delete".into(),
-                            if reason.is_some() {
-                                theme::MUTED
+                                }),
+                            )
+                            .child(
+                                div()
+                                    .w(px(14.0))
+                                    .flex_shrink_0()
+                                    .text_size(px(12.0))
+                                    .text_color(rgb(if active {
+                                        theme::ACCENT
+                                    } else {
+                                        theme::MUTED
+                                    }))
+                                    .child((index + 1).to_string()),
+                            )
+                            .child(if editing {
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .child(self.name_editor(cx))
+                                    .into_any_element()
                             } else {
-                                theme::DANGER
-                            },
-                            reason.map(str::to_owned),
-                        )
-                        .when(reason.is_none(), |el| {
-                            el.on_click(cx.listener(move |browser, _, window, cx| {
-                                browser.delete_workspace(&expected, window, cx);
-                            }))
-                        }),
-                    );
-                    list = list
-                        .child(
-                            cells
-                                .row()
-                                .text_color(rgb(theme::OUTLINE))
-                                .child("─".repeat(columns - 2)),
-                        )
-                        .child(
-                            menu_row(
-                                cells,
-                                "new-workspace".into(),
-                                Some(("+".into(), theme::ACCENT)),
-                                "New workspace".into(),
-                                theme::NORMAL,
-                                Some("⌘⇧N".into()),
-                            )
-                            .on_click(cx.listener(
-                                |browser, _, window, cx| browser.begin_workspace(window, cx),
-                            )),
-                        );
-                } else {
-                    for (index, tab) in space.tabs.iter().enumerate() {
-                        let id = tab.id.clone();
-                        let active = space.selected == id;
-                        let number = (index + 1).to_string();
-                        let glyphs = "▮".repeat(tab.tree.leaves().len().min(6));
-                        let tail = glyphs.chars().count() + if active { 3 } else { 1 };
-                        let room = columns.saturating_sub(3 + number.len() + tail);
-                        let editing = active && self.editing.as_ref().is_some_and(|edit| edit.tab);
-                        list = list.child(
-                            cells
-                                .row()
-                                .id(SharedString::from(format!("tab-{id}")))
-                                .on_mouse_down(
-                                    gpui::MouseButton::Right,
-                                    cx.listener({
-                                        let id = id.clone();
-                                        move |browser, _, window, cx| {
-                                            browser.open_tab_menu(&id, window, cx)
-                                        }
-                                    }),
-                                )
-                                .cursor_pointer()
-                                .when(active, |el| el.bg(rgb(theme::ACTIVE)))
-                                .child(
-                                    div()
-                                        .flex_shrink_0()
-                                        .text_color(rgb(if active {
-                                            theme::ACCENT
-                                        } else {
-                                            theme::MUTED
-                                        }))
-                                        .child(number),
-                                )
-                                .child(div().flex_shrink_0().w(cells.width(1)))
-                                .child(if editing {
-                                    div()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .child(self.name_editor(cx))
-                                        .into_any_element()
-                                } else {
-                                    let tab_id = id.clone();
-                                    div()
-                                        .id(SharedString::from(format!("tab-name-{id}")))
-                                        .flex_1()
-                                        .min_w_0()
-                                        .when(active, |el| {
-                                            el.text_color(rgb(theme::ACTIVE_TEXT))
-                                                .font_weight(gpui::FontWeight::BOLD)
-                                        })
-                                        .child(theme::fit(&tab.name, room))
+                                let tab_id = id.clone();
+                                div()
+                                    .id(SharedString::from(format!("tab-name-{id}")))
+                                    .flex_1()
+                                    .min_w_0()
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .when(active, |el| {
+                                        el.text_color(rgb(theme::ACTIVE_TEXT))
+                                            .font_weight(gpui::FontWeight::MEDIUM)
+                                    })
+                                    .child(tab.name.clone())
+                                    .on_click(cx.listener(
+                                        move |browser, event: &gpui::ClickEvent, window, cx| {
+                                            cx.stop_propagation();
+                                            let active =
+                                                browser.layout.as_ref().is_some_and(|layout| {
+                                                    layout
+                                                        .model()
+                                                        .tab()
+                                                        .is_some_and(|tab| tab.id == tab_id)
+                                                });
+                                            if event.click_count() == 1 {
+                                                browser.name_click = Some((tab_id.clone(), active));
+                                            }
+                                            let edit = event.click_count() == 2
+                                                && browser.name_click.as_ref().is_some_and(
+                                                    |(id, active)| id == &tab_id && *active,
+                                                );
+                                            if let Some(layout) = &mut browser.layout {
+                                                layout.model_mut().choose_tab(&tab_id);
+                                            }
+                                            if edit {
+                                                browser.begin_name(true, window, cx);
+                                            } else if let Some(focus) = &browser.navigation {
+                                                window.focus(focus, cx);
+                                            }
+                                            cx.notify();
+                                        },
+                                    ))
+                                    .into_any_element()
+                            })
+                            .child(div().flex().flex_shrink_0().gap(px(2.0)).children(
+                                (0..panes).map(|_| {
+                                    panel::pane_mark(if active {
+                                        theme::NORMAL
+                                    } else {
+                                        theme::MUTED
+                                    })
+                                }),
+                            ))
+                            .when(active && !editing, |el| {
+                                let id = id.clone();
+                                el.child(
+                                    panel::icon_button("tab-options", "ellipsis", theme::MUTED)
                                         .on_click(cx.listener(
                                             move |browser, event: &gpui::ClickEvent, window, cx| {
                                                 cx.stop_propagation();
-                                                let active =
-                                                    browser.layout.as_ref().is_some_and(|layout| {
-                                                        layout
-                                                            .model()
-                                                            .tab()
-                                                            .is_some_and(|tab| tab.id == tab_id)
-                                                    });
-                                                if event.click_count() == 1 {
-                                                    browser.name_click =
-                                                        Some((tab_id.clone(), active));
-                                                }
-                                                let edit = event.click_count() == 2
-                                                    && browser.name_click.as_ref().is_some_and(
-                                                        |(id, active)| id == &tab_id && *active,
-                                                    );
-                                                if let Some(layout) = &mut browser.layout {
-                                                    layout.model_mut().choose_tab(&tab_id);
-                                                }
-                                                if edit {
-                                                    browser.begin_name(true, window, cx);
-                                                } else if let Some(focus) = &browser.navigation {
-                                                    window.focus(focus, cx);
-                                                }
-                                                cx.notify();
+                                                browser.menu_at = Some(event.position());
+                                                browser.open_tab_menu(&id, window, cx);
                                             },
-                                        ))
-                                        .into_any_element()
-                                })
-                                .child(
-                                    div()
-                                        .flex_shrink_0()
-                                        .text_color(rgb(theme::MUTED))
-                                        .child(glyphs),
+                                        )),
                                 )
-                                .when(active && !editing, |el| {
-                                    let id = id.clone();
-                                    el.child(div().flex_shrink_0().w(cells.width(1))).child(
-                                        div()
-                                            .id("tab-options")
-                                            .flex_shrink_0()
-                                            .text_color(rgb(theme::MUTED))
-                                            .child("⋯")
-                                            .on_click(cx.listener(
-                                                move |browser, _, window, cx| {
-                                                    cx.stop_propagation();
-                                                    browser.open_tab_menu(&id, window, cx);
-                                                },
-                                            )),
-                                    )
-                                })
-                                .on_click(cx.listener(move |browser, _, window, cx| {
-                                    if let Some(layout) = &mut browser.layout {
-                                        layout.model_mut().choose_tab(&id);
-                                    }
-                                    if let Some(focus) = &browser.navigation {
-                                        window.focus(focus, cx);
-                                    }
-                                    cx.notify();
-                                })),
-                        );
-                    }
-                    if space.tabs.is_empty() {
-                        list = list.child(
-                            cells
-                                .row()
-                                .id("no-tabs")
-                                .pl(cells.width(3))
-                                .cursor_pointer()
-                                .text_color(rgb(theme::MUTED))
-                                .child("no tabs yet")
-                                .on_click(cx.listener(|browser, _, window, cx| {
-                                    browser.create(Create::Tab, window, cx)
-                                })),
-                        );
-                    }
+                            })
+                            .on_click(cx.listener(move |browser, _, window, cx| {
+                                if let Some(layout) = &mut browser.layout {
+                                    layout.model_mut().choose_tab(&id);
+                                }
+                                if let Some(focus) = &browser.navigation {
+                                    window.focus(focus, cx);
+                                }
+                                cx.notify();
+                            })),
+                    );
+                }
+                if space.tabs.is_empty() {
+                    list = list.child(
+                        panel::row("no-tabs", false)
+                            .text_color(rgb(theme::MUTED))
+                            .child("No tabs yet")
+                            .on_click(cx.listener(|browser, _, window, cx| {
+                                browser.create(Create::Tab, window, cx)
+                            })),
+                    );
                 }
             }
             if let Some(tab) = model.tab() {
@@ -1788,10 +1864,11 @@ impl Render for Browser {
             }
         } else if !self.loading {
             content = content.child(
-                cells
-                    .row()
+                div()
+                    .p(px(16.0))
+                    .font_family(panel::FONT)
                     .text_color(rgb(theme::MUTED))
-                    .child("Open a folder containing layouts.db: ⌘O"),
+                    .child("Open a folder containing layouts.db with ⌘O."),
             );
             message = Some("No library open".into());
         } else {
@@ -1806,194 +1883,122 @@ impl Render for Browser {
         if let Some(error) = &self.error {
             message = Some(error.clone());
         }
-        // The status row's left slot names the open menu, editor or chooser,
-        // and its centre the keys for that mode, as the source does.
         if self.editing.is_some() {
             context = ("Rename".into(), Some("type a new name".into()));
             hints = vec!["⏎ save", "esc cancel"];
         } else if self.chooser.is_some() {
             context = ("Attach session".into(), None);
             hints = vec!["type to filter", "↑↓ move", "⏎ open", "esc back"];
-        } else if self.tab_menu.is_some() {
-            context = ("Tab".into(), None);
-            hints = vec!["esc back"];
-        } else if self.workspace_menu {
-            context = ("Workspaces".into(), None);
-            hints = vec!["esc back"];
-        } else if self.configure_menu {
-            context = ("Configure".into(), None);
-            hints = vec!["esc back"];
         }
-        let back = cx.listener(|browser, _, window, cx| {
-            browser.tab_menu = None;
-            browser.workspace_menu = false;
-            browser.configure_menu = false;
-            if let Some(focus) = &browser.navigation {
-                window.focus(focus, cx);
-            }
-            cx.notify();
-        });
         let workspace_edit = self.editing.as_ref().is_some_and(|edit| !edit.tab);
-        let top = if menu_open {
-            cells
-                .row()
-                .bg(rgb(theme::HEADER))
-                .justify_between()
-                .child(
-                    div()
-                        .id("menu-back")
-                        .cursor_pointer()
-                        .text_color(rgb(theme::ACCENT))
-                        .child("‹ Back")
-                        .on_click(back),
-                )
-                .child(div().text_color(rgb(theme::MUTED)).child("esc"))
-                .into_any_element()
-        } else if workspace_edit {
-            cells
-                .row()
-                .bg(rgb(theme::HEADER))
-                .child(div().flex_1().min_w_0().child(self.name_editor(cx)))
-                .into_any_element()
-        } else {
-            let icon = self
-                .layout
-                .as_ref()
-                .and_then(|layout| layout.model().workspace())
-                .and_then(|space| space.icon.clone())
-                .filter(|icon| !icon.is_empty() && !icon.chars().any(char::is_control));
-            let room = (columns - 4)
-                .saturating_sub(icon.as_ref().map_or(0, |icon| icon.chars().count() + 1));
-            cells
-                .row()
-                .bg(rgb(theme::HEADER))
-                .child(
-                    div()
-                        .id("workspace-name")
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .gap(cells.width(1))
-                        .font_weight(gpui::FontWeight::BOLD)
-                        .cursor_pointer()
-                        .when_some(icon, |el, icon| {
-                            el.child(div().text_color(rgb(theme::ACCENT)).child(icon))
-                        })
-                        .child(theme::fit(&heading, room))
-                        .on_mouse_down(
-                            gpui::MouseButton::Right,
-                            cx.listener(|browser, _, window, cx| {
-                                browser.tab_menu = None;
-                                browser.configure_menu = false;
-                                browser.workspace_menu = true;
-                                if let Some(focus) = &browser.navigation {
-                                    window.focus(focus, cx);
-                                }
-                                cx.stop_propagation();
-                                cx.notify();
-                            }),
-                        )
-                        .on_click(
-                            cx.listener(|browser, event: &gpui::ClickEvent, window, cx| {
-                                if event.click_count() == 2 {
-                                    browser.begin_name(false, window, cx);
-                                    cx.notify();
-                                }
-                            }),
-                        ),
-                )
-                .child(
-                    div()
-                        .id("workspace-menu")
-                        .flex_shrink_0()
-                        .w(cells.width(2))
-                        .cursor_pointer()
-                        .text_color(rgb(theme::MUTED))
-                        .child(" ▾")
-                        .on_click(cx.listener(|browser, _, window, cx| {
-                            browser.tab_menu = None;
-                            browser.configure_menu = false;
-                            browser.workspace_menu = !browser.workspace_menu;
-                            if let Some(focus) = &browser.navigation {
-                                window.focus(focus, cx);
+        let header = div()
+            .id("workspace-header")
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .gap(px(8.0))
+            .h(px(36.0))
+            .px(px(12.0))
+            .bg(rgb(theme::HEADER))
+            .when(workspace_edit, |el| {
+                el.child(div().flex_1().min_w_0().child(self.name_editor(cx)))
+            })
+            .when(!workspace_edit, |el| {
+                el.cursor_pointer()
+                    .hover(|el| el.bg(rgb(theme::ACTIVE)))
+                    .when_some(heading_icon, |el, name| {
+                        el.child(panel::icon(name, 16.0, theme::ACCENT))
+                    })
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .child(heading.clone()),
+                    )
+                    .child(panel::icon("chevron-down", 14.0, theme::MUTED))
+                    .on_mouse_down(
+                        gpui::MouseButton::Right,
+                        cx.listener(|browser, event: &gpui::MouseDownEvent, window, cx| {
+                            browser.open_menu(Popover::Workspace, event.position, window, cx);
+                            cx.stop_propagation();
+                        }),
+                    )
+                    .on_click(
+                        cx.listener(|browser, event: &gpui::ClickEvent, window, cx| {
+                            if event.click_count() == 2 {
+                                browser.close_menus();
+                                browser.begin_name(false, window, cx);
+                            } else if browser.workspace_menu {
+                                browser.close_menus();
+                            } else {
+                                browser.open_menu(Popover::Workspace, event.position(), window, cx);
                             }
                             cx.notify();
-                        })),
-                )
-                .into_any_element()
-        };
-        let label = if menu_open {
-            let mut row = cells.row().text_color(rgb(theme::MUTED));
-            if self.tab_menu.is_some() {
-                row = row.child("TAB · ").child(
-                    div()
-                        .min_w_0()
-                        .text_color(rgb(theme::NORMAL))
-                        .child(theme::fit(title.as_deref().unwrap_or(""), columns - 8)),
-                );
-            } else if self.workspace_menu {
-                row = row.child("WORKSPACES");
-            } else {
-                row = row.child("CONFIGURE");
-            }
-            row
-        } else {
-            cells
-                .row()
-                .justify_between()
-                .text_color(rgb(theme::MUTED))
-                .child("TABS")
-                .child(
-                    div()
-                        .id("new-tab")
-                        .cursor_pointer()
-                        .text_color(rgb(theme::ACCENT))
-                        .font_weight(gpui::FontWeight::BOLD)
-                        .child("+")
-                        .on_click(cx.listener(|browser, _, window, cx| {
-                            browser.create(Create::Tab, window, cx)
-                        })),
-                )
-        };
-        let editing = self.editing.is_some() && !menu_open;
-        let mut slots = cells.row().gap(cells.width(1));
+                        }),
+                    )
+            });
+        let editing = self.editing.is_some();
+        // One-click workspace switching along the bottom, as before, now with
+        // each workspace's icon.
+        let mut slots = div()
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .gap(px(4.0))
+            .h(px(40.0))
+            .px(px(6.0));
         if let Some(layout) = &self.layout {
             let model = layout.model();
-            let capacity = theme::slot_count(columns);
+            let capacity = ((f32::from(sidebar_width) - 12.0) / 32.0).floor().max(1.0) as usize;
             let overflow = model.workspaces.len() > capacity;
             let shown = if overflow { capacity - 1 } else { capacity };
             for (index, space) in model.workspaces.iter().take(shown).enumerate() {
                 let id = space.id.clone();
                 let current = model.selected == id;
+                let glyph = icons::workspace(space.symbol.as_deref(), space.icon.as_deref());
                 slots = slots.child(
                     div()
                         .id(SharedString::from(format!("workspace-slot-{id}")))
                         .flex_shrink_0()
-                        .w(cells.width(3))
+                        .size(px(28.0))
                         .flex()
+                        .items_center()
                         .justify_center()
+                        .rounded(px(6.0))
                         .cursor_pointer()
-                        .when(current, |el| {
-                            el.bg(rgb(theme::ACTIVE)).text_color(rgb(theme::ACCENT))
+                        .when(current, |el| el.bg(rgb(theme::ACTIVE)))
+                        .when(!current, |el| el.hover(|el| el.bg(rgb(theme::HEADER))))
+                        .map(|el| match glyph {
+                            Some(name) => el.child(panel::icon(
+                                name,
+                                16.0,
+                                if current { theme::ACCENT } else { theme::MUTED },
+                            )),
+                            None => el
+                                .text_size(px(12.0))
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .text_color(rgb(if current { theme::ACCENT } else { theme::MUTED }))
+                                .child((index + 1).to_string()),
                         })
-                        .when(!current, |el| el.text_color(rgb(theme::MUTED)))
-                        .child(theme::slot_label(space.icon.as_deref(), index))
                         .on_mouse_down(
                             gpui::MouseButton::Right,
                             cx.listener({
                                 let id = id.clone();
-                                move |browser, _, window, cx| {
+                                move |browser, event: &gpui::MouseDownEvent, window, cx| {
                                     if let Some(layout) = &mut browser.layout {
                                         layout.model_mut().choose_workspace(&id);
                                     }
-                                    browser.tab_menu = None;
-                                    browser.configure_menu = false;
-                                    browser.workspace_menu = true;
-                                    if let Some(focus) = &browser.navigation {
-                                        window.focus(focus, cx);
-                                    }
+                                    browser.open_menu(
+                                        Popover::Workspace,
+                                        event.position,
+                                        window,
+                                        cx,
+                                    );
                                     cx.stop_propagation();
-                                    cx.notify();
                                 }
                             }),
                         )
@@ -2001,9 +2006,7 @@ impl Render for Browser {
                             if let Some(layout) = &mut browser.layout {
                                 layout.model_mut().choose_workspace(&id);
                             }
-                            browser.workspace_menu = false;
-                            browser.configure_menu = false;
-                            browser.tab_menu = None;
+                            browser.close_menus();
                             if let Some(focus) = &browser.navigation {
                                 window.focus(focus, cx);
                             }
@@ -2013,98 +2016,118 @@ impl Render for Browser {
             }
             if overflow {
                 slots = slots.child(
-                    div()
-                        .id("workspace-more")
-                        .flex_shrink_0()
-                        .w(cells.width(3))
-                        .flex()
-                        .justify_center()
-                        .cursor_pointer()
-                        .text_color(rgb(theme::MUTED))
-                        .child("…")
-                        .on_click(cx.listener(|browser, _, window, cx| {
-                            browser.tab_menu = None;
-                            browser.configure_menu = false;
-                            browser.workspace_menu = true;
-                            if let Some(focus) = &browser.navigation {
-                                window.focus(focus, cx);
-                            }
-                            cx.notify();
-                        })),
+                    panel::icon_button("workspace-more", "ellipsis", theme::MUTED).on_click(
+                        cx.listener(|browser, event: &gpui::ClickEvent, window, cx| {
+                            browser.open_menu(Popover::Workspace, event.position(), window, cx);
+                        }),
+                    ),
                 );
             }
         }
         let sidebar = div()
             .id("sidebar")
-            .w(cells.width(columns))
+            .w(sidebar_width)
             .flex_shrink_0()
             .h_full()
             .flex()
             .flex_col()
             .bg(rgb(theme::PANEL))
+            .font_family(panel::FONT)
+            .text_size(px(13.0))
+            .line_height(px(18.0))
             .text_color(rgb(theme::NORMAL))
-            .child(top)
-            .child(if editing {
-                cells
-                    .row()
-                    .text_color(rgb(theme::ACCENT))
-                    .child("Enter save · Esc cancel")
-                    .into_any_element()
-            } else {
-                cells.blank().into_any_element()
+            .child(header)
+            .when(editing, |el| {
+                el.child(
+                    div()
+                        .px(px(14.0))
+                        .pt(px(6.0))
+                        .text_size(px(11.0))
+                        .text_color(rgb(theme::ACCENT))
+                        .child("Enter to save · Esc to cancel"),
+                )
             })
-            .child(label)
+            .child(div().h(px(6.0)).flex_shrink_0())
+            .child(panel::section("TABS").child(
+                panel::icon_button("new-tab", "plus", theme::ACCENT).on_click(
+                    cx.listener(|browser, _, window, cx| browser.create(Create::Tab, window, cx)),
+                ),
+            ))
             .child(list)
             .when(self.save_failed, |el| {
                 el.child(
-                    menu_row(
-                        cells,
-                        "retry-save".into(),
-                        None,
-                        "Retry saving changes".into(),
-                        theme::ACCENT,
-                        None,
-                    )
-                    .on_click(cx.listener(|browser, _, _, cx| browser.save(cx))),
+                    panel::row("retry-save", false)
+                        .text_color(rgb(theme::ACCENT))
+                        .child("Retry saving changes")
+                        .on_click(cx.listener(|browser, _, _, cx| browser.save(cx))),
                 )
                 .child(
-                    menu_row(
-                        cells,
-                        "discard-save".into(),
-                        None,
-                        "Discard unsaved changes".into(),
-                        theme::DANGER,
-                        None,
-                    )
-                    .on_click(cx.listener(|browser, _, _, cx| browser.discard_save(cx))),
+                    panel::row("discard-save", false)
+                        .text_color(rgb(theme::DANGER))
+                        .child("Discard unsaved changes")
+                        .on_click(cx.listener(|browser, _, _, cx| browser.discard_save(cx))),
                 )
             })
-            .child(cells.blank())
-            .child(if self.configure_menu {
-                cells
-                    .row()
+            .child(
+                panel::row("configure", self.configure_menu)
                     .text_color(rgb(theme::MUTED))
-                    .child(concat!("tmux-workspaces ", env!("CARGO_PKG_VERSION")))
-                    .into_any_element()
-            } else {
-                cells
-                    .row()
-                    .id("configure")
-                    .cursor_pointer()
-                    .text_color(rgb(theme::MUTED))
-                    .child("Configure…")
-                    .on_click(cx.listener(|browser, _, window, cx| {
-                        browser.tab_menu = None;
-                        browser.workspace_menu = false;
-                        browser.configure_menu = true;
-                        if let Some(focus) = &browser.navigation {
-                            window.focus(focus, cx);
-                        }
-                        cx.notify();
-                    }))
-                    .into_any_element()
-            })
+                    .child(panel::icon("settings", 14.0, theme::MUTED))
+                    .child("Settings")
+                    .on_click(
+                        cx.listener(|browser, event: &gpui::ClickEvent, window, cx| {
+                            if browser.configure_menu {
+                                browser.close_menus();
+                                cx.notify();
+                            } else {
+                                browser.open_menu(Popover::Configure, event.position(), window, cx);
+                            }
+                        }),
+                    ),
+            )
             .child(slots);
+        // The open menu floats over the window at the point it was opened from.
+        let menu_body = if self.icon_picker {
+            Some(self.icon_picker(cx))
+        } else if self.tab_menu.is_some() {
+            Some(self.tab_options(cx))
+        } else if self.workspace_menu {
+            Some(self.workspace_options(cx))
+        } else if self.configure_menu {
+            Some(
+                panel::menu()
+                    .child(panel::menu_heading(concat!(
+                        "tmux-workspaces ",
+                        env!("CARGO_PKG_VERSION")
+                    )))
+                    .child(
+                        panel::menu_item(
+                            "detach",
+                            Some(("x", theme::MUTED)),
+                            "Detach",
+                            theme::NORMAL,
+                            Some("sessions keep running".into()),
+                        )
+                        .on_click(|_, window, _| window.remove_window()),
+                    ),
+            )
+        } else {
+            None
+        };
+        let overlay = menu_body.map(|body| {
+            gpui::deferred(
+                gpui::anchored()
+                    .position(
+                        self.menu_at
+                            .unwrap_or_else(|| gpui::point(px(8.0), px(40.0))),
+                    )
+                    .snap_to_window_with_margin(px(8.0))
+                    .child(body.on_mouse_down_out(cx.listener(|browser, _, _, cx| {
+                        browser.close_menus();
+                        cx.notify();
+                    }))),
+            )
+            .with_priority(1)
+        });
         // The source drops the centre hints where they would meet the sides.
         let row_columns =
             (f32::from(window.viewport_size().width) / f32::from(cells.0.width)) as usize;
@@ -2129,6 +2152,8 @@ impl Render for Browser {
             .row()
             .relative()
             .justify_between()
+            .font_family(panel::FONT)
+            .text_size(px(12.0))
             .bg(rgb(theme::PANEL))
             .text_color(rgb(theme::MUTED))
             .child(
@@ -2259,12 +2284,11 @@ impl Render for Browser {
                     }
                     if (browser.tab_menu.is_some()
                         || browser.workspace_menu
-                        || browser.configure_menu)
+                        || browser.configure_menu
+                        || browser.icon_picker)
                         && key.key == "escape"
                     {
-                        browser.tab_menu = None;
-                        browser.workspace_menu = false;
-                        browser.configure_menu = false;
+                        browser.close_menus();
                         cx.stop_propagation();
                         cx.notify();
                         return;
@@ -2311,9 +2335,7 @@ impl Render for Browser {
                                     .update(cx, |terminal, cx| terminal.focus_terminal(window, cx));
                             }
                         }
-                        browser.workspace_menu = false;
-                        browser.configure_menu = false;
-                        browser.tab_menu = None;
+                        browser.close_menus();
                         cx.stop_propagation();
                         cx.notify();
                     }
@@ -2329,49 +2351,8 @@ impl Render for Browser {
                     .child(content),
             )
             .child(status)
+            .children(overlay)
     }
-}
-
-/// One menu choice as the source draws it: a two-cell gutter for its icon,
-/// the label, and a key or value right-aligned in muted.
-fn menu_row(
-    cells: Cells,
-    id: SharedString,
-    icon: Option<(String, u32)>,
-    label: String,
-    color: u32,
-    right: Option<String>,
-) -> gpui::Stateful<gpui::Div> {
-    let room =
-        theme::SIDEBAR_COLUMNS - 4 - right.as_ref().map_or(0, |right| right.chars().count() + 1);
-    cells
-        .row()
-        .id(id)
-        .cursor_pointer()
-        .hover(|el| el.bg(rgb(theme::ACTIVE)))
-        .child(
-            div()
-                .flex_shrink_0()
-                .w(cells.width(2))
-                .when_some(icon, |el, (icon, color)| {
-                    el.text_color(rgb(color)).child(icon)
-                }),
-        )
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .text_color(rgb(color))
-                .child(theme::fit(&label, room)),
-        )
-        .when_some(right, |el, right| {
-            el.child(
-                div()
-                    .flex_shrink_0()
-                    .text_color(rgb(theme::MUTED))
-                    .child(right),
-            )
-        })
 }
 
 // Navigation changes this window's selection only. An unavailable terminal keeps

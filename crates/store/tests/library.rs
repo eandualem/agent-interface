@@ -651,3 +651,28 @@ fn reconciliation_refreshes_invalid_combinations_but_preserves_oversized_edits()
     assert_eq!(latest.model(), &peer);
     assert_eq!(base.raw_json(), RECORD);
 }
+
+#[test]
+fn a_native_icon_name_round_trips_and_clearing_it_shows_the_number() {
+    let path = Path::new("layouts.db");
+    let document =
+        parse(&RECORD.replace("\"icon\": \"λ\"", "\"icon\": \"λ\", \"symbol\": \"rocket\""))
+            .unwrap();
+    assert_eq!(
+        document.model().workspaces[0].symbol.as_deref(),
+        Some("rocket")
+    );
+    assert!(parse(&RECORD.replace("\"icon\": \"λ\"", "\"symbol\": \"Rocket!\"")).is_err());
+    let mut model = document.model().clone();
+    assert!(model.set_workspace_symbol(Some("code")));
+    let saved: serde_json::Value =
+        serde_json::from_str(document.with_model(&model, path).unwrap().raw_json()).unwrap();
+    assert_eq!(saved["workspaces"][0]["symbol"], "code");
+    assert_eq!(saved["workspaces"][0]["icon"], "λ");
+    assert!(model.set_workspace_symbol(None));
+    assert!(!model.set_workspace_symbol(None));
+    let cleared: serde_json::Value =
+        serde_json::from_str(document.with_model(&model, path).unwrap().raw_json()).unwrap();
+    assert!(cleared["workspaces"][0]["symbol"].is_null());
+    assert!(cleared["workspaces"][0]["icon"].is_null());
+}

@@ -200,6 +200,15 @@ fn read_layout(value: &Value, navigation: bool) -> Result<Layout> {
                 ));
             }
         };
+        let symbol = match item.get("symbol") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(s)) if is_symbol(s) => Some(s.clone()),
+            _ => {
+                return Err(format!(
+                    "{at}.symbol: expected an icon name of lowercase letters, digits and hyphens"
+                ));
+            }
+        };
         let raw_tabs = item
             .get("tabs")
             .and_then(Value::as_array)
@@ -247,6 +256,7 @@ fn read_layout(value: &Value, navigation: bool) -> Result<Layout> {
             id,
             name,
             icon,
+            symbol,
             tabs,
             selected,
         });
@@ -272,4 +282,12 @@ fn read_layout(value: &Value, navigation: bool) -> Result<Layout> {
         focus,
         show_agents,
     })
+}
+
+/// A native icon name: 1 to 40 lowercase ASCII letters, digits and hyphens.
+fn is_symbol(value: &str) -> bool {
+    (1..=40).contains(&value.len())
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
