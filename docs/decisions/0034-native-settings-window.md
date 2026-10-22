@@ -15,8 +15,14 @@ application menu or Command-comma. It has four pages:
   the panel, menus, status row and terminal colours repaint, and terminals with
   a new text size declare their new cell size to tmux
   ([0032](0032-source-equivalent-chrome-and-sizing.md)).
-- **Shortcuts:** the native shortcuts, grouped. Changing them needs the key
-  handling to move into one configurable table and is not available yet.
+- **Shortcuts:** fifteen workspace commands (new tab, splits, attach, rename,
+  pane, tab and workspace navigation, focus) are configurable: click one and
+  press the new keys. A chord needs ⌘, ⌃ or ⌥ so terminal typing is
+  unaffected; keys owned by copy, paste, the application menu or numbered
+  selection are refused, as is a chord another command uses. Each command can
+  be reset, and all can be restored. The window's key handling, tab menu and
+  status-row hints read the same table. Numbered selection, copy, paste,
+  history and the application menu's keys stay fixed and are listed.
 - **Agents:** whether Agent Backbone was found, and how the section is shown.
 
 **Themes.** Dark is the approved look with Ghostty's default terminal colours.
@@ -27,7 +33,10 @@ which has no meaning once this app is the terminal.
 
 **Storage.** `$XDG_CONFIG_HOME/tmux-workspaces/settings.toml`, else
 `~/.config/tmux-workspaces/settings.toml`, with `theme = "dark" | "light"` and
-`font_size`. It is read at startup with the existing `toml` dependency
+`font_size`, and a `[shortcuts]` table holding only the commands changed
+from their defaults (for example `new-tab = "ctrl-alt-t"`). Saved entries load
+together, so two commands may swap keys; an unknown command or an unusable or
+clashing chord keeps its default. It is read at startup with the existing `toml` dependency
 (already pinned for the core's theme and keymap readers, no new licence) and
 written atomically through a sibling file and rename. A missing file, unknown
 keys and invalid values leave the defaults. The previous tool's `theme.toml`
@@ -38,11 +47,13 @@ Window command (Command-W) in the application menu; sessions keep running.
 
 ## Limits
 
-Shortcut editing, per-role colour editing and syncing a changed settings file
+Per-role colour editing and syncing a changed settings file
 from another process into running windows are not implemented.
 
 ## Verification
 
 A unit test round-trips the settings file, keeps defaults for invalid values
-and saves into a missing directory. Live repainting and resizing on desktop are
+and saves into a missing directory. Shortcut tests cover parsing and labels,
+matching layout-shifted keys such as `}` for Command-Shift-], refusing
+reserved, bare and clashing chords, saving only changes and loading swaps. Live repainting and resizing on desktop are
 not yet accepted on screen.

@@ -13,10 +13,11 @@ const DEFAULT_FONT_SIZE: f32 = 13.0;
 
 static FONT_SIZE: AtomicU32 = AtomicU32::new(DEFAULT_FONT_SIZE.to_bits());
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Settings {
     pub light: bool,
     pub font_size: f32,
+    pub shortcuts: super::shortcuts::Bindings,
 }
 
 impl Default for Settings {
@@ -24,6 +25,7 @@ impl Default for Settings {
         Self {
             light: false,
             font_size: DEFAULT_FONT_SIZE,
+            shortcuts: super::shortcuts::Bindings::default(),
         }
     }
 }
@@ -44,21 +46,37 @@ impl Settings {
         {
             settings.font_size = size as f32;
         }
+        if let Some(shortcuts) = table.get("shortcuts").and_then(toml::Value::as_table) {
+            settings.shortcuts = super::shortcuts::Bindings::from_entries(
+                shortcuts
+                    .iter()
+                    .filter_map(|(id, value)| Some((id.as_str(), value.as_str()?))),
+            );
+        }
         settings
     }
 
-    pub fn to_toml(self) -> String {
-        format!(
+    pub fn to_toml(&self) -> String {
+        let mut text = format!(
             "theme = \"{}\"\nfont_size = {}\n",
             if self.light { "light" } else { "dark" },
             self.font_size as u32
-        )
+        );
+        let changed = self.shortcuts.changed();
+        if !changed.is_empty() {
+            text.push_str("\n[shortcuts]\n");
+            for (id, chord) in changed {
+                text.push_str(&format!("{id} = {}\n", toml::Value::String(chord)));
+            }
+        }
+        text
     }
 
     /// Make these the settings every window draws with.
-    pub fn apply(self) {
+    pub fn apply(&self) {
         super::theme::set_light(self.light);
         FONT_SIZE.store(self.font_size.to_bits(), Ordering::Relaxed);
+        super::shortcuts::set(self.shortcuts.clone());
     }
 
     /// The settings windows are drawing with now.
@@ -66,6 +84,7 @@ impl Settings {
         Self {
             light: super::theme::is_light(),
             font_size: font_size(),
+            shortcuts: super::shortcuts::current(),
         }
     }
 }
@@ -92,7 +111,7 @@ pub fn load() -> Settings {
 }
 
 /// Save atomically: write a sibling file, then rename it over the old one.
-pub fn save(settings: Settings, path: &Path) -> io::Result<()> {
+pub fn save(settings: &Settings, path: &Path) -> io::Result<()> {
     let directory = path
         .parent()
         .ok_or_else(|| io::Error::other("settings path has no directory"))?;
@@ -110,13 +129,26 @@ mod tests {
 
     #[test]
     fn settings_round_trip_and_invalid_values_keep_defaults() {
+        let mut shortcuts = super::super::shortcuts::Bindings::default();
+        shortcuts
+            .assign(
+                super::super::shortcuts::Command::NewTab,
+                super::super::shortcuts::Chord::parse("ctrl-alt-t").unwrap(),
+            )
+            .unwrap();
         let light = Settings {
             light: true,
             font_size: 16.0,
+            shortcuts,
         };
         assert_eq!(Settings::parse(&light.to_toml()), light);
-        light.apply();
-        assert_eq!(Settings::current(), light);
+        // Shortcuts are global; other tests rely on the defaults.
+        let applied = Settings {
+            shortcuts: super::super::shortcuts::Bindings::default(),
+            ..light.clone()
+        };
+        applied.apply();
+        assert_eq!(Settings::current(), applied);
         Settings::default().apply();
         assert_eq!(Settings::current(), Settings::default());
         assert_eq!(Settings::parse("not toml ["), Settings::default());
@@ -124,7 +156,7 @@ mod tests {
         assert_eq!(odd, Settings::default());
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("nested/settings.toml");
-        save(light, &path).unwrap();
+        save(&light, &path).unwrap();
         assert_eq!(
             Settings::parse(&std::fs::read_to_string(&path).unwrap()),
             light
