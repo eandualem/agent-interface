@@ -64,7 +64,7 @@ impl Settings {
     /// The settings windows are drawing with now.
     pub fn current() -> Self {
         Self {
-            light: std::ptr::eq(super::theme::current(), &super::theme::LIGHT),
+            light: super::theme::is_light(),
             font_size: font_size(),
         }
     }
@@ -115,6 +115,10 @@ mod tests {
             font_size: 16.0,
         };
         assert_eq!(Settings::parse(&light.to_toml()), light);
+        light.apply();
+        assert_eq!(Settings::current(), light);
+        Settings::default().apply();
+        assert_eq!(Settings::current(), Settings::default());
         assert_eq!(Settings::parse("not toml ["), Settings::default());
         let odd = Settings::parse("theme = \"sepia\"\nfont_size = 99\nother = 1\n");
         assert_eq!(odd, Settings::default());

@@ -86,6 +86,11 @@ pub fn current() -> &'static Palette {
     }
 }
 
+/// Whether the light palette is in use.
+pub fn is_light() -> bool {
+    LIGHT_ACTIVE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Switch every window's palette; windows repaint on their next frame.
 pub fn set_light(light: bool) {
     LIGHT_ACTIVE.store(light, std::sync::atomic::Ordering::Relaxed);

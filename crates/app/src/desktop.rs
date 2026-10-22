@@ -74,7 +74,9 @@ pub fn run(directory: Option<PathBuf>) -> Result<(), String> {
                 KeyBinding::new("cmd-,", OpenSettings, None),
                 KeyBinding::new("cmd-w", CloseWindow, None),
             ]);
-            cx.on_action(|_: &OpenSettings, cx| settings_window::show(cx));
+            // Defer: a window that is dispatching this action cannot be updated
+            // until dispatch returns.
+            cx.on_action(|_: &OpenSettings, cx| cx.defer(settings_window::show));
             cx.on_action(|_: &CloseWindow, cx| {
                 if let Some(window) = cx.active_window() {
                     cx.defer(move |cx| {
@@ -85,10 +87,7 @@ pub fn run(directory: Option<PathBuf>) -> Result<(), String> {
             // The source chooses its library at launch; keep the native choice in
             // the application menu rather than in the panel.
             cx.on_action(|_: &OpenLibrary, cx| {
-                if let Some(window) = cx
-                    .active_window()
-                    .and_then(|window| window.downcast::<Browser>())
-                {
+                if let Some(window) = browser_window(cx) {
                     cx.defer(move |cx| {
                         let _ = window.update(cx, |browser, _, cx| browser.pick_library(cx));
                     });
@@ -96,15 +95,18 @@ pub fn run(directory: Option<PathBuf>) -> Result<(), String> {
             });
             cx.on_action(|_: &Quit, cx| cx.quit());
             cx.on_action(|_: &NewWindow, cx| {
-                if let Some(window) = cx
-                    .active_window()
-                    .and_then(|window| window.downcast::<Browser>())
-                {
-                    // Dispatch currently borrows the originating window. Open after it
-                    // returns, retaining that window's identity even if focus changes.
-                    cx.defer(move |cx| {
+                // Dispatch currently borrows the originating window. Open after it
+                // returns, retaining that window's identity even if focus changes.
+                // With only Settings open, start a window on the default library.
+                match browser_window(cx) {
+                    Some(window) => cx.defer(move |cx| {
                         let _ = window.update(cx, |browser, _, cx| browser.open_another(cx));
-                    });
+                    }),
+                    None => cx.defer(|cx| {
+                        let source =
+                            crate::sessions::source_socket(None).map_err(|e| e.to_string());
+                        let _ = open_browser(None, source, cx);
+                    }),
                 }
             });
             cx.set_menus(vec![Menu {
@@ -132,6 +134,18 @@ pub fn run(directory: Option<PathBuf>) -> Result<(), String> {
             cx.activate(true);
         });
     failure.borrow_mut().take().map_or(Ok(()), Err)
+}
+
+/// The active workspace window, else any open one, for application commands
+/// sent while another window, such as Settings, is active.
+fn browser_window(cx: &App) -> Option<gpui::WindowHandle<Browser>> {
+    cx.active_window()
+        .and_then(|window| window.downcast::<Browser>())
+        .or_else(|| {
+            cx.windows()
+                .into_iter()
+                .find_map(|window| window.downcast::<Browser>())
+        })
 }
 
 fn open_browser(
@@ -2302,7 +2316,7 @@ impl Render for Browser {
                     .child("Settings")
                     .on_click(cx.listener(|browser, _, _, cx| {
                         browser.close_menus();
-                        settings_window::show(cx);
+                        cx.defer(settings_window::show);
                     })),
             )
             .child(slots);
