@@ -127,9 +127,27 @@ pub fn font_size() -> f32 {
 
 /// `$XDG_CONFIG_HOME/tmux-workspaces/settings.toml`, else under `~/.config`.
 pub fn path() -> Option<PathBuf> {
-    let config = match std::env::var_os("XDG_CONFIG_HOME").filter(|path| !path.is_empty()) {
+    path_from(
+        std::env::var_os("XDG_CONFIG_HOME"),
+        std::env::var_os("HOME"),
+        || crate::library::location::user_home(None),
+    )
+}
+
+/// The settings path from these variables; the account's home directory is
+/// used only when HOME is unset, as the library, theme and keymap lookups do.
+fn path_from(
+    xdg: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+    account: impl FnOnce() -> Option<PathBuf>,
+) -> Option<PathBuf> {
+    let config = match xdg.filter(|path| !path.is_empty()) {
         Some(path) => PathBuf::from(path),
-        None => crate::library::location::user_home(None)?.join(".config"),
+        None => home
+            .filter(|home| !home.is_empty())
+            .map(PathBuf::from)
+            .or_else(account)?
+            .join(".config"),
     };
     Some(config.join("tmux-workspaces/settings.toml"))
 }
@@ -139,6 +157,49 @@ pub fn load() -> Settings {
     path()
         .and_then(|path| std::fs::read_to_string(path).ok())
         .map_or_else(Settings::default, |text| Settings::parse(&text))
+}
+
+static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static PENDING: AtomicU32 = AtomicU32::new(0);
+static WRITTEN: std::sync::Mutex<u64> = std::sync::Mutex::new(0);
+
+/// Save these settings on a background thread, so slow storage never blocks
+/// the windows. Saves run one at a time and an older one never replaces a
+/// newer one. `done` receives the outcome.
+pub fn save_in_background(settings: Settings, done: impl FnOnce(io::Result<()>) + Send + 'static) {
+    let generation = GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
+    PENDING.fetch_add(1, Ordering::SeqCst);
+    std::thread::spawn(move || {
+        let _pending = Pending;
+        let mut written = WRITTEN.lock().unwrap_or_else(|error| error.into_inner());
+        if *written > generation {
+            return done(Ok(()));
+        }
+        let result = path()
+            .ok_or_else(|| io::Error::other("no home directory"))
+            .and_then(|path| save(&settings, &path));
+        if result.is_ok() {
+            *written = generation;
+        }
+        done(result);
+    });
+}
+
+struct Pending;
+
+impl Drop for Pending {
+    fn drop(&mut self) {
+        PENDING.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Before the process exits, let background saves finish, waiting at most
+/// `limit`; a detached save thread would otherwise end mid-write.
+pub fn finish_saves(limit: std::time::Duration) {
+    let deadline = std::time::Instant::now() + limit;
+    while PENDING.load(Ordering::SeqCst) > 0 && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
 }
 
 /// Save atomically: write a sibling file, then rename it over the old one.
@@ -173,6 +234,25 @@ pub fn save(settings: &Settings, path: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_settings_file_follows_xdg_then_home_then_the_account() {
+        let account = || Some(PathBuf::from("/account"));
+        let file = "tmux-workspaces/settings.toml";
+        assert_eq!(
+            path_from(Some("/xdg".into()), Some("/home".into()), account),
+            Some(PathBuf::from("/xdg").join(file))
+        );
+        assert_eq!(
+            path_from(None, Some("/home".into()), account),
+            Some(PathBuf::from("/home/.config").join(file))
+        );
+        assert_eq!(
+            path_from(Some("".into()), None, account),
+            Some(PathBuf::from("/account/.config").join(file))
+        );
+        assert_eq!(path_from(None, None, || None), None);
+    }
 
     #[test]
     fn settings_round_trip_and_invalid_values_keep_defaults() {

@@ -302,6 +302,11 @@ impl TerminalView {
         self.clear_selection(cx);
     }
 
+    /// Whether this terminal has keyboard focus.
+    pub(crate) fn has_focus(&self, window: &Window) -> bool {
+        self.focus.is_focused(window)
+    }
+
     pub(crate) fn focus_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.take_update();
         if self.panes().is_finished() {

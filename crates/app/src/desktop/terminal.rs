@@ -127,6 +127,13 @@ pub(super) struct LiveTerminal {
 }
 
 impl LiveTerminal {
+    /// Whether this leaf's terminal has keyboard focus.
+    pub fn has_focus(&self, window: &Window, cx: &gpui::App) -> bool {
+        self.view
+            .as_ref()
+            .is_some_and(|view| view.read(cx).has_focus(window))
+    }
+
     pub fn focus_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.connecting
             && let Some(view) = &self.view

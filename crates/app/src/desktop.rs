@@ -94,7 +94,10 @@ pub fn run(directory: Option<PathBuf>) -> Result<(), String> {
                     });
                 }
             });
-            cx.on_action(|_: &Quit, cx| cx.quit());
+            cx.on_action(|_: &Quit, cx| {
+                settings::finish_saves(std::time::Duration::from_secs(2));
+                cx.quit();
+            });
             cx.on_action(|_: &NewWindow, cx| {
                 // Dispatch currently borrows the originating window. Open after it
                 // returns, retaining that window's identity even if focus changes.
@@ -123,6 +126,7 @@ pub fn run(directory: Option<PathBuf>) -> Result<(), String> {
             }]);
             cx.on_window_closed(|cx, _| {
                 if cx.windows().is_empty() {
+                    settings::finish_saves(std::time::Duration::from_secs(2));
                     cx.quit();
                 }
             })
@@ -1432,12 +1436,19 @@ impl Browser {
     /// Keep a dragged panel width: save it and repaint every window.
     fn finish_sidebar_drag(&mut self, cx: &mut Context<Self>) {
         self.sidebar_drag = None;
-        let current = settings::Settings::current();
-        if let Some(path) = settings::path()
-            && let Err(error) = settings::save(&current, &path)
-        {
-            self.save_notice = Some(format!("Panel width not saved: {error}"));
-        }
+        let (done, saved) = futures::channel::oneshot::channel();
+        settings::save_in_background(settings::Settings::current(), move |result| {
+            let _ = done.send(result);
+        });
+        cx.spawn(async move |this, cx| {
+            if let Ok(Err(error)) = saved.await {
+                let _ = this.update(cx, |browser, cx| {
+                    browser.save_notice = Some(format!("Panel width not saved: {error}"));
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
         cx.refresh_windows();
     }
 
@@ -1605,12 +1616,35 @@ impl Browser {
                     .min_h_0()
                     .overflow_hidden()
                     .bg(rgb(theme::surface()))
-                    .on_click(cx.listener(move |browser, _, _, cx| {
-                        if let Some(layout) = &mut browser.layout {
-                            layout.model_mut().choose_pane(&id);
-                            cx.notify();
-                        }
-                    }))
+                    // A left click selects the pane. A right or middle click
+                    // selects it only if the terminal took keyboard focus (a
+                    // mouse-enabled program accepts those clicks), so pane
+                    // commands always follow the terminal that receives typing.
+                    .capture_any_mouse_down(cx.listener(
+                        move |browser, event: &gpui::MouseDownEvent, window, cx| {
+                            let leaf = id.clone();
+                            let id = id.clone();
+                            let select = move |browser: &mut Self, cx: &mut Context<Self>| {
+                                if let Some(layout) = &mut browser.layout
+                                    && layout.model().tab().is_some_and(|tab| tab.focus != id)
+                                {
+                                    layout.model_mut().choose_pane(&id);
+                                    cx.notify();
+                                }
+                            };
+                            if event.button == gpui::MouseButton::Left {
+                                select(browser, cx);
+                            } else {
+                                cx.defer_in(window, move |browser, window, cx| {
+                                    if browser.terminals.get(&leaf).is_some_and(|terminal| {
+                                        terminal.read(cx).has_focus(window, cx)
+                                    }) {
+                                        select(browser, cx);
+                                    }
+                                });
+                            }
+                        },
+                    ))
                     .child(
                         if let Some(chooser) =
                             chooser.filter(|chooser| chooser.destination.pane == leaf.id)
