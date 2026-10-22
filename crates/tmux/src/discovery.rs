@@ -1,4 +1,4 @@
-//! Bounded read-only session discovery and attachment policy on an explicit socket.
+//! Bounded read-only session discovery, directory queries and attachment policy on an explicit socket.
 
 use std::io::{self, Read};
 use std::os::fd::OwnedFd;
@@ -43,6 +43,38 @@ pub fn read_sessions(socket: &Path) -> io::Result<Vec<String>> {
         };
     }
     Ok(names(stdout))
+}
+
+/// Read the current directory of an exact session's active pane.
+///
+/// The caller supplies an absolute socket and a raw session name. This starts
+/// no server and attaches no client. A missing session, failed query, timeout or
+/// invalid directory returns a fixed diagnostic; callers keep their saved cwd.
+/// UTF-8 paths retain spaces and newlines, including a trailing newline. Like
+/// discovery, this bounded query belongs on a worker, not the UI thread.
+pub fn read_session_directory(socket: &Path, session: &str) -> io::Result<String> {
+    let unavailable = || io::Error::other("Working directory unavailable");
+    if names(session).as_slice() != [session] {
+        return Err(unavailable());
+    }
+    let mut command = command(socket).ok_or_else(unavailable)?;
+    command.args([
+        "display-message",
+        "-p",
+        "-t",
+        &format!("={session}:"),
+        "#{pane_current_path}",
+    ]);
+    let output = capture(command, TIMEOUT).map_err(|_| unavailable())?;
+    if !output.status.success() {
+        return Err(unavailable());
+    }
+    let output = std::str::from_utf8(&output.stdout).map_err(|_| unavailable())?;
+    let directory = output.strip_suffix('\n').ok_or_else(unavailable)?;
+    if !Path::new(directory).is_absolute() || directory.contains('\0') {
+        return Err(unavailable());
+    }
+    Ok(directory.to_owned())
 }
 
 /// A read-only attachment decision for a session on the queried server.
@@ -131,7 +163,7 @@ fn policy(line: &str) -> Option<AttachmentPolicy> {
     })
 }
 
-/// Both queries use the same isolated, non-starting client and bounded capture.
+/// Every query uses the same isolated, non-starting client and bounded capture.
 fn command(socket: &Path) -> Option<Command> {
     if !socket.is_absolute() {
         return None;
@@ -189,7 +221,7 @@ fn names(output: &str) -> Vec<String> {
 
 // Nonblocking socket pairs let the worker drain both streams while enforcing
 // one deadline, without reader threads that could outlive a failed query.
-fn capture(mut command: Command, timeout: Duration) -> io::Result<Output> {
+pub(super) fn capture(mut command: Command, timeout: Duration) -> io::Result<Output> {
     let deadline = Instant::now() + timeout;
     let (mut stdout, output) = UnixStream::pair()?;
     let (mut stderr, error) = UnixStream::pair()?;
@@ -318,7 +350,6 @@ mod tests {
             [" a ", "=leading", "café"]
         );
     }
-
     #[test]
     fn attachment_policy_reads_inherited_values_without_changing_the_source() {
         let server = TmuxServer::start().unwrap();
