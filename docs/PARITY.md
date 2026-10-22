@@ -24,8 +24,9 @@ reports pane output and events to a program instead of drawing a screen. The app
 draws every terminal pane itself on the GPU, handles keys and mouse natively,
 and keeps each pane's terminal state in memory. It reads the same library
 (`layouts.db`, schema version 2) and attaches to the same shell server as the
-Python tool, so one library opens in both. Native renames use the same merge and
-conflict rules when saving to an existing version-2 library.
+Python tool, so one library opens in both. Native layout edits use the shared
+merge and conflict rules. An absent library starts with one empty workspace;
+Python and Backbone are not runtime requirements.
 
 ## Words used here
 
@@ -53,8 +54,10 @@ Each table has these columns:
 - **Source**: the Python documentation section it comes from.
 - **Decision**: one of the four values below.
 - **Notes**: why and how, for anything other than a plain Keep.
-- **Status**: `Not started`, `In progress`, `Done` (with the pull request) or
-  `Won't do`.
+- **Status**: `Not started`, `In progress`, `Implemented`, `Done` (with the pull request) or
+  `Won't do`. An implemented path can remain `In progress` while desktop acceptance
+  or another part of the row is pending. Planned rows, especially CLI flags, are
+  not descriptions of commands the current binary accepts; see `--help`.
 
 Decision values:
 
@@ -70,13 +73,14 @@ Decision values:
 The core model supports in-memory creation, splitting, attachment changes and
 closing records. The native sidebar selects saved workspaces and tabs and displays existing tmux
 sessions inside their saved split layouts. Clicked terminals accept typed keys.
-Native workspace/tab renames save through the shared conflict rules. Other editing
-controls and complete terminal interaction remain pending; the
-connected window does not yet complete these workflows.
+Native creation, renaming, splitting, tab moves and attachment choices save through
+the shared conflict rules. Ordinary shells start only on request. Remaining gaps
+include closing tabs/panes from the UI, complete input parity and desktop acceptance
+on each supported platform.
 
 | # | Behaviour (Python tool) | Source | Decision | Notes | Status |
 | --- | --- | --- | --- | --- | --- |
-| WS-1 | A new library starts with one workspace, **Workspace 1**, holding one tab with a random name such as **Tab a82f** and one ordinary shell. | [README][rd-first], [GUIDE][g-organize] | Keep | | In progress |
+| WS-1 | A new library starts with one workspace, **Workspace 1**, holding one tab with a random name such as **Tab a82f** and one ordinary shell. | [README][rd-first], [GUIDE][g-organize] | Change | The app creates Workspace 1 with no tabs or shells. Add a tab and choose what it should run. | Implemented in [#68](https://github.com/eandualem/tmux-workspaces-rs/pull/68); isolated initialization and preservation tests pass. |
 | WS-2 | Tabs are only created by the user. Nothing is populated from the agent roster, and the session list is only an attachment chooser, never a source of tabs. | [GUIDE][g-organize], [GUIDE][g-attach] | Keep | | In progress |
 | WS-3 | A new workspace starts empty, with no tabs; the user adds its first tab with new tab. | [GUIDE][g-organize], [SHORTCUTS][sc-ws] | Keep | | In progress: native New workspace saves an empty named workspace; desktop acceptance pending. |
 | WS-4 | Upgrading keeps existing saved names, tabs and attachments; the tool never deletes earlier arrangements. | [GUIDE][g-organize] | Keep | Also applies between the two tools: opening a library in the Rust app must not drop anything the Python tool saved. | Not started |
@@ -91,17 +95,17 @@ connected window does not yet complete these workflows.
 | WS-13 | Tab and workspace names are limited to 80 characters. | [INLINE_RENAME][ir-use] | Keep | Keeps names valid in both tools. | In progress: native field and core enforce the 80-character limit; desktop acceptance pending. |
 | WS-14 | An empty name cannot be saved; the editor stays open until a name is entered or the edit is cancelled. | [INLINE_RENAME][ir-use] | Keep | | In progress: empty input keeps the native editor open; desktop acceptance pending. |
 | WS-15 | A workspace can be renamed even when it has no tabs. | [INLINE_RENAME][ir-use] | Keep | | In progress: workspace name editing works independently of tabs; desktop acceptance pending. |
-| WS-16 | The **▾** beside the workspace name, or a right-click on the name, opens the workspace chooser and options: switch, create, rename, set an icon, or delete an empty workspace. | [GUIDE][g-ws], [SHORTCUTS][sc-right] | Keep | How the menu is presented is VL-10. | In progress: native chooser supports switching, New workspace, Rename and Delete empty workspace; icons and desktop acceptance pending. |
+| WS-16 | The **▾** beside the workspace name, or a right-click on the name, opens the workspace chooser and options: switch, create, rename, set an icon, or delete an empty workspace. | [GUIDE][g-ws], [SHORTCUTS][sc-right] | Keep | How the menu is presented is VL-10. | In progress: native workspace menus support switching, creation, rename, icon selection and empty-workspace deletion; desktop acceptance pending. |
 | WS-17 | A workspace that still has tabs cannot be deleted; its **Delete** row says so. | [SHORTCUTS][sc-cover] | Keep | | In progress: native Delete is disabled with has-tabs or last-workspace reasons; handler rechecks eligibility before saving. |
-| WS-18 | The icon row at the bottom of the panel switches workspace with one click. Each workspace has a three-cell slot showing its icon, or its number when it has none; the current one is filled. | [GUIDE][g-ws], [UI_PREVIEW][up-org] | Keep | Slots are sized natively instead of in terminal cells. | Not started |
+| WS-18 | The icon row at the bottom of the panel switches workspace with one click. Each workspace has a three-cell slot showing its icon, or its number when it has none; the current one is filled. | [GUIDE][g-ws], [UI_PREVIEW][up-org] | Change | Native icon buttons replace terminal-cell slots. | Implemented: bottom workspace switcher with a selected-state fill. |
 | WS-19 | Right-clicking a workspace slot opens that workspace's options. When the row is full, its last slot, **…**, opens the full list. | [GUIDE][g-ws], [SHORTCUTS][sc-right] | Keep | | Not started |
-| WS-20 | **Set icon…** offers a small set of glyphs that render one cell wide in the usual terminal fonts; **Number** removes the icon; the choice is saved with the workspace. | [GUIDE][g-ws] | Keep | Offer the same glyph set, so an icon chosen in one tool draws correctly in the other. | In progress: shared icon choices and model set/clear implemented; native picker and saving pending. |
-| WS-21 | Previous and next workspace shortcuts cycle workspaces; numbered shortcuts select workspace 1 to 9. | [GUIDE][g-ws], [SHORTCUTS][sc-ws] | Keep | Keys are KB-17, KB-18 and KB-27. | In progress: model navigation, ordering, transfer and deletion rules implemented; product controls pending. In progress: model cycling, numbered selection, ordering, transfer and deletion rules implemented; product controls pending. |
-| WS-22 | Next and previous tab shortcuts switch complete layouts; numbered shortcuts select tab 1 to 9 in the current workspace. | [GUIDE][g-split], [SHORTCUTS][sc-tabs] | Keep | Keys are KB-8, KB-9 and KB-26. | In progress: model navigation, ordering, transfer and deletion rules implemented; product controls pending. In progress: model cycling, numbered selection, ordering, transfer and deletion rules implemented; product controls pending. |
+| WS-20 | **Set icon…** offers a small set of glyphs that render one cell wide in the usual terminal fonts; **Number** removes the icon; the choice is saved with the workspace. | [GUIDE][g-ws] | Change | Choose icon offers native Lucide icons saved as symbol names. Legacy glyph icons remain readable; Show number instead clears both forms. | Implemented: native icon picker and transactional saving. |
+| WS-21 | Previous and next workspace shortcuts cycle workspaces; numbered shortcuts select workspace 1 to 9. | [GUIDE][g-ws], [SHORTCUTS][sc-ws] | Keep | Keys are KB-17, KB-18 and KB-27. | In progress: native workspace cycling and numbered selection implemented; desktop acceptance pending. |
+| WS-22 | Next and previous tab shortcuts switch complete layouts; numbered shortcuts select tab 1 to 9 in the current workspace. | [GUIDE][g-split], [SHORTCUTS][sc-tabs] | Keep | Keys are KB-8, KB-9 and KB-26. | In progress: native tab cycling and numbered selection implemented; desktop acceptance pending. |
 | WS-23 | Out-of-range numbered shortcuts do nothing. | [SHORTCUTS][sc-ws] | Keep | | In progress: one-based workspace/tab model selection ignores absent positions; shortcut dispatch pending. |
 | WS-24 | The tab menu opens from the **⋯** at the right end of the selected tab, from a right-click on any tab (even an inactive one), or from the tab-options shortcut. | [GUIDE][g-split], [SHORTCUTS][sc-right] | Keep | | In progress: selected-tab ellipsis and right-click options implemented; menu shortcut and desktop acceptance pending. |
 | WS-25 | The tab menu holds Rename tab, Split right, Split below, Focus one pane or Restore layout, pane cycling, Attach session, Return to shell, reordering, moving to another workspace, and closing panes and tabs. | [SHORTCUTS][sc-right], [GUIDE][g-split], [GUIDE][g-attach] | Keep | | In progress: native options include renaming, reordering and moving between workspaces; other menu actions pending. |
-| WS-26 | The tab menu reorders tabs and moves a tab to another workspace; these need no shortcut of their own. | [GUIDE][g-ws], [SHORTCUTS][sc-cover] | Keep | The menu path stays even if drag and drop is added later. | In progress: native tab options save reorder and transfer operations; desktop acceptance pending. In progress: model navigation, ordering, transfer and deletion rules implemented; product controls pending. |
+| WS-26 | The tab menu reorders tabs and moves a tab to another workspace; these need no shortcut of their own. | [GUIDE][g-ws], [SHORTCUTS][sc-cover] | Keep | The menu path stays even if drag and drop is added later. | In progress: native tab options save reorder and transfer operations; desktop acceptance pending. |
 | WS-27 | **Close tab** closes the whole tab and ends its ordinary shells; attached external sessions keep running. | [GUIDE][g-settings], [SHORTCUTS][sc-tabs] | Keep | Keys are KB-20. Process rules are SH-12. | In progress |
 | WS-28 | Every new tab gets a neutral random name, **Tab** followed by four hexadecimal characters, unless the user supplies one. | [INITIAL_TASK][it-req], [ACCEPTANCE][ac-checks] | Keep | | In progress: native new tabs use the model’s random neutral name; desktop acceptance pending. |
 
@@ -109,22 +113,22 @@ connected window does not yet complete these workflows.
 
 | # | Behaviour (Python tool) | Source | Decision | Notes | Status |
 | --- | --- | --- | --- | --- | --- |
-| SP-1 | **Split right** adds a pane beside the selected one, with a vertical divider. **Split below** adds one under it, with a horizontal divider. | [GUIDE][g-split], [SHORTCUTS][sc-tabs] | Keep | Keys are KB-3 and KB-4. | In progress: native saved right/below splits retain the existing leaf and add an empty pane; desktop acceptance pending. In progress |
+| SP-1 | **Split right** adds a pane beside the selected one, with a vertical divider. **Split below** adds one under it, with a horizontal divider. | [GUIDE][g-split], [SHORTCUTS][sc-tabs] | Keep | Keys are KB-3 and KB-4. | In progress: native saved right/below splits retain the existing leaf and add an empty pane; desktop acceptance pending. |
 | SP-2 | Both splits are in the tab menu and on shortcuts. | [GUIDE][g-split] | Keep | | In progress: native tab options and Command-D/Command-Shift-D; desktop acceptance pending. |
-| SP-3 | A new split opens as the new-pane chooser. A terminal chosen there starts in the working directory of the shell it was split from. | [GUIDE][g-split], [README][rd-first], [ARCHITECTURE][ar-modules] | Keep | Read the source pane's current directory from tmux on the shell server. | In progress: native split inherits refreshed ordinary or parked shell cwd; new pane can attach existing sessions. Explicit Open terminal saves before shell creation; desktop acceptance pending. In progress: bounded read-only ordinary-shell directory lookup and in-memory refresh implemented; split controls and shell creation pending. |
-| SP-4 | One tab can hold several panes; a four-pane tab is a normal, tested case. | [GUIDE][g-split], [ACCEPTANCE][ac-checks] | Keep | | In progress: pure cell geometry and focused-pane fallback implemented; product rendering pending. |
-| SP-5 | Clicking a pane selects it, and typing goes there. | [GUIDE][g-split] | Keep | | In progress: model pane selection and measured split ratios implemented; native controls and input handoff pending. |
-| SP-6 | Dragging the separator between two panes resizes the split; the navigation panel keeps its width. | [GUIDE][g-split], [GUIDE][g-resize] | Keep | | In progress: native divider drag previews and saves bounded ratios on release without changing other clients; desktop acceptance pending. |
+| SP-3 | A new split opens as the new-pane chooser. A terminal chosen there starts in the working directory of the shell it was split from. | [GUIDE][g-split], [README][rd-first], [ARCHITECTURE][ar-modules] | Keep | Read the source pane's current directory from tmux on the shell server. | In progress: native splits inherit refreshed ordinary or parked shell cwd; Open terminal saves before starting a shell; desktop acceptance pending. |
+| SP-4 | One tab can hold several panes; a four-pane tab is a normal, tested case. | [GUIDE][g-split], [ACCEPTANCE][ac-checks] | Keep |  | In progress: native cards render the selected tab’s saved leaves; multi-pane desktop acceptance remains pending. |
+| SP-5 | Clicking a pane selects it, and typing goes there. | [GUIDE][g-split] | Keep |  | In progress: clicking focuses a ready terminal and routes input to its pane; desktop acceptance pending. |
+| SP-6 | Dragging the separator between two panes resizes the split; the navigation panel keeps its width. | [GUIDE][g-split], [GUIDE][g-resize] | Keep | Each resized viewport declares its size to tmux. The source’s window-size policy can change shared geometry seen by other clients. | In progress: native divider drag previews and saves bounded ratios; desktop acceptance pending. |
 | SP-7 | Next and previous pane shortcuts move input focus between the panes of the selected tab. | [GUIDE][g-split] | Keep | Keys are KB-10 and KB-11. | In progress: direct shortcuts select the next/previous saved pane and focus a connected destination; connecting panes require a ready-pane click. |
-| SP-8 | **Focus one pane** temporarily shows only the selected pane; **Restore layout** shows the splits again. The saved arrangement does not change. | [GUIDE][g-split], [SHORTCUTS][sc-tabs], [UI_PREVIEW][up-try2] | Keep | Key is KB-12. Focus mode is per window (PE-19). | In progress: pure cell geometry and focused-pane fallback implemented; product rendering pending. |
+| SP-8 | **Focus one pane** temporarily shows only the selected pane; **Restore layout** shows the splits again. The saved arrangement does not change. | [GUIDE][g-split], [SHORTCUTS][sc-tabs], [UI_PREVIEW][up-try2] | Keep | Key is KB-12. Focus mode is per window (PE-19). | In progress: native Focus one pane / Restore layout uses window-local focus state; desktop acceptance pending. |
 | SP-9 | When the complete layout does not fit the window, only the focused pane is shown for the moment, and the saved split tree is kept. | [GUIDE][g-split], [GUIDE][g-resize], [ACCEPTANCE][ac-limits] | Keep | | In progress: pure cell geometry and focused-pane fallback implemented; product rendering pending. |
 | SP-10 | Saved split proportions are limited by the space each nested layout needs. | [GUIDE][g-resize] | Keep | | Not started |
-| SP-11 | Split proportions survive closing and reopening. | [ACCEPTANCE][ac-checks] | Keep | | Not started |
+| SP-11 | Split proportions survive closing and reopening. | [ACCEPTANCE][ac-checks] | Keep |  | In progress: divider release saves ratios in the shared document; reopen desktop acceptance pending. |
 | SP-12 | **Close pane** closes the selected pane and ends its ordinary shell; closing a tab's last pane closes the tab. | [SHORTCUTS][sc-tabs], [GUIDE][g-settings] | Keep | Keys are KB-19. | Not started |
-| SP-13 | A layout change recreates attachment clients and can cause a brief redraw. | [GUIDE][g-limits], [ACCEPTANCE][ac-limits] | Drop | A limit of nested tmux clients. The app keeps each leaf's terminal state in memory, so a layout change only re-lays out and redraws. | Not started |
-| SP-14 | Switching tabs restarts each visible pane's attachment client, reusing pane containers when the geometry still matches. | [ARCHITECTURE][ar-nav] | Drop | Mechanics of the private display server. Switching tabs in the app changes what is drawn and starts no process. | Not started |
+| SP-13 | A layout change recreates attachment clients and can cause a brief redraw. | [GUIDE][g-limits], [ACCEPTANCE][ac-limits] | Change | Unchanged native leaves retain their clients; replacing a leaf or attachment creates a new connection. Redraw behavior needs desktop verification. | In progress |
+| SP-14 | Switching tabs restarts each visible pane's attachment client, reusing pane containers when the geometry still matches. | [ARCHITECTURE][ar-nav] | Change | Only the selected tab retains native terminal entities. Returning creates clients and recovers the screen, retaining the selected source window rather than the old renderer. | In progress: implemented; navigation latency acceptance pending. |
 | SP-15 | A second tmux layer affects sizing, scrolling and repaint. | [ACCEPTANCE][ac-limits], [GUIDE][g-limits] | Drop | There is no second tmux layer. | Not started |
-| SP-16 | A writable attachment takes part in tmux window sizing, so another window showing the same terminal can change its size. | [GUIDE][g-limits], [ACCEPTANCE][ac-limits] | Keep | This is how tmux works: a control-mode client also takes part in sizing. Document it. | Not started |
+| SP-16 | A writable attachment takes part in tmux window sizing, so another window showing the same terminal can change its size. | [GUIDE][g-limits], [ACCEPTANCE][ac-limits] | Keep | This is how tmux works: a control-mode client also takes part in sizing. Document it. | Implemented: each embedded viewport declares its size with refresh-client; tmux’s window-size policy controls shared geometry. |
 
 ## Choosers and attaching existing sessions
 
@@ -134,10 +138,10 @@ connected window does not yet complete these workflows.
 | CH-2 | Nothing is created until the user chooses. An empty pane stays empty across exit and reopen until it is filled. | [GUIDE][g-organize] | Keep | Store an empty leaf exactly as the Python tool does. | In progress: native fill preserves the empty leaf until its ordinary-shell or attachment choice is saved; desktop acceptance pending. |
 | CH-3 | **Open terminal** starts, at first, in the directory where the viewer was launched. | [GUIDE][g-organize] | Open | An app started from the Dock or a desktop launcher has no useful working directory. Decide the default (for example the home directory) and whether a command-line launch keeps the invoking directory. | Not started |
 | CH-4 | In a chooser, the arrow keys and Enter, or a click on a row, pick an entry. | [GUIDE][g-organize] | Keep | Full menu keys are IN-4. | In progress: native session filter supports Up/Down, Enter and row clicks; full menu keyboard parity and desktop acceptance pending. |
-| CH-5 | Typing filters the attachment chooser by session name, ignoring case. Editing the filter selects the first match; with no match, Enter does nothing; `Ctrl-u` clears the filter. | [SHORTCUTS][sc-cover], [GUIDE][g-keys] | Keep | | In progress: native Unicode case-folded filtering, first-match selection, no-match Enter and Ctrl-U implemented; desktop acceptance pending. In progress: Unicode filter and identity-based selection model implemented; native controls and attachment integration pending. |
+| CH-5 | Typing filters the attachment chooser by session name, ignoring case. Editing the filter selects the first match; with no match, Enter does nothing; `Ctrl-u` clears the filter. | [SHORTCUTS][sc-cover], [GUIDE][g-keys] | Keep |  | In progress: native Unicode filtering, first-match selection, no-match Enter and Ctrl-U implemented; desktop acceptance pending. |
 | CH-6 | The chooser follows the theme: title in `accent`, hints in `muted`, the selected row in `active`, agent states in the accent, danger and muted colours, all on the `surface`. | [THEMES][th-beyond] | Keep | | Not started |
-| CH-7 | **Attach session** attaches a session to a pane that already has a shell. The pane's shell keeps running in the background (parked). | [GUIDE][g-attach], [SHORTCUTS][sc-ws] | Keep | Keys are KB-5. | In progress: pane header, tab options and Command-Shift-A save existing-session attachments before replacing the client; fresh cwd snapshots and desktop acceptance pending. |
-| CH-8 | **Return to shell** in the tab menu brings the parked shell back. | [GUIDE][g-attach], [SHORTCUTS][sc-ws] | Keep | | In progress: captured-pane return saves before reconnecting its existing library shell; missing-shell creation and desktop acceptance pending. |
+| CH-7 | **Attach session** attaches a session to a pane that already has a shell. The pane's shell keeps running in the background (parked). | [GUIDE][g-attach], [SHORTCUTS][sc-ws] | Keep | Keys are KB-5. | In progress: native attachment choices save before replacing the client; ordinary-shell cwd is refreshed before saves; desktop acceptance pending. |
+| CH-8 | **Return to shell** in the tab menu brings the parked shell back. | [GUIDE][g-attach], [SHORTCUTS][sc-ws] | Keep |  | In progress: Return to shell saves before reconnecting its existing library shell. If absent, Open terminal starts it explicitly; desktop acceptance pending. |
 | CH-9 | Each split can attach a different session or stay an ordinary terminal. | [GUIDE][g-attach] | Keep | | Not started |
 | CH-10 | Once open, the attachment chooser keeps its destination pane even if focus moves to another pane. | [GUIDE][g-resize] | Keep | | In progress: native chooser retains its captured destination across focus changes within the tab; desktop acceptance pending. |
 | CH-11 | If another window removes or changes the chooser's destination, the user attaches again from the updated pane; the tool does not overwrite the other window's change. | [GUIDE][g-resize] | Keep | | In progress: refresh guards and transactional conflicts reject removed, filled or changed destinations before installing a replacement; desktop acceptance pending. |
@@ -156,29 +160,27 @@ connected window does not yet complete these workflows.
 | CH-24 | Session names may contain spaces, Unicode and punctuation. Display text is kept separate from exact tmux targets. | [GUIDE][g-iso], [ACCEPTANCE][ac-checks] | Keep | Always target sessions by exact name, never by prefix match. | Not started |
 | CH-25 | A normal launch lists sessions from one source server: the default socket outside tmux, or the invoking server when started inside tmux. | [GUIDE][g-iso] | Keep | A Dock launch has no invoking server and uses the default socket. | In progress: read-only source-path selection implemented; launch controls and discovery activation pending. |
 | CH-26 | `--source-socket PATH` selects another source server. | [GUIDE][g-iso] | Keep | | In progress: read-only source-path selection implemented; launch controls and discovery activation pending. |
-| CH-27 | Each new attachment saves its source socket. If a later launch uses a different source server, the pane still connects to its saved server, and the panel labels it "saved server". | [GUIDE][g-iso] | Keep | | In progress: native attachment choices save the resolved source socket explicitly; saved-server label and desktop acceptance pending. In progress: read-only source resolution and per-server availability implemented; native labels and attachment lifecycle pending. |
+| CH-27 | Each new attachment saves its source socket. If a later launch uses a different source server, the pane still connects to its saved server, and the panel labels it "saved server". | [GUIDE][g-iso] | Keep | | In progress: native attachment choices save the resolved source socket explicitly and reconnect to that source; saved-server label and desktop acceptance pending. |
 | CH-28 | Older version-2 references without a saved socket use the launcher's source socket. | [GUIDE][g-iso] | Keep | | In progress: read-only legacy source fallback implemented; attachment lifecycle pending. |
-| CH-29 | A missing source server counts as an empty, successful session list, so a fresh install needs no external sessions. A failed tmux listing marks sessions unavailable instead of keeping stale "online" claims. | [ARCHITECTURE][ar-provider] | Keep | Control-mode notifications can replace some periodic listing. | In progress: native chooser consumes bounded source discovery, clears failed availability and recovers automatically; desktop acceptance pending. In progress: bounded read-only query and worker clear availability on failure and recover on later polls; metadata composition and controls pending. |
+| CH-29 | A missing source server counts as an empty, successful session list, so a fresh install needs no external sessions. A failed tmux listing marks sessions unavailable instead of keeping stale "online" claims. | [ARCHITECTURE][ar-provider] | Keep | Control-mode notifications can replace some periodic listing. | In progress: native chooser consumes bounded source discovery, clears failed availability and recovers automatically; desktop acceptance pending. |
 | CH-30 | When the viewer runs inside tmux, the session hosting it cannot be attached inside itself; the pane explains this and offers to return to its shell. | [GUIDE][g-limits], [GUIDE][g-tpm], [ACCEPTANCE][ac-checks] | Drop | The app draws in its own native window and is never hosted inside a tmux pane, so this loop cannot happen. | Not started |
 | CH-31 | **Attach session** and the attach shortcut work on every supported tmux version. | [GUIDE][g-resize], [SHORTCUTS][sc-right] | Keep | | Not started |
 | CH-32 | Inside an attachment, the usual `Ctrl-b` prefix reaches the inner tmux client. | [GUIDE][g-keys] | Open | In control mode there is no inner tmux client to read the attached session's prefix keys. Decide whether the app sends such keys literally, imitates common tmux bindings, or offers its own window controls for attached sessions. Evidence: [tmux control mode research](research/tmux-control-mode.md#input-prefix-keys-mouse-and-history-ownership). | Not started |
-| CH-33 | An attached session is shown through a full nested tmux client, so tmux draws that session's windows, panes and status line inside the leaf. | [GUIDE][g-iso], [GUIDE][g-attach] | Open | The app must draw the attached session's current window, including that window's own panes, inside one leaf. Decide how those inner panes look and how the user switches the session's windows. Evidence: [tmux control mode research](research/tmux-control-mode.md#decisions-that-materially-change-the-architecture). | In progress: existing windows have native controls and their inner panes render natively; custom tmux modes/status and desktop acceptance remain pending. |
+| CH-33 | An attached session is shown through a full nested tmux client, so tmux draws that session's windows, panes and status line inside the leaf. | [GUIDE][g-iso], [GUIDE][g-attach] | Change | The selected tmux window’s panes render natively inside the leaf. Pane headers provide window selectors; the selected source window is remembered locally. | Implemented: native window controls and inner-pane rendering; custom tmux modes/status parity and desktop acceptance remain pending. |
 | CH-34 | Scrolling and rendering inside an attachment depend on the outer terminal and the inner session's mouse settings. | [GUIDE][g-limits] | Change | The app owns rendering and scrollback for every pane (IN-25). | Not started |
 
 ## Persistence, concurrent windows and conflict handling
 
 The model/store implements the schema checks below, change tokens and transactional
-saving to existing version-2 libraries. Native windows poll shared changes and
-save renames with conflict handling. Other editing workflows, library creation
-and desktop acceptance remain pending.
-
-Data compatibility lives here. The Rust app reads the same library as the Python
-tool. It writes that library only after PE-15 is in place.
+saving to version-2 libraries. Native windows poll shared changes and save layout
+edits with conflict handling. An absent library is initialized without overwriting
+an existing database. Desktop acceptance remains separate from the automated
+storage and reconciliation checks.
 
 | # | Behaviour (Python tool) | Source | Decision | Notes | Status |
 | --- | --- | --- | --- | --- | --- |
-| PE-1 | The library directory is chosen in this order: `--data-dir`, then `$TMUX_WORKSPACES_DATA_DIR`, then `$XDG_DATA_HOME/tmux-workspaces`, then `~/.local/share/tmux-workspaces`. | [GUIDE][g-iso], [NAMING][nm-compat], [PACKAGING][pk-layout] | Keep | Use the same order on macOS too (not `~/Library/Application Support`), so both tools open the same library. | In progress: read-only path selection, CLI --data-dir and native folder selection implemented; library creation pending. |
-| PE-2 | Workspaces, ordered tabs, terminal identities and split layouts live in `layouts.db`, a SQLite database with schema version 2. | [GUIDE][g-iso], [ARCHITECTURE][ar-modules] | Keep | Read support first. Write support waits for PE-15. | In progress |
+| PE-1 | The library directory is chosen in this order: `--data-dir`, then `$TMUX_WORKSPACES_DATA_DIR`, then `$XDG_DATA_HOME/tmux-workspaces`, then `~/.local/share/tmux-workspaces`. | [GUIDE][g-iso], [NAMING][nm-compat], [PACKAGING][pk-layout] | Keep | Use the same order on macOS too (not `~/Library/Application Support`), so both tools open the same library. | Implemented: path precedence, folder selection and absent-library initialization; existing invalid libraries are not replaced. |
+| PE-2 | Workspaces, ordered tabs, terminal identities and split layouts live in `layouts.db`, a SQLite database with schema version 2. | [GUIDE][g-iso], [ARCHITECTURE][ar-modules] | Keep | Transactional writes use PE-15’s merge rules. | Implemented: schema validation, initialization and native layout saves. |
 | PE-3 | The current arrangement is in the `terminal_layout` table. The earlier `layout` and `shared_layout` tables are kept with their exact JSON text and are never used as a silent fallback. | [RECOVERY][rc-copy], [GUIDE][g-iso] | Keep | | In progress |
 | PE-4 | Older layouts are imported once into the terminal library in the same database. Old viewers cannot overwrite the new library, and later edits made in an old version are not synchronized. | [GUIDE][g-iso] | Open | Decide whether the Rust app performs this one-time import itself, or asks the user to open the library once with the Python tool first. | Not started |
 | PE-5 | A library written by an unsupported future version is refused. The version number must not be edited to get past validation. | [RECOVERY][rc-copy] | Keep | | In progress |
@@ -190,14 +192,14 @@ tool. It writes that library only after PE-15 is in place.
 | PE-11 | Limits: tree depth 64, data depth 128, 10000 containers or identified objects, 100000 data values and 16 MiB of JSON text. The size limit is also checked before saving or migrating, so a write cannot create a record the next read refuses. | [RECOVERY][rc-valid] | Keep | | In progress |
 | PE-12 | Duplicate JSON keys, non-finite numbers, invalid JSON and malformed SQLite schemas are rejected without rewriting any record. | [RECOVERY][rc-valid] | Keep | | In progress |
 | PE-13 | `layouts.db-wal` and `layouts.db-shm` may sit beside the database and hold committed data that has not reached the main file yet. | [RECOVERY][rc-keep] | Keep | The Python tool does not enable write-ahead logging; it uses SQLite's default rollback journal. If these files exist, let SQLite use them, never change the journal mode and never delete them. Keep read transactions short so the Python tool's five-second busy timeout is not exhausted ([research](research/rust-architecture.md#sqlite-and-python-compatibility)). | In progress |
-| PE-14 | Ordinary shells run on a persistent shell server that belongs to the library. Leaves have stable identities, and opening the same terminal in two windows attaches to the same running shell. | [GUIDE][g-iso], [NAMING][nm-compat] | Keep | From the Python source, not its docs: the shell server socket is `/tmp/tmux-workspaces-<uid>/<first 16 hex digits of the SHA-256 of the resolved library path>-terminals.sock`, and each ordinary shell is the session `terminal-<leaf id>` on it. Derive both the same way. | In progress: read-only shell socket and session identity lookup implemented; connection/lifecycle integration pending. |
-| PE-15 | Concurrent edits to different items are merged. A conflicting edit to the same item is refreshed, and the user is asked to retry. | [GUIDE][g-iso], [ACCEPTANCE][ac-checks] | Keep | This three-way merge is the gate for writing `layouts.db`. | In progress: native edits use transactional three-way saving, preserve retryable failures and show conflict refresh; desktop acceptance pending. In progress: document reconciliation and window state merge local edits or refresh conflicts while retaining navigation and the correct merge base; persistence and UI refresh pending. |
-| PE-16 | If another window changes the active pane's layout or attachment, focus moves to the navigation panel, so typing cannot land in a different terminal. | [GUIDE][g-iso] | Keep | | In progress: native controller applies active-tree focus handoff before replacement input; desktop acceptance pending. In progress: window-local input eligibility returns to navigation on an active-tree refresh or conflict and requires explicit terminal focus; product controls and keyboard dispatch pending. |
-| PE-17 | A rename that conflicts with another window's rename or deletion is cancelled instead of overwriting it. | [INLINE_RENAME][ir-use] | Keep | | In progress: native save applies conflict refresh and displays retry; database integration tested, desktop acceptance pending. In progress: model inline-rename guards and document reconciliation implemented; native editor and persistence pending. |
-| PE-18 | Shared names, tabs, arrangements and attachment availability refresh during normal use, without a restart. | [REFRESH][rf-reopen] | Keep | The Python docs do not give an interval. Watching the database file or polling are both possible. | In progress: native browser applies read-only library updates while retaining local selection; terminal availability integration pending. In progress: read-only storage worker publishes validated updates and window state applies successive document refreshes; UI integration pending. |
-| PE-19 | Each window keeps its own selected workspace, tab, pane, focus mode and dimensions. The library is shared, and closing one window leaves the others running. | [GUIDE][g-iso], [SHORTCUTS][sc-top] | Keep | Windows of one app process behave like separate viewers. | In progress: Command-N and New Window open independent native browsers on the current library; each retains its own navigation and connections. Native desktop acceptance remains pending. In progress: model retains local selection; app windows pending. |
+| PE-14 | Ordinary shells run on a persistent shell server that belongs to the library. Leaves have stable identities, and opening the same terminal in two windows attaches to the same running shell. | [GUIDE][g-iso], [NAMING][nm-compat] | Keep | From the Python source, not its docs: the shell server socket is `/tmp/tmux-workspaces-<uid>/<first 16 hex digits of the SHA-256 of the resolved library path>-terminals.sock`, and each ordinary shell is the session `terminal-<leaf id>` on it. Derive both the same way. | In progress: native creation, existing-shell reuse and private-server compatibility checks implemented; desktop acceptance pending. |
+| PE-15 | Concurrent edits to different items are merged. A conflicting edit to the same item is refreshed, and the user is asked to retry. | [GUIDE][g-iso], [ACCEPTANCE][ac-checks] | Keep | This three-way merge is the gate for writing `layouts.db`. | In progress: transactional three-way saves preserve retryable failures and refresh conflicts while retaining local navigation; desktop acceptance pending. |
+| PE-16 | If another window changes the active pane's layout or attachment, focus moves to the navigation panel, so typing cannot land in a different terminal. | [GUIDE][g-iso] | Keep |  | In progress: active-tree refresh hands focus to navigation before replacing input; desktop acceptance pending. |
+| PE-17 | A rename that conflicts with another window's rename or deletion is cancelled instead of overwriting it. | [INLINE_RENAME][ir-use] | Keep |  | In progress: save conflicts refresh the arrangement and ask for another edit; database integration tested, desktop acceptance pending. |
+| PE-18 | Shared names, tabs, arrangements and attachment availability refresh during normal use, without a restart. | [REFRESH][rf-reopen] | Keep | The Python docs do not give an interval. Watching the database file or polling are both possible. | In progress: native windows apply validated library updates while retaining local selection; session discovery polls separately and unavailable terminals offer Reconnect. |
+| PE-19 | Each window keeps its own selected workspace, tab, pane, focus mode and dimensions. The library is shared, and closing one window leaves the others running. | [GUIDE][g-iso], [SHORTCUTS][sc-top] | Keep | Windows of one app process behave like separate viewers. | In progress: New Window opens an independent native browser on the current library, with local navigation and connections; desktop acceptance pending. |
 | PE-20 | The last-used navigation seeds new windows. | [GUIDE][g-iso] | Keep | | In progress |
-| PE-21 | The store holds one shared arrangement. Each running window keeps its own selected workspace, tab, pane and focus mode in memory, and the last-used navigation seeds new windows. The agents toggle is saved with the layout. | [ARCHITECTURE][ar-modules], [GUIDE][g-iso], [GUIDE][g-bb] | Open | Until write support lands, decide whether the app keeps navigation and edits in memory only, or disables editing. | Not started |
+| PE-21 | The store holds one shared arrangement. Each running window keeps its own selected workspace, tab, pane and focus mode in memory, and the last-used navigation seeds new windows. The agents toggle is saved with the layout. | [ARCHITECTURE][ar-modules], [GUIDE][g-iso], [GUIDE][g-bb] | Keep | Native edits save transactionally. Navigation and focus remain window-local; the agents toggle saves with the layout. | In progress: implemented; multi-window desktop acceptance pending. |
 | PE-22 | The tool stores references, not transcripts or credentials. | [GUIDE][g-iso] | Keep | | Not started |
 | PE-23 | No other checkout's layouts are imported by default; `--data-dir` selects a separate library. | [GUIDE][g-iso] | Keep | | Not started |
 | PE-24 | Runtime manifests under `windows/<instance>/` in the library name each window's sockets. Closing a window cleans up only its own display server and action socket. | [GUIDE][g-iso] | Drop | The app has no display server or action socket. It must leave the Python tool's manifests alone. | Not started |
@@ -229,30 +231,30 @@ tool. It writes that library only after PE-15 is in place.
 
 | # | Behaviour (Python tool) | Source | Decision | Notes | Status |
 | --- | --- | --- | --- | --- | --- |
-| AG-1 | The roster is optional. Workspaces work fully without it, and it adds no notifications. | [README][rd-top], [GUIDE][g-top] | Keep | | Not started |
+| AG-1 | The roster is optional. Workspaces work fully without it, and it adds no notifications. | [README][rd-top], [GUIDE][g-top] | Keep |  | In progress: standalone startup, discovery and terminals do not depend on the optional roster; full platform runtime acceptance pending. |
 | AG-2 | The roster appears only when a state-reporting source is connected: Backbone, found on its own, or the demo. | [GUIDE][g-bb] | Keep | | Not started |
-| AG-3 | The Backbone adapter turns on by itself when Backbone's data directory (`~/.local/share/agent-backbone`, or `$BACKBONE_DATA_DIR`) holds its database. `--no-backbone` keeps it off; `--backbone` asks for it. | [GUIDE][g-bb], [ARCHITECTURE][ar-modules] | Keep | | In progress: enablement and directory resolution implemented without configuration reads; product startup wiring pending. |
-| AG-4 | `--backbone-data-dir PATH` selects another installation. `--url http://127.0.0.1:PORT` sets the address and is required when it cannot be read from SQLite, including PostgreSQL setups. | [GUIDE][g-bb], [SHORTCUTS][sc-top] | Keep | | In progress: enablement and directory resolution implemented without configuration reads; product startup wiring pending. |
-| AG-5 | The adapter reads the API address from Backbone's settings database in read-only mode and the API key from Backbone's `.env`. It never changes those files. | [GUIDE][g-bb], [ARCHITECTURE][ar-provider] | Keep | | In progress: lazy read-only configuration and precedence implemented; product startup wiring pending. |
-| AG-6 | It polls the existing `/api/agents` endpoint every five seconds with loopback HTTP GET requests, without proxies or redirects, and uses Backbone's own state decisions. | [GUIDE][g-bb], [ARCHITECTURE][ar-provider] | Keep | | In progress: bounded loopback GET, lazy configuration and explicit five-second worker implemented; product startup wiring pending. |
-| AG-7 | Unless Backbone is requested with `--backbone`, `--backbone-data-dir` or `--url`, a launch without Backbone's database (and not in demo mode) loads no Backbone provider, reads no Backbone configuration and calls no API. | [ARCHITECTURE][ar-provider], [ARCHITECTURE][ar-life], [ACCEPTANCE][ac-checks] | Keep | | In progress: enablement and directory resolution implemented without configuration reads; product startup wiring pending. |
-| AG-8 | One row per active agent: a state symbol in a fixed slot, then the name. Offline agents take no row. | [GUIDE][g-bb], [UI_PREVIEW][up-org] | Keep | | In progress: snapshot projection omits offline agents; native rows pending. |
+| AG-3 | The Backbone adapter turns on by itself when Backbone's data directory (`~/.local/share/agent-backbone`, or `$BACKBONE_DATA_DIR`) holds its database. `--no-backbone` keeps it off; `--backbone` asks for it. | [GUIDE][g-bb], [ARCHITECTURE][ar-modules] | Keep |  | In progress: native startup auto-detects the database and honors BACKBONE_DATA_DIR. The --backbone and --no-backbone CLI switches are not implemented. |
+| AG-4 | `--backbone-data-dir PATH` selects another installation. `--url http://127.0.0.1:PORT` sets the address and is required when it cannot be read from SQLite, including PostgreSQL setups. | [GUIDE][g-bb], [SHORTCUTS][sc-top] | Keep |  | Not started in the product CLI. Provider resolution supports explicit arguments internally; main.rs exposes none of these switches. |
+| AG-5 | The adapter reads the API address from Backbone's settings database in read-only mode and the API key from Backbone's `.env`. It never changes those files. | [GUIDE][g-bb], [ARCHITECTURE][ar-provider] | Keep |  | Implemented: native startup uses bounded, read-only provider configuration and credential lookup. |
+| AG-6 | It polls the existing `/api/agents` endpoint every five seconds with loopback HTTP GET requests, without proxies or redirects, and uses Backbone's own state decisions. | [GUIDE][g-bb], [ARCHITECTURE][ar-provider] | Change | The native worker waits two seconds after each completed attempt. | Implemented: bounded loopback GET without proxies or redirects; uses reported states. |
+| AG-7 | Unless Backbone is requested with `--backbone`, `--backbone-data-dir` or `--url`, a launch without Backbone's database (and not in demo mode) loads no Backbone provider, reads no Backbone configuration and calls no API. | [ARCHITECTURE][ar-provider], [ARCHITECTURE][ar-life], [ACCEPTANCE][ac-checks] | Keep |  | In progress: absent-database startup skips provider configuration and API requests. Explicit provider switches and demo mode are not implemented. |
+| AG-8 | One row per active agent: a state symbol in a fixed slot, then the name. Offline agents take no row. | [GUIDE][g-bb], [UI_PREVIEW][up-org] | Keep |  | Implemented: the native sidebar projects active agents into rows; offline agents are omitted. |
 | AG-9 | Symbols: `▶` working, `!` needs you (waiting for input, or blocked), `○` idle, `?` unknown. | [GUIDE][g-bb], [README][rd-top] | Keep | Keep the symbols with any colour, so a state never depends on colour alone. | Not started |
 | AG-10 | Working agents use the `accent` colour; agents that need you use the `danger` colour. | [THEMES][th-roles] | Keep | | Not started |
-| AG-11 | States come only from Backbone's reports, never from terminal text or a running process. | [GUIDE][g-bb] | Keep | | In progress: decoder and independent polling retain reported states without inference; product controls pending. |
-| AG-12 | Order: agents that need you, then working agents, then the rest, each group by name. A row moves when its state changes. | [GUIDE][g-bb], [CHANGELOG][cl] | Keep | | In progress: snapshot projection orders by attention, case-folded name and exact name; native rows pending. |
+| AG-11 | States come only from Backbone's reports, never from terminal text or a running process. | [GUIDE][g-bb] | Keep |  | Implemented: native rows use provider-reported states, never terminal inference. |
+| AG-12 | Order: agents that need you, then working agents, then the rest, each group by name. A row moves when its state changes. | [GUIDE][g-bb], [CHANGELOG][cl] | Keep |  | Implemented: sidebar rows follow attention ordering and case-folded name ordering. |
 | AG-13 | The roster uses the height the tab list leaves, so a tall window shows every active agent. When not all fit, the label row shows the total and scroll arrows. | [GUIDE][g-bb], [CHANGELOG][cl], [UI_PREVIEW][up-org] | Keep | | Not started |
 | AG-14 | The tab list keeps its rows first, but agents that need you or are working keep their rows while the tab list keeps four rows, or one per tab when there are fewer. | [GUIDE][g-bb] | Keep | Translate rows into native heights. | Not started |
-| AG-15 | With no active agents the section shows one quiet row, *No active agents*. When the connection fails it shows *Roster unavailable* instead of old states. | [GUIDE][g-bb], [UI_PREVIEW][up-org] | Keep | | In progress: snapshot projection distinguishes unavailable from successful empty results and suppresses stale rows; native status pending. |
+| AG-15 | With no active agents the section shows one quiet row, *No active agents*. When the connection fails it shows *Roster unavailable* instead of old states. | [GUIDE][g-bb], [UI_PREVIEW][up-org] | Keep |  | Implemented: native sidebar distinguishes empty results from unavailable provider state and hides stale rows. |
 | AG-16 | After a failed read, cached states stay but are marked stale, with a fixed error that never includes credentials, response bodies or exception text. A later successful read clears it. | [GUIDE][g-bb], [ARCHITECTURE][ar-provider] | Keep | | In progress: bounded decoding, configured polling and stale-state recovery implemented; product controls pending. |
 | AG-17 | One provider's failure cannot stop polling or remove live sessions found by tmux discovery. | [ARCHITECTURE][ar-provider] | Keep | | In progress: observation composition and a separate roster worker preserve independent session discovery; product integration pending. |
 | AG-18 | Agent names from the API may stay as offline references, but an API state can never make a missing tmux session attachable. | [ARCHITECTURE][ar-provider] | Keep | | In progress: metadata availability claims discarded; composed availability comes only from discovery. Product controls pending. |
 | AG-19 | Generic tmux sessions stay available beside configured agents, including offline entries. | [GUIDE][g-bb] | Keep | | In progress: composition retains generic sessions and offline metadata references; product controls pending. |
 | AG-20 | The roster does not follow the selected tab or pane. | [GUIDE][g-bb] | Keep | | Not started |
-| AG-21 | Clicking an agent's row goes to a tab already showing its session, switching workspace if needed. If several tabs do, it picks the one this window showed most recently. It never attaches or starts anything. | [GUIDE][g-bb] | Keep | | In progress: model, read-only source-path resolution and per-window viewing history select an existing attachment by source server, current tab, recency and pane focus; product refresh/display and input handoff pending. |
-| AG-22 | If no tab shows that agent's session, the click opens **Agent status…**, which says so. | [GUIDE][g-bb] | Keep | | In progress: model reports no match without changing navigation; status UI pending. |
+| AG-21 | Clicking an agent's row goes to a tab already showing its session, switching workspace if needed. If several tabs do, it picks the one this window showed most recently. It never attaches or starts anything. | [GUIDE][g-bb] | Change | A click prefers the current tab, then the first matching tab in layout order, matching the source server. It never attaches or starts a session. | Implemented: native row click navigates to an existing attachment. |
+| AG-22 | If no tab shows that agent's session, the click opens **Agent status…**, which says so. | [GUIDE][g-bb] | Change | The native status row reports No tab shows <name>; it opens no status dialog. | Implemented |
 | AG-23 | **Agent status…** in Configure… spells out each state and ends with the symbol legend. | [GUIDE][g-bb], [UI_PREVIEW][up-org] | Keep | | Not started |
-| AG-24 | The roster can be hidden with **Show agents** in Configure…, with `Ctrl-g A`, or by clicking **agents shown** in the status row. The choice is saved with the layout, applies before the first frame and hides the whole section. | [GUIDE][g-bb], [README][rd-keys] | Keep | Saving the choice depends on PE-21. | Not started |
+| AG-24 | The roster can be hidden with **Show agents** in Configure…, with `Ctrl-g A`, or by clicking **agents shown** in the status row. The choice is saved with the layout, applies before the first frame and hides the whole section. | [GUIDE][g-bb], [README][rd-keys] | Change | Native Settings and the status-row agents toggle save the choice with the layout. The legacy prefix is not dispatched. | Implemented |
 | AG-25 | Ordinary terminals stay usable when Backbone's configuration or API is unavailable. | [GUIDE][g-bb] | Keep | | Not started |
 
 ## Settings: themes, keymaps, the JSON editor, refresh
@@ -292,7 +294,7 @@ themselves are listed under [Default key bindings](#default-key-bindings).
 | TH-25 | At least eight colours and six colour pairs are required; there is no monochrome mode. | [THEMES][th-palettes], [STARTUP][su-term] | Drop | A check on the hosting terminal. | Not started |
 | TH-26 | An invalid or unreadable startup theme keeps the shipped colours and shows a diagnostic. If the terminal refuses theme installation, startup falls back to the shipped theme, then to the terminal's own colours. | [THEMES][th-edit] | Change | Keep the invalid-file fallback and the diagnostic. The terminal-refusal fallback does not apply. | Loader fallback and diagnostic implemented; startup pending |
 | TH-27 | The font, its size, glyph availability and the colours programs print belong to the terminal. The viewer offers no font setting and never edits terminal or operating-system settings. | [THEMES][th-keeps] | Open | The app draws text itself, so it must own font family, size, fallback glyphs and the terminal colour palette. Decide where these settings live, given that `theme.toml` must stay readable by the Python tool. | Not started |
-| TH-28 | Saved colours apply to the window that saved them when the editor closes. Other windows keep their colours until they reload. | [JSON_SETTINGS][js-save], [THEMES][th-file] | Open | Decide whether a save applies to every window of the app, or only to the saving window as in the Python tool. | Not started |
+| TH-28 | Saved colours apply to the window that saved them when the editor closes. Other windows keep their colours until they reload. | [JSON_SETTINGS][js-save], [THEMES][th-file] | Change | Native appearance changes apply to every open window immediately and are saved in settings.toml. | Implemented: native Settings updates all windows in the process. |
 | TH-29 | A saved theme reaches every open part of the window at once, including separators, choosers and popups. | [THEMES][th-beyond], [THEMES][th-notest], [CHANGELOG][cl] | Keep | | Not started |
 | TH-30 | Popups use a rounded frame on the panel with a dim border, a title bar shaded from warm dark amber to the header colour, and a footer on the `header` ground. JSON keys and strings in the editor have fixed colours. | [THEMES][th-beyond] | Keep | | Not started |
 | TH-31 | Pressing `t` while the sidebar has focus and no menu is open opens **Edit theme…**. | [THEMES][th-edit] | Keep | | Not started |
@@ -401,7 +403,7 @@ themselves are listed under [Default key bindings](#default-key-bindings).
 | IN-15 | `Ctrl-g y` (or `Command-C` in a dedicated Ghostty window) copies the selection. The highlight stays after copying. Copying with no selection does nothing. | [SHORTCUTS][sc-copy], [GUIDE][g-keys] | Keep | | Not started |
 | IN-16 | Escape or a click outside the selection clears it; a click elsewhere in the same pane also returns to the live terminal. | [SHORTCUTS][sc-copy], [GUIDE][g-keys] | Keep | | Not started |
 | IN-17 | Copying writes the clipboard through tmux's OSC 52 output, so the terminal must support and allow clipboard writes. | [SHORTCUTS][sc-copy], [GUIDE][g-limits], [ACCEPTANCE][ac-limits] | Change | The app writes the system clipboard directly. | In progress: Command-C and Linux Control-Shift-C copy the native selection; desktop clipboard acceptance pending. |
-| IN-18 | A resize or layout change may clear the selection. | [SHORTCUTS][sc-copy] | Change | The selection lives in the app's terminal state, so it survives tab switches. A resize that reflows text may still clear it. | Not started |
+| IN-18 | A resize or layout change may clear the selection. | [SHORTCUTS][sc-copy] | Change | Selection belongs to the current native terminal entity. Switching tabs drops that entity and its text selection; resizing or layout changes can also clear it. | Implemented; broader desktop selection acceptance pending. |
 | IN-19 | `Command-V` paste, font-size keys, app preferences and normal shell Control shortcuts keep their usual behaviour. | [SHORTCUTS][sc-ws] | Change | The app implements paste, font size and preferences itself. Paste uses bracketed paste when the program has turned it on. | In progress: native paste and mode-aware control keys implemented; font size, preferences and desktop acceptance pending. |
 | IN-20 | Bracketed paste works with an ordinary interactive shell. | [ARCHITECTURE][ar-input], [PERFORMANCE][pf-nav] | Keep | | In progress: engine and private tmux byte-delivery tests pass; native clipboard-to-shell acceptance pending. |
 | IN-21 | The private viewer turns off tmux's `assume-paste-time`, so rapid text cannot slip past shortcut bindings. | [ARCHITECTURE][ar-input] | Drop | No private tmux server reads the keyboard. | Not started |
@@ -452,16 +454,16 @@ Prefix keys are pressed after `Ctrl-g`. Direct keys are written in
 
 | # | Behaviour (Python tool) | Source | Decision | Notes | Status |
 | --- | --- | --- | --- | --- | --- |
-| VL-1 | The navigation panel is 22 columns wide, flush with the window's left edge, and dragging pane separators never changes its width. | [GUIDE][g-resize], [UI_PREVIEW][up-org], [THEMES][th-beyond] | Open | The width becomes a native size. Decide whether it stays fixed or the user can drag the sidebar edge. | Not started |
+| VL-1 | The navigation panel is 22 columns wide, flush with the window's left edge, and dragging pane separators never changes its width. | [GUIDE][g-resize], [UI_PREVIEW][up-org], [THEMES][th-beyond] | Change | The panel uses the design token’s default width and has a draggable right edge. Its saved width is independent of pane split ratios. | Implemented |
 | VL-2 | Terminals sit on a slightly lighter `surface` beside the `panel`. One thin line in the `outline` colour separates the panel from the content, and split panes from each other, with no extra border or padding column. | [GUIDE][g-resize], [THEMES][th-beyond], [UI_PREVIEW][up-org] | Keep | | Not started |
-| VL-3 | No border marks the focused pane; the cursor does. | [GUIDE][g-resize], [THEMES][th-beyond], [UI_PREVIEW][up-org] | Open | Decide whether the app adds a focus cue, such as dimming inactive panes. | Not started |
+| VL-3 | No border marks the focused pane; the cursor does. | [GUIDE][g-resize], [THEMES][th-beyond], [UI_PREVIEW][up-org] | Change | The focused pane has an accent ring; other panes are dimmed according to the design tokens. | Implemented |
 | VL-4 | The panel's first row is the workspace heading on the header bar: the workspace icon when one is set, the name, and a `▾` chooser at the right. | [UI_PREVIEW][up-org] | Keep | | Not started |
 | VL-5 | A blank row follows the heading; the inline-rename hint uses it. | [UI_PREVIEW][up-org] | Keep | | Not started |
 | VL-6 | Then the `TABS` label with the `+` that adds a tab, then one row per tab: its number, its name and one `▮` per pane. Nothing else repeats what a tab's panes hold. | [UI_PREVIEW][up-org], [README][rd-top] | Keep | | Not started |
 | VL-7 | The selected tab is one filled row with its name in bold and a `⋯` at the right end. Long names end with an ellipsis. | [UI_PREVIEW][up-org] | Keep | | Not started |
 | VL-8 | From the last row up: the workspace icon row, **Configure…**, then a blank row. The AGENTS section sits above that when shown. | [UI_PREVIEW][up-org] | Keep | | Not started |
 | VL-9 | **Configure…** lists Edit theme…, Edit shortcuts…, View shortcuts…, Refresh viewer…, then Show agents and Agent status…, then Detach after a rule. | [UI_PREVIEW][up-org], [GUIDE][g-settings] | Keep | Refresh viewer… becomes the reload action (RF-1). | Not started |
-| VL-10 | Menus take the place of the tab list in the panel, headed by **‹ Back**, with each row's prefix key at its right end. | [UI_PREVIEW][up-org], [THEMES][th-roles] | Open | Decide between in-panel menus, as in the Python tool, and native context menus or popovers. Keyboard navigation (IN-4) stays either way. | Not started |
+| VL-10 | Menus take the place of the tab list in the panel, headed by **‹ Back**, with each row's prefix key at its right end. | [UI_PREVIEW][up-org], [THEMES][th-roles] | Change | Native popovers display workspace/tab options; configurable shortcut labels come from the current bindings. Full menu keyboard navigation remains pending. | In progress |
 | VL-11 | The navigation panel scrolls with the wheel or its arrow controls. | [GUIDE][g-ws] | Keep | | Not started |
 | VL-12 | A navigation panel shorter than 16 rows shows a hint to enlarge the window, and core shortcuts keep working. | [UI_PREVIEW][up-try2] | Change | Set a native minimum window size, and keep a hint if content still cannot fit. | Not started |
 | VL-13 | The status row runs along the bottom of the window on the `panel` colour, with one cell of inset on each side, no line above it and no blank padding rows. | [GUIDE][g-settings], [THEMES][th-beyond], [UI_PREVIEW][up-org] | Keep | | Not started |
@@ -494,7 +496,7 @@ Prefix keys are pressed after `Ctrl-g`. Direct keys are written in
 | SU-13 | An invalid library stops the launch before any server or shell starts. The error names `layouts.db` and the invalid field or database problem. Nothing is repaired automatically, and older tables are never used as a fallback. | [RECOVERY][rc-top], [ARCHITECTURE][ar-valid] | Keep | | Not started |
 | SU-14 | A running viewer refuses to refresh or save over an invalid current record. | [RECOVERY][rc-top], [ARCHITECTURE][ar-valid] | Keep | | Not started |
 | SU-15 | Recovery advice: do not delete `layouts.db`; keep the `-wal` and `-shm` files; exit every viewer, then copy the whole directory to a new location; use SQLite's backup tools if a writer cannot be closed. | [RECOVERY][rc-keep] | Keep | Carry this advice into the Rust app's docs. | Not started |
-| SU-16 | `--data-dir` with a new directory starts an independent library and shell server and leaves the original untouched. A backup restored into another directory opens the same way. | [RECOVERY][rc-continue], [RECOVERY][rc-copy] | Keep | | Not started |
+| SU-16 | `--data-dir` with a new directory starts an independent library and shell server and leaves the original untouched. A backup restored into another directory opens the same way. | [RECOVERY][rc-continue], [RECOVERY][rc-copy] | Change | An absent database creates an empty workspace, not a running shell server. Open terminal starts the library’s shell server explicitly. | Implemented in [#68](https://github.com/eandualem/tmux-workspaces-rs/pull/68); existing libraries are preserved. |
 | SU-17 | There is no automatic repair or export command. | [RECOVERY][rc-copy] | Keep | | Not started |
 | SU-18 | Split dragging, clicks on panes while an attachment starts, and input sent during startup are each handled once, in order. | [CHANGELOG][cl] | Keep | | Not started |
 | SU-19 | Losing the private display server unexpectedly ends the viewer with a non-zero exit status. | [ARCHITECTURE][ar-life] | Change | There is no display server. A lost tmux connection is reported per pane, and the window stays open. | Not started |
@@ -535,7 +537,7 @@ Prefix keys are pressed after `Ctrl-g`. Direct keys are written in
 | LP-17 | Uninstalling removes only owned files and links. It never kills processes or deletes libraries, sockets, shells, sessions or settings. | [PACKAGING][pk-upgrade] | Keep | | Not started |
 | LP-18 | There is no `brew services` unit, background updater or automatic cleanup. | [PACKAGING][pk-upgrade] | Keep | Fits the rule that the app runs no daemon. | Not started |
 | LP-19 | Renaming the project keeps environment variable names, XDG configuration paths, `tmux-workspaces.tmux` and the `@tmux-workspaces-*` options. The proposed future name, Muxstead, has no command yet. | [NAMING][nm-compat], [NAMING][nm-top] | Keep | Use the same environment variable names and configuration paths. | Not started |
-| LP-20 | No terminal plugin, browser or Backbone service is required. | [GUIDE][g-top] | Keep | | Not started |
+| LP-20 | No terminal plugin, browser or Backbone service is required. | [GUIDE][g-top] | Keep |  | In progress: no plugin, Python runtime or Backbone service is required; Linux desktop runtime acceptance remains pending. |
 | LP-21 | CI runs the lint, unit and real-terminal suites on Ubuntu and macOS. | [ACCEPTANCE][ac-platform] | Keep | Rust CI covers macOS and Linux. | Not started |
 | LP-22 | Contributors run `make check` (lint and unit tests), `make smoke` (real-terminal suites), `make package-smoke` (two relocated installs of the committed HEAD) and `make benchmark` (options through `BENCHMARK_ARGS`). | [README][rd-top], [ACCEPTANCE][ac-platform], [PACKAGING][pk-verify], [PERFORMANCE][pf-run] | Change | Cargo-based equivalents (`cargo fmt --check`, `cargo clippy`, `cargo test`) plus real-terminal and benchmark suites. | Not started |
 | LP-23 | No installer edits `~/.tmux.conf`, installs TPM, reloads a live tmux server or changes Ghostty settings. | [PACKAGING][pk-install] | Keep | | Not started |
@@ -545,10 +547,10 @@ Prefix keys are pressed after `Ctrl-g`. Direct keys are written in
 
 | # | Behaviour (Python tool) | Source | Decision | Notes | Status |
 | --- | --- | --- | --- | --- | --- |
-| PF-1 | The engineering target for every one- and four-pane tab and workspace navigation path, by click and by direct shortcut, is p50 ≤ 150 ms and p95 ≤ 250 ms, for both shell-client readiness and routed-input acknowledgement. These are acceptance budgets, not machine guarantees; historical quiet-host runs met them. | [PERFORMANCE][pf-top], [PERFORMANCE][pf-gate] | Change | Keep these as ceilings; the app should beat them easily, since switching starts no client. Add native measures: time to the first presented frame, typing latency and frame pacing against plain Ghostty, and bulk output against Ghostty running tmux. | Not started |
+| PF-1 | The engineering target for every one- and four-pane tab and workspace navigation path, by click and by direct shortcut, is p50 ≤ 150 ms and p95 ≤ 250 ms, for both shell-client readiness and routed-input acknowledgement. These are acceptance budgets, not machine guarantees; historical quiet-host runs met them. | [PERFORMANCE][pf-top], [PERFORMANCE][pf-gate] | Change | Keep these ceilings and measure native first-presented-frame, typing latency and frame pacing against plain Ghostty, and bulk output against Ghostty running tmux. Tab switches reconnect visible leaves. | Not accepted: performance gates remain open. |
 | PF-2 | The benchmark uses only disposable resources: unique sockets, temporary directories and a temporary `HOME`. It never uses the default tmux socket or an existing library, and cleanup touches only its own servers. | [PERFORMANCE][pf-run] | Keep | | Not started |
 | PF-3 | The default workload runs one-, four- and eight-pane layouts, three 30-second idle samples per layout and 20 events per navigation group, with two tabs per workspace. `--viewers 2` adds a second viewer that stays on its tab. | [PERFORMANCE][pf-run] | Keep | Port the workload; flag names may differ. | Not started |
-| PF-4 | Shell-client readiness is the time until the destination layout has the expected leaves and every ordinary shell has a client from the exact display pane. | [PERFORMANCE][pf-json] | Change | There are no per-pane clients. Measure until the app holds the destination's terminal state and has presented it. | Not started |
+| PF-4 | Shell-client readiness is the time until the destination layout has the expected leaves and every ordinary shell has a client from the exact display pane. | [PERFORMANCE][pf-json] | Change | Measure destination-client readiness, recovered terminal state and the first presented frame. Each visible leaf has a control-mode connection. | Not accepted |
 | PF-5 | Routed acknowledgement: a unique `printf` probe typed after each navigation must reach only the intended shell; duplicate delivery fails the run. | [PERFORMANCE][pf-json], [PERFORMANCE][pf-not] | Keep | | Not started |
 | PF-6 | "First PTY output" is recorded but is not native paint or frame completion. | [PERFORMANCE][pf-json] | Change | The app can time presented frames directly. | Not started |
 | PF-7 | Observer cost (tmux query count and time) is recorded with each event and never subtracted. | [PERFORMANCE][pf-json] | Keep | | Not started |
@@ -584,20 +586,20 @@ Prefix keys are pressed after `Ctrl-g`. Direct keys are written in
 
 - **No second tmux layer.** The Python tool shows every pane through a nested
   `tmux attach` client on a private display server. The app is a control-mode
-  client and draws panes itself. Tab switches start no process, layout changes
-  cause no redraw flash, and nested-tmux sizing and scrolling quirks go away
-  (SP-13 to SP-15, SH-15, CH-33).
+  client and draws panes itself. Tab switches reconnect visible leaves; ordinary
+  shell processes remain in tmux. Native viewports still participate in tmux sizing
+  (SP-13 to SP-16, SH-15, CH-33).
 - **Keys and mouse are native.** There is no action socket, no tmux prefix
-  table, no CSI translation and no Ghostty profile. The `Ctrl-g` prefix and the
-  Command shortcuts are both read by the app, and the `keymap.toml` format stays
-  the same (IN-1, IN-3, KM-11, KM-15 to KM-17).
+  table or Ghostty profile. Native direct shortcuts are configured in Settings
+  and saved in `settings.toml`. The legacy `keymap.toml` has print-only inspection;
+  its `Ctrl-g` prefix is not dispatched by the desktop (IN-1, KM-15 to KM-17).
 - **Selection, copy and scrollback belong to the app.** Copying uses the system
-  clipboard instead of OSC 52, and a selection survives tab switches (IN-17,
-  IN-18, IN-25).
+  clipboard instead of OSC 52. Text selection is local to the current terminal
+  entity and is lost when switching tabs (IN-17, IN-18, IN-25).
 - **No terminal capability checks.** curses, terminfo, colour-pair and palette
   fallbacks are dropped. In return the app must own fonts and the terminal
   colour palette (TH-22 to TH-25, TH-27, SU-7, SU-8).
-- **Reload instead of refresh.** Theme and keymap changes apply in-process. New
+- **Reload instead of refresh.** Native Settings changes apply in-process. New
   code means an app restart, which is cheap because shells live in tmux. The
   interpreter replacement, supervising parent and recovery shell are dropped
   (RF-1, RF-5 to RF-8).
@@ -607,10 +609,10 @@ Prefix keys are pressed after `Ctrl-g`. Direct keys are written in
 - **Remote use needs a new answer.** The Python tool runs inside an SSH session
   on the tmux host. A desktop app cannot, so remote hosts are an open question
   (RM-1).
-- **Same data, read first.** The library path, `layouts.db` schema version 2,
+- **Shared data and transactional saves.** The library path, `layouts.db` schema version 2,
   the shell server socket and session names, and the helper-session marker all
-  stay the same. The app reads the store first and writes it only after the
-  merge rules land (PE-1, PE-2, PE-14, PE-15, CH-21).
+  stay the same. Native edits use the shared merge rules; absent databases can be
+  initialized without another app (PE-1, PE-2, PE-14, PE-15, CH-21).
 - **No recursive-host case.** The app is never hosted inside a tmux pane, so the
   Python tool's protection against attaching its own host session is not needed
   (CH-30).
@@ -625,44 +627,34 @@ Prefix keys are pressed after `Ctrl-g`. Direct keys are written in
    invoking directory?
 2. **CH-32**: Inside an attached session, what happens to that session's own
    tmux prefix keys (such as `Ctrl-b`)?
-3. **CH-33**: How does the app draw an attached session's current window when
-   that window has its own panes, and how does the user switch its windows?
-4. **PE-4**: Does the Rust app perform the one-time import of older layout
+3. **PE-4**: Does the Rust app perform the one-time import of older layout
    tables, or ask the user to open the library once with the Python tool?
-5. **PE-21**: Until write support lands, are navigation state and edits kept in
-   memory only, or is editing disabled?
-6. **SH-2**: How does an app started from the Dock obtain the user's shell
+4. **SH-2**: How does an app started from the Dock obtain the user's shell
    environment, and what do `TERM` and `COLORTERM` mean without an outer
    terminal?
-7. **TH-9**: What does the colour `default` resolve to in a native app, so the
+5. **TH-9**: What does the colour `default` resolve to in a native app, so the
    `plain`, `forest` and `mono` presets still work?
-8. **TH-27**: Where do font family, size, fallback glyphs and the terminal
+6. **TH-27**: Where do font family, size, fallback glyphs and the terminal
    colour palette live, given that `theme.toml` must stay readable by the
    Python tool?
-9. **TH-28**: Does a saved theme apply to every window of the app, or only to
-   the window that saved it?
-10. **KB-29**: Which modifier do direct shortcuts use by default on Linux, where
+7. **KB-29**: Which modifier do direct shortcuts use by default on Linux, where
     Super is often reserved?
-11. **VL-1**: Does the sidebar keep a fixed width, or can the user resize it?
-12. **VL-3**: Does the app add a cue for the focused pane?
-13. **VL-10**: Are menus drawn inside the sidebar, as in the Python tool, or as
-    native context menus and popovers?
-14. **SU-2**: Does tmux 3.3 support every control-mode feature the app needs?
-15. **SU-5**: How does the app find tmux when it is started without the user's
+8. **SU-2**: Does tmux 3.3 support every control-mode feature the app needs?
+9. **SU-5**: How does the app find tmux when it is started without the user's
     `PATH`?
-16. **RM-1**: Are remote hosts supported through tmux control mode over SSH, or
+10. **RM-1**: Are remote hosts supported through tmux control mode over SSH, or
     left to the Python tool for now?
-17. **RM-6**: How is remote use verified, if it is supported? Depends on RM-1.
-18. **RM-7**: Is WSL a target?
-19. **LP-2**: How can the Rust app and the Python tool be installed side by
+11. **RM-6**: How is remote use verified, if it is supported? Depends on RM-1.
+12. **RM-7**: Is WSL a target?
+13. **LP-2**: How can the Rust app and the Python tool be installed side by
     side when both use the command name `tmux-workspaces`?
-20. **LP-4**: Should the app read the user's terminal settings, such as
+14. **LP-4**: Should the app read the user's terminal settings, such as
     Ghostty's font and colours?
-21. **LP-8**: What does the TPM launch key do for a native app: open it on the
+15. **LP-8**: What does the TPM launch key do for a native app: open it on the
     same library, or is TPM support dropped?
-22. **LP-9**: Do the `@tmux-workspaces-key` and `@tmux-workspaces-data-dir`
+16. **LP-9**: Do the `@tmux-workspaces-key` and `@tmux-workspaces-data-dir`
     options stay? Depends on LP-8.
-23. **LP-10**: Does a TPM launch still read sessions from the hosting server
+17. **LP-10**: Does a TPM launch still read sessions from the hosting server
     and share the standalone library? Depends on LP-8.
 
 [rd-top]: https://github.com/eandualem/tmux-workspaces/blob/51de6757cd0aeda3c19fe68fa4ec5b93ab206804/README.md#tmux-workspaces
