@@ -95,10 +95,25 @@ impl Terminal {
     pub fn write(&mut self, bytes: &[u8]) {
         let engine = &mut self.engine;
         let rename = &mut self.rename;
-        self.del.filter(bytes, |part| {
+        self.del.filter(bytes, |part, horizontal| {
+            // The pinned engine routes CHA/HPA through a two-axis cursor move,
+            // incorrectly adding the top margin to the unchanged row. Its mode
+            // API only changes the bit, unlike sending DECRST/DECSET (which homes
+            // the cursor). Keep the original mode for every subsequent byte.
+            let origin = horizontal && engine.mode(Mode::ORIGIN).expect("valid origin mode");
+            if origin {
+                engine
+                    .set_mode(Mode::ORIGIN, false)
+                    .expect("valid origin mode");
+            }
             rename.filter(part, |part| {
                 controls::filter(part, |part| engine.vt_write(part));
             });
+            if origin {
+                engine
+                    .set_mode(Mode::ORIGIN, true)
+                    .expect("valid origin mode");
+            }
         });
     }
 
