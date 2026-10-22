@@ -1432,12 +1432,19 @@ impl Browser {
     /// Keep a dragged panel width: save it and repaint every window.
     fn finish_sidebar_drag(&mut self, cx: &mut Context<Self>) {
         self.sidebar_drag = None;
-        let current = settings::Settings::current();
-        if let Some(path) = settings::path()
-            && let Err(error) = settings::save(&current, &path)
-        {
-            self.save_notice = Some(format!("Panel width not saved: {error}"));
-        }
+        let (done, saved) = futures::channel::oneshot::channel();
+        settings::save_in_background(settings::Settings::current(), move |result| {
+            let _ = done.send(result);
+        });
+        cx.spawn(async move |this, cx| {
+            if let Ok(Err(error)) = saved.await {
+                let _ = this.update(cx, |browser, cx| {
+                    browser.save_notice = Some(format!("Panel width not saved: {error}"));
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
         cx.refresh_windows();
     }
 
@@ -1605,8 +1612,14 @@ impl Browser {
                     .min_h_0()
                     .overflow_hidden()
                     .bg(rgb(theme::surface()))
-                    .on_click(cx.listener(move |browser, _, _, cx| {
-                        if let Some(layout) = &mut browser.layout {
+                    // Any button can focus a terminal (a mouse-enabled program
+                    // takes right and middle clicks), so select its pane before
+                    // the terminal handles the press. Pane commands then follow
+                    // the terminal that receives typing.
+                    .capture_any_mouse_down(cx.listener(move |browser, _, _, cx| {
+                        if let Some(layout) = &mut browser.layout
+                            && layout.model().tab().is_some_and(|tab| tab.focus != id)
+                        {
                             layout.model_mut().choose_pane(&id);
                             cx.notify();
                         }
