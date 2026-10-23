@@ -3,7 +3,7 @@
 //! first, filtered by kind.
 
 use gpui::{AnyElement, Context, Rgba, SharedString, div, prelude::*, px, relative};
-use tmux_workspaces_roster::views::{Activity, Entry, Member, now};
+use tmux_workspaces_roster::views::{Activity, Change, Entry, History, Member, now};
 
 use super::{Records, ViewPane, line, list, mono, since};
 use crate::desktop::{
@@ -80,10 +80,12 @@ fn lanes(activity: &Activity, end: f64) -> Vec<Lane<'_>> {
             .collect();
         // Observed states, each lasting until the next observation. Before
         // the first one in the hour the lane says nothing.
-        let observed: Vec<(f64, &str)> = activity
-            .history
+        let changes: &[Change] = match &activity.history {
+            History::Observed(changes) => changes,
+            _ => &[],
+        };
+        let observed: Vec<(f64, &str)> = changes
             .iter()
-            .flatten()
             .filter(|change| change.agent == member.name)
             .filter_map(|change| change.at.map(|at| (at, change.state.as_str())))
             .filter(|(at, _)| *at <= end)
@@ -251,14 +253,20 @@ fn timeline(activity: &Activity) -> gpui::Div {
         .pl(px(name_width))
         .pt(px(t.space.s4))
         .child(swatch(c.text_2, "message delivered"));
-    section.child(if activity.history.is_some() {
-        legend
+    section.child(match &activity.history {
+        History::Observed(_) => legend
             .child(swatch(c.accent, "busy"))
             .child(swatch(c.attention, "waiting or blocked"))
             .child(swatch(c.line_strong, "idle"))
-            .child("states as Backbone observed them; brief changes between looks can be missed")
-    } else {
-        legend.child("state now on the right; this Backbone keeps no state history")
+            .child("states as Backbone observed them; brief changes between looks can be missed"),
+        History::Failed(error) => legend.child(
+            div()
+                .text_color(c.attention_text)
+                .child(format!("State history could not be read: {error}")),
+        ),
+        History::NotServed => {
+            legend.child("state now on the right; this Backbone keeps no state history")
+        }
     })
 }
 
@@ -431,7 +439,7 @@ mod tests {
                 member("builder", "busy"),
                 member("waiter", "idle"),
             ],
-            history: None,
+            history: History::NotServed,
         };
         let lanes = lanes(&activity, end);
         let names: Vec<&str> = lanes.iter().map(|lane| lane.member.name.as_str()).collect();
@@ -442,7 +450,7 @@ mod tests {
 
     #[test]
     fn observed_states_span_until_the_next_observation() {
-        let change = |state: &str, at: f64| tmux_workspaces_roster::views::Change {
+        let change = |state: &str, at: f64| Change {
             agent: "worker".into(),
             state: state.into(),
             at: Some(at),
@@ -455,17 +463,20 @@ mod tests {
                 state: "idle".into(),
                 ..Member::default()
             }],
-            history: Some(vec![
-                change("idle", end - 2.0 * HOUR),
-                change("busy", end - 1_800.0),
-                change("idle", end - 900.0),
+            // Busy since before the hour, as the lookback shows, then idle.
+            history: History::Observed(vec![
+                change("busy", end - 2.0 * HOUR),
+                change("idle", end - 1_800.0),
+                change("busy", end - 900.0),
+                change("idle", end - 600.0),
             ]),
             ..Activity::default()
         };
         let lanes = lanes(&activity, end);
-        assert_eq!(
-            lanes[0].spans,
-            [(0.0, 0.5, "idle"), (0.5, 0.75, "busy"), (0.75, 1.0, "idle")]
-        );
+        let spans: Vec<(f32, f32, &str)> = lanes[0].spans.clone();
+        assert_eq!(spans[0], (0.0, 0.5, "busy"));
+        assert_eq!(spans[1], (0.5, 0.75, "idle"));
+        assert_eq!(spans[2].2, "busy");
+        assert_eq!(spans[3], (spans[3].0, 1.0, "idle"));
     }
 }

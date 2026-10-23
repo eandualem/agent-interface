@@ -174,8 +174,11 @@ pub fn read(
         Request::Usage(range) => Ok(Data::Usage(Usage::decode(&api.get(&usage_path(*range))?)?)),
         Request::Activity => {
             // History is an addition: when it cannot be read, the timeline
-            // shows deliveries and states now, as without it.
-            let changes = history(&api, now().saturating_sub(3_600)).unwrap_or(None);
+            // still shows deliveries and states now, and says why.
+            let changes = history(&api, now().saturating_sub(3_600 + HISTORY_LOOKBACK));
+            if !api.live() {
+                return Err(UNAVAILABLE);
+            }
             Ok(Data::Activity(Activity::decode(
                 &api.get("/api/deliveries?limit=200")?,
                 &api.get("/api/events?limit=200")?,
@@ -499,15 +502,29 @@ pub struct Activity {
     pub entries: Vec<Entry>,
     /// The configured agents with their current states.
     pub members: Vec<Member>,
-    /// Observed state changes, oldest first; none when this Backbone does
-    /// not keep state history.
-    pub history: Option<Vec<Change>>,
+    /// The state changes Backbone observed.
+    pub history: History,
+}
+
+/// The state history an activity read found.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum History {
+    /// This Backbone keeps no state history.
+    #[default]
+    NotServed,
+    /// Backbone keeps it, but it could not be read this time.
+    Failed(&'static str),
+    /// Observations, oldest first, from before the hour so each agent's
+    /// state at its start is known.
+    Observed(Vec<Change>),
 }
 
 /// A state Backbone observed for an agent. `at` is when it was observed, not
 /// the exact moment it changed; changes between observations can be missed.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Change {
+    /// Backbone's order of observations: a later one has a larger id.
+    pub id: i64,
     /// Agent name.
     pub agent: String,
     /// Its state, as Backbone reports it.
@@ -525,6 +542,7 @@ impl Change {
         #[derive(Deserialize, Default)]
         #[serde(default)]
         struct Raw {
+            id: i64,
             agent: String,
             state: String,
             reason: Option<String>,
@@ -535,6 +553,7 @@ impl Change {
             .into_iter()
             .filter(|raw| valid_agent(&raw.agent))
             .map(|raw| Self {
+                id: raw.id,
                 at: epoch_seconds(&raw.at),
                 agent: raw.agent,
                 state: raw.state,
@@ -552,30 +571,49 @@ impl Change {
 /// The most pages of state history one refresh reads.
 const HISTORY_PAGES: usize = 4;
 
+/// How far before the hour history is read, so a state that began earlier
+/// is drawn from the hour's start.
+pub const HISTORY_LOOKBACK: u64 = 6 * 3_600;
+
 /// State changes observed since `since`, oldest first, following Backbone's
-/// cursor. `None` when Backbone does not serve state history.
-fn history(api: &Api<'_>, since: u64) -> Result<Option<Vec<Change>>, &'static str> {
+/// cursor and stopping when the read is no longer wanted.
+fn history(api: &Api<'_>, since: u64) -> History {
     let mut changes = Vec::new();
     let mut before: Option<i64> = None;
     for _ in 0..HISTORY_PAGES {
+        if !api.live() {
+            break;
+        }
         let cursor = before
             .map(|id| format!("&before_id={id}"))
             .unwrap_or_default();
         let path = format!("/api/agents/states?since={}&limit=500{cursor}", iso(since));
         let body = match transport::fetch(&api.url, &path, &api.key, VIEW_LIMIT) {
             Ok(body) => body,
-            Err(Some(404 | 405)) => return Ok(None),
-            Err(_) => return Err(UNAVAILABLE),
+            Err(Some(404 | 405)) => return History::NotServed,
+            Err(_) => return History::Failed(UNAVAILABLE),
         };
-        let (page, more, next) = Change::page(&body)?;
+        let (page, more, next) = match Change::page(&body) {
+            Ok(page) => page,
+            Err(error) => return History::Failed(error),
+        };
         changes.extend(page);
         before = next;
         if !more || before.is_none() {
             break;
         }
     }
-    changes.sort_by(|a, b| a.at.unwrap_or(0.0).total_cmp(&b.at.unwrap_or(0.0)));
-    Ok(Some(changes))
+    oldest_first(&mut changes);
+    History::Observed(changes)
+}
+
+/// Oldest first; of observations at one time, the later one last.
+fn oldest_first(changes: &mut [Change]) {
+    changes.sort_by(|a, b| {
+        a.at.unwrap_or(0.0)
+            .total_cmp(&b.at.unwrap_or(0.0))
+            .then(a.id.cmp(&b.id))
+    });
 }
 
 #[derive(Deserialize, Default)]
@@ -615,7 +653,7 @@ impl Activity {
         deliveries: &[u8],
         events: &[u8],
         agents: &[u8],
-        history: Option<Vec<Change>>,
+        history: History,
     ) -> Result<Self, &'static str> {
         #[derive(Deserialize, Default)]
         #[serde(default)]
@@ -1260,10 +1298,19 @@ mod tests {
         .unwrap();
         assert_eq!(changes.len(), 1);
         assert_eq!(changes[0].state, "busy");
+        assert_eq!(changes[0].id, 42);
         assert_eq!(changes[0].at, epoch_seconds("2026-10-23T14:02:00Z"));
         assert!(more);
         assert_eq!(next, Some(41));
         assert!(Change::page(br#"{"items":{}}"#).is_err());
+        // Newest first from Backbone; equal times keep the later id last.
+        let (mut changes, _, _) = Change::page(
+            br#"{"items":[{"id":8,"agent":"worker","state":"idle","at":"2026-10-23T14:02:00Z"},
+            {"id":7,"agent":"worker","state":"busy","at":"2026-10-23T14:02:00Z"}]}"#,
+        )
+        .unwrap();
+        oldest_first(&mut changes);
+        assert_eq!(changes[1].state, "idle");
     }
 
     #[test]
@@ -1274,7 +1321,7 @@ mod tests {
             "event_type":"comment_created","sender":"someone","summary":"a comment",
             "received_at":"2026-10-23T08:00:00Z","outcome":null}]}"#;
         let agents = br#"{"items":[{"name":"worker","state":"busy"}]}"#;
-        let activity = Activity::decode(deliveries, events, agents, None).unwrap();
+        let activity = Activity::decode(deliveries, events, agents, History::NotServed).unwrap();
         assert_eq!(activity.entries.len(), 2);
         assert!(activity.entries[0].inbound);
         assert_eq!(
