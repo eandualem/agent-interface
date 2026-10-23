@@ -530,12 +530,16 @@ fn document(body: &[u8]) -> Result<Document<'_>, &'static str> {
     serde_json::from_slice(body).map_err(|_| UNREADABLE)
 }
 
-// The `items` array, skipping entries that do not decode.
+// The required `items` array, skipping entries that do not decode.
 fn items<T: DeserializeOwned>(document: &Document<'_>) -> Result<Vec<T>, &'static str> {
-    if !document.contains_key("items") {
-        return Err(UNREADABLE);
-    }
-    Ok(list(document, "items"))
+    let items: Vec<&RawValue> = document
+        .get("items")
+        .and_then(|raw| serde_json::from_str(raw.get()).ok())
+        .ok_or(UNREADABLE)?;
+    Ok(items
+        .into_iter()
+        .filter_map(|item| serde_json::from_str(item.get()).ok())
+        .collect())
 }
 
 fn list<T: DeserializeOwned>(document: &Document<'_>, name: &str) -> Vec<T> {
@@ -643,6 +647,8 @@ mod tests {
         assert_eq!(team.swarms.len(), 1);
         assert_eq!(team.swarms[0].members, ["worker", "scout"]);
         assert_eq!(Team::decode(b"[]", swarms), Err(UNREADABLE));
+        assert_eq!(Team::decode(br#"{"items":null}"#, swarms), Err(UNREADABLE));
+        assert_eq!(Skills::decode(br#"{"items":{}}"#), Err(UNREADABLE));
     }
 
     #[test]

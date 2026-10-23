@@ -134,7 +134,14 @@ impl ViewPane {
         pane._updates = Some(cx.spawn(async move |this, cx| {
             while woken.next().await.is_some() {
                 let updated = this.update(cx, |pane, cx| {
-                    if let Some(update) = pane.source.as_ref().and_then(ViewSource::take_update) {
+                    if let Some((request, update)) =
+                        pane.source.as_ref().and_then(ViewSource::take_update)
+                    {
+                        // A read for an earlier request, such as another
+                        // usage range, must not be shown under the new one.
+                        if request != pane.request() {
+                            return;
+                        }
                         match update {
                             Ok(data) => {
                                 pane.data = Some(data);
@@ -167,6 +174,9 @@ impl ViewPane {
     fn set_range(&mut self, range: Range, cx: &mut Context<Self>) {
         if self.range != range {
             self.range = range;
+            // The old range's totals must not appear under the new label.
+            self.data = None;
+            self.error = None;
             if let Some(source) = &self.source {
                 source.set_request(self.request());
             }
@@ -184,6 +194,16 @@ impl ViewPane {
         match &view.agent {
             Some(agent) => agent.clone().into(),
             None => about(view.kind).label.into(),
+        }
+    }
+}
+
+impl Drop for ViewPane {
+    // Stopping the worker waits for its current request, which can take
+    // seconds; never do that on the UI thread.
+    fn drop(&mut self) {
+        if let Some(source) = self.source.take() {
+            std::thread::spawn(move || drop(source));
         }
     }
 }

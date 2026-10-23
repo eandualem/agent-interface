@@ -84,8 +84,9 @@ impl Drop for RosterSource {
     }
 }
 
-/// The newest data for one Backbone view, or why there is none.
-pub type ViewUpdate = Result<views::Data, &'static str>;
+/// The newest data for one Backbone view, or why there is none, with the
+/// request it answers.
+pub type ViewUpdate = (views::Request, Result<views::Data, &'static str>);
 
 /// Polls the data of one view while its pane is shown, on its own I/O worker.
 ///
@@ -117,7 +118,7 @@ impl ViewSource {
                 loop {
                     let request = shared.lock().unwrap_or_else(|e| e.into_inner()).clone();
                     let update = views::read(&data_dir, None, &request);
-                    *pending.lock().unwrap_or_else(|e| e.into_inner()) = Some(update);
+                    *pending.lock().unwrap_or_else(|e| e.into_inner()) = Some((request, update));
                     wake();
                     match stopped.recv_timeout(every) {
                         Err(mpsc::RecvTimeoutError::Timeout) | Ok(()) => {}
@@ -133,7 +134,8 @@ impl ViewSource {
         })
     }
 
-    /// Replace the request and read it now.
+    /// Replace the request and read it now. An update for the old request
+    /// may still arrive; compare its request before using it.
     pub fn set_request(&self, request: views::Request) {
         *self.request.lock().unwrap_or_else(|e| e.into_inner()) = request;
         let _ = self.stop.send(());
