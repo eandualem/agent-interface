@@ -8,9 +8,9 @@ use gpui::{AnyElement, Context, SharedString, div, prelude::*, px};
 use tmux_workspaces_core::View;
 use tmux_workspaces_roster::views::{Member, Team};
 
-use super::{Grouping, ViewEvent, ViewPane, list, mono, since};
+use super::{Grouping, ViewEvent, ViewPane, home, mono, since};
 use crate::desktop::{
-    components::{self as ui, AgentState},
+    components::{self as ui, AgentState, Tone},
     design::{colors, tokens},
 };
 
@@ -33,7 +33,7 @@ pub(super) fn body(pane: &ViewPane, team: &Team, cx: &mut Context<ViewPane>) -> 
     let online = team.members.iter().filter(|m| state(m).is_some()).count();
     let mut grouping = ui::segments();
     for (choice, label) in [
-        (Grouping::Repository, "Repository"),
+        (Grouping::Folder, "Folder"),
         (Grouping::Tag, "Tag"),
         (Grouping::Swarm, "Swarm"),
     ] {
@@ -98,124 +98,18 @@ pub(super) fn body(pane: &ViewPane, team: &Team, cx: &mut Context<ViewPane>) -> 
     )
     .child(format!("{} offline", tally(None)));
 
-    // Groups in name order; agents with no group last.
-    let mut groups: BTreeMap<(bool, String), Vec<&Member>> = BTreeMap::new();
-    for member in &team.members {
-        let keys: Vec<String> = match pane.grouping {
-            Grouping::Repository => vec![member.repo.clone()],
-            Grouping::Tag if member.tags.is_empty() => vec![String::new()],
-            Grouping::Tag => member.tags.clone(),
-            Grouping::Swarm => {
-                let swarms: Vec<String> = team
-                    .swarms
-                    .iter()
-                    .filter(|swarm| swarm.members.contains(&member.name))
-                    .map(|swarm| swarm.name.clone())
-                    .collect();
-                if swarms.is_empty() {
-                    vec![String::new()]
-                } else {
-                    swarms
-                }
-            }
-        };
-        for key in keys {
-            groups
-                .entry((key.is_empty(), key))
-                .or_default()
-                .push(member);
-        }
-    }
-    let empty = match pane.grouping {
-        Grouping::Repository => "no repository",
-        Grouping::Tag => "no tag",
-        Grouping::Swarm => "not in a swarm",
+    let column = match pane.grouping {
+        Grouping::Folder => folders(team, cx),
+        Grouping::Tag => by_tag(team, cx),
+        Grouping::Swarm => swarms(team, cx),
     };
-    let mut rows = list("team-rows");
-    for ((_, key), mut members) in groups {
-        members.sort_by_key(|member| rank(member));
-        let count = members.len();
-        let label = if key.is_empty() {
-            empty.to_owned()
-        } else {
-            key.clone()
-        };
-        rows = rows.child(group_row(
-            &label,
-            &format!("{count} agent{}", if count == 1 { "" } else { "s" }),
-        ));
-        // Under a repository, its running swarms and their members.
-        let swarms: Vec<_> = if pane.grouping == Grouping::Repository {
-            team.swarms
-                .iter()
-                .filter(|swarm| swarm.repo == key && !key.is_empty())
-                .collect()
-        } else {
-            Vec::new()
-        };
-        let in_swarm = |member: &Member| {
-            swarms
-                .iter()
-                .any(|swarm| swarm.members.contains(&member.name))
-        };
-        for member in members.iter().filter(|m| !in_swarm(m)) {
-            rows = rows.child(agent_row(member, "", &key, cx));
-        }
-        for swarm in &swarms {
-            let issue = swarm
-                .issue
-                .map(|n| format!("issue #{n}"))
-                .unwrap_or_default();
-            rows = rows.child(
-                ui::text(
-                    div()
-                        .flex()
-                        .flex_shrink_0()
-                        .items_center()
-                        .gap(px(t.space.s8))
-                        .h(px(t.size.row - t.space.s2))
-                        .px(px(t.space.s8))
-                        .text_color(c.muted),
-                    &t.text.status,
-                )
-                .child(mono("└ ").text_color(c.faint))
-                .child(ui::icon("git-branch", t.size.icon - 1.0, c.violet))
-                .child(
-                    div()
-                        .flex()
-                        .gap(px(t.space.s4))
-                        .text_color(c.text_2)
-                        .child("swarm")
-                        .child(
-                            div()
-                                .text_color(c.text)
-                                .font_weight(t.text.row_selected.weight())
-                                .child(swarm.name.clone()),
-                        ),
-                )
-                .child(issue),
-            );
-            let inside: Vec<_> = members
-                .iter()
-                .filter(|m| swarm.members.contains(&m.name))
-                .collect();
-            for (index, member) in inside.iter().enumerate() {
-                let guide = if index + 1 == inside.len() {
-                    "   └ "
-                } else {
-                    "   ├ "
-                };
-                rows = rows.child(agent_row(member, guide, &key, cx));
-            }
-        }
-    }
     div()
         .size_full()
         .flex()
         .flex_col()
         .child(header)
         .child(summary)
-        .child(rows)
+        .child(ui::grouped_page("team-rows", column))
         .child(ui::view_footer(
             &[
                 ("click", "show its terminal"),
@@ -226,30 +120,160 @@ pub(super) fn body(pane: &ViewPane, team: &Team, cx: &mut Context<ViewPane>) -> 
         .into_any_element()
 }
 
-fn group_row(label: &str, meta: &str) -> gpui::Div {
-    let (t, c) = (tokens(), colors());
-    ui::text(
-        div()
-            .flex()
-            .flex_shrink_0()
-            .items_center()
-            .gap(px(t.space.s8))
-            .h(px(t.size.section_label))
-            .px(px(t.space.s8))
-            .pt(px(t.space.s6))
-            .text_color(c.muted),
-        &t.text.status,
-    )
-    .child(ui::icon("git-branch", t.size.icon - 1.0, c.muted))
-    .child(mono(label.to_owned()).flex_shrink_0().text_color(c.text_2))
-    .child(div().flex_1().h(px(t.size.hairline)).bg(c.line))
-    .child(meta.to_owned())
+fn plural(count: usize) -> String {
+    format!("{count} agent{}", if count == 1 { "" } else { "s" })
 }
 
+fn name_of(path: &str) -> &str {
+    path.rsplit('/')
+        .find(|part| !part.is_empty())
+        .unwrap_or(path)
+}
+
+fn parent(path: &str) -> &str {
+    path.trim_end_matches('/')
+        .rsplit_once('/')
+        .map_or("", |(parent, _)| parent)
+}
+
+/// Whether an agent coordinates its folder: its own folder is named so.
+fn coordinates(member: &Member) -> bool {
+    name_of(&member.dir) == "coordinator"
+}
+
+/// One card of agents, with tree guides for the agents a coordinator leads.
+fn card(
+    members: &[&Member],
+    group: &str,
+    lead: Option<&Member>,
+    cx: &mut Context<ViewPane>,
+) -> gpui::Div {
+    let mut card = ui::group_card();
+    let mut first = true;
+    if let Some(lead) = lead {
+        card = card.child(agent_row(lead, "", group, true, cx));
+        first = false;
+    }
+    let led: Vec<&&Member> = members
+        .iter()
+        .filter(|member| lead.is_none_or(|lead| lead.name != member.name))
+        .collect();
+    for (index, member) in led.iter().enumerate() {
+        let guide = match (lead.is_some(), index + 1 == led.len()) {
+            (false, _) => "",
+            (true, false) => "├ ",
+            (true, true) => "└ ",
+        };
+        card = card.child(agent_row(member, guide, group, first, cx));
+        first = false;
+    }
+    card
+}
+
+/// Agents by workspace folder: one section per folder under the common
+/// root, its coordinator first and the agents it leads beneath.
+fn folders(team: &Team, cx: &mut Context<ViewPane>) -> gpui::Div {
+    // The root most folders share, such as ~/ws; anything else is elsewhere.
+    let mut roots: BTreeMap<&str, usize> = BTreeMap::new();
+    for member in &team.members {
+        *roots.entry(parent(parent(&member.dir))).or_default() += 1;
+    }
+    let root = roots
+        .into_iter()
+        .filter(|(root, _)| !root.is_empty())
+        .max_by_key(|(_, count)| *count)
+        .map(|(root, _)| root)
+        .unwrap_or_default();
+    let mut groups: BTreeMap<(bool, String), Vec<&Member>> = BTreeMap::new();
+    for member in &team.members {
+        let folder = parent(&member.dir);
+        let inside = !root.is_empty() && parent(folder) == root;
+        let key = if inside {
+            folder.to_owned()
+        } else {
+            String::new()
+        };
+        groups.entry((!inside, key)).or_default().push(member);
+    }
+    let mut column = div();
+    for ((_, folder), mut members) in groups {
+        members.sort_by_key(|member| rank(member));
+        let lead = members.iter().copied().find(|member| coordinates(member));
+        let (title, note) = if folder.is_empty() {
+            ("Elsewhere".to_owned(), plural(members.len()))
+        } else {
+            (
+                name_of(&folder).to_owned(),
+                format!("{} · {}", home(&folder), plural(members.len())),
+            )
+        };
+        column = column
+            .child(ui::group_title(title, note))
+            .child(card(&members, &folder, lead, cx));
+    }
+    column
+}
+
+fn by_tag(team: &Team, cx: &mut Context<ViewPane>) -> gpui::Div {
+    let mut groups: BTreeMap<(bool, String), Vec<&Member>> = BTreeMap::new();
+    for member in &team.members {
+        if member.tags.is_empty() {
+            groups
+                .entry((true, String::new()))
+                .or_default()
+                .push(member);
+        }
+        for tag in &member.tags {
+            groups.entry((false, tag.clone())).or_default().push(member);
+        }
+    }
+    let mut column = div();
+    for ((_, tag), mut members) in groups {
+        members.sort_by_key(|member| rank(member));
+        let label = if tag.is_empty() {
+            ui::tag("no tag", Tone::Quiet)
+        } else {
+            ui::tag(tag.clone(), Tone::Tag)
+        };
+        column = column
+            .child(ui::group_label(label, plural(members.len())))
+            .child(card(&members, &tag, None, cx));
+    }
+    column
+}
+
+fn swarms(team: &Team, cx: &mut Context<ViewPane>) -> gpui::Div {
+    let mut column = div();
+    if team.swarms.is_empty() {
+        return column.child(ui::group_note("No swarm is running."));
+    }
+    for swarm in &team.swarms {
+        let members: Vec<&Member> = team
+            .members
+            .iter()
+            .filter(|member| swarm.members.contains(&member.name))
+            .collect();
+        let issue = swarm
+            .issue
+            .map(|n| format!(" · issue #{n}"))
+            .unwrap_or_default();
+        column = column
+            .child(ui::group_title(
+                swarm.name.clone(),
+                format!("{}{issue} · {}", swarm.repo, plural(members.len())),
+            ))
+            .child(card(&members, &swarm.name, None, cx));
+    }
+    column
+}
+
+/// One agent on a card: its state, name, CLI and tags, what it is doing and
+/// for how long. `guide` draws its place under a coordinator.
 pub(super) fn agent_row(
     member: &Member,
     guide: &'static str,
     group: &str,
+    first: bool,
     cx: &mut Context<ViewPane>,
 ) -> AnyElement {
     let (t, c) = (tokens(), colors());
@@ -278,9 +302,11 @@ pub(super) fn agent_row(
         .flex_shrink_0()
         .items_center()
         .gap(px(t.space.s8))
-        .h(px(t.size.row))
-        .px(px(t.space.s8))
-        .rounded(px(t.radius.row))
+        .h(px(t.size.group_row))
+        .px(px(t.space.s14))
+        .when(!first, |el| {
+            el.border_t(px(t.size.hairline)).border_color(c.line)
+        })
         .cursor_pointer()
         .hover(|el| el.bg(colors().hover))
         .when(state.is_none(), |el| el.opacity(0.7))
@@ -312,6 +338,9 @@ pub(super) fn agent_row(
                 .child(name.clone()),
         )
         .child(ui::badge(member.runtime.clone()))
+        .when(coordinates(member), |el| {
+            el.child(ui::tag("coordinator", Tone::Plain))
+        })
         .child(
             ui::text(
                 div()
@@ -335,7 +364,13 @@ pub(super) fn agent_row(
                     .text_color(c.muted),
                 &t.text.meta,
             )
-            .child(since(member.state_since)),
+            // Backbone's time for a live agent is when it was last read, not
+            // when its state began; only an offline agent's says something.
+            .child(if state.is_none() {
+                since(member.state_since)
+            } else {
+                String::new()
+            }),
         )
         .on_click(cx.listener(move |_, event: &gpui::ClickEvent, _, cx| {
             if event.modifiers().alt {
@@ -345,4 +380,21 @@ pub(super) fn agent_row(
             }
         }))
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn folders_and_coordinators_come_from_the_workspace_path() {
+        assert_eq!(parent("/home/me/ws/career/desk"), "/home/me/ws/career");
+        assert_eq!(name_of("/home/me/ws/career/"), "career");
+        let lead = Member {
+            dir: "/home/me/ws/career/coordinator".into(),
+            ..Member::default()
+        };
+        assert!(coordinates(&lead));
+        assert!(!coordinates(&Member::default()));
+    }
 }

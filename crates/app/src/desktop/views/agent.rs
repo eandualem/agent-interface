@@ -389,7 +389,7 @@ fn skills_section(agent: &Agent, cx: &mut Context<ViewPane>) -> AnyElement {
     let mut at = 0;
     for ((heading, note), group) in groups {
         let (title, note) = match heading {
-            "SHARED STORE" => ("Shared skills", note),
+            "SHARED STORE" => ("Shared skills", home(&note)),
             "USER-LEVEL" => (
                 "User-level skills",
                 format!("in {}, for every {} agent", home(&note), agent.runtime),

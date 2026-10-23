@@ -169,10 +169,9 @@ All in `components.rs`; each takes its look from the tokens.
 | `choice_button`, `filter_frame`, `choice_frame`, `choice_key`, `hint_bar` | The chooser's two buttons, filter, selectable row with its ring, number key and centred key row |
 | `view_header`, `back_button`, `pill`, `info_card` | A view's 28 px header; the reading view's way back; a tag; a summary panel |
 | `tag` with `Tone` | How something is delivered: `Plain` for `all` and plain facts, `Tag` in the accent tint for a tag, `Quiet` outline for a direct assignment |
-| `layer_heading` | A library's layer: `layer_tile` numbered tile in `accent_soft` (`selected` when nobody receives it), uppercase label, mono path, note on the right |
-| `list_row` | An openable row: optional leading mark, mono name over a one-line description, pills or a note on the right, chevron; below `narrow_view` the right side moves under the description so a name is never cut |
+| `grouped_page`, `group_title`, `group_label`, `group_card`, `group_row`, `group_note` | How a view lays out a list people browse: a padded page with a centred column no wider than `grouped_width`; a major section's title (`group_title` text) and one line saying what it holds; a subgroup's label, which may be a `tag`; rows on a rounded `panel` card, one line each, `group_row` tall, separated by hairlines, with a name, meta on the right and a chevron; a quiet line for what a section does not list |
 | `number_tile` | A round tile with a position, such as a policy's place in a brief |
-| `tag_card` | A tag on the left (`tag_card_label` wide) with how many agents carry it; labelled lines of mono names on the right, a dash when empty; `panel` fill for `all` |
+| `tag_card` | A tag on the left (`tag_card_label` wide) with how many agents carry it; labelled lines of mono names on the right (agents, skills, policies), a dash when empty; `panel` fill for `all` |
 
 ## Backbone views
 
@@ -201,6 +200,11 @@ Views follow four rules:
   delivered (layer, tag, `all`) and how many agents that reaches.
 - **Read only.** Every view only reads; nothing approves, tags, edits or
   starts anything.
+- **Group, then list.** A list people browse is grouped: sections for what
+  kind of thing it is, subgroups for where it comes from or who receives it,
+  and one line per row. Descriptions belong in the reader, not the list.
+  Team groups agents by workspace folder, with an agent whose folder is named
+  `coordinator` first and the others beneath it.
 
 Agent states always pair a shape with a colour, so they read without colour.
 Backbone's states fold onto four (`AgentState::from_report`): needs you

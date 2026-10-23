@@ -66,7 +66,8 @@ pub(super) enum ViewEvent {
 /// How the team view groups agents.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Grouping {
-    Repository,
+    /// By workspace folder, coordinators first.
+    Folder,
     Tag,
     Swarm,
 }
@@ -149,7 +150,7 @@ impl ViewPane {
             data: None,
             error: None,
             range: Range::Day,
-            grouping: Grouping::Repository,
+            grouping: Grouping::Folder,
             usage_by: UsageBy::Agent,
             cost: false,
             expanded: HashSet::new(),

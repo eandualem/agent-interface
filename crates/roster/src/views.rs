@@ -175,6 +175,7 @@ pub fn read(
         Request::Activity => Ok(Data::Activity(Activity::decode(
             &api.get("/api/deliveries?limit=200")?,
             &api.get("/api/events?limit=200")?,
+            &api.get("/api/agents")?,
         )?)),
         Request::Skills => Ok(Data::Skills(Box::new(SkillLibrary::read(&api)?))),
         Request::Policies => {
@@ -236,6 +237,8 @@ pub struct Member {
     pub runtime: String,
     /// The repository it owns, or empty.
     pub repo: String,
+    /// Its registered workspace folder, or empty.
+    pub dir: String,
     /// Its tags.
     pub tags: Vec<String>,
     /// Its reported state.
@@ -478,13 +481,17 @@ pub struct Entry {
     pub preview: String,
     /// Whether it is an inbound event rather than a delivery.
     pub inbound: bool,
+    /// The agent a delivery went to; empty for an inbound event.
+    pub agent: String,
 }
 
-/// Recent deliveries and events, newest first.
+/// Recent deliveries and events, newest first, and each agent's state now.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Activity {
     /// The records.
     pub entries: Vec<Entry>,
+    /// The configured agents with their current states.
+    pub members: Vec<Member>,
 }
 
 #[derive(Deserialize, Default)]
@@ -514,12 +521,13 @@ impl From<Delivery> for Entry {
             outcome: delivery.outcome,
             preview: delivery.preview,
             inbound: false,
+            agent: delivery.session_name,
         }
     }
 }
 
 impl Activity {
-    fn decode(deliveries: &[u8], events: &[u8]) -> Result<Self, &'static str> {
+    fn decode(deliveries: &[u8], events: &[u8], agents: &[u8]) -> Result<Self, &'static str> {
         #[derive(Deserialize, Default)]
         #[serde(default)]
         struct Event {
@@ -555,11 +563,16 @@ impl Activity {
                         outcome: event.outcome.unwrap_or_default(),
                         preview: event.summary,
                         inbound: true,
+                        agent: String::new(),
                     }
                 }),
         );
         entries.sort_by(|a, b| b.at.unwrap_or(0.0).total_cmp(&a.at.unwrap_or(0.0)));
-        Ok(Self { entries })
+        let members = items::<Member>(&document(agents)?)?
+            .into_iter()
+            .filter(|member| valid_agent(&member.name) && member.configured != Some(false))
+            .collect();
+        Ok(Self { entries, members })
     }
 }
 
@@ -1151,7 +1164,8 @@ mod tests {
         let events = br#"{"items":[{"source":"webhook","repo":"example/app","issue_number":3,
             "event_type":"comment_created","sender":"someone","summary":"a comment",
             "received_at":"2026-10-23T08:00:00Z","outcome":null}]}"#;
-        let activity = Activity::decode(deliveries, events).unwrap();
+        let agents = br#"{"items":[{"name":"worker","state":"busy"}]}"#;
+        let activity = Activity::decode(deliveries, events, agents).unwrap();
         assert_eq!(activity.entries.len(), 2);
         assert!(activity.entries[0].inbound);
         assert_eq!(
@@ -1159,6 +1173,8 @@ mod tests {
             "webhook · example/app#3 · someone"
         );
         assert_eq!(activity.entries[1].route, "→ worker");
+        assert_eq!(activity.entries[1].agent, "worker");
+        assert_eq!(activity.members[0].state, "busy");
     }
 
     #[test]

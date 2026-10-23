@@ -5,7 +5,7 @@
 use gpui::{AnyElement, Context, SharedString, div, prelude::*, px};
 use tmux_workspaces_roster::views::TagLibrary;
 
-use super::{ViewPane, list, mono, team};
+use super::{ViewPane, mono, team};
 use crate::desktop::{
     components::{self as ui, Tone},
     design::{colors, tokens},
@@ -157,7 +157,7 @@ fn cards(library: &TagLibrary, cx: &mut Context<ViewPane>) -> AnyElement {
 
 /// The agents carrying `tag`, or every agent for `all`.
 fn carriers(library: &TagLibrary, tag: &str, cx: &mut Context<ViewPane>) -> AnyElement {
-    let (t, c) = (tokens(), colors());
+    let t = tokens();
     let members: Vec<_> = library
         .agents
         .iter()
@@ -176,29 +176,22 @@ fn carriers(library: &TagLibrary, tag: &str, cx: &mut Context<ViewPane>) -> AnyE
             tag.to_owned(),
             if tag == "all" { Tone::Plain } else { Tone::Tag },
         ));
-    let mut rows = list("tag-agents");
-    for member in &members {
-        rows = rows.child(team::agent_row(member, "", tag, cx));
+    let mut card = ui::group_card();
+    for (index, member) in members.iter().enumerate() {
+        card = card.child(team::agent_row(member, "", tag, index == 0, cx));
     }
-    if members.is_empty() {
-        rows = rows.child(
-            ui::text(
-                div()
-                    .px(px(t.space.s8))
-                    .py(px(t.space.s8))
-                    .text_color(c.muted),
-                &t.text.body,
-            )
-            .child("No agent carries this tag."),
-        );
-    }
+    let column = if members.is_empty() {
+        div().child(ui::group_note("No agent carries this tag."))
+    } else {
+        div().pt(px(t.space.s12)).child(card)
+    };
     div()
         .size_full()
         .flex()
         .flex_col()
         .child(header)
         .child(bar)
-        .child(rows)
+        .child(ui::grouped_page("tag-agents", column))
         .child(ui::view_footer(
             &[("esc", "back"), ("click", "show its terminal")],
             "read-only",
