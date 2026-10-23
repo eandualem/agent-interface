@@ -118,6 +118,7 @@ impl Browser {
         let (t, c) = (tokens(), colors());
         let id = leaf.id.clone();
         let focused = leaf.id == cards.focus;
+        let is_view = leaf.view.is_some();
         let state = cards.leaf_states.get(&leaf.id).copied();
         let group: SharedString = format!("pane-group-{id}").into();
         let border = if state == Some(AgentState::NeedsYou) {
@@ -190,6 +191,11 @@ impl Browser {
                     };
                     if event.button == gpui::MouseButton::Left {
                         select(browser, cx);
+                        // A view takes no keys: stop a terminal beside it
+                        // from receiving them once the view is selected.
+                        if is_view && let Some(focus) = &browser.navigation {
+                            window.focus(focus, cx);
+                        }
                     } else {
                         cx.defer_in(window, move |browser, window, cx| {
                             if browser

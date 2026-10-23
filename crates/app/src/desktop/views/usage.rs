@@ -20,8 +20,9 @@ struct Row<'a> {
     coverage: &'a str,
 }
 
-pub(super) fn body(usage: &Usage, range: Range, cx: &mut Context<ViewPane>) -> AnyElement {
-    let (t, c) = (tokens(), colors());
+/// The range control, shown with or without data so a failing range can be
+/// changed.
+pub(super) fn toolbar(range: Range, cx: &mut Context<ViewPane>) -> gpui::Div {
     let mut ranges = ui::segments();
     for choice in Range::ALL {
         ranges = ranges.child(
@@ -33,10 +34,13 @@ pub(super) fn body(usage: &Usage, range: Range, cx: &mut Context<ViewPane>) -> A
             .on_click(cx.listener(move |pane, _, _, cx| pane.set_range(choice, cx))),
         );
     }
-    let toolbar = ui::view_toolbar()
-        .child(ranges)
-        .child(div().flex_1())
-        .child(format!("coverage {}", usage.coverage.replace('_', " ")));
+    ui::view_toolbar().child(ranges).child(div().flex_1())
+}
+
+pub(super) fn body(usage: &Usage, range: Range, cx: &mut Context<ViewPane>) -> AnyElement {
+    let (t, c) = (tokens(), colors());
+    let toolbar =
+        toolbar(range, cx).child(format!("coverage {}", usage.coverage.replace('_', " ")));
 
     let mut agents: BTreeMap<&str, Row<'_>> = BTreeMap::new();
     for session in &usage.sessions {

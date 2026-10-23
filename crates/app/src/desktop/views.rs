@@ -237,6 +237,10 @@ impl Render for ViewPane {
             .flex()
             .flex_col()
             .bg(c.surface)
+            .when(
+                self.view.kind == ViewKind::Usage && self.data.is_none(),
+                |el| el.child(usage::toolbar(self.range, cx)),
+            )
             .child(div().flex_1().min_h_0().flex().flex_col().child(body))
             .children(
                 self.data
