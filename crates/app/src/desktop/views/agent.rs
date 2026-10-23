@@ -229,6 +229,7 @@ fn page<'a>(pane: &'a ViewPane, agent: &'a Agent) -> Option<reader::Page<'a>> {
                 &sources,
                 at,
                 format!("{}'s brief", agent.name),
+                true,
             ))
         }
         Target::Skill(folder) => {

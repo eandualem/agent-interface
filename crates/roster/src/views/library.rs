@@ -24,17 +24,18 @@ pub const PREVIEW_LIMIT: usize = 32;
 /// soon after its pane is gone and never holds its worker for minutes.
 pub const BUDGET: Duration = Duration::from_secs(10);
 
-/// The agents a refresh reads, in order, until the budget is spent.
-fn sampled(agents: &[Member]) -> impl Iterator<Item = &Member> {
+/// The agents a refresh reads, in order, until the budget is spent or the
+/// read is no longer wanted.
+fn sampled<'a>(api: &'a Api<'_>, agents: &'a [Member]) -> impl Iterator<Item = &'a Member> {
     let started = Instant::now();
     agents
         .iter()
         .take(PREVIEW_LIMIT)
-        .take_while(move |_| started.elapsed() < BUDGET)
+        .take_while(move |_| started.elapsed() < BUDGET && api.live())
 }
 
 /// The configured agents, in Backbone's order.
-pub(super) fn agents(api: &Api) -> Result<Vec<Member>, &'static str> {
+pub(super) fn agents(api: &Api<'_>) -> Result<Vec<Member>, &'static str> {
     Ok(items::<Member>(&document(&api.get("/api/agents")?)?)?
         .into_iter()
         .filter(|agent| valid_agent(&agent.name) && agent.configured != Some(false))
@@ -167,7 +168,7 @@ pub struct SkillLibrary {
 }
 
 impl SkillLibrary {
-    pub(super) fn read(api: &Api) -> Result<Self, &'static str> {
+    pub(super) fn read(api: &Api<'_>) -> Result<Self, &'static str> {
         let store = Skills::decode(&api.get("/api/skills")?)?;
         let agents = agents(api)?;
         let mut library = Self {
@@ -175,7 +176,7 @@ impl SkillLibrary {
             ..Self::default()
         };
         let mut failure = None;
-        for agent in sampled(&agents) {
+        for agent in sampled(api, &agents) {
             // One agent's preview failing leaves the rest of the library.
             match api
                 .get(&format!("/api/skills/preview/{}", agent.name))
@@ -255,10 +256,10 @@ pub struct PolicyLibrary {
 }
 
 impl PolicyLibrary {
-    pub(super) fn read(api: &Api, agents: &[Member]) -> Result<Self, &'static str> {
+    pub(super) fn read(api: &Api<'_>, agents: &[Member]) -> Result<Self, &'static str> {
         let mut briefs = Vec::new();
         let mut failure = None;
-        for agent in sampled(agents) {
+        for agent in sampled(api, agents) {
             match instructions(api, &agent.name) {
                 Ok(brief) => briefs.push(brief),
                 Err(super::NOT_SERVED) => return Err(super::NOT_SERVED),
@@ -376,6 +377,22 @@ pub struct TagLibrary {
     pub tag_policy: BTreeMap<String, Vec<String>>,
 }
 
+/// A configuration setting's value. An absent setting is empty; one that is
+/// present but does not decode is unreadable, so the view keeps its last data.
+fn setting_value<T: serde::de::DeserializeOwned + Default>(
+    raw: Option<&str>,
+) -> Result<T, &'static str> {
+    #[derive(Deserialize)]
+    struct Setting<T> {
+        value: T,
+    }
+    raw.map_or(Ok(T::default()), |raw| {
+        serde_json::from_str::<Setting<T>>(raw)
+            .map(|setting| setting.value)
+            .map_err(|_| super::UNREADABLE)
+    })
+}
+
 /// One tag and what it brings.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TagCard {
@@ -390,28 +407,15 @@ pub struct TagCard {
 }
 
 impl TagLibrary {
-    pub(super) fn read(api: &Api) -> Result<Self, &'static str> {
-        #[derive(Deserialize, Default)]
-        #[serde(default)]
-        struct Setting<T> {
-            value: T,
-        }
+    pub(super) fn read(api: &Api<'_>) -> Result<Self, &'static str> {
         let agents = agents(api)?;
         let store = Skills::decode(&api.get("/api/skills")?)?;
         // Configuration is flat: each dotted key holds its value and help.
         let config = api.get("/api/config")?;
         let config = document(&config)?;
         let setting = |key: &str| config.get(key).map(|raw| raw.get());
-        let global = setting("agents.shared_policy")
-            .and_then(|raw| serde_json::from_str::<Setting<Vec<String>>>(raw).ok())
-            .map(|setting| setting.value)
-            .unwrap_or_default();
-        let tag_policy = setting("agents.tag_policy")
-            .and_then(|raw| {
-                serde_json::from_str::<Setting<BTreeMap<String, Vec<String>>>>(raw).ok()
-            })
-            .map(|setting| setting.value)
-            .unwrap_or_default();
+        let global = setting_value(setting("agents.shared_policy"))?;
+        let tag_policy = setting_value(setting("agents.tag_policy"))?;
         Ok(Self {
             agents,
             store,
@@ -604,6 +608,25 @@ mod tests {
         assert_eq!(cards[2].policies, ["review"]);
         assert_eq!(cards[4].carriers, 0);
         assert_eq!(library.direct(), [("audit".to_owned(), 2)]);
+    }
+
+    #[test]
+    fn settings_decode_strictly_and_reads_stop_when_unwanted() {
+        let tags: Result<BTreeMap<String, Vec<String>>, _> =
+            setting_value(Some(r#"{"value":{"coder":["review"]},"help":"h"}"#));
+        assert_eq!(tags.unwrap()["coder"], ["review"]);
+        assert_eq!(setting_value::<Vec<String>>(None), Ok(Vec::new()));
+        assert_eq!(
+            setting_value::<BTreeMap<String, Vec<String>>>(Some(r#"{"value":{"coder":"review"}}"#)),
+            Err(super::super::UNREADABLE)
+        );
+        let agents = [agent("worker", &[]), agent("helper", &[])];
+        let gone = || false;
+        let api = Api::new(String::new(), String::new(), &gone);
+        assert_eq!(sampled(&api, &agents).count(), 0);
+        let wanted = || true;
+        let api = Api::new(String::new(), String::new(), &wanted);
+        assert_eq!(sampled(&api, &agents).count(), 2);
     }
 
     #[test]

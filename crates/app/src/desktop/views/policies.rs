@@ -65,7 +65,7 @@ pub(super) fn body(
     {
         let all = library.all();
         if let Some(at) = all.iter().position(|source| &source.path == path) {
-            return reader::render(pane, header, page(&all, at, "Policies".into()), cx);
+            return reader::render(pane, header, page(&all, at, "Policies".into(), false), cx);
         }
     }
     index(pane, library, header, cx)
@@ -230,7 +230,13 @@ fn quiet(text: &str) -> Div {
 }
 
 /// The policy at `at` of `sources` as a reader page, returning to `back`.
-pub(super) fn page<'a>(sources: &[&'a Source], at: usize, back: String) -> reader::Page<'a> {
+/// Whether it applies is one agent's fact, so only `one_agent` says it.
+pub(super) fn page<'a>(
+    sources: &[&'a Source],
+    at: usize,
+    back: String,
+    one_agent: bool,
+) -> reader::Page<'a> {
     let (t, c) = (tokens(), colors());
     let source = sources[at];
     let card = ui::info_card().child(
@@ -243,10 +249,12 @@ pub(super) fn page<'a>(sources: &[&'a Source], at: usize, back: String) -> reade
             .text_color(c.muted)
             .child(mono(source.path.clone()).text_color(c.text_2))
             .child(scope(source))
-            .child(if source.applied {
-                "applied at the next start"
-            } else {
-                "not applied"
+            .when(one_agent, |facts| {
+                facts.child(if source.applied {
+                    "applied at the next start"
+                } else {
+                    "not applied"
+                })
             }),
     );
     reader::Page {

@@ -59,6 +59,8 @@ pub(super) enum ViewEvent {
     ShowAgent(String),
     /// Open this view in a new pane beside this one.
     OpenBeside(View),
+    /// A field in the view gave up focus; return it to the window's keys.
+    ReturnFocus,
 }
 
 /// How the team view groups agents.
@@ -193,7 +195,10 @@ impl ViewPane {
                         cx.notify();
                     }
                     // Esc in the field goes back, as it does anywhere in the reader.
-                    NameEvent::Cancel => pane.close(cx),
+                    NameEvent::Cancel => {
+                        pane.close(cx);
+                        cx.emit(ViewEvent::ReturnFocus);
+                    }
                     NameEvent::Save => {}
                 }));
             pane.check_field = Some(field);

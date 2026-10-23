@@ -3,7 +3,11 @@
 use std::{
     io,
     path::PathBuf,
-    sync::{Arc, Mutex, mpsc},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
     thread::{self, JoinHandle},
     time::Duration,
 };
@@ -94,6 +98,8 @@ pub type ViewUpdate = (views::Request, Result<views::Data, &'static str>);
 /// again at once. Dropping the handle stops polling. Like the roster, every
 /// read re-resolves configuration and nothing is written to Backbone.
 pub struct ViewSource {
+    /// Cleared when the view is gone, so a library read stops early.
+    live: Arc<AtomicBool>,
     request: Arc<Mutex<views::Request>>,
     updates: Arc<Mutex<Option<ViewUpdate>>>,
     stop: mpsc::Sender<()>,
@@ -112,12 +118,16 @@ impl ViewSource {
         let updates = Arc::new(Mutex::new(None));
         let (shared, pending) = (Arc::clone(&request), Arc::clone(&updates));
         let (stop, stopped) = mpsc::channel();
+        let live = Arc::new(AtomicBool::new(true));
+        let wanted = Arc::clone(&live);
         let worker = thread::Builder::new()
             .name("view polling".into())
             .spawn(move || {
                 loop {
                     let request = shared.lock().unwrap_or_else(|e| e.into_inner()).clone();
-                    let update = views::read(&data_dir, None, &request);
+                    let update = views::read(&data_dir, None, &request, &|| {
+                        wanted.load(Ordering::Relaxed)
+                    });
                     *pending.lock().unwrap_or_else(|e| e.into_inner()) = Some((request, update));
                     wake();
                     match stopped.recv_timeout(every) {
@@ -127,6 +137,7 @@ impl ViewSource {
                 }
             })?;
         Ok(Self {
+            live,
             request,
             updates,
             stop,
@@ -152,6 +163,7 @@ impl ViewSource {
 
 impl Drop for ViewSource {
     fn drop(&mut self) {
+        self.live.store(false, Ordering::Relaxed);
         let (stop, _) = mpsc::channel();
         // Dropping the only sender disconnects the worker's wait.
         drop(std::mem::replace(&mut self.stop, stop));

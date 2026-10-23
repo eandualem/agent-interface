@@ -116,20 +116,31 @@ pub enum Data {
     Agent(Box<Agent>),
 }
 
-/// An enabled provider's address and key.
-pub(crate) struct Api {
+/// An enabled provider's address and key, and whether the read is still
+/// wanted.
+pub(crate) struct Api<'a> {
     url: String,
     key: String,
+    live: &'a dyn Fn() -> bool,
 }
 
-impl Api {
+impl<'a> Api<'a> {
+    #[cfg(test)]
+    pub(crate) fn new(url: String, key: String, live: &'a dyn Fn() -> bool) -> Self {
+        Self { url, key, live }
+    }
+
+    fn live(&self) -> bool {
+        (self.live)()
+    }
+
     fn get(&self, path: &str) -> Result<Vec<u8>, &'static str> {
         transport::get(&self.url, path, &self.key, VIEW_LIMIT).ok_or(UNAVAILABLE)
     }
 }
 
 /// What one agent receives at its next start.
-fn instructions(api: &Api, name: &str) -> Result<Instructions, &'static str> {
+fn instructions(api: &Api<'_>, name: &str) -> Result<Instructions, &'static str> {
     let path = format!("/api/agents/{name}/instructions");
     match transport::fetch(&api.url, &path, &api.key, VIEW_LIMIT) {
         Ok(body) => Instructions::decode(&body),
@@ -145,9 +156,16 @@ fn usage_path(range: Range) -> String {
 
 /// Read one request from an enabled provider. Blocks for up to three seconds
 /// per GET, so call it on an I/O worker. Configuration is re-read every time.
-pub fn read(data_dir: &Path, url: Option<&str>, request: &Request) -> Result<Data, &'static str> {
+/// A library read stops starting per-agent requests once `live` says no one
+/// is waiting for it any more.
+pub fn read(
+    data_dir: &Path,
+    url: Option<&str>,
+    request: &Request,
+    live: &dyn Fn() -> bool,
+) -> Result<Data, &'static str> {
     let (url, key) = configured(data_dir, url).ok_or(UNAVAILABLE)?;
-    let api = Api { url, key };
+    let api = Api { url, key, live };
     match request {
         Request::Team => Ok(Data::Team(Team::decode(
             &api.get("/api/agents")?,
