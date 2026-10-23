@@ -100,9 +100,11 @@ reads, the store, each agent's skill preview and its brief, for at most 32
 agents per refresh, merged by file path so no row names an agent. They poll
 every 30 seconds. An agent view reads only the part its shown section needs.
 The Activity timeline draws the last hour from `/api/agents/states`, the
-states Backbone observed, read from six hours before the hour so a state that
-began earlier is drawn from its start (following the `before_id` cursor for up
-to four pages, and stopping when the pane closes). Deliveries are ticks and
+states Backbone observed. It reads from six hours before the hour, so a state
+that began within those six hours is drawn from the hour's start; an older
+one is not known. It follows the `before_id` cursor for up to four pages of
+500, says so when that limit leaves the oldest observations unread, and stops
+when the pane closes. Deliveries are ticks and
 each agent's state now sits beside its lane. A Backbone that answers 404 or
 405 keeps no history and the timeline shows deliveries and current states;
 when history fails to load, the legend says so.

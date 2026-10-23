@@ -81,7 +81,7 @@ fn lanes(activity: &Activity, end: f64) -> Vec<Lane<'_>> {
         // Observed states, each lasting until the next observation. Before
         // the first one in the hour the lane says nothing.
         let changes: &[Change] = match &activity.history {
-            History::Observed(changes) => changes,
+            History::Observed { changes, .. } => changes,
             _ => &[],
         };
         let observed: Vec<(f64, &str)> = changes
@@ -254,11 +254,16 @@ fn timeline(activity: &Activity) -> gpui::Div {
         .pt(px(t.space.s4))
         .child(swatch(c.text_2, "message delivered"));
     section.child(match &activity.history {
-        History::Observed(_) => legend
+        History::Observed { complete, .. } => legend
             .child(swatch(c.accent, "busy"))
             .child(swatch(c.attention, "waiting or blocked"))
             .child(swatch(c.line_strong, "idle"))
-            .child("states as Backbone observed them; brief changes between looks can be missed"),
+            .child(if *complete {
+                "states as Backbone observed them; brief changes between looks can be missed"
+            } else {
+                "states as Backbone observed them; the oldest observations were not read, so \
+                 states early in the hour may be missing"
+            }),
         History::Failed(error) => legend.child(
             div()
                 .text_color(c.attention_text)
@@ -464,12 +469,15 @@ mod tests {
                 ..Member::default()
             }],
             // Busy since before the hour, as the lookback shows, then idle.
-            history: History::Observed(vec![
-                change("busy", end - 2.0 * HOUR),
-                change("idle", end - 1_800.0),
-                change("busy", end - 900.0),
-                change("idle", end - 600.0),
-            ]),
+            history: History::Observed {
+                complete: true,
+                changes: vec![
+                    change("busy", end - 2.0 * HOUR),
+                    change("idle", end - 1_800.0),
+                    change("busy", end - 900.0),
+                    change("idle", end - 600.0),
+                ],
+            },
             ..Activity::default()
         };
         let lanes = lanes(&activity, end);

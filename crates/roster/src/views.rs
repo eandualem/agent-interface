@@ -135,6 +135,10 @@ impl<'a> Api<'a> {
     }
 
     fn get(&self, path: &str) -> Result<Vec<u8>, &'static str> {
+        // A read nobody is waiting for any more starts no further request.
+        if !self.live() {
+            return Err(UNAVAILABLE);
+        }
         transport::get(&self.url, path, &self.key, VIEW_LIMIT).ok_or(UNAVAILABLE)
     }
 }
@@ -514,9 +518,16 @@ pub enum History {
     NotServed,
     /// Backbone keeps it, but it could not be read this time.
     Failed(&'static str),
-    /// Observations, oldest first, from before the hour so each agent's
-    /// state at its start is known.
-    Observed(Vec<Change>),
+    /// Observations, oldest first, read from up to [`HISTORY_LOOKBACK`]
+    /// before the hour so a state that began then is drawn from the hour's
+    /// start. `complete` is false when the page limit stopped the read
+    /// before its oldest observation, so earlier states may be missing.
+    Observed {
+        /// The observations, oldest first.
+        changes: Vec<Change>,
+        /// Whether the read reached the oldest observation it asked for.
+        complete: bool,
+    },
 }
 
 /// A state Backbone observed for an agent. `at` is when it was observed, not
@@ -580,6 +591,7 @@ pub const HISTORY_LOOKBACK: u64 = 6 * 3_600;
 fn history(api: &Api<'_>, since: u64) -> History {
     let mut changes = Vec::new();
     let mut before: Option<i64> = None;
+    let mut complete = false;
     for _ in 0..HISTORY_PAGES {
         if !api.live() {
             break;
@@ -600,11 +612,12 @@ fn history(api: &Api<'_>, since: u64) -> History {
         changes.extend(page);
         before = next;
         if !more || before.is_none() {
+            complete = true;
             break;
         }
     }
     oldest_first(&mut changes);
-    History::Observed(changes)
+    History::Observed { changes, complete }
 }
 
 /// Oldest first; of observations at one time, the later one last.
