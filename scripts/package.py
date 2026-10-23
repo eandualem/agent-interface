@@ -38,13 +38,15 @@ def notices(destination, target, native, env):
             "https://crates.io/api/v1/crates/NAME/VERSION/download\n"]
     for license in graph["licenses"]:
         members = [use["crate"]["name"] + "@" + use["crate"]["version"] for use in license["used_by"]]
-        if not license.get("source_path"):
+        if not license.get("source_path") or "<copyright holders>" in license["text"]:
             missing = set(members) - covered
             if missing:
                 raise SystemExit("Review missing licence notices: " + ", ".join(sorted(missing)))
             continue  # Complete notices below replace generic placeholder text.
         rust += [license["name"], ", ".join(members), license["text"]]
     rust.append((ROOT / "packaging/rust-notices.txt").read_text())
+    if target.endswith("unknown-linux-gnu"):
+        rust.append((ROOT / "packaging/wayland-notices.txt").read_text())
     (destination / "RUST-LICENSES.txt").write_text("\n\n".join(rust) + "\n")
     chunks = ["Native and embedded components\n==============================\n",
               (ROOT / "packaging/extra-notices.txt").read_text()]

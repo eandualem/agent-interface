@@ -137,6 +137,11 @@ advisories and permitted sources.
 
 - **GPUI (`gpui-pre` and platform packages):** native windowing and GPU drawing,
   pinned as one package family. Apache-2.0.
+- **Plasma Wayland protocols:** GPUI's Linux backend uses the MIT-licensed
+  `wayland-protocols-plasma` wrapper. Its vendored protocol definitions also
+  carry LGPL-2.1-or-later, MIT-CMU and BSD terms, preserved in the
+  [Linux protocol notices](../packaging/wayland-notices.txt). Cargo licence
+  metadata alone does not describe those generated-binding inputs.
 - **`libghostty-vt`:** terminal emulation behind the `term` boundary, pinned with
   its native binding. MIT OR Apache-2.0; Ghostty's core is MIT-licensed.
 - **`rusqlite`:** transactional access to the existing SQLite library format.
