@@ -6,22 +6,13 @@ This repository reimplements
 [tmux-workspaces](https://github.com/eandualem/tmux-workspaces) in Rust as a
 native desktop app. The binary is `tmux-workspaces` from day one.
 
-## Architecture comes first
+## Architecture and documentation
 
-The first phase builds the foundation, not features. Before feature work:
-
-1. Research and decide the architecture. Weigh maintainability,
-   extensibility and understandability as heavily as speed. Record each
-   decision in `docs/decisions/`, one numbered record per decision, with the
-   alternatives, evidence and licences considered.
-2. Set up the Cargo workspace, crate boundaries, folder structure, build, CI
-   and documentation (`docs/ARCHITECTURE.md` and a contributor guide), so a
-   new contributor can understand the system from the docs alone.
-3. Pass the milestone-0 benchmark gate before building UI.
-
-The starting research in `.backbone/memory/research/` is a hypothesis to
-validate, not a spec. Confirm, revise or reject each point with your own
-evidence, and say which.
+Keep `docs/ARCHITECTURE.md` accurate for contributors: explain the current
+crate boundaries, process and data ownership, and relevant technical tradeoffs.
+Public documentation helps readers install, use, understand and contribute to
+the app. Development research, acceptance worklists and historical run receipts
+belong in the local memory directory described below.
 
 ## Product contract
 
@@ -74,8 +65,8 @@ server.
 
 - The project is MIT. GPL code, such as Zed's terminal crates, may be read
   for ideas but never copied.
-- Record each dependency's licence and the reason for it in its decision
-  record. Pin fast-moving dependencies to an exact version or commit.
+- Record each dependency's licence and purpose in its pull request and the
+  architecture guide. Pin fast-moving dependencies to an exact version or commit.
 
 ## Boundaries
 

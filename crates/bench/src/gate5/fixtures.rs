@@ -1,5 +1,5 @@
 //! The programs gate 5 rebuilds panes from, and the differences each may show
-//! (`docs/decisions/0021-pane-state-recovery.md`).
+//! (`docs/BENCHMARKING.md`).
 //!
 //! Each fixture is two pieces of shell: `draw` leaves the pane in the state to
 //! rebuild, and `more` writes further output after the rebuild, so that state
@@ -89,7 +89,7 @@ pub enum After {
 /// What explains an expected difference.
 #[derive(Clone, Copy, Debug)]
 pub enum Why {
-    /// A limit decision record 0021 lists: the gate passes.
+    /// An expected recovery limitation: the comparison passes.
     Limit(&'static str),
 }
 

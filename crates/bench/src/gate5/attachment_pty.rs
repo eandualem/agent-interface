@@ -1,4 +1,4 @@
-//! Ordinary-client attachment alternative for ADRs 0003 and 0015.
+//! Ordinary-client attachment alternative.
 //! Only owned private fixtures receive input; no desktop terminal is involved.
 
 use std::time::{Duration, Instant};

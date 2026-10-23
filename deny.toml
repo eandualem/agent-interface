@@ -1,5 +1,5 @@
 # cargo-deny configuration: licences, advisories, banned crates and sources,
-# checked in CI with `cargo deny check` (decision record 0011).
+# checked in CI with `cargo deny check`.
 
 [graph]
 # Check every target and feature, so a platform-specific dependency is audited
@@ -12,8 +12,7 @@ all-features = true
 unmaintained = "all"
 unsound = "all"
 yanked = "deny"
-# Unmaintained crates with no known vulnerability, in GPUI's graph
-# (decision record 0019).
+# Unmaintained crates with no known vulnerability, in GPUI's graph.
 ignore = [
     { id = "RUSTSEC-2024-0436", reason = "paste is unmaintained; used by GPUI through metal and image" },
     { id = "RUSTSEC-2026-0206", reason = "rustybuzz is unmaintained; used by GPUI through usvg" },
@@ -24,8 +23,8 @@ ignore = [
 ]
 
 [licenses]
-# Reviewed licences only. Add one here only with the dependency's decision
-# record, and keep any exception narrow, with its reason.
+# Reviewed licences only. Add one here only with the dependency's
+# purpose and licence documented, and keep any exception narrow, with its reason.
 allow = [
     "Apache-2.0",
     "BSD-2-Clause",
@@ -37,8 +36,7 @@ allow = [
     "Zlib",
 ]
 confidence-threshold = 0.9
-# MPL-2.0 for these crates only, unmodified, as GPUI uses them
-# (decision record 0019).
+# MPL-2.0 for these crates only, unmodified, as GPUI uses them.
 exceptions = [
     { crate = "cbindgen", allow = ["MPL-2.0"] },
     { crate = "dwrote", allow = ["MPL-2.0"] },
@@ -50,8 +48,8 @@ multiple-versions = "warn"
 wildcards = "deny"
 # Path dependencies between workspace members carry no version.
 allow-wildcard-paths = true
-# The dependency direction between the project's crates
-# (decision record 0006). Each crate may be used only by the crates listed in
+# The dependency direction between the project's crates.
+# Each crate may be used only by the crates listed in
 # its `wrappers`; any other project crate that depends on it fails the check.
 deny = [
     { crate = "tmux-workspaces-core", wrappers = ["tmux-workspaces-store", "tmux-workspaces-app"], reason = "only store and app depend on the model" },

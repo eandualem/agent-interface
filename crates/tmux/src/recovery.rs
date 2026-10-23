@@ -1,6 +1,6 @@
 //! Rebuilding a pane's terminal state from tmux when its earlier output is
 //! not available: on attach, after a pause and after a resize
-//! (`docs/decisions/0021-pane-state-recovery.md`).
+//! (`docs/ARCHITECTURE.md`).
 //!
 //! The types here do no I/O. The caller writes the commands they return to
 //! the pane's control connection, hands them the replies to those commands
@@ -62,7 +62,7 @@ pub struct Snapshot {
 /// What tmux's formats report about a pane.
 ///
 /// A mode that a tmux version does not report is `None`, never a false
-/// value (`docs/decisions/0014-supported-tmux-versions.md`).
+/// value (`docs/ARCHITECTURE.md`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PaneState {
     /// Content column within the tmux window, excluding borders and scrollbars.

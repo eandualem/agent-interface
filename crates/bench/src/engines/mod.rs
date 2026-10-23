@@ -1,6 +1,6 @@
 //! The engines this program measures: `libghostty-vt` through the `term`
-//! crate, the path the app uses, and `alacritty_terminal` from decision
-//! record 0004, adapted to the same owned display data.
+//! crate, the path the app uses, and `alacritty_terminal` for comparison.
+//! Both expose the same owned display data.
 //!
 //! `rio-vt` runs in `tmux-workspaces-bench-rio` instead: it and
 //! `libghostty-vt` both contain the simdutf C++ library, and a program that

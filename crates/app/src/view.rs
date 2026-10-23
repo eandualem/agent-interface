@@ -1,5 +1,5 @@
 //! The terminal grid: draws the panes' owned display data with GPUI
-//! (`docs/decisions/0005-ui-framework-and-terminal-renderer.md`).
+//! (`docs/ARCHITECTURE.md`).
 //!
 //! Terminal columns come from the display data, never from text layout.
 //! Ligatures are off. With a monospaced font, each run of plain ASCII text

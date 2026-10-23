@@ -1,4 +1,4 @@
-# The one toolchain this project builds and tests with (decision record 0011).
+# The one toolchain this project builds and tests with.
 [toolchain]
 channel = "1.99.1"
 components = ["rustfmt", "clippy"]

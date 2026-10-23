@@ -2,7 +2,7 @@
 //! connection, then fed the pane's output that follows the rebuild.
 //!
 //! The snapshot conversion is shared with the app. Neither the tmux nor
-//! terminal crate depends on the other (decision record 0006).
+//! terminal crate depends on the other.
 
 use std::time::Instant;
 

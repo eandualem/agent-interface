@@ -1,4 +1,4 @@
-//! Gate 1, headless headroom (decision record 0013): how fast the app's path
+//! Gate 1, headless headroom: how fast the app's path
 //! from control-mode output to display data runs, against tmux's own rate.
 //!
 //! For each payload, the gate records tmux runs on fresh private servers,
@@ -26,7 +26,7 @@ use crate::stats::{self, Summary};
 
 /// Every engine the gate can measure, the leading one first.
 const ENGINES: [&str; 3] = ["libghostty-vt", "rio-vt", "alacritty_terminal"];
-/// The engine the pass or fail decision is about (decision record 0004).
+/// The engine the pass or fail decision is about.
 const LEADING: &str = "libghostty-vt";
 /// The rate the ASCII payload must reach, in MB/s.
 const ASCII_TARGET: f64 = 200.0;
@@ -546,7 +546,7 @@ fn describe(difference: &compare::Difference, label: &str, examples: &mut String
 
 /// The gate's decision on the leading engine, and the reasons. Its timing
 /// on a payload counts only if its final screen matches every other
-/// engine's, as decision record 0013 requires.
+/// engine's, before comparing processing rates.
 fn verdict(results: &[PayloadResult]) -> (&'static str, Vec<String>) {
     let mut reasons = Vec::new();
     let mut pass = true;
