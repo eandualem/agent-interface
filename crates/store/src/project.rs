@@ -5,7 +5,7 @@ use std::io::{self, Write};
 
 use serde::{Serialize, Serializer};
 use serde_json::{Value, value::RawValue};
-use tmux_workspaces_core::{Direction, Layout, Node};
+use tmux_workspaces_core::{AgentSection, Direction, Layout, Node};
 
 type RawObject<'a> = BTreeMap<String, &'a RawValue>;
 type Object<'a> = BTreeMap<String, Field<'a>>;
@@ -111,6 +111,18 @@ impl<'a> Projection<'a> {
                 } else {
                     item.remove("empty");
                 }
+                let view = leaf.view.as_ref();
+                optional(&mut item, "view", view.map(|view| view.kind.as_str()));
+                optional(
+                    &mut item,
+                    "view_agent",
+                    view.and_then(|view| view.agent.as_deref()),
+                );
+                optional(
+                    &mut item,
+                    "view_section",
+                    view.and_then(|view| view.section).map(AgentSection::as_str),
+                );
                 item
             }
             Node::Split {
@@ -120,8 +132,19 @@ impl<'a> Projection<'a> {
                 first,
                 second,
             } => {
-                let mut item =
-                    self.object(id, &["first", "second", "agent", "cwd", "source_socket"])?;
+                let mut item = self.object(
+                    id,
+                    &[
+                        "first",
+                        "second",
+                        "agent",
+                        "cwd",
+                        "source_socket",
+                        "view",
+                        "view_agent",
+                        "view_section",
+                    ],
+                )?;
                 item.insert(
                     "direction".into(),
                     value(match direction {

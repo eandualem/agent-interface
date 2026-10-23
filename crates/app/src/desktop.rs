@@ -10,7 +10,7 @@ use gpui::{
 };
 use gpui_platform::application;
 use tmux_workspaces_core::{
-    Attachment, AttachmentTarget, Direction, Layout, Leaf, NameEdit, RenameOutcome, Tab,
+    Attachment, AttachmentTarget, Direction, Layout, Leaf, NameEdit, RenameOutcome, Tab, View,
 };
 use tmux_workspaces_store::Document;
 
@@ -18,6 +18,7 @@ use crate::library::{Library, Update, WindowLayout};
 mod chooser;
 mod layout_edit;
 mod name;
+mod new_pane;
 use chooser::{Choice, SessionChooser};
 use layout_edit::{Create, Selection};
 mod components;
@@ -34,6 +35,7 @@ mod sidebar;
 mod split_resize;
 mod status;
 mod terminal;
+mod views;
 mod workspace;
 use name::{NameEvent, NameField};
 use terminal::{LiveTerminal, Target};
@@ -388,6 +390,7 @@ struct Browser {
     /// A navigation panel drag: where it started and the width then.
     sidebar_drag: Option<(gpui::Pixels, gpui::Pixels)>,
     reset_focus: bool,
+    painted_pane_focus: Option<String>,
     navigation: Option<gpui::FocusHandle>,
     updates: Option<Task<()>>,
     editing: Option<EditingName>,
@@ -408,6 +411,12 @@ struct Browser {
     resize: Option<split_resize::Drag>,
     split_bounds: Rc<RefCell<HashMap<String, Bounds<gpui::Pixels>>>>,
     resize_activation: Option<gpui::Subscription>,
+    /// Agent Backbone's data directory, when it is set up.
+    backbone: Option<PathBuf>,
+    /// The view in each shown view pane, with its event subscription.
+    views: HashMap<String, (gpui::Entity<views::ViewPane>, gpui::Subscription)>,
+    /// The chooser in each shown empty pane, with its event subscription.
+    new_panes: HashMap<String, (gpui::Entity<new_pane::NewPane>, gpui::Subscription)>,
 }
 
 impl Browser {
@@ -463,6 +472,7 @@ impl Browser {
         let Ok(Some(directory)) = crate::roster::provider_directory(None, None, None, false) else {
             return;
         };
+        self.backbone = Some(directory.clone());
         let (wake, mut woken) = mpsc::unbounded();
         let Ok(roster) = crate::roster::RosterSource::start(directory, None, move || {
             let _ = wake.unbounded_send(());
@@ -969,6 +979,30 @@ impl Browser {
         cx.notify();
     }
 
+    /// Open a terminal from an empty pane's chooser, only if the pane is
+    /// still empty once shared changes are applied.
+    fn open_terminal_in_empty(&mut self, pane: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(update) = self.library.as_ref().and_then(Library::take_update) {
+            self.apply(update);
+        }
+        let empty = self
+            .layout
+            .as_ref()
+            .and_then(|layout| layout.model().tab())
+            .is_some_and(|tab| {
+                tab.tree
+                    .leaves()
+                    .iter()
+                    .any(|leaf| leaf.id == pane && leaf.empty)
+            });
+        if empty {
+            self.open_terminal(pane, window, cx);
+        } else {
+            self.save_notice = Some("The pane changed. Choose again.".into());
+            cx.notify();
+        }
+    }
+
     fn open_terminal(&mut self, pane: &str, window: &mut Window, cx: &mut Context<Self>) {
         if self.saving || self.save_failed {
             return;
@@ -1009,6 +1043,144 @@ impl Browser {
             window.focus(focus, cx);
         }
         self.save(cx);
+    }
+
+    /// Show a view in an empty pane. Like opening a terminal, the pane changes
+    /// only once the library has saved it.
+    fn open_view(&mut self, pane: &str, view: View, window: &mut Window, cx: &mut Context<Self>) {
+        if self.saving || self.save_failed {
+            return;
+        }
+        if let Some(update) = self.library.as_ref().and_then(Library::take_update) {
+            self.apply(update);
+        }
+        let Some(layout) = &mut self.layout else {
+            return;
+        };
+        if !layout
+            .model()
+            .tab()
+            .is_some_and(|tab| !layout.model().focus || tab.focus == pane)
+            || !layout.model_mut().choose_pane(pane)
+        {
+            return;
+        }
+        let Some(target) = AttachmentEdit::capture(layout.model()) else {
+            return;
+        };
+        let (base, mut proposed) = layout.save_snapshot();
+        if !target.displayed(&proposed) || !proposed.show_view(&target.tab, &target.pane, view) {
+            self.save_notice = Some("The pane changed. Choose the view again.".into());
+            cx.notify();
+            return;
+        }
+        let _ = layout.model_mut().retain_navigation(&proposed);
+        self.pending_save = Some((base, proposed));
+        self.editing = None;
+        self.chooser = None;
+        self.tab_menu = None;
+        if let Some(focus) = &self.navigation {
+            window.focus(focus, cx);
+        }
+        self.save(cx);
+    }
+
+    /// Split `pane` and show `view` in the new pane to its right, saved like
+    /// any split before it appears.
+    fn open_beside(&mut self, pane: &str, view: View, window: &mut Window, cx: &mut Context<Self>) {
+        if self.saving || self.save_failed {
+            return;
+        }
+        if let Some(update) = self.library.as_ref().and_then(Library::take_update) {
+            self.apply(update);
+        }
+        let Some(layout) = &mut self.layout else {
+            return;
+        };
+        if !layout.model_mut().choose_pane(pane) {
+            return;
+        }
+        let (base, mut proposed) = layout.save_snapshot();
+        let cwd = proposed
+            .pane()
+            .and_then(|leaf| leaf.cwd.clone())
+            .or_else(|| std::env::var("HOME").ok())
+            .unwrap_or_else(|| "/".into());
+        if !proposed.choose_pane(pane) || !proposed.split(Direction::Right, cwd, true) {
+            return;
+        }
+        let (Some(tab), Some(added)) = (
+            proposed.tab().map(|tab| tab.id.clone()),
+            proposed.pane().map(|leaf| leaf.id.clone()),
+        ) else {
+            return;
+        };
+        if !proposed.show_view(&tab, &added, view) {
+            return;
+        }
+        // The new pane is not in the displayed tree yet; select it once saved.
+        self.creation_from = Some(Selection::capture(layout.model()));
+        self.pending_save = Some((base, proposed));
+        if let Some(focus) = &self.navigation {
+            window.focus(focus, cx);
+        }
+        self.save(cx);
+    }
+
+    /// Attach a session chosen in an empty pane's chooser, saved like any
+    /// attachment before the pane changes.
+    fn attach_into(&mut self, pane: &str, name: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.saving || self.save_failed {
+            return;
+        }
+        if let Some(update) = self.library.as_ref().and_then(Library::take_update) {
+            self.apply(update);
+        }
+        let Some(source) = self
+            .source
+            .as_ref()
+            .and_then(|source| source.as_ref().ok())
+            .and_then(|path| path.to_str())
+            .map(str::to_owned)
+        else {
+            self.save_notice = Some("The source tmux server is unavailable.".into());
+            cx.notify();
+            return;
+        };
+        let Some(layout) = &mut self.layout else {
+            return;
+        };
+        if !layout
+            .model()
+            .tab()
+            .is_some_and(|tab| !layout.model().focus || tab.focus == pane)
+            || !layout.model_mut().choose_pane(pane)
+        {
+            return;
+        }
+        let Some(destination) = AttachmentEdit::capture(layout.model()) else {
+            return;
+        };
+        // Another window may have filled the pane since the chooser drew it.
+        if !destination.empty {
+            self.save_notice = Some("The pane changed. Choose again.".into());
+            cx.notify();
+            return;
+        }
+        let attachment = Attachment {
+            session: name.into(),
+            source_socket: Some(source),
+        };
+        if let Some(proposal) = destination.propose(layout, attachment) {
+            self.pending_save = Some(proposal);
+            self.save(cx);
+        } else {
+            self.save_notice = Some("The pane changed. Choose the session again.".into());
+        }
+        if let Some(focus) = &self.navigation {
+            window.focus(focus, cx);
+        }
+        cx.notify();
     }
 
     fn open_attach(&mut self, pane: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -1331,7 +1503,7 @@ impl Render for Browser {
                 tab.tree
                     .leaves()
                     .into_iter()
-                    .filter(|leaf| !leaf.empty)
+                    .filter(|leaf| leaf.runs_terminal())
                     .cloned()
                     .collect::<Vec<_>>()
             })
@@ -1383,15 +1555,103 @@ impl Render for Browser {
                 );
             }
         }
+        let shown: Vec<(String, View)> = self
+            .layout
+            .as_ref()
+            .and_then(|layout| layout.model().tab())
+            .map(|tab| {
+                tab.tree
+                    .leaves()
+                    .into_iter()
+                    .filter_map(|leaf| Some((leaf.id.clone(), leaf.view.clone()?)))
+                    .collect()
+            })
+            .unwrap_or_default();
+        self.views.retain(|id, (pane, _)| {
+            shown
+                .iter()
+                .any(|(leaf, view)| leaf == id && &pane.read(cx).view == view)
+        });
+        for (id, view) in shown {
+            if !self.views.contains_key(&id) {
+                let backbone = self.backbone.clone();
+                let pane = cx.new(|cx| views::ViewPane::new(view, backbone, window, cx));
+                let leaf = id.clone();
+                let events = cx.subscribe_in(
+                    &pane,
+                    window,
+                    move |browser, _, event, window, cx| match event {
+                        views::ViewEvent::ShowAgent(name) => browser.go_to_agent(name, window, cx),
+                        views::ViewEvent::OpenBeside(view) => {
+                            browser.open_beside(&leaf, view.clone(), window, cx)
+                        }
+                        views::ViewEvent::ReturnFocus => {
+                            if let Some(focus) = &browser.navigation {
+                                window.focus(focus, cx);
+                            }
+                        }
+                    },
+                );
+                self.views.insert(id, (pane, events));
+            }
+        }
+        let expanded = self.layout.as_ref().and_then(|layout| {
+            let model = layout.model();
+            model
+                .focus
+                .then(|| model.tab().map(|tab| tab.focus.as_str()))
+                .flatten()
+        });
+        for (id, (view, _)) in &self.views {
+            view.read(cx)
+                .set_visible(expanded.is_none_or(|focused| focused == id));
+        }
+        let empty: Vec<String> = self
+            .layout
+            .as_ref()
+            .and_then(|layout| layout.model().tab())
+            .map(|tab| {
+                tab.tree
+                    .leaves()
+                    .into_iter()
+                    .filter(|leaf| leaf.empty && leaf.attachment.is_none())
+                    .map(|leaf| leaf.id.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        self.new_panes.retain(|id, _| empty.contains(id));
+        for id in empty {
+            if !self.new_panes.contains_key(&id) {
+                let socket = self.source.clone().and_then(Result::ok);
+                let backbone = self.backbone.clone();
+                let pane = id.clone();
+                let chooser =
+                    cx.new(|cx| new_pane::NewPane::new(pane, socket, backbone, window, cx));
+                let events =
+                    cx.subscribe_in(&chooser, window, |browser, chooser, event, window, cx| {
+                        let pane = chooser.read(cx).pane().to_owned();
+                        match event {
+                            new_pane::NewPaneEvent::OpenTerminal => {
+                                browser.open_terminal_in_empty(&pane, window, cx)
+                            }
+                            new_pane::NewPaneEvent::Attach(name) => {
+                                browser.attach_into(&pane, name, window, cx)
+                            }
+                            new_pane::NewPaneEvent::OpenView(view) => {
+                                browser.open_view(&pane, view.clone(), window, cx)
+                            }
+                        }
+                    });
+                self.new_panes.insert(id, (chooser, events));
+            }
+        }
         if let Some(request) = self.shell_to_open.take()
             && let Some(layout) = &self.layout
             && let Some(tab) = layout.model().tab()
             && (!layout.model().focus || tab.focus == request.id)
-            && let Some(leaf) = tab
-                .tree
-                .leaves()
-                .into_iter()
-                .find(|leaf| leaf.id == request.id && !leaf.empty && leaf.attachment.is_none())
+            && let Some(leaf) = tab.tree.leaves().into_iter().find(|leaf| {
+                leaf.id == request.id && leaf.runs_terminal() && leaf.attachment.is_none()
+            })
             && let Some(terminal) = self.terminals.get(&request.id)
             && let Some(Ok(environment)) = &self.shell_environment
         {
@@ -1561,8 +1821,6 @@ impl Render for Browser {
                         return;
                     }
                     if command.is_none()
-                        && key.key == "enter"
-                        && !key.modifiers.modified()
                         && browser.chooser.is_none()
                         && browser.tab_menu.is_none()
                         && !browser.workspace_menu
@@ -1577,8 +1835,25 @@ impl Render for Browser {
                             .and_then(|layout| layout.model().pane())
                             .filter(|leaf| leaf.empty && leaf.attachment.is_none())
                             .map(|leaf| leaf.id.clone())
+                        && let Some((chooser, _)) = browser.new_panes.get(&pane)
+                        && chooser.update(cx, |chooser, cx| chooser.key(key, true, cx))
                     {
-                        browser.open_terminal(&pane, window, cx);
+                        cx.stop_propagation();
+                        return;
+                    }
+                    if command.is_none()
+                        && browser
+                            .navigation
+                            .as_ref()
+                            .is_some_and(|focus| focus.is_focused(window))
+                        && let Some(pane) = browser
+                            .layout
+                            .as_ref()
+                            .and_then(|layout| layout.model().pane())
+                            .map(|leaf| leaf.id.clone())
+                        && let Some((view, _)) = browser.views.get(&pane)
+                        && view.update(cx, |view, cx| view.key(key, cx))
+                    {
                         cx.stop_propagation();
                         return;
                     }

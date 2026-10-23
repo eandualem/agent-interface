@@ -580,10 +580,7 @@ impl Browser {
                     let calm = matches!(state, AgentState::Idle | AgentState::Unknown);
                     rows = rows.child(
                         ui::row(SharedString::from(format!("agent-{name}")), false)
-                            .child(ui::agent_symbol(
-                                *state,
-                                SharedString::from(format!("agent-spin-{name}")),
-                            ))
+                            .child(ui::agent_symbol(*state))
                             .child(
                                 div()
                                     .flex_1()

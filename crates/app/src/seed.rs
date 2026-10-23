@@ -30,7 +30,12 @@ pub(crate) enum Event {
 /// Reads the attach reply, checks recovery hooks and server version, then
 /// captures before enabling output. The client must use no-output,ignore-size.
 /// A deadline bounds startup even if the control client stops replying.
-pub(crate) fn attach(client: &mut Child, window: u32, session: Option<u32>) -> io::Result<Seed> {
+pub(crate) fn attach(
+    client: &mut Child,
+    window: u32,
+    session: Option<u32>,
+    scrollback: usize,
+) -> io::Result<Seed> {
     let stdin = client
         .stdin
         .take()
@@ -43,7 +48,7 @@ pub(crate) fn attach(client: &mut Child, window: u32, session: Option<u32>) -> i
     let reader = thread::Builder::new()
         .name("pane snapshot".into())
         .spawn(move || {
-            let _ = send.send(capture(stdin, stdout, window, session));
+            let _ = send.send(capture(stdin, stdout, window, session, scrollback));
         })?;
     let result = receive
         .recv_timeout(TIMEOUT)
@@ -68,6 +73,7 @@ fn capture<I: Write, O: Read>(
     mut stdout: O,
     window: u32,
     session: Option<u32>,
+    scrollback: usize,
 ) -> io::Result<Seed<I, O>> {
     let target = session.map_or_else(
         || format!("@{window}"),
@@ -155,8 +161,8 @@ fn capture<I: Write, O: Read>(
                                         }
                                         let panes = current.panes.iter().map(|p| p.id).collect();
                                         let (capture, commands) = match session {
-                                            Some(session) => Attach::in_session(panes, session, window),
-                                            None => Attach::new(panes),
+                                            Some(session) => Attach::in_session(panes, session, window, scrollback),
+                                            None => Attach::new(panes, scrollback),
                                         };
                                         attach = Some(capture);
                                         layout = Some(current);
@@ -243,6 +249,75 @@ mod tests {
     use super::*;
 
     #[test]
+    fn initial_capture_keeps_only_requested_history_without_moving_the_screen() {
+        let server = tmux_workspaces_test_support::TmuxServer::start().unwrap();
+        server
+            .run(&[
+                "respawn-pane",
+                "-k",
+                "-t",
+                tmux_workspaces_test_support::TmuxServer::SESSION,
+                "sh",
+                "-c",
+                "i=0; while [ $i -lt 200 ]; do printf 'row%03d\\n' $i; i=$((i+1)); done; exec cat",
+            ])
+            .unwrap();
+        let height: usize = server
+            .run(&["display-message", "-p", "#{pane_height}"])
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let deadline = std::time::Instant::now() + TIMEOUT;
+        while server
+            .run(&["display-message", "-p", "#{history_size}"])
+            .unwrap()
+            .trim()
+            .parse::<usize>()
+            .unwrap()
+            < 201 - height
+        {
+            assert!(std::time::Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(10));
+        }
+        let socket = server
+            .run(&["display-message", "-p", "#{socket_path}"])
+            .unwrap();
+        for scrollback in [0, 10] {
+            let mut connection = tmux_workspaces_tmux::connection::connect(
+                std::path::Path::new(socket.trim()),
+                tmux_workspaces_test_support::TmuxServer::SESSION,
+            )
+            .unwrap();
+            let seed = attach(
+                &mut connection.client,
+                connection.layout.window,
+                Some(connection.session),
+                scrollback,
+            )
+            .unwrap();
+            let snapshot = &seed.snapshots[0];
+            assert_eq!(snapshot.state.history, scrollback);
+            assert_eq!(
+                snapshot.rows.len(),
+                scrollback + usize::from(snapshot.state.height)
+            );
+            let penultimate = &snapshot.rows[snapshot.rows.len() - 2];
+            assert_eq!(
+                penultimate
+                    .segments
+                    .iter()
+                    .map(|s| s.text.as_str())
+                    .collect::<String>()
+                    .trim(),
+                "row199"
+            );
+            let _ = connection.client.kill();
+            let _ = connection.client.wait();
+        }
+    }
+
+    #[test]
     fn window_moved_after_layout_reply_cannot_be_captured() {
         use tmux_workspaces_test_support::TmuxServer;
         struct MoveOnCapture<'a> {
@@ -287,6 +362,7 @@ mod tests {
             connection.client.stdout.take().unwrap(),
             connection.layout.window,
             Some(connection.session),
+            100,
         );
         let _ = connection.client.kill();
         let _ = connection.client.wait();
@@ -303,7 +379,7 @@ mod tests {
                 "%begin 1 0 0\n%end 1 0 0\n%begin 1 1 1\n%end 1 1 1\n%begin 1 2 1\n%end 1 2 1\n%begin 1 3 1\n{version}\n%end 1 3 1\n"
             );
             let mut commands = Vec::new();
-            let error = capture(&mut commands, wire.as_bytes(), 1, None)
+            let error = capture(&mut commands, wire.as_bytes(), 1, None, 100)
                 .err()
                 .unwrap();
             assert!(error.to_string().contains("server"), "{error}");
@@ -342,7 +418,7 @@ mod tests {
         wire.push_str("%output %7 more\n");
         let mut exited = wire.clone();
         exited.push_str("%exit\n");
-        let seed = capture(Vec::new(), exited.as_bytes(), 1, None).unwrap();
+        let seed = capture(Vec::new(), exited.as_bytes(), 1, None, 100).unwrap();
         assert_eq!(seed.snapshots[0].state.cursor, (6, 0));
         assert_eq!(seed.layout.panes[0].id, PaneId(7));
         assert_eq!(seed.events, [Event::Output(PaneId(7), b"more".to_vec())]);
@@ -352,7 +428,7 @@ mod tests {
             "{wire}{}\n%output %7 later\n",
             String::from_utf8_lossy(layout)
         );
-        let seeded = capture(Vec::new(), with_layout.as_bytes(), 1, None).unwrap();
+        let seeded = capture(Vec::new(), with_layout.as_bytes(), 1, None, 100).unwrap();
         assert_eq!(
             seeded.events,
             [
@@ -362,7 +438,7 @@ mod tests {
             ]
         );
         wire.push_str("%output %7 par");
-        let mut seed = capture(Vec::new(), wire.as_bytes(), 1, None).unwrap();
+        let mut seed = capture(Vec::new(), wire.as_bytes(), 1, None, 100).unwrap();
         assert_eq!(seed.events, [Event::Output(PaneId(7), b"more".to_vec())]);
         seed.decoder
             .decode(b"tial\n", |message| {

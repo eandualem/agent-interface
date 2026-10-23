@@ -1,6 +1,8 @@
 use serde_json::{Map, Value};
 use std::collections::HashSet;
-use tmux_workspaces_core::{Attachment, Direction, Layout, Leaf, Node, Tab, Workspace};
+use tmux_workspaces_core::{
+    AgentSection, Attachment, Direction, Layout, Leaf, Node, Tab, View, ViewKind, Workspace,
+};
 use unicode_properties::{GeneralCategoryGroup, UnicodeGeneralCategory};
 
 type Result<T> = std::result::Result<T, String>;
@@ -65,6 +67,73 @@ fn identify(item: &Object, at: &str, identities: &mut HashSet<String>) -> Result
     Ok(id)
 }
 
+// A view pane has neither an attachment nor the new-pane chooser. Only an
+// agent view names an agent, with Backbone's agent-name rule, and only it
+// may name the section it opens on.
+fn view(item: &Object, occupied: bool, at: &str) -> Result<Option<View>> {
+    let agent = match item.get("view_agent") {
+        None => None,
+        Some(value) => Some(
+            value
+                .as_str()
+                .filter(|name| {
+                    name.len() <= 200
+                        && name
+                            .as_bytes()
+                            .first()
+                            .is_some_and(u8::is_ascii_alphanumeric)
+                        && name
+                            .bytes()
+                            .all(|byte| byte.is_ascii_alphanumeric() || b"_.-".contains(&byte))
+                })
+                .ok_or_else(|| format!("{at}.view_agent: invalid agent name"))?
+                .to_owned(),
+        ),
+    };
+    let Some(kind) = item.get("view") else {
+        return match (agent, item.contains_key("view_section")) {
+            (Some(_), _) => Err(format!("{at}.view_agent: agent without a view")),
+            (None, true) => Err(format!("{at}.view_section: section without a view")),
+            (None, false) => Ok(None),
+        };
+    };
+    let mut kind = kind
+        .as_str()
+        .and_then(ViewKind::parse)
+        .ok_or_else(|| format!("{at}.view: unknown view"))?;
+    let mut section = match item.get("view_section") {
+        None => None,
+        Some(value) => Some(
+            value
+                .as_str()
+                .and_then(AgentSection::parse)
+                .ok_or_else(|| format!("{at}.view_section: unknown section"))?,
+        ),
+    };
+    if occupied {
+        return Err(format!(
+            "{at}.view: a view pane has no attachment and is not empty"
+        ));
+    }
+    // Earlier versions showed one agent's policies as their own view; that is
+    // now a section of the agent's view, and is saved that way next time.
+    if kind == ViewKind::Policies && agent.is_some() && section.is_none() {
+        kind = ViewKind::Agent;
+        section = Some(AgentSection::Policies);
+    }
+    let view = View {
+        kind,
+        agent,
+        section,
+    };
+    if !view.is_valid() {
+        return Err(format!(
+            "{at}.view_agent: only an agent view names an agent or a section"
+        ));
+    }
+    Ok(Some(view))
+}
+
 fn node(
     value: &Value,
     at: &str,
@@ -106,6 +175,7 @@ fn node(
         if socket.is_some() && session.is_none() {
             return Err(format!("{at}.source_socket: socket without an attachment"));
         }
+        let view = view(item, session.is_some() || empty, at)?;
         leaves.push(id.clone());
         Ok(Node::Leaf(Leaf {
             id,
@@ -115,6 +185,7 @@ fn node(
             }),
             cwd: path(item, "cwd", at)?,
             empty,
+            view,
         }))
     } else {
         let direction = match item.get("direction").and_then(Value::as_str) {
@@ -133,7 +204,10 @@ fn node(
                 "{at}.ratio: expected a finite split ratio from 0.01 to 0.99"
             ));
         }
-        if item.contains_key("cwd") || item.contains_key("source_socket") {
+        if ["cwd", "source_socket", "view", "view_agent", "view_section"]
+            .iter()
+            .any(|key| item.contains_key(*key))
+        {
             return Err(format!("{at}: split also contains leaf fields"));
         }
         Ok(Node::Split {

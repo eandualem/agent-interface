@@ -681,10 +681,7 @@ impl SettingsWindow {
                 .flex()
                 .items_center()
                 .gap(px(t.space.s8))
-                .child(ui::agent_symbol(
-                    state,
-                    SharedString::from(format!("legend-{}", state.word())),
-                ))
+                .child(ui::agent_symbol(state))
                 .child(state.word())
         };
         div()

@@ -105,7 +105,7 @@ pub(super) fn remember_directories(model: &mut Layout, previous: &Tab, socket: &
         .tree
         .leaves()
         .into_iter()
-        .filter(|leaf| !leaf.empty)
+        .filter(|leaf| leaf.runs_terminal())
     {
         if Instant::now() >= deadline {
             break;

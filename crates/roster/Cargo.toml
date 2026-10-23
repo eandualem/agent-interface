@@ -11,7 +11,9 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+toml.workspace = true
 http.workspace = true
 reqwest.workspace = true
 rusqlite.workspace = true

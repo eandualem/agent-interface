@@ -4,11 +4,9 @@
 //! to `assets/design/tokens.toml` reaches every use. `docs/DESIGN.md` lists
 //! each component and its states.
 
-use std::time::Duration;
-
 use gpui::{
-    Animation, AnimationExt, BoxShadow, Div, Rgba, SharedString, Stateful, Svg, Transformation,
-    div, percentage, point, prelude::*, px, svg,
+    AnyElement, BoxShadow, Div, Rgba, SharedString, Stateful, Svg, div, point, prelude::*, px,
+    relative, svg,
 };
 
 use super::{
@@ -287,7 +285,7 @@ impl AgentState {
 }
 
 /// An agent's state symbol: shape first, colour second.
-pub fn agent_symbol(state: AgentState, id: impl Into<SharedString>) -> Div {
+pub fn agent_symbol(state: AgentState) -> Div {
     let (t, c) = (tokens(), colors());
     let size = t.size.agent_symbol;
     let frame = div()
@@ -307,28 +305,22 @@ pub fn agent_symbol(state: AgentState, id: impl Into<SharedString>) -> Div {
             .rounded_full()
             .bg(c.attention)
             .child(mark("!", c.on_attention)),
-        AgentState::Working => {
-            let turn = Duration::from_millis(t.motion.spinner_ms as u64);
-            frame
-                .child(
-                    div()
-                        .absolute()
-                        .inset_0()
-                        .rounded_full()
-                        .border(px(t.size.minimap_stroke * 1.5))
-                        .border_color(c.accent_soft),
-                )
-                .child(div().absolute().inset_0().child(
-                    icon("agent-arc", size, c.accent).with_animation(
-                        id.into(),
-                        Animation::new(turn).repeat(),
-                        |arc, delta| {
-                            arc.with_transformation(Transformation::rotate(percentage(delta)))
-                        },
-                    ),
-                ))
-                .child(icon("agent-play", size, c.accent))
-        }
+        AgentState::Working => frame
+            .child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .rounded_full()
+                    .border(px(t.size.minimap_stroke * 1.5))
+                    .border_color(c.accent_soft),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .child(icon("agent-arc", size, c.accent)),
+            )
+            .child(icon("agent-play", size, c.accent)),
         AgentState::Idle => frame.child(
             div()
                 .size(px(size - t.space.s4))
@@ -437,6 +429,829 @@ pub fn field_frame(focused: bool) -> Div {
     )
     .when(focused, |el| el.border_color(c.accent))
     .when(!focused, |el| el.border_color(c.line))
+}
+
+// ---------------------------------------------------------------- views
+//
+// The pieces Backbone views are built from. Each view composes these, so a
+// view never styles its own headings, controls, bars or footers.
+
+/// A view's 28 px header: its icon in the accent and its title. Callers add
+/// the subtitle and any controls on the right.
+pub fn view_header(name: &str, title: impl Into<SharedString>) -> Div {
+    let (t, c) = (tokens(), colors());
+    text(
+        div()
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .gap(px(t.space.s8))
+            .h(px(t.size.pane_header))
+            .px(px(t.space.s12))
+            .border_b(px(t.size.hairline))
+            .border_color(c.line)
+            .text_color(c.muted)
+            .overflow_hidden()
+            .whitespace_nowrap(),
+        &t.text.status,
+    )
+    .child(icon(name, t.size.icon - 1.0, c.accent))
+    .child(
+        div()
+            .text_color(c.text)
+            .font_weight(t.text.row_selected.weight())
+            .child(title.into()),
+    )
+}
+
+/// A back button: a chevron and where it returns to.
+pub fn back_button(id: impl Into<SharedString>, label: impl Into<SharedString>) -> Stateful<Div> {
+    let (t, c) = (tokens(), colors());
+    text(
+        div()
+            .id(id.into())
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .gap(px(t.space.s6))
+            .h(px(t.size.chip + t.space.s4))
+            .pl(px(t.space.s6))
+            .pr(px(t.space.s8 + 1.0))
+            .rounded(px(t.radius.icon_button))
+            .bg(c.hover)
+            .text_color(c.text_2)
+            .cursor_pointer()
+            .hover(|el| el.bg(colors().selected)),
+        &t.text.status,
+    )
+    .child(icon("chevron-left", t.size.icon - 1.0, c.text_2))
+    .child(label.into())
+}
+
+/// A rounded tag, such as a skill's or agent's tag.
+pub fn pill(label: impl Into<SharedString>) -> Div {
+    let (t, c) = (tokens(), colors());
+    text(
+        div()
+            .flex_shrink_0()
+            .px(px(t.space.s6 + 1.0))
+            .rounded(px(t.radius.pill))
+            .bg(c.selected)
+            .text_color(c.text_2),
+        &t.text.meta,
+    )
+    .child(label.into())
+}
+
+/// How a [`tag`] pill reads: what delivers a thing to an agent.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Tone {
+    /// Everyone, or a plain fact such as a CLI: neutral fill.
+    Plain,
+    /// A tag: the accent tint.
+    Tag,
+    /// Given by name, or otherwise secondary: an outline only.
+    Quiet,
+}
+
+/// A pill naming how something is delivered: `all`, a tag, `direct`.
+pub fn tag(label: impl Into<SharedString>, tone: Tone) -> Div {
+    let (t, c) = (tokens(), colors());
+    let pill = text(
+        div()
+            .flex_shrink_0()
+            .px(px(t.space.s6 + 1.0))
+            .rounded(px(t.radius.pill))
+            .border(px(t.size.hairline))
+            .whitespace_nowrap(),
+        &t.text.meta,
+    );
+    match tone {
+        Tone::Plain => pill
+            .bg(c.selected)
+            .border_color(c.selected)
+            .text_color(c.text),
+        Tone::Tag => pill
+            .bg(c.accent_soft)
+            .border_color(gpui::transparent_black())
+            .text_color(c.accent_text),
+        Tone::Quiet => pill.border_color(c.line_strong).text_color(c.muted),
+    }
+    .child(label.into())
+}
+
+/// A tag's card: the tag and how many agents carry it on the left, and
+/// labelled lines of what it brings on the right. `lines` pairs a label with
+/// mono names; an empty list shows a dash.
+pub fn tag_card(
+    id: impl Into<SharedString>,
+    tag_pill: Div,
+    carried: impl Into<SharedString>,
+    lines: &[(&'static str, Vec<String>)],
+    special: bool,
+) -> Stateful<Div> {
+    let (t, c) = (tokens(), colors());
+    let mut right = div()
+        .flex_1()
+        .min_w_0()
+        .flex()
+        .flex_col()
+        .gap(px(t.space.s6));
+    for (label, names) in lines {
+        right = right.child(
+            div()
+                .flex()
+                .items_baseline()
+                .gap(px(t.space.s8))
+                .child(
+                    text(
+                        div()
+                            .flex_shrink_0()
+                            .w(px(t.size.view_choice + t.space.s6))
+                            .text_color(c.muted),
+                        &t.text.label,
+                    )
+                    .child(*label),
+                )
+                .child(
+                    text(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_wrap()
+                            .gap_x(px(t.space.s10))
+                            .gap_y(px(t.space.s4))
+                            .font_family(t.font.mono.clone())
+                            .text_color(if names.is_empty() { c.muted } else { c.text_2 }),
+                        &t.text.meta,
+                    )
+                    .when(names.is_empty(), |el| el.child("—"))
+                    .children(names.iter().map(|name| div().child(name.clone()))),
+                ),
+        );
+    }
+    div()
+        .id(id.into())
+        .flex()
+        .flex_shrink_0()
+        .gap(px(t.space.s14))
+        .px(px(t.space.s12))
+        .py(px(t.space.s10 + 1.0))
+        .rounded(px(t.radius.slot))
+        .border(px(t.size.hairline))
+        .border_color(c.line_strong)
+        .when(special, |el| el.bg(c.panel))
+        .cursor_pointer()
+        .hover(|el| el.bg(colors().hover))
+        .child(
+            div()
+                .flex_shrink_0()
+                .w(px(t.size.tag_card_label))
+                .flex()
+                .flex_col()
+                .items_start()
+                .gap(px(t.space.s4))
+                .child(tag_pill)
+                .child(text(div().text_color(c.muted), &t.text.meta).child(carried.into())),
+        )
+        .child(right)
+}
+
+// ---------------------------------------------------------------- grouped lists
+//
+// How a view lays out a list people browse: a padded page, major sections
+// with a title, subgroups with a small label, and rows on rounded cards. A
+// row holds one line; longer text belongs in the reader.
+
+/// The scrolling page of a grouped list: padded, with a centred column no
+/// wider than reads well. Add sections to the returned column.
+pub fn grouped_page(id: impl Into<SharedString>, column: Div) -> Stateful<Div> {
+    let t = tokens();
+    div()
+        .id(id.into())
+        .flex_1()
+        .min_h_0()
+        .overflow_y_scroll()
+        .px(px(t.space.s20))
+        .pt(px(t.space.s8))
+        .pb(px(t.space.s24))
+        .flex()
+        // The column keeps its own height so the page can scroll through it.
+        .items_start()
+        .justify_center()
+        .child(
+            column
+                .w_full()
+                .max_w(px(t.size.grouped_width))
+                .flex()
+                .flex_col(),
+        )
+}
+
+/// A major section of a grouped list: its title and, under it, one line
+/// saying what the section holds.
+pub fn group_title(title: impl Into<SharedString>, note: impl Into<SharedString>) -> Div {
+    let (t, c) = (tokens(), colors());
+    let note: SharedString = note.into();
+    div()
+        .flex()
+        .flex_shrink_0()
+        .flex_col()
+        .gap(px(t.space.s2))
+        .px(px(t.space.s4))
+        .pt(px(t.space.s20))
+        .pb(px(t.space.s8))
+        .child(text(div().text_color(c.text), &t.text.group_title).child(title.into()))
+        .when(!note.is_empty(), |el| {
+            el.child(text(div().text_color(c.muted), &t.text.status).child(note))
+        })
+}
+
+/// A subgroup's label above its card: a label, which may be a pill, and a
+/// note after it.
+pub fn group_label(label: impl IntoElement, note: impl Into<SharedString>) -> Div {
+    let (t, c) = (tokens(), colors());
+    text(
+        div()
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .gap(px(t.space.s8))
+            .px(px(t.space.s4))
+            .pt(px(t.space.s12))
+            .pb(px(t.space.s6))
+            .text_color(c.muted)
+            .overflow_hidden()
+            .whitespace_nowrap(),
+        &t.text.status,
+    )
+    .child(label)
+    .child(
+        div()
+            .min_w_0()
+            .overflow_hidden()
+            .text_ellipsis()
+            .child(note.into()),
+    )
+}
+
+/// The rounded card a subgroup's rows sit on.
+pub fn group_card() -> Div {
+    let (t, c) = (tokens(), colors());
+    div()
+        .flex()
+        .flex_shrink_0()
+        .flex_col()
+        .rounded(px(t.radius.popover))
+        .bg(c.panel)
+        .border(px(t.size.hairline))
+        .border_color(c.line)
+        .overflow_hidden()
+}
+
+/// One line on a [`group_card`]: an optional leading mark, a name, what it
+/// says on the right and a chevron. Rows after the first are separated by a
+/// hairline.
+pub fn group_row(
+    id: impl Into<SharedString>,
+    first: bool,
+    leading: Option<AnyElement>,
+    name: impl Into<SharedString>,
+    trailing: impl IntoElement,
+) -> Stateful<Div> {
+    let (t, c) = (tokens(), colors());
+    text(
+        div()
+            .id(id.into())
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .gap(px(t.space.s10))
+            .h(px(t.size.group_row))
+            .px(px(t.space.s14))
+            .when(!first, |el| {
+                el.border_t(px(t.size.hairline)).border_color(c.line)
+            })
+            .cursor_pointer()
+            .hover(|el| el.bg(colors().hover)),
+        &t.text.row,
+    )
+    .children(leading)
+    .child(
+        div()
+            .flex_shrink_0()
+            .max_w(relative(0.6))
+            .overflow_hidden()
+            .whitespace_nowrap()
+            .text_ellipsis()
+            .font_family(t.font.mono.clone())
+            .text_color(c.text)
+            .child(name.into()),
+    )
+    .child(
+        text(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .justify_end()
+                .items_center()
+                .gap(px(t.space.s6))
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_color(c.muted),
+            &t.text.meta,
+        )
+        .child(trailing),
+    )
+    .child(icon("chevron-right", t.size.icon - 2.0, c.faint))
+}
+
+/// A quiet line inside a grouped list, for what a section does not list.
+pub fn group_note(note: impl Into<SharedString>) -> Div {
+    let (t, c) = (tokens(), colors());
+    text(
+        div()
+            .flex_shrink_0()
+            .px(px(t.space.s4))
+            .py(px(t.space.s6))
+            .text_color(c.muted),
+        &t.text.status,
+    )
+    .child(note.into())
+}
+
+/// A round tile holding a position, such as a policy's place in a brief.
+pub fn number_tile(number: impl Into<SharedString>) -> Div {
+    let (t, c) = (tokens(), colors());
+    text(
+        div()
+            .flex_shrink_0()
+            .size(px(t.size.chip))
+            .rounded_full()
+            .bg(c.hover)
+            .flex()
+            .items_center()
+            .justify_center()
+            .font_family(t.font.mono.clone())
+            .text_color(c.muted),
+        &t.text.meta,
+    )
+    .child(number.into())
+}
+
+/// A tinted panel holding a document's or agent's summary.
+pub fn info_card() -> Div {
+    let (t, c) = (tokens(), colors());
+    text(
+        div()
+            .flex()
+            .flex_shrink_0()
+            .flex_col()
+            .gap(px(t.space.s10))
+            .px(px(t.space.s14))
+            .py(px(t.space.s12))
+            .rounded(px(t.radius.slot))
+            .bg(c.panel)
+            .border(px(t.size.hairline))
+            .border_color(c.line),
+        &t.text.status,
+    )
+}
+
+/// A view's section heading: an uppercase label, and a note on the right.
+pub fn view_heading(label: impl Into<SharedString>, note: impl Into<SharedString>) -> Div {
+    let (t, c) = (tokens(), colors());
+    text(
+        div()
+            .flex()
+            .flex_shrink_0()
+            .items_end()
+            .justify_between()
+            .gap(px(t.space.s8))
+            .h(px(t.size.pane_header))
+            .px(px(t.space.s8))
+            .pb(px(t.space.s6))
+            .text_color(c.muted),
+        &t.text.label,
+    )
+    .child(label.into())
+    .child(text(div().overflow_hidden().whitespace_nowrap(), &t.text.meta).child(note.into()))
+}
+
+/// The row of controls under a view's header.
+pub fn view_toolbar() -> Div {
+    let (t, c) = (tokens(), colors());
+    text(
+        div()
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .gap(px(t.space.s8))
+            .h(px(t.size.view_toolbar))
+            .px(px(t.space.s12))
+            .border_b(px(t.size.hairline))
+            .border_color(c.line)
+            .text_color(c.muted),
+        &t.text.status,
+    )
+}
+
+/// A view's bottom row: keys with what they do, then a note on the right.
+pub fn view_footer(hints: &[(&'static str, &'static str)], note: impl Into<SharedString>) -> Div {
+    let (t, c) = (tokens(), colors());
+    let mut footer = text(
+        div()
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .gap(px(t.space.s16))
+            .h(px(t.size.view_footer))
+            .px(px(t.space.s14))
+            .border_t(px(t.size.hairline))
+            .border_color(c.line)
+            .text_color(c.muted)
+            .overflow_hidden()
+            .whitespace_nowrap(),
+        &t.text.meta,
+    );
+    for (key, action) in hints {
+        footer = footer.child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(t.space.s4))
+                .child(key_hint(*key).text_color(c.text_2))
+                .child(*action),
+        );
+    }
+    footer.child(div().flex_1()).child(note.into())
+}
+
+/// A pill that filters a list; filled while it is on.
+pub fn chip(
+    id: impl Into<SharedString>,
+    label: impl Into<SharedString>,
+    on: bool,
+) -> Stateful<Div> {
+    let (t, c) = (tokens(), colors());
+    text(
+        div()
+            .id(id.into())
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .h(px(t.size.chip))
+            .px(px(t.space.s10))
+            .rounded(px(t.radius.pill))
+            .border(px(t.size.hairline))
+            .cursor_pointer(),
+        &t.text.meta,
+    )
+    .when(on, |el| {
+        el.bg(c.selected)
+            .border_color(c.selected)
+            .text_color(c.text)
+    })
+    .when(!on, |el| {
+        el.border_color(c.line_strong)
+            .text_color(c.muted)
+            .hover(|el| el.text_color(colors().text))
+    })
+    .child(label.into())
+}
+
+/// The frame of a segmented control; its children are [`segment`]s.
+pub fn segments() -> Div {
+    let (t, c) = (tokens(), colors());
+    div()
+        .flex()
+        .flex_shrink_0()
+        .gap(px(t.size.hairline))
+        .p(px(t.space.s2))
+        .rounded(px(t.radius.icon_button))
+        .bg(c.panel)
+}
+
+/// One choice in a segmented control.
+pub fn segment(
+    id: impl Into<SharedString>,
+    label: impl Into<SharedString>,
+    on: bool,
+) -> Stateful<Div> {
+    let (t, c) = (tokens(), colors());
+    text(
+        div()
+            .id(id.into())
+            .flex()
+            .items_center()
+            .h(px(t.size.chip - t.space.s4))
+            .px(px(t.space.s10))
+            .rounded(px(t.radius.key))
+            .cursor_pointer(),
+        &t.text.meta,
+    )
+    .when(on, |el| el.bg(c.selected).text_color(c.text))
+    .when(!on, |el| {
+        el.text_color(c.muted)
+            .hover(|el| el.text_color(colors().text))
+    })
+    .child(label.into())
+}
+
+/// A short bar filled to `fraction` of its width.
+pub fn meter(fraction: f32, color: Rgba) -> Div {
+    let (t, c) = (tokens(), colors());
+    div()
+        .flex_1()
+        .min_w_0()
+        .h(px(t.size.meter))
+        .rounded(px(t.size.meter / 2.0))
+        .bg(c.selected)
+        .overflow_hidden()
+        .child(
+            div()
+                .h_full()
+                .w(gpui::relative(fraction.clamp(0.0, 1.0)))
+                .rounded(px(t.size.meter / 2.0))
+                .bg(color),
+        )
+}
+
+/// A bar split into coloured parts by their shares of the whole.
+pub fn stacked_meter(parts: &[(f32, Rgba)]) -> Div {
+    let t = tokens();
+    let total: f32 = parts.iter().map(|(share, _)| share.max(0.0)).sum();
+    let mut bar = div()
+        .flex()
+        .w_full()
+        .h(px(t.size.meter_large))
+        .gap(px(t.space.s2))
+        .rounded(px(t.size.meter_large / 2.0))
+        .overflow_hidden();
+    for (share, color) in parts {
+        if *share > 0.0 && total > 0.0 {
+            bar = bar.child(
+                div()
+                    .h_full()
+                    .flex_grow(*share / total)
+                    .flex_basis(px(0.0))
+                    .bg(*color),
+            );
+        }
+    }
+    bar
+}
+
+/// A legend entry: a colour swatch, its label and its value.
+pub fn legend(color: Rgba, label: impl Into<SharedString>, value: impl Into<SharedString>) -> Div {
+    let (t, c) = (tokens(), colors());
+    div()
+        .flex()
+        .items_center()
+        .gap(px(t.space.s6))
+        .text_color(c.muted)
+        .child(
+            div()
+                .size(px(t.size.dot + t.space.s2 + 1.0))
+                .rounded(px(t.space.s2))
+                .bg(color),
+        )
+        .child(label.into())
+        .child(div().text_color(c.text).child(value.into()))
+}
+
+/// A small mono badge, such as the CLI an agent runs in.
+pub fn badge(label: impl Into<SharedString>) -> Div {
+    let (t, c) = (tokens(), colors());
+    text(
+        div()
+            .flex_shrink_0()
+            .px(px(t.space.s4 + 1.0))
+            .h(px(t.size.keycap))
+            .flex()
+            .items_center()
+            .rounded(px(t.radius.key))
+            .bg(c.hover)
+            .font_family(t.font.mono.clone())
+            .text_color(c.muted),
+        &t.text.key,
+    )
+    .child(label.into())
+}
+
+/// A row of the new-pane views list: a glyph tile, a label and description,
+/// what it covers and its number key. Selected rows take the accent tile and
+/// ring.
+pub fn view_choice(
+    id: impl Into<SharedString>,
+    glyph: &'static str,
+    label: impl Into<SharedString>,
+    description: impl Into<SharedString>,
+    scope: impl Into<SharedString>,
+    key: impl Into<SharedString>,
+    selected: bool,
+) -> Stateful<Div> {
+    let (t, c) = (tokens(), colors());
+    choice_frame(id, selected)
+        .h(px(t.size.view_choice))
+        .gap(px(t.space.s12))
+        .child(
+            text(
+                div()
+                    .flex_shrink_0()
+                    .size(px(t.size.view_tile))
+                    .rounded(px(t.radius.row))
+                    .bg(if selected { c.accent_soft } else { c.selected })
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .font_family(t.font.mono.clone())
+                    .text_color(if selected { c.accent_text } else { c.text_2 }),
+                &t.text.row,
+            )
+            .child(glyph),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap(px(t.space.s2))
+                .child(text(div().text_color(c.text), &t.text.row_selected).child(label.into()))
+                .child(
+                    text(
+                        div()
+                            .text_color(c.muted)
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis(),
+                        &t.text.meta,
+                    )
+                    .child(description.into()),
+                ),
+        )
+        .child(text(div().flex_shrink_0().text_color(c.muted), &t.text.meta).child(scope.into()))
+        .child(choice_key(key))
+}
+
+/// The frame of a chooser row: transparent, or filled with the accent ring
+/// when selected.
+pub fn choice_frame(id: impl Into<SharedString>, selected: bool) -> Stateful<Div> {
+    let (t, c) = (tokens(), colors());
+    div()
+        .id(id.into())
+        .flex()
+        .flex_shrink_0()
+        .items_center()
+        .gap(px(t.space.s10))
+        .h(px(t.size.choice_row))
+        .px(px(t.space.s10))
+        .rounded(px(t.radius.row))
+        .cursor_pointer()
+        .when(selected, |el| {
+            el.bg(c.selected).shadow(vec![BoxShadow {
+                color: c.focus.into(),
+                offset: point(px(0.0), px(0.0)),
+                blur_radius: px(0.0),
+                spread_radius: px(t.size.focus_ring),
+                inset: false,
+            }])
+        })
+        .when(!selected, |el| el.hover(|el| el.bg(colors().hover)))
+}
+
+/// A chooser row's number key, right-aligned.
+pub fn choice_key(key: impl Into<SharedString>) -> Div {
+    let t = tokens();
+    key_hint(key)
+        .w(px(t.size.agent_symbol))
+        .flex()
+        .justify_end()
+}
+
+/// One of the two buttons atop the new-pane chooser: an icon, a label and its
+/// key. `on` shows it in the accent while its list is open.
+pub fn choice_button(
+    id: impl Into<SharedString>,
+    name: &str,
+    label: impl Into<SharedString>,
+    key: impl Into<SharedString>,
+    on: bool,
+) -> Stateful<Div> {
+    let (t, c) = (tokens(), colors());
+    let color = if on { c.accent_text } else { c.text };
+    text(
+        div()
+            .id(id.into())
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .items_center()
+            .gap(px(t.space.s10))
+            .h(px(t.size.choice_button))
+            .px(px(t.space.s14))
+            .rounded(px(t.radius.slot))
+            .border(px(t.size.hairline))
+            .cursor_pointer()
+            .text_color(color),
+        &t.text.workspace,
+    )
+    .font_weight(t.text.row_selected.weight())
+    .when(on, |el| el.bg(c.accent_soft).border_color(c.focus))
+    .when(!on, |el| {
+        el.bg(c.field)
+            .border_color(c.line_strong)
+            .hover(|el| el.bg(colors().hover))
+    })
+    .child(icon(
+        name,
+        t.size.icon + 1.0,
+        if on { c.accent_text } else { c.muted },
+    ))
+    .child(
+        div()
+            .flex_1()
+            .min_w_0()
+            .overflow_hidden()
+            .whitespace_nowrap()
+            .child(label.into()),
+    )
+    .child(key_hint(key).text_color(if on { c.accent_text } else { c.muted }))
+}
+
+/// The chooser's filter field frame.
+pub fn filter_frame() -> Div {
+    let (t, c) = (tokens(), colors());
+    text(
+        div()
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .gap(px(t.space.s8))
+            .h(px(t.size.filter))
+            .px(px(t.space.s10))
+            .rounded(px(t.radius.row))
+            .bg(c.panel)
+            .border(px(t.size.hairline))
+            .border_color(c.line_strong)
+            .text_color(c.muted),
+        &t.text.row,
+    )
+    .child(icon("search", t.size.icon, c.muted))
+}
+
+/// A centred row of keys and what they do, then a closing note.
+pub fn hint_bar(hints: &[(&'static str, SharedString)], note: impl Into<SharedString>) -> Div {
+    let (t, c) = (tokens(), colors());
+    let mut bar = text(
+        div()
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .justify_center()
+            .gap(px(t.space.s16))
+            .h(px(t.size.hint_bar))
+            .border_t(px(t.size.hairline))
+            .border_color(c.line)
+            .text_color(c.muted)
+            .overflow_hidden()
+            .whitespace_nowrap(),
+        &t.text.meta,
+    );
+    for (key, action) in hints {
+        bar = bar.child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(t.space.s4))
+                .child(key_hint(*key).text_color(c.text_2))
+                .child(action.clone()),
+        );
+    }
+    bar.child(note.into())
+}
+
+/// A label and its value, one line of an agent's facts.
+pub fn fact(label: impl Into<SharedString>, value: impl IntoElement) -> Div {
+    let (t, c) = (tokens(), colors());
+    text(
+        div()
+            .flex()
+            .gap(px(t.space.s12))
+            .min_h(px(t.size.keycap + t.space.s4)),
+        &t.text.body,
+    )
+    .child(
+        div()
+            .flex_shrink_0()
+            .w(px(t.size.fact_label))
+            .text_color(c.muted)
+            .child(label.into()),
+    )
+    .child(div().flex_1().min_w_0().text_color(c.text_2).child(value))
 }
 
 #[cfg(test)]

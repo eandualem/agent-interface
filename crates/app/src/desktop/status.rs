@@ -44,7 +44,7 @@ impl Browser {
         let editing = self.editing.as_ref().map(|edit| edit.tab);
         if self.save_failed {
             left = left
-                .child(ui::agent_symbol(ui::AgentState::NeedsYou, "save-failed"))
+                .child(ui::agent_symbol(ui::AgentState::NeedsYou))
                 .child(
                     div()
                         .text_color(c.attention_text)

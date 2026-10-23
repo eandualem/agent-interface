@@ -288,12 +288,7 @@ impl Browser {
                     None,
                 )
                 .when(chosen, |el| el.bg(colors().selected))
-                .when_some(hit.agent, |el, state| {
-                    el.child(ui::agent_symbol(
-                        state,
-                        SharedString::from(format!("jump-spin-{position}")),
-                    ))
-                })
+                .when_some(hit.agent, |el, state| el.child(ui::agent_symbol(state)))
                 .when(!hit.meta.is_empty(), |el| {
                     el.child(
                         ui::text(

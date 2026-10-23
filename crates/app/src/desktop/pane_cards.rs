@@ -12,17 +12,21 @@ use tmux_workspaces_core::{Direction, Leaf, Node};
 use super::{
     Attaching, Browser, components as ui,
     design::{colors, tokens},
+    new_pane::NewPane,
     settings::{self, PaneHeaders},
-    shortcuts::{self, Command},
     terminal::LiveTerminal,
+    views::{self, ViewPane},
 };
 use ui::AgentState;
 
 /// What every card in one tree needs to know.
 pub(super) struct Cards<'a> {
     pub focus: &'a str,
+    pub focus_changed: bool,
     pub numbers: &'a [String],
     pub terminals: &'a HashMap<String, Entity<LiveTerminal>>,
+    pub views: &'a HashMap<String, (Entity<ViewPane>, gpui::Subscription)>,
+    pub new_panes: &'a HashMap<String, (Entity<NewPane>, gpui::Subscription)>,
     pub chooser: Option<&'a Attaching>,
     pub split_bounds: &'a Rc<RefCell<HashMap<String, Bounds<Pixels>>>>,
     /// The agent state shown in each pane, by leaf.
@@ -110,6 +114,7 @@ impl Browser {
         let (t, c) = (tokens(), colors());
         let id = leaf.id.clone();
         let focused = leaf.id == cards.focus;
+        let is_view = leaf.view.is_some();
         let state = cards.leaf_states.get(&leaf.id).copied();
         let group: SharedString = format!("pane-group-{id}").into();
         let border = if state == Some(AgentState::NeedsYou) {
@@ -121,6 +126,8 @@ impl Browser {
         };
         let header = Self::pane_header(leaf, focused, state, cards, cx);
         let (inline, overlay) = match settings::pane_headers() {
+            // A view draws its own header, as in the design.
+            _ if is_view => (None, None),
             PaneHeaders::Always => (Some(header), None),
             PaneHeaders::Hover => (None, Some(header)),
             PaneHeaders::Off => (None, None),
@@ -130,10 +137,28 @@ impl Browser {
             .filter(|chooser| chooser.destination.pane == leaf.id)
         {
             chooser.view.clone().into_any_element()
+        } else if let Some((view, _)) = cards.views.get(&leaf.id) {
+            if cards.focus_changed {
+                view.clone().into_any_element()
+            } else {
+                view.clone()
+                    .cached(gpui::StyleRefinement::default().size_full())
+                    .into_any_element()
+            }
         } else if let Some(terminal) = cards.terminals.get(&leaf.id) {
-            terminal.clone().into_any_element()
+            if cards.focus_changed {
+                terminal.clone().into_any_element()
+            } else {
+                terminal
+                    .clone()
+                    .cached(gpui::StyleRefinement::default().size_full())
+                    .into_any_element()
+            }
         } else {
-            Self::new_pane(&leaf.id, cx)
+            match cards.new_panes.get(&leaf.id) {
+                Some((chooser, _)) => chooser.clone().into_any_element(),
+                None => div().into_any_element(),
+            }
         };
         div()
             .id(SharedString::from(format!("pane-{id}")))
@@ -176,6 +201,11 @@ impl Browser {
                     };
                     if event.button == gpui::MouseButton::Left {
                         select(browser, cx);
+                        // A view takes no keys: stop a terminal beside it
+                        // from receiving them once the view is selected.
+                        if is_view && let Some(focus) = &browser.navigation {
+                            window.focus(focus, cx);
+                        }
                     } else {
                         cx.defer_in(window, move |browser, window, cx| {
                             if browser
@@ -352,6 +382,27 @@ impl Browser {
                     .as_deref()
                     .map(|path| home_relative(path, std::env::var("HOME").ok().as_deref()))
                     .unwrap_or_default();
+                if let Some(view) = &leaf.view {
+                    return row
+                        .child(ui::icon(
+                            views::about(view.kind).icon,
+                            t.size.icon - t.space.s2 / 2.0,
+                            icon_color,
+                        ))
+                        .child(div().text_color(title_color).child(ViewPane::title(view)))
+                        .when(view.agent.is_some(), |row| {
+                            row.child(div().child(views::about(view.kind).label))
+                        })
+                        .child(div().flex_1())
+                        .child(
+                            div()
+                                .w(px(t.size.pane_number_width))
+                                .flex_shrink_0()
+                                .font_family(t.font.mono.clone())
+                                .text_size(t.text.key.size())
+                                .child(number.to_string()),
+                        );
+                }
                 row = row
                     .child(ui::icon(
                         "terminal",
@@ -401,84 +452,6 @@ impl Browser {
             &t.text.meta,
         )
         .child(label)
-    }
-
-    /// An empty pane asks what it should run; nothing is created until then.
-    fn new_pane(pane: &str, cx: &mut Context<Self>) -> AnyElement {
-        let (t, c) = (tokens(), colors());
-        let terminal = pane.to_owned();
-        let attach = pane.to_owned();
-        div()
-            .size_full()
-            .flex()
-            .flex_col()
-            .child(
-                div()
-                    .flex_1()
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .justify_center()
-                    .gap(px(t.space.s14))
-                    .p(px(t.space.s24))
-                    .child(
-                        ui::text(div().text_color(c.text), &t.text.empty_title)
-                            .child("What should it run?"),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap(px(t.space.s8))
-                            .w(px(t.size.popover_min_width))
-                            .child(
-                                ui::button(
-                                    SharedString::from(format!("open-terminal-{pane}")),
-                                    "Open terminal",
-                                    ui::Button::Primary,
-                                )
-                                .child(div().flex_1())
-                                .child(ui::key_hint("↵").text_color(c.on_accent))
-                                .on_click(cx.listener(
-                                    move |browser, _, window, cx| {
-                                        cx.stop_propagation();
-                                        browser.open_terminal(&terminal, window, cx);
-                                    },
-                                )),
-                            )
-                            .child(
-                                ui::button(
-                                    SharedString::from(format!("attach-{pane}")),
-                                    "Attach a session",
-                                    ui::Button::Secondary,
-                                )
-                                .child(div().flex_1())
-                                .child(ui::key_hint(shortcuts::label(Command::Attach)))
-                                .on_click(cx.listener(
-                                    move |browser, _, window, cx| {
-                                        cx.stop_propagation();
-                                        browser.open_attach(&attach, window, cx);
-                                    },
-                                )),
-                            ),
-                    ),
-            )
-            .child(
-                ui::text(
-                    div()
-                        .h(px(t.size.button + t.space.s4))
-                        .flex_shrink_0()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .border_t(px(t.size.hairline))
-                        .border_color(c.line)
-                        .text_color(c.muted),
-                    &t.text.status,
-                )
-                .child("Nothing is created until you choose."),
-            )
-            .into_any_element()
     }
 }
 

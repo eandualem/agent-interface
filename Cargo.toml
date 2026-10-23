@@ -56,8 +56,6 @@ objc2-screen-capture-kit = { version = "0.3.2", default-features = false, featur
 signal-hook = "0.4.5"
 tempfile = "3.27.0"
 thiserror = "2.0.21"
-# tmux 3.8 layout protocol.
-
 # Read-only schema-v2 library access.
 rusqlite = { version = "=0.40.2", features = ["bundled"] }
 serde = "=1.0.229"
