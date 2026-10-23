@@ -22,17 +22,18 @@ pub const WORKSPACE_ICONS: &[(&str, &str)] = &[
     ("♪", "Note"),
 ];
 
-/// The destination and attachment captured when a session chooser opens.
+/// The destination, attachment and view captured when a session chooser opens.
 #[derive(Clone, Debug)]
 pub struct AttachmentTarget {
     tab: String,
     pane: String,
     attachment: Option<Attachment>,
+    view: Option<View>,
 }
 
 impl AttachmentTarget {
     /// Apply to the captured pane if its tab is still selected and its attachment
-    /// has not changed. Moving focus within that tab does not redirect the choice.
+    /// and view have not changed. Moving focus within that tab does not redirect the choice.
     /// None returns to the ordinary shell reference. The caller first refreshes
     /// shared data and cancels on reconciliation conflict; this changes only the
     /// model, without connecting to a session or persisting anything.
@@ -40,11 +41,11 @@ impl AttachmentTarget {
     pub fn apply(&self, layout: &mut Layout, attachment: Option<Attachment>) -> bool {
         let unchanged = layout.tab().is_some_and(|tab| {
             tab.id == self.tab
-                && tab
-                    .tree
-                    .leaves()
-                    .iter()
-                    .any(|pane| pane.id == self.pane && pane.attachment == self.attachment)
+                && tab.tree.leaves().iter().any(|pane| {
+                    pane.id == self.pane
+                        && pane.attachment == self.attachment
+                        && pane.view == self.view
+                })
         });
         unchanged && layout.choose_pane(&self.pane) && layout.attach(attachment)
     }
@@ -235,6 +236,7 @@ impl Layout {
             tab: tab.id.clone(),
             pane: pane.id.clone(),
             attachment: pane.attachment.clone(),
+            view: pane.view.clone(),
         })
     }
 
@@ -732,6 +734,28 @@ mod tests {
         assert!(target.apply(&mut model, None));
         assert!(model.pane().unwrap().attachment.is_none());
         assert_eq!(model.pane().unwrap().id, second);
+    }
+
+    #[test]
+    fn attachment_choices_refuse_a_view_replaced_by_a_terminal() {
+        let mut model = Layout::initial("/tmp".into());
+        model.split(Direction::Right, "/tmp".into(), true);
+        let tab = model.tab().unwrap().id.clone();
+        let pane = model.pane().unwrap().id.clone();
+        assert!(model.show_view(&tab, &pane, View::of(ViewKind::Team)));
+        let target = model.attachment_target().unwrap();
+        let attachment = Attachment {
+            session: "work".into(),
+            source_socket: None,
+        };
+        assert!(target.apply(&mut model.clone(), Some(attachment.clone())));
+
+        assert!(model.open_terminal());
+        let changed = model.clone();
+        assert!(!target.apply(&mut model, Some(attachment.clone())));
+        assert_eq!(model, changed);
+        let current = model.attachment_target().unwrap();
+        assert!(current.apply(&mut model, Some(attachment)));
     }
 
     #[test]
