@@ -1,7 +1,7 @@
 //! The programs gates 2 to 4 measure, started for one run and stopped after
-//! it (`docs/decisions/0018-milestone-0-benchmark-method-revised.md`).
+//! it (`docs/BENCHMARKING.md`).
 //!
-//! - `app`: the benchmark window of decision record 0019, attached as a
+//! - `app`: the native benchmark window, attached as a
 //!   control-mode client to a session on a private tmux server.
 //! - `ghostty`: a separate Ghostty instance running a command directly.
 //! - `ghostty-tmux`: a separate Ghostty instance running an ordinary tmux

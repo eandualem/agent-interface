@@ -1,4 +1,4 @@
-//! Gate 5's scenarios (`docs/decisions/0021-pane-state-recovery.md`, harness
+//! Gate 5's scenarios (`docs/BENCHMARKING.md`, harness
 //! for gate 5).
 
 use std::path::Path;

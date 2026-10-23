@@ -1,5 +1,5 @@
 //! Gate 3: typing latency
-//! (`docs/decisions/0018-milestone-0-benchmark-method-revised.md`).
+//! (`docs/BENCHMARKING.md`).
 //!
 //! The measured pane runs `cat`. Keys are posted one at a time to the
 //! measured program's process, at random gaps. A key's latency runs from just
@@ -554,7 +554,7 @@ fn verdict(settings: &Settings, results: &[Measured]) -> (String, Vec<String>) {
     }
     reasons.push(
         "An acceptance result needs three independent runs of a clean build on a quiet \
-         machine (decision record 0018); this report alone does not make one."
+         machine; this report alone does not make one."
             .to_owned(),
     );
     (

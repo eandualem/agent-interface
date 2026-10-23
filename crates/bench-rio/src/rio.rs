@@ -1,4 +1,4 @@
-//! `rio-vt`, the engine decision record 0004 measures against
+//! `rio-vt`, a comparison engine measured against
 //! `libghostty-vt`, built with its default features off.
 
 use crate::display::{Attributes, Color, Cursor, Screen, Style, Underline, Width};

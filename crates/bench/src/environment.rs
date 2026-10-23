@@ -1,5 +1,4 @@
-//! The machine, software and build a benchmark ran on, as decision record
-//! 0013 requires every result to state.
+//! The machine, software and build recorded with every benchmark result.
 
 use std::process::Command;
 

@@ -1,5 +1,5 @@
 //! Rebuilding a terminal from a pane's state as tmux holds it
-//! (`docs/decisions/0021-pane-state-recovery.md`).
+//! (`docs/ARCHITECTURE.md`).
 //!
 //! The types here mirror what tmux reports for a pane, in this crate's own
 //! terms: the caller converts a capture into a [`Restore`], and

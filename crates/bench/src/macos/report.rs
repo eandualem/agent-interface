@@ -169,8 +169,8 @@ pub enum Judged {
     /// Below the limit by more than the margin.
     Passes,
     /// Within the margin of the limit, on either side: the capture leaves
-    /// out the display's scan-out, so decision record 0018 has a camera
-    /// confirm such a result before the gate is decided.
+    /// out the display's scan-out, so a camera must confirm such a result
+    /// before the comparison is decided.
     Near,
     /// Above the limit by more than the margin.
     Fails,

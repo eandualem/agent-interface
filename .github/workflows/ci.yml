@@ -1,5 +1,5 @@
 # Builds, lints, tests and audits the workspace on macOS and Linux
-# (decision record 0012). It builds and tests only; it never publishes.
+#. It builds and tests only; it never publishes.
 # Every Action is pinned by full commit SHA, with its tag and licence beside it.
 name: CI
 
@@ -17,9 +17,9 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # The terminal engine's native build needs exactly this Zig (decision record 0011).
+  # The terminal engine's native build needs exactly this Zig.
   ZIG_VERSION: 0.15.2
-  # The portable CPU target that distributed builds use (decision record 0011).
+  # The portable CPU target that distributed builds use.
   LIBGHOSTTY_VT_SYS_CPU: baseline
   # Keep runtime safety checks without Debug's full-page integrity scans.
   LIBGHOSTTY_VT_SYS_OPTIMIZE: ReleaseSafe
@@ -46,7 +46,7 @@ jobs:
           version: ${{ env.ZIG_VERSION }}
 
       # tmux, and the libraries GPUI's Wayland and X11 backends build against
-      # (decision record 0019).
+      #.
       - name: Install tmux and GPUI's libraries (Linux)
         if: runner.os == 'Linux'
         run: >-

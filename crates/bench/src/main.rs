@@ -1,9 +1,9 @@
 //! The milestone-0 benchmark harness
-//! (`docs/decisions/0013-milestone-0-benchmark-method.md`).
+//! (`docs/BENCHMARKING.md`).
 //!
 //! A development tool, never shipped. Every tmux process it starts runs on a
 //! private server through `tmux-workspaces-test-support`. See
-//! `docs/benchmarks/README.md` for how to run it.
+//! `docs/BENCHMARKING.md` for how to run it.
 
 #![deny(unsafe_code)]
 
@@ -48,7 +48,7 @@ const USAGE: &str = "usage: tmux-workspaces-bench gate1 --out DIR [options]
   --keep DIR          keep the payloads, recordings and final screens in DIR
 
 usage: tmux-workspaces-bench gate2|gate3|gate4 --out DIR [options]   (macOS)
-  display gates of decision record 0018; each measured window must stay fully
+  display measurements; each measured window must stay fully
   visible, and the program running this needs Screen Recording and
   Accessibility (posting events) access
   --targets LIST      app,ghostty,ghostty-tmux (gate2: app,ghostty-tmux;
@@ -73,7 +73,7 @@ usage: tmux-workspaces-bench gate2|gate3|gate4 --out DIR [options]   (macOS)
   fail the gate but not pass it
 
 usage: tmux-workspaces-bench gate5 --out DIR [options]
-  control-mode fidelity of decision record 0021, on the tmux first on PATH
+  control-mode state recovery, on the tmux first on PATH
   --scenarios LIST    attach,pause,split-attach,split-pause,resize,flow,
                       own-pause,exit,hooks (all)
   --fixtures LIST     the fixtures to run (all; see crates/bench/src/gate5/fixtures.rs)

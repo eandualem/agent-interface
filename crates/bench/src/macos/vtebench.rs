@@ -1,5 +1,5 @@
 //! vtebench, gate 2's second measurement
-//! (`docs/decisions/0022-vtebench-in-gate-2.md`).
+//! (`docs/BENCHMARKING.md`).
 //!
 //! Each run starts a new window of one target, whose tmux pane runs vtebench
 //! from a checkout at a pinned commit, on the gate's patched copy of its
@@ -131,7 +131,7 @@ impl Settings {
 fn checkout(dir: &Path) -> Result<PathBuf, String> {
     let how = format!(
         "check out vtebench commit {COMMIT} and build it with `cargo build --release --locked`, \
-         as docs/benchmarks/README.md describes"
+         as docs/BENCHMARKING.md describes"
     );
     let dir = fs::canonicalize(dir)
         .map_err(|error| format!("--vtebench {}: {error}; {how}", dir.display()))?;
@@ -188,7 +188,7 @@ pub fn prepare(checkout: &Path, work: &Path) -> Result<PathBuf, String> {
     if changed != TTY_LINES {
         return Err(format!(
             "{}: {changed} line(s) are `{TTY_LINE}`, where commit {COMMIT} has {TTY_LINES}; \
-             the gate changes exactly those (docs/decisions/0022-vtebench-in-gate-2.md)",
+             the gate changes exactly those (docs/BENCHMARKING.md)",
             benchmarks.display()
         ));
     }
@@ -533,7 +533,7 @@ pub fn section(settings: &Settings, targets: &[Target], runs: &[Run]) -> String 
          how long one case's writes to the pane blocked, in whole milliseconds; each target's \
          samples are pooled over its runs. With Ghostty running tmux, tmux keeps reading the \
          pane however far Ghostty falls behind, so those times are mostly tmux's own \
-         (docs/benchmarks/README.md). The ratio is Ghostty with tmux's median time divided by \
+         (docs/BENCHMARKING.md). The ratio is Ghostty with tmux's median time divided by \
          the app's: the app's rate as a multiple of Ghostty with tmux's. These windows are not \
          captured, so the windows table shows no frames for them.\n\n| Case |",
         settings.runs, settings.bytes, settings.secs
