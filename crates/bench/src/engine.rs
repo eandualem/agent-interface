@@ -16,7 +16,7 @@ pub struct Grid {
     pub scrollback: usize,
 }
 
-/// The size decision record 0013 sets for every gate.
+/// The common terminal size for benchmark runs.
 pub const GRID: Grid = Grid {
     cols: 200,
     rows: 50,

@@ -2,13 +2,13 @@
 //! crate's own types.
 //!
 //! The engine is `libghostty-vt`
-//! (`docs/decisions/0004-terminal-emulation-core.md`). No engine type appears
+//! (`docs/ARCHITECTURE.md`). No engine type appears
 //! in this crate's public API, so the engine can be replaced without changing
 //! other crates. This crate depends on no other project crate.
 //!
 //! Engine handles are not `Send`: construct, use and drop a [`Terminal`] on
 //! the thread that owns it
-//! (`docs/decisions/0007-threads-ownership-and-event-ordering.md`). The
+//! (`docs/ARCHITECTURE.md`). The
 //! display data it hands out, a [`Screen`], is owned and can go to any thread.
 
 #![forbid(unsafe_code)]
@@ -251,8 +251,8 @@ impl Terminal {
 /// when the limit is reached. The limit is room for one and a half times
 /// `lines` rows at the wider of `cols` and 215 columns, the engine's standard
 /// page width. A page grows when it holds many styles, so styled output keeps
-/// fewer lines in the same room: at 200 columns, the benchmark's most heavily
-/// styled payload still keeps 10,000 lines (`docs/benchmarks/gate-1.md`).
+/// fewer lines in the same room. The headless benchmark reports the number
+/// of lines retained for each payload (`docs/BENCHMARKING.md`).
 fn history_bytes(cols: u16, lines: usize) -> usize {
     const CELL_BYTES: usize = 8;
     const PAGE_COLS: usize = 215;

@@ -1,5 +1,5 @@
 //! Seeded benchmark payloads: the terminal output the milestone-0 gates send
-//! through tmux and replay (`docs/decisions/0013-milestone-0-benchmark-method.md`).
+//! through tmux and replay (`docs/BENCHMARKING.md`).
 //!
 //! Each [`Kind`] imitates one sort of real output, written for a 200×50
 //! terminal. [`generate`] is a pure function of its arguments, built on a

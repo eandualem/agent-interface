@@ -1,5 +1,4 @@
-//! Comparing a rebuilt pane's cells with the reference's, by the rules of
-//! decision record 0021.
+//! Comparing a rebuilt pane's cells with the reference's visible state.
 
 use std::fmt::Write as _;
 

@@ -1,4 +1,4 @@
-//! `alacritty_terminal`, the fallback engine of decision record 0004.
+//! `alacritty_terminal`, a comparison terminal engine.
 //!
 //! `tmux-workspaces-bench-rio` includes this file for its tests.
 

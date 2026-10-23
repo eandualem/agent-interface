@@ -1,6 +1,6 @@
 //! The panes of one control-mode connection, each kept as terminal state on a
 //! terminal worker thread
-//! (`docs/decisions/0007-threads-ownership-and-event-ordering.md`).
+//! (`docs/ARCHITECTURE.md`).
 //!
 //! A reader thread reads the tmux client's output and decodes it. Each pane's
 //! output goes, in order, to the terminal worker, which owns every

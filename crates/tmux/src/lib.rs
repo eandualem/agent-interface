@@ -3,7 +3,7 @@
 //!
 //! This crate depends on no other project crate. Protocol parsing stays
 //! separate from the transport that starts and reads processes. See
-//! `docs/decisions/0003-control-mode-connection-and-attachment-model.md`.
+//! `docs/ARCHITECTURE.md`.
 
 #![forbid(unsafe_code)]
 

@@ -10,7 +10,7 @@ use std::mem::size_of;
 ///
 /// A `Screen` holds no engine handle, so the thread that owns the terminal can
 /// hand it to the user-interface thread
-/// (`docs/decisions/0007-threads-ownership-and-event-ordering.md`). Reading
+/// (`docs/ARCHITECTURE.md`). Reading
 /// into the same `Screen` again reuses its allocations.
 ///
 /// `Terminal::read_screen` fills a screen from the engine. Building one cell

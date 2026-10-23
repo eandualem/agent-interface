@@ -1,7 +1,7 @@
 //! Test fixtures shared by the tmux-workspaces crates.
 //!
 //! [`TmuxServer`] is the only way tests, benchmarks and spikes start tmux
-//! (`docs/decisions/0012-testing-strategy-and-tmux-isolation.md`), so tmux
+//! (`docs/ARCHITECTURE.md`), so tmux
 //! isolation can be reviewed in this one file. This package is used only as a
 //! development dependency.
 

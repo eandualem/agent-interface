@@ -51,7 +51,7 @@ cargo run -p tmux-workspaces-app
 The first build takes a few minutes because it compiles Ghostty's core; later
 builds reuse it.
 
-Before each commit, run the checks that CI runs:
+Before submitting a change, run the local checks:
 
 ```sh
 export LIBGHOSTTY_VT_SYS_OPTIMIZE=ReleaseSafe
@@ -66,8 +66,10 @@ cargo deny check
 dependency direction between the project's crates. Install the version CI
 uses with `cargo install cargo-deny --version 0.20.2 --locked`.
 
-CI runs the same commands with `--locked` on macOS (`macos-15`, arm64) and
-Linux (`ubuntu-24.04`, x86-64), as set out in `.github/workflows/ci.yml`.
+The CI workflow defines the same checks with `--locked` for macOS
+(`macos-15`, arm64) and Linux (`ubuntu-24.04`, x86-64). Hosted CI and automated
+reviews are enabled when the repository becomes public; while it is private,
+record local verification in the pull request.
 
 ## The terminal engine's native build
 
@@ -146,13 +148,15 @@ sizing. Tests, benchmarks and scripts must never touch those sessions:
 - **Commits.** Use [Conventional Commits](https://www.conventionalcommits.org)
   (`feat:`, `fix:`, `docs:`, `chore:`), with a body that says why the change
   is needed.
-- **Review.** Every pull request is reviewed by someone other than its author
-  and needs green CI on both platforms before it is merged.
-- **Architecture.** Keep the architecture guide accurate when behavior or crate
-  boundaries change. Explain technical changes in the pull request.
-- **Dependencies.** Record each new dependency's licence and the reason for
-  it in the pull request for that change. Pin fast-moving
-  dependencies, such as the terminal engine and the UI framework, to an exact
-  version. The project is MIT-licensed: GPL code, such as Zed's terminal
-  crates, may be read for ideas but never copied.
-- **Speed claims** include the method, environment and raw measurement results.
+- **Review.** Every pull request is reviewed independently of its author. Include
+  the checks you ran and any platform you could not verify. Once hosted CI is
+  enabled, its required checks must pass before merging.
+- **Architecture.** Keep [the architecture guide](docs/ARCHITECTURE.md) accurate
+  when behavior or crate boundaries change. Explain the technical reason for a
+  change in its pull request.
+- **Dependencies.** Record each new dependency's purpose and licence in its pull
+  request and keep the architecture guide's dependency summary current. Pin
+  fast-moving dependencies, such as the terminal engine and UI framework, to an
+  exact version. The project is MIT-licensed; do not copy GPL code into it.
+- **Measurements.** Follow the [benchmark guide](docs/BENCHMARKING.md). Include
+  the revision, environment, method and raw results with any performance claim.

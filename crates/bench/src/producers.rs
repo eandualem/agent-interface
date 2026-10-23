@@ -1,5 +1,5 @@
 //! Output that the display gates run inside the measured terminal
-//! (`docs/decisions/0018-milestone-0-benchmark-method-revised.md`): a fire
+//! (`docs/BENCHMARKING.md`): a fire
 //! animation and a scroll test, each written to standard output as fast as
 //! the terminal accepts it, for a fixed time. Gate 5 runs a third, a count.
 //!
