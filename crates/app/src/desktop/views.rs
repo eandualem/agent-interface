@@ -138,6 +138,12 @@ pub(super) struct ViewPane {
 impl EventEmitter<ViewEvent> for ViewPane {}
 
 impl ViewPane {
+    pub fn set_visible(&self, visible: bool) {
+        if let Some(source) = &self.source {
+            source.set_active(visible);
+        }
+    }
+
     /// Start polling `view`. Without Backbone, the pane says so and polls nothing.
     pub fn new(
         view: View,

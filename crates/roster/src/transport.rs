@@ -8,6 +8,12 @@ use http::{HeaderValue, Uri};
 
 use crate::{RESPONSE_LIMIT, Snapshot};
 
+thread_local! {
+    // One runtime and connection pool per polling worker. Credentials and
+    // endpoint validation remain per request, including after config changes.
+    static CLIENT: std::cell::RefCell<Option<reqwest::blocking::Client>> = const { std::cell::RefCell::new(None) };
+}
+
 impl Snapshot {
     /// Read one agents response from an explicitly supplied local API address.
     ///
@@ -66,21 +72,13 @@ fn fetch_inner(
     limit: usize,
 ) -> Option<Result<Vec<u8>, Option<u16>>> {
     let uri = endpoint(url, path)?;
-    let client = reqwest::blocking::Client::builder()
-        .no_proxy()
-        .redirect(reqwest::redirect::Policy::none())
-        .connection_verbose(false)
-        // Never start an uncancellable system lookup for the only allowed
-        // hostname. Client shutdown must not wait for DNS after the deadline.
-        .resolve_to_addrs(
-            "localhost",
-            &[
-                SocketAddr::from(([127, 0, 0, 1], 0)),
-                SocketAddr::from((Ipv6Addr::LOCALHOST, 0)),
-            ],
-        )
-        .build()
-        .ok()?;
+    let client = CLIENT.with(|cached| {
+        let mut cached = cached.borrow_mut();
+        if cached.is_none() {
+            *cached = client();
+        }
+        cached.clone()
+    })?;
     // Set the request's total deadline, including the response body, rather
     // than only a timeout renewed for each blocking read.
     let mut request = client.get(uri.to_string()).timeout(Duration::from_secs(3));
@@ -103,6 +101,24 @@ fn fetch_inner(
     Some(Ok(bytes))
 }
 
+fn client() -> Option<reqwest::blocking::Client> {
+    reqwest::blocking::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .connection_verbose(false)
+        // Never start an uncancellable system lookup for the only allowed
+        // hostname. Client shutdown must not wait for DNS after the deadline.
+        .resolve_to_addrs(
+            "localhost",
+            &[
+                SocketAddr::from(([127, 0, 0, 1], 0)),
+                SocketAddr::from((Ipv6Addr::LOCALHOST, 0)),
+            ],
+        )
+        .build()
+        .ok()
+}
+
 #[cfg(test)]
 pub(super) mod tests {
     use super::*;
@@ -113,6 +129,39 @@ pub(super) mod tests {
     use std::time::Instant;
 
     const BODY: &str = r#"{"items":[{"name":"worker","state":"busy"}]}"#;
+
+    #[test]
+    fn consecutive_reads_reuse_the_connection_with_current_credentials() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let worker = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            for key in ["first", "second"] {
+                let mut request = Vec::new();
+                while !request.ends_with(b"\r\n\r\n") {
+                    let mut byte = [0];
+                    socket.read_exact(&mut byte).unwrap();
+                    request.push(byte[0]);
+                }
+                assert!(
+                    String::from_utf8(request)
+                        .unwrap()
+                        .to_ascii_lowercase()
+                        .contains(&format!("authorization: bearer {key}\r\n"))
+                );
+                socket
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}")
+                    .unwrap();
+            }
+        });
+        for key in ["first", "second"] {
+            assert_eq!(get(&url, "/api/agents", key, 20).unwrap(), b"{}");
+        }
+        worker.join().unwrap();
+    }
 
     pub(crate) fn server(reply: String, pause: Duration) -> (String, thread::JoinHandle<String>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();

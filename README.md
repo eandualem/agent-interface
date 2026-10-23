@@ -24,7 +24,7 @@ Python is used only to prepare the native source during the build.
 ```sh
 python3 scripts/prepare-native.py
 export LIBGHOSTTY_VT_SYS_OPTIMIZE=ReleaseSafe
-cargo run -p tmux-workspaces-app --bin tmux-workspaces
+cargo run --release -p tmux-workspaces-app --bin tmux-workspaces
 ```
 
 The first launch creates an empty workspace. Add a tab with **+** or
@@ -34,7 +34,7 @@ use Ctrl+Shift+T. Click a terminal before typing.
 To open a particular library:
 
 ```sh
-cargo run -p tmux-workspaces-app --bin tmux-workspaces -- --data-dir /path/to/library
+cargo run --release -p tmux-workspaces-app --bin tmux-workspaces -- --data-dir /path/to/library
 ```
 
 ## Guides

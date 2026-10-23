@@ -154,6 +154,7 @@ pub struct Recovery {
     /// line.
     waiting: Waiting,
     replies: Vec<Reply>,
+    scrollback: usize,
     /// The pane's output after the boundary.
     held: Option<Vec<u8>>,
 }
@@ -191,11 +192,13 @@ pub struct Rebuilt {
 
 impl Recovery {
     /// Starts rebuilding `pane`, returning the command line that pauses it.
-    pub fn start(pane: PaneId) -> (Self, String) {
+    pub fn start(pane: PaneId, scrollback: usize) -> (Self, String) {
+        let scrollback = scrollback.min(i32::MAX as usize);
         let recovery = Self {
             pane,
             waiting: Waiting::Pause,
             replies: Vec::new(),
+            scrollback,
             held: None,
         };
         (
@@ -207,14 +210,19 @@ impl Recovery {
     /// Starts rebuilding `pane` after tmux paused it itself (`pause-after`),
     /// returning the line to send. All of the pane's output after the
     /// `%pause` notification belongs after the rebuilt state.
-    pub fn paused(pane: PaneId) -> (Self, String) {
+    pub fn paused(pane: PaneId, scrollback: usize) -> (Self, String) {
+        let scrollback = scrollback.min(i32::MAX as usize);
         let recovery = Self {
             pane,
             waiting: Waiting::Line,
             replies: Vec::new(),
+            scrollback,
             held: Some(Vec::new()),
         };
-        (recovery, line(&[pane], &continue_command(pane), None))
+        (
+            recovery,
+            line(&[pane], &continue_command(pane), None, scrollback),
+        )
     }
 
     /// The pane being rebuilt.
@@ -248,6 +256,7 @@ impl Recovery {
                     &[self.pane],
                     &continue_command(self.pane),
                     None,
+                    self.scrollback,
                 )))
             }
             Waiting::Line => {
@@ -256,7 +265,11 @@ impl Recovery {
                     return Ok(Step::Wait);
                 }
                 self.waiting = Waiting::Nothing;
-                let snapshot = snapshot(self.pane, &self.replies[..replies_per_pane()])?;
+                let snapshot = snapshot(
+                    self.pane,
+                    &self.replies[..replies_per_pane()],
+                    self.scrollback,
+                )?;
                 Ok(Step::Done(Rebuilt {
                     snapshot,
                     output: self.held.take().unwrap_or_default(),
@@ -278,24 +291,32 @@ impl Recovery {
 #[derive(Debug)]
 pub struct Attach {
     panes: Vec<PaneId>,
+    scrollback: usize,
     replies: Vec<Reply>,
 }
 
 impl Attach {
     /// Starts rebuilding `panes`, returning the line to send.
-    pub fn new(panes: Vec<PaneId>) -> (Self, String) {
-        Self::start(panes, None)
+    pub fn new(panes: Vec<PaneId>, scrollback: usize) -> (Self, String) {
+        Self::start(panes, None, scrollback)
     }
 
     /// Rebuilds only panes still in the expected source session and window.
-    pub fn in_session(panes: Vec<PaneId>, session: u32, window: u32) -> (Self, String) {
-        Self::start(panes, Some((session, window)))
+    pub fn in_session(
+        panes: Vec<PaneId>,
+        session: u32,
+        window: u32,
+        scrollback: usize,
+    ) -> (Self, String) {
+        Self::start(panes, Some((session, window)), scrollback)
     }
 
-    fn start(panes: Vec<PaneId>, source: Option<(u32, u32)>) -> (Self, String) {
-        let command = line(&panes, "refresh-client -f '!no-output'", source);
+    fn start(panes: Vec<PaneId>, source: Option<(u32, u32)>, scrollback: usize) -> (Self, String) {
+        let scrollback = scrollback.min(i32::MAX as usize);
+        let command = line(&panes, "refresh-client -f '!no-output'", source, scrollback);
         let attach = Self {
             panes,
+            scrollback,
             replies: Vec::new(),
         };
         (attach, command)
@@ -317,7 +338,7 @@ impl Attach {
         self.panes
             .iter()
             .zip(self.replies.chunks(replies_per_pane()))
-            .map(|(&pane, replies)| snapshot(pane, replies))
+            .map(|(&pane, replies)| snapshot(pane, replies, self.scrollback))
             .collect::<Result<_, _>>()
             .map(Step::Done)
     }
@@ -404,18 +425,20 @@ fn continue_command(pane: PaneId) -> String {
 /// Returns one line that reads every pane's state and then runs `last`.
 /// None of its commands waits, so tmux reads no pane output while it runs
 /// them.
-fn line(panes: &[PaneId], last: &str, source: Option<(u32, u32)>) -> String {
+fn line(panes: &[PaneId], last: &str, source: Option<(u32, u32)>, scrollback: usize) -> String {
     let mut commands = Vec::new();
     for &pane in panes {
         let target = source.map_or_else(
             || target(pane),
             |(session, window)| format!("${session}:@{window}.%{}", pane.0),
         );
-        // The screen with all retained history, then the primary screen
+        // The screen with only the history the local terminal retains, then the primary screen
         // saved while the alternate screen is on (empty otherwise).
-        commands.push(format!("capture-pane -p -e -N -C -S - -E - -t '{target}'"));
         commands.push(format!(
-            "capture-pane -p -e -N -C -a -q -S - -E - -t '{target}'"
+            "capture-pane -p -e -N -C -S -{scrollback} -E - -t '{target}'"
+        ));
+        commands.push(format!(
+            "capture-pane -p -e -N -C -a -q -S -{scrollback} -E - -t '{target}'"
         ));
         for format in FORMATS {
             commands.push(format!("display-message -p -t '{target}' '#{{{format}}}'"));
@@ -430,7 +453,7 @@ fn line(panes: &[PaneId], last: &str, source: Option<(u32, u32)>) -> String {
 
 /// Builds a snapshot from one pane's replies, in the order [`line`] sends
 /// its commands.
-fn snapshot(pane: PaneId, replies: &[Reply]) -> Result<Snapshot, Error> {
+fn snapshot(pane: PaneId, replies: &[Reply], scrollback: usize) -> Result<Snapshot, Error> {
     let values: Vec<String> = replies[2..2 + FORMATS.len()]
         .iter()
         .map(|reply| {
@@ -441,7 +464,8 @@ fn snapshot(pane: PaneId, replies: &[Reply]) -> Result<Snapshot, Error> {
                 .unwrap_or_default()
         })
         .collect();
-    let state = pane_state(&values)?;
+    let mut state = pane_state(&values)?;
+    state.history = state.history.min(scrollback);
     // Without an alternate screen, the saved capture is one empty line.
     let saved = if state.alternate_saved_cursor.is_some() {
         capture::rows(lines(&replies[1]))?
@@ -618,7 +642,7 @@ mod tests {
 
     #[test]
     fn a_recovery_pauses_then_captures_and_continues_in_one_line() {
-        let (mut recovery, pause) = Recovery::start(PaneId(7));
+        let (mut recovery, pause) = Recovery::start(PaneId(7), 100);
         assert_eq!(pause, "refresh-client -A '%7:pause'\n");
         // Output before the pause's reply is in the capture.
         recovery.output(b"before");
@@ -626,7 +650,7 @@ mod tests {
             panic!("the line follows the pause's reply");
         };
         assert_eq!(line.matches('\n').count(), 1);
-        assert!(line.starts_with("capture-pane -p -e -N -C -S - -E - -t '%7' ; "));
+        assert!(line.starts_with("capture-pane -p -e -N -C -S -100 -E - -t '%7' ; "));
         assert!(line.contains(" ; display-message -p -t '%7' '#{cursor_x}' ; "));
         assert!(
             line.ends_with(" ; capture-pane -p -P -C -t '%7' ; refresh-client -A '%7:continue'\n")
@@ -658,7 +682,7 @@ mod tests {
     fn reads_the_saved_screen_only_with_the_alternate_screen_on() {
         let mut replies = replies(&values());
         replies[1] = ok(&["P1", ""]);
-        assert!(snapshot(PaneId(1), &replies).unwrap().saved.is_empty());
+        assert!(snapshot(PaneId(1), &replies, 100).unwrap().saved.is_empty());
         let on = with_values(&[
             ("alternate_on", "1"),
             ("alternate_saved_x", "0"),
@@ -666,12 +690,12 @@ mod tests {
         ]);
         let mut replies = self::replies(&on);
         replies[1] = ok(&["P1", ""]);
-        assert_eq!(snapshot(PaneId(1), &replies).unwrap().saved.len(), 2);
+        assert_eq!(snapshot(PaneId(1), &replies, 100).unwrap().saved.len(), 2);
     }
 
     #[test]
     fn after_tmux_pauses_a_pane_its_output_from_then_on_is_held() {
-        let (mut recovery, line) = Recovery::paused(PaneId(2));
+        let (mut recovery, line) = Recovery::paused(PaneId(2), 100);
         assert!(line.ends_with("refresh-client -A '%2:continue'\n"));
         recovery.output(b"held");
         for reply in replies(&values()) {
@@ -689,16 +713,16 @@ mod tests {
             ok: false,
             lines: vec![b"can't find pane: %7".to_vec()],
         };
-        let (mut recovery, _) = Recovery::start(PaneId(7));
+        let (mut recovery, _) = Recovery::start(PaneId(7), 100);
         assert_eq!(recovery.reply(failed.clone()).unwrap(), Step::Failed);
-        let (mut recovery, _) = Recovery::paused(PaneId(7));
+        let (mut recovery, _) = Recovery::paused(PaneId(7), 100);
         assert_eq!(recovery.reply(ok(&[])).unwrap(), Step::Wait);
         assert_eq!(recovery.reply(failed).unwrap(), Step::Failed);
     }
 
     #[test]
     fn an_attach_reads_every_pane_then_turns_output_on() {
-        let (mut attach, line) = Attach::new(vec![PaneId(1), PaneId(4)]);
+        let (mut attach, line) = Attach::new(vec![PaneId(1), PaneId(4)], 100);
         assert!(line.contains("-t '%1'") && line.contains("-t '%4'"));
         assert!(line.ends_with(" ; refresh-client -f '!no-output'\n"));
         let mut replies = replies(&values());
@@ -712,7 +736,7 @@ mod tests {
         let panes: Vec<_> = snapshots.iter().map(|snapshot| snapshot.pane).collect();
         assert_eq!(panes, [PaneId(1), PaneId(4)]);
         assert_eq!(attach.reply(ok(&[])), Err(Error::UnexpectedReply));
-        let (mut attach, _) = Attach::new(vec![PaneId(1)]);
+        let (mut attach, _) = Attach::new(vec![PaneId(1)], 100);
         let failed = Reply::default();
         assert_eq!(attach.reply(failed).unwrap(), Step::Failed);
     }

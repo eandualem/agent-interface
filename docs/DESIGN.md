@@ -141,7 +141,6 @@ weight, applied with `components::text`:
 - `[size]`: every component dimension, from `titlebar` and `panel_width` to
   `row`, `pane_header`, `status_row`, `slot`, `keycap`, `hairline` and the
   Settings window. Each is commented in `tokens.toml`.
-- `[motion]`: `spinner_ms`, one turn of the working-agent arc.
 
 ## Components
 
@@ -156,7 +155,7 @@ All in `components.rs`; each takes its look from the tokens.
 | `button` | `Primary` (accent fill), `Secondary` (field with border), `Danger` (attention text) |
 | `dot` | Small filled mark: needs you on tabs and slots, the saved light |
 | `menu`, `menu_item`, `menu_heading`, `menu_rule` | Popover frame on `field` with shadow; item with mark slot, label and key; uppercase heading; rule |
-| `agent_symbol` | Needs you: filled `attention` circle with "!". Working: `accent` arc turning once per `spinner_ms`, with a play mark. Idle: `faint` ring. Unknown: dashed `muted` ring with "?" |
+| `agent_symbol` | Needs you: filled `attention` circle with "!". Working: static `accent` arc with a play mark. Idle: `faint` ring. Unknown: dashed `muted` ring with "?" |
 | `minimap` | A tab's layout thumbnail: one frame, split once, or split twice |
 | `empty_tile`, `empty_state` | Icon tile, title, explanation and actions, centred |
 | `field_frame` | Text field frame, `accent` border when focused |

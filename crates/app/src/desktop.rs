@@ -390,6 +390,7 @@ struct Browser {
     /// A navigation panel drag: where it started and the width then.
     sidebar_drag: Option<(gpui::Pixels, gpui::Pixels)>,
     reset_focus: bool,
+    painted_pane_focus: Option<String>,
     navigation: Option<gpui::FocusHandle>,
     updates: Option<Task<()>>,
     editing: Option<EditingName>,
@@ -1593,6 +1594,17 @@ impl Render for Browser {
                 );
                 self.views.insert(id, (pane, events));
             }
+        }
+        let expanded = self.layout.as_ref().and_then(|layout| {
+            let model = layout.model();
+            model
+                .focus
+                .then(|| model.tab().map(|tab| tab.focus.as_str()))
+                .flatten()
+        });
+        for (id, (view, _)) in &self.views {
+            view.read(cx)
+                .set_visible(expanded.is_none_or(|focused| focused == id));
         }
         let empty: Vec<String> = self
             .layout

@@ -76,7 +76,7 @@ pub(super) fn body(pane: &ViewPane, team: &Team, cx: &mut Context<ViewPane>) -> 
             .items_center()
             .gap(px(t.space.s6))
             .text_color(c.attention_text)
-            .child(ui::agent_symbol(AgentState::NeedsYou, "team-tally-need"))
+            .child(ui::agent_symbol(AgentState::NeedsYou))
             .child(format!("{} need you", tally(Some(AgentState::NeedsYou)))),
     )
     .child(
@@ -85,7 +85,7 @@ pub(super) fn body(pane: &ViewPane, team: &Team, cx: &mut Context<ViewPane>) -> 
             .items_center()
             .gap(px(t.space.s6))
             .text_color(c.accent_text)
-            .child(ui::agent_symbol(AgentState::Working, "team-tally-work"))
+            .child(ui::agent_symbol(AgentState::Working))
             .child(format!("{} working", tally(Some(AgentState::Working)))),
     )
     .child(
@@ -93,7 +93,7 @@ pub(super) fn body(pane: &ViewPane, team: &Team, cx: &mut Context<ViewPane>) -> 
             .flex()
             .items_center()
             .gap(px(t.space.s6))
-            .child(ui::agent_symbol(AgentState::Idle, "team-tally-idle"))
+            .child(ui::agent_symbol(AgentState::Idle))
             .child(format!("{} idle", tally(Some(AgentState::Idle)))),
     )
     .child(format!("{} offline", tally(None)));
@@ -357,7 +357,7 @@ pub(super) fn agent_row(
             el.child(mono(guide).text_color(c.faint))
         })
         .child(match state {
-            Some(state) => ui::agent_symbol(state, id),
+            Some(state) => ui::agent_symbol(state),
             None => div()
                 .size(px(t.size.agent_symbol))
                 .flex_shrink_0()

@@ -49,14 +49,23 @@ replies and layout events. A terminal worker owns the engine handles and feeds
 output into each pane's terminal state. It publishes owned `Screen` data for the
 UI thread to draw, so drawing does not borrow a live engine or wait for I/O.
 
-On connection or recovery, the worker captures the pane's current state from
-tmux and then continues with subsequent output. Recovery uses the state tmux
+On connection or recovery, the worker captures the pane's current state and
+only the history its local scrollback retains, then continues with subsequent
+output. Initial snapshots are released after restoration. The reader queues
+output only for panes in its selected window. Recovery uses the state tmux
 can report; it cannot reconstruct every historical parser or input mode.
 
 The UI handles application shortcuts first. Other keys and paste operations
 are encoded for the destination pane's reported input modes and sent as literal
 bytes to that exact pane. Navigation does not redirect queued input to another
 pane. Input waits until a newly selected destination is ready.
+
+Closing a pane allows queued input, including a final mouse release, up to one
+second to drain, then cancels the connection. A control client that cannot
+detach within another second is terminated; its tmux session is not terminated.
+An input write that times out terminates its connection before returning, so
+queued input cannot arrive later. Disconnect diagnostics retain tmux exit
+reasons and transport failures.
 
 The app uses background workers for storage and terminal work. The library
 crates expose synchronous operations; `app` owns scheduling, cancellation and
@@ -94,7 +103,15 @@ Agent Backbone is optional. Its adapter resolves configuration lazily and uses
 bounded, read-only requests to an approved loopback endpoint. A failed refresh
 must not present an old agent state as current. The app remains useful without
 Backbone or the Python implementation. The `roster::views` adapter reads and
-decodes view data; `app::desktop::views` renders it in native panes.
+decodes view data; `app::desktop::views` renders it in native panes. Each
+polling worker reuses its HTTP client while validating the endpoint and
+credentials for every request. Selection changes coalesce and cancel obsolete
+request chains. Views hidden by an expanded pane pause their polling. Agent
+Usage refreshes every 15 seconds, like the team-wide Usage view.
+
+Pane bodies cache unchanged render trees; output, data, size, focus and appearance
+changes invalidate them. Working-agent indicators are static, so they do not
+request continuous frames while the UI is idle.
 Team-wide libraries (`roster::views::library`) are gathered from per-agent
 reads, the store, each agent's skill preview and its brief, for at most 32
 agents per refresh, merged by file path so no row names an agent. They poll

@@ -4,7 +4,7 @@ Complete the [source build setup](../CONTRIBUTING.md#build-and-test), including
 native-source preparation and the build-mode environment variable, then run:
 
 ```sh
-cargo run -p tmux-workspaces-app --bin tmux-workspaces
+cargo run --release -p tmux-workspaces-app --bin tmux-workspaces
 ```
 
 If no library exists, the first launch creates one empty workspace. Add a tab,
@@ -210,4 +210,3 @@ no configuration. These options inspect the Python-compatible `keymap.toml`;
 they do not configure the native desktop. Use **Settings → Shortcuts** for native
 bindings, which are saved separately in `settings.toml`. The legacy prefix is not
 dispatched by the desktop.
-

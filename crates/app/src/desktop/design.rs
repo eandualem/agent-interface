@@ -129,11 +129,6 @@ group!(
     }
 );
 
-group!(
-    /// Timings.
-    Motion { spinner_ms: f32 = number }
-);
-
 /// The whole design language.
 #[derive(Clone, Debug)]
 pub struct Design {
@@ -146,7 +141,6 @@ pub struct Design {
     pub space: Space,
     pub radius: Radius,
     pub size: Size,
-    pub motion: Motion,
 }
 
 impl Design {
@@ -173,7 +167,6 @@ impl Design {
             space: Space::read(group(&["space"])?, "space")?,
             radius: Radius::read(group(&["radius"])?, "radius")?,
             size: Size::read(group(&["size"])?, "size")?,
-            motion: Motion::read(group(&["motion"])?, "motion")?,
         })
     }
 }

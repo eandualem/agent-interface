@@ -283,8 +283,13 @@ impl LiveTerminal {
                         });
                         terminal.closed = Some(cx.subscribe(
                             &view,
-                            |terminal, _, _: &crate::view::Disconnected, cx| {
-                                terminal.error = Some("Session disconnected".into());
+                            |terminal, _, event: &crate::view::Disconnected, cx| {
+                                terminal.error = Some(
+                                    event
+                                        .0
+                                        .clone()
+                                        .unwrap_or_else(|| "Session disconnected".into()),
+                                );
                                 cx.notify();
                             },
                         ));

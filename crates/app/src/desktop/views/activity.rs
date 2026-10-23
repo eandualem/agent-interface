@@ -50,9 +50,7 @@ fn state_label(member: &Member) -> gpui::Div {
         .items_center()
         .gap(px(t.space.s6))
         .text_color(color)
-        .children(state.map(|state| {
-            ui::agent_symbol(state, SharedString::from(format!("lane-{}", member.name)))
-        }))
+        .children(state.map(ui::agent_symbol))
         .child(word)
 }
 

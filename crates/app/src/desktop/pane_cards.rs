@@ -22,6 +22,7 @@ use ui::AgentState;
 /// What every card in one tree needs to know.
 pub(super) struct Cards<'a> {
     pub focus: &'a str,
+    pub focus_changed: bool,
     pub numbers: &'a [String],
     pub terminals: &'a HashMap<String, Entity<LiveTerminal>>,
     pub views: &'a HashMap<String, (Entity<ViewPane>, gpui::Subscription)>,
@@ -137,9 +138,22 @@ impl Browser {
         {
             chooser.view.clone().into_any_element()
         } else if let Some((view, _)) = cards.views.get(&leaf.id) {
-            view.clone().into_any_element()
+            if cards.focus_changed {
+                view.clone().into_any_element()
+            } else {
+                view.clone()
+                    .cached(gpui::StyleRefinement::default().size_full())
+                    .into_any_element()
+            }
         } else if let Some(terminal) = cards.terminals.get(&leaf.id) {
-            terminal.clone().into_any_element()
+            if cards.focus_changed {
+                terminal.clone().into_any_element()
+            } else {
+                terminal
+                    .clone()
+                    .cached(gpui::StyleRefinement::default().size_full())
+                    .into_any_element()
+            }
         } else {
             match cards.new_panes.get(&leaf.id) {
                 Some((chooser, _)) => chooser.clone().into_any_element(),

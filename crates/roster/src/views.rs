@@ -145,6 +145,9 @@ impl<'a> Api<'a> {
 
 /// What one agent receives at its next start.
 fn instructions(api: &Api<'_>, name: &str) -> Result<Instructions, &'static str> {
+    if !api.live() {
+        return Err(UNAVAILABLE);
+    }
     let path = format!("/api/agents/{name}/instructions");
     match transport::fetch(&api.url, &path, &api.key, VIEW_LIMIT) {
         Ok(body) => Instructions::decode(&body),

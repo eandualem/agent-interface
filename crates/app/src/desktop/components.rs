@@ -4,11 +4,9 @@
 //! to `assets/design/tokens.toml` reaches every use. `docs/DESIGN.md` lists
 //! each component and its states.
 
-use std::time::Duration;
-
 use gpui::{
-    Animation, AnimationExt, AnyElement, BoxShadow, Div, Rgba, SharedString, Stateful, Svg,
-    Transformation, div, percentage, point, prelude::*, px, relative, svg,
+    AnyElement, BoxShadow, Div, Rgba, SharedString, Stateful, Svg, div, point, prelude::*, px,
+    relative, svg,
 };
 
 use super::{
@@ -287,7 +285,7 @@ impl AgentState {
 }
 
 /// An agent's state symbol: shape first, colour second.
-pub fn agent_symbol(state: AgentState, id: impl Into<SharedString>) -> Div {
+pub fn agent_symbol(state: AgentState) -> Div {
     let (t, c) = (tokens(), colors());
     let size = t.size.agent_symbol;
     let frame = div()
@@ -307,28 +305,22 @@ pub fn agent_symbol(state: AgentState, id: impl Into<SharedString>) -> Div {
             .rounded_full()
             .bg(c.attention)
             .child(mark("!", c.on_attention)),
-        AgentState::Working => {
-            let turn = Duration::from_millis(t.motion.spinner_ms as u64);
-            frame
-                .child(
-                    div()
-                        .absolute()
-                        .inset_0()
-                        .rounded_full()
-                        .border(px(t.size.minimap_stroke * 1.5))
-                        .border_color(c.accent_soft),
-                )
-                .child(div().absolute().inset_0().child(
-                    icon("agent-arc", size, c.accent).with_animation(
-                        id.into(),
-                        Animation::new(turn).repeat(),
-                        |arc, delta| {
-                            arc.with_transformation(Transformation::rotate(percentage(delta)))
-                        },
-                    ),
-                ))
-                .child(icon("agent-play", size, c.accent))
-        }
+        AgentState::Working => frame
+            .child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .rounded_full()
+                    .border(px(t.size.minimap_stroke * 1.5))
+                    .border_color(c.accent_soft),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .child(icon("agent-arc", size, c.accent)),
+            )
+            .child(icon("agent-play", size, c.accent)),
         AgentState::Idle => frame.child(
             div()
                 .size(px(size - t.space.s4))

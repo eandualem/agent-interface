@@ -5,7 +5,7 @@ use std::{
     path::PathBuf,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc,
     },
     thread::{self, JoinHandle},
@@ -100,7 +100,9 @@ pub type ViewUpdate = (views::Request, Result<views::Data, &'static str>);
 pub struct ViewSource {
     /// Cleared when the view is gone, so a library read stops early.
     live: Arc<AtomicBool>,
+    active: Arc<AtomicBool>,
     request: Arc<Mutex<views::Request>>,
+    generation: Arc<AtomicU64>,
     updates: Arc<Mutex<Option<ViewUpdate>>>,
     stop: mpsc::Sender<()>,
     worker: Option<JoinHandle<()>>,
@@ -120,17 +122,48 @@ impl ViewSource {
         let (stop, stopped) = mpsc::channel();
         let live = Arc::new(AtomicBool::new(true));
         let wanted = Arc::clone(&live);
+        let active = Arc::new(AtomicBool::new(true));
+        let visible = Arc::clone(&active);
+        let generation = Arc::new(AtomicU64::new(0));
+        let current_generation = Arc::clone(&generation);
         let worker = thread::Builder::new()
             .name("view polling".into())
             .spawn(move || {
                 loop {
-                    let request = shared.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                    // A burst of selection changes needs one read of the
+                    // latest selection, not one read per queued wakeup.
+                    while stopped.try_recv().is_ok() {}
+                    if !wanted.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    if !visible.load(Ordering::Relaxed) {
+                        if stopped.recv().is_err() {
+                            break;
+                        }
+                        continue;
+                    }
+                    let (request, generation) = {
+                        let request = shared.lock().unwrap_or_else(|e| e.into_inner());
+                        (request.clone(), current_generation.load(Ordering::Relaxed))
+                    };
                     let update = views::read(&data_dir, None, &request, &|| {
                         wanted.load(Ordering::Relaxed)
+                            && visible.load(Ordering::Relaxed)
+                            && current_generation.load(Ordering::Relaxed) == generation
                     });
-                    *pending.lock().unwrap_or_else(|e| e.into_inner()) = Some((request, update));
-                    wake();
-                    match stopped.recv_timeout(every) {
+                    let interval = match request {
+                        views::Request::Agent(_, views::Part::Usage(_)) => Duration::from_secs(15),
+                        _ => every,
+                    };
+                    if wanted.load(Ordering::Relaxed)
+                        && visible.load(Ordering::Relaxed)
+                        && current_generation.load(Ordering::Relaxed) == generation
+                    {
+                        *pending.lock().unwrap_or_else(|e| e.into_inner()) =
+                            Some((request, update));
+                        wake();
+                    }
+                    match stopped.recv_timeout(interval) {
                         Err(mpsc::RecvTimeoutError::Timeout) | Ok(()) => {}
                         Err(mpsc::RecvTimeoutError::Disconnected) => break,
                     }
@@ -138,7 +171,9 @@ impl ViewSource {
             })?;
         Ok(Self {
             live,
+            active,
             request,
+            generation,
             updates,
             stop,
             worker: Some(worker),
@@ -148,8 +183,21 @@ impl ViewSource {
     /// Replace the request and read it now. An update for the old request
     /// may still arrive; compare its request before using it.
     pub fn set_request(&self, request: views::Request) {
-        *self.request.lock().unwrap_or_else(|e| e.into_inner()) = request;
+        {
+            let mut current = self.request.lock().unwrap_or_else(|e| e.into_inner());
+            *current = request;
+            self.generation.fetch_add(1, Ordering::Relaxed);
+        }
         let _ = self.stop.send(());
+    }
+
+    /// Pause reads while another pane is expanded, preserving this view's
+    /// selection and data. Showing it again requests an immediate refresh.
+    pub fn set_active(&self, active: bool) {
+        if self.active.swap(active, Ordering::Relaxed) != active {
+            self.generation.fetch_add(1, Ordering::Relaxed);
+            let _ = self.stop.send(());
+        }
     }
 
     /// Take the newest read, if one arrived since the last call.
@@ -183,6 +231,117 @@ mod tests {
         process::Command,
         time::Instant,
     };
+
+    #[test]
+    fn view_requests_cancel_old_chains_and_coalesce_selection_changes() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let mut child = Command::new(env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "roster::tests::view_poll_fixture_child",
+                "--nocapture",
+            ])
+            .env("VIEW_POLL_FIXTURE_DIR", directory.path())
+            .env("BACKBONE_API_KEY", "")
+            .env(
+                "BACKBONE_PORT",
+                listener.local_addr().unwrap().port().to_string(),
+            )
+            .spawn()
+            .unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut paths = Vec::new();
+        while Instant::now() < deadline {
+            if child.try_wait().unwrap().is_some() {
+                break;
+            }
+            let (mut socket, _) = match listener.accept() {
+                Ok(pair) => pair,
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(5));
+                    continue;
+                }
+                Err(e) => panic!("{e}"),
+            };
+            socket
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                let mut byte = [0];
+                socket.read_exact(&mut byte).unwrap();
+                request.push(byte[0]);
+            }
+            paths.push(
+                String::from_utf8(request)
+                    .unwrap()
+                    .lines()
+                    .next()
+                    .unwrap()
+                    .to_owned(),
+            );
+            if paths.len() == 1 {
+                fs::write(directory.path().join("reading"), "").unwrap();
+                while !directory.path().join("changed").exists() {
+                    assert!(Instant::now() < deadline);
+                    thread::sleep(Duration::from_millis(5));
+                }
+            }
+            socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 12\r\nConnection: close\r\n\r\n{\"items\":[]}").unwrap();
+        }
+        if child.try_wait().unwrap().is_none() {
+            let _ = child.kill();
+        }
+        assert!(child.wait().unwrap().success());
+        assert_eq!(paths.len(), 3, "{paths:?}");
+        assert!(paths[0].starts_with("GET /api/agents "));
+        assert!(paths[1].starts_with("GET /api/usage?"));
+        assert!(paths[2].starts_with("GET /api/usage?"));
+    }
+
+    #[test]
+    fn view_poll_fixture_child() {
+        let Some(directory) = env::var_os("VIEW_POLL_FIXTURE_DIR").map(PathBuf::from) else {
+            return;
+        };
+        let (wake, woken) = mpsc::channel();
+        let source = ViewSource::start(
+            directory.clone(),
+            views::Request::Team,
+            Duration::from_secs(60),
+            move || {
+                let _ = wake.send(());
+            },
+        )
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !directory.join("reading").exists() {
+            assert!(Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(5));
+        }
+        for _ in 0..20 {
+            source.set_request(views::Request::Usage(views::Range::Hour));
+            source.set_request(views::Request::Usage(views::Range::Week));
+        }
+        fs::write(directory.join("changed"), "").unwrap();
+        woken.recv_timeout(Duration::from_secs(5)).unwrap();
+        let (request, update) = source.take_update().unwrap();
+        assert_eq!(request, views::Request::Usage(views::Range::Week));
+        assert!(update.is_ok(), "{update:?}");
+        assert!(woken.recv_timeout(Duration::from_millis(200)).is_err());
+        source.set_active(false);
+        source.set_request(views::Request::Usage(views::Range::Hour));
+        assert!(woken.recv_timeout(Duration::from_millis(200)).is_err());
+        source.set_active(true);
+        woken.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(
+            source.take_update().unwrap().0,
+            views::Request::Usage(views::Range::Hour)
+        );
+        drop(source);
+    }
 
     #[test]
     fn polling_rereads_configuration_coalesces_failures_and_recovers() {

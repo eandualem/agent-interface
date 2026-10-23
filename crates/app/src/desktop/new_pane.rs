@@ -686,7 +686,7 @@ fn agent_row(
         member.repo.clone()
     };
     ui::choice_frame(id.clone(), selected)
-        .child(ui::agent_symbol(state, id))
+        .child(ui::agent_symbol(state))
         .child(mono(member.name.clone()).flex_shrink_0().text_color(c.text))
         .child(ui::badge(member.runtime.clone()))
         .child(

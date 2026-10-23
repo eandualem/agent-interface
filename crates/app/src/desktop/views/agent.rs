@@ -63,9 +63,7 @@ pub(super) fn body(pane: &ViewPane, agent: &Agent, cx: &mut Context<ViewPane>) -
                 .items_center()
                 .gap(px(t.space.s4 + 1.0))
                 .text_color(color)
-                .when(agent.online, |el| {
-                    el.child(ui::agent_symbol(state, "agent-card-state"))
-                })
+                .when(agent.online, |el| el.child(ui::agent_symbol(state)))
                 .child(word),
         )
         .child(div().flex_1())
