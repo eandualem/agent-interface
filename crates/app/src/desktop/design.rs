@@ -73,7 +73,7 @@ group!(
         row: TextStyle = style, row_selected: TextStyle = style,
         status: TextStyle = style, meta: TextStyle = style, label: TextStyle = style,
         key: TextStyle = style, empty_title: TextStyle = style, body: TextStyle = style,
-        figure: TextStyle = style, doc_title: TextStyle = style,
+        figure: TextStyle = style, group_title: TextStyle = style, doc_title: TextStyle = style,
         doc_heading: TextStyle = style, doc_body: TextStyle = style,
     }
 );
@@ -123,8 +123,9 @@ group!(
         view_footer: f32 = number, view_choice: f32 = number, view_tile: f32 = number,
         chip: f32 = number, meter: f32 = number, meter_large: f32 = number,
         fact_label: f32 = number, choice_button: f32 = number, filter: f32 = number,
-        choice_row: f32 = number, hint_bar: f32 = number, layer_tile: f32 = number,
-        tag_card_label: f32 = number, narrow_view: f32 = number,
+        choice_row: f32 = number, hint_bar: f32 = number,
+        tag_card_label: f32 = number, grouped_width: f32 = number,
+        group_row: f32 = number,
     }
 );
 

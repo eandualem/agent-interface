@@ -56,10 +56,7 @@ fn cards(library: &TagLibrary, cx: &mut Context<ViewPane>) -> AnyElement {
     .child("and")
     .child(div().flex().child(code("python")).child(","))
     .child("and nothing else.");
-    let mut rows = list("tag-cards")
-        .px(px(t.space.s12))
-        .py(px(t.space.s10))
-        .gap(px(t.space.s8));
+    let mut rows = div().gap(px(t.space.s8)).pt(px(t.space.s12));
     for card in library.cards() {
         let all = card.tag == "all";
         let carried = if all {
@@ -68,12 +65,27 @@ fn cards(library: &TagLibrary, cx: &mut Context<ViewPane>) -> AnyElement {
             agents(card.carriers)
         };
         let tag = card.tag.clone();
+        // Every agent carries `all`; the count says so without listing them.
+        let carriers: Vec<String> = if all {
+            Vec::new()
+        } else {
+            library
+                .agents
+                .iter()
+                .filter(|agent| agent.tags.contains(&card.tag))
+                .map(|agent| agent.name.clone())
+                .collect()
+        };
+        let mut lines = vec![("SKILLS", card.skills), ("POLICIES", card.policies)];
+        if !all {
+            lines.insert(0, ("AGENTS", carriers));
+        }
         rows = rows.child(
             ui::tag_card(
                 SharedString::from(format!("tag-{}", card.tag)),
                 ui::tag(card.tag, if all { Tone::Plain } else { Tone::Tag }),
                 carried,
-                &[("SKILLS", card.skills), ("POLICIES", card.policies)],
+                &lines,
                 all,
             )
             .on_click(cx.listener(move |pane, _, _, cx| {
@@ -135,7 +147,7 @@ fn cards(library: &TagLibrary, cx: &mut Context<ViewPane>) -> AnyElement {
         .flex_col()
         .child(header)
         .child(intro)
-        .child(rows)
+        .child(ui::grouped_page("tag-cards", rows))
         .child(ui::view_footer(
             &[("click", "the agents carrying it")],
             "tags set with backbone agent tag NAME TAG…",

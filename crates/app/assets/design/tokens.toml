@@ -133,6 +133,9 @@ weight = 400
 [text.figure]               # the headline number in a view
 size = 26.0
 weight = 600
+[text.group_title]          # a major section of a grouped list
+size = 15.0
+weight = 600
 [text.doc_title]            # a document's title in a reading view
 size = 20.0
 weight = 600
@@ -232,9 +235,9 @@ choice_button = 40.0        # the two buttons atop the new-pane chooser
 filter = 32.0               # the new-pane chooser's filter field
 choice_row = 34.0           # an agent or session row in that chooser
 hint_bar = 34.0             # the chooser's centred row of keys
-layer_tile = 20.0           # the numbered tile of a library's layer heading
 tag_card_label = 132.0      # the tag column of a tag card
-narrow_view = 680.0         # below this width a view row moves its meta under its name
+grouped_width = 880.0       # the widest a grouped list's column grows
+group_row = 36.0            # a row on a grouped list's card
 
 # ---------------------------------------------------------------- motion
 

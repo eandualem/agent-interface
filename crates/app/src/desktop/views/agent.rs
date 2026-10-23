@@ -10,8 +10,8 @@ use tmux_workspaces_roster::views::{
 };
 
 use super::{
-    Target, ViewEvent, ViewPane, ago, count, line, list, mono, policies, reader, since, skills,
-    usage,
+    Target, ViewEvent, ViewPane, ago, count, home, line, list, mono, policies, reader, since,
+    skills, usage,
 };
 use crate::desktop::{
     components::{self as ui, AgentState, Tone},
@@ -138,8 +138,8 @@ pub(super) fn body(pane: &ViewPane, agent: &Agent, cx: &mut Context<ViewPane>) -
         AgentSection::Overview => overview(agent, state),
         AgentSection::Permissions => permissions(agent),
         AgentSection::Connections => connections(agent),
-        AgentSection::Skills => skills_section(pane, agent, cx),
-        AgentSection::Policies => policies_section(pane, agent, cx),
+        AgentSection::Skills => skills_section(agent, cx),
+        AgentSection::Policies => policies_section(agent, cx),
         AgentSection::Usage => usage_section(agent),
     };
     div()
@@ -372,44 +372,43 @@ fn failed(error: &'static str) -> AnyElement {
         .into_any_element()
 }
 
-fn intro(text: String) -> Div {
-    let (t, c) = (tokens(), colors());
-    ui::text(
-        div()
-            .flex_shrink_0()
-            .px(px(t.space.s8))
-            .pt(px(t.space.s6))
-            .pb(px(t.space.s4))
-            .text_color(c.muted),
-        &t.text.status,
-    )
-    .child(text)
-}
-
-fn skills_section(pane: &ViewPane, agent: &Agent, cx: &mut Context<ViewPane>) -> AnyElement {
+fn skills_section(agent: &Agent, cx: &mut Context<ViewPane>) -> AnyElement {
     let loadout = match &agent.skills {
         None => return waiting("Reading the skills its next launch links…"),
         Some(Err(error)) => return failed(error),
         Some(Ok(loadout)) => loadout,
     };
     let c = colors();
-    let narrow = pane.narrow();
     let groups = skill_rows(loadout, &agent.runtime);
     let total: usize = groups.iter().map(|(_, rows)| rows.len()).sum();
-    let mut rows = list("agent-skills").child(intro(format!(
+    let mut column = div().child(ui::group_note(format!(
         "{total} skill{} load for {}. Each says why it reaches this agent.",
         if total == 1 { "" } else { "s" },
         agent.name
     )));
     let mut at = 0;
     for ((heading, note), group) in groups {
-        let note = match (heading, group.is_empty()) {
-            ("REPOSITORY", true) => "its directory has none".to_owned(),
-            ("REPOSITORY", false) => agent.dir.clone(),
-            _ => note,
+        let (title, note) = match heading {
+            "SHARED STORE" => ("Shared skills", note),
+            "USER-LEVEL" => (
+                "User-level skills",
+                format!("in {}, for every {} agent", home(&note), agent.runtime),
+            ),
+            _ => (
+                "Repository skills",
+                if group.is_empty() {
+                    "its directory has none".to_owned()
+                } else {
+                    format!("in {}", home(&agent.dir))
+                },
+            ),
         };
-        rows = rows.child(ui::view_heading(heading, note));
-        for row in group {
+        column = column.child(ui::group_title(title, note));
+        if group.is_empty() {
+            continue;
+        }
+        let mut card = ui::group_card();
+        for (index, row) in group.into_iter().enumerate() {
             at += 1;
             let why = match row.why {
                 Why::Store(_) => {
@@ -420,93 +419,112 @@ fn skills_section(pane: &ViewPane, agent: &Agent, cx: &mut Context<ViewPane>) ->
                 }
                 other => other,
             };
-            let (text, color) = match row.error {
-                Some(error) => (line(error), c.attention_text),
-                None => (line(row.description), c.muted),
-            };
             let target = Target::Skill(row.path.to_owned());
-            rows = rows.child(
-                ui::list_row(
+            card = card.child(
+                ui::group_row(
                     SharedString::from(format!("agent-skill-{at}")),
+                    index == 0,
                     None,
                     row.name.to_owned(),
-                    text,
-                    color,
-                    div().child(self::why(&why)),
-                    narrow,
+                    match row.error {
+                        Some(error) => div().text_color(c.attention_text).child(line(error)),
+                        None => div().child(self::why(&why)),
+                    },
                 )
                 .on_click(cx.listener(move |pane, _, _, cx| pane.open(target.clone(), cx))),
             );
         }
+        column = column.child(card);
     }
-    rows = rows.child(ui::view_heading(
-        "PLUGINS",
-        format!("loaded by {}, not listed by Backbone", agent.runtime),
+    column = column.child(ui::group_title(
+        "Plugin skills",
+        format!(
+            "Loaded by {} itself; Backbone does not list them.",
+            agent.runtime
+        ),
     ));
     for notice in &loadout.notices {
-        rows = rows.child(intro(notice.clone()));
+        column = column.child(ui::group_note(notice.clone()));
     }
-    rows.into_any_element()
+    ui::grouped_page("agent-skills", column).into_any_element()
 }
 
 /// The group a source of a brief belongs to, as the design heads them.
 fn group(scope: &str) -> (&'static str, &'static str) {
     let parts: Vec<&str> = scope.split(", ").collect();
     if parts.contains(&"base") {
-        ("BASE", "base.md")
+        ("Base brief", "every agent starts with it")
     } else if parts.contains(&"swarm") {
-        ("SWARM ROLE", "only for swarm members")
+        ("Swarm role", "only for swarm members")
     } else if parts.contains(&"global") {
-        ("SHARED, IN ORDER", "agents.shared_policy")
+        ("Global policies", "every agent, in this order")
     } else {
-        ("BY TAG", "agents.tag_policy")
+        ("Tag policies", "from the tags it carries")
     }
 }
 
-fn policies_section(pane: &ViewPane, agent: &Agent, cx: &mut Context<ViewPane>) -> AnyElement {
+fn policies_section(agent: &Agent, cx: &mut Context<ViewPane>) -> AnyElement {
     let brief: &Instructions = match &agent.brief {
         None => return waiting("Reading what it receives at its next start…"),
         Some(Err(error)) => return failed(error),
         Some(Ok(brief)) => brief,
     };
-    let c = colors();
-    let narrow = pane.narrow();
-    let mut rows = list("agent-policies").child(intro(
-        "What it receives at its next start, in order. Each says why.".into(),
+    let mut column = div().child(ui::group_note(
+        "What it receives at its next start, in order. Each says why.",
     ));
     if !brief.enabled {
-        rows = rows.child(intro(
-            "Backbone does not inject a brief into this agent.".into(),
+        column = column.child(ui::group_note(
+            "Backbone does not inject a brief into this agent.",
         ));
     }
+    let mut card: Option<(Div, bool)> = None;
     let mut previous = "";
     for (at, source) in brief.sources.iter().enumerate() {
         let (heading, note) = group(&source.scope);
         if heading != previous {
-            rows = rows.child(ui::view_heading(heading, note));
+            if let Some((done, _)) = card.take() {
+                column = column.child(done);
+            }
+            column = column.child(ui::group_title(heading, note));
+            card = Some((ui::group_card(), true));
             previous = heading;
         }
         let path = source.path.clone();
-        rows = rows.child(
-            ui::list_row(
+        let Some((mut current, first)) = card.take() else {
+            continue;
+        };
+        current = current.child(
+            ui::group_row(
                 SharedString::from(format!("agent-policy-{at}")),
-                Some(ui::number_tile((at + 1).to_string())),
+                first,
+                Some(ui::number_tile((at + 1).to_string()).into_any_element()),
                 source.name.clone(),
-                policies::title(source),
-                c.muted,
-                policies::scope(source),
-                narrow,
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(tokens().space.s8))
+                    .child(
+                        div()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .child(policies::title(source)),
+                    )
+                    .child(policies::scope(source)),
             )
             .when(!source.applied, |el| el.opacity(0.45))
             .on_click(
                 cx.listener(move |pane, _, _, cx| pane.open(Target::Policy(path.clone()), cx)),
             ),
         );
+        card = Some((current, false));
+    }
+    if let Some((done, _)) = card {
+        column = column.child(done);
     }
     for notice in &brief.notices {
-        rows = rows.child(intro(notice.clone()));
+        column = column.child(ui::group_note(notice.clone()));
     }
-    rows.into_any_element()
+    ui::grouped_page("agent-policies", column).into_any_element()
 }
 
 fn usage_section(agent: &Agent) -> AnyElement {

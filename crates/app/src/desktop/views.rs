@@ -7,7 +7,7 @@
 //! policy opens it in the same pane through `reader`, with a way back. Backbone
 //! is only read; nothing here changes an agent.
 
-use std::{cell::Cell, collections::HashSet, path::PathBuf, rc::Rc, time::Duration};
+use std::{collections::HashSet, path::PathBuf, time::Duration};
 
 use futures::{StreamExt, channel::mpsc};
 use gpui::{
@@ -118,10 +118,6 @@ pub(super) struct ViewPane {
     records: Records,
     /// The shown section of an agent's view.
     section: AgentSection,
-    /// The tag a list is filtered to.
-    tag: Option<String>,
-    /// Whether the skills library lists skills under each tag.
-    by_tag: bool,
     query: String,
     search: Option<Entity<NameField>>,
     /// The agent named in a skill's "check an agent" field.
@@ -134,8 +130,6 @@ pub(super) struct ViewPane {
     raw: bool,
     /// The tag whose agents the tags view lists in place of its cards.
     carriers_of: Option<String>,
-    /// The pane's last drawn width, to fit rows to narrow panes.
-    width: Rc<Cell<f32>>,
     _updates: Option<Task<()>>,
     _search: Vec<Subscription>,
 }
@@ -161,8 +155,6 @@ impl ViewPane {
             expanded: HashSet::new(),
             records: Records::All,
             section: view.section.unwrap_or_default(),
-            tag: None,
-            by_tag: false,
             query: String::new(),
             search: None,
             check: String::new(),
@@ -170,7 +162,6 @@ impl ViewPane {
             open: None,
             raw: false,
             carriers_of: None,
-            width: Rc::new(Cell::new(0.0)),
             _updates: None,
             _search: Vec::new(),
             view,
@@ -396,12 +387,6 @@ impl ViewPane {
         true
     }
 
-    /// Whether the pane is narrower than a row's meta column needs.
-    fn narrow(&self) -> bool {
-        let width = self.width.get();
-        width > 0.0 && width < tokens().size.narrow_view
-    }
-
     /// The title shown for a view.
     pub fn title(view: &View) -> SharedString {
         match &view.agent {
@@ -461,29 +446,11 @@ impl Render for ViewPane {
             Some(Data::Tags(data)) => tags::body(self, data, cx),
         };
         self.data = data;
-        let width = Rc::clone(&self.width);
         div()
-            .relative()
             .size_full()
             .flex()
             .flex_col()
             .bg(c.surface)
-            // Measure the pane, and draw again when it crosses the narrow width.
-            .child(
-                gpui::canvas(
-                    |_, _, _| (),
-                    move |area, (), window, _| {
-                        let narrow = tokens().size.narrow_view;
-                        let (before, now) = (width.get(), f32::from(area.size.width));
-                        width.set(now);
-                        if (before < narrow) != (now < narrow) {
-                            window.refresh();
-                        }
-                    },
-                )
-                .absolute()
-                .size_full(),
-            )
             .child(div().flex_1().min_h_0().flex().flex_col().child(body))
             .children(
                 self.data
@@ -545,6 +512,16 @@ fn ago(seconds: f64) -> String {
 fn since(at: Option<f64>) -> String {
     at.map(|at| ago(views::now() as f64 - at))
         .unwrap_or_default()
+}
+
+/// A path with the home directory written as `~`.
+fn home(path: &str) -> String {
+    match std::env::var("HOME") {
+        Ok(home) if !home.is_empty() && path.starts_with(&home) => {
+            format!("~{}", &path[home.len()..])
+        }
+        _ => path.to_owned(),
+    }
 }
 
 /// Text without control characters, on one line.

@@ -7,7 +7,7 @@
 use gpui::{AnyElement, Context, Div, SharedString, div, prelude::*, px};
 use tmux_workspaces_roster::views::{PREVIEW_LIMIT, PolicyLibrary, Source};
 
-use super::{Target, ViewPane, list, markdown, mono, reader};
+use super::{Target, ViewPane, markdown, mono, reader};
 use crate::desktop::{
     components::{self as ui, Tone},
     design::{colors, tokens},
@@ -68,137 +68,67 @@ pub(super) fn body(
             return reader::render(pane, header, page(&all, at, "Policies".into(), false), cx);
         }
     }
-    index(pane, library, header, cx)
+    index(library, header, cx)
 }
 
-fn index(
-    pane: &ViewPane,
-    library: &PolicyLibrary,
-    header: Div,
-    cx: &mut Context<ViewPane>,
-) -> AnyElement {
-    let (t, c) = (tokens(), colors());
-    let arrow = || div().text_color(c.faint).child("→");
-    let intro = ui::text(
-        div()
-            .flex()
-            .flex_shrink_0()
-            .flex_col()
-            .gap(px(t.space.s8))
-            .px(px(t.space.s16))
-            .py(px(t.space.s12))
-            .border_b(px(t.size.hairline))
-            .border_color(c.line)
-            .text_color(c.muted),
-        &t.text.status,
-    )
-    .child(
-        "How a brief is built, top to bottom. Policies never name an agent: each is global or \
-         belongs to a tag.",
-    )
-    .child(
-        div()
-            .flex()
-            .flex_wrap()
-            .items_center()
-            .gap(px(t.space.s6))
-            .child(ui::tag(
-                "base, or a swarm brief for swarm members",
-                Tone::Plain,
-            ))
-            .child(arrow())
-            .child(ui::tag("global, in order", Tone::Plain))
-            .child(arrow())
-            .child(ui::tag("the agent's tags", Tone::Tag)),
-    );
-    let narrow = pane.narrow();
-    let mut rows = list("policy-rows").pt(px(t.space.s2));
+fn index(library: &PolicyLibrary, header: Div, cx: &mut Context<ViewPane>) -> AnyElement {
     let mut number = 0;
-    let mut row = |rows: gpui::Stateful<Div>, order: String, source: &Source| {
-        number += 1;
-        let path = source.path.clone();
-        rows.child(
-            ui::list_row(
-                SharedString::from(format!("policy-{number}")),
-                (!order.is_empty()).then(|| ui::number_tile(order)),
-                source.name.clone(),
-                title(source),
-                c.muted,
-                div(),
-                narrow,
-            )
-            .on_click(
-                cx.listener(move |pane, _, _, cx| pane.open(Target::Policy(path.clone()), cx)),
-            ),
-        )
+    let mut card = |sources: &[Source], numbered: bool, cx: &mut Context<ViewPane>| {
+        let mut card = ui::group_card();
+        for (at, source) in sources.iter().enumerate() {
+            number += 1;
+            let path = source.path.clone();
+            card = card.child(
+                ui::group_row(
+                    SharedString::from(format!("policy-{number}")),
+                    at == 0,
+                    numbered.then(|| ui::number_tile((at + 1).to_string()).into_any_element()),
+                    source.name.clone(),
+                    title(source),
+                )
+                .on_click(
+                    cx.listener(move |pane, _, _, cx| pane.open(Target::Policy(path.clone()), cx)),
+                ),
+            );
+        }
+        card
     };
-    rows = rows.child(ui::layer_heading(
-        "1",
-        "BASE BRIEF",
-        "base.md",
-        "every ordinary agent",
-        false,
-    ));
-    for source in &library.base {
-        rows = row(rows, String::new(), source);
-    }
-    rows = rows.child(ui::layer_heading(
-        "2",
-        "GLOBAL POLICIES",
-        "agents.shared_policy",
-        "every ordinary agent, in this order",
-        false,
-    ));
-    for (at, source) in library.global.iter().enumerate() {
-        rows = row(rows, (at + 1).to_string(), source);
-    }
-    rows = rows.child(ui::layer_heading(
-        "3",
-        "TAG POLICIES",
-        "agents.tag_policy",
-        "agents carrying the tag",
-        false,
-    ));
+    let mut column = div()
+        .child(ui::group_title(
+            "Base brief",
+            "Every ordinary agent starts with it. Policies never name an agent: each is \
+             global or belongs to a tag.",
+        ))
+        .child(card(&library.base, false, cx))
+        .child(ui::group_title(
+            "Global policies",
+            "Every agent receives these after the base brief, in this order.",
+        ))
+        .child(card(&library.global, true, cx))
+        .child(ui::group_title(
+            "Tag policies",
+            "Added for the agents that carry the tag, after the global ones.",
+        ));
     for (tag, sources) in &library.tags {
         let carried = library.carriers.get(tag).copied().unwrap_or(0);
-        rows = rows.child(
-            ui::text(
-                div()
-                    .flex()
-                    .flex_shrink_0()
-                    .items_center()
-                    .gap(px(t.space.s8))
-                    .pl(px(t.space.s8 + t.size.layer_tile + t.space.s10))
-                    .pt(px(t.space.s6))
-                    .pb(px(t.space.s2))
-                    .text_color(c.muted),
-                &t.text.meta,
-            )
-            .child(ui::tag(tag.clone(), Tone::Tag))
-            .child(format!(
-                "carried by {carried} agent{}",
-                if carried == 1 { "" } else { "s" }
-            )),
-        );
-        for source in sources {
-            rows = row(rows, String::new(), source);
-        }
+        column = column
+            .child(ui::group_label(
+                ui::tag(tag.clone(), Tone::Tag),
+                format!("{carried} agent{}", if carried == 1 { "" } else { "s" }),
+            ))
+            .child(card(sources, true, cx));
     }
-    rows = rows.child(ui::layer_heading(
-        "1b",
-        "SWARM BRIEFS",
-        "swarm/",
-        "replace the base brief for swarm members",
-        false,
+    column = column.child(ui::group_title(
+        "Swarm briefs",
+        "Replace the base brief for the members of a swarm.",
     ));
-    for source in &library.swarm {
-        rows = row(rows, String::new(), source);
-    }
-    if library.swarm.is_empty() {
-        rows = rows.child(quiet("Shown once an agent is in a swarm."));
-    }
+    column = if library.swarm.is_empty() {
+        column.child(ui::group_note("Shown once an agent is in a swarm."))
+    } else {
+        column.child(card(&library.swarm, false, cx))
+    };
     if library.read < library.agents {
-        rows = rows.child(quiet(&format!(
+        column = column.child(ui::group_note(format!(
             "Gathered from the briefs of {} of {} agents (at most {PREVIEW_LIMIT}).",
             library.read, library.agents
         )));
@@ -208,25 +138,12 @@ fn index(
         .flex()
         .flex_col()
         .child(header)
-        .child(intro)
-        .child(rows)
+        .child(ui::grouped_page("policy-rows", column))
         .child(ui::view_footer(
             &[("click", "read the policy")],
             "assigned with backbone templates use NAME [--tag TAG]",
         ))
         .into_any_element()
-}
-
-fn quiet(text: &str) -> Div {
-    let (t, c) = (tokens(), colors());
-    ui::text(
-        div()
-            .pl(px(t.space.s8 + t.size.layer_tile + t.space.s10))
-            .py(px(t.space.s6))
-            .text_color(c.muted),
-        &t.text.meta,
-    )
-    .child(text.to_owned())
 }
 
 /// The policy at `at` of `sources` as a reader page, returning to `back`.
