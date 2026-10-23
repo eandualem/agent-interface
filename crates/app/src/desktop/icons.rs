@@ -16,6 +16,8 @@ macro_rules! icons {
 
 icons!(
     "chevron-down",
+    "chevron-up",
+    "hash",
     "plus",
     "ellipsis",
     "settings",

@@ -511,6 +511,255 @@ pub fn pill(label: impl Into<SharedString>) -> Div {
     .child(label.into())
 }
 
+/// How a [`tag`] pill reads: what delivers a thing to an agent.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Tone {
+    /// Everyone, or a plain fact such as a CLI: neutral fill.
+    Plain,
+    /// A tag: the accent tint.
+    Tag,
+    /// Given by name, or otherwise secondary: an outline only.
+    Quiet,
+}
+
+/// A pill naming how something is delivered: `all`, a tag, `direct`.
+pub fn tag(label: impl Into<SharedString>, tone: Tone) -> Div {
+    let (t, c) = (tokens(), colors());
+    let pill = text(
+        div()
+            .flex_shrink_0()
+            .px(px(t.space.s6 + 1.0))
+            .rounded(px(t.radius.pill))
+            .border(px(t.size.hairline))
+            .whitespace_nowrap(),
+        &t.text.meta,
+    );
+    match tone {
+        Tone::Plain => pill
+            .bg(c.selected)
+            .border_color(c.selected)
+            .text_color(c.text),
+        Tone::Tag => pill
+            .bg(c.accent_soft)
+            .border_color(gpui::transparent_black())
+            .text_color(c.accent_text),
+        Tone::Quiet => pill.border_color(c.line_strong).text_color(c.muted),
+    }
+    .child(label.into())
+}
+
+/// A library's layer: a numbered tile, an uppercase label, a mono path and
+/// a note on the right saying who it reaches. `quiet` dims the tile, for a
+/// layer nobody receives.
+pub fn layer_heading(
+    number: impl Into<SharedString>,
+    label: impl Into<SharedString>,
+    path: impl Into<SharedString>,
+    note: impl Into<SharedString>,
+    quiet: bool,
+) -> Div {
+    let (t, c) = (tokens(), colors());
+    text(
+        div()
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .gap(px(t.space.s10))
+            .px(px(t.space.s8))
+            .pt(px(t.space.s14))
+            .pb(px(t.space.s6))
+            .text_color(c.muted)
+            .overflow_hidden()
+            .whitespace_nowrap(),
+        &t.text.meta,
+    )
+    .child(
+        text(
+            div()
+                .flex_shrink_0()
+                .size(px(t.size.layer_tile))
+                .rounded(px(t.radius.icon_button))
+                .flex()
+                .items_center()
+                .justify_center()
+                .font_family(t.font.mono.clone())
+                .bg(if quiet { c.selected } else { c.accent_soft })
+                .text_color(if quiet { c.muted } else { c.accent_text }),
+            &t.text.meta,
+        )
+        .child(number.into()),
+    )
+    .child(text(div().flex_shrink_0().text_color(c.text_2), &t.text.label).child(label.into()))
+    .child(
+        div()
+            .min_w_0()
+            .overflow_hidden()
+            .text_ellipsis()
+            .font_family(t.font.mono.clone())
+            .child(path.into()),
+    )
+    .child(div().flex_1())
+    .child(div().flex_shrink_0().child(note.into()))
+}
+
+/// A tag's card: the tag and how many agents carry it on the left, and
+/// labelled lines of what it brings on the right. `lines` pairs a label with
+/// mono names; an empty list shows a dash.
+pub fn tag_card(
+    id: impl Into<SharedString>,
+    tag_pill: Div,
+    carried: impl Into<SharedString>,
+    lines: &[(&'static str, Vec<String>)],
+    special: bool,
+) -> Stateful<Div> {
+    let (t, c) = (tokens(), colors());
+    let mut right = div()
+        .flex_1()
+        .min_w_0()
+        .flex()
+        .flex_col()
+        .gap(px(t.space.s6));
+    for (label, names) in lines {
+        right = right.child(
+            div()
+                .flex()
+                .items_baseline()
+                .gap(px(t.space.s8))
+                .child(
+                    text(
+                        div()
+                            .flex_shrink_0()
+                            .w(px(t.size.view_choice + t.space.s6))
+                            .text_color(c.muted),
+                        &t.text.label,
+                    )
+                    .child(*label),
+                )
+                .child(
+                    text(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_wrap()
+                            .gap_x(px(t.space.s10))
+                            .gap_y(px(t.space.s4))
+                            .font_family(t.font.mono.clone())
+                            .text_color(if names.is_empty() { c.muted } else { c.text_2 }),
+                        &t.text.meta,
+                    )
+                    .when(names.is_empty(), |el| el.child("—"))
+                    .children(names.iter().map(|name| div().child(name.clone()))),
+                ),
+        );
+    }
+    div()
+        .id(id.into())
+        .flex()
+        .flex_shrink_0()
+        .gap(px(t.space.s14))
+        .px(px(t.space.s12))
+        .py(px(t.space.s10 + 1.0))
+        .rounded(px(t.radius.slot))
+        .border(px(t.size.hairline))
+        .border_color(c.line_strong)
+        .when(special, |el| el.bg(c.panel))
+        .cursor_pointer()
+        .hover(|el| el.bg(colors().hover))
+        .child(
+            div()
+                .flex_shrink_0()
+                .w(px(t.size.tag_card_label))
+                .flex()
+                .flex_col()
+                .items_start()
+                .gap(px(t.space.s4))
+                .child(tag_pill)
+                .child(text(div().text_color(c.muted), &t.text.meta).child(carried.into())),
+        )
+        .child(right)
+}
+
+/// A list row that opens something: an optional leading mark such as a
+/// [`number_tile`], a mono name with a one-line description under it, pills or
+/// a note on the right, and a chevron. `narrow` moves the
+/// right side under the description so a name is never cut.
+pub fn list_row(
+    id: impl Into<SharedString>,
+    leading: Option<Div>,
+    name: impl Into<SharedString>,
+    description: impl Into<SharedString>,
+    description_color: Rgba,
+    trailing: Div,
+    narrow: bool,
+) -> Stateful<Div> {
+    let (t, c) = (tokens(), colors());
+    let description = text(
+        div()
+            .text_color(description_color)
+            .overflow_hidden()
+            .whitespace_nowrap()
+            .text_ellipsis(),
+        &t.text.status,
+    )
+    .child(description.into());
+    let name = div()
+        .font_family(t.font.mono.clone())
+        .text_color(c.text)
+        .overflow_hidden()
+        .text_ellipsis()
+        .child(name.into());
+    let text_column = div()
+        .flex_1()
+        .min_w_0()
+        .flex()
+        .flex_col()
+        .gap(px(t.space.s2 + 1.0))
+        .child(name)
+        .child(description);
+    let trailing = text(trailing.flex_shrink_0().text_color(c.muted), &t.text.meta);
+    div()
+        .id(id.into())
+        .flex()
+        .flex_shrink_0()
+        .items_center()
+        .gap(px(t.space.s12))
+        .min_h(px(t.size.view_choice - t.space.s2))
+        .px(px(t.space.s8))
+        .py(px(t.space.s6))
+        .rounded(px(t.radius.row))
+        .cursor_pointer()
+        .hover(|el| el.bg(colors().hover))
+        .children(leading)
+        .map(|row| {
+            if narrow {
+                row.child(text_column.child(trailing))
+            } else {
+                row.child(text_column).child(trailing)
+            }
+        })
+        .child(icon("chevron-right", t.size.icon - 2.0, c.faint))
+}
+
+/// A round tile holding a position, such as a policy's place in a brief.
+pub fn number_tile(number: impl Into<SharedString>) -> Div {
+    let (t, c) = (tokens(), colors());
+    text(
+        div()
+            .flex_shrink_0()
+            .size(px(t.size.chip))
+            .rounded_full()
+            .bg(c.hover)
+            .flex()
+            .items_center()
+            .justify_center()
+            .font_family(t.font.mono.clone())
+            .text_color(c.muted),
+        &t.text.meta,
+    )
+    .child(number.into())
+}
+
 /// A tinted panel holding a document's or agent's summary.
 pub fn info_card() -> Div {
     let (t, c) = (tokens(), colors());
@@ -753,7 +1002,7 @@ pub fn badge(label: impl Into<SharedString>) -> Div {
 
 /// A row of the new-pane views list: a glyph tile, a label and description,
 /// what it covers and its number key. Selected rows take the accent tile and
-/// ring; a view Backbone cannot serve yet is dimmed.
+/// ring.
 pub fn view_choice(
     id: impl Into<SharedString>,
     glyph: &'static str,

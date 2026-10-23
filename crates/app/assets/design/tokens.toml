@@ -232,6 +232,9 @@ choice_button = 40.0        # the two buttons atop the new-pane chooser
 filter = 32.0               # the new-pane chooser's filter field
 choice_row = 34.0           # an agent or session row in that chooser
 hint_bar = 34.0             # the chooser's centred row of keys
+layer_tile = 20.0           # the numbered tile of a library's layer heading
+tag_card_label = 132.0      # the tag column of a tag card
+narrow_view = 680.0         # below this width a view row moves its meta under its name
 
 # ---------------------------------------------------------------- motion
 

@@ -280,7 +280,7 @@ impl Layout {
                     .iter()
                     .any(|pane| pane.id == pane_id && pane.empty && pane.attachment.is_none())
         });
-        if !empty || view.kind.needs_agent() != view.agent.is_some() || !self.choose_pane(pane_id) {
+        if !empty || !view.is_valid() || !self.choose_pane(pane_id) {
             return false;
         }
         let Some(pane) = self.pane_mut() else {
@@ -772,20 +772,18 @@ mod tests {
         model.split(Direction::Right, "/tmp".into(), true);
         let tab = model.tab().unwrap().id.clone();
         let destination = model.pane().unwrap().id.clone();
-        let usage = View {
-            kind: ViewKind::Usage,
-            agent: None,
-        };
+        let usage = View::of(ViewKind::Usage);
         let before = model.clone();
         assert!(!model.show_view(&tab, &first, usage.clone()));
         for wrong in [
+            View::of(ViewKind::Agent),
             View {
-                kind: ViewKind::Agent,
-                agent: None,
+                agent: Some("worker".into()),
+                ..View::of(ViewKind::Usage)
             },
             View {
-                kind: ViewKind::Usage,
-                agent: Some("worker".into()),
+                section: Some(crate::AgentSection::Skills),
+                ..View::of(ViewKind::Skills)
             },
         ] {
             assert!(!model.show_view(&tab, &destination, wrong));

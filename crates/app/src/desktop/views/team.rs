@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 
 use gpui::{AnyElement, Context, SharedString, div, prelude::*, px};
-use tmux_workspaces_core::{View, ViewKind};
+use tmux_workspaces_core::View;
 use tmux_workspaces_roster::views::{Member, Team};
 
 use super::{Grouping, ViewEvent, ViewPane, list, mono, since};
@@ -246,7 +246,7 @@ fn group_row(label: &str, meta: &str) -> gpui::Div {
     .child(meta.to_owned())
 }
 
-fn agent_row(
+pub(super) fn agent_row(
     member: &Member,
     guide: &'static str,
     group: &str,
@@ -339,10 +339,7 @@ fn agent_row(
         )
         .on_click(cx.listener(move |_, event: &gpui::ClickEvent, _, cx| {
             if event.modifiers().alt {
-                cx.emit(ViewEvent::OpenBeside(View {
-                    kind: ViewKind::Agent,
-                    agent: Some(name.clone()),
-                }));
+                cx.emit(ViewEvent::OpenBeside(View::agent(name.clone(), None)));
             } else {
                 cx.emit(ViewEvent::ShowAgent(name.clone()));
             }

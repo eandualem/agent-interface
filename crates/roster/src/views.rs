@@ -1,8 +1,9 @@
 //! Read-only data for the Backbone views a pane can show.
 //!
-//! Each [`Request`] is one or two GETs of fixed local API paths, with the same
+//! Each [`Request`] is a few GETs of fixed local API paths, with the same
 //! address, credential, proxy and redirect rules as the roster. Decoding keeps
 //! only the fields a view draws; an item that does not decode is skipped.
+//! Team-wide libraries are gathered in [`library`].
 
 use std::{
     collections::BTreeMap,
@@ -14,6 +15,13 @@ use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::value::RawValue;
 
 use crate::{configuration::configured, transport, valid_agent, within_depth};
+
+mod library;
+
+pub use library::{
+    Loadout, LocalSkill, PREVIEW_LIMIT, Place, PolicyLibrary, Reason, SkillLibrary, TagCard,
+    TagLibrary,
+};
 
 const VIEW_LIMIT: usize = 4 * 1024 * 1024;
 
@@ -33,12 +41,27 @@ pub enum Request {
     Usage(Range),
     /// Recent deliveries and inbound events.
     Activity,
-    /// The shared skills store.
+    /// Every skill an agent can load, team-wide.
     Skills,
-    /// One agent's card.
-    Agent(String),
-    /// The policies one agent receives, in order.
-    Policies(String),
+    /// The layers a brief is built from, team-wide.
+    Policies,
+    /// What each tag brings.
+    Tags,
+    /// One agent's card, with the part its shown section needs.
+    Agent(String, Part),
+}
+
+/// What an agent's view reads besides its card.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Part {
+    /// Nothing more.
+    Card,
+    /// The skills its next launch links.
+    Skills,
+    /// What it receives at its next start.
+    Policies,
+    /// Its usage over a range.
+    Usage(Range),
 }
 
 /// A recent period ending now.
@@ -83,56 +106,95 @@ pub enum Data {
     Usage(Usage),
     /// See [`Activity`].
     Activity(Activity),
-    /// See [`Skills`].
-    Skills(Skills),
+    /// See [`SkillLibrary`].
+    Skills(Box<SkillLibrary>),
+    /// See [`PolicyLibrary`].
+    Policies(Box<PolicyLibrary>),
+    /// See [`TagLibrary`].
+    Tags(Box<TagLibrary>),
     /// See [`Agent`].
     Agent(Box<Agent>),
-    /// See [`Instructions`].
-    Policies(Instructions),
+}
+
+/// An enabled provider's address and key.
+pub(crate) struct Api {
+    url: String,
+    key: String,
+}
+
+impl Api {
+    fn get(&self, path: &str) -> Result<Vec<u8>, &'static str> {
+        transport::get(&self.url, path, &self.key, VIEW_LIMIT).ok_or(UNAVAILABLE)
+    }
+}
+
+/// What one agent receives at its next start.
+fn instructions(api: &Api, name: &str) -> Result<Instructions, &'static str> {
+    let path = format!("/api/agents/{name}/instructions");
+    match transport::fetch(&api.url, &path, &api.key, VIEW_LIMIT) {
+        Ok(body) => Instructions::decode(&body),
+        Err(Some(404 | 405)) => Err(NOT_SERVED),
+        Err(_) => Err(UNAVAILABLE),
+    }
+}
+
+fn usage_path(range: Range) -> String {
+    let since = iso(now().saturating_sub(range.seconds()));
+    format!("/api/usage?refresh=false&limit=1000&since={since}")
 }
 
 /// Read one request from an enabled provider. Blocks for up to three seconds
 /// per GET, so call it on an I/O worker. Configuration is re-read every time.
 pub fn read(data_dir: &Path, url: Option<&str>, request: &Request) -> Result<Data, &'static str> {
     let (url, key) = configured(data_dir, url).ok_or(UNAVAILABLE)?;
-    let fetch = |path: &str| transport::get(&url, path, &key, VIEW_LIMIT).ok_or(UNAVAILABLE);
+    let api = Api { url, key };
     match request {
         Request::Team => Ok(Data::Team(Team::decode(
-            &fetch("/api/agents")?,
-            &fetch("/api/swarms")?,
+            &api.get("/api/agents")?,
+            &api.get("/api/swarms")?,
         )?)),
-        Request::Usage(range) => {
-            let since = iso(now().saturating_sub(range.seconds()));
-            let path = format!("/api/usage?refresh=false&limit=1000&since={since}");
-            Ok(Data::Usage(Usage::decode(&fetch(&path)?)?))
-        }
+        Request::Usage(range) => Ok(Data::Usage(Usage::decode(&api.get(&usage_path(*range))?)?)),
         Request::Activity => Ok(Data::Activity(Activity::decode(
-            &fetch("/api/deliveries?limit=200")?,
-            &fetch("/api/events?limit=200")?,
+            &api.get("/api/deliveries?limit=200")?,
+            &api.get("/api/events?limit=200")?,
         )?)),
-        Request::Skills => Ok(Data::Skills(Skills::decode(&fetch("/api/skills")?)?)),
-        Request::Agent(name) => {
+        Request::Skills => Ok(Data::Skills(Box::new(SkillLibrary::read(&api)?))),
+        Request::Policies => {
+            let agents = library::agents(&api)?;
+            Ok(Data::Policies(Box::new(PolicyLibrary::read(
+                &api, &agents,
+            )?)))
+        }
+        Request::Tags => Ok(Data::Tags(Box::new(TagLibrary::read(&api)?))),
+        Request::Agent(name, part) => {
             if !valid_agent(name) {
                 return Err(UNREADABLE);
             }
             let path = format!("/api/agents/{name}/inspect");
-            let mut agent = Agent::decode(&fetch(&path)?)?;
-            agent.launch = items_of::<Launch>(&fetch("/api/config/agents")?)
+            let mut agent = Agent::decode(&api.get(&path)?)?;
+            agent.launch = items_of::<Launch>(&api.get("/api/config/agents")?)
                 .into_iter()
                 .find(|launch| &launch.name == name);
             agent.permissions = read_permissions(&agent.runtime, &agent.dir);
+            // A section's own read failing leaves the card; the section says why.
+            match part {
+                Part::Card => {}
+                Part::Skills => {
+                    agent.skills = Some(
+                        api.get(&format!("/api/skills/preview/{name}"))
+                            .and_then(|body| Loadout::decode(&body)),
+                    );
+                }
+                Part::Policies => agent.brief = Some(instructions(&api, name)),
+                Part::Usage(range) => {
+                    agent.usage = Some(
+                        api.get(&usage_path(*range))
+                            .and_then(|body| Usage::decode(&body))
+                            .map(|usage| usage.of(name)),
+                    );
+                }
+            }
             Ok(Data::Agent(Box::new(agent)))
-        }
-        Request::Policies(name) => {
-            if !valid_agent(name) {
-                return Err(UNREADABLE);
-            }
-            let path = format!("/api/agents/{name}/instructions");
-            match transport::fetch(&url, &path, &key, VIEW_LIMIT) {
-                Ok(body) => Ok(Data::Policies(Instructions::decode(&body)?)),
-                Err(Some(404 | 405)) => Err(NOT_SERVED),
-                Err(_) => Err(UNAVAILABLE),
-            }
         }
     }
 }
@@ -342,6 +404,45 @@ impl Usage {
             more: field("has_more") == Some("true"),
         })
     }
+
+    /// Only `agent`'s sessions, with totals, cost and coverage over them.
+    pub fn of(self, agent: &str) -> Self {
+        let sessions: Vec<Session> = self
+            .sessions
+            .into_iter()
+            .filter(|session| session.agent == agent)
+            .collect();
+        let mut totals = Tokens::default();
+        let mut usd: Option<f64> = None;
+        for session in &sessions {
+            totals += session.tokens;
+            if let Some(cost) = session
+                .estimated_usd
+                .as_deref()
+                .and_then(|c| c.parse::<f64>().ok())
+            {
+                *usd.get_or_insert(0.0) += cost;
+            }
+        }
+        // The weakest coverage of its sessions is the agent's coverage.
+        let coverage = ["unavailable", "partial", "catching_up", "measured"]
+            .into_iter()
+            .find(|level| sessions.iter().any(|session| session.coverage == *level))
+            .unwrap_or("unavailable")
+            .to_owned();
+        Self {
+            totals,
+            coverage,
+            estimated_usd: usd.map(|usd| format!("{usd:.2}")),
+            unmeasured: self
+                .unmeasured
+                .into_iter()
+                .filter(|unmeasured| unmeasured.agent == agent)
+                .collect(),
+            sessions,
+            more: self.more,
+        }
+    }
 }
 
 /// One recent record: a delivery attempt or an inbound event.
@@ -543,6 +644,15 @@ pub struct Agent {
     /// What its CLI lets it do without asking.
     #[serde(skip)]
     pub permissions: Permissions,
+    /// The skills its next launch links, when its Skills section is shown.
+    #[serde(skip)]
+    pub skills: Option<Result<Loadout, &'static str>>,
+    /// What it receives at its next start, when its Policies section is shown.
+    #[serde(skip)]
+    pub brief: Option<Result<Instructions, &'static str>>,
+    /// Its usage, when its Usage section is shown.
+    #[serde(skip)]
+    pub usage: Option<Result<Usage, &'static str>>,
 }
 
 /// How Backbone launches an agent, from its configuration.
@@ -1005,6 +1115,15 @@ mod tests {
         assert_eq!(usage.sessions[0].tokens.cache_read, 20);
         assert_eq!(usage.unmeasured[0].reason, "no source");
         assert!(!usage.more);
+
+        let mine = usage.clone().of("worker");
+        assert_eq!(mine.totals.total, 37);
+        assert_eq!(mine.coverage, "measured");
+        assert!(mine.unmeasured.is_empty());
+        let none = usage.of("desk");
+        assert_eq!(none.totals.total, 0);
+        assert_eq!(none.coverage, "unavailable");
+        assert_eq!(none.unmeasured.len(), 1);
     }
 
     #[test]

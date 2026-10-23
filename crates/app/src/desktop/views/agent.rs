@@ -1,14 +1,20 @@
-//! Agent: one agent's card. Its state and what it is waiting for, its work,
-//! what Backbone holds for it, and its connections, in sections; ↗ sections
-//! open beside this pane.
+//! Agent: everything about one agent, in sections drawn inside this pane.
+//! Its state and work, what its CLI lets it do, its connections, the skills it
+//! loads and why each reaches it, what it receives at its next start, and its
+//! usage. Choosing a skill or policy reads it here; nothing opens elsewhere.
 
-use gpui::{AnyElement, Context, SharedString, div, prelude::*, px};
-use tmux_workspaces_core::{View, ViewKind};
-use tmux_workspaces_roster::views::{Agent, Received};
+use gpui::{AnyElement, Context, Div, SharedString, div, prelude::*, px};
+use tmux_workspaces_core::AgentSection;
+use tmux_workspaces_roster::views::{
+    Agent, Instructions, Loadout, LocalSkill, Reason, Received, Usage,
+};
 
-use super::{Section, ViewEvent, ViewPane, ago, line, list, mono, since};
+use super::{
+    Target, ViewEvent, ViewPane, ago, count, line, list, mono, policies, reader, since, skills,
+    usage,
+};
 use crate::desktop::{
-    components::{self as ui, AgentState},
+    components::{self as ui, AgentState, Tone},
     design::{colors, tokens},
 };
 
@@ -85,7 +91,9 @@ pub(super) fn body(pane: &ViewPane, agent: &Agent, cx: &mut Context<ViewPane>) -
             .on_click(cx.listener(move |_, _, _, cx| cx.emit(ViewEvent::ShowAgent(name.clone())))),
         );
 
-    // Sections, then the views that open beside this pane.
+    if let Some(page) = page(pane, agent) {
+        return reader::render(pane, header, page, cx);
+    }
     let mut nav = div()
         .flex()
         .flex_shrink_0()
@@ -95,50 +103,41 @@ pub(super) fn body(pane: &ViewPane, agent: &Agent, cx: &mut Context<ViewPane>) -
         .px(px(t.space.s10))
         .border_b(px(t.size.hairline))
         .border_color(c.line);
-    for (section, label) in [
-        (Section::Overview, "Overview"),
-        (Section::Permissions, "Permissions"),
-        (Section::Connections, "Connections"),
-    ] {
+    for section in AgentSection::ALL {
+        // A count is known once its section has been read.
+        let count = match section {
+            AgentSection::Skills => agent
+                .skills
+                .as_ref()
+                .and_then(|loadout| loadout.as_ref().ok())
+                .map(|loadout| {
+                    loadout.skills.len() + loadout.user.len() + loadout.repository.len()
+                }),
+            AgentSection::Policies => agent
+                .brief
+                .as_ref()
+                .and_then(|brief| brief.as_ref().ok())
+                .map(|brief| brief.sources.len()),
+            _ => None,
+        };
         nav = nav.child(
             tab(
-                SharedString::from(format!("agent-section-{label}")),
-                label,
-                "",
+                SharedString::from(format!("agent-section-{}", section.as_str())),
+                label(section),
+                count.map(|n| n.to_string()).unwrap_or_default(),
                 section == pane.section,
             )
-            .on_click(cx.listener(move |pane, _, _, cx| {
-                pane.section = section;
-                cx.notify();
-            })),
-        );
-    }
-    for (kind, label) in [
-        (ViewKind::Skills, "Skills"),
-        (ViewKind::Policies, "Policies"),
-        (ViewKind::Usage, "Usage"),
-    ] {
-        let agent = kind.needs_agent().then(|| agent.name.clone());
-        nav = nav.child(
-            tab(
-                SharedString::from(format!("agent-open-{label}")),
-                label,
-                "↗",
-                false,
-            )
-            .on_click(cx.listener(move |_, _, _, cx| {
-                cx.emit(ViewEvent::OpenBeside(View {
-                    kind,
-                    agent: agent.clone(),
-                }))
-            })),
+            .on_click(cx.listener(move |pane, _, _, cx| pane.set_section(section, cx))),
         );
     }
 
     let content = match pane.section {
-        Section::Overview => overview(agent, state),
-        Section::Permissions => permissions(agent),
-        Section::Connections => connections(agent),
+        AgentSection::Overview => overview(agent, state),
+        AgentSection::Permissions => permissions(agent),
+        AgentSection::Connections => connections(agent),
+        AgentSection::Skills => skills_section(pane, agent, cx),
+        AgentSection::Policies => policies_section(pane, agent, cx),
+        AgentSection::Usage => usage_section(agent),
     };
     div()
         .size_full()
@@ -150,12 +149,427 @@ pub(super) fn body(pane: &ViewPane, agent: &Agent, cx: &mut Context<ViewPane>) -
         .into_any_element()
 }
 
-fn tab(
-    id: SharedString,
-    label: &'static str,
-    mark: &'static str,
-    on: bool,
-) -> gpui::Stateful<gpui::Div> {
+fn label(section: AgentSection) -> &'static str {
+    match section {
+        AgentSection::Overview => "Overview",
+        AgentSection::Permissions => "Permissions",
+        AgentSection::Connections => "Connections",
+        AgentSection::Skills => "Skills",
+        AgentSection::Policies => "Policies",
+        AgentSection::Usage => "Usage",
+    }
+}
+
+/// What the shown section's list can open, in its order.
+pub(super) fn targets(pane: &ViewPane, agent: &Agent) -> Vec<Target> {
+    match pane.section {
+        AgentSection::Skills => loaded(&agent.skills)
+            .map(|loadout| {
+                skill_rows(loadout)
+                    .into_iter()
+                    .flat_map(|(_, rows)| rows)
+                    .map(|row| Target::Skill(row.path.to_owned()))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        AgentSection::Policies => loaded(&agent.brief)
+            .map(|brief| {
+                brief
+                    .sources
+                    .iter()
+                    .map(|source| Target::Policy(source.path.clone()))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    }
+}
+
+fn loaded<'a, T>(part: &'a Option<Result<T, &'static str>>) -> Option<&'a T> {
+    part.as_ref().and_then(|part| part.as_ref().ok())
+}
+
+/// The open skill or policy as a reader page, when this section lists it.
+fn page<'a>(pane: &'a ViewPane, agent: &'a Agent) -> Option<reader::Page<'a>> {
+    let open = pane.open.as_ref()?;
+    match &open.target {
+        Target::Policy(path) => {
+            let brief = loaded(&agent.brief)?;
+            let sources: Vec<_> = brief.sources.iter().collect();
+            let at = sources.iter().position(|source| &source.path == path)?;
+            Some(policies::page(
+                &sources,
+                at,
+                format!("{}'s brief", agent.name),
+            ))
+        }
+        Target::Skill(folder) => {
+            let loadout = loaded(&agent.skills)?;
+            let rows: Vec<_> = skill_rows(loadout)
+                .into_iter()
+                .flat_map(|(_, rows)| rows)
+                .collect();
+            let at = rows.iter().position(|row| row.path == folder)?;
+            let row = &rows[at];
+            let (t, c) = (tokens(), colors());
+            let card = ui::info_card()
+                .child(div().text_color(c.text_2).child(line(row.description)))
+                .child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .items_center()
+                        .gap_x(px(t.space.s14))
+                        .gap_y(px(t.space.s6))
+                        .text_color(c.muted)
+                        .child(why(&row.why))
+                        .child(mono(row.path.to_owned()).text_color(c.muted)),
+                );
+            Some(reader::Page {
+                back: format!("{} · Skills", agent.name),
+                name: Some(row.name.to_owned()),
+                at: Some(at),
+                count: rows.len(),
+                card,
+                text: skills::text(open),
+            })
+        }
+    }
+}
+
+/// How a skill reaches the agent, as its row's pill says.
+enum Why {
+    Store(Option<Reason>),
+    Plain(String),
+}
+
+fn why(why: &Why) -> Div {
+    match why {
+        Why::Store(Some(reason @ Reason::Tag(_))) => ui::tag(reason.label(), Tone::Tag),
+        Why::Store(Some(reason)) => ui::tag(reason.label(), Tone::Plain),
+        Why::Store(None) => ui::tag("linked", Tone::Quiet),
+        Why::Plain(label) => ui::tag(label.clone(), Tone::Plain),
+    }
+}
+
+struct SkillRow<'a> {
+    name: &'a str,
+    description: &'a str,
+    error: Option<&'a str>,
+    path: &'a str,
+    why: Why,
+}
+
+/// The agent's skills by source, with each group's heading and note:
+/// the store, user-level, repository.
+fn skill_rows(loadout: &Loadout) -> Vec<((&'static str, String), Vec<SkillRow<'_>>)> {
+    let store = loadout
+        .skills
+        .iter()
+        .map(|skill| SkillRow {
+            name: &skill.name,
+            description: &skill.description,
+            error: skill.error.as_deref(),
+            path: &skill.path,
+            why: Why::Store(None),
+        })
+        .collect();
+    fn local<'a>(skills: &'a [LocalSkill], label: &str) -> Vec<SkillRow<'a>> {
+        skills
+            .iter()
+            .map(|skill| SkillRow {
+                name: &skill.name,
+                description: &skill.description,
+                error: skill.error.as_deref(),
+                path: &skill.path,
+                why: Why::Plain(label.to_owned()),
+            })
+            .collect()
+    }
+    vec![
+        (
+            (
+                "SHARED STORE",
+                format!(
+                    "{}, chosen by its tags",
+                    loadout.store.clone().unwrap_or_default()
+                ),
+            ),
+            store,
+        ),
+        (
+            ("USER-LEVEL", loadout.user_directories.join(" · ")),
+            local(&loadout.user, "user"),
+        ),
+        (
+            ("REPOSITORY", String::new()),
+            local(&loadout.repository, "repository"),
+        ),
+    ]
+}
+
+fn waiting(text: &'static str) -> AnyElement {
+    let (t, c) = (tokens(), colors());
+    list("agent-section-state")
+        .child(
+            ui::text(
+                div()
+                    .px(px(t.space.s10))
+                    .py(px(t.space.s10))
+                    .text_color(c.muted),
+                &t.text.body,
+            )
+            .child(text),
+        )
+        .into_any_element()
+}
+
+fn failed(error: &'static str) -> AnyElement {
+    let (t, c) = (tokens(), colors());
+    list("agent-section-state")
+        .child(
+            ui::text(
+                div()
+                    .px(px(t.space.s10))
+                    .py(px(t.space.s10))
+                    .text_color(c.attention_text),
+                &t.text.body,
+            )
+            .child(error),
+        )
+        .into_any_element()
+}
+
+fn intro(text: String) -> Div {
+    let (t, c) = (tokens(), colors());
+    ui::text(
+        div()
+            .flex_shrink_0()
+            .px(px(t.space.s8))
+            .pt(px(t.space.s6))
+            .pb(px(t.space.s4))
+            .text_color(c.muted),
+        &t.text.status,
+    )
+    .child(text)
+}
+
+fn skills_section(pane: &ViewPane, agent: &Agent, cx: &mut Context<ViewPane>) -> AnyElement {
+    let loadout = match &agent.skills {
+        None => return waiting("Reading the skills its next launch links…"),
+        Some(Err(error)) => return failed(error),
+        Some(Ok(loadout)) => loadout,
+    };
+    let c = colors();
+    let narrow = pane.narrow();
+    let groups = skill_rows(loadout);
+    let total: usize = groups.iter().map(|(_, rows)| rows.len()).sum();
+    let mut rows = list("agent-skills").child(intro(format!(
+        "{total} skill{} load for {}. Each says why it reaches this agent.",
+        if total == 1 { "" } else { "s" },
+        agent.name
+    )));
+    let mut at = 0;
+    for ((heading, note), group) in groups {
+        let note = match (heading, group.is_empty()) {
+            ("REPOSITORY", true) => "its directory has none".to_owned(),
+            ("REPOSITORY", false) => agent.dir.clone(),
+            _ => note,
+        };
+        rows = rows.child(ui::view_heading(heading, note));
+        for row in group {
+            at += 1;
+            let why = match row.why {
+                Why::Store(_) => {
+                    let skill = loadout.skills.iter().find(|skill| skill.path == row.path);
+                    Why::Store(
+                        skill.and_then(|skill| Reason::of(&skill.tags, &agent.name, &loadout.tags)),
+                    )
+                }
+                other => other,
+            };
+            let (text, color) = match row.error {
+                Some(error) => (line(error), c.attention_text),
+                None => (line(row.description), c.muted),
+            };
+            let target = Target::Skill(row.path.to_owned());
+            rows = rows.child(
+                ui::list_row(
+                    SharedString::from(format!("agent-skill-{at}")),
+                    None,
+                    row.name.to_owned(),
+                    text,
+                    color,
+                    div().child(self::why(&why)),
+                    narrow,
+                )
+                .on_click(cx.listener(move |pane, _, _, cx| pane.open(target.clone(), cx))),
+            );
+        }
+    }
+    rows = rows.child(ui::view_heading(
+        "PLUGINS",
+        format!("loaded by {}, not listed by Backbone", agent.runtime),
+    ));
+    for notice in &loadout.notices {
+        rows = rows.child(intro(notice.clone()));
+    }
+    rows.into_any_element()
+}
+
+/// The group a source of a brief belongs to, as the design heads them.
+fn group(scope: &str) -> (&'static str, &'static str) {
+    let parts: Vec<&str> = scope.split(", ").collect();
+    if parts.contains(&"base") {
+        ("BASE", "base.md")
+    } else if parts.contains(&"swarm") {
+        ("SWARM ROLE", "only for swarm members")
+    } else if parts.contains(&"global") {
+        ("SHARED, IN ORDER", "agents.shared_policy")
+    } else {
+        ("BY TAG", "agents.tag_policy")
+    }
+}
+
+fn policies_section(pane: &ViewPane, agent: &Agent, cx: &mut Context<ViewPane>) -> AnyElement {
+    let brief: &Instructions = match &agent.brief {
+        None => return waiting("Reading what it receives at its next start…"),
+        Some(Err(error)) => return failed(error),
+        Some(Ok(brief)) => brief,
+    };
+    let c = colors();
+    let narrow = pane.narrow();
+    let mut rows = list("agent-policies").child(intro(
+        "What it receives at its next start, in order. Each says why.".into(),
+    ));
+    if !brief.enabled {
+        rows = rows.child(intro(
+            "Backbone does not inject a brief into this agent.".into(),
+        ));
+    }
+    let mut previous = "";
+    for (at, source) in brief.sources.iter().enumerate() {
+        let (heading, note) = group(&source.scope);
+        if heading != previous {
+            rows = rows.child(ui::view_heading(heading, note));
+            previous = heading;
+        }
+        let path = source.path.clone();
+        rows = rows.child(
+            ui::list_row(
+                SharedString::from(format!("agent-policy-{at}")),
+                Some(ui::number_tile((at + 1).to_string())),
+                source.name.clone(),
+                policies::title(source),
+                c.muted,
+                policies::scope(source),
+                narrow,
+            )
+            .when(!source.applied, |el| el.opacity(0.45))
+            .on_click(
+                cx.listener(move |pane, _, _, cx| pane.open(Target::Policy(path.clone()), cx)),
+            ),
+        );
+    }
+    for notice in &brief.notices {
+        rows = rows.child(intro(notice.clone()));
+    }
+    rows.into_any_element()
+}
+
+fn usage_section(agent: &Agent) -> AnyElement {
+    let usage: &Usage = match &agent.usage {
+        None => return waiting("Reading its usage…"),
+        Some(Err(error)) => return failed(error),
+        Some(Ok(usage)) => usage,
+    };
+    let (t, c) = (tokens(), colors());
+    let mut models: Vec<&str> = Vec::new();
+    for model in usage.sessions.iter().flat_map(|session| &session.models) {
+        if !models.contains(&model.as_str()) {
+            models.push(model);
+        }
+    }
+    let sessions = usage.sessions.len();
+    let headline = div()
+        .flex()
+        .flex_shrink_0()
+        .items_baseline()
+        .gap(px(t.space.s12))
+        .child(ui::text(div(), &t.text.figure).child(count(usage.totals.total)))
+        .child(
+            ui::text(div().flex_1().min_w_0().text_color(c.muted), &t.text.body).child(format!(
+                "tokens in the last 24 h, {sessions} CLI session{}{}",
+                if sessions == 1 { "" } else { "s" },
+                if models.is_empty() {
+                    String::new()
+                } else {
+                    format!(", {}", models.join(", "))
+                }
+            )),
+        )
+        .child(usage::coverage(&usage.coverage));
+    let mut list = list("agent-usage")
+        .px(px(t.space.s18))
+        .py(px(t.space.s16))
+        .gap(px(t.space.s16))
+        .child(headline)
+        .child(usage::breakdown(usage.totals))
+        .child(ui::view_heading("SESSIONS", "newest first").px(px(0.0)));
+    let mut ordered: Vec<_> = usage.sessions.iter().collect();
+    ordered.sort_by(|a, b| b.first_seen.cmp(&a.first_seen));
+    for session in ordered {
+        let short: String = session.id.chars().take(6).collect();
+        let kind = if session.parent.is_some() {
+            "subagent"
+        } else if session.current {
+            "current"
+        } else {
+            "ended"
+        };
+        list = list.child(
+            ui::text(
+                div()
+                    .flex()
+                    .flex_shrink_0()
+                    .items_center()
+                    .gap(px(t.space.s12))
+                    .h(px(t.size.row))
+                    .text_color(c.muted),
+                &t.text.status,
+            )
+            .child(mono(short).text_color(c.text))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .child(format!(
+                        "{kind} · started {} ago · {}",
+                        since(tmux_workspaces_roster::views::epoch_seconds(
+                            &session.first_seen
+                        )),
+                        session.models.join(", ")
+                    )),
+            )
+            .child(mono(count(session.tokens.total)).text_color(c.text_2))
+            .child(usage::coverage(&session.coverage)),
+        );
+    }
+    if usage.sessions.is_empty() {
+        list = list.child(ui::text(div().text_color(c.muted), &t.text.body).child(
+            match usage.unmeasured.first() {
+                Some(unmeasured) => format!("No readable record: {}.", unmeasured.reason),
+                None => "No sessions in the last 24 h.".into(),
+            },
+        ));
+    }
+    list.into_any_element()
+}
+
+fn tab(id: SharedString, label: &'static str, mark: String, on: bool) -> gpui::Stateful<gpui::Div> {
     let (t, c) = (tokens(), colors());
     ui::text(
         div()

@@ -1,7 +1,7 @@
 use serde_json::{Map, Value};
 use std::collections::HashSet;
 use tmux_workspaces_core::{
-    Attachment, Direction, Layout, Leaf, Node, Tab, View, ViewKind, Workspace,
+    AgentSection, Attachment, Direction, Layout, Leaf, Node, Tab, View, ViewKind, Workspace,
 };
 use unicode_properties::{GeneralCategoryGroup, UnicodeGeneralCategory};
 
@@ -68,7 +68,8 @@ fn identify(item: &Object, at: &str, identities: &mut HashSet<String>) -> Result
 }
 
 // A view pane has neither an attachment nor the new-pane chooser. Only an
-// agent view names an agent, with Backbone's agent-name rule.
+// agent view names an agent, with Backbone's agent-name rule, and only it
+// may name the section it opens on.
 fn view(item: &Object, occupied: bool, at: &str) -> Result<Option<View>> {
     let agent = match item.get("view_agent") {
         None => None,
@@ -90,26 +91,47 @@ fn view(item: &Object, occupied: bool, at: &str) -> Result<Option<View>> {
         ),
     };
     let Some(kind) = item.get("view") else {
-        return match agent {
-            Some(_) => Err(format!("{at}.view_agent: agent without a view")),
-            None => Ok(None),
+        return match (agent, item.contains_key("view_section")) {
+            (Some(_), _) => Err(format!("{at}.view_agent: agent without a view")),
+            (None, true) => Err(format!("{at}.view_section: section without a view")),
+            (None, false) => Ok(None),
         };
     };
-    let kind = kind
+    let mut kind = kind
         .as_str()
         .and_then(ViewKind::parse)
         .ok_or_else(|| format!("{at}.view: unknown view"))?;
+    let mut section = match item.get("view_section") {
+        None => None,
+        Some(value) => Some(
+            value
+                .as_str()
+                .and_then(AgentSection::parse)
+                .ok_or_else(|| format!("{at}.view_section: unknown section"))?,
+        ),
+    };
     if occupied {
         return Err(format!(
             "{at}.view: a view pane has no attachment and is not empty"
         ));
     }
-    if kind.needs_agent() != agent.is_some() {
+    // Earlier versions showed one agent's policies as their own view; that is
+    // now a section of the agent's view, and is saved that way next time.
+    if kind == ViewKind::Policies && agent.is_some() && section.is_none() {
+        kind = ViewKind::Agent;
+        section = Some(AgentSection::Policies);
+    }
+    let view = View {
+        kind,
+        agent,
+        section,
+    };
+    if !view.is_valid() {
         return Err(format!(
-            "{at}.view_agent: only an agent view names an agent"
+            "{at}.view_agent: only an agent view names an agent or a section"
         ));
     }
-    Ok(Some(View { kind, agent }))
+    Ok(Some(view))
 }
 
 fn node(
@@ -182,7 +204,7 @@ fn node(
                 "{at}.ratio: expected a finite split ratio from 0.01 to 0.99"
             ));
         }
-        if ["cwd", "source_socket", "view", "view_agent"]
+        if ["cwd", "source_socket", "view", "view_agent", "view_section"]
             .iter()
             .any(|key| item.contains_key(*key))
         {

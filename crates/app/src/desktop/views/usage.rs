@@ -187,19 +187,6 @@ pub(super) fn body(pane: &ViewPane, usage: &Usage, cx: &mut Context<ViewPane>) -
         .len();
 
     let totals = usage.totals;
-    let parts = [
-        (totals.cache_read, c.info, "cache reads"),
-        (totals.input, c.accent, "uncached input"),
-        (totals.cache_write, c.violet, "cache writes"),
-        (totals.output, c.green, "output"),
-    ];
-    let mut legend = ui::text(
-        div().flex().flex_wrap().gap(px(t.space.s20)),
-        &t.text.status,
-    );
-    for (tokens, color, label) in parts {
-        legend = legend.child(ui::legend(color, label, count(tokens)));
-    }
     let total_usd = usage
         .estimated_usd
         .as_deref()
@@ -233,10 +220,7 @@ pub(super) fn body(pane: &ViewPane, usage: &Usage, cx: &mut Context<ViewPane>) -
                     )),
                 ),
         )
-        .child(ui::stacked_meter(
-            &parts.map(|(tokens, color, _)| (tokens as f32, color)),
-        ))
-        .child(legend);
+        .child(breakdown(totals));
 
     let first = match pane.usage_by {
         UsageBy::Agent => "AGENT",
@@ -396,6 +380,32 @@ pub(super) fn body(pane: &ViewPane, usage: &Usage, cx: &mut Context<ViewPane>) -
         .into_any_element()
 }
 
+/// The four kinds of tokens as a stacked bar, with a legend under it.
+pub(super) fn breakdown(totals: Tokens) -> gpui::Div {
+    let (t, c) = (tokens(), colors());
+    let parts = [
+        (totals.cache_read, c.info, "cache reads"),
+        (totals.input, c.accent, "uncached input"),
+        (totals.cache_write, c.violet, "cache writes"),
+        (totals.output, c.green, "output"),
+    ];
+    let mut legend = ui::text(
+        div().flex().flex_wrap().gap(px(t.space.s20)),
+        &t.text.status,
+    );
+    for (tokens, color, label) in parts {
+        legend = legend.child(ui::legend(color, label, count(tokens)));
+    }
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(t.space.s10))
+        .child(ui::stacked_meter(
+            &parts.map(|(tokens, color, _)| (tokens as f32, color)),
+        ))
+        .child(legend)
+}
+
 fn amount(fraction: f32, label: String, color: Rgba) -> AnyElement {
     let t = tokens();
     div()
@@ -413,7 +423,7 @@ fn amount(fraction: f32, label: String, color: Rgba) -> AnyElement {
         .into_any_element()
 }
 
-fn coverage(coverage: &str) -> AnyElement {
+pub(super) fn coverage(coverage: &str) -> AnyElement {
     let color = coverage_color(coverage);
     div()
         .flex()

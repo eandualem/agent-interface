@@ -416,8 +416,6 @@ struct Browser {
     views: HashMap<String, (gpui::Entity<views::ViewPane>, gpui::Subscription)>,
     /// The chooser in each shown empty pane, with its event subscription.
     new_panes: HashMap<String, (gpui::Entity<new_pane::NewPane>, gpui::Subscription)>,
-    /// The section an agent card chosen in a chooser opens on.
-    opening_section: Option<(String, views::Section)>,
 }
 
 impl Browser {
@@ -1576,17 +1574,7 @@ impl Render for Browser {
         for (id, view) in shown {
             if !self.views.contains_key(&id) {
                 let backbone = self.backbone.clone();
-                let section = self
-                    .opening_section
-                    .take_if(|(pane, _)| pane == &id)
-                    .map(|(_, section)| section);
-                let pane = cx.new(|cx| {
-                    let mut pane = views::ViewPane::new(view, backbone, window, cx);
-                    if let Some(section) = section {
-                        pane.section = section;
-                    }
-                    pane
-                });
+                let pane = cx.new(|cx| views::ViewPane::new(view, backbone, window, cx));
                 let leaf = id.clone();
                 let events = cx.subscribe_in(
                     &pane,
@@ -1632,8 +1620,7 @@ impl Render for Browser {
                             new_pane::NewPaneEvent::Attach(name) => {
                                 browser.attach_into(&pane, name, window, cx)
                             }
-                            new_pane::NewPaneEvent::OpenView(view, section) => {
-                                browser.opening_section = section.map(|s| (pane.clone(), s));
+                            new_pane::NewPaneEvent::OpenView(view) => {
                                 browser.open_view(&pane, view.clone(), window, cx)
                             }
                         }

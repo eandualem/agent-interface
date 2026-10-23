@@ -116,6 +116,35 @@ pub struct View {
     pub kind: ViewKind,
     /// The agent an agent view describes; none for every other kind.
     pub agent: Option<String>,
+    /// The section an agent view opens on; none for every other kind.
+    pub section: Option<AgentSection>,
+}
+
+impl View {
+    /// A view that describes no agent.
+    pub fn of(kind: ViewKind) -> Self {
+        Self {
+            kind,
+            agent: None,
+            section: None,
+        }
+    }
+
+    /// One agent's view, opening on `section`.
+    pub fn agent(name: String, section: Option<AgentSection>) -> Self {
+        Self {
+            kind: ViewKind::Agent,
+            agent: Some(name),
+            section,
+        }
+    }
+
+    /// Whether the agent and section fit the kind: only an agent view names an
+    /// agent, and it alone may open on a section.
+    pub fn is_valid(&self) -> bool {
+        let agent = self.kind == ViewKind::Agent;
+        agent == self.agent.is_some() && (agent || self.section.is_none())
+    }
 }
 
 /// The views a pane can show.
@@ -127,23 +156,26 @@ pub enum ViewKind {
     Usage,
     /// Recent deliveries and inbound events.
     Activity,
-    /// The shared skills store.
+    /// Every skill an agent can load, by where it lives, team-wide.
     Skills,
-    /// One agent's card.
+    /// One agent: its state, rules, connections, skills, policies and usage.
     Agent,
-    /// The policies one agent receives, in order.
+    /// The layers a brief is built from, team-wide.
     Policies,
+    /// What each tag gives the agents that carry it.
+    Tags,
 }
 
 impl ViewKind {
     /// Every kind, in the order the new-pane chooser lists them.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Skills,
         Self::Policies,
-        Self::Agent,
+        Self::Tags,
+        Self::Team,
         Self::Usage,
         Self::Activity,
-        Self::Team,
+        Self::Agent,
     ];
 
     /// The saved name.
@@ -155,17 +187,67 @@ impl ViewKind {
             Self::Skills => "skills",
             Self::Agent => "agent",
             Self::Policies => "policies",
+            Self::Tags => "tags",
         }
     }
 
     /// Whether this view describes one agent, which it then names.
     pub fn needs_agent(self) -> bool {
-        matches!(self, Self::Agent | Self::Policies)
+        self == Self::Agent
     }
 
     /// The kind with this saved name.
     pub fn parse(name: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|kind| kind.as_str() == name)
+    }
+}
+
+/// The sections of one agent's view.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AgentSection {
+    /// Its state, work and held messages.
+    #[default]
+    Overview,
+    /// What its CLI lets it do without asking.
+    Permissions,
+    /// GitHub, sources and other connections.
+    Connections,
+    /// The skills it loads, and why each reaches it.
+    Skills,
+    /// What it receives at its next start, in order.
+    Policies,
+    /// Its token usage.
+    Usage,
+}
+
+impl AgentSection {
+    /// Every section, in tab order.
+    pub const ALL: [Self; 6] = [
+        Self::Overview,
+        Self::Permissions,
+        Self::Connections,
+        Self::Skills,
+        Self::Policies,
+        Self::Usage,
+    ];
+
+    /// The saved name.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Overview => "overview",
+            Self::Permissions => "permissions",
+            Self::Connections => "connections",
+            Self::Skills => "skills",
+            Self::Policies => "policies",
+            Self::Usage => "usage",
+        }
+    }
+
+    /// The section with this saved name.
+    pub fn parse(name: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|section| section.as_str() == name)
     }
 }
 

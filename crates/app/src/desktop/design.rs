@@ -123,7 +123,8 @@ group!(
         view_footer: f32 = number, view_choice: f32 = number, view_tile: f32 = number,
         chip: f32 = number, meter: f32 = number, meter_large: f32 = number,
         fact_label: f32 = number, choice_button: f32 = number, filter: f32 = number,
-        choice_row: f32 = number, hint_bar: f32 = number,
+        choice_row: f32 = number, hint_bar: f32 = number, layer_tile: f32 = number,
+        tag_card_label: f32 = number, narrow_view: f32 = number,
     }
 );
 

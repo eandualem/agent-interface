@@ -2,7 +2,7 @@
 
 use rusqlite::Connection;
 use std::path::Path;
-use tmux_workspaces_core::{Direction, Node, View, ViewKind};
+use tmux_workspaces_core::{AgentSection, Direction, Node, View, ViewKind};
 use tmux_workspaces_store::{Document, MAX_RECORD_BYTES, Store};
 
 const RECORD: &str = r#"{
@@ -729,10 +729,7 @@ fn view_panes_round_trip_and_reject_mixed_or_unknown_views() {
     let Node::Leaf(leaf) = second.as_ref() else {
         panic!("expected a leaf");
     };
-    let expected = View {
-        kind: ViewKind::Agent,
-        agent: Some("worker-1".into()),
-    };
+    let expected = View::agent("worker-1".into(), None);
     assert_eq!(leaf.view.as_ref(), Some(&expected));
     assert!(!leaf.runs_terminal());
 
@@ -743,10 +740,7 @@ fn view_panes_round_trip_and_reject_mixed_or_unknown_views() {
     let Node::Leaf(leaf) = second.as_mut() else {
         unreachable!();
     };
-    leaf.view = Some(View {
-        kind: ViewKind::Usage,
-        agent: None,
-    });
+    leaf.view = Some(View::of(ViewKind::Usage));
     let saved = document
         .with_model(&model, Path::new("layouts.db"))
         .unwrap();
@@ -765,6 +759,18 @@ fn view_panes_round_trip_and_reject_mixed_or_unknown_views() {
         ),
         ("\"agent\": null, \"view\"", "\"agent\": \"work\", \"view\""),
         (
+            "\"view\": \"agent\"",
+            "\"view\": \"agent\", \"view_section\": \"later\"",
+        ),
+        (
+            "\"view\": \"agent\", \"view_agent\": \"worker-1\"",
+            "\"view\": \"usage\", \"view_section\": \"usage\"",
+        ),
+        (
+            "\"view\": \"agent\", \"view_agent\": \"worker-1\"",
+            "\"view_section\": \"usage\"",
+        ),
+        (
             "\"agent\": null, \"view\"",
             "\"agent\": null, \"empty\": true, \"view\"",
         ),
@@ -779,4 +785,42 @@ fn view_panes_round_trip_and_reject_mixed_or_unknown_views() {
         1,
     );
     assert!(parse(&stray).is_err());
+}
+
+// Before the agent view had sections, one agent's policies were a view of
+// their own. Such a pane opens on the agent's Policies section, and is saved
+// that way with the next change; without an agent, the saved name is the team-wide library.
+#[test]
+fn saved_agent_policies_open_on_the_agent_section_and_libraries_stay() {
+    let parse_pane =
+        |text: &str| parse(&RECORD.replacen("\"agent\": null, \"empty\": true", text, 1)).unwrap();
+    let view = |document: &Document| {
+        let Node::Split { second, .. } = &document.model().workspaces[0].tabs[0].tree else {
+            panic!("expected a split");
+        };
+        let Node::Leaf(leaf) = second.as_ref() else {
+            panic!("expected a leaf");
+        };
+        leaf.view.clone()
+    };
+    let document =
+        parse_pane("\"agent\": null, \"view\": \"policies\", \"view_agent\": \"worker-1\"");
+    let section = View::agent("worker-1".into(), Some(AgentSection::Policies));
+    assert_eq!(view(&document), Some(section));
+    // The new form is written with the next change.
+    let mut model = document.model().clone();
+    model.workspaces[0].name = "renamed".into();
+    let saved = document
+        .with_model(&model, Path::new("layouts.db"))
+        .unwrap();
+    let value: serde_json::Value = serde_json::from_str(saved.raw_json()).unwrap();
+    let written = &value["workspaces"][0]["tabs"][0]["tree"]["second"];
+    assert_eq!(written["view"], "agent");
+    assert_eq!(written["view_agent"], "worker-1");
+    assert_eq!(written["view_section"], "policies");
+
+    for kind in [ViewKind::Skills, ViewKind::Policies, ViewKind::Tags] {
+        let text = format!("\"agent\": null, \"view\": \"{}\"", kind.as_str());
+        assert_eq!(view(&parse_pane(&text)), Some(View::of(kind)));
+    }
 }

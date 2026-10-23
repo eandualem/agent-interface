@@ -20,7 +20,6 @@ use super::{
     components::{self as ui, AgentState},
     design::{colors, tokens},
     name::{NameEvent, NameField},
-    views::Section,
 };
 use crate::{roster::ViewSource, sessions::SessionSource};
 
@@ -28,8 +27,7 @@ use crate::{roster::ViewSource, sessions::SessionSource};
 pub(super) enum NewPaneEvent {
     OpenTerminal,
     Attach(String),
-    /// A view, and for an agent card the section to open on.
-    OpenView(View, Option<Section>),
+    OpenView(View),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -46,68 +44,58 @@ struct ViewChoice {
     label: &'static str,
     description: &'static str,
     scope: &'static str,
-    /// None while Backbone does not serve this view's data.
-    kind: Option<ViewKind>,
-    /// The agent card section this choice opens on.
-    section: Option<Section>,
+    kind: ViewKind,
 }
 
 const VIEWS: [ViewChoice; 7] = [
     ViewChoice {
         glyph: "◆",
         label: "Skills",
-        description: "The shared store, readable, with who gets each skill",
-        scope: "all agents",
-        kind: Some(ViewKind::Skills),
-        section: None,
+        description: "Every skill by layer: store, repositories, user-level, and its tags",
+        scope: "whole team",
+        kind: ViewKind::Skills,
     },
     ViewChoice {
         glyph: "≡",
         label: "Policies",
-        description: "Each policy in full, and the order an agent receives them",
-        scope: "pick an agent",
-        kind: Some(ViewKind::Policies),
-        section: None,
+        description: "Base, global, tag and swarm layers, each readable in full",
+        scope: "whole team",
+        kind: ViewKind::Policies,
     },
     ViewChoice {
-        glyph: "⚿",
-        label: "Agent configuration",
-        description: "State, permissions, connections and recent messages",
-        scope: "pick an agent",
-        kind: Some(ViewKind::Agent),
-        section: None,
-    },
-    ViewChoice {
-        glyph: "⇄",
-        label: "Connections",
-        description: "GitHub, sources and integrations per agent",
-        scope: "pick an agent",
-        kind: Some(ViewKind::Agent),
-        section: Some(Section::Connections),
-    },
-    ViewChoice {
-        glyph: "Σ",
-        label: "Usage",
-        description: "Tokens by agent, CLI session and model",
-        scope: "all agents",
-        kind: Some(ViewKind::Usage),
-        section: None,
-    },
-    ViewChoice {
-        glyph: "∿",
-        label: "Activity",
-        description: "Deliveries, held and expired messages, GitHub events",
-        scope: "all agents",
-        kind: Some(ViewKind::Activity),
-        section: None,
+        glyph: "#",
+        label: "Tags",
+        description: "What each tag gives the agents that carry it",
+        scope: "whole team",
+        kind: ViewKind::Tags,
     },
     ViewChoice {
         glyph: "⌥",
         label: "Team",
         description: "Agents by repository, tag or swarm",
-        scope: "all agents",
-        kind: Some(ViewKind::Team),
-        section: None,
+        scope: "whole team",
+        kind: ViewKind::Team,
+    },
+    ViewChoice {
+        glyph: "Σ",
+        label: "Usage",
+        description: "Tokens by agent, CLI session and model",
+        scope: "whole team",
+        kind: ViewKind::Usage,
+    },
+    ViewChoice {
+        glyph: "∿",
+        label: "Activity",
+        description: "State timeline, deliveries, held and expired messages",
+        scope: "whole team",
+        kind: ViewKind::Activity,
+    },
+    ViewChoice {
+        glyph: "⚿",
+        label: "Agent",
+        description: "One agent: permissions, connections, its skills, policies, usage",
+        scope: "pick an agent",
+        kind: ViewKind::Agent,
     },
 ];
 
@@ -124,9 +112,6 @@ pub(super) struct NewPane {
     field: Entity<NameField>,
     query: String,
     mode: Mode,
-    /// The view an agent is being chosen for, and its section.
-    picking: ViewKind,
-    picking_section: Option<Section>,
     /// The chosen row by identity, so refreshes that reorder or remove rows
     /// never move Enter onto another session.
     selected: Option<String>,
@@ -202,8 +187,6 @@ impl NewPane {
             field,
             query: String::new(),
             mode: Mode::Sessions,
-            picking: ViewKind::Agent,
-            picking_section: None,
             selected: None,
             disarmed: false,
             reveal: false,
@@ -320,11 +303,7 @@ impl NewPane {
     }
 
     fn selectable(row: &Row) -> bool {
-        match row {
-            Row::Heading(..) => false,
-            Row::View(index) => VIEWS[*index].kind.is_some(),
-            _ => true,
-        }
+        !matches!(row, Row::Heading(..))
     }
 
     fn choices(&self) -> Vec<Row> {
@@ -396,21 +375,10 @@ impl NewPane {
             Row::Agent(member) => cx.emit(NewPaneEvent::Attach(member.name)),
             Row::Session(name) => cx.emit(NewPaneEvent::Attach(name)),
             Row::View(index) => match VIEWS[index].kind {
-                Some(kind) if kind.needs_agent() => {
-                    self.picking = kind;
-                    self.picking_section = VIEWS[index].section;
-                    self.set_mode(Mode::Agents, cx);
-                }
-                Some(kind) => cx.emit(NewPaneEvent::OpenView(View { kind, agent: None }, None)),
-                None => {}
+                ViewKind::Agent => self.set_mode(Mode::Agents, cx),
+                kind => cx.emit(NewPaneEvent::OpenView(View::of(kind))),
             },
-            Row::Pick(name) => cx.emit(NewPaneEvent::OpenView(
-                View {
-                    kind: self.picking,
-                    agent: Some(name),
-                },
-                self.picking_section,
-            )),
+            Row::Pick(name) => cx.emit(NewPaneEvent::OpenView(View::agent(name, None))),
         }
     }
 
@@ -542,7 +510,6 @@ impl Render for NewPane {
                         key,
                         selected,
                     )
-                    .when(view.kind.is_none(), |el| el.opacity(0.5))
                     .into_any_element()
                 }
                 Row::Pick(name) => ui::choice_frame(id, selected)

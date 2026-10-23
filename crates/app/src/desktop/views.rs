@@ -3,16 +3,18 @@
 //! A [`ViewPane`] exists only while its pane is shown, and polls its data on
 //! an I/O worker until then (`crate::roster::ViewSource`). Each view draws its
 //! data in its own module from the shared pieces in `components`, following
-//! the design boards. Backbone is only read; nothing here changes an agent.
+//! the design boards. Every view stays inside its pane: choosing a skill or a
+//! policy opens it in the same pane through `reader`, with a way back. Backbone
+//! is only read; nothing here changes an agent.
 
-use std::{collections::HashSet, path::PathBuf, time::Duration};
+use std::{cell::Cell, collections::HashSet, path::PathBuf, rc::Rc, time::Duration};
 
 use futures::{StreamExt, channel::mpsc};
 use gpui::{
     Context, Entity, EventEmitter, SharedString, Subscription, Task, Window, div, prelude::*, px,
 };
-use tmux_workspaces_core::{View, ViewKind};
-use tmux_workspaces_roster::views::{self, Data, Range, Request};
+use tmux_workspaces_core::{AgentSection, View, ViewKind};
+use tmux_workspaces_roster::views::{self, Data, Part, Range, Request};
 
 use super::{
     components as ui,
@@ -25,7 +27,9 @@ mod activity;
 mod agent;
 mod markdown;
 mod policies;
+mod reader;
 mod skills;
+mod tags;
 mod team;
 mod usage;
 
@@ -44,6 +48,7 @@ pub(super) fn about(kind: ViewKind) -> About {
         ViewKind::Usage => ("chart-line", "Usage"),
         ViewKind::Activity => ("activity", "Activity"),
         ViewKind::Team => ("bot", "Team"),
+        ViewKind::Tags => ("hash", "Tags"),
     };
     About { icon, label }
 }
@@ -81,19 +86,20 @@ pub(super) enum Records {
     Held,
 }
 
-/// The agent card's sections.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum Section {
-    Overview,
-    Permissions,
-    Connections,
+/// Something a list can open in the reader, by its file or folder.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum Target {
+    /// A skill, by its folder, whose SKILL.md is read when opened.
+    Skill(String),
+    /// A policy, by its file; its text is already in the view's data.
+    Policy(String),
 }
 
-/// A skill being read: its name, its text, how it is shown.
-pub(super) struct Reading {
-    pub name: String,
+/// What the reader shows in place of a list.
+pub(super) struct Open {
+    pub target: Target,
+    /// A skill's text once read, and whether it was cut.
     pub text: Option<Result<(String, bool), &'static str>>,
-    pub source: bool,
 }
 
 /// One view in one pane, with its newest data and what the person chose in it.
@@ -108,16 +114,28 @@ pub(super) struct ViewPane {
     cost: bool,
     expanded: HashSet<String>,
     records: Records,
-    pub section: Section,
+    /// The shown section of an agent's view.
+    section: AgentSection,
+    /// The tag a list is filtered to.
     tag: Option<String>,
+    /// Whether the skills library lists skills under each tag.
+    by_tag: bool,
     query: String,
     search: Option<Entity<NameField>>,
-    reading: Option<Reading>,
-    /// The policy being read, by its file, so a refresh never swaps it.
-    policy: Option<String>,
-    policy_source: bool,
+    /// The agent named in a skill's "check an agent" field.
+    check: String,
+    check_field: Option<Entity<NameField>>,
+    /// What is open in place of the list, found by its file so a refresh
+    /// never swaps it for another.
+    open: Option<Open>,
+    /// Whether the reader shows the document's source.
+    raw: bool,
+    /// The tag whose agents the tags view lists in place of its cards.
+    carriers_of: Option<String>,
+    /// The pane's last drawn width, to fit rows to narrow panes.
+    width: Rc<Cell<f32>>,
     _updates: Option<Task<()>>,
-    _search: Option<Subscription>,
+    _search: Vec<Subscription>,
 }
 
 impl EventEmitter<ViewEvent> for ViewPane {}
@@ -131,7 +149,6 @@ impl ViewPane {
         cx: &mut Context<Self>,
     ) -> Self {
         let mut pane = Self {
-            view,
             source: None,
             data: None,
             error: None,
@@ -141,35 +158,53 @@ impl ViewPane {
             cost: false,
             expanded: HashSet::new(),
             records: Records::All,
-            section: Section::Overview,
+            section: view.section.unwrap_or_default(),
             tag: None,
+            by_tag: false,
             query: String::new(),
             search: None,
-            reading: None,
-            policy: None,
-            policy_source: false,
+            check: String::new(),
+            check_field: None,
+            open: None,
+            raw: false,
+            carriers_of: None,
+            width: Rc::new(Cell::new(0.0)),
             _updates: None,
-            _search: None,
+            _search: Vec::new(),
+            view,
         };
         if pane.view.kind == ViewKind::Skills {
             let field = cx.new(|cx| NameField::filter(window, cx));
-            pane._search = Some(cx.subscribe(&field, |pane, _, event, cx| {
-                if let NameEvent::Changed(query) = event {
-                    pane.query = query.clone();
-                    cx.notify();
-                }
-            }));
+            pane._search
+                .push(cx.subscribe(&field, |pane, _, event, cx| {
+                    if let NameEvent::Changed(query) = event {
+                        pane.query = query.clone();
+                        cx.notify();
+                    }
+                }));
             pane.search = Some(field);
+        }
+        if matches!(pane.view.kind, ViewKind::Skills | ViewKind::Agent) {
+            let field = cx.new(|cx| NameField::filter(window, cx));
+            pane._search
+                .push(cx.subscribe(&field, |pane, _, event, cx| {
+                    if let NameEvent::Changed(name) = event {
+                        pane.check = name.trim().to_owned();
+                        cx.notify();
+                    }
+                }));
+            pane.check_field = Some(field);
         }
         let Some(directory) = backbone else {
             pane.error = Some("Agent Backbone is not set up on this computer.");
             return pane;
         };
-        // Backbone collects usage about once a minute; everything else is live.
-        let every = Duration::from_secs(if pane.view.kind == ViewKind::Usage {
-            15
-        } else {
-            3
+        // Backbone collects usage about once a minute, and a library gathers
+        // many agents' previews and changes rarely; everything else is live.
+        let every = Duration::from_secs(match pane.view.kind {
+            ViewKind::Usage => 15,
+            ViewKind::Skills | ViewKind::Policies | ViewKind::Tags => 30,
+            _ => 3,
         });
         let (wake, mut woken) = mpsc::unbounded();
         match ViewSource::start(directory, pane.request(), every, move || {
@@ -214,46 +249,89 @@ impl ViewPane {
             ViewKind::Usage => Request::Usage(self.range),
             ViewKind::Activity => Request::Activity,
             ViewKind::Skills => Request::Skills,
-            ViewKind::Agent => Request::Agent(self.view.agent.clone().unwrap_or_default()),
-            ViewKind::Policies => Request::Policies(self.view.agent.clone().unwrap_or_default()),
+            ViewKind::Policies => Request::Policies,
+            ViewKind::Tags => Request::Tags,
+            ViewKind::Agent => Request::Agent(
+                self.view.agent.clone().unwrap_or_default(),
+                match self.section {
+                    AgentSection::Skills => Part::Skills,
+                    AgentSection::Policies => Part::Policies,
+                    AgentSection::Usage => Part::Usage(self.range),
+                    _ => Part::Card,
+                },
+            ),
         }
+    }
+
+    /// Ask the worker for the current request now. `clear` drops data that
+    /// would be wrong under the new request, such as another range's totals.
+    fn refetch(&mut self, clear: bool, cx: &mut Context<Self>) {
+        if clear {
+            self.data = None;
+            // Without a worker nothing will arrive, so keep saying why.
+            if self.source.is_some() {
+                self.error = None;
+            }
+        }
+        if let Some(source) = &self.source {
+            source.set_request(self.request());
+        }
+        cx.notify();
     }
 
     fn set_range(&mut self, range: Range, cx: &mut Context<Self>) {
         if self.range != range {
             self.range = range;
             // The old range's totals must not appear under the new label.
-            self.data = None;
-            // Without a worker nothing will arrive, so keep saying why.
-            if self.source.is_some() {
-                self.error = None;
+            let clear = self.view.kind == ViewKind::Usage;
+            if let Some(Data::Agent(agent)) = &mut self.data {
+                agent.usage = None;
             }
-            if let Some(source) = &self.source {
-                source.set_request(self.request());
-            }
-            cx.notify();
+            self.refetch(clear, cx);
         }
     }
 
-    /// Open the named skill and read its text from `folder`.
-    fn read_skill(&mut self, name: String, folder: String, cx: &mut Context<Self>) {
-        let source = self.reading.as_ref().is_some_and(|reading| reading.source);
-        self.reading = Some(Reading {
-            name: name.clone(),
+    /// Show another section of an agent's view. The card stays while the
+    /// section's own data is read.
+    fn set_section(&mut self, section: AgentSection, cx: &mut Context<Self>) {
+        if self.section != section {
+            self.section = section;
+            self.open = None;
+            self.refetch(false, cx);
+        }
+    }
+
+    /// The documents the shown list can open, in its order.
+    fn targets(&self) -> Vec<Target> {
+        match &self.data {
+            Some(Data::Skills(library)) => skills::targets(self, library),
+            Some(Data::Policies(library)) => policies::targets(library),
+            Some(Data::Agent(agent)) => agent::targets(self, agent),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Open `target` in the reader, reading a skill's SKILL.md off the UI thread.
+    fn open(&mut self, target: Target, cx: &mut Context<Self>) {
+        self.open = Some(Open {
+            target: target.clone(),
             text: None,
-            source,
         });
         cx.notify();
-        let read = cx
-            .background_executor()
-            .spawn(async move { views::read_skill(&folder) });
+        let Target::Skill(folder) = target else {
+            return;
+        };
+        let read = cx.background_executor().spawn({
+            let folder = folder.clone();
+            async move { views::read_skill(&folder) }
+        });
         cx.spawn(async move |this, cx| {
             let text = read.await;
             let _ = this.update(cx, |pane, cx| {
-                if let Some(reading) = &mut pane.reading
-                    && reading.name == name
+                if let Some(open) = &mut pane.open
+                    && open.target == Target::Skill(folder)
                 {
-                    reading.text = Some(text);
+                    open.text = Some(text);
                     cx.notify();
                 }
             });
@@ -261,36 +339,25 @@ impl ViewPane {
         .detach();
     }
 
-    /// Move to the previous or next shown skill while reading.
-    fn step_skill(&mut self, step: isize, cx: &mut Context<Self>) {
-        let (Some(reading), Some(Data::Skills(data))) = (&self.reading, &self.data) else {
-            return;
-        };
-        let shown = skills::shown(data, self.tag.as_deref(), &self.query);
-        let Some(at) = shown.iter().position(|skill| skill.name == reading.name) else {
-            return;
-        };
-        let next = at as isize + step;
-        if let Some(skill) = usize::try_from(next).ok().and_then(|n| shown.get(n)) {
-            let (name, folder) = (skill.name.clone(), skill.path.clone());
-            self.read_skill(name, folder, cx);
-        }
+    /// Back from the reader, or from a tag's agents, to the list.
+    fn close(&mut self, cx: &mut Context<Self>) {
+        self.open = None;
+        self.carriers_of = None;
+        cx.notify();
     }
 
-    /// Move to the previous or next policy in the agent's order.
-    fn step_policy(&mut self, step: isize) {
-        let Some(Data::Policies(brief)) = &self.data else {
+    /// Open the previous or next document of the list that opened this one.
+    fn step(&mut self, by: isize, cx: &mut Context<Self>) {
+        let Some(open) = &self.open else {
             return;
         };
-        let Some(at) = self
-            .policy
-            .as_ref()
-            .and_then(|path| brief.sources.iter().position(|source| &source.path == path))
-        else {
+        let targets = self.targets();
+        let Some(at) = targets.iter().position(|target| *target == open.target) else {
             return;
         };
-        let next = (at as isize + step).clamp(0, brief.sources.len() as isize - 1) as usize;
-        self.policy = Some(brief.sources[next].path.clone());
+        if let Some(target) = at.checked_add_signed(by).and_then(|next| targets.get(next)) {
+            self.open(target.clone(), cx);
+        }
     }
 
     /// Keys a view understands while its pane is selected. Returns whether
@@ -299,33 +366,30 @@ impl ViewPane {
         if key.modifiers.modified() {
             return false;
         }
-        if self.policy.is_some() {
-            match key.key.as_str() {
-                "escape" => self.policy = None,
-                "s" => self.policy_source = !self.policy_source,
-                "[" => self.step_policy(-1),
-                "]" => self.step_policy(1),
-                _ => return false,
+        if self.open.is_none() {
+            if self.carriers_of.is_some() && key.key == "escape" {
+                self.close(cx);
+                return true;
             }
-            cx.notify();
-            return true;
-        }
-        if self.reading.is_none() {
             return false;
         }
         match key.key.as_str() {
-            "escape" => self.reading = None,
+            "escape" => self.close(cx),
             "s" => {
-                if let Some(reading) = &mut self.reading {
-                    reading.source = !reading.source;
-                }
+                self.raw = !self.raw;
+                cx.notify();
             }
-            "[" => self.step_skill(-1, cx),
-            "]" => self.step_skill(1, cx),
+            "[" => self.step(-1, cx),
+            "]" => self.step(1, cx),
             _ => return false,
         }
-        cx.notify();
         true
+    }
+
+    /// Whether the pane is narrower than a row's meta column needs.
+    fn narrow(&self) -> bool {
+        let width = self.width.get();
+        width > 0.0 && width < tokens().size.narrow_view
     }
 
     /// The title shown for a view.
@@ -384,13 +448,32 @@ impl Render for ViewPane {
             Some(Data::Skills(data)) => skills::body(self, data, cx),
             Some(Data::Agent(data)) => agent::body(self, data, cx),
             Some(Data::Policies(data)) => policies::body(self, data, cx),
+            Some(Data::Tags(data)) => tags::body(self, data, cx),
         };
         self.data = data;
+        let width = Rc::clone(&self.width);
         div()
+            .relative()
             .size_full()
             .flex()
             .flex_col()
             .bg(c.surface)
+            // Measure the pane, and draw again when it crosses the narrow width.
+            .child(
+                gpui::canvas(
+                    |_, _, _| (),
+                    move |area, (), window, _| {
+                        let narrow = tokens().size.narrow_view;
+                        let (before, now) = (width.get(), f32::from(area.size.width));
+                        width.set(now);
+                        if (before < narrow) != (now < narrow) {
+                            window.refresh();
+                        }
+                    },
+                )
+                .absolute()
+                .size_full(),
+            )
             .child(div().flex_1().min_h_0().flex().flex_col().child(body))
             .children(
                 self.data

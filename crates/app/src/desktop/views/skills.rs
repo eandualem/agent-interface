@@ -1,91 +1,262 @@
-//! Skills: the shared store as a list, then one skill's SKILL.md to read,
-//! with a way back, previous and next, and its source.
+//! Skills: every skill an agent can load, team-wide, by where it lives (the
+//! shared store, repositories, user-level directories, plugins) or by tag.
+//! Rows never name an agent; they say how a skill is delivered. Choosing a
+//! skill reads its SKILL.md in this pane.
 
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 
-use gpui::{AnyElement, Context, SharedString, div, prelude::*, px};
-use tmux_workspaces_roster::views::{Skill, Skills};
+use gpui::{AnyElement, Context, Div, SharedString, div, prelude::*, px};
+use tmux_workspaces_roster::views::{
+    LocalSkill, PREVIEW_LIMIT, Place, Reason, Skill, SkillLibrary,
+};
 
-use super::{ViewPane, line, list, markdown, mono};
+use super::{Open, Target, ViewPane, line, list, mono, reader};
 use crate::desktop::{
-    components as ui,
+    components::{self as ui, Tone},
     design::{colors, tokens},
 };
 
-/// The skills shown for a tag and a search. A search that names an agent
-/// shows what that agent gets.
-pub(super) fn shown<'a>(skills: &'a Skills, tag: Option<&str>, query: &str) -> Vec<&'a Skill> {
-    let query = query.trim().to_lowercase();
-    skills
+/// One line of the library, top to bottom.
+enum Item<'a> {
+    Layer {
+        number: &'static str,
+        label: &'static str,
+        path: String,
+        note: &'static str,
+    },
+    /// A repository or CLI directory under a layer, or a tag; a tag shows
+    /// as a pill in its tone.
+    Group {
+        label: String,
+        tone: Option<Tone>,
+        note: String,
+    },
+    Store(&'a Skill),
+    Local(&'a LocalSkill, &'a Place),
+    Note(String),
+}
+
+fn matches(query: &str, name: &str, description: &str) -> bool {
+    query.is_empty()
+        || name.to_lowercase().contains(query)
+        || description.to_lowercase().contains(query)
+}
+
+/// The store skills the tag filter and search let through.
+fn store<'a>(pane: &ViewPane, library: &'a SkillLibrary, query: &str) -> Vec<&'a Skill> {
+    library
+        .store
         .items
         .iter()
-        .filter(|skill| tag.is_none_or(|tag| skill.tags.iter().any(|t| t == tag)))
-        .filter(|skill| {
-            query.is_empty()
-                || skill.name.to_lowercase().contains(&query)
-                || skill.description.to_lowercase().contains(&query)
-                || skill
-                    .reaches
-                    .iter()
-                    .any(|agent| agent.to_lowercase() == query)
-        })
+        .filter(|skill| pane.tag.as_ref().is_none_or(|tag| skill.tags.contains(tag)))
+        .filter(|skill| matches(query, &skill.name, &skill.description))
         .collect()
 }
 
-fn reach(skill: &Skill, everyone: bool) -> String {
-    match skill.reaches.len() {
-        _ if everyone && skill.tags.iter().any(|tag| tag == "all") => "every agent".into(),
-        0 => "no agent".into(),
-        1 => "1 agent".into(),
-        n => format!("{n} agents"),
+fn items<'a>(pane: &ViewPane, library: &'a SkillLibrary) -> Vec<Item<'a>> {
+    let query = pane.query.trim().to_lowercase();
+    let store = store(pane, library, &query);
+    let mut items = Vec::new();
+    if pane.by_tag {
+        let mut tags: BTreeMap<(bool, &str), Vec<&Skill>> = BTreeMap::new();
+        for skill in store {
+            for tag in skill.tags.iter().filter(|tag| !tag.starts_with("agent:")) {
+                tags.entry((tag != "all", tag)).or_default().push(skill);
+            }
+        }
+        for ((_, tag), skills) in tags {
+            let tone = if tag == "all" { Tone::Plain } else { Tone::Tag };
+            items.push(Item::Group {
+                label: tag.to_owned(),
+                tone: Some(tone),
+                note: format!("{} skill{}", skills.len(), plural(skills.len())),
+            });
+            items.extend(skills.into_iter().map(Item::Store));
+        }
+        items.push(Item::Note(
+            "Repository and user-level skills have no tags; they are listed by layer.".into(),
+        ));
+        return items;
     }
-}
-
-pub(super) fn body(pane: &ViewPane, skills: &Skills, cx: &mut Context<ViewPane>) -> AnyElement {
-    let shown = shown(skills, pane.tag.as_deref(), &pane.query);
-    // The skill being read is found by name, so a refreshed or filtered list
-    // never puts another skill's details above its text.
-    let reading = pane.reading.as_ref().and_then(|reading| {
-        let skill = skills
-            .items
-            .iter()
-            .find(|skill| skill.name == reading.name)?;
-        let at = shown.iter().position(|shown| shown.name == reading.name);
-        Some((skill, at))
+    items.push(Item::Layer {
+        number: "1",
+        label: "SHARED STORE",
+        path: library.store.store.clone().unwrap_or_else(|| "off".into()),
+        note: "Backbone links each by its tags",
     });
-    match reading {
-        Some((skill, at)) => detail(pane, skill, at, shown.len(), cx),
-        None => index(pane, skills, &shown, cx),
+    items.extend(store.into_iter().map(Item::Store));
+    // Places hold no tags, so a tag filter hides them.
+    let places = |items: &mut Vec<Item<'a>>, places: &'a [Place]| {
+        if pane.tag.is_some() {
+            return;
+        }
+        for place in places {
+            let skills: Vec<_> = place
+                .skills
+                .iter()
+                .filter(|skill| matches(&query, &skill.name, &skill.description))
+                .collect();
+            if skills.is_empty() {
+                continue;
+            }
+            items.push(Item::Group {
+                label: place.label.clone(),
+                tone: None,
+                note: place.directory.clone(),
+            });
+            items.extend(skills.into_iter().map(|skill| Item::Local(skill, place)));
+        }
+    };
+    items.push(Item::Layer {
+        number: "2",
+        label: "REPOSITORIES",
+        path: ".claude/skills · .agents/skills".into(),
+        note: "every agent working in that project",
+    });
+    places(&mut items, &library.repositories);
+    items.push(Item::Layer {
+        number: "3",
+        label: "USER-LEVEL",
+        path: "per CLI, in the home folder".into(),
+        note: "every agent on that CLI",
+    });
+    places(&mut items, &library.user);
+    items.push(Item::Layer {
+        number: "4",
+        label: "PLUGINS",
+        path: "installed with each CLI".into(),
+        note: "not listed by Backbone",
+    });
+    if library.previewed < library.agents.len() {
+        items.push(Item::Note(format!(
+            "Repository and user skills from the first {} of {} agents.",
+            library.previewed.min(PREVIEW_LIMIT),
+            library.agents.len()
+        )));
     }
+    items
 }
 
-fn index(
+fn plural(count: usize) -> &'static str {
+    if count == 1 { "" } else { "s" }
+}
+
+fn sub_heading(label: impl IntoElement, note: String) -> Div {
+    let (t, c) = (tokens(), colors());
+    ui::text(
+        div()
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .gap(px(t.space.s8))
+            .pl(px(t.space.s8 + t.size.layer_tile + t.space.s10))
+            .pr(px(t.space.s8))
+            .pt(px(t.space.s8))
+            .pb(px(t.space.s2))
+            .text_color(c.muted)
+            .overflow_hidden()
+            .whitespace_nowrap(),
+        &t.text.meta,
+    )
+    .child(label)
+    .child(
+        div()
+            .min_w_0()
+            .overflow_hidden()
+            .text_ellipsis()
+            .child(note),
+    )
+}
+
+/// What the list can open, in its order, for previous and next.
+pub(super) fn targets(pane: &ViewPane, library: &SkillLibrary) -> Vec<Target> {
+    let mut targets = Vec::new();
+    for item in items(pane, library) {
+        let folder = match item {
+            Item::Store(skill) => &skill.path,
+            Item::Local(skill, _) => &skill.path,
+            _ => continue,
+        };
+        let target = Target::Skill(folder.clone());
+        // Under By tag a skill appears once per tag; step through it once.
+        if !targets.contains(&target) {
+            targets.push(target);
+        }
+    }
+    targets
+}
+
+/// A store skill's delivery as pills: `all`, its tags, and how many agents it
+/// names directly.
+pub(super) fn delivery(tags: &[String]) -> Div {
+    let t = tokens();
+    let direct = tags.iter().filter(|tag| tag.starts_with("agent:")).count();
+    let mut pills = div().flex().flex_wrap().gap(px(t.space.s4));
+    for tag in tags.iter().filter(|tag| !tag.starts_with("agent:")) {
+        let tone = if tag == "all" { Tone::Plain } else { Tone::Tag };
+        pills = pills.child(ui::tag(tag.clone(), tone));
+    }
+    if direct > 0 {
+        pills = pills.child(ui::tag(format!("+{direct} direct"), Tone::Quiet));
+    }
+    pills
+}
+
+pub(super) fn body(
     pane: &ViewPane,
-    skills: &Skills,
-    shown: &[&Skill],
+    library: &SkillLibrary,
     cx: &mut Context<ViewPane>,
 ) -> AnyElement {
+    if let Some(open) = &pane.open {
+        return detail(pane, library, open, cx);
+    }
+    index(pane, library, cx)
+}
+
+fn index(pane: &ViewPane, library: &SkillLibrary, cx: &mut Context<ViewPane>) -> AnyElement {
     let (t, c) = (tokens(), colors());
-    let header = ui::view_header("diamond", "Skills").child("all agents");
-    let tags: BTreeSet<&str> = skills
-        .items
-        .iter()
-        .flat_map(|s| s.tags.iter().map(String::as_str))
-        .collect();
-    let mut chips = div().flex().flex_wrap().gap(px(t.space.s4 + 1.0)).child(
-        ui::chip("skills-tag-any", "Any tag", pane.tag.is_none()).on_click(cx.listener(
-            |pane, _, _, cx| {
-                pane.tag = None;
+    let header = ui::view_header("diamond", "Skills")
+        .child("every skill an agent can load, by where it lives");
+    let mut grouping = ui::segments();
+    for (by_tag, label) in [(false, "By layer"), (true, "By tag")] {
+        grouping = grouping.child(
+            ui::segment(
+                SharedString::from(format!("skills-{label}")),
+                label,
+                pane.by_tag == by_tag,
+            )
+            .on_click(cx.listener(move |pane, _, _, cx| {
+                pane.by_tag = by_tag;
                 cx.notify();
-            },
-        )),
-    );
-    for tag in tags {
+            })),
+        );
+    }
+    let mut counts: BTreeMap<(bool, &str), usize> = BTreeMap::new();
+    for tag in library.store.items.iter().flat_map(|skill| &skill.tags) {
+        if !tag.starts_with("agent:") {
+            *counts.entry((tag != "all", tag)).or_default() += 1;
+        }
+    }
+    let mut chips = div()
+        .flex()
+        .flex_wrap()
+        .items_center()
+        .gap(px(t.space.s4 + 1.0))
+        .child(ui::text(div().text_color(c.muted).mr(px(t.space.s2)), &t.text.meta).child("tags"))
+        .child(
+            ui::chip("skills-tag-any", "Any", pane.tag.is_none()).on_click(cx.listener(
+                |pane, _, _, cx| {
+                    pane.tag = None;
+                    cx.notify();
+                },
+            )),
+        );
+    for ((_, tag), count) in counts {
         let name = tag.to_owned();
         chips = chips.child(
             ui::chip(
                 SharedString::from(format!("skills-tag-{tag}")),
-                tag.to_owned(),
+                format!("{tag} {count}"),
                 pane.tag.as_deref() == Some(tag),
             )
             .on_click(cx.listener(move |pane, _, _, cx| {
@@ -100,77 +271,80 @@ fn index(
         .flex_col()
         .gap(px(t.space.s10))
         .px(px(t.space.s14))
-        .pt(px(t.space.s12))
-        .pb(px(t.space.s10))
+        .py(px(t.space.s12))
         .border_b(px(t.size.hairline))
         .border_color(c.line)
-        .children(pane.search.clone().map(|field| {
-            ui::filter_frame()
-                .h(px(t.size.jump_field))
-                .child(div().flex_1().min_w_0().child(field))
-        }))
-        .child(chips);
-    let mut rows = list("skill-rows").child(ui::view_heading("SHARED STORE", ""));
-    for skill in shown {
-        let (name, folder) = (skill.name.clone(), skill.path.clone());
-        let (detail, detail_color) = match &skill.error {
-            Some(error) => (line(error), c.attention_text),
-            None => (line(&skill.description), c.muted),
-        };
-        rows = rows.child(
+        .child(
             div()
-                .id(SharedString::from(format!("skill-{}", skill.name)))
-                .flex_shrink_0()
                 .flex()
                 .items_center()
-                .gap(px(t.space.s12))
-                .min_h(px(t.size.slot_row + t.space.s4))
-                .px(px(t.space.s8))
-                .py(px(t.space.s6))
-                .rounded(px(t.radius.row))
-                .cursor_pointer()
-                .hover(|el| el.bg(colors().hover))
-                .child(
-                    div()
+                .gap(px(t.space.s10))
+                .children(pane.search.clone().map(|field| {
+                    ui::filter_frame()
                         .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .gap(px(t.space.s2 + 1.0))
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap(px(t.space.s8))
-                                .child(mono(skill.name.clone()).text_color(c.text))
-                                .child(
-                                    ui::text(div().text_color(c.muted), &t.text.meta)
-                                        .child(skill.tags.join(" · ")),
-                                ),
-                        )
-                        .child(
-                            ui::text(
-                                div()
-                                    .text_color(detail_color)
-                                    .overflow_hidden()
-                                    .whitespace_nowrap()
-                                    .text_ellipsis(),
-                                &t.text.status,
-                            )
-                            .child(detail),
-                        ),
+                        .h(px(t.size.jump_field))
+                        .child(div().flex_1().min_w_0().child(field))
+                }))
+                .child(grouping),
+        )
+        .child(chips);
+    let narrow = pane.narrow();
+    let mut rows = list("skill-rows").pt(px(t.space.s2));
+    let mut shown = 0;
+    for (at, item) in items(pane, library).into_iter().enumerate() {
+        rows = rows.child(match item {
+            Item::Layer {
+                number,
+                label,
+                path,
+                note,
+            } => ui::layer_heading(number, label, path, note, false).into_any_element(),
+            Item::Group { label, tone, note } => sub_heading(
+                match tone {
+                    Some(tone) => ui::tag(label, tone),
+                    None => mono(label).text_color(c.text_2),
+                },
+                note,
+            )
+            .into_any_element(),
+            Item::Note(text) => ui::text(
+                div()
+                    .px(px(t.space.s8))
+                    .py(px(t.space.s8))
+                    .text_color(c.muted),
+                &t.text.meta,
+            )
+            .child(text)
+            .into_any_element(),
+            Item::Store(skill) => {
+                shown += 1;
+                row(
+                    at,
+                    &skill.name,
+                    &skill.description,
+                    skill.error.as_deref(),
+                    delivery(&skill.tags),
+                    Target::Skill(skill.path.clone()),
+                    narrow,
+                    cx,
                 )
-                .child(
-                    ui::text(div().flex_shrink_0().text_color(c.muted), &t.text.meta)
-                        .child(reach(skill, true)),
+            }
+            Item::Local(skill, place) => {
+                shown += 1;
+                row(
+                    at,
+                    &skill.name,
+                    &skill.description,
+                    skill.error.as_deref(),
+                    div().child(ui::tag(place.label.clone(), Tone::Plain)),
+                    Target::Skill(skill.path.clone()),
+                    narrow,
+                    cx,
                 )
-                .child(ui::icon("chevron-right", t.size.icon - 2.0, c.faint))
-                .on_click(cx.listener(move |pane, _, _, cx| {
-                    pane.read_skill(name.clone(), folder.clone(), cx)
-                })),
-        );
+            }
+        });
     }
-    if shown.is_empty() {
+    if shown == 0 {
         rows = rows.child(
             ui::text(
                 div()
@@ -179,13 +353,9 @@ fn index(
                     .text_color(c.muted),
                 &t.text.body,
             )
-            .child("No skill matches. Type a skill, or an agent's name to see what it gets."),
+            .child("No skill matches this search and tag."),
         );
     }
-    let note = match &skills.store {
-        Some(store) => format!("store {store} · {} skills", skills.items.len()),
-        None => "the skills store is turned off".to_owned(),
-    };
     div()
         .size_full()
         .flex()
@@ -193,157 +363,165 @@ fn index(
         .child(header)
         .child(controls)
         .child(rows)
-        .child(ui::view_footer(&[("click", "read")], note))
+        .child(ui::view_footer(
+            &[("click", "read the skill")],
+            "a repository skill wins over a store skill of the same name",
+        ))
         .into_any_element()
 }
 
+#[allow(clippy::too_many_arguments)]
+fn row(
+    at: usize,
+    name: &str,
+    description: &str,
+    error: Option<&str>,
+    trailing: Div,
+    target: Target,
+    narrow: bool,
+    cx: &mut Context<ViewPane>,
+) -> AnyElement {
+    let c = colors();
+    let (text, color) = match error {
+        Some(error) => (line(error), c.attention_text),
+        None => (line(description), c.muted),
+    };
+    ui::list_row(
+        SharedString::from(format!("skill-{at}")),
+        None,
+        name.to_owned(),
+        text,
+        color,
+        trailing,
+        narrow,
+    )
+    .on_click(cx.listener(move |pane, _, _, cx| pane.open(target.clone(), cx)))
+    .into_any_element()
+}
+
+/// A skill being read: its summary, and its SKILL.md.
 fn detail(
     pane: &ViewPane,
-    skill: &Skill,
-    at: Option<usize>,
-    count: usize,
+    library: &SkillLibrary,
+    open: &Open,
     cx: &mut Context<ViewPane>,
 ) -> AnyElement {
     let (t, c) = (tokens(), colors());
-    let Some(reading) = &pane.reading else {
+    let Target::Skill(folder) = &open.target else {
         return div().into_any_element();
     };
     let header = ui::view_header("diamond", "Skills").child("reading SKILL.md");
-    let mut display = ui::segments();
-    for (source, label) in [(false, "Rendered"), (true, "Source")] {
-        display = display.child(
-            ui::segment(
-                SharedString::from(format!("skill-display-{label}")),
-                label,
-                reading.source == source,
-            )
-            .on_click(cx.listener(move |pane, _, _, cx| {
-                if let Some(reading) = &mut pane.reading {
-                    reading.source = source;
-                }
-                cx.notify();
-            })),
-        );
-    }
-    let step = |id: &'static str, icon: &'static str, by: isize, cx: &mut Context<ViewPane>| {
-        ui::icon_button(id, icon)
-            .on_click(cx.listener(move |pane, _, _, cx| pane.step_skill(by, cx)))
+    let targets = targets(pane, library);
+    let at = targets.iter().position(|target| *target == open.target);
+    let store = library
+        .store
+        .items
+        .iter()
+        .find(|skill| &skill.path == folder);
+    let local = [&library.repositories, &library.user]
+        .into_iter()
+        .flatten()
+        .find_map(|place| {
+            let skill = place.skills.iter().find(|skill| &skill.path == folder)?;
+            Some((skill, place))
+        });
+    let (name, description) = match (store, local) {
+        (Some(skill), _) => (skill.name.clone(), skill.description.clone()),
+        (None, Some((skill, _))) => (skill.name.clone(), skill.description.clone()),
+        (None, None) => (String::new(), String::new()),
     };
-    let bar = div()
+    let facts = div()
         .flex()
-        .flex_shrink_0()
+        .flex_wrap()
         .items_center()
-        .gap(px(t.space.s8))
-        .h(px(t.size.row + t.space.s10))
-        .px(px(t.space.s10))
-        .border_b(px(t.size.hairline))
-        .border_color(c.line)
-        .child(
-            ui::back_button("skill-back", "Skills").on_click(cx.listener(|pane, _, _, cx| {
-                pane.reading = None;
-                cx.notify();
-            })),
-        )
-        .child(mono(skill.name.clone()).text_color(c.text))
-        .child(div().flex_1())
-        .child(step("skill-previous", "chevron-left", -1, cx))
-        .child(
-            ui::text(div().text_color(c.muted), &t.text.status).child(match at {
-                Some(at) => format!("{} of {count}", at + 1),
-                None => "not in this list".into(),
-            }),
-        )
-        .child(step("skill-next", "chevron-right", 1, cx))
-        .child(display);
-    let mut tags = div()
-        .flex()
-        .items_center()
-        .gap(px(t.space.s6))
-        .child("tags");
-    for tag in &skill.tags {
-        tags = tags.child(ui::pill(tag.clone()));
-    }
-    let card = ui::info_card()
-        .child(div().text_color(c.text_2).child(line(&skill.description)))
-        .child(
-            div()
-                .flex()
-                .flex_wrap()
-                .items_center()
-                .gap(px(t.space.s14))
-                .text_color(c.muted)
-                .child(tags)
-                .child(format!("reaches {}", reach(skill, true)))
-                .child(mono(skill.path.clone()).text_color(c.muted)),
-        )
-        .when(!skill.reaches.is_empty(), |card| {
-            card.child(
+        .gap_x(px(t.space.s14))
+        .gap_y(px(t.space.s6))
+        .text_color(c.muted);
+    let facts = match (store, local) {
+        (Some(skill), _) => facts
+            .child(
                 div()
                     .flex()
-                    .flex_wrap()
-                    .gap(px(t.space.s4))
-                    .text_color(c.muted)
-                    .child("agents:")
-                    .child(skill.reaches.join(", ")),
+                    .items_center()
+                    .gap(px(t.space.s6))
+                    .child("tags")
+                    .child(delivery(&skill.tags)),
             )
-        });
-    let content: AnyElement = match &reading.text {
-        None => ui::text(div().text_color(c.muted), &t.text.body)
-            .child("Reading SKILL.md…")
-            .into_any_element(),
-        Some(Err(error)) => ui::text(div().text_color(c.attention_text), &t.text.body)
-            .child(*error)
-            .into_any_element(),
-        Some(Ok((text, cut))) => {
-            let shown = if reading.source {
-                ui::text(
-                    div().font_family(t.font.mono.clone()).text_color(c.text_2),
-                    &t.text.status,
-                )
-                .child(text.clone())
-            } else {
-                markdown::render(&markdown::parse(text))
-            };
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(t.space.s12))
-                .child(shown)
-                .when(*cut, |el| {
-                    el.child(
-                        ui::text(div().text_color(c.muted), &t.text.meta)
-                            .child("The rest of this file is longer than this view reads."),
-                    )
-                })
-                .into_any_element()
+            .child(reaches(skill, library.agents.len())),
+        (None, Some((_, place))) if library.repositories.contains(place) => {
+            facts.child(format!("every agent working in {}", place.label))
+        }
+        (None, Some((_, place))) => facts.child(format!("every {} agent", place.label)),
+        (None, None) => facts,
+    }
+    .child(mono(folder.clone()).text_color(c.muted));
+    let mut card = ui::info_card()
+        .child(div().text_color(c.text_2).child(line(&description)))
+        .child(facts);
+    if let Some(skill) = store {
+        card = card.child(check(pane, skill, library));
+    }
+    reader::render(
+        pane,
+        header,
+        reader::Page {
+            back: "Skills".into(),
+            name: Some(name),
+            at,
+            count: targets.len(),
+            card,
+            text: text(open),
+        },
+        cx,
+    )
+}
+
+fn reaches(skill: &Skill, agents: usize) -> String {
+    match skill.reaches.len() {
+        n if n == agents && n > 0 => "reaches every agent".into(),
+        0 => "reaches no agent".into(),
+        n => format!("reaches {n} agent{}", plural(n)),
+    }
+}
+
+/// A store skill's "check an agent" line: type a name, read why it gets the
+/// skill or that it does not.
+fn check(pane: &ViewPane, skill: &Skill, library: &SkillLibrary) -> Div {
+    let (t, c) = (tokens(), colors());
+    let answer = if pane.check.is_empty() {
+        ui::text(div().text_color(c.muted), &t.text.status).child("check an agent")
+    } else {
+        let agent = library.agents.iter().find(|agent| agent.name == pane.check);
+        let reason = agent.and_then(|agent| Reason::of(&skill.tags, &agent.name, &agent.tags));
+        match (agent, reason) {
+            (None, _) => {
+                ui::text(div().text_color(c.muted), &t.text.status).child("no agent by that name")
+            }
+            (Some(_), Some(reason)) => ui::text(div().text_color(c.text_2), &t.text.status)
+                .child(format!("✓ gets it by {}", reason.label())),
+            (Some(_), None) => {
+                ui::text(div().text_color(c.muted), &t.text.status).child("does not get it")
+            }
         }
     };
-    let page = div()
-        .id("skill-page")
-        .flex_1()
-        .min_h_0()
-        .flex()
-        .flex_col()
-        .gap(px(t.space.s16))
-        .overflow_y_scroll()
-        .px(px(t.space.s24))
-        .py(px(t.space.s20))
-        .child(card)
-        .child(content);
     div()
-        .size_full()
         .flex()
-        .flex_col()
-        .child(header)
-        .child(bar)
-        .child(page)
-        .child(ui::view_footer(
-            &[
-                ("esc", "back to skills"),
-                ("[ ]", "previous, next skill"),
-                ("S", "source"),
-            ],
-            "read-only",
-        ))
-        .into_any_element()
+        .items_center()
+        .gap(px(t.space.s8))
+        .children(pane.check_field.clone().map(|field| {
+            ui::field_frame(false)
+                .w(px(t.size.tag_card_label + t.space.s18))
+                .h(px(t.size.chip + t.space.s4))
+                .child(div().flex_1().min_w_0().child(field))
+        }))
+        .child(answer)
+}
+
+/// The reader's text for an open skill.
+pub(super) fn text(open: &Open) -> reader::Text<'_> {
+    match &open.text {
+        None => reader::Text::Loading,
+        Some(Err(error)) => reader::Text::Failed(error),
+        Some(Ok((text, cut))) => reader::Text::Ready { text, cut: *cut },
+    }
 }
