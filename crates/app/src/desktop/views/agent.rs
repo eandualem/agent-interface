@@ -94,13 +94,16 @@ pub(super) fn body(pane: &ViewPane, agent: &Agent, cx: &mut Context<ViewPane>) -
     if let Some(page) = page(pane, agent) {
         return reader::render(pane, header, page, cx);
     }
+    // In a narrow pane the tabs scroll sideways rather than hide a section.
     let mut nav = div()
+        .id("agent-sections")
         .flex()
         .flex_shrink_0()
         .items_end()
         .gap(px(t.space.s2))
         .h(px(t.size.view_toolbar))
         .px(px(t.space.s10))
+        .overflow_x_scroll()
         .border_b(px(t.size.hairline))
         .border_color(c.line);
     for section in AgentSection::ALL {
@@ -612,6 +615,7 @@ fn tab(id: SharedString, label: &'static str, mark: String, on: bool) -> gpui::S
         div()
             .id(id)
             .flex()
+            .flex_shrink_0()
             .items_center()
             .gap(px(t.space.s4 + 1.0))
             .h(px(t.size.row))
