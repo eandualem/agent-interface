@@ -113,8 +113,8 @@ pub(super) struct ViewPane {
     query: String,
     search: Option<Entity<NameField>>,
     reading: Option<Reading>,
-    /// The policy being read, by its place in the agent's order.
-    policy: Option<usize>,
+    /// The policy being read, by its file, so a refresh never swaps it.
+    policy: Option<String>,
     policy_source: bool,
     _updates: Option<Task<()>>,
     _search: Option<Subscription>,
@@ -277,22 +277,34 @@ impl ViewPane {
         }
     }
 
+    /// Move to the previous or next policy in the agent's order.
+    fn step_policy(&mut self, step: isize) {
+        let Some(Data::Policies(brief)) = &self.data else {
+            return;
+        };
+        let Some(at) = self
+            .policy
+            .as_ref()
+            .and_then(|path| brief.sources.iter().position(|source| &source.path == path))
+        else {
+            return;
+        };
+        let next = (at as isize + step).clamp(0, brief.sources.len() as isize - 1) as usize;
+        self.policy = Some(brief.sources[next].path.clone());
+    }
+
     /// Keys a view understands while its pane is selected. Returns whether
     /// `key` was one of them.
     pub fn key(&mut self, key: &gpui::Keystroke, cx: &mut Context<Self>) -> bool {
         if key.modifiers.modified() {
             return false;
         }
-        if let Some(at) = self.policy {
-            let count = match &self.data {
-                Some(Data::Policies(brief)) => brief.sources.len(),
-                _ => 0,
-            };
+        if self.policy.is_some() {
             match key.key.as_str() {
                 "escape" => self.policy = None,
                 "s" => self.policy_source = !self.policy_source,
-                "[" => self.policy = Some(at.saturating_sub(1)),
-                "]" => self.policy = Some((at + 1).min(count.saturating_sub(1))),
+                "[" => self.step_policy(-1),
+                "]" => self.step_policy(1),
                 _ => return false,
             }
             cx.notify();

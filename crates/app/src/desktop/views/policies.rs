@@ -50,7 +50,11 @@ pub(super) fn body(
     brief: &Instructions,
     cx: &mut Context<ViewPane>,
 ) -> AnyElement {
-    match pane.policy.filter(|at| *at < brief.sources.len()) {
+    let at = pane
+        .policy
+        .as_ref()
+        .and_then(|path| brief.sources.iter().position(|source| &source.path == path));
+    match at {
         Some(at) => detail(pane, brief, at, cx),
         None => index(brief, cx),
     }
@@ -81,6 +85,7 @@ fn index(brief: &Instructions, cx: &mut Context<ViewPane>) -> AnyElement {
             rows = rows.child(ui::view_heading(heading, "").child(mono(note).text_color(c.muted)));
             previous = heading;
         }
+        let path = source.path.clone();
         rows = rows.child(
             div()
                 .id(SharedString::from(format!("policy-{at}")))
@@ -137,7 +142,7 @@ fn index(brief: &Instructions, cx: &mut Context<ViewPane>) -> AnyElement {
                 )
                 .child(ui::icon("chevron-right", t.size.icon - 2.0, c.faint))
                 .on_click(cx.listener(move |pane, _, _, cx| {
-                    pane.policy = Some(at);
+                    pane.policy = Some(path.clone());
                     cx.notify();
                 })),
         );
@@ -214,7 +219,7 @@ fn detail(
         .child(
             ui::icon_button("policy-previous", "chevron-left").on_click(cx.listener(
                 move |pane, _, _, cx| {
-                    pane.policy = Some(at.saturating_sub(1));
+                    pane.step_policy(-1);
                     cx.notify();
                 },
             )),
@@ -226,7 +231,7 @@ fn detail(
         .child(
             ui::icon_button("policy-next", "chevron-right").on_click(cx.listener(
                 move |pane, _, _, cx| {
-                    pane.policy = Some((at + 1).min(count - 1));
+                    pane.step_policy(1);
                     cx.notify();
                 },
             )),

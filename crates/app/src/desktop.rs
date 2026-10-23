@@ -1788,7 +1788,7 @@ impl Render for Browser {
                             .filter(|leaf| leaf.empty && leaf.attachment.is_none())
                             .map(|leaf| leaf.id.clone())
                         && let Some((chooser, _)) = browser.new_panes.get(&pane)
-                        && chooser.update(cx, |chooser, cx| chooser.key(key, cx))
+                        && chooser.update(cx, |chooser, cx| chooser.key(key, true, cx))
                     {
                         cx.stop_propagation();
                         return;

@@ -159,7 +159,7 @@ pub(super) fn body(pane: &ViewPane, team: &Team, cx: &mut Context<ViewPane>) -> 
                 .any(|swarm| swarm.members.contains(&member.name))
         };
         for member in members.iter().filter(|m| !in_swarm(m)) {
-            rows = rows.child(agent_row(member, "", cx));
+            rows = rows.child(agent_row(member, "", &key, cx));
         }
         for swarm in &swarms {
             let issue = swarm
@@ -205,7 +205,7 @@ pub(super) fn body(pane: &ViewPane, team: &Team, cx: &mut Context<ViewPane>) -> 
                 } else {
                     "   ├ "
                 };
-                rows = rows.child(agent_row(member, guide, cx));
+                rows = rows.child(agent_row(member, guide, &key, cx));
             }
         }
     }
@@ -246,11 +246,17 @@ fn group_row(label: &str, meta: &str) -> gpui::Div {
     .child(meta.to_owned())
 }
 
-fn agent_row(member: &Member, guide: &'static str, cx: &mut Context<ViewPane>) -> AnyElement {
+fn agent_row(
+    member: &Member,
+    guide: &'static str,
+    group: &str,
+    cx: &mut Context<ViewPane>,
+) -> AnyElement {
     let (t, c) = (tokens(), colors());
     let state = state(member);
     let name = member.name.clone();
-    let id = SharedString::from(format!("team-{name}-{}", guide.len()));
+    // An agent can appear in several groups; each row needs its own identity.
+    let id = SharedString::from(format!("team-{group}-{name}-{}", guide.len()));
     let word = match (state, &member.reason) {
         (None, _) => "offline".to_owned(),
         (Some(AgentState::NeedsYou), Some(reason)) => format!("waiting · {reason}"),

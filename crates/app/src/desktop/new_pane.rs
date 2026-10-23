@@ -218,10 +218,12 @@ impl NewPane {
             self.loading = false;
             cx.notify();
         }
-        if let Some((_, Ok(Data::Team(team)))) =
-            self.team_source.as_ref().and_then(ViewSource::take_update)
-        {
-            self.team = Some(team);
+        if let Some((_, update)) = self.team_source.as_ref().and_then(ViewSource::take_update) {
+            // Without a current read, show plain sessions rather than old states.
+            self.team = match update {
+                Ok(Data::Team(team)) => Some(team),
+                _ => None,
+            };
             cx.notify();
         }
     }
@@ -608,7 +610,7 @@ impl Render for NewPane {
                 if chooser.field.read(cx).composing() {
                     return;
                 }
-                if chooser.key(&event.keystroke, cx) {
+                if chooser.key(&event.keystroke, false, cx) {
                     cx.stop_propagation();
                 }
             }))
@@ -618,7 +620,8 @@ impl Render for NewPane {
 impl NewPane {
     /// Handle a chooser key; returns whether it was one. The window also sends
     /// these while navigation has focus and this pane is selected.
-    pub fn key(&mut self, key: &gpui::Keystroke, cx: &mut Context<Self>) -> bool {
+    /// Number keys choose only from navigation; in the filter they are text.
+    pub fn key(&mut self, key: &gpui::Keystroke, navigating: bool, cx: &mut Context<Self>) -> bool {
         let m = &key.modifiers;
         if key.key == "enter" && m.platform && !m.control && !m.alt {
             cx.emit(NewPaneEvent::OpenTerminal);
@@ -632,7 +635,7 @@ impl NewPane {
             "down" => self.move_by(1, cx),
             "tab" => self.toggle(cx),
             "enter" => self.activate(cx),
-            digit if self.query.is_empty() && digit.len() == 1 => match digit.parse::<usize>() {
+            digit if navigating && digit.len() == 1 => match digit.parse::<usize>() {
                 Ok(number) if number > 0 => self.choose_number(number, cx),
                 _ => return false,
             },
