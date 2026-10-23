@@ -68,7 +68,7 @@ const REQUIRED_SECONDS: f64 = 30.0;
 
 struct Settings {
     /// How this program's build differs from the distributable one; any
-    /// difference keeps the gate undecided (0018).
+    /// difference keeps the gate undecided.
     build_issues: Vec<String>,
     seconds: f64,
     runs: usize,

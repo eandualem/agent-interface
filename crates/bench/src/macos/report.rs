@@ -195,7 +195,7 @@ impl Judged {
             Judged::Passes => "passes",
             Judged::Near => {
                 "not decided: within one refresh interval of the limit, needs camera \
-                 confirmation (0018)"
+                 confirmation"
             }
             Judged::Fails => "fails",
         }
@@ -214,7 +214,7 @@ pub fn verdict(
     missing: &[String],
     build_issues: &[String],
 ) -> String {
-    // Only the distributable build decides a gate, either way (0018).
+    // Only the distributable build decides a gate, either way.
     let outcome = if !build_issues.is_empty() {
         "not decided"
     } else if failed {
@@ -243,7 +243,7 @@ pub fn verdict(
 
 /// Returns how `build` differs from the distributable configuration: a
 /// release build of the engine in `ReleaseFast` mode for the `baseline` CPU.
-/// Only that configuration decides a gate (0018); `check_build` has made
+/// Only that configuration decides a gate; `check_build` has made
 /// sure the window matches the harness.
 pub fn build_issues(build: &super::targets::Build) -> Vec<String> {
     let mut issues = Vec::new();

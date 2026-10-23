@@ -58,7 +58,7 @@ exec sleep 86400
 
 struct Settings {
     /// How this program's build differs from the distributable one; any
-    /// difference keeps the gate undecided (0018).
+    /// difference keeps the gate undecided.
     build_issues: Vec<String>,
     size: usize,
     seed: u64,
@@ -504,7 +504,7 @@ mod tests {
         // results within another 16.7 ms of that need a camera.
         let (_, reasons) = judge(1005, Some(60.0), &ascii);
         assert!(
-            reasons[0].ends_with("needs camera confirmation (0018)"),
+            reasons[0].ends_with("needs camera confirmation"),
             "{reasons:?}"
         );
         let (verdict, reasons) = judge(980, Some(60.0), &ascii);

@@ -62,6 +62,13 @@ git -C vtebench checkout ead80032e57dee2e75f0b51f2ea67528647d9944
 cargo build --release --locked --manifest-path vtebench/Cargo.toml
 ```
 
+The harness copies vtebench into each run's work directory and changes the
+TTY-discovery line in seven scripts to handle the spaces macOS adds to `ps`
+output. The original checkout remains untouched. It checks the pinned commit,
+a clean checkout and the expected seven matching lines; if this check fails,
+restore that exact clean revision and rebuild vtebench before retrying. The pane's
+size is supplied in `LINES` and `COLUMNS` so the workload uses the measured grid.
+
 Then run:
 
 ```sh
@@ -86,7 +93,15 @@ before treating a faster result as an improvement.
 Write throughput, terminal processing and displayed-frame timing measure
 different parts of the system. tmux's behavior differs between ordinary and
 control-mode clients, so write throughput alone does not establish what reached
-the screen. Display capture timestamps also exclude the panel's scan-out and
+the screen. With an ordinary client such as Ghostty running tmux, tmux keeps
+reading output and can discard intermediate drawing when that client falls
+behind. A control-mode client with pending output can instead hold tmux back.
+The vtebench write-time comparison therefore largely measures tmux for the
+ordinary client and the slower of tmux and the app for the control client;
+it is a stricter comparison for the app. The final-frame marker measurement
+checks when output reaches the screen.
+
+Display capture timestamps also exclude the panel's scan-out and
 pixel response. Close latency comparisons need an independent display-level
 measurement, such as a camera.
 

@@ -139,7 +139,7 @@ enum Verdict {
     Match,
     /// Matched where a difference was expected.
     MatchedDespite(Why),
-    /// Differed as a limit of record 0021 explains.
+    /// Differed within the expected recovery limits.
     Explained(&'static str),
     /// Differed in a way nothing expected explains, beyond the expected
     /// difference if there was one.

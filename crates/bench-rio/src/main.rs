@@ -1,5 +1,5 @@
-//! The milestone-0 benchmark's replay child for `rio-vt`, the engine decision
-//! record 0004 measures against `libghostty-vt`.
+//! The milestone-0 benchmark's replay child for `rio-vt`, a comparison engine
+//! measured against `libghostty-vt`.
 //!
 //! It is its own program because `rio-vt` and `libghostty-vt` both contain
 //! the simdutf C++ library, and a program that links both crashes. So that

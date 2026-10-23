@@ -13,7 +13,6 @@ unmaintained = "all"
 unsound = "all"
 yanked = "deny"
 # Unmaintained crates with no known vulnerability, in GPUI's graph
-#.
 ignore = [
     { id = "RUSTSEC-2024-0436", reason = "paste is unmaintained; used by GPUI through metal and image" },
     { id = "RUSTSEC-2026-0206", reason = "rustybuzz is unmaintained; used by GPUI through usvg" },
@@ -38,7 +37,6 @@ allow = [
 ]
 confidence-threshold = 0.9
 # MPL-2.0 for these crates only, unmodified, as GPUI uses them
-#.
 exceptions = [
     { crate = "cbindgen", allow = ["MPL-2.0"] },
     { crate = "dwrote", allow = ["MPL-2.0"] },
@@ -51,7 +49,7 @@ wildcards = "deny"
 # Path dependencies between workspace members carry no version.
 allow-wildcard-paths = true
 # The dependency direction between the project's crates
-#. Each crate may be used only by the crates listed in
+# Each crate may be used only by the crates listed in
 # its `wrappers`; any other project crate that depends on it fails the check.
 deny = [
     { crate = "tmux-workspaces-core", wrappers = ["tmux-workspaces-store", "tmux-workspaces-app"], reason = "only store and app depend on the model" },

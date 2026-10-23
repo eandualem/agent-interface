@@ -87,7 +87,7 @@ impl Condition {
 
 struct Settings {
     /// How this program's build differs from the distributable one; any
-    /// difference keeps the gate undecided (0018).
+    /// difference keeps the gate undecided.
     build_issues: Vec<String>,
     keys: usize,
     warmup_keys: usize,
