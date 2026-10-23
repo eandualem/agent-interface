@@ -47,9 +47,10 @@ cargo run -p tmux-workspaces-app --bin tmux-workspaces -- --data-dir /path/to/li
 
 ## Platform support
 
-The app is in early development. macOS is the primary platform. Linux has
-Wayland and X11 backends, but desktop interaction has not yet been fully
-verified there. Windows is not currently supported by the app.
+The app is in early development. macOS is the primary platform. Native builds
+and automated tests have been verified on Ubuntu 24.04 (ARM64) with tmux 3.4.
+Linux has Wayland and X11 backends, but desktop interaction has not yet been
+fully verified there. Windows is not currently supported by the app.
 
 Terminal input methods, accessible terminal text, key-release events and
 selection across history pages are not yet implemented. See the
