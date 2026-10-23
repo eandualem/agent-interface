@@ -166,14 +166,17 @@ All in `components.rs`; each takes its look from the tokens.
 | `badge` | Small mono label, such as an agent's CLI |
 | `view_choice` | A row of the new-pane views list: icon tile, label, description, scope |
 | `fact` | A label and value, one line of an agent's card |
+| `choice_button`, `filter_frame`, `choice_frame`, `choice_key`, `hint_bar` | The chooser's two buttons, filter, selectable row with its ring, number key and centred key row |
+| `view_header`, `back_button`, `pill`, `info_card` | A view's 28 px header; the reading view's way back; a tag; a summary panel |
 
 ## Backbone views
 
 A pane can show a view instead of a terminal.
-The new-pane chooser offers **Skills, usage, team…** when Agent Backbone is set
-up; it lists the views, and Agent then asks which agent. Each view lives in
-`desktop/views/` and is built from the components above: a toolbar, a
-scrolling list and a footer. The pane header shows the view's icon and title.
+An empty pane shows the new-pane chooser (`desktop/new_pane.rs`): Open
+terminal and **Skills, usage, team…**, a filter, Backbone agents then other
+tmux sessions, and the views list. Each view lives in `desktop/views/` and
+follows its design board with its own header (`view_header`), controls, list
+and footer; a view pane has no generic pane header.
 A view keeps its last data when Backbone stops answering and says so in a
 band at the bottom.
 

@@ -257,6 +257,10 @@ pub struct Session {
     pub coverage: String,
     /// Whether it is the agent's current session.
     pub current: bool,
+    /// When Backbone first saw it, as UTC text.
+    pub first_seen: String,
+    /// Estimated cost in US dollars, when priced.
+    pub estimated_usd: Option<String>,
     /// Its tokens.
     #[serde(flatten)]
     pub tokens: Tokens,
@@ -282,6 +286,8 @@ pub struct Usage {
     pub totals: Tokens,
     /// Overall coverage of the totals.
     pub coverage: String,
+    /// Estimated cost of the totals in US dollars, when priced.
+    pub estimated_usd: Option<String>,
     /// Sessions in the range.
     pub sessions: Vec<Session>,
     /// Agents with no readable record.
@@ -298,6 +304,7 @@ impl Usage {
             #[serde(flatten)]
             tokens: Tokens,
             coverage: String,
+            estimated_usd: Option<String>,
         }
         let document = document(body)?;
         let field = |name: &str| document.get(name).map(|raw| raw.get());
@@ -307,6 +314,7 @@ impl Usage {
         Ok(Self {
             totals: totals.tokens,
             coverage: totals.coverage,
+            estimated_usd: totals.estimated_usd,
             sessions: items(&document)?,
             unmeasured: list(&document, "unavailable"),
             more: field("has_more") == Some("true"),
@@ -420,6 +428,8 @@ impl Activity {
 pub struct Skill {
     /// Skill name.
     pub name: String,
+    /// Its folder in the store, as Backbone reports it.
+    pub path: String,
     /// When to use it.
     pub description: String,
     /// The tags it is shared by.
@@ -500,9 +510,58 @@ pub struct Agent {
     pub state_age_seconds: Option<f64>,
     /// Its last reply, clipped by Backbone.
     pub last_message: Option<String>,
+    /// Sources it is subscribed to.
+    pub subscriptions: Vec<Subscription>,
     /// Its most recent deliveries.
     #[serde(skip)]
     pub received: Vec<Received>,
+}
+
+/// An outside source an agent receives messages from.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct Subscription {
+    /// The source, such as `gmail`.
+    pub source: String,
+    /// What it matches.
+    pub filter: String,
+    /// Its priority.
+    pub priority: String,
+}
+
+/// The largest part of a SKILL.md that is read.
+pub const SKILL_LIMIT: usize = 256 * 1024;
+
+/// Read the SKILL.md in a skill folder Backbone reported, up to
+/// [`SKILL_LIMIT`] bytes ending at a whole character. Returns the text and
+/// whether it was cut. Nothing outside that one file is read. Blocking.
+pub fn read_skill(folder: &str) -> Result<(String, bool), &'static str> {
+    use std::io::Read;
+    const MISSING: &str = "This skill's SKILL.md cannot be read.";
+    let path = Path::new(folder);
+    if !path.is_absolute() {
+        return Err(MISSING);
+    }
+    let file = std::fs::File::open(path.join("SKILL.md")).map_err(|_| MISSING)?;
+    let mut bytes = Vec::new();
+    file.take(SKILL_LIMIT as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| MISSING)?;
+    let cut = bytes.len() > SKILL_LIMIT;
+    bytes.truncate(SKILL_LIMIT);
+    let text = match String::from_utf8(bytes) {
+        Ok(text) => text,
+        Err(error) => {
+            let valid = error.utf8_error().valid_up_to();
+            if !cut || error.utf8_error().error_len().is_some() {
+                return Err(MISSING);
+            }
+            let mut bytes = error.into_bytes();
+            bytes.truncate(valid);
+            String::from_utf8(bytes).map_err(|_| MISSING)?
+        }
+    };
+    Ok((text, cut))
 }
 
 impl Agent {
@@ -617,6 +676,19 @@ fn civil_from_days(days: i64) -> (i64, i64, i64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn skill_text_is_bounded_at_a_whole_character() {
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().to_str().unwrap();
+        std::fs::write(folder.path().join("SKILL.md"), "# Check\n").unwrap();
+        assert_eq!(read_skill(path), Ok(("# Check\n".into(), false)));
+        let long = format!("{}é", "a".repeat(SKILL_LIMIT - 1));
+        std::fs::write(folder.path().join("SKILL.md"), long).unwrap();
+        let (text, cut) = read_skill(path).unwrap();
+        assert!(cut && text.len() == SKILL_LIMIT - 1);
+        assert!(read_skill("relative").is_err());
+    }
 
     #[test]
     fn times_convert_both_ways() {

@@ -1,7 +1,8 @@
-//! Activity: recent deliveries to agents and events Backbone received.
+//! Activity: recent deliveries to agents and events Backbone received,
+//! newest first, filtered by kind.
 
 use gpui::{AnyElement, Context, SharedString, div, prelude::*, px, relative};
-use tmux_workspaces_roster::views::Activity;
+use tmux_workspaces_roster::views::{Activity, Entry};
 
 use super::{Records, ViewPane, line, list, mono, since};
 use crate::desktop::{
@@ -9,37 +10,60 @@ use crate::desktop::{
     design::{colors, tokens},
 };
 
-pub(super) fn body(
-    activity: &Activity,
-    records: Records,
-    cx: &mut Context<ViewPane>,
-) -> AnyElement {
+fn held(entry: &Entry) -> bool {
+    matches!(
+        entry.outcome.as_str(),
+        "queued" | "held" | "expired" | "stored" | "agent_working" | "deferred"
+    )
+}
+
+pub(super) fn body(pane: &ViewPane, activity: &Activity, cx: &mut Context<ViewPane>) -> AnyElement {
     let (t, c) = (tokens(), colors());
-    let mut toolbar = ui::view_toolbar().gap(px(t.space.s6));
+    let header = ui::view_header("activity", "Activity")
+        .child("deliveries and events, all agents")
+        .child(div().flex_1())
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(t.space.s6))
+                .child(ui::dot(if pane.error.is_none() { c.ok } else { c.muted }))
+                .child(if pane.error.is_none() {
+                    "live"
+                } else {
+                    "stale"
+                }),
+        );
+    let mut filters = ui::view_toolbar().gap(px(t.space.s6));
     for (choice, label) in [
         (Records::All, "All"),
         (Records::Deliveries, "Deliveries"),
-        (Records::Events, "Events"),
+        (Records::GitHub, "GitHub"),
+        (Records::Held, "Held or expired"),
     ] {
-        toolbar = toolbar.child(
+        filters = filters.child(
             ui::chip(
                 SharedString::from(format!("activity-{label}")),
                 label,
-                choice == records,
+                choice == pane.records,
             )
-            .on_click(cx.listener(move |pane, _, _, cx| pane.set_records(choice, cx))),
+            .on_click(cx.listener(move |pane, _, _, cx| {
+                pane.records = choice;
+                cx.notify();
+            })),
         );
     }
     let mut rows = list("activity-rows");
-    for entry in activity.entries.iter().filter(|entry| match records {
+    for entry in activity.entries.iter().filter(|entry| match pane.records {
         Records::All => true,
         Records::Deliveries => !entry.inbound,
-        Records::Events => entry.inbound,
+        Records::GitHub => entry.inbound,
+        Records::Held => held(entry),
     }) {
         let outcome = match entry.outcome.as_str() {
             "delivered" | "handed_off" => c.ok,
-            "queued" | "stored" | "agent_working" => c.accent_text,
             "expired" | "failed" | "rejected" => c.attention_text,
+            _ if held(entry) => c.accent_text,
             _ => c.muted,
         };
         rows = rows.child(
@@ -56,22 +80,21 @@ pub(super) fn body(
                 &t.text.status,
             )
             .child(
-                div()
+                mono(since(entry.at))
                     .flex_shrink_0()
-                    .w(px(t.size.button + t.space.s6))
-                    .text_color(c.muted)
-                    .child(since(entry.at)),
+                    .w(px(t.size.pane_header + t.space.s16))
+                    .text_color(c.muted),
             )
             .child(
                 mono(entry.kind.clone())
                     .flex_shrink_0()
-                    .w(relative(0.16))
+                    .w(relative(0.13))
                     .text_color(if entry.inbound { c.info } else { c.text_2 }),
             )
             .child(
                 div()
                     .flex_shrink_0()
-                    .w(relative(0.22))
+                    .w(relative(0.24))
                     .overflow_hidden()
                     .whitespace_nowrap()
                     .text_ellipsis()
@@ -81,7 +104,7 @@ pub(super) fn body(
             .child(
                 div()
                     .flex_shrink_0()
-                    .w(relative(0.14))
+                    .w(relative(0.12))
                     .flex()
                     .items_center()
                     .gap(px(t.space.s6))
@@ -107,7 +130,8 @@ pub(super) fn body(
         .size_full()
         .flex()
         .flex_col()
-        .child(toolbar)
+        .child(header)
+        .child(filters)
         .child(rows)
         .child(ui::view_footer(&[], "recent records, newest first"))
         .into_any_element()

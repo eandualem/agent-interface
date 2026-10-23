@@ -7,13 +7,13 @@ use gpui::{
     AnyElement, Bounds, BoxShadow, Context, Entity, Pixels, SharedString, div, point, prelude::*,
     px,
 };
-use tmux_workspaces_core::{Direction, Leaf, Node, View, ViewKind};
+use tmux_workspaces_core::{Direction, Leaf, Node};
 
 use super::{
     Attaching, Browser, components as ui,
     design::{colors, tokens},
+    new_pane::NewPane,
     settings::{self, PaneHeaders},
-    shortcuts::{self, Command},
     terminal::LiveTerminal,
     views::{self, ViewPane},
 };
@@ -25,12 +25,7 @@ pub(super) struct Cards<'a> {
     pub numbers: &'a [String],
     pub terminals: &'a HashMap<String, Entity<LiveTerminal>>,
     pub views: &'a HashMap<String, (Entity<ViewPane>, gpui::Subscription)>,
-    /// The empty pane listing views, and whether it lists agents.
-    pub view_menu: Option<&'a (String, bool)>,
-    /// Whether Agent Backbone is set up, so views can be offered.
-    pub backbone: bool,
-    /// Agent names, for choosing an agent view.
-    pub agents: Vec<String>,
+    pub new_panes: &'a HashMap<String, (Entity<NewPane>, gpui::Subscription)>,
     pub chooser: Option<&'a Attaching>,
     pub split_bounds: &'a Rc<RefCell<HashMap<String, Bounds<Pixels>>>>,
     /// The agent state shown in each pane, by leaf.
@@ -130,6 +125,8 @@ impl Browser {
         };
         let header = Self::pane_header(leaf, focused, state, cards, cx);
         let (inline, overlay) = match settings::pane_headers() {
+            // A view draws its own header, as in the design.
+            _ if is_view => (None, None),
             PaneHeaders::Always => (Some(header), None),
             PaneHeaders::Hover => (None, Some(header)),
             PaneHeaders::Off => (None, None),
@@ -144,10 +141,9 @@ impl Browser {
         } else if let Some(terminal) = cards.terminals.get(&leaf.id) {
             terminal.clone().into_any_element()
         } else {
-            match cards.view_menu.filter(|(pane, _)| pane == &leaf.id) {
-                Some((_, false)) => Self::view_list(&leaf.id, cx),
-                Some((_, true)) => Self::agent_list(&leaf.id, &cards.agents, cx),
-                None => Self::new_pane(&leaf.id, cards.backbone, cx),
+            match cards.new_panes.get(&leaf.id) {
+                Some((chooser, _)) => chooser.clone().into_any_element(),
+                None => div().into_any_element(),
             }
         };
         div()
@@ -442,203 +438,6 @@ impl Browser {
             &t.text.meta,
         )
         .child(label)
-    }
-
-    /// An empty pane asks what it should run; nothing is created until then.
-    fn new_pane(pane: &str, backbone: bool, cx: &mut Context<Self>) -> AnyElement {
-        let (t, c) = (tokens(), colors());
-        let terminal = pane.to_owned();
-        let attach = pane.to_owned();
-        let views = pane.to_owned();
-        div()
-            .size_full()
-            .flex()
-            .flex_col()
-            .child(
-                div()
-                    .flex_1()
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .justify_center()
-                    .gap(px(t.space.s14))
-                    .p(px(t.space.s24))
-                    .child(
-                        ui::text(div().text_color(c.text), &t.text.empty_title)
-                            .child("What should it run?"),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap(px(t.space.s8))
-                            .w(px(t.size.popover_min_width))
-                            .child(
-                                ui::button(
-                                    SharedString::from(format!("open-terminal-{pane}")),
-                                    "Open terminal",
-                                    ui::Button::Primary,
-                                )
-                                .child(div().flex_1())
-                                .child(ui::key_hint("↵").text_color(c.on_accent))
-                                .on_click(cx.listener(
-                                    move |browser, _, window, cx| {
-                                        cx.stop_propagation();
-                                        browser.open_terminal(&terminal, window, cx);
-                                    },
-                                )),
-                            )
-                            .child(
-                                ui::button(
-                                    SharedString::from(format!("attach-{pane}")),
-                                    "Attach a session",
-                                    ui::Button::Secondary,
-                                )
-                                .child(div().flex_1())
-                                .child(ui::key_hint(shortcuts::label(Command::Attach)))
-                                .on_click(cx.listener(
-                                    move |browser, _, window, cx| {
-                                        cx.stop_propagation();
-                                        browser.open_attach(&attach, window, cx);
-                                    },
-                                )),
-                            )
-                            .when(backbone, |choices| {
-                                choices.child(
-                                    ui::button(
-                                        SharedString::from(format!("views-{pane}")),
-                                        "Skills, usage, team…",
-                                        ui::Button::Secondary,
-                                    )
-                                    .child(div().flex_1())
-                                    .child(ui::icon("layout-grid", t.size.icon, c.muted))
-                                    .on_click(cx.listener(
-                                        move |browser, _, _, cx| {
-                                            cx.stop_propagation();
-                                            browser.view_menu = Some((views.clone(), false));
-                                            cx.notify();
-                                        },
-                                    )),
-                                )
-                            }),
-                    ),
-            )
-            .child(
-                ui::text(
-                    div()
-                        .h(px(t.size.button + t.space.s4))
-                        .flex_shrink_0()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .border_t(px(t.size.hairline))
-                        .border_color(c.line)
-                        .text_color(c.muted),
-                    &t.text.status,
-                )
-                .child("Nothing is created until you choose."),
-            )
-            .into_any_element()
-    }
-    /// The new-pane views list: open a view here, or go back to the choices.
-    fn view_list(pane: &str, cx: &mut Context<Self>) -> AnyElement {
-        let mut rows = Self::menu_frame("AGENT BACKBONE · LIVE, READ-ONLY", pane, false, cx);
-        for kind in ViewKind::ALL {
-            let about = views::about(kind);
-            let pane = pane.to_owned();
-            rows = rows.child(
-                ui::view_choice(
-                    SharedString::from(format!("view-{}-{pane}", kind.as_str())),
-                    about.icon,
-                    about.label,
-                    about.description,
-                    about.scope,
-                )
-                .on_click(cx.listener(move |browser, _, window, cx| {
-                    cx.stop_propagation();
-                    if kind == ViewKind::Agent {
-                        browser.view_menu = Some((pane.clone(), true));
-                        cx.notify();
-                    } else {
-                        browser.open_view(&pane, View { kind, agent: None }, window, cx);
-                    }
-                })),
-            );
-        }
-        rows.into_any_element()
-    }
-
-    /// Choose the agent an agent view describes.
-    fn agent_list(pane: &str, agents: &[String], cx: &mut Context<Self>) -> AnyElement {
-        let c = colors();
-        let mut rows = Self::menu_frame("WHICH AGENT?", pane, true, cx);
-        if agents.is_empty() {
-            rows = rows.child(
-                ui::text(
-                    div().px(px(tokens().space.s10)).text_color(c.muted),
-                    &tokens().text.body,
-                )
-                .child("No agents yet. Backbone has not answered."),
-            );
-        }
-        for agent in agents {
-            let (pane, name) = (pane.to_owned(), agent.clone());
-            rows = rows.child(
-                ui::row(
-                    SharedString::from(format!("view-agent-{agent}-{pane}")),
-                    false,
-                )
-                .child(ui::icon("user", tokens().size.icon, c.muted))
-                .child(agent.clone())
-                .on_click(cx.listener(move |browser, _, window, cx| {
-                    cx.stop_propagation();
-                    let view = View {
-                        kind: ViewKind::Agent,
-                        agent: Some(name.clone()),
-                    };
-                    browser.open_view(&pane, view, window, cx);
-                })),
-            );
-        }
-        rows.into_any_element()
-    }
-
-    // A scrolling list under a heading with a way back.
-    fn menu_frame(
-        heading: &'static str,
-        pane: &str,
-        agents: bool,
-        cx: &mut Context<Self>,
-    ) -> gpui::Stateful<gpui::Div> {
-        let (t, c) = (tokens(), colors());
-        let back = pane.to_owned();
-        div()
-            .id(SharedString::from(format!("view-menu-{pane}")))
-            .size_full()
-            .flex()
-            .flex_col()
-            .gap(px(t.space.s2))
-            .overflow_y_scroll()
-            .px(px(t.space.s24))
-            .py(px(t.space.s16))
-            .child(
-                ui::view_heading(heading, "").child(
-                    div()
-                        .id(SharedString::from(format!("view-menu-back-{pane}")))
-                        .flex()
-                        .items_center()
-                        .gap(px(t.space.s4))
-                        .cursor_pointer()
-                        .text_color(c.accent_text)
-                        .child(ui::icon("chevron-left", t.size.icon, c.accent_text))
-                        .child(if agents { "views" } else { "back" })
-                        .on_click(cx.listener(move |browser, _, _, cx| {
-                            cx.stop_propagation();
-                            browser.view_menu = agents.then(|| (back.clone(), false));
-                            cx.notify();
-                        })),
-                ),
-            )
     }
 }
 

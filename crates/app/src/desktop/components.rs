@@ -444,6 +444,92 @@ pub fn field_frame(focused: bool) -> Div {
 // The pieces Backbone views are built from. Each view composes these, so a
 // view never styles its own headings, controls, bars or footers.
 
+/// A view's 28 px header: its icon in the accent and its title. Callers add
+/// the subtitle and any controls on the right.
+pub fn view_header(name: &str, title: impl Into<SharedString>) -> Div {
+    let (t, c) = (tokens(), colors());
+    text(
+        div()
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .gap(px(t.space.s8))
+            .h(px(t.size.pane_header))
+            .px(px(t.space.s12))
+            .border_b(px(t.size.hairline))
+            .border_color(c.line)
+            .text_color(c.muted)
+            .overflow_hidden()
+            .whitespace_nowrap(),
+        &t.text.status,
+    )
+    .child(icon(name, t.size.icon - 1.0, c.accent))
+    .child(
+        div()
+            .text_color(c.text)
+            .font_weight(t.text.row_selected.weight())
+            .child(title.into()),
+    )
+}
+
+/// A back button: a chevron and where it returns to.
+pub fn back_button(id: impl Into<SharedString>, label: impl Into<SharedString>) -> Stateful<Div> {
+    let (t, c) = (tokens(), colors());
+    text(
+        div()
+            .id(id.into())
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .gap(px(t.space.s6))
+            .h(px(t.size.chip + t.space.s4))
+            .pl(px(t.space.s6))
+            .pr(px(t.space.s8 + 1.0))
+            .rounded(px(t.radius.icon_button))
+            .bg(c.hover)
+            .text_color(c.text_2)
+            .cursor_pointer()
+            .hover(|el| el.bg(colors().selected)),
+        &t.text.status,
+    )
+    .child(icon("chevron-left", t.size.icon - 1.0, c.text_2))
+    .child(label.into())
+}
+
+/// A rounded tag, such as a skill's or agent's tag.
+pub fn pill(label: impl Into<SharedString>) -> Div {
+    let (t, c) = (tokens(), colors());
+    text(
+        div()
+            .flex_shrink_0()
+            .px(px(t.space.s6 + 1.0))
+            .rounded(px(t.radius.pill))
+            .bg(c.selected)
+            .text_color(c.text_2),
+        &t.text.meta,
+    )
+    .child(label.into())
+}
+
+/// A tinted panel holding a document's or agent's summary.
+pub fn info_card() -> Div {
+    let (t, c) = (tokens(), colors());
+    text(
+        div()
+            .flex()
+            .flex_shrink_0()
+            .flex_col()
+            .gap(px(t.space.s10))
+            .px(px(t.space.s14))
+            .py(px(t.space.s12))
+            .rounded(px(t.radius.slot))
+            .bg(c.panel)
+            .border(px(t.size.hairline))
+            .border_color(c.line),
+        &t.text.status,
+    )
+}
+
 /// A view's section heading: an uppercase label, and a note on the right.
 pub fn view_heading(label: impl Into<SharedString>, note: impl Into<SharedString>) -> Div {
     let (t, c) = (tokens(), colors());
@@ -454,7 +540,7 @@ pub fn view_heading(label: impl Into<SharedString>, note: impl Into<SharedString
             .items_end()
             .justify_between()
             .gap(px(t.space.s8))
-            .h(px(t.size.row))
+            .h(px(t.size.pane_header))
             .px(px(t.space.s8))
             .pb(px(t.space.s6))
             .text_color(c.muted),
@@ -665,37 +751,37 @@ pub fn badge(label: impl Into<SharedString>) -> Div {
     .child(label.into())
 }
 
-/// A row of the new-pane views list: an icon tile, a label and description,
-/// and on the right what it covers.
+/// A row of the new-pane views list: a glyph tile, a label and description,
+/// what it covers and its number key. Selected rows take the accent tile and
+/// ring; a view Backbone cannot serve yet is dimmed.
 pub fn view_choice(
     id: impl Into<SharedString>,
-    name: &str,
+    glyph: &'static str,
     label: impl Into<SharedString>,
     description: impl Into<SharedString>,
     scope: impl Into<SharedString>,
+    key: impl Into<SharedString>,
+    selected: bool,
 ) -> Stateful<Div> {
     let (t, c) = (tokens(), colors());
-    div()
-        .id(id.into())
-        .flex()
-        .flex_shrink_0()
-        .items_center()
-        .gap(px(t.space.s12))
+    choice_frame(id, selected)
         .h(px(t.size.view_choice))
-        .px(px(t.space.s10))
-        .rounded(px(t.radius.row))
-        .cursor_pointer()
-        .hover(|el| el.bg(colors().selected))
+        .gap(px(t.space.s12))
         .child(
-            div()
-                .flex_shrink_0()
-                .size(px(t.size.view_tile))
-                .rounded(px(t.radius.row))
-                .bg(c.selected)
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(icon(name, t.size.icon, c.text_2)),
+            text(
+                div()
+                    .flex_shrink_0()
+                    .size(px(t.size.view_tile))
+                    .rounded(px(t.radius.row))
+                    .bg(if selected { c.accent_soft } else { c.selected })
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .font_family(t.font.mono.clone())
+                    .text_color(if selected { c.accent_text } else { c.text_2 }),
+                &t.text.row,
+            )
+            .child(glyph),
         )
         .child(
             div()
@@ -718,6 +804,144 @@ pub fn view_choice(
                 ),
         )
         .child(text(div().flex_shrink_0().text_color(c.muted), &t.text.meta).child(scope.into()))
+        .child(choice_key(key))
+}
+
+/// The frame of a chooser row: transparent, or filled with the accent ring
+/// when selected.
+pub fn choice_frame(id: impl Into<SharedString>, selected: bool) -> Stateful<Div> {
+    let (t, c) = (tokens(), colors());
+    div()
+        .id(id.into())
+        .flex()
+        .flex_shrink_0()
+        .items_center()
+        .gap(px(t.space.s10))
+        .h(px(t.size.choice_row))
+        .px(px(t.space.s10))
+        .rounded(px(t.radius.row))
+        .cursor_pointer()
+        .when(selected, |el| {
+            el.bg(c.selected).shadow(vec![BoxShadow {
+                color: c.focus.into(),
+                offset: point(px(0.0), px(0.0)),
+                blur_radius: px(0.0),
+                spread_radius: px(t.size.focus_ring),
+                inset: false,
+            }])
+        })
+        .when(!selected, |el| el.hover(|el| el.bg(colors().hover)))
+}
+
+/// A chooser row's number key, right-aligned.
+pub fn choice_key(key: impl Into<SharedString>) -> Div {
+    let t = tokens();
+    key_hint(key)
+        .w(px(t.size.agent_symbol))
+        .flex()
+        .justify_end()
+}
+
+/// One of the two buttons atop the new-pane chooser: an icon, a label and its
+/// key. `on` shows it in the accent while its list is open.
+pub fn choice_button(
+    id: impl Into<SharedString>,
+    name: &str,
+    label: impl Into<SharedString>,
+    key: impl Into<SharedString>,
+    on: bool,
+) -> Stateful<Div> {
+    let (t, c) = (tokens(), colors());
+    let color = if on { c.accent_text } else { c.text };
+    text(
+        div()
+            .id(id.into())
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .items_center()
+            .gap(px(t.space.s10))
+            .h(px(t.size.choice_button))
+            .px(px(t.space.s14))
+            .rounded(px(t.radius.slot))
+            .border(px(t.size.hairline))
+            .cursor_pointer()
+            .text_color(color),
+        &t.text.workspace,
+    )
+    .font_weight(t.text.row_selected.weight())
+    .when(on, |el| el.bg(c.accent_soft).border_color(c.focus))
+    .when(!on, |el| {
+        el.bg(c.field)
+            .border_color(c.line_strong)
+            .hover(|el| el.bg(colors().hover))
+    })
+    .child(icon(
+        name,
+        t.size.icon + 1.0,
+        if on { c.accent_text } else { c.muted },
+    ))
+    .child(
+        div()
+            .flex_1()
+            .min_w_0()
+            .overflow_hidden()
+            .whitespace_nowrap()
+            .child(label.into()),
+    )
+    .child(key_hint(key).text_color(if on { c.accent_text } else { c.muted }))
+}
+
+/// The chooser's filter field frame.
+pub fn filter_frame() -> Div {
+    let (t, c) = (tokens(), colors());
+    text(
+        div()
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .gap(px(t.space.s8))
+            .h(px(t.size.filter))
+            .px(px(t.space.s10))
+            .rounded(px(t.radius.row))
+            .bg(c.panel)
+            .border(px(t.size.hairline))
+            .border_color(c.line_strong)
+            .text_color(c.muted),
+        &t.text.row,
+    )
+    .child(icon("search", t.size.icon, c.muted))
+}
+
+/// A centred row of keys and what they do, then a closing note.
+pub fn hint_bar(hints: &[(&'static str, SharedString)], note: impl Into<SharedString>) -> Div {
+    let (t, c) = (tokens(), colors());
+    let mut bar = text(
+        div()
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .justify_center()
+            .gap(px(t.space.s16))
+            .h(px(t.size.hint_bar))
+            .border_t(px(t.size.hairline))
+            .border_color(c.line)
+            .text_color(c.muted)
+            .overflow_hidden()
+            .whitespace_nowrap(),
+        &t.text.meta,
+    );
+    for (key, action) in hints {
+        bar = bar.child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(t.space.s4))
+                .child(key_hint(*key).text_color(c.text_2))
+                .child(action.clone()),
+        );
+    }
+    bar.child(note.into())
 }
 
 /// A label and its value, one line of an agent's facts.

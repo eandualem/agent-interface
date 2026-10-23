@@ -38,6 +38,7 @@ ok = "#8bc48a"              # saved light, connected
 info = "#7fa7d8"            # state changes; cache reads in usage
 violet = "#c39bd3"          # cache writes in usage
 green = "#a9c77e"           # output tokens in usage
+code = "#e8c27a"            # inline code in a document
 shadow = "#00000073"        # popover shadow
 pane_dim = 0.72             # opacity of unfocused panes' content
 
@@ -69,6 +70,7 @@ ok = "#2e7d32"
 info = "#2f5f9e"
 violet = "#7f4fa0"
 green = "#4f7a1f"
+code = "#8a6000"
 shadow = "#281e1424"
 pane_dim = 0.8
 
@@ -131,6 +133,15 @@ weight = 400
 [text.figure]               # the headline number in a view
 size = 26.0
 weight = 600
+[text.doc_title]            # a document's title in a reading view
+size = 20.0
+weight = 600
+[text.doc_heading]          # a document's section heading
+size = 15.0
+weight = 600
+[text.doc_body]             # a document's text
+size = 13.5
+weight = 400
 
 # ---------------------------------------------------------------- spacing
 
@@ -147,6 +158,7 @@ s16 = 16.0
 s18 = 18.0
 s20 = 20.0
 s24 = 24.0
+s28 = 28.0
 
 [radius]
 key = 4.0                   # keycaps, chips
@@ -216,6 +228,10 @@ chip = 22.0                 # filter chips and segmented controls
 meter = 6.0                 # a bar in a table cell
 meter_large = 10.0          # the stacked bar under a view's headline
 fact_label = 110.0          # the label column of an agent card
+choice_button = 40.0        # the two buttons atop the new-pane chooser
+filter = 32.0               # the new-pane chooser's filter field
+choice_row = 34.0           # an agent or session row in that chooser
+hint_bar = 34.0             # the chooser's centred row of keys
 
 # ---------------------------------------------------------------- motion
 
