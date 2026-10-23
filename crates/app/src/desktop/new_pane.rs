@@ -20,6 +20,7 @@ use super::{
     components::{self as ui, AgentState},
     design::{colors, tokens},
     name::{NameEvent, NameField},
+    views::Section,
 };
 use crate::{roster::ViewSource, sessions::SessionSource};
 
@@ -27,7 +28,8 @@ use crate::{roster::ViewSource, sessions::SessionSource};
 pub(super) enum NewPaneEvent {
     OpenTerminal,
     Attach(String),
-    OpenView(View),
+    /// A view, and for an agent card the section to open on.
+    OpenView(View, Option<Section>),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -46,6 +48,8 @@ struct ViewChoice {
     scope: &'static str,
     /// None while Backbone does not serve this view's data.
     kind: Option<ViewKind>,
+    /// The agent card section this choice opens on.
+    section: Option<Section>,
 }
 
 const VIEWS: [ViewChoice; 7] = [
@@ -55,6 +59,7 @@ const VIEWS: [ViewChoice; 7] = [
         description: "The shared store, readable, with who gets each skill",
         scope: "all agents",
         kind: Some(ViewKind::Skills),
+        section: None,
     },
     ViewChoice {
         glyph: "≡",
@@ -62,6 +67,7 @@ const VIEWS: [ViewChoice; 7] = [
         description: "Each policy in full, and the order an agent receives them",
         scope: "pick an agent",
         kind: Some(ViewKind::Policies),
+        section: None,
     },
     ViewChoice {
         glyph: "⚿",
@@ -69,6 +75,7 @@ const VIEWS: [ViewChoice; 7] = [
         description: "State, permissions, connections and recent messages",
         scope: "pick an agent",
         kind: Some(ViewKind::Agent),
+        section: None,
     },
     ViewChoice {
         glyph: "⇄",
@@ -76,6 +83,7 @@ const VIEWS: [ViewChoice; 7] = [
         description: "GitHub, sources and integrations per agent",
         scope: "pick an agent",
         kind: Some(ViewKind::Agent),
+        section: Some(Section::Connections),
     },
     ViewChoice {
         glyph: "Σ",
@@ -83,6 +91,7 @@ const VIEWS: [ViewChoice; 7] = [
         description: "Tokens by agent, CLI session and model",
         scope: "all agents",
         kind: Some(ViewKind::Usage),
+        section: None,
     },
     ViewChoice {
         glyph: "∿",
@@ -90,6 +99,7 @@ const VIEWS: [ViewChoice; 7] = [
         description: "Deliveries, held and expired messages, GitHub events",
         scope: "all agents",
         kind: Some(ViewKind::Activity),
+        section: None,
     },
     ViewChoice {
         glyph: "⌥",
@@ -97,6 +107,7 @@ const VIEWS: [ViewChoice; 7] = [
         description: "Agents by repository, tag or swarm",
         scope: "all agents",
         kind: Some(ViewKind::Team),
+        section: None,
     },
 ];
 
@@ -113,8 +124,9 @@ pub(super) struct NewPane {
     field: Entity<NameField>,
     query: String,
     mode: Mode,
-    /// The view an agent is being chosen for.
+    /// The view an agent is being chosen for, and its section.
     picking: ViewKind,
+    picking_section: Option<Section>,
     /// The chosen row by identity, so refreshes that reorder or remove rows
     /// never move Enter onto another session.
     selected: Option<String>,
@@ -191,6 +203,7 @@ impl NewPane {
             query: String::new(),
             mode: Mode::Sessions,
             picking: ViewKind::Agent,
+            picking_section: None,
             selected: None,
             disarmed: false,
             reveal: false,
@@ -385,15 +398,19 @@ impl NewPane {
             Row::View(index) => match VIEWS[index].kind {
                 Some(kind) if kind.needs_agent() => {
                     self.picking = kind;
+                    self.picking_section = VIEWS[index].section;
                     self.set_mode(Mode::Agents, cx);
                 }
-                Some(kind) => cx.emit(NewPaneEvent::OpenView(View { kind, agent: None })),
+                Some(kind) => cx.emit(NewPaneEvent::OpenView(View { kind, agent: None }, None)),
                 None => {}
             },
-            Row::Pick(name) => cx.emit(NewPaneEvent::OpenView(View {
-                kind: self.picking,
-                agent: Some(name),
-            })),
+            Row::Pick(name) => cx.emit(NewPaneEvent::OpenView(
+                View {
+                    kind: self.picking,
+                    agent: Some(name),
+                },
+                self.picking_section,
+            )),
         }
     }
 
@@ -452,8 +469,11 @@ impl Render for NewPane {
                         "⇥",
                         views,
                     )
-                    .on_click(cx.listener(|chooser, _, _, cx| {
+                    .on_click(cx.listener(|chooser, _, window, cx| {
                         cx.stop_propagation();
+                        // Keys now belong to this list, not a terminal beside it.
+                        let focus = chooser.field.read(cx).focus.clone();
+                        window.focus(&focus, cx);
                         chooser.toggle(cx);
                     })),
                 )

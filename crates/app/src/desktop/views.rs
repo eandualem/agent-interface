@@ -108,7 +108,7 @@ pub(super) struct ViewPane {
     cost: bool,
     expanded: HashSet<String>,
     records: Records,
-    section: Section,
+    pub section: Section,
     tag: Option<String>,
     query: String,
     search: Option<Entity<NameField>>,

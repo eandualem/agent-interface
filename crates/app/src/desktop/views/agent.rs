@@ -424,6 +424,18 @@ fn connections(agent: &Agent) -> AnyElement {
         .into_any_element()
 }
 
+/// Whether the CLI's own settings let it act without any prompt.
+fn skips_prompts(rules: &tmux_workspaces_roster::views::Permissions) -> bool {
+    rules.modes.iter().any(|(name, value)| {
+        matches!(
+            (name.as_str(), value.as_str()),
+            ("defaultMode", "bypassPermissions")
+                | ("approval_policy", "never")
+                | ("sandbox_mode", "danger-full-access")
+        )
+    })
+}
+
 fn summary(title: String, sub: String) -> gpui::Div {
     let (t, c) = (tokens(), colors());
     div()
@@ -461,8 +473,16 @@ fn permissions(agent: &Agent) -> AnyElement {
                 "Runs unattended".into(),
                 "launched without permission prompts".into(),
             )
+        } else if skips_prompts(rules) {
+            summary(
+                "Does not ask".into(),
+                "its CLI settings skip prompts".into(),
+            )
         } else {
-            summary("Asks before acting".into(), "not unattended".into())
+            summary(
+                "Asks before acting".into(),
+                "except what its rules allow".into(),
+            )
         })
         .child(summary(
             format!("{} rules pre-approved", rules.allow.len()),
@@ -533,7 +553,7 @@ fn permissions(agent: &Agent) -> AnyElement {
             if launch.unattended {
                 "Started so it acts without asking."
             } else {
-                "Its CLI asks before acting, except for the rules below."
+                "Backbone does not start it unattended; its CLI's own settings below still apply."
             },
             launch.unattended,
         ))
