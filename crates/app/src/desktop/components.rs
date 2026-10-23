@@ -645,6 +645,8 @@ pub fn grouped_page(id: impl Into<SharedString>, column: Div) -> Stateful<Div> {
         .pt(px(t.space.s8))
         .pb(px(t.space.s24))
         .flex()
+        // The column keeps its own height so the page can scroll through it.
+        .items_start()
         .justify_center()
         .child(
             column

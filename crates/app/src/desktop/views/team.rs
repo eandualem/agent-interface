@@ -136,6 +136,14 @@ fn parent(path: &str) -> &str {
         .map_or("", |(parent, _)| parent)
 }
 
+/// The folder directly under `root` that `dir` lies in, when `dir` is
+/// deeper than that folder.
+fn top_folder(root: &str, dir: &str) -> Option<String> {
+    let rest = dir.strip_prefix(root)?.strip_prefix('/')?;
+    let (first, below) = rest.split_once('/')?;
+    (!first.is_empty() && !below.is_empty()).then(|| format!("{root}/{first}"))
+}
+
 /// Whether an agent coordinates its folder: its own folder is named so.
 fn coordinates(member: &Member) -> bool {
     name_of(&member.dir) == "coordinator"
@@ -154,17 +162,24 @@ fn card(
         card = card.child(agent_row(lead, "", group, true, cx));
         first = false;
     }
-    let led: Vec<&&Member> = members
+    // A coordinator leads the agents in its own folder; others in the
+    // group follow without a guide.
+    let (led, rest): (Vec<&Member>, Vec<&Member>) = members
         .iter()
+        .copied()
         .filter(|member| lead.is_none_or(|lead| lead.name != member.name))
-        .collect();
+        .partition(|member| lead.is_some_and(|lead| parent(&member.dir) == parent(&lead.dir)));
     for (index, member) in led.iter().enumerate() {
-        let guide = match (lead.is_some(), index + 1 == led.len()) {
-            (false, _) => "",
-            (true, false) => "├ ",
-            (true, true) => "└ ",
+        let guide = if index + 1 == led.len() {
+            "└ "
+        } else {
+            "├ "
         };
         card = card.child(agent_row(member, guide, group, first, cx));
+        first = false;
+    }
+    for member in rest {
+        card = card.child(agent_row(member, "", group, first, cx));
         first = false;
     }
     card
@@ -184,21 +199,22 @@ fn folders(team: &Team, cx: &mut Context<ViewPane>) -> gpui::Div {
         .max_by_key(|(_, count)| *count)
         .map(|(root, _)| root)
         .unwrap_or_default();
+    // Each agent belongs to the first folder under the root on its path,
+    // however deep its own folder is.
     let mut groups: BTreeMap<(bool, String), Vec<&Member>> = BTreeMap::new();
     for member in &team.members {
-        let folder = parent(&member.dir);
-        let inside = !root.is_empty() && parent(folder) == root;
-        let key = if inside {
-            folder.to_owned()
-        } else {
-            String::new()
-        };
-        groups.entry((!inside, key)).or_default().push(member);
+        let key = top_folder(root, &member.dir).unwrap_or_default();
+        groups
+            .entry((key.is_empty(), key))
+            .or_default()
+            .push(member);
     }
     let mut column = div();
     for ((_, folder), mut members) in groups {
         members.sort_by_key(|member| rank(member));
-        let lead = members.iter().copied().find(|member| coordinates(member));
+        let lead = (!folder.is_empty())
+            .then(|| members.iter().copied().find(|member| coordinates(member)))
+            .flatten();
         let (title, note) = if folder.is_empty() {
             ("Elsewhere".to_owned(), plural(members.len()))
         } else {
@@ -245,7 +261,7 @@ fn by_tag(team: &Team, cx: &mut Context<ViewPane>) -> gpui::Div {
 fn swarms(team: &Team, cx: &mut Context<ViewPane>) -> gpui::Div {
     let mut column = div();
     if team.swarms.is_empty() {
-        return column.child(ui::group_note("No swarm is running."));
+        column = column.child(ui::group_note("No swarm is running."));
     }
     for swarm in &team.swarms {
         let members: Vec<&Member> = team
@@ -263,6 +279,21 @@ fn swarms(team: &Team, cx: &mut Context<ViewPane>) -> gpui::Div {
                 format!("{}{issue} · {}", swarm.repo, plural(members.len())),
             ))
             .child(card(&members, &swarm.name, None, cx));
+    }
+    let outside: Vec<&Member> = team
+        .members
+        .iter()
+        .filter(|member| {
+            !team
+                .swarms
+                .iter()
+                .any(|swarm| swarm.members.contains(&member.name))
+        })
+        .collect();
+    if !outside.is_empty() {
+        column = column
+            .child(ui::group_title("Not in a swarm", plural(outside.len())))
+            .child(card(&outside, "", None, cx));
     }
     column
 }
@@ -396,5 +427,11 @@ mod tests {
         };
         assert!(coordinates(&lead));
         assert!(!coordinates(&Member::default()));
+        assert_eq!(
+            top_folder("/w", "/w/learning/rust/project").as_deref(),
+            Some("/w/learning")
+        );
+        assert_eq!(top_folder("/w", "/w/agent"), None);
+        assert_eq!(top_folder("/w", "/elsewhere/agent"), None);
     }
 }

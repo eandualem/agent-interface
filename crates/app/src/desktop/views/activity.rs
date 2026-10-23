@@ -16,15 +16,44 @@ const HOUR: f64 = 3_600.0;
 /// The most lanes the timeline draws.
 const LANES: usize = 10;
 
-/// The colour of an agent's state on the timeline.
-fn state_color(member: &Member) -> Rgba {
-    let c = colors();
-    match (member.state != "offline").then(|| AgentState::from_report(&member.state)) {
-        Some(AgentState::NeedsYou) => c.attention,
-        Some(AgentState::Working) => c.accent,
-        Some(_) => c.line_strong,
-        None => c.selected,
+/// An agent's state now, its word, and whether it is on the timeline
+/// without a recent delivery: busy or waiting, not idle, offline or unknown.
+fn state_now(member: &Member) -> (Option<AgentState>, &'static str, bool) {
+    if member.state == "offline" {
+        return (None, "offline", false);
     }
+    let state = AgentState::from_report(&member.state);
+    let active = matches!(state, AgentState::Working | AgentState::NeedsYou);
+    (Some(state), state.word(), active)
+}
+
+/// Whether a delivery reached its agent.
+fn delivered(entry: &Entry) -> bool {
+    matches!(entry.outcome.as_str(), "delivered" | "handed_off")
+}
+
+/// An agent's state now, beside its lane: the state symbol and its word, so
+/// it reads without colour.
+fn state_label(member: &Member) -> gpui::Div {
+    let (t, c) = (tokens(), colors());
+    let (state, word, _) = state_now(member);
+    let color = match state {
+        Some(AgentState::NeedsYou) => c.attention_text,
+        Some(AgentState::Working) => c.accent_text,
+        _ => c.muted,
+    };
+    div()
+        .flex_shrink_0()
+        .w(px(t.size.fact_label))
+        .pl(px(t.space.s10))
+        .flex()
+        .items_center()
+        .gap(px(t.space.s6))
+        .text_color(color)
+        .children(state.map(|state| {
+            ui::agent_symbol(state, SharedString::from(format!("lane-{}", member.name)))
+        }))
+        .child(word)
 }
 
 /// One lane per agent that received something in the last hour or is not
@@ -37,13 +66,10 @@ fn lanes(activity: &Activity, end: f64) -> Vec<(&Member, Vec<f32>)> {
         let ticks: Vec<f64> = activity
             .entries
             .iter()
-            .filter(|entry| entry.agent == member.name)
+            .filter(|entry| entry.agent == member.name && delivered(entry))
             .filter_map(|entry| entry.at.filter(|at| *at >= start && *at <= end))
             .collect();
-        let active = !matches!(
-            AgentState::from_report(&member.state),
-            AgentState::Idle | AgentState::Unknown
-        ) && member.state != "offline";
+        let (_, _, active) = state_now(member);
         if ticks.is_empty() && !active {
             continue;
         }
@@ -94,11 +120,13 @@ fn timeline(activity: &Activity) -> gpui::Div {
                 ui::text(div().w(px(name_width)).text_color(c.text_2), &t.text.label)
                     .child("LAST HOUR"),
             )
-            .child(axis),
+            .child(axis)
+            .child(div().flex_shrink_0().w(px(t.size.fact_label))),
     );
     if lanes.is_empty() {
-        section =
-            section.child("Nothing reached an agent in the last hour, and every agent is idle.");
+        section = section.child(
+            "No message reached an agent in the last hour, and no agent is busy or waiting.",
+        );
     }
     for (member, ticks) in lanes {
         let mut track = div()
@@ -119,17 +147,6 @@ fn timeline(activity: &Activity) -> gpui::Div {
                     .bg(c.text_2),
             );
         }
-        // Its state now, at the end of the lane. Backbone does not yet keep
-        // earlier states, so the lane does not claim them.
-        track = track.child(
-            div()
-                .absolute()
-                .top(px(0.0))
-                .right(px(0.0))
-                .w(relative(0.03))
-                .h_full()
-                .bg(state_color(member)),
-        );
         section = section.child(
             div()
                 .flex()
@@ -141,7 +158,8 @@ fn timeline(activity: &Activity) -> gpui::Div {
                         .pr(px(t.space.s10))
                         .text_color(c.text_2),
                 )
-                .child(track),
+                .child(track)
+                .child(state_label(member)),
         );
     }
     let swatch = |color: Rgba, label: &'static str| {
@@ -161,10 +179,7 @@ fn timeline(activity: &Activity) -> gpui::Div {
             .pl(px(name_width))
             .pt(px(t.space.s4))
             .child(swatch(c.text_2, "message delivered"))
-            .child(swatch(c.accent, "busy now"))
-            .child(swatch(c.attention, "waiting or blocked now"))
-            .child(swatch(c.line_strong, "idle now"))
-            .child("earlier states need Backbone's state history"),
+            .child("state now on the right; earlier states need Backbone's state history"),
     )
 }
 
@@ -211,7 +226,13 @@ pub(super) fn body(pane: &ViewPane, activity: &Activity, cx: &mut Context<ViewPa
             })),
         );
     }
-    let mut rows = list("activity-rows");
+    // The timeline and filters scroll with the feed, so a short pane keeps
+    // room for the records.
+    let mut rows = list("activity-rows")
+        .px(px(0.0))
+        .py(px(0.0))
+        .child(timeline(activity))
+        .child(filters);
     for entry in activity.entries.iter().filter(|entry| match pane.records {
         Records::All => true,
         Records::Deliveries => !entry.inbound,
@@ -292,8 +313,6 @@ pub(super) fn body(pane: &ViewPane, activity: &Activity, cx: &mut Context<ViewPa
         .flex()
         .flex_col()
         .child(header)
-        .child(timeline(activity))
-        .child(filters)
         .child(rows)
         .child(ui::view_footer(&[], "recent records, newest first"))
         .into_any_element()
@@ -313,6 +332,7 @@ mod tests {
         let delivery = |agent: &str, at: f64| Entry {
             agent: agent.into(),
             at: Some(at),
+            outcome: "delivered".into(),
             ..Entry::default()
         };
         let end = 10_000.0;
@@ -320,11 +340,17 @@ mod tests {
             entries: vec![
                 delivery("worker", end - 900.0),
                 delivery("helper", end - 2.0 * HOUR),
+                // Held, not delivered: no tick and no lane.
+                Entry {
+                    outcome: "queued".into(),
+                    ..delivery("waiter", end - 60.0)
+                },
             ],
             members: vec![
                 member("worker", "idle"),
                 member("helper", "idle"),
                 member("builder", "busy"),
+                member("waiter", "idle"),
             ],
         };
         let lanes = lanes(&activity, end);
