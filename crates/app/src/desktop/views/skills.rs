@@ -58,14 +58,27 @@ fn items<'a>(pane: &ViewPane, library: &'a SkillLibrary) -> Vec<Item<'a>> {
     let store = store(pane, library, &query);
     let mut items = Vec::new();
     if pane.by_tag {
-        let mut tags: BTreeMap<(bool, &str), Vec<&Skill>> = BTreeMap::new();
+        // `all` first, then tags by name, then skills given by name and
+        // skills with no tag, so every skill appears at least once.
+        let mut tags: BTreeMap<(u8, &str), Vec<&Skill>> = BTreeMap::new();
         for skill in store {
             for tag in skill.tags.iter().filter(|tag| !tag.starts_with("agent:")) {
-                tags.entry((tag != "all", tag)).or_default().push(skill);
+                let rank = if tag == "all" { 0 } else { 1 };
+                tags.entry((rank, tag)).or_default().push(skill);
+            }
+            if skill.tags.iter().any(|tag| tag.starts_with("agent:")) {
+                tags.entry((2, "direct")).or_default().push(skill);
+            }
+            if skill.tags.is_empty() {
+                tags.entry((3, "no tag")).or_default().push(skill);
             }
         }
-        for ((_, tag), skills) in tags {
-            let tone = if tag == "all" { Tone::Plain } else { Tone::Tag };
+        for ((rank, tag), skills) in tags {
+            let tone = match rank {
+                0 => Tone::Plain,
+                1 => Tone::Tag,
+                _ => Tone::Quiet,
+            };
             items.push(Item::Group {
                 label: tag.to_owned(),
                 tone: Some(tone),
@@ -129,8 +142,8 @@ fn items<'a>(pane: &ViewPane, library: &'a SkillLibrary) -> Vec<Item<'a>> {
     });
     if library.previewed < library.agents.len() {
         items.push(Item::Note(format!(
-            "Repository and user skills from the first {} of {} agents.",
-            library.previewed.min(PREVIEW_LIMIT),
+            "Repository and user skills from {} of {} agents' previews (at most {PREVIEW_LIMIT}).",
+            library.previewed,
             library.agents.len()
         )));
     }

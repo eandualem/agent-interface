@@ -51,12 +51,11 @@ fn cards(library: &TagLibrary, cx: &mut Context<ViewPane>) -> AnyElement {
     .child("Tags are how a team is organised in Backbone. An agent tagged")
     .child(code("coder python"))
     .child("gets everything tagged")
-    .child(code("all"))
-    .child(",")
+    .child(div().flex().child(code("all")).child(","))
     .child(code("coder"))
     .child("and")
-    .child(code("python"))
-    .child(", and nothing else.");
+    .child(div().flex().child(code("python")).child(","))
+    .child("and nothing else.");
     let mut rows = list("tag-cards")
         .px(px(t.space.s12))
         .py(px(t.space.s10))

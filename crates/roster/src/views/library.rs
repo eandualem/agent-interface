@@ -2,10 +2,15 @@
 //! and what each tag brings. Nothing here names an agent in its results; it
 //! says how a thing is delivered and how many agents that reaches.
 //!
-//! Backbone serves these per agent, so a library is gathered from up to
-//! [`PREVIEW_LIMIT`] agents' previews and merged by file path.
+//! Backbone serves skills and briefs per agent, so a library is gathered
+//! from up to [`PREVIEW_LIMIT`] agents' reads within [`BUDGET`] and merged by
+//! file path. A refresh where every such read fails is an error, so the view
+//! keeps its last data and says it is stale.
 
-use std::collections::BTreeMap;
+use std::{
+    collections::BTreeMap,
+    time::{Duration, Instant},
+};
 
 use serde::Deserialize;
 
@@ -14,6 +19,19 @@ use crate::valid_agent;
 
 /// The most agents whose previews one refresh reads.
 pub const PREVIEW_LIMIT: usize = 32;
+
+/// How long one refresh keeps starting per-agent reads, so a library stops
+/// soon after its pane is gone and never holds its worker for minutes.
+pub const BUDGET: Duration = Duration::from_secs(10);
+
+/// The agents a refresh reads, in order, until the budget is spent.
+fn sampled(agents: &[Member]) -> impl Iterator<Item = &Member> {
+    let started = Instant::now();
+    agents
+        .iter()
+        .take(PREVIEW_LIMIT)
+        .take_while(move |_| started.elapsed() < BUDGET)
+}
 
 /// The configured agents, in Backbone's order.
 pub(super) fn agents(api: &Api) -> Result<Vec<Member>, &'static str> {
@@ -143,7 +161,8 @@ pub struct SkillLibrary {
     pub user: Vec<Place>,
     /// The configured agents, to answer which of them gets a skill.
     pub agents: Vec<Member>,
-    /// How many agents' previews were read; fewer than `agents` past the limit.
+    /// How many agents' previews were read; fewer than `agents` past the
+    /// limit or the budget, or when one failed.
     pub previewed: usize,
 }
 
@@ -155,16 +174,22 @@ impl SkillLibrary {
             store,
             ..Self::default()
         };
-        for agent in agents.iter().take(PREVIEW_LIMIT) {
+        let mut failure = None;
+        for agent in sampled(&agents) {
             // One agent's preview failing leaves the rest of the library.
-            let Ok(loadout) = api
+            match api
                 .get(&format!("/api/skills/preview/{}", agent.name))
                 .and_then(|body| Loadout::decode(&body))
-            else {
-                continue;
-            };
-            library.previewed += 1;
-            library.merge(agent, &loadout);
+            {
+                Ok(loadout) => {
+                    library.previewed += 1;
+                    library.merge(agent, &loadout);
+                }
+                Err(error) => failure = Some(error),
+            }
+        }
+        if let Some(error) = failure.filter(|_| library.previewed == 0) {
+            return Err(error);
         }
         library.agents = agents;
         Ok(library)
@@ -232,13 +257,17 @@ pub struct PolicyLibrary {
 impl PolicyLibrary {
     pub(super) fn read(api: &Api, agents: &[Member]) -> Result<Self, &'static str> {
         let mut briefs = Vec::new();
-        for agent in agents.iter().take(PREVIEW_LIMIT) {
+        let mut failure = None;
+        for agent in sampled(agents) {
             match instructions(api, &agent.name) {
                 Ok(brief) => briefs.push(brief),
                 Err(super::NOT_SERVED) => return Err(super::NOT_SERVED),
                 // One agent's brief failing leaves the rest of the library.
-                Err(_) => {}
+                Err(error) => failure = Some(error),
             }
+        }
+        if let Some(error) = failure.filter(|_| briefs.is_empty()) {
+            return Err(error);
         }
         Ok(Self::gather(&briefs, agents))
     }
@@ -275,6 +304,29 @@ impl PolicyLibrary {
             }
         }
         library.tags = tags.into_iter().collect();
+        // A file can reach agents in several ways; every copy says all of them.
+        let mut scopes: BTreeMap<String, (Vec<String>, bool)> = BTreeMap::new();
+        for source in briefs.iter().flat_map(|brief| &brief.sources) {
+            let (parts, applied) = scopes.entry(source.path.clone()).or_default();
+            for part in source.scope.split(", ") {
+                if !parts.iter().any(|known| known == part) {
+                    parts.push(part.to_owned());
+                }
+            }
+            *applied |= source.applied;
+        }
+        let layers = library
+            .base
+            .iter_mut()
+            .chain(&mut library.global)
+            .chain(library.tags.iter_mut().flat_map(|(_, sources)| sources))
+            .chain(&mut library.swarm);
+        for source in layers {
+            if let Some((parts, applied)) = scopes.get(&source.path) {
+                source.scope = parts.join(", ");
+                source.applied = *applied;
+            }
+        }
         library
     }
 
@@ -310,15 +362,18 @@ fn add(sources: &mut Vec<Source>, source: &Source) {
     }
 }
 
-/// What each tag brings, from the agents, the store and the policies.
+/// What each tag brings, from the agents, the store and the configured
+/// policy assignments.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TagLibrary {
     /// The configured agents.
     pub agents: Vec<Member>,
     /// The shared store.
     pub store: Skills,
-    /// The policy layers.
-    pub policies: PolicyLibrary,
+    /// Global policies, in order.
+    pub global: Vec<String>,
+    /// Each tag's policies, in order.
+    pub tag_policy: BTreeMap<String, Vec<String>>,
 }
 
 /// One tag and what it brings.
@@ -336,13 +391,32 @@ pub struct TagCard {
 
 impl TagLibrary {
     pub(super) fn read(api: &Api) -> Result<Self, &'static str> {
+        #[derive(Deserialize, Default)]
+        #[serde(default)]
+        struct Setting<T> {
+            value: T,
+        }
         let agents = agents(api)?;
         let store = Skills::decode(&api.get("/api/skills")?)?;
-        let policies = PolicyLibrary::read(api, &agents)?;
+        // Configuration is flat: each dotted key holds its value and help.
+        let config = api.get("/api/config")?;
+        let config = document(&config)?;
+        let setting = |key: &str| config.get(key).map(|raw| raw.get());
+        let global = setting("agents.shared_policy")
+            .and_then(|raw| serde_json::from_str::<Setting<Vec<String>>>(raw).ok())
+            .map(|setting| setting.value)
+            .unwrap_or_default();
+        let tag_policy = setting("agents.tag_policy")
+            .and_then(|raw| {
+                serde_json::from_str::<Setting<BTreeMap<String, Vec<String>>>>(raw).ok()
+            })
+            .map(|setting| setting.value)
+            .unwrap_or_default();
         Ok(Self {
             agents,
             store,
-            policies,
+            global,
+            tag_policy,
         })
     }
 
@@ -361,12 +435,8 @@ impl TagLibrary {
             tag: "all".into(),
             carriers: self.agents.len(),
             skills: skills("all"),
-            policies: self
-                .policies
-                .base
-                .iter()
-                .chain(&self.policies.global)
-                .map(|source| source.name.clone())
+            policies: std::iter::once("base".to_owned())
+                .chain(self.global.iter().cloned())
                 .collect(),
         }];
         let mut names: Vec<&str> = self
@@ -375,7 +445,7 @@ impl TagLibrary {
             .flat_map(|agent| &agent.tags)
             .chain(self.store.items.iter().flat_map(|skill| &skill.tags))
             .map(String::as_str)
-            .chain(self.policies.tags.iter().map(|(tag, _)| tag.as_str()))
+            .chain(self.tag_policy.keys().map(String::as_str))
             .filter(|tag| *tag != "all" && !tag.starts_with("agent:"))
             .collect();
         names.sort_unstable();
@@ -383,20 +453,13 @@ impl TagLibrary {
         for tag in names {
             cards.push(TagCard {
                 tag: tag.to_owned(),
-                carriers: self.policies.carriers.get(tag).copied().unwrap_or_else(|| {
-                    self.agents
-                        .iter()
-                        .filter(|agent| agent.tags.iter().any(|t| t == tag))
-                        .count()
-                }),
-                skills: skills(tag),
-                policies: self
-                    .policies
-                    .tags
+                carriers: self
+                    .agents
                     .iter()
-                    .find(|(name, _)| name == tag)
-                    .map(|(_, sources)| sources.iter().map(|s| s.name.clone()).collect())
-                    .unwrap_or_default(),
+                    .filter(|agent| agent.tags.iter().any(|t| t == tag))
+                    .count(),
+                skills: skills(tag),
+                policies: self.tag_policy.get(tag).cloned().unwrap_or_default(),
             });
         }
         cards
@@ -471,8 +534,13 @@ mod tests {
                 source("collaboration", "global"),
                 source("continuity", "global"),
                 source("minimal-change", "tag:coder"),
-                source("review", "tag:coder, tag:security"),
+                source("review", "tag:coder"),
             ],
+            ..Instructions::default()
+        };
+        let auditor = Instructions {
+            name: "auditor".into(),
+            sources: vec![source("review", "tag:security")],
             ..Instructions::default()
         };
         let member = Instructions {
@@ -488,7 +556,7 @@ mod tests {
             agent("worker", &["coder", "security"]),
             agent("helper", &[]),
         ];
-        let library = PolicyLibrary::gather(&[member, coder], &agents);
+        let library = PolicyLibrary::gather(&[member, coder, auditor], &agents);
         let names = |sources: &[Source]| -> Vec<String> {
             sources.iter().map(|source| source.name.clone()).collect()
         };
@@ -499,6 +567,9 @@ mod tests {
         assert_eq!(library.tags[0].0, "coder");
         assert_eq!(names(&library.tags[0].1), ["minimal-change", "review"]);
         assert_eq!(names(&library.tags[1].1), ["review"]);
+        // A file that arrives by two tags says both wherever it is listed.
+        assert_eq!(library.tags[0].1[1].scope, "tag:coder, tag:security");
+        assert_eq!(library.tags[1].1[0].scope, "tag:coder, tag:security");
         assert_eq!(library.carriers.get("coder"), Some(&1));
         assert_eq!(library.all().len(), 6);
     }
@@ -520,12 +591,8 @@ mod tests {
                     skill("layout", &["xstate"]),
                 ],
             },
-            policies: PolicyLibrary {
-                base: vec![source("base", "base")],
-                global: vec![source("collaboration", "global")],
-                tags: vec![("review".into(), vec![source("review", "tag:review")])],
-                ..PolicyLibrary::default()
-            },
+            global: vec!["collaboration".into()],
+            tag_policy: [("review".to_owned(), vec!["review".to_owned()])].into(),
         };
         let cards = library.cards();
         let tags: Vec<&str> = cards.iter().map(|card| card.tag.as_str()).collect();

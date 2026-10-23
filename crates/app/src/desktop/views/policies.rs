@@ -199,9 +199,8 @@ fn index(
     }
     if library.read < library.agents {
         rows = rows.child(quiet(&format!(
-            "Gathered from the briefs of {} of {} agents.",
-            library.read.min(PREVIEW_LIMIT),
-            library.agents
+            "Gathered from the briefs of {} of {} agents (at most {PREVIEW_LIMIT}).",
+            library.read, library.agents
         )));
     }
     div()

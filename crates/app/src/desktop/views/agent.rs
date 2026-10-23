@@ -6,7 +6,7 @@
 use gpui::{AnyElement, Context, Div, SharedString, div, prelude::*, px};
 use tmux_workspaces_core::AgentSection;
 use tmux_workspaces_roster::views::{
-    Agent, Instructions, Loadout, LocalSkill, Reason, Received, Usage,
+    Agent, Data, Instructions, Loadout, LocalSkill, Reason, Received, Usage,
 };
 
 use super::{
@@ -165,7 +165,7 @@ pub(super) fn targets(pane: &ViewPane, agent: &Agent) -> Vec<Target> {
     match pane.section {
         AgentSection::Skills => loaded(&agent.skills)
             .map(|loadout| {
-                skill_rows(loadout)
+                skill_rows(loadout, &agent.runtime)
                     .into_iter()
                     .flat_map(|(_, rows)| rows)
                     .map(|row| Target::Skill(row.path.to_owned()))
@@ -183,6 +183,31 @@ pub(super) fn targets(pane: &ViewPane, agent: &Agent) -> Vec<Target> {
             .unwrap_or_default(),
         _ => Vec::new(),
     }
+}
+
+/// When a refresh's section read failed but the last data had that section,
+/// keep the last section and return the failure to show as stale.
+pub(super) fn keep_section(last: Option<&Data>, new: &mut Data) -> Option<&'static str> {
+    fn keep<T: Clone>(
+        last: &Option<Result<T, &'static str>>,
+        new: &mut Option<Result<T, &'static str>>,
+    ) -> Option<&'static str> {
+        let (Some(Ok(kept)), Some(Err(error))) = (last, &new) else {
+            return None;
+        };
+        let error = *error;
+        *new = Some(Ok(kept.clone()));
+        Some(error)
+    }
+    let (Some(Data::Agent(last)), Data::Agent(new)) = (last, new) else {
+        return None;
+    };
+    if last.name != new.name {
+        return None;
+    }
+    keep(&last.skills, &mut new.skills)
+        .or(keep(&last.brief, &mut new.brief))
+        .or(keep(&last.usage, &mut new.usage))
 }
 
 fn loaded<'a, T>(part: &'a Option<Result<T, &'static str>>) -> Option<&'a T> {
@@ -205,7 +230,7 @@ fn page<'a>(pane: &'a ViewPane, agent: &'a Agent) -> Option<reader::Page<'a>> {
         }
         Target::Skill(folder) => {
             let loadout = loaded(&agent.skills)?;
-            let rows: Vec<_> = skill_rows(loadout)
+            let rows: Vec<_> = skill_rows(loadout, &agent.runtime)
                 .into_iter()
                 .flat_map(|(_, rows)| rows)
                 .collect();
@@ -262,7 +287,10 @@ struct SkillRow<'a> {
 
 /// The agent's skills by source, with each group's heading and note:
 /// the store, user-level, repository.
-fn skill_rows(loadout: &Loadout) -> Vec<((&'static str, String), Vec<SkillRow<'_>>)> {
+fn skill_rows<'a>(
+    loadout: &'a Loadout,
+    runtime: &str,
+) -> Vec<((&'static str, String), Vec<SkillRow<'a>>)> {
     let store = loadout
         .skills
         .iter()
@@ -299,7 +327,7 @@ fn skill_rows(loadout: &Loadout) -> Vec<((&'static str, String), Vec<SkillRow<'_
         ),
         (
             ("USER-LEVEL", loadout.user_directories.join(" · ")),
-            local(&loadout.user, "user"),
+            local(&loadout.user, runtime),
         ),
         (
             ("REPOSITORY", String::new()),
@@ -362,7 +390,7 @@ fn skills_section(pane: &ViewPane, agent: &Agent, cx: &mut Context<ViewPane>) ->
     };
     let c = colors();
     let narrow = pane.narrow();
-    let groups = skill_rows(loadout);
+    let groups = skill_rows(loadout, &agent.runtime);
     let total: usize = groups.iter().map(|(_, rows)| rows.len()).sum();
     let mut rows = list("agent-skills").child(intro(format!(
         "{total} skill{} load for {}. Each says why it reaches this agent.",
@@ -499,8 +527,14 @@ fn usage_section(agent: &Agent) -> AnyElement {
         .child(ui::text(div(), &t.text.figure).child(count(usage.totals.total)))
         .child(
             ui::text(div().flex_1().min_w_0().text_color(c.muted), &t.text.body).child(format!(
-                "tokens in the last 24 h, {sessions} CLI session{}{}",
+                "tokens in the last 24 h, {sessions} CLI session{}{}{}",
                 if sessions == 1 { "" } else { "s" },
+                // The team read stops at its limit; say so rather than claim a total.
+                if usage.more {
+                    " among the team's first 1000 sessions"
+                } else {
+                    ""
+                },
                 if models.is_empty() {
                     String::new()
                 } else {
@@ -562,6 +596,9 @@ fn usage_section(agent: &Agent) -> AnyElement {
         list = list.child(ui::text(div().text_color(c.muted), &t.text.body).child(
             match usage.unmeasured.first() {
                 Some(unmeasured) => format!("No readable record: {}.", unmeasured.reason),
+                None if usage.more => {
+                    "None among the team's first 1000 sessions in the last 24 h.".into()
+                }
                 None => "No sessions in the last 24 h.".into(),
             },
         ));

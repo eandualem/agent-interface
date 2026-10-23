@@ -187,11 +187,14 @@ impl ViewPane {
         if matches!(pane.view.kind, ViewKind::Skills | ViewKind::Agent) {
             let field = cx.new(|cx| NameField::filter(window, cx));
             pane._search
-                .push(cx.subscribe(&field, |pane, _, event, cx| {
-                    if let NameEvent::Changed(name) = event {
+                .push(cx.subscribe(&field, |pane, _, event, cx| match event {
+                    NameEvent::Changed(name) => {
                         pane.check = name.trim().to_owned();
                         cx.notify();
                     }
+                    // Esc in the field goes back, as it does anywhere in the reader.
+                    NameEvent::Cancel => pane.close(cx),
+                    NameEvent::Save => {}
                 }));
             pane.check_field = Some(field);
         }
@@ -225,9 +228,11 @@ impl ViewPane {
                             return;
                         }
                         match update {
-                            Ok(data) => {
+                            Ok(mut data) => {
+                                // A section whose own read failed keeps its
+                                // last data, so an open document stays open.
+                                pane.error = agent::keep_section(pane.data.as_ref(), &mut data);
                                 pane.data = Some(data);
-                                pane.error = None;
                             }
                             // Keep the last data and say it is stale.
                             Err(error) => pane.error = Some(error),
@@ -568,6 +573,27 @@ mod tests {
         assert_eq!(ago(7_300.0), "2h");
         assert_eq!(ago(-5.0), "0s");
         assert_eq!(line("a\nb"), "a b");
+    }
+
+    #[test]
+    fn a_failed_section_read_keeps_the_last_section() {
+        use tmux_workspaces_roster::views::{Agent, Instructions};
+        let agent = |brief| {
+            Data::Agent(Box::new(Agent {
+                name: "worker".into(),
+                brief: Some(brief),
+                ..Agent::default()
+            }))
+        };
+        let last = agent(Ok(Instructions::default()));
+        let mut new = agent(Err(views::UNAVAILABLE));
+        assert_eq!(
+            agent::keep_section(Some(&last), &mut new),
+            Some(views::UNAVAILABLE)
+        );
+        assert_eq!(new, last);
+        let mut first = agent(Err(views::UNAVAILABLE));
+        assert_eq!(agent::keep_section(None, &mut first), None);
     }
 
     #[test]
