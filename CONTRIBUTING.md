@@ -163,3 +163,40 @@ sizing. Tests, benchmarks and scripts must never touch those sessions:
   exact version. The project is MIT-licensed; do not copy GPL code into it.
 - **Measurements.** Follow the [benchmark guide](docs/BENCHMARKING.md). Include
   the revision, environment, method and raw results with any performance claim.
+
+## Build installable packages
+
+Install the build prerequisites above and the notice generator:
+
+```sh
+cargo install cargo-about --version 0.9.2 --locked
+rustup component add rust-docs
+python3 scripts/package.py
+```
+
+The script builds for the host architecture, explicitly using Cargo's release
+profile and Ghostty `ReleaseFast` with the portable `baseline` CPU target. It
+produces an archive and adjacent SHA-256 file under `dist/`. macOS archives
+contain an ad-hoc-signed `.app`; Linux archives contain the binary and notices.
+No compiler or Python runtime is included or required by the installed app.
+The script needs network access for hash-pinned native notices and upstream
+Rust licence texts. `cargo-about` is a build-only MIT/Apache-2.0 tool.
+
+The manual **Native packages** workflow runs this script for Apple silicon,
+Intel macOS, and ARM64/x86-64 Ubuntu 24.04. It uploads workflow artifacts for
+inspection, without publishing release assets. A build is not a desktop
+compatibility test: check launch, keyboard input, terminal output, Settings and
+the library chooser on the intended desktop before publishing that target.
+The packaged `BUILD.json` must identify clean, reviewed source. Audit the
+unpacked binary and notices, and retain the archive checksum with the release.
+
+Installer regression checks use inert payloads and temporary home directories:
+
+```sh
+python3 -B -m unittest discover -s scripts/tests -v
+```
+
+Test the actual archive with `sh install.sh --archive dist/<archive>.tar.gz`.
+Use a separate test account for installation and upgrade checks. On macOS,
+verify the real download's first-launch behavior as well as its ad-hoc signature;
+a local package does not establish Gatekeeper acceptance on another Mac.

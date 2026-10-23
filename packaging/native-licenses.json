@@ -1,0 +1,32 @@
+[
+  {
+    "name": "uucode",
+    "url": "https://raw.githubusercontent.com/jacobsandlund/uucode/v0.2.0/LICENSE.md",
+    "sha256": "312e901e142be2477b4ca859e9311f9e3f80d33372991759b7921c1893605f33"
+  },
+  {
+    "name": "unicode",
+    "url": "https://raw.githubusercontent.com/jacobsandlund/uucode/v0.2.0/licenses/LICENSE_unicode",
+    "sha256": "1eda5a3b026870c737b22e8bcd4954338612c790db688242e003f41a4fa95175"
+  },
+  {
+    "name": "hoehrmann",
+    "url": "https://raw.githubusercontent.com/jacobsandlund/uucode/v0.2.0/licenses/LICENSE_Bjoern_Hoehrmann",
+    "sha256": "de219cece932aad5a817bf763393d8d149d378a15d2ad5320e3331eac07626dd"
+  },
+  {
+    "name": "simdutf",
+    "url": "https://raw.githubusercontent.com/simdutf/simdutf/v9.0.0/LICENSE-APACHE",
+    "sha256": "3d34610fc6b5e1b0bfe4e2f36171c2d62c28ef05cb8d704f5a0073be41a43b3d"
+  },
+  {
+    "name": "Highway Apache-2.0",
+    "url": "https://raw.githubusercontent.com/google/highway/66486a10623fa0d72fe91260f96c892e41aceb06/LICENSE",
+    "sha256": "43070e2d4e532684de521b885f385d0841030efa2b1a20bafb76133a5e1379c1"
+  },
+  {
+    "name": "Highway BSD-3-Clause",
+    "url": "https://raw.githubusercontent.com/google/highway/66486a10623fa0d72fe91260f96c892e41aceb06/LICENSE-BSD3",
+    "sha256": "d25e82e26acd42ca3ccc9993622631163425b869b9e16284226d534cff6470f2"
+  }
+]

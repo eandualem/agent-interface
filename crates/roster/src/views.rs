@@ -3,7 +3,7 @@
 //! Each [`Request`] is a few GETs of fixed local API paths, with the same
 //! address, credential, proxy and redirect rules as the roster. Decoding keeps
 //! only the fields a view draws; an item that does not decode is skipped.
-//! Team-wide libraries are gathered in [`library`].
+//! Team-wide libraries are gathered in the private `library` module.
 
 use std::{
     collections::BTreeMap,

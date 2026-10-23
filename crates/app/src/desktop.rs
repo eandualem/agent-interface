@@ -41,6 +41,8 @@ use name::{NameEvent, NameField};
 use terminal::{LiveTerminal, Target};
 use tmux_workspaces_tmux::connection::SessionWindow;
 
+const APP_ID: &str = "io.github.eandualem.tmux-workspaces";
+
 actions!(
     library_browser,
     [
@@ -67,6 +69,7 @@ pub fn run(directory: Option<PathBuf>) -> Result<(), String> {
     application()
         .with_assets(icons::Assets)
         .run(move |cx: &mut App| {
+            cx.set_app_identity(APP_ID, "tmux-workspaces");
             if cfg!(target_os = "linux") && cx.graphical_environment().is_none() {
                 *opened.borrow_mut() =
                     Some("the workspace browser requires a graphical desktop".into());
@@ -166,6 +169,7 @@ fn open_browser(
     cx: &mut App,
 ) -> Result<(), String> {
     let options = WindowOptions {
+        app_id: Some(APP_ID.into()),
         window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
             None,
             size(
