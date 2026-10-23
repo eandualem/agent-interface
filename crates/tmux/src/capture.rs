@@ -1,6 +1,6 @@
 //! Reading a pane's contents from `capture-pane`.
 //!
-//! A rebuild (`docs/decisions/0021-pane-state-recovery.md`) captures a pane
+//! A rebuild (`docs/ARCHITECTURE.md`) captures a pane
 //! with `capture-pane -p -e -N -C`: one line per row, holding the row's text
 //! and the escape sequences that set its style, hyperlink and character set,
 //! with every byte below a space written as a backslash and three octal

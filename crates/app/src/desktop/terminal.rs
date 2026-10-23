@@ -25,6 +25,7 @@ impl Target {
         self.leaf.id == leaf.id
             && self.leaf.attachment == leaf.attachment
             && self.leaf.empty == leaf.empty
+            && self.leaf.view == leaf.view
     }
 
     pub fn same_session(&self, other: &Self) -> bool {
@@ -235,7 +236,7 @@ impl LiveTerminal {
         let connection = cx.background_executor().spawn(async move {
             let reopened = environment.is_some();
             if let Some(environment) = environment {
-                if target.leaf.empty || target.leaf.attachment.is_some() {
+                if !target.leaf.runs_terminal() || target.leaf.attachment.is_some() {
                     return Err("Only an ordinary terminal can be opened.".into());
                 }
                 let directory = library::library_directory(target.directory.as_deref())
@@ -282,8 +283,13 @@ impl LiveTerminal {
                         });
                         terminal.closed = Some(cx.subscribe(
                             &view,
-                            |terminal, _, _: &crate::view::Disconnected, cx| {
-                                terminal.error = Some("Session disconnected".into());
+                            |terminal, _, event: &crate::view::Disconnected, cx| {
+                                terminal.error = Some(
+                                    event
+                                        .0
+                                        .clone()
+                                        .unwrap_or_else(|| "Session disconnected".into()),
+                                );
                                 cx.notify();
                             },
                         ));
@@ -456,6 +462,7 @@ mod tests {
                 id: "123456abcdef".into(),
                 cwd: None,
                 empty: false,
+                view: None,
                 attachment: Some(Attachment {
                     session: "window-source".into(),
                     source_socket: Some(socket.trim().into()),
@@ -596,6 +603,7 @@ mod tests {
                 id: "abcdef123456".into(),
                 cwd: None,
                 empty: false,
+                view: None,
                 attachment: Some(Attachment {
                     session: "sized".into(),
                     source_socket: Some(socket.trim().into()),
@@ -687,6 +695,7 @@ mod tests {
                 id: "123456abcdef".into(),
                 cwd: None,
                 empty: false,
+                view: None,
                 attachment: Some(Attachment {
                     session: session.into(),
                     source_socket: Some(socket.to_str().unwrap().into()),

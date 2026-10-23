@@ -107,6 +107,7 @@ Each theme defines the same names (`[color.dark]`, `[color.light]` in
 | `focus`, `focus_halo` | Focused pane border and focus rings; glow around the focused pane |
 | `attention`, `attention_text`, `on_attention`, `attention_soft` | Needs you, destructive actions, errors |
 | `ok` | Saved light, connected |
+| `info`, `violet`, `green` | Inbound events and cache reads; cache writes; output tokens (Backbone views) |
 | `shadow` | Popover shadow |
 | `pane_dim` | Opacity of unfocused panes' content |
 
@@ -130,16 +131,16 @@ weight, applied with `components::text`:
 | `label` | Uppercase section labels (TABS, AGENTS) |
 | `key` | Keycaps and numbers, in `mono` |
 | `empty_title`, `body` | Empty and error states; explanatory text |
+| `figure` | The headline number in a view |
 
 ## Spacing, radii and sizes
 
 - `[space]`: a 2 px scale named by value (`s2` … `s24`). Views use these names.
 - `[radius]`: by use — `key`, `icon_button`, `menu_item`, `row`, `slot`,
-  `pane`, `popover`.
+  `pane`, `popover`, `pill`.
 - `[size]`: every component dimension, from `titlebar` and `panel_width` to
   `row`, `pane_header`, `status_row`, `slot`, `keycap`, `hairline` and the
   Settings window. Each is commented in `tokens.toml`.
-- `[motion]`: `spinner_ms`, one turn of the working-agent arc.
 
 ## Components
 
@@ -154,10 +155,55 @@ All in `components.rs`; each takes its look from the tokens.
 | `button` | `Primary` (accent fill), `Secondary` (field with border), `Danger` (attention text) |
 | `dot` | Small filled mark: needs you on tabs and slots, the saved light |
 | `menu`, `menu_item`, `menu_heading`, `menu_rule` | Popover frame on `field` with shadow; item with mark slot, label and key; uppercase heading; rule |
-| `agent_symbol` | Needs you: filled `attention` circle with "!". Working: `accent` arc turning once per `spinner_ms`, with a play mark. Idle: `faint` ring. Unknown: dashed `muted` ring with "?" |
+| `agent_symbol` | Needs you: filled `attention` circle with "!". Working: static `accent` arc with a play mark. Idle: `faint` ring. Unknown: dashed `muted` ring with "?" |
 | `minimap` | A tab's layout thumbnail: one frame, split once, or split twice |
 | `empty_tile`, `empty_state` | Icon tile, title, explanation and actions, centred |
 | `field_frame` | Text field frame, `accent` border when focused |
+| `view_heading`, `view_toolbar`, `view_footer` | A view's uppercase section label with a note; its control row; its bottom row of keys and a note |
+| `chip`, `segments`, `segment` | Filter pill, filled when on; a segmented control's frame and its choices |
+| `meter`, `stacked_meter`, `legend` | A bar filled to a share; a bar split by shares; a swatch, label and value |
+| `badge` | Small mono label, such as an agent's CLI |
+| `view_choice` | A row of the new-pane views list: icon tile, label, description, scope |
+| `fact` | A label and value, one line of an agent's card |
+| `choice_button`, `filter_frame`, `choice_frame`, `choice_key`, `hint_bar` | The chooser's two buttons, filter, selectable row with its ring, number key and centred key row |
+| `view_header`, `back_button`, `pill`, `info_card` | A view's 28 px header; the reading view's way back; a tag; a summary panel |
+| `tag` with `Tone` | How something is delivered: `Plain` for `all` and plain facts, `Tag` in the accent tint for a tag, `Quiet` outline for a direct assignment |
+| `grouped_page`, `group_title`, `group_label`, `group_card`, `group_row`, `group_note` | How a view lays out a list people browse: a padded page with a centred column no wider than `grouped_width`; a major section's title (`group_title` text) and one line saying what it holds; a subgroup's label, which may be a `tag`; rows on a rounded `panel` card, one line each, `group_row` tall, separated by hairlines, with a name, meta on the right and a chevron; a quiet line for what a section does not list |
+| `number_tile` | A round tile with a position, such as a policy's place in a brief |
+| `tag_card` | A tag on the left (`tag_card_label` wide) with how many agents carry it; labelled lines of mono names on the right (agents, skills, policies), a dash when empty; `panel` fill for `all` |
+
+## Backbone views
+
+A pane can show a view instead of a terminal.
+An empty pane shows the new-pane chooser (`desktop/new_pane.rs`): Open
+terminal and **Skills, usage, team…**, a filter, Backbone agents then other
+tmux sessions, and the views list. Each view lives in `desktop/views/` and
+follows its design board with its own header (`view_header`), controls, list
+and footer; a view pane has no generic pane header.
+A view keeps its last data when Backbone stops answering and says so in a
+band at the bottom.
+
+Views follow four rules:
+
+- **A view is a pane.** It never opens or takes over another pane by itself;
+  only an explicit choice such as ⌥-click in Team opens one beside it.
+- **List, then document, in the same pane.** Choosing a skill or policy
+  replaces the list with the reader (`views/reader.rs`): a `back_button` named
+  after where it returns ("Skills", "Policies", "worker's brief"), the
+  document's place in that list, Rendered or Source, a summary `info_card` and
+  the text. Esc goes back; `[` and `]` move through the list; S shows the
+  source.
+- **One agent's things live in the agent view.** Its Skills, Policies and
+  Usage are sections of the Agent view. The team-wide Skills, Policies and
+  Tags views never name agents in their rows; they say how a thing is
+  delivered (layer, tag, `all`) and how many agents that reaches.
+- **Read only.** Every view only reads; nothing approves, tags, edits or
+  starts anything.
+- **Group, then list.** A list people browse is grouped: sections for what
+  kind of thing it is, subgroups for where it comes from or who receives it,
+  and one line per row. Descriptions belong in the reader, not the list.
+  Team groups agents by workspace folder, with an agent whose folder is named
+  `coordinator` first and the others beneath it.
 
 Agent states always pair a shape with a colour, so they read without colour.
 Backbone's states fold onto four (`AgentState::from_report`): needs you

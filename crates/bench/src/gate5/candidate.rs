@@ -2,7 +2,7 @@
 //! connection, then fed the pane's output that follows the rebuild.
 //!
 //! The snapshot conversion is shared with the app. Neither the tmux nor
-//! terminal crate depends on the other (decision record 0006).
+//! terminal crate depends on the other.
 
 use std::time::Instant;
 
@@ -19,7 +19,7 @@ mod stream;
 use super::connection::{Connection, Event, TIMEOUT};
 
 /// The lines of history a rebuilt terminal keeps: tmux's default limit.
-const SCROLLBACK: usize = 2_000;
+pub(super) const SCROLLBACK: usize = 2_000;
 
 /// A pane rebuilt from a snapshot, kept up to date with its output.
 pub struct Candidate {
@@ -109,7 +109,7 @@ impl Candidate {
                 return Err("output did not settle during margin cursor recovery".to_owned());
             }
             let from = connection.mark();
-            let (recovery, pause) = Recovery::start(self.pane);
+            let (recovery, pause) = Recovery::start(self.pane, SCROLLBACK);
             connection.send(&pause)?;
             let (rebuilt, next) = recover(connection, from, from, recovery, deadline)?
                 .ok_or("margin cursor recovery failed")?;

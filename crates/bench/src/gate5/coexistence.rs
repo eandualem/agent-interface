@@ -1,4 +1,4 @@
-//! ADR 0003's coexistence checks. All clients and servers belong to the fixture;
+//! Client coexistence checks. All clients and servers belong to the fixture;
 //! ordinary clients run in the existing PTY harness, never a desktop terminal.
 
 use std::time::{Duration, Instant};

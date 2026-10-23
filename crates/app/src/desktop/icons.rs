@@ -16,6 +16,8 @@ macro_rules! icons {
 
 icons!(
     "chevron-down",
+    "chevron-up",
+    "hash",
     "plus",
     "ellipsis",
     "settings",
@@ -87,6 +89,10 @@ icons!(
     "circle-check",
     "agent-arc",
     "agent-play",
+    "activity",
+    "chevron-left",
+    "layout-grid",
+    "align-left",
 );
 
 /// Icons a workspace can show, in the order the picker offers them.

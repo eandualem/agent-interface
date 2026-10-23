@@ -75,14 +75,14 @@ impl WindowLayout {
     pub fn terminal_input(&self) -> Option<&Leaf> {
         self.model
             .pane()
-            .filter(|pane| self.terminal_focused && !pane.empty)
+            .filter(|pane| self.terminal_focused && pane.runs_terminal())
     }
 
     /// Explicitly move input focus to the selected terminal. The caller must
     /// first check that it is displayed and ready. An empty workspace or chooser
     /// stays in navigation. This state is local and never saved in layouts.db.
     pub fn focus_terminal(&mut self) -> bool {
-        self.terminal_focused = self.model.pane().is_some_and(|pane| !pane.empty);
+        self.terminal_focused = self.model.pane().is_some_and(Leaf::runs_terminal);
         self.terminal_focused
     }
 

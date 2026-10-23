@@ -76,6 +76,7 @@ pub fn show(cx: &mut App) {
     }
     let t = tokens();
     let options = WindowOptions {
+        app_id: Some(super::APP_ID.into()),
         window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
             None,
             size(px(t.size.settings_width), px(t.size.settings_height)),
@@ -681,10 +682,7 @@ impl SettingsWindow {
                 .flex()
                 .items_center()
                 .gap(px(t.space.s8))
-                .child(ui::agent_symbol(
-                    state,
-                    SharedString::from(format!("legend-{}", state.word())),
-                ))
+                .child(ui::agent_symbol(state))
                 .child(state.word())
         };
         div()

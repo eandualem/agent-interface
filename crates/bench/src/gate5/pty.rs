@@ -1,5 +1,5 @@
 //! Gate 5's reference: an ordinary tmux client attached in a pseudo-terminal,
-//! whose output the harness keeps (`docs/decisions/0021-pane-state-recovery.md`).
+//! whose output the harness keeps (`docs/BENCHMARKING.md`).
 
 // Opening a pseudo-terminal and making it the client's controlling terminal
 // need the C library.

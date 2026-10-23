@@ -1,6 +1,6 @@
 //! Gate 5, control-mode fidelity
-//! (`docs/decisions/0018-milestone-0-benchmark-method-revised.md`), by the
-//! harness decision record 0021 describes: each scenario rebuilds a pane with
+//! (`docs/BENCHMARKING.md`), by the
+//! recovery harness: each scenario rebuilds a pane with
 //! the app's recovery code on a control connection and compares it, cell by
 //! cell, with an ordinary tmux client attached to the same pane.
 //!
@@ -139,7 +139,7 @@ enum Verdict {
     Match,
     /// Matched where a difference was expected.
     MatchedDespite(Why),
-    /// Differed as a limit of record 0021 explains.
+    /// Differed within the expected recovery limits.
     Explained(&'static str),
     /// Differed in a way nothing expected explains, beyond the expected
     /// difference if there was one.
@@ -437,7 +437,7 @@ impl Report<'_> {
             .count();
         let _ = writeln!(
             text,
-            "**{}.** Of {} comparisons, {} match, {} differ as a limit of decision record 0021 explains and {} differ unexplained. {} fixture runs failed to complete. {} of {} checks failed.\n",
+            "**{}.** Of {} comparisons, {} match, {} differ within the expected recovery limits and {} differ unexplained. {} fixture runs failed to complete. {} of {} checks failed.\n",
             match self.outcome() {
                 Outcome::Pass => "Passed".to_owned(),
                 Outcome::Fail => "Failed".to_owned(),

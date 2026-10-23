@@ -8,6 +8,12 @@ use http::{HeaderValue, Uri};
 
 use crate::{RESPONSE_LIMIT, Snapshot};
 
+thread_local! {
+    // One runtime and connection pool per polling worker. Credentials and
+    // endpoint validation remain per request, including after config changes.
+    static CLIENT: std::cell::RefCell<Option<reqwest::blocking::Client>> = const { std::cell::RefCell::new(None) };
+}
+
 impl Snapshot {
     /// Read one agents response from an explicitly supplied local API address.
     ///
@@ -17,14 +23,16 @@ impl Snapshot {
     /// nonempty, is sent only as the validated endpoint's bearer token. Every
     /// failure marks the existing snapshot stale with the same fixed diagnostic.
     pub fn fetch(&mut self, url: &str, key: &str) {
-        match response(url, key) {
+        match get(url, "/api/agents", key, RESPONSE_LIMIT) {
             Some(bytes) => self.update(&bytes),
             None => self.unavailable(),
         }
     }
 }
 
-pub(super) fn endpoint(url: &str) -> Option<Uri> {
+/// The validated loopback address of `path`, which the caller builds from
+/// fixed text and validated values only.
+pub(super) fn endpoint(url: &str, path: &str) -> Option<Uri> {
     let uri: Uri = url.parse().ok()?;
     let authority = uri.authority()?;
     if uri.scheme_str() != Some("http")
@@ -38,14 +46,63 @@ pub(super) fn endpoint(url: &str) -> Option<Uri> {
     {
         return None;
     }
-    format!("{}/api/agents", url.trim_end_matches('/'))
-        .parse()
-        .ok()
+    format!("{}{path}", url.trim_end_matches('/')).parse().ok()
 }
 
-fn response(url: &str, key: &str) -> Option<Vec<u8>> {
-    let uri = endpoint(url)?;
-    let client = reqwest::blocking::Client::builder()
+/// One bounded GET of a fixed read path, returning at most `limit` plus one
+/// bytes so the caller can reject an oversized body.
+pub(super) fn get(url: &str, path: &str, key: &str, limit: usize) -> Option<Vec<u8>> {
+    fetch(url, path, key, limit).ok()
+}
+
+/// As [`get`], but a reply that is not a success reports its status.
+pub(super) fn fetch(
+    url: &str,
+    path: &str,
+    key: &str,
+    limit: usize,
+) -> Result<Vec<u8>, Option<u16>> {
+    fetch_inner(url, path, key, limit).ok_or(None)?
+}
+
+fn fetch_inner(
+    url: &str,
+    path: &str,
+    key: &str,
+    limit: usize,
+) -> Option<Result<Vec<u8>, Option<u16>>> {
+    let uri = endpoint(url, path)?;
+    let client = CLIENT.with(|cached| {
+        let mut cached = cached.borrow_mut();
+        if cached.is_none() {
+            *cached = client();
+        }
+        cached.clone()
+    })?;
+    // Set the request's total deadline, including the response body, rather
+    // than only a timeout renewed for each blocking read.
+    let mut request = client.get(uri.to_string()).timeout(Duration::from_secs(3));
+    if !key.is_empty() {
+        let mut value = HeaderValue::from_str(&format!("Bearer {key}")).ok()?;
+        value.set_sensitive(true);
+        request = request.header("Authorization", value);
+    }
+    let response = request.send().ok()?;
+    if !response.status().is_success() {
+        return Some(Err(Some(response.status().as_u16())));
+    }
+    // Read one extra byte to distinguish an exact-size body from an oversized
+    // one. Snapshot::update keeps the inclusive limit when decoding.
+    let mut bytes = Vec::new();
+    response
+        .take(limit as u64 + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    Some(Ok(bytes))
+}
+
+fn client() -> Option<reqwest::blocking::Client> {
+    reqwest::blocking::Client::builder()
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
         .connection_verbose(false)
@@ -59,27 +116,7 @@ fn response(url: &str, key: &str) -> Option<Vec<u8>> {
             ],
         )
         .build()
-        .ok()?;
-    // Set the request's total deadline, including the response body, rather
-    // than only a timeout renewed for each blocking read.
-    let mut request = client.get(uri.to_string()).timeout(Duration::from_secs(3));
-    if !key.is_empty() {
-        let mut value = HeaderValue::from_str(&format!("Bearer {key}")).ok()?;
-        value.set_sensitive(true);
-        request = request.header("Authorization", value);
-    }
-    let response = request.send().ok()?;
-    if !response.status().is_success() {
-        return None;
-    }
-    // Read one extra byte to distinguish an exact-size body from an oversized
-    // one. Snapshot::update keeps the inclusive limit when decoding.
-    let mut bytes = Vec::new();
-    response
-        .take(RESPONSE_LIMIT as u64 + 1)
-        .read_to_end(&mut bytes)
-        .ok()?;
-    Some(bytes)
+        .ok()
 }
 
 #[cfg(test)]
@@ -92,6 +129,39 @@ pub(super) mod tests {
     use std::time::Instant;
 
     const BODY: &str = r#"{"items":[{"name":"worker","state":"busy"}]}"#;
+
+    #[test]
+    fn consecutive_reads_reuse_the_connection_with_current_credentials() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let worker = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            for key in ["first", "second"] {
+                let mut request = Vec::new();
+                while !request.ends_with(b"\r\n\r\n") {
+                    let mut byte = [0];
+                    socket.read_exact(&mut byte).unwrap();
+                    request.push(byte[0]);
+                }
+                assert!(
+                    String::from_utf8(request)
+                        .unwrap()
+                        .to_ascii_lowercase()
+                        .contains(&format!("authorization: bearer {key}\r\n"))
+                );
+                socket
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}")
+                    .unwrap();
+            }
+        });
+        for key in ["first", "second"] {
+            assert_eq!(get(&url, "/api/agents", key, 20).unwrap(), b"{}");
+        }
+        worker.join().unwrap();
+    }
 
     pub(crate) fn server(reply: String, pause: Duration) -> (String, thread::JoinHandle<String>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -150,7 +220,12 @@ pub(super) mod tests {
             "http://LOCALHOST/prefix/",
             "http://[::1]:7120",
         ] {
-            assert!(endpoint(url).unwrap().path().ends_with("/api/agents"));
+            assert!(
+                endpoint(url, "/api/agents")
+                    .unwrap()
+                    .path()
+                    .ends_with("/api/agents")
+            );
         }
         for url in [
             "https://localhost",
@@ -169,7 +244,7 @@ pub(super) mod tests {
             "http://[::1]:65536",
             "http://localhost:",
         ] {
-            assert!(endpoint(url).is_none(), "{url}");
+            assert!(endpoint(url, "/api/agents").is_none(), "{url}");
         }
     }
 

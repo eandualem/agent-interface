@@ -1,5 +1,4 @@
-//! Gate 5's scenarios (`docs/decisions/0021-pane-state-recovery.md`, harness
-//! for gate 5).
+//! Pane recovery and rendering scenarios for gate 5.
 
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -419,7 +418,7 @@ fn rebuild_paused(
     pane: PaneId,
     at: usize,
 ) -> Result<(Snapshot, Candidate), String> {
-    let (recovery, line) = Recovery::paused(pane);
+    let (recovery, line) = Recovery::paused(pane, candidate::SCROLLBACK);
     // Every earlier command has had its replies: the rebuild's start here.
     let replies_from = connection.mark();
     connection.send(&line)?;
@@ -450,7 +449,7 @@ pub fn exit_after_pause(version: (u32, u32)) -> Result<Check, String> {
         &[pane],
     )?;
     let from = connection.mark();
-    let (mut recovery, pause) = Recovery::start(pane);
+    let (mut recovery, pause) = Recovery::start(pane, candidate::SCROLLBACK);
     connection.send(&pause)?;
     let mut index = from;
     let line = loop {
@@ -508,7 +507,7 @@ pub fn exit_during_attach(version: (u32, u32)) -> Result<(Check, [Comparison; 2]
     session.signal("quit")?;
     wait_until_gone(&session, leaving)?;
     let from = connection.mark();
-    let (attach, line) = Attach::new(vec![pane, leaving]);
+    let (attach, line) = Attach::new(vec![pane, leaving], candidate::SCROLLBACK);
     connection.send(&line)?;
     let failed = candidate::attach(&connection, from, attach)?.is_none();
     // The remaining pane writes more: the reference draws it, and the
@@ -518,7 +517,7 @@ pub fn exit_during_attach(version: (u32, u32)) -> Result<(Check, [Comparison; 2]
     quiet(&reference, None)?;
     let quiet_output = connection.output_bytes() == 0;
     let from = connection.mark();
-    let (attach, line) = Attach::new(vec![pane]);
+    let (attach, line) = Attach::new(vec![pane], candidate::SCROLLBACK);
     connection.send(&line)?;
     let (snapshots, next) =
         candidate::attach(&connection, from, attach)?.ok_or("the second attach line failed")?;
@@ -624,7 +623,7 @@ fn first_attach(
         panes,
     )?;
     let from = connection.mark();
-    let (attach, line) = Attach::new(panes.to_vec());
+    let (attach, line) = Attach::new(panes.to_vec(), candidate::SCROLLBACK);
     connection.send(&line)?;
     let (snapshots, next) = candidate::attach(&connection, from, attach)?
         .ok_or("a command of the attach line failed")?;
@@ -660,7 +659,7 @@ fn pause_and_rebuild(
         std::thread::sleep(stall);
     }
     let from = connection.mark();
-    let (recovery, pause) = Recovery::start(pane);
+    let (recovery, pause) = Recovery::start(pane, candidate::SCROLLBACK);
     let sent = connection.send(&pause);
     if let Some(stall) = stall {
         std::thread::sleep(stall);
@@ -886,7 +885,7 @@ mod tests {
             ])
             .unwrap();
         let from = connection.mark();
-        let (recovery, pause) = Recovery::start(pane);
+        let (recovery, pause) = Recovery::start(pane, candidate::SCROLLBACK);
         let deadline = Instant::now() + Duration::from_millis(50);
         connection.send(&pause).unwrap();
         let result = candidate::recover(&connection, from, from, recovery, deadline);

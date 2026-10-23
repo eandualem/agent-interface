@@ -96,10 +96,17 @@ impl Browser {
                 ))
             })
             .collect();
+        // Cached paint already contains inherited opacity. Repaint once
+        // when pane focus changes so dimming follows the new selection.
+        let focus_changed = self.painted_pane_focus.as_ref() != Some(&tab.focus);
+        self.painted_pane_focus = Some(tab.focus.clone());
         let cards = super::pane_cards::Cards {
             focus: &tab.focus,
+            focus_changed,
             numbers: &numbers,
             terminals: &self.terminals,
+            views: &self.views,
+            new_panes: &self.new_panes,
             chooser: self.chooser.as_ref(),
             split_bounds: &self.split_bounds,
             leaf_states,

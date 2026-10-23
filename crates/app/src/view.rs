@@ -1,5 +1,5 @@
 //! The terminal grid: draws the panes' owned display data with GPUI
-//! (`docs/decisions/0005-ui-framework-and-terminal-renderer.md`).
+//! (`docs/ARCHITECTURE.md`).
 //!
 //! Terminal columns come from the display data, never from text layout.
 //! Ligatures are off. With a monospaced font, each run of plain ASCII text
@@ -111,7 +111,7 @@ pub struct TerminalView {
     wheel_gesture: WheelGesture,
 }
 
-pub(crate) struct Disconnected;
+pub(crate) struct Disconnected(pub Option<String>);
 impl gpui::EventEmitter<Disconnected> for TerminalView {}
 
 /// What the grid draws, shared with the paint callback of each frame.
@@ -177,9 +177,17 @@ impl TerminalView {
         let focus = cx.focus_handle();
         cx.on_release(|view, cx| {
             view.release_mouse();
+            let drained = view.input_queue.close();
             let panes = view.panes.take();
             cx.background_executor()
-                .spawn(async move { drop(panes) })
+                .spawn(async move {
+                    if let Some(panes) = panes {
+                        if let Some(drained) = drained {
+                            let _ = drained.recv_timeout(std::time::Duration::from_secs(1));
+                        }
+                        panes.shutdown();
+                    }
+                })
                 .detach();
         })
         .detach();
@@ -715,7 +723,7 @@ impl Render for TerminalView {
             self.report_failure();
             if self.embedded && !self.closed_reported {
                 self.closed_reported = true;
-                cx.emit(Disconnected);
+                cx.emit(Disconnected(self.panes().failure()));
             }
             // The client has gone: close once this frame, which shows its last
             // output, has been drawn.
@@ -915,13 +923,20 @@ impl Render for TerminalView {
 }
 
 pub(crate) struct InputQueue {
-    sender: std::sync::mpsc::Sender<(PaneId, Input)>,
+    sender: Option<std::sync::mpsc::Sender<(PaneId, Input)>>,
+    drained: Option<std::sync::mpsc::Receiver<()>>,
     queued: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl InputQueue {
+    fn close(&mut self) -> Option<std::sync::mpsc::Receiver<()>> {
+        self.sender.take();
+        self.drained.take()
+    }
+
     pub(crate) fn try_send(&self, event: (PaneId, Input)) -> Result<(), ()> {
         use std::sync::atomic::Ordering;
+        let sender = self.sender.as_ref().ok_or(())?;
         // A view owns at most one outstanding press. Its release must fit even
         // when ordinary input has filled all 64 slots.
         let limit = if matches!(event.1, Input::Mouse(_, MouseAction::Release(_))) {
@@ -934,7 +949,7 @@ impl InputQueue {
                 (count < limit).then_some(count + 1)
             })
             .map_err(|_| ())?;
-        if self.sender.send(event).is_err() {
+        if sender.send(event).is_err() {
             self.queued.fetch_sub(1, Ordering::AcqRel);
             return Err(());
         }
@@ -947,6 +962,7 @@ pub(crate) fn input_queue(
     report: impl Fn(Option<String>) + Send + 'static,
 ) -> InputQueue {
     let (sender, pending) = std::sync::mpsc::channel::<(PaneId, Input)>();
+    let (finished, drained) = std::sync::mpsc::channel();
     let queued = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let waiting = Arc::clone(&queued);
     std::thread::spawn(move || {
@@ -960,8 +976,13 @@ pub(crate) fn input_queue(
                     .map(|e| e.to_string()),
             );
         }
+        let _ = finished.send(());
     });
-    InputQueue { sender, queued }
+    InputQueue {
+        sender: Some(sender),
+        drained: Some(drained),
+        queued,
+    }
 }
 
 fn ends_mouse_gesture(pressed: Button, released: Button, macos: bool) -> bool {
@@ -1398,6 +1419,87 @@ mod tests {
     use super::*;
 
     #[test]
+    fn closing_input_queue_delivers_mouse_release_before_shutdown() {
+        use std::time::{Duration, Instant};
+        use tmux_workspaces_test_support::TmuxServer;
+        let server = TmuxServer::start().unwrap();
+        let session = TmuxServer::SESSION;
+        server.run(&["respawn-pane", "-k", "-t", session, "sh", "-c",
+            "stty raw -echo; printf '\\033[?1000h\\033[?1006hready'; mouse=$(dd bs=1 count=18 2>/dev/null | od -An -tx1 | tr -d '[:space:]'); printf '\\r\\nmouse:%s' \"$mouse\"; exec cat"
+        ]).unwrap();
+        let fields = server
+            .run(&[
+                "display-message",
+                "-p",
+                "-t",
+                session,
+                "#{window_id} #{window_layout} #{window_visible_layout} #{window_raw_flags}",
+            ])
+            .unwrap();
+        let layout =
+            tmux_workspaces_tmux::layout::parse(format!("%layout-change {fields}").as_bytes())
+                .unwrap();
+        let client = server
+            .control(&[
+                "attach-session",
+                "-f",
+                "no-output,ignore-size,new-layouts",
+                "-t",
+                session,
+            ])
+            .unwrap();
+        let panes = Arc::new(Panes::start(client, &layout, 100, || {}).unwrap());
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if panes.take_update().is_some_and(|update| {
+                update
+                    .screens
+                    .iter()
+                    .any(|(_, screen)| screen.mouse_input())
+            }) {
+                break;
+            }
+            assert!(Instant::now() < deadline, "mouse mode was not observed");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let pointer = Pointer {
+            x: 2.5,
+            y: 3.5,
+            cols: layout.panes[0].cols,
+            rows: layout.panes[0].rows,
+            cell_width: 8,
+            cell_height: 16,
+            ..Default::default()
+        };
+        let mut queue = input_queue(Arc::clone(&panes), |_| {});
+        for action in [
+            MouseAction::Press(Button::Left),
+            MouseAction::Release(Button::Left),
+        ] {
+            queue
+                .try_send((layout.panes[0].id, Input::Mouse(pointer, action)))
+                .unwrap();
+        }
+        queue
+            .close()
+            .unwrap()
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap();
+        panes.shutdown();
+        loop {
+            let captured = server.run(&["capture-pane", "-p", "-t", session]).unwrap();
+            if captured.contains("mouse:1b5b3c303b333b344d1b5b3c303b333b346d") {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "mouse release was lost: {captured}"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
     fn control_click_release_aliases_end_the_original_macos_gesture() {
         assert!(ends_mouse_gesture(Button::Left, Button::Right, true));
         assert!(ends_mouse_gesture(Button::Right, Button::Left, true));
@@ -1408,8 +1510,9 @@ mod tests {
     #[test]
     fn saturated_input_queue_reserves_the_drag_release_in_order() {
         let (sender, receiver) = std::sync::mpsc::channel();
-        let queue = InputQueue {
-            sender,
+        let mut queue = InputQueue {
+            sender: Some(sender),
+            drained: None,
             queued: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         };
         let pane = PaneId(1);
@@ -1437,7 +1540,8 @@ mod tests {
                 Input::Mouse(pointer, MouseAction::Release(Button::Left)),
             ))
             .unwrap();
-        let events: Vec<_> = receiver.try_iter().collect();
+        queue.close();
+        let events: Vec<_> = receiver.iter().collect();
         assert_eq!(events.len(), 65);
         assert!(matches!(
             events[0].1,

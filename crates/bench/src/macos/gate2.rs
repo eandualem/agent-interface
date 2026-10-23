@@ -1,5 +1,5 @@
 //! Gate 2: end-to-end bulk output, the marker probe and vtebench
-//! (`docs/decisions/0018-milestone-0-benchmark-method-revised.md`).
+//! (`docs/BENCHMARKING.md`).
 //!
 //! A producer in a tmux pane waits on a FIFO, prints a 20 MB payload from
 //! gate 1's generator and then fills the screen with the marker colour. The
@@ -58,7 +58,7 @@ exec sleep 86400
 
 struct Settings {
     /// How this program's build differs from the distributable one; any
-    /// difference keeps the gate undecided (0018).
+    /// difference keeps the gate undecided.
     build_issues: Vec<String>,
     size: usize,
     seed: u64,
@@ -423,7 +423,7 @@ fn verdict(
     }
     reasons.push(
         "An acceptance result needs three independent runs of a clean build on a quiet \
-         machine (decision record 0018); this report alone does not make one."
+         machine; this report alone does not make one."
             .to_owned(),
     );
     // Without vtebench, it is missing: the gate can fail but never pass.
@@ -504,7 +504,7 @@ mod tests {
         // results within another 16.7 ms of that need a camera.
         let (_, reasons) = judge(1005, Some(60.0), &ascii);
         assert!(
-            reasons[0].ends_with("needs camera confirmation (0018)"),
+            reasons[0].ends_with("needs camera confirmation"),
             "{reasons:?}"
         );
         let (verdict, reasons) = judge(980, Some(60.0), &ascii);

@@ -1,5 +1,5 @@
 //! Gate 4: frame pacing
-//! (`docs/decisions/0018-milestone-0-benchmark-method-revised.md`).
+//! (`docs/BENCHMARKING.md`).
 //!
 //! The measured terminal runs the fire animation or the scroll test, the app
 //! inside a tmux pane and plain Ghostty directly. Frames are counted only
@@ -68,7 +68,7 @@ const REQUIRED_SECONDS: f64 = 30.0;
 
 struct Settings {
     /// How this program's build differs from the distributable one; any
-    /// difference keeps the gate undecided (0018).
+    /// difference keeps the gate undecided.
     build_issues: Vec<String>,
     seconds: f64,
     runs: usize,
@@ -347,7 +347,7 @@ fn verdict(settings: &Settings, results: &[Measured]) -> (String, Vec<String>) {
     }
     reasons.push(
         "An acceptance result needs three independent runs of a clean build on a quiet \
-         machine (decision record 0018); this report alone does not make one."
+         machine; this report alone does not make one."
             .to_owned(),
     );
     (

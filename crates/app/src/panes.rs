@@ -1,6 +1,6 @@
 //! The panes of one control-mode connection, each kept as terminal state on a
 //! terminal worker thread
-//! (`docs/decisions/0007-threads-ownership-and-event-ordering.md`).
+//! (`docs/ARCHITECTURE.md`).
 //!
 //! A reader thread reads the tmux client's output and decodes it. Each pane's
 //! output goes, in order, to the terminal worker, which owns every
@@ -12,7 +12,7 @@
 
 use std::collections::VecDeque;
 use std::io::{self, Read, Write};
-use std::process::{Child, ChildStdout};
+use std::process::Child;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -55,7 +55,7 @@ pub struct Panes {
     control: Arc<Control>,
     input: Mutex<()>,
     source: Option<(u32, u32)>,
-    client: Child,
+    client: Mutex<Child>,
     threads: Vec<JoinHandle<()>>,
 }
 
@@ -150,8 +150,16 @@ impl Control {
             .map_err(|_| io::Error::other("the client is detached"))?;
         if wait {
             received
-                .recv()
-                .map_err(|_| io::Error::other("the control writer exited"))??;
+                .recv_timeout(crate::seed::TIMEOUT)
+                .map_err(|error| match error {
+                    mpsc::RecvTimeoutError::Timeout => io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "timed out writing to the control client",
+                    ),
+                    mpsc::RecvTimeoutError::Disconnected => {
+                        io::Error::other("the control writer exited")
+                    }
+                })??;
         }
         Ok(())
     }
@@ -166,6 +174,9 @@ fn write_commands(
     shared: &Shared,
 ) {
     while let Ok(WriteRequest::Command { line, owner, sent }) = requests.recv() {
+        if shared.lock().cancelled {
+            break;
+        }
         control
             .pending
             .lock()
@@ -176,7 +187,10 @@ fn write_commands(
             .and_then(|()| stdin.flush());
         let failed = result.is_err();
         if let Err(error) = &result {
-            shared.lock().transport_failure = Some(format!("writing to control client: {error}"));
+            shared
+                .lock()
+                .transport_failure
+                .get_or_insert_with(|| format!("writing to control client: {error}"));
             shared.changed.notify_all();
         }
         if let Some(sent) = sent {
@@ -195,8 +209,8 @@ struct LivePane {
     size: (u16, u16),
     offset: (u16, u16),
     // The engine's display copy cannot express tmux's logical margin cursor.
-    // Retain its authoritative snapshot and never stream into that copy.
-    captured: Option<Snapshot>,
+    // Keep it in capture-only mode rather than streaming into that copy.
+    captured: bool,
     needs_capture: bool,
     recovery_deadline: Option<Instant>,
 }
@@ -216,7 +230,7 @@ impl LivePane {
             size: (snapshot.state.width, snapshot.state.height),
             offset: (snapshot.state.left, snapshot.state.top),
             terminal,
-            captured: captured.then_some(snapshot),
+            captured,
             needs_capture: false,
             recovery_deadline: None,
         })
@@ -235,7 +249,7 @@ impl LivePane {
     }
 
     fn output(&mut self, bytes: &[u8]) -> Result<(), String> {
-        if self.captured.is_some() || self.needs_capture {
+        if self.captured || self.needs_capture {
             self.needs_capture |= !bytes.is_empty();
         } else {
             (_, self.needs_capture) = crate::stream::write_until_wrap(&mut self.terminal, bytes)
@@ -308,7 +322,7 @@ impl WindowState {
                             .map_err(|e| e.to_string())?,
                         size: (pane.cols, pane.rows),
                         offset: (pane.left, pane.top),
-                        captured: None,
+                        captured: false,
                         needs_capture: true,
                         recovery_deadline: None,
                     },
@@ -364,7 +378,7 @@ impl Panes {
         scrollback: usize,
         wake: impl Fn() + Send + 'static,
     ) -> io::Result<Self> {
-        let seed = match crate::seed::attach(&mut client, layout.window, session) {
+        let seed = match crate::seed::attach(&mut client, layout.window, session, scrollback) {
             Ok(seed) => seed,
             Err(error) => {
                 let _ = client.kill();
@@ -382,14 +396,18 @@ impl Panes {
         } = seed;
         let prefix = format!("%layout-change @{} ", layout.window);
         let mut queue = VecDeque::new();
+        let mut visible: Vec<_> = layout.panes.iter().map(|pane| pane.id).collect();
         for event in events {
             match event {
-                crate::seed::Event::Output(pane, bytes) => {
+                crate::seed::Event::Output(pane, bytes) if visible.contains(&pane) => {
                     queue.push_back(Event::Output(pane, bytes))
                 }
                 crate::seed::Event::Layout(line) if line.starts_with(prefix.as_bytes()) => {
                     match layout::parse(&line) {
-                        Ok(change) => queue.push_back(Event::Layout(change)),
+                        Ok(change) => {
+                            visible = change.panes.iter().map(|pane| pane.id).collect();
+                            queue.push_back(Event::Layout(change));
+                        }
                         Err(error) => {
                             let _ = client.kill();
                             let _ = client.wait();
@@ -418,7 +436,7 @@ impl Panes {
             }),
             input: Mutex::new(()),
             source: session.map(|session| (session, layout.window)),
-            client,
+            client: Mutex::new(client),
             threads: Vec::new(),
         };
         let writer = spawn("tmux writer", {
@@ -429,20 +447,28 @@ impl Panes {
         match writer {
             Ok(writer) => panes.threads.push(writer),
             Err(error) => {
-                let _ = panes.client.kill();
+                let _ = panes
+                    .client
+                    .get_mut()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .kill();
                 return Err(error);
             }
         }
         let reader = spawn("tmux reader", {
             let shared = Arc::clone(&panes.shared);
             let window = layout.window;
-            move || read(&shared, stdout, decoder, window, session)
+            move || read(&shared, stdout, decoder, window, session, visible)
         });
         match reader {
             Ok(reader) => panes.threads.push(reader),
             Err(error) => {
                 // Its output is closed unread, so the client might never exit.
-                let _ = panes.client.kill();
+                let _ = panes
+                    .client
+                    .get_mut()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .kill();
                 return Err(error);
             }
         }
@@ -499,7 +525,11 @@ impl Panes {
         // even when recovery commands run between its chunks.
         let _input = self.input.lock().unwrap_or_else(|e| e.into_inner());
         for chunk in bytes.chunks(INPUT_CHUNK) {
-            if self.shared.lock().closed {
+            let unavailable = {
+                let state = self.shared.lock();
+                state.closed || state.cancelled
+            };
+            if unavailable {
                 return Err(io::Error::other("the control client has exited"));
             }
             if self.shared.lock().gone.contains(&pane) {
@@ -514,7 +544,25 @@ impl Panes {
                 }
                 None => command::send_bytes(pane, chunk),
             };
-            self.control.send(&line, ReplyOwner::Input(pane))?;
+            if let Err(error) = self.control.send(&line, ReplyOwner::Input(pane)) {
+                {
+                    let mut state = self.shared.lock();
+                    state
+                        .transport_failure
+                        .get_or_insert_with(|| format!("writing to control client: {error}"));
+                }
+                // A timed-out write may still be in the pipe. Kill this
+                // connection before returning so it cannot deliver it later.
+                if error.kind() == io::ErrorKind::TimedOut {
+                    self.shared.lock().cancelled = true;
+                    let mut client = self.client.lock().unwrap_or_else(|e| e.into_inner());
+                    let _ = client.kill();
+                    let _ = client.wait();
+                    drop(client);
+                    self.shutdown();
+                }
+                return Err(error);
+            }
         }
         Ok(())
     }
@@ -576,16 +624,33 @@ impl Panes {
         let state = self.shared.lock();
         state.finished && state.update.is_none()
     }
+
+    /// Cancel before releasing the UI's reference: an input writer may hold
+    /// another reference while blocked on this client's pipe. Only the owned
+    /// control client is terminated if it cannot detach promptly.
+    pub(crate) fn shutdown(&self) {
+        self.shared.lock().cancelled = true;
+        self.shared.changed.notify_all();
+        let _ = self.control.commands.send(WriteRequest::Close);
+        let mut client = self.client.lock().unwrap_or_else(|e| e.into_inner());
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            match client.try_wait() {
+                Ok(Some(_)) => return,
+                Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(10)),
+                _ => break,
+            }
+        }
+        let _ = client.kill();
+        let _ = client.wait();
+    }
 }
 
 impl Drop for Panes {
     fn drop(&mut self) {
         // Closing standard input detaches the client, which then exits and
         // ends the reader with end of file.
-        self.shared.lock().cancelled = true;
-        self.shared.changed.notify_all();
-        let _ = self.control.commands.send(WriteRequest::Close);
-        let _ = self.client.wait();
+        self.shutdown();
         for thread in self.threads.drain(..) {
             let _ = thread.join();
         }
@@ -617,10 +682,11 @@ fn spawn(name: &str, body: impl FnOnce() + Send + 'static) -> io::Result<JoinHan
 /// worker, until the client exits.
 fn read(
     shared: &Shared,
-    mut stdout: ChildStdout,
+    mut stdout: impl Read,
     mut decoder: Decoder,
     window: u32,
     session: Option<u32>,
+    mut visible: Vec<PaneId>,
 ) {
     let layout_prefix = format!("%layout-change @{window} ");
     let removed = format!("%unlinked-window-close @{window}");
@@ -629,13 +695,21 @@ fn read(
     let mut from_client = false;
     loop {
         let read = match stdout.read(&mut buffer) {
-            Ok(0) | Err(_) => break,
+            Ok(0) => break,
             Ok(read) => read,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => {
+                shared
+                    .lock()
+                    .transport_failure
+                    .get_or_insert_with(|| format!("reading from control client: {error}"));
+                break;
+            }
         };
         let mut batch: Vec<Event> = Vec::new();
         let mut exited = false;
         let decoded = decoder.decode(&buffer[..read], |message| match message {
-            Message::Output { pane, data } => match batch.last_mut() {
+            Message::Output { pane, data } if visible.contains(&pane) => match batch.last_mut() {
                 Some(Event::Output(last, bytes)) if *last == pane => bytes.extend_from_slice(data),
                 _ => batch.push(Event::Output(pane, data.to_vec())),
             },
@@ -652,7 +726,10 @@ fn read(
             }
             Message::Notification(line) if line.starts_with(layout_prefix.as_bytes()) => {
                 match layout::parse(line) {
-                    Ok(change) => batch.push(Event::Layout(change)),
+                    Ok(change) => {
+                        visible = change.panes.iter().map(|pane| pane.id).collect();
+                        batch.push(Event::Layout(change));
+                    }
                     Err(error) => {
                         shared.lock().failure = Some(format!("invalid window layout: {error}"));
                         exited = true;
@@ -682,15 +759,26 @@ fn read(
                     exited = true;
                 }
             }
-            Message::Notification(line) if line.starts_with(b"%exit") => exited = true,
+            Message::Notification(line) if line == b"%exit" || line.starts_with(b"%exit ") => {
+                if let Some(reason) = line.strip_prefix(b"%exit ").filter(|s| !s.is_empty()) {
+                    shared.lock().transport_failure.get_or_insert_with(|| {
+                        format!("tmux disconnected: {}", String::from_utf8_lossy(reason))
+                    });
+                }
+                exited = true;
+            }
             Message::Notification(line) if line == removed.as_bytes() => {
                 shared.lock().failure = Some("Selected window left the source session".into());
                 exited = true;
             }
             _ => {}
         });
-        if decoded.is_err() {
-            break;
+        if let Err(error) = decoded {
+            shared
+                .lock()
+                .transport_failure
+                .get_or_insert_with(|| format!("decoding control client output: {error}"));
+            exited = true;
         }
         let size: usize = batch.iter().map(Event::size).sum();
         let mut state = shared.lock();
@@ -721,7 +809,7 @@ fn work(
     shared: &Shared,
     control: &Control,
     layout: &layout::Change,
-    snapshots: Vec<Snapshot>,
+    mut snapshots: Vec<Snapshot>,
     scrollback: usize,
     wake: &dyn Fn(),
     ready: mpsc::Sender<Result<(), String>>,
@@ -731,11 +819,12 @@ fn work(
         .panes
         .iter()
         .map(|pane| {
-            let snapshot = snapshots
+            let index = snapshots
                 .iter()
-                .find(|snapshot| snapshot.pane == pane.id)
+                .position(|snapshot| snapshot.pane == pane.id)
                 .ok_or_else(|| format!("no initial snapshot for pane %{}", pane.id.0))?;
-            LivePane::restored(snapshot.clone(), scrollback).map(|terminal| (pane.id, terminal))
+            LivePane::restored(snapshots.swap_remove(index), scrollback)
+                .map(|terminal| (pane.id, terminal))
         })
         .collect();
     let terminals = match terminals {
@@ -748,6 +837,7 @@ fn work(
             return;
         }
     };
+    drop(snapshots);
     let mut window = WindowState {
         layout: layout.clone(),
         terminals,
@@ -793,7 +883,7 @@ fn work(
                         .any(|visible| visible.id == *pane)
             })
         {
-            let (recovery, line) = Recovery::start(*pane);
+            let (recovery, line) = Recovery::start(*pane, scrollback);
             let deadline = *terminal
                 .recovery_deadline
                 .get_or_insert_with(|| Instant::now() + crate::seed::TIMEOUT);
@@ -1139,13 +1229,181 @@ mod tests {
     use super::*;
 
     #[test]
+    fn shutdown_unblocks_a_stopped_clients_writer_without_stopping_its_session() {
+        let server = TmuxServer::start().unwrap();
+        let layout = layout(&server);
+        let client = server
+            .control(&[
+                "attach-session",
+                "-f",
+                "no-output,ignore-size,new-layouts",
+                "-t",
+                TmuxServer::SESSION,
+            ])
+            .unwrap();
+        let pid = client.id();
+        let panes = Arc::new(Panes::start(client, &layout, 100, || {}).unwrap());
+        assert!(
+            std::process::Command::new("kill")
+                .args(["-STOP", &pid.to_string()])
+                .status()
+                .unwrap()
+                .success()
+        );
+        let sending = Arc::clone(&panes);
+        let pane = layout.panes[0].id;
+        let (done, received) = mpsc::channel();
+        let writer = thread::spawn(move || {
+            let result = sending.send_input(pane, &vec![b'x'; 256 * 1024]);
+            let _ = done.send(result);
+        });
+        assert!(received.recv_timeout(Duration::from_millis(100)).is_err());
+        panes.shutdown();
+        assert!(
+            received
+                .recv_timeout(Duration::from_secs(3))
+                .unwrap()
+                .is_err()
+        );
+        writer.join().unwrap();
+        drop(panes);
+        server
+            .run(&["has-session", "-t", TmuxServer::SESSION])
+            .unwrap();
+    }
+
+    #[test]
+    fn a_timed_out_input_terminates_its_client_before_returning() {
+        let server = TmuxServer::start().unwrap();
+        let layout = layout(&server);
+        let client = server
+            .control(&[
+                "attach-session",
+                "-f",
+                "no-output,ignore-size,new-layouts",
+                "-t",
+                TmuxServer::SESSION,
+            ])
+            .unwrap();
+        let mut panes = Panes::start(client, &layout, 100, || {}).unwrap();
+        // Hold the command before acknowledgement, independent of the OS
+        // pipe capacity or the server resuming a stopped control client.
+        let (commands, _pending) = mpsc::channel();
+        let original = std::mem::replace(
+            &mut panes.control,
+            Arc::new(Control {
+                commands,
+                pending: Mutex::new(VecDeque::new()),
+            }),
+        );
+        let pane = layout.panes[0].id;
+        let error = panes.send_input(pane, b"timed-out input").unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(panes.client.lock().unwrap().try_wait().unwrap().is_some());
+        assert!(panes.failure().unwrap().contains("timed out writing"));
+        assert!(panes.send_input(pane, b"later").is_err());
+        // Let Drop signal the real writer as well as the held test queue.
+        panes.control = original;
+        server
+            .run(&["has-session", "-t", TmuxServer::SESSION])
+            .unwrap();
+    }
+
+    #[test]
+    fn reader_queues_only_selected_window_output_in_layout_order() {
+        let shared = Shared {
+            state: Mutex::new(State::default()),
+            changed: Condvar::new(),
+        };
+        let wire = b"%output %8 hidden\n%output %1 first\n%layout-change @0 abcd,80x24,0,0,2 abcd,80x24,0,0,2 *\n%output %1 removed\n%output %2 second\n";
+        read(
+            &shared,
+            wire.as_slice(),
+            Decoder::new(),
+            0,
+            None,
+            vec![PaneId(1)],
+        );
+        let state = shared.lock();
+        assert_eq!(state.queue.len(), 3);
+        assert!(matches!(state.queue[0], Event::Output(PaneId(1), ref bytes) if bytes == b"first"));
+        assert!(matches!(state.queue[1], Event::Layout(_)));
+        assert!(
+            matches!(state.queue[2], Event::Output(PaneId(2), ref bytes) if bytes == b"second")
+        );
+    }
+
+    #[test]
+    fn reader_keeps_exit_and_decode_reasons_and_preceding_output() {
+        for (wire, reason) in [
+            (
+                "%output %1 final\n%exit too far behind\n",
+                "tmux disconnected: too far behind",
+            ),
+            (
+                "%output %1 final\n%output invalid\n",
+                "decoding control client output: malformed control-mode line: %output without a pane",
+            ),
+        ] {
+            let shared = Shared {
+                state: Mutex::new(State::default()),
+                changed: Condvar::new(),
+            };
+            read(
+                &shared,
+                wire.as_bytes(),
+                Decoder::new(),
+                0,
+                None,
+                vec![PaneId(1)],
+            );
+            let state = shared.lock();
+            assert_eq!(state.transport_failure.as_deref(), Some(reason));
+            assert!(state.closed);
+            assert!(
+                matches!(state.queue.front(), Some(Event::Output(PaneId(1), bytes)) if bytes == b"final")
+            );
+        }
+    }
+
+    #[test]
+    fn reader_retries_interruption_and_reports_io_failure() {
+        struct InterruptedThenFailed(bool);
+        impl Read for InterruptedThenFailed {
+            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+                if std::mem::take(&mut self.0) {
+                    Err(io::ErrorKind::Interrupted.into())
+                } else {
+                    Err(io::Error::other("fixture read failed"))
+                }
+            }
+        }
+        let shared = Shared {
+            state: Mutex::new(State::default()),
+            changed: Condvar::new(),
+        };
+        read(
+            &shared,
+            InterruptedThenFailed(true),
+            Decoder::new(),
+            0,
+            None,
+            vec![],
+        );
+        assert_eq!(
+            shared.lock().transport_failure.as_deref(),
+            Some("reading from control client: fixture read failed")
+        );
+    }
+
+    #[test]
     fn successful_recovery_does_not_lend_its_deadline_to_the_next_margin() {
         let expired = Instant::now() - Duration::from_secs(1);
         let mut terminal = LivePane {
             terminal: Terminal::new(80, 24, 0).unwrap(),
             size: (80, 24),
             offset: (0, 0),
-            captured: None,
+            captured: false,
             needs_capture: false,
             recovery_deadline: None,
         };
@@ -1234,7 +1492,7 @@ mod tests {
                 TmuxServer::SESSION,
             ])
             .unwrap();
-        let seed = crate::seed::attach(&mut client, layout.window, None).unwrap();
+        let seed = crate::seed::attach(&mut client, layout.window, None, 100).unwrap();
         let snapshots = seed.snapshots.clone();
         let mut margin_snapshot = snapshots[0].clone();
         margin_snapshot.state.cursor.0 = margin_snapshot.state.width;
@@ -1247,6 +1505,7 @@ mod tests {
         assert!(idle_margin.needs_capture);
         assert_eq!(idle_margin.recovery_deadline, None);
         drop(seed);
+        client.kill().unwrap();
         client.wait().unwrap();
         let mut margin = b"\x1b[2J\x1b[H".to_vec();
         margin.extend(vec![b'x'; usize::from(layout.panes[0].cols)]);
@@ -1826,17 +2085,24 @@ mod tests {
             .unwrap();
         // tmux 3.3 and 3.4 already emit CSI-u. Newer versions expose a
         // format option; select CSI-u there without skipping any input checks.
-        if server
+        let configurable_extended_keys = server
             .run(&["show-options", "-s"])
             .unwrap()
             .lines()
-            .any(|line| line.starts_with("extended-keys-format "))
-        {
+            .any(|line| line.starts_with("extended-keys-format "));
+        if configurable_extended_keys {
             server
                 .run(&["set-option", "-s", "extended-keys-format", "csi-u"])
                 .unwrap();
         }
-        let script = "stty raw -echo; printf '\\033[>4;2m\\033[?1h\\033[2J\\033[Harrow-ready'; arrow=$(dd bs=1 count=3 2>/dev/null | od -An -tx1 | tr -d '[:space:]'); printf '\\033[2J\\033[Hextended-ready%s' \"$arrow\"; extended=$(dd bs=1 count=7 2>/dev/null | od -An -tx1 | tr -d '[:space:]'); printf '\\033[?2004h\\033[2J\\033[Hpaste-ready%s' \"$extended\"; pasted=$(dd bs=1 count=15 2>/dev/null | od -An -tx1 | tr -d '[:space:]'); printf '\\033[?1000h\\033[?1006h\\033[2J\\033[Hpaste:%s' \"$pasted\"; mouse=$(dd bs=1 count=28 2>/dev/null | od -An -tx1 | tr -d '[:space:]'); printf '\\033[?1002h\\033[2J\\033[Hmouse:%s' \"$mouse\"; drag=$(dd bs=1 count=28 2>/dev/null | od -An -tx1 | tr -d '[:space:]'); printf '\\033[2J\\033[Hdrag:%s' \"$drag\"; exec cat";
+        // Before tmux 3.5, shifted letters keep the lowercase codepoint.
+        // Read the whole server-encoded key so no byte spills into the paste.
+        let extended = if configurable_extended_keys {
+            "1b5b37323b3675" // CSI 72;6u
+        } else {
+            "1b5b3130343b3675" // CSI 104;6u
+        };
+        let script = "stty raw -echo; printf '\\033[>4;2m\\033[?1h\\033[2J\\033[Harrow-ready'; arrow=$(dd bs=1 count=3 2>/dev/null | od -An -tx1 | tr -d '[:space:]'); printf '\\033[2J\\033[Hextended-ready%s' \"$arrow\"; extended=$(dd bs=1 count=$1 2>/dev/null | od -An -tx1 | tr -d '[:space:]'); printf '\\033[?2004h\\033[2J\\033[Hpaste-ready%s' \"$extended\"; pasted=$(dd bs=1 count=15 2>/dev/null | od -An -tx1 | tr -d '[:space:]'); printf '\\033[?1000h\\033[?1006h\\033[2J\\033[Hpaste:%s' \"$pasted\"; mouse=$(dd bs=1 count=28 2>/dev/null | od -An -tx1 | tr -d '[:space:]'); printf '\\033[?1002h\\033[2J\\033[Hmouse:%s' \"$mouse\"; drag=$(dd bs=1 count=28 2>/dev/null | od -An -tx1 | tr -d '[:space:]'); printf '\\033[2J\\033[Hdrag:%s' \"$drag\"; exec cat";
         server
             .run(&[
                 "respawn-pane",
@@ -1846,6 +2112,8 @@ mod tests {
                 "sh",
                 "-c",
                 script,
+                "input-fixture",
+                &(extended.len() / 2).to_string(),
             ])
             .unwrap();
         let layout = layout(&server);
@@ -1886,7 +2154,7 @@ mod tests {
                 }),
             )
             .unwrap();
-        wait_for_row(&panes, &woken, pane, "paste-ready1b5b37323b3675");
+        wait_for_row(&panes, &woken, pane, &format!("paste-ready{extended}"));
         panes
             .send_encoded_input(pane, Input::Paste("ok\n".into()))
             .unwrap();
@@ -2125,7 +2393,8 @@ mod tests {
         drop(client.stdin.take());
         // Read on another thread, so that a client that never exits fails
         // the test instead of hanging it: killing the client ends the read.
-        let reader = std::thread::spawn(move || read(&shared, stdout, Decoder::new(), 0, None));
+        let reader =
+            std::thread::spawn(move || read(&shared, stdout, Decoder::new(), 0, None, vec![]));
 
         let deadline = Instant::now() + Duration::from_secs(10);
         while client.try_wait().unwrap().is_none() {

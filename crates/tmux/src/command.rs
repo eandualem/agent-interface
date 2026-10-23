@@ -8,7 +8,7 @@ use crate::control::PaneId;
 /// ready to write to a control-mode client's standard input.
 ///
 /// `send-keys -H` delivers each byte as given to that exact pane, without
-/// tmux's key tables (`docs/decisions/0015-input-routing.md`).
+/// tmux's key tables (`docs/ARCHITECTURE.md`).
 pub fn send_bytes(pane: PaneId, bytes: &[u8]) -> String {
     append_bytes(format!("send-keys -H -t %{}", pane.0), bytes)
 }

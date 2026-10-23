@@ -6,6 +6,7 @@
 .codex/
 # Build output
 /target/
+/dist/
 # Secrets come from the environment only
 .env
 .env.*
@@ -13,5 +14,5 @@
 *.trace
 *.log
 .DS_Store
-# Prepared pinned native source (decision record 0025)
+# Prepared pinned native source
 /.native/

@@ -159,6 +159,7 @@ mod tests {
             }),
             cwd: Some("/previous".into()),
             empty: false,
+            view: None,
         };
         // A longer session name cannot stand in for this ordinary shell.
         server

@@ -51,7 +51,7 @@ cargo run -p tmux-workspaces-app
 The first build takes a few minutes because it compiles Ghostty's core; later
 builds reuse it.
 
-Before each commit, run the checks that CI runs:
+Before submitting a change, run the local checks:
 
 ```sh
 export LIBGHOSTTY_VT_SYS_OPTIMIZE=ReleaseSafe
@@ -62,12 +62,17 @@ RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 cargo deny check
 ```
 
+When running the tests in Docker, start the container with `--init` so exited
+tmux processes are reaped.
+
 `cargo deny check` audits licences, security advisories, crate sources and the
 dependency direction between the project's crates. Install the version CI
 uses with `cargo install cargo-deny --version 0.20.2 --locked`.
 
-CI runs the same commands with `--locked` on macOS (`macos-15`, arm64) and
-Linux (`ubuntu-24.04`, x86-64), as set out in `.github/workflows/ci.yml`.
+The CI workflow defines the same checks with `--locked` for macOS
+(`macos-15`, arm64) and Linux (`ubuntu-24.04`, x86-64). Hosted CI and automated
+reviews are enabled when the repository becomes public; while it is private,
+record local verification in the pull request.
 
 ## The terminal engine's native build
 
@@ -146,13 +151,52 @@ sizing. Tests, benchmarks and scripts must never touch those sessions:
 - **Commits.** Use [Conventional Commits](https://www.conventionalcommits.org)
   (`feat:`, `fix:`, `docs:`, `chore:`), with a body that says why the change
   is needed.
-- **Review.** Every pull request is reviewed by someone other than its author
-  and needs green CI on both platforms before it is merged.
-- **Architecture.** Keep the architecture guide accurate when behavior or crate
-  boundaries change. Explain technical changes in the pull request.
-- **Dependencies.** Record each new dependency's licence and the reason for
-  it in the pull request for that change. Pin fast-moving
-  dependencies, such as the terminal engine and the UI framework, to an exact
-  version. The project is MIT-licensed: GPL code, such as Zed's terminal
-  crates, may be read for ideas but never copied.
-- **Speed claims** include the method, environment and raw measurement results.
+- **Review.** Every pull request is reviewed independently of its author. Include
+  the checks you ran and any platform you could not verify. Once hosted CI is
+  enabled, its required checks must pass before merging.
+- **Architecture.** Keep [the architecture guide](docs/ARCHITECTURE.md) accurate
+  when behavior or crate boundaries change. Explain the technical reason for a
+  change in its pull request.
+- **Dependencies.** Record each new dependency's purpose and licence in its pull
+  request and keep the architecture guide's dependency summary current. Pin
+  fast-moving dependencies, such as the terminal engine and UI framework, to an
+  exact version. The project is MIT-licensed; do not copy GPL code into it.
+- **Measurements.** Follow the [benchmark guide](docs/BENCHMARKING.md). Include
+  the revision, environment, method and raw results with any performance claim.
+
+## Build installable packages
+
+Install the build prerequisites above and the notice generator:
+
+```sh
+cargo install cargo-about --version 0.9.2 --locked
+rustup component add rust-docs
+python3 scripts/package.py
+```
+
+The script builds for the host architecture, explicitly using Cargo's release
+profile and Ghostty `ReleaseFast` with the portable `baseline` CPU target. It
+produces an archive and adjacent SHA-256 file under `dist/`. macOS archives
+contain an ad-hoc-signed `.app`; Linux archives contain the binary and notices.
+No compiler or Python runtime is included or required by the installed app.
+The script needs network access for hash-pinned native notices and upstream
+Rust licence texts. `cargo-about` is a build-only MIT/Apache-2.0 tool.
+
+The manual **Native packages** workflow runs this script for Apple silicon,
+Intel macOS, and ARM64/x86-64 Ubuntu 24.04. It uploads workflow artifacts for
+inspection, without publishing release assets. A build is not a desktop
+compatibility test: check launch, keyboard input, terminal output, Settings and
+the library chooser on the intended desktop before publishing that target.
+The packaged `BUILD.json` must identify clean, reviewed source. Audit the
+unpacked binary and notices, and retain the archive checksum with the release.
+
+Installer regression checks use inert payloads and temporary home directories:
+
+```sh
+python3 -B -m unittest discover -s scripts/tests -v
+```
+
+Test the actual archive with `sh install.sh --archive dist/<archive>.tar.gz`.
+Use a separate test account for installation and upgrade checks. On macOS,
+verify the real download's first-launch behavior as well as its ad-hoc signature;
+a local package does not establish Gatekeeper acceptance on another Mac.

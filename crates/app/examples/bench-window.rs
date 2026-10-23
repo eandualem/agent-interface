@@ -1,6 +1,6 @@
 //! The milestone-0 benchmark window: the panes of one tmux window, drawn by
 //! the app's terminal path. Benchmark scaffolding, not product UI
-//! (`docs/decisions/0019-benchmark-window.md`).
+//! (`docs/BENCHMARKING.md`).
 //!
 //! The benchmark harness starts it, attached to a session on a private tmux
 //! server that the harness owns. Its font and colours come from the same file

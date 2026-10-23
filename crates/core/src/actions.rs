@@ -2,7 +2,7 @@
 //! not persist records or start/stop processes. Rename operations normalize
 //! proposed names; creation methods expect caller-validated values.
 
-use crate::{Attachment, Direction, Layout, Leaf, Node, Tab, Workspace};
+use crate::{Attachment, Direction, Layout, Leaf, Node, Tab, View, Workspace};
 use unicode_properties::{GeneralCategoryGroup, UnicodeGeneralCategory};
 
 /// Workspace icon picker choices as (glyph, label), in the Python tool's order.
@@ -22,17 +22,18 @@ pub const WORKSPACE_ICONS: &[(&str, &str)] = &[
     ("♪", "Note"),
 ];
 
-/// The destination and attachment captured when a session chooser opens.
+/// The destination, attachment and view captured when a session chooser opens.
 #[derive(Clone, Debug)]
 pub struct AttachmentTarget {
     tab: String,
     pane: String,
     attachment: Option<Attachment>,
+    view: Option<View>,
 }
 
 impl AttachmentTarget {
     /// Apply to the captured pane if its tab is still selected and its attachment
-    /// has not changed. Moving focus within that tab does not redirect the choice.
+    /// and view have not changed. Moving focus within that tab does not redirect the choice.
     /// None returns to the ordinary shell reference. The caller first refreshes
     /// shared data and cancels on reconciliation conflict; this changes only the
     /// model, without connecting to a session or persisting anything.
@@ -40,11 +41,11 @@ impl AttachmentTarget {
     pub fn apply(&self, layout: &mut Layout, attachment: Option<Attachment>) -> bool {
         let unchanged = layout.tab().is_some_and(|tab| {
             tab.id == self.tab
-                && tab
-                    .tree
-                    .leaves()
-                    .iter()
-                    .any(|pane| pane.id == self.pane && pane.attachment == self.attachment)
+                && tab.tree.leaves().iter().any(|pane| {
+                    pane.id == self.pane
+                        && pane.attachment == self.attachment
+                        && pane.view == self.view
+                })
         });
         unchanged && layout.choose_pane(&self.pane) && layout.attach(attachment)
     }
@@ -135,6 +136,7 @@ fn leaf(cwd: String, empty: bool) -> Leaf {
         attachment: None,
         cwd: Some(cwd),
         empty,
+        view: None,
     }
 }
 
@@ -234,6 +236,7 @@ impl Layout {
             tab: tab.id.clone(),
             pane: pane.id.clone(),
             attachment: pane.attachment.clone(),
+            view: pane.view.clone(),
         })
     }
 
@@ -264,6 +267,30 @@ impl Layout {
             Some(attachment) => self.attach(Some(attachment)),
             None => self.open_terminal(),
         }
+    }
+
+    /// Show a view in the named empty pane of the selected tab, selecting that
+    /// destination. The same guards as `fill_pane` apply; an agent view needs
+    /// an agent and every other view has none. This starts no process.
+    #[must_use = "a changed destination requires a fresh choice"]
+    pub fn show_view(&mut self, tab_id: &str, pane_id: &str, view: View) -> bool {
+        let empty = self.tab().is_some_and(|tab| {
+            tab.id == tab_id
+                && tab
+                    .tree
+                    .leaves()
+                    .iter()
+                    .any(|pane| pane.id == pane_id && pane.empty && pane.attachment.is_none())
+        });
+        if !empty || !view.is_valid() || !self.choose_pane(pane_id) {
+            return false;
+        }
+        let Some(pane) = self.pane_mut() else {
+            return false;
+        };
+        pane.empty = false;
+        pane.view = Some(view);
+        true
     }
 
     /// Capture the current workspace's identity and name for a guarded inline edit.
@@ -549,15 +576,17 @@ impl Layout {
         };
         pane.attachment = attachment;
         pane.empty = false;
+        pane.view = None;
         true
     }
 
-    /// End the focused leaf's chooser state without starting a process.
+    /// End the focused leaf's chooser state or view without starting a process.
     pub fn open_terminal(&mut self) -> bool {
         let Some(pane) = self.pane_mut() else {
             return false;
         };
         pane.empty = false;
+        pane.view = None;
         true
     }
 
@@ -654,6 +683,7 @@ fn remove_leaf(node: Node, target: &str) -> Option<Node> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ViewKind;
     use std::collections::HashSet;
 
     #[test]
@@ -707,6 +737,28 @@ mod tests {
     }
 
     #[test]
+    fn attachment_choices_refuse_a_view_replaced_by_a_terminal() {
+        let mut model = Layout::initial("/tmp".into());
+        model.split(Direction::Right, "/tmp".into(), true);
+        let tab = model.tab().unwrap().id.clone();
+        let pane = model.pane().unwrap().id.clone();
+        assert!(model.show_view(&tab, &pane, View::of(ViewKind::Team)));
+        let target = model.attachment_target().unwrap();
+        let attachment = Attachment {
+            session: "work".into(),
+            source_socket: None,
+        };
+        assert!(target.apply(&mut model.clone(), Some(attachment.clone())));
+
+        assert!(model.open_terminal());
+        let changed = model.clone();
+        assert!(!target.apply(&mut model, Some(attachment.clone())));
+        assert_eq!(model, changed);
+        let current = model.attachment_target().unwrap();
+        assert!(current.apply(&mut model, Some(attachment)));
+    }
+
+    #[test]
     fn empty_choices_fill_only_the_named_unfilled_pane() {
         let mut model = Layout::initial("/tmp".into());
         let first = model.pane().unwrap().id.clone();
@@ -735,6 +787,39 @@ mod tests {
         assert!(model.fill_pane(&tab, &destination, None));
         assert!(!model.pane().unwrap().empty);
         assert!(model.pane().unwrap().attachment.is_none());
+    }
+
+    #[test]
+    fn views_fill_only_empty_panes_and_name_an_agent_only_for_agent_views() {
+        let mut model = Layout::initial("/tmp".into());
+        let first = model.pane().unwrap().id.clone();
+        model.split(Direction::Right, "/tmp".into(), true);
+        let tab = model.tab().unwrap().id.clone();
+        let destination = model.pane().unwrap().id.clone();
+        let usage = View::of(ViewKind::Usage);
+        let before = model.clone();
+        assert!(!model.show_view(&tab, &first, usage.clone()));
+        for wrong in [
+            View::of(ViewKind::Agent),
+            View {
+                agent: Some("worker".into()),
+                ..View::of(ViewKind::Usage)
+            },
+            View {
+                section: Some(crate::AgentSection::Skills),
+                ..View::of(ViewKind::Skills)
+            },
+        ] {
+            assert!(!model.show_view(&tab, &destination, wrong));
+        }
+        assert_eq!(model, before);
+        assert!(model.show_view(&tab, &destination, usage.clone()));
+        let pane = model.pane().unwrap();
+        assert!(!pane.empty && !pane.runs_terminal());
+        assert_eq!(pane.view, Some(usage.clone()));
+        assert!(!model.show_view(&tab, &destination, usage));
+        assert!(model.open_terminal());
+        assert!(model.pane().unwrap().runs_terminal());
     }
 
     #[test]

@@ -100,7 +100,7 @@ impl Environment {
             }
         }
         words.extend([self.shell.as_os_str().to_owned(), "-l".into(), "-i".into()]);
-        let mut command = Vec::new();
+        let mut command = b"exec".to_vec();
         for word in words {
             if !command.is_empty() {
                 command.push(b' ');
