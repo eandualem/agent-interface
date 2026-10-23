@@ -6,6 +6,7 @@
 .codex/
 # Build output
 /target/
+/dist/
 # Secrets come from the environment only
 .env
 .env.*

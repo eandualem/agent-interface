@@ -158,3 +158,24 @@ their snapshots. `app::desktop` provides the product UI. Read `tmux::control` an
 `tmux::recovery` for the wire protocol, then `term::Terminal` for the engine
 boundary. Tests that start tmux use `test_support::TmuxServer` to isolate their
 servers from real sessions.
+
+## Native distribution
+
+`scripts/package.py` builds the product binary in release mode for the host,
+with Ghostty explicitly set to `ReleaseFast` and the baseline CPU target. It
+packages embedded UI assets, dependency notices and source/build metadata.
+macOS receives an ad-hoc-signed application bundle; Linux receives a glibc
+binary linked to the system desktop libraries. Neither package includes a
+Python runtime, build toolchain, tmux server or application daemon.
+
+The shell installer verifies the archive checksum and target, stages a
+per-user replacement, and preserves the data directories. Linux desktop and
+window identifiers use `io.github.eandualem.tmux-workspaces`; macOS uses the same
+bundle identifier. The Linux launcher uses the desktop's terminal icon.
+
+Build-only `cargo-about` 0.9.2 (MIT OR Apache-2.0) generates Rust dependency
+notices. Hash-pinned native notices supplement Cargo's graph for Ghostty,
+uucode/Unicode, simdutf, Highway, X11 color data and compiler runtimes. The
+package retains Lucide's ISC notice and SQLite's public-domain dedication.
+The manual package workflow uses `actions/upload-artifact` v7.0.0 (MIT), pinned
+to a full commit, to retain build artifacts; it does not publish releases.

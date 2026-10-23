@@ -15,6 +15,11 @@ The app draws terminals natively and needs neither Python nor Agent Backbone
 at runtime. It can open existing schema-v2 libraries from
 [tmux-workspaces](https://github.com/eandualem/tmux-workspaces).
 
+## Install
+
+See the [installation guide](docs/INSTALL.md) for native macOS and Linux packages,
+single-command installation, runtime prerequisites and unsigned macOS launch.
+
 ## Get started
 
 Build from source using the [setup instructions](CONTRIBUTING.md#set-up).

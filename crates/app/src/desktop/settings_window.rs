@@ -76,6 +76,7 @@ pub fn show(cx: &mut App) {
     }
     let t = tokens();
     let options = WindowOptions {
+        app_id: Some(super::APP_ID.into()),
         window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
             None,
             size(px(t.size.settings_width), px(t.size.settings_height)),
