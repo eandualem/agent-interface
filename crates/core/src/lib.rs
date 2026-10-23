@@ -131,12 +131,15 @@ pub enum ViewKind {
     Skills,
     /// One agent's card.
     Agent,
+    /// The policies one agent receives, in order.
+    Policies,
 }
 
 impl ViewKind {
     /// Every kind, in the order the new-pane chooser lists them.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Skills,
+        Self::Policies,
         Self::Agent,
         Self::Usage,
         Self::Activity,
@@ -151,7 +154,13 @@ impl ViewKind {
             Self::Activity => "activity",
             Self::Skills => "skills",
             Self::Agent => "agent",
+            Self::Policies => "policies",
         }
+    }
+
+    /// Whether this view describes one agent, which it then names.
+    pub fn needs_agent(self) -> bool {
+        matches!(self, Self::Agent | Self::Policies)
     }
 
     /// The kind with this saved name.

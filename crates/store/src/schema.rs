@@ -104,7 +104,7 @@ fn view(item: &Object, occupied: bool, at: &str) -> Result<Option<View>> {
             "{at}.view: a view pane has no attachment and is not empty"
         ));
     }
-    if (kind == ViewKind::Agent) != agent.is_some() {
+    if kind.needs_agent() != agent.is_some() {
         return Err(format!(
             "{at}.view_agent: only an agent view names an agent"
         ));

@@ -46,6 +46,25 @@ pub(super) fn endpoint(url: &str, path: &str) -> Option<Uri> {
 /// One bounded GET of a fixed read path, returning at most `limit` plus one
 /// bytes so the caller can reject an oversized body.
 pub(super) fn get(url: &str, path: &str, key: &str, limit: usize) -> Option<Vec<u8>> {
+    fetch(url, path, key, limit).ok()
+}
+
+/// As [`get`], but a reply that is not a success reports its status.
+pub(super) fn fetch(
+    url: &str,
+    path: &str,
+    key: &str,
+    limit: usize,
+) -> Result<Vec<u8>, Option<u16>> {
+    fetch_inner(url, path, key, limit).ok_or(None)?
+}
+
+fn fetch_inner(
+    url: &str,
+    path: &str,
+    key: &str,
+    limit: usize,
+) -> Option<Result<Vec<u8>, Option<u16>>> {
     let uri = endpoint(url, path)?;
     let client = reqwest::blocking::Client::builder()
         .no_proxy()
@@ -72,7 +91,7 @@ pub(super) fn get(url: &str, path: &str, key: &str, limit: usize) -> Option<Vec<
     }
     let response = request.send().ok()?;
     if !response.status().is_success() {
-        return None;
+        return Some(Err(Some(response.status().as_u16())));
     }
     // Read one extra byte to distinguish an exact-size body from an oversized
     // one. Snapshot::update keeps the inclusive limit when decoding.
@@ -81,7 +100,7 @@ pub(super) fn get(url: &str, path: &str, key: &str, limit: usize) -> Option<Vec<
         .take(limit as u64 + 1)
         .read_to_end(&mut bytes)
         .ok()?;
-    Some(bytes)
+    Some(Ok(bytes))
 }
 
 #[cfg(test)]

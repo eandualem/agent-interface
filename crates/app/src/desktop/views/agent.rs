@@ -114,30 +114,30 @@ pub(super) fn body(pane: &ViewPane, agent: &Agent, cx: &mut Context<ViewPane>) -
         );
     }
     for (kind, label) in [
-        (Some(ViewKind::Skills), "Skills"),
-        (None, "Policies"),
-        (Some(ViewKind::Usage), "Usage"),
+        (ViewKind::Skills, "Skills"),
+        (ViewKind::Policies, "Policies"),
+        (ViewKind::Usage, "Usage"),
     ] {
-        let link = tab(
-            SharedString::from(format!("agent-open-{label}")),
-            label,
-            "↗",
-            false,
-        );
-        nav = nav.child(match kind {
-            Some(kind) => link.on_click(cx.listener(move |_, _, _, cx| {
-                cx.emit(ViewEvent::OpenBeside(View { kind, agent: None }))
+        let agent = kind.needs_agent().then(|| agent.name.clone());
+        nav = nav.child(
+            tab(
+                SharedString::from(format!("agent-open-{label}")),
+                label,
+                "↗",
+                false,
+            )
+            .on_click(cx.listener(move |_, _, _, cx| {
+                cx.emit(ViewEvent::OpenBeside(View {
+                    kind,
+                    agent: agent.clone(),
+                }))
             })),
-            None => link.opacity(0.45),
-        });
+        );
     }
 
     let content = match pane.section {
         Section::Overview => overview(agent, state),
-        Section::Permissions => unavailable(
-            "Permissions are not served yet",
-            "Backbone does not report an agent's launch settings or its CLI's rules yet.",
-        ),
+        Section::Permissions => permissions(agent),
         Section::Connections => connections(agent),
     };
     div()
@@ -424,7 +424,217 @@ fn connections(agent: &Agent) -> AnyElement {
         .into_any_element()
 }
 
-fn unavailable(title: &'static str, body: &'static str) -> AnyElement {
-    let c = colors();
-    ui::empty_state(ui::empty_tile("lock", c.selected, c.muted), title, body).into_any_element()
+fn summary(title: String, sub: String) -> gpui::Div {
+    let (t, c) = (tokens(), colors());
+    div()
+        .flex_1()
+        .min_w_0()
+        .flex()
+        .flex_col()
+        .gap(px(t.space.s2 + 1.0))
+        .px(px(t.space.s12))
+        .py(px(t.space.s10))
+        .rounded(px(t.radius.slot))
+        .bg(c.field)
+        .border(px(t.size.hairline))
+        .border_color(c.line_strong)
+        .child(ui::text(div().text_color(c.text), &t.text.row_selected).child(title))
+        .child(ui::text(div().text_color(c.muted), &t.text.meta).child(sub))
+}
+
+fn permissions(agent: &Agent) -> AnyElement {
+    let (t, c) = (tokens(), colors());
+    let rules = &agent.permissions;
+    let launch = agent.launch.clone().unwrap_or_default();
+    let mode = rules
+        .modes
+        .iter()
+        .map(|(name, value)| format!("{name} {value}"))
+        .collect::<Vec<_>>()
+        .join(" · ");
+    let cards = div()
+        .flex()
+        .flex_shrink_0()
+        .gap(px(t.space.s8))
+        .child(if launch.unattended {
+            summary(
+                "Runs unattended".into(),
+                "launched without permission prompts".into(),
+            )
+        } else {
+            summary("Asks before acting".into(), "not unattended".into())
+        })
+        .child(summary(
+            format!("{} rules pre-approved", rules.allow.len()),
+            if rules.deny.is_empty() {
+                "no deny rules".into()
+            } else {
+                format!("{} deny rules", rules.deny.len())
+            },
+        ))
+        .child(summary(
+            if mode.is_empty() {
+                "CLI defaults".into()
+            } else {
+                mode
+            },
+            if launch.always_on {
+                "kept running by Backbone".into()
+            } else {
+                "started on demand".into()
+            },
+        ));
+    let row = |key: &'static str, value: &'static str, why: &'static str, warn: bool| {
+        ui::text(
+            div()
+                .flex()
+                .items_baseline()
+                .gap(px(t.space.s12))
+                .py(px(t.space.s6 + 1.0))
+                .border_t(px(t.size.hairline))
+                .border_color(c.line),
+            &t.text.body,
+        )
+        .child(
+            div()
+                .flex_shrink_0()
+                .w(px(t.size.fact_label + t.space.s24 * 2.0))
+                .text_color(c.text_2)
+                .child(key),
+        )
+        .child(
+            div()
+                .flex_shrink_0()
+                .w(px(t.size.fact_label))
+                .font_weight(t.text.row_selected.weight())
+                .text_color(if warn { c.accent_text } else { c.text })
+                .child(value),
+        )
+        .child(ui::text(div().flex_1().min_w_0().text_color(c.muted), &t.text.meta).child(why))
+    };
+    let set = div()
+        .flex_shrink_0()
+        .flex()
+        .flex_col()
+        .child(
+            ui::view_heading(
+                "SET BY BACKBONE AT LAUNCH",
+                "changes apply at the next start",
+            )
+            .px(px(0.0)),
+        )
+        .child(row(
+            "Approval mode",
+            if launch.unattended {
+                "Unattended"
+            } else {
+                "Attended"
+            },
+            if launch.unattended {
+                "Started so it acts without asking."
+            } else {
+                "Its CLI asks before acting, except for the rules below."
+            },
+            launch.unattended,
+        ))
+        .child(row(
+            "Always on",
+            if launch.always_on { "Yes" } else { "No" },
+            "Backbone restarts it when it stops.",
+            false,
+        ))
+        .child(row(
+            "Inbox only",
+            if launch.inbox_only { "Yes" } else { "No" },
+            "Messages wait in its inbox instead of its terminal.",
+            false,
+        ));
+    let files: Vec<String> = rules
+        .files
+        .iter()
+        .filter(|file| file.read)
+        .map(|file| file.path.clone())
+        .collect();
+    let chips = |items: &[String]| {
+        let mut chips = div().flex_1().flex().flex_wrap().gap(px(t.space.s4 + 1.0));
+        if items.is_empty() {
+            chips = chips.child(ui::text(div().text_color(c.muted), &t.text.status).child("none"));
+        }
+        for item in items {
+            chips = chips.child(
+                ui::text(
+                    div()
+                        .px(px(t.space.s6 + 1.0))
+                        .py(px(t.space.s2))
+                        .rounded(px(t.radius.key + 1.0))
+                        .bg(c.hover)
+                        .border(px(t.size.hairline))
+                        .border_color(c.line_strong)
+                        .font_family(t.font.mono.clone())
+                        .text_color(c.text_2),
+                    &t.text.meta,
+                )
+                .child(item.clone()),
+            );
+        }
+        chips
+    };
+    let kind = |label: &'static str, color: gpui::Rgba| {
+        ui::text(
+            div()
+                .flex_shrink_0()
+                .w(px(t.size.view_choice + t.space.s8))
+                .pt(px(t.space.s2))
+                .text_color(color),
+            &t.text.status,
+        )
+        .child(label)
+    };
+    let own = div()
+        .flex_shrink_0()
+        .flex()
+        .flex_col()
+        .gap(px(t.space.s8))
+        .child(
+            ui::view_heading(format!("{}'S OWN RULES", agent.runtime.to_uppercase()), "")
+                .px(px(0.0))
+                .child(mono(files.join(" · ")).text_color(c.muted)),
+        )
+        .child(if rules.files.is_empty() {
+            ui::text(div().text_color(c.muted), &t.text.status).child(format!(
+                "This app does not read {}'s settings.",
+                agent.runtime
+            ))
+        } else {
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(t.space.s8))
+                .child(
+                    div()
+                        .flex()
+                        .child(kind("allow", c.ok))
+                        .child(chips(&rules.allow)),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .child(kind("deny", c.attention_text))
+                        .child(chips(&rules.deny)),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .child(kind("ask", c.muted))
+                        .child(chips(&rules.ask)),
+                )
+        });
+    list("agent-permissions")
+        .px(px(t.space.s18))
+        .py(px(t.space.s14))
+        .gap(px(t.space.s14))
+        .child(cards)
+        .child(set)
+        .child(own)
+        .into_any_element()
 }

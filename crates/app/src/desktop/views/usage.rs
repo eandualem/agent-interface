@@ -137,7 +137,9 @@ pub(super) fn body(pane: &ViewPane, usage: &Usage, cx: &mut Context<ViewPane>) -
             UsageBy::Agent => vec![session.agent.clone()],
             UsageBy::Cli => vec![session.runtime.clone()],
             UsageBy::Model if session.models.is_empty() => vec!["unknown model".into()],
-            UsageBy::Model => session.models.clone(),
+            // Backbone counts a session's tokens as a whole, so a session that
+            // used several models is its own group rather than counted twice.
+            UsageBy::Model => vec![session.models.join(" + ")],
         };
         for key in keys {
             let row = groups.entry(key.clone()).or_insert_with(|| Row {

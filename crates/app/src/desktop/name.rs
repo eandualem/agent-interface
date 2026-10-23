@@ -163,6 +163,27 @@ impl NameField {
         field
     }
 
+    /// A search field that waits for a click or an explicit focus, for panes
+    /// that are built before they are chosen.
+    pub fn filter(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let previous = window.focused(cx);
+        let field = Self::search(window, cx);
+        match previous {
+            Some(previous) => window.focus(&previous, cx),
+            None => window.blur(cx),
+        }
+        field
+    }
+
+    /// Empty the field without announcing a change.
+    pub fn clear(&mut self, cx: &mut Context<Self>) {
+        self.text.value.clear();
+        self.text.anchor = 0;
+        self.text.cursor = 0;
+        self.text.marked = None;
+        cx.notify();
+    }
+
     pub fn composing(&self) -> bool {
         self.text.marked.is_some()
     }

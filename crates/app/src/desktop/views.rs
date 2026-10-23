@@ -24,6 +24,7 @@ use crate::roster::ViewSource;
 mod activity;
 mod agent;
 mod markdown;
+mod policies;
 mod skills;
 mod team;
 mod usage;
@@ -39,6 +40,7 @@ pub(super) fn about(kind: ViewKind) -> About {
     let (icon, label) = match kind {
         ViewKind::Skills => ("diamond", "Skills"),
         ViewKind::Agent => ("user", "Agent"),
+        ViewKind::Policies => ("align-left", "Policies"),
         ViewKind::Usage => ("chart-line", "Usage"),
         ViewKind::Activity => ("activity", "Activity"),
         ViewKind::Team => ("bot", "Team"),
@@ -87,9 +89,9 @@ pub(super) enum Section {
     Connections,
 }
 
-/// A skill being read: its place in the shown list, its text, how it is shown.
+/// A skill being read: its name, its text, how it is shown.
 pub(super) struct Reading {
-    pub index: usize,
+    pub name: String,
     pub text: Option<Result<(String, bool), &'static str>>,
     pub source: bool,
 }
@@ -111,6 +113,9 @@ pub(super) struct ViewPane {
     query: String,
     search: Option<Entity<NameField>>,
     reading: Option<Reading>,
+    /// The policy being read, by its place in the agent's order.
+    policy: Option<usize>,
+    policy_source: bool,
     _updates: Option<Task<()>>,
     _search: Option<Subscription>,
 }
@@ -141,11 +146,13 @@ impl ViewPane {
             query: String::new(),
             search: None,
             reading: None,
+            policy: None,
+            policy_source: false,
             _updates: None,
             _search: None,
         };
         if pane.view.kind == ViewKind::Skills {
-            let field = cx.new(|cx| NameField::search(window, cx));
+            let field = cx.new(|cx| NameField::filter(window, cx));
             pane._search = Some(cx.subscribe(&field, |pane, _, event, cx| {
                 if let NameEvent::Changed(query) = event {
                     pane.query = query.clone();
@@ -208,6 +215,7 @@ impl ViewPane {
             ViewKind::Activity => Request::Activity,
             ViewKind::Skills => Request::Skills,
             ViewKind::Agent => Request::Agent(self.view.agent.clone().unwrap_or_default()),
+            ViewKind::Policies => Request::Policies(self.view.agent.clone().unwrap_or_default()),
         }
     }
 
@@ -227,11 +235,11 @@ impl ViewPane {
         }
     }
 
-    /// Open the skill at `index` of the shown list and read its text.
-    fn read_skill(&mut self, index: usize, folder: String, cx: &mut Context<Self>) {
+    /// Open the named skill and read its text from `folder`.
+    fn read_skill(&mut self, name: String, folder: String, cx: &mut Context<Self>) {
         let source = self.reading.as_ref().is_some_and(|reading| reading.source);
         self.reading = Some(Reading {
-            index,
+            name: name.clone(),
             text: None,
             source,
         });
@@ -243,7 +251,7 @@ impl ViewPane {
             let text = read.await;
             let _ = this.update(cx, |pane, cx| {
                 if let Some(reading) = &mut pane.reading
-                    && reading.index == index
+                    && reading.name == name
                 {
                     reading.text = Some(text);
                     cx.notify();
@@ -253,23 +261,44 @@ impl ViewPane {
         .detach();
     }
 
-    /// Move to the previous or next skill while reading.
+    /// Move to the previous or next shown skill while reading.
     fn step_skill(&mut self, step: isize, cx: &mut Context<Self>) {
         let (Some(reading), Some(Data::Skills(data))) = (&self.reading, &self.data) else {
             return;
         };
         let shown = skills::shown(data, self.tag.as_deref(), &self.query);
-        let next = reading.index as isize + step;
+        let Some(at) = shown.iter().position(|skill| skill.name == reading.name) else {
+            return;
+        };
+        let next = at as isize + step;
         if let Some(skill) = usize::try_from(next).ok().and_then(|n| shown.get(n)) {
-            let folder = skill.path.clone();
-            self.read_skill(next as usize, folder, cx);
+            let (name, folder) = (skill.name.clone(), skill.path.clone());
+            self.read_skill(name, folder, cx);
         }
     }
 
     /// Keys a view understands while its pane is selected. Returns whether
     /// `key` was one of them.
     pub fn key(&mut self, key: &gpui::Keystroke, cx: &mut Context<Self>) -> bool {
-        if key.modifiers.modified() || self.reading.is_none() {
+        if key.modifiers.modified() {
+            return false;
+        }
+        if let Some(at) = self.policy {
+            let count = match &self.data {
+                Some(Data::Policies(brief)) => brief.sources.len(),
+                _ => 0,
+            };
+            match key.key.as_str() {
+                "escape" => self.policy = None,
+                "s" => self.policy_source = !self.policy_source,
+                "[" => self.policy = Some(at.saturating_sub(1)),
+                "]" => self.policy = Some((at + 1).min(count.saturating_sub(1))),
+                _ => return false,
+            }
+            cx.notify();
+            return true;
+        }
+        if self.reading.is_none() {
             return false;
         }
         match key.key.as_str() {
@@ -342,6 +371,7 @@ impl Render for ViewPane {
             Some(Data::Activity(data)) => activity::body(self, data, cx),
             Some(Data::Skills(data)) => skills::body(self, data, cx),
             Some(Data::Agent(data)) => agent::body(self, data, cx),
+            Some(Data::Policies(data)) => policies::body(self, data, cx),
         };
         self.data = data;
         div()

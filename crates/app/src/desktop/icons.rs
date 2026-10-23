@@ -90,6 +90,7 @@ icons!(
     "activity",
     "chevron-left",
     "layout-grid",
+    "align-left",
 );
 
 /// Icons a workspace can show, in the order the picker offers them.

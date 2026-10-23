@@ -60,13 +60,13 @@ const VIEWS: [ViewChoice; 7] = [
         glyph: "≡",
         label: "Policies",
         description: "Each policy in full, and the order an agent receives them",
-        scope: "not served yet",
-        kind: None,
+        scope: "pick an agent",
+        kind: Some(ViewKind::Policies),
     },
     ViewChoice {
         glyph: "⚿",
         label: "Agent configuration",
-        description: "State, question, work, connections and recent messages",
+        description: "State, permissions, connections and recent messages",
         scope: "pick an agent",
         kind: Some(ViewKind::Agent),
     },
@@ -113,7 +113,15 @@ pub(super) struct NewPane {
     field: Entity<NameField>,
     query: String,
     mode: Mode,
-    selected: usize,
+    /// The view an agent is being chosen for.
+    picking: ViewKind,
+    /// The chosen row by identity, so refreshes that reorder or remove rows
+    /// never move Enter onto another session.
+    selected: Option<String>,
+    /// The chosen row disappeared; nothing is chosen until the next move.
+    disarmed: bool,
+    /// Scroll the chosen row into view at the next frame.
+    reveal: bool,
     sessions: Vec<String>,
     sessions_error: Option<String>,
     loading: bool,
@@ -136,12 +144,13 @@ impl NewPane {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let field = cx.new(|cx| NameField::search(window, cx));
+        let field = cx.new(|cx| NameField::filter(window, cx));
         let input = cx.subscribe_in(&field, window, |chooser, _, event, _, cx| {
             match event {
                 NameEvent::Changed(query) => {
                     chooser.query = query.clone();
-                    chooser.selected = 0;
+                    chooser.selected = None;
+                    chooser.disarmed = false;
                     chooser.scroll.scroll_to_item(0);
                 }
                 NameEvent::Save => chooser.activate(cx),
@@ -181,7 +190,10 @@ impl NewPane {
             field,
             query: String::new(),
             mode: Mode::Sessions,
-            selected: 0,
+            picking: ViewKind::Agent,
+            selected: None,
+            disarmed: false,
+            reveal: false,
             sessions: Vec::new(),
             sessions_error: None,
             loading: session_source.is_some(),
@@ -304,31 +316,52 @@ impl NewPane {
         self.rows().into_iter().filter(Self::selectable).collect()
     }
 
-    /// Move the selection by `offset` choices. Returns whether it moved.
+    fn selected_index(&self, choices: &[Row]) -> Option<usize> {
+        let selected = self.selected.as_deref()?;
+        choices.iter().position(|row| row_key(row) == selected)
+    }
+
+    /// Move the selection by `offset` choices and scroll it into view.
     pub fn move_by(&mut self, offset: isize, cx: &mut Context<Self>) {
-        let count = self.choices().len();
-        if count > 0 {
-            self.selected = (self.selected as isize + offset).clamp(0, count as isize - 1) as usize;
-            cx.notify();
+        let choices = self.choices();
+        if choices.is_empty() {
+            return;
         }
+        let next = match self.selected_index(&choices) {
+            Some(at) => (at as isize + offset).clamp(0, choices.len() as isize - 1) as usize,
+            None => 0,
+        };
+        self.selected = Some(row_key(&choices[next]));
+        self.disarmed = false;
+        self.reveal = true;
+        cx.notify();
+    }
+
+    fn set_mode(&mut self, mode: Mode, cx: &mut Context<Self>) {
+        self.mode = mode;
+        self.selected = None;
+        self.disarmed = false;
+        // A filter typed for one list means nothing in the next.
+        self.query.clear();
+        self.field.update(cx, |field, cx| field.clear(cx));
+        cx.notify();
     }
 
     /// Switch between sessions and views; from the agent list, back to views.
     pub fn toggle(&mut self, cx: &mut Context<Self>) {
-        self.mode = match self.mode {
+        let mode = match self.mode {
             Mode::Sessions if self.backbone => Mode::Views,
-            Mode::Sessions => Mode::Sessions,
+            Mode::Sessions => return,
             Mode::Views | Mode::Agents => Mode::Sessions,
         };
-        self.selected = 0;
-        cx.notify();
+        self.set_mode(mode, cx);
     }
 
     /// Choose the selected row.
     pub fn activate(&mut self, cx: &mut Context<Self>) {
         let mut choices = self.choices();
-        if self.selected < choices.len() {
-            let row = choices.swap_remove(self.selected);
+        if let Some(at) = self.selected_index(&choices) {
+            let row = choices.swap_remove(at);
             self.choose(row, cx);
         }
     }
@@ -348,16 +381,15 @@ impl NewPane {
             Row::Agent(member) => cx.emit(NewPaneEvent::Attach(member.name)),
             Row::Session(name) => cx.emit(NewPaneEvent::Attach(name)),
             Row::View(index) => match VIEWS[index].kind {
-                Some(ViewKind::Agent) => {
-                    self.mode = Mode::Agents;
-                    self.selected = 0;
-                    cx.notify();
+                Some(kind) if kind.needs_agent() => {
+                    self.picking = kind;
+                    self.set_mode(Mode::Agents, cx);
                 }
                 Some(kind) => cx.emit(NewPaneEvent::OpenView(View { kind, agent: None })),
                 None => {}
             },
             Row::Pick(name) => cx.emit(NewPaneEvent::OpenView(View {
-                kind: ViewKind::Agent,
+                kind: self.picking,
                 agent: Some(name),
             })),
         }
@@ -381,7 +413,16 @@ impl Render for NewPane {
         let (t, c) = (tokens(), colors());
         let rows = self.rows();
         let count = rows.iter().filter(|row| Self::selectable(row)).count();
-        self.selected = self.selected.min(count.saturating_sub(1));
+        let choices = self.choices();
+        match self.selected_index(&choices) {
+            Some(_) => {}
+            None if self.selected.is_some() => {
+                self.selected = None;
+                self.disarmed = true;
+            }
+            None if !self.disarmed => self.selected = choices.first().map(row_key),
+            None => {}
+        }
         let views = self.mode != Mode::Sessions;
         let buttons = div()
             .flex()
@@ -429,6 +470,7 @@ impl Render for NewPane {
                 ui::view_heading("AGENT BACKBONE · LIVE, READ-ONLY", "").child(back(
                     &self.pane,
                     "← back to sessions",
+                    Mode::Sessions,
                     cx,
                 )),
             );
@@ -436,13 +478,15 @@ impl Render for NewPane {
             list = list.child(ui::view_heading("WHICH AGENT?", "").child(back(
                 &self.pane,
                 "← views",
+                Mode::Views,
                 cx,
             )));
         }
         let mut number = 0;
-        for row in rows {
+        // Children before the rows: the list's heading in the views lists.
+        for (child, row) in (usize::from(self.mode != Mode::Sessions)..).zip(rows) {
             let selectable = Self::selectable(&row);
-            let selected = selectable && number == self.selected;
+            let selected = selectable && self.selected.as_deref() == Some(row_key(&row).as_str());
             if selectable {
                 number += 1;
             }
@@ -451,7 +495,10 @@ impl Render for NewPane {
             } else {
                 String::new()
             };
-            let index = number.saturating_sub(1);
+            let chosen = row_key(&row);
+            if selected && std::mem::take(&mut self.reveal) {
+                self.scroll.scroll_to_item(child);
+            }
             let id =
                 SharedString::from(format!("new-pane-{}-{number}-{}", self.pane, row_key(&row)));
             let element = match &row {
@@ -485,12 +532,12 @@ impl Render for NewPane {
             list = list.child(if selectable {
                 div()
                     .id(SharedString::from(format!(
-                        "new-pane-pick-{}-{index}",
+                        "new-pane-pick-{}-{chosen}",
                         self.pane
                     )))
                     .on_click(cx.listener(move |chooser, _, _, cx| {
                         cx.stop_propagation();
-                        chooser.selected = index;
+                        chooser.selected = Some(chosen.clone());
                         chooser.activate(cx);
                     }))
                     .child(element)
@@ -595,15 +642,20 @@ impl NewPane {
     }
 }
 
-fn back(pane: &str, label: &'static str, cx: &mut Context<NewPane>) -> gpui::Stateful<gpui::Div> {
+fn back(
+    pane: &str,
+    label: &'static str,
+    to: Mode,
+    cx: &mut Context<NewPane>,
+) -> gpui::Stateful<gpui::Div> {
     div()
         .id(SharedString::from(format!("new-pane-back-{pane}")))
         .cursor_pointer()
         .text_color(colors().accent_text)
         .child(label)
-        .on_click(cx.listener(|chooser, _, _, cx| {
+        .on_click(cx.listener(move |chooser, _, _, cx| {
             cx.stop_propagation();
-            chooser.toggle(cx);
+            chooser.set_mode(to, cx);
         }))
 }
 

@@ -2,7 +2,7 @@
 //! not persist records or start/stop processes. Rename operations normalize
 //! proposed names; creation methods expect caller-validated values.
 
-use crate::{Attachment, Direction, Layout, Leaf, Node, Tab, View, ViewKind, Workspace};
+use crate::{Attachment, Direction, Layout, Leaf, Node, Tab, View, Workspace};
 use unicode_properties::{GeneralCategoryGroup, UnicodeGeneralCategory};
 
 /// Workspace icon picker choices as (glyph, label), in the Python tool's order.
@@ -280,10 +280,7 @@ impl Layout {
                     .iter()
                     .any(|pane| pane.id == pane_id && pane.empty && pane.attachment.is_none())
         });
-        if !empty
-            || (view.kind == ViewKind::Agent) != view.agent.is_some()
-            || !self.choose_pane(pane_id)
-        {
+        if !empty || view.kind.needs_agent() != view.agent.is_some() || !self.choose_pane(pane_id) {
             return false;
         }
         let Some(pane) = self.pane_mut() else {
@@ -684,6 +681,7 @@ fn remove_leaf(node: Node, target: &str) -> Option<Node> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ViewKind;
     use std::collections::HashSet;
 
     #[test]

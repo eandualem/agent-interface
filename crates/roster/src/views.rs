@@ -13,12 +13,14 @@ use std::{
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::value::RawValue;
 
-use crate::{configuration::configured, transport::get, valid_agent, within_depth};
+use crate::{configuration::configured, transport, valid_agent, within_depth};
 
 const VIEW_LIMIT: usize = 4 * 1024 * 1024;
 
 /// Why a view has no data. The text is fixed and contains no response content.
 pub const UNAVAILABLE: &str = "Backbone is not answering.";
+/// Backbone answered that it does not serve this read.
+pub const NOT_SERVED: &str = "This Backbone does not serve policies yet; it needs updating.";
 /// A response this version cannot read.
 pub const UNREADABLE: &str = "Backbone answered with data this version cannot read.";
 
@@ -35,6 +37,8 @@ pub enum Request {
     Skills,
     /// One agent's card.
     Agent(String),
+    /// The policies one agent receives, in order.
+    Policies(String),
 }
 
 /// A recent period ending now.
@@ -83,13 +87,15 @@ pub enum Data {
     Skills(Skills),
     /// See [`Agent`].
     Agent(Box<Agent>),
+    /// See [`Instructions`].
+    Policies(Instructions),
 }
 
 /// Read one request from an enabled provider. Blocks for up to three seconds
 /// per GET, so call it on an I/O worker. Configuration is re-read every time.
 pub fn read(data_dir: &Path, url: Option<&str>, request: &Request) -> Result<Data, &'static str> {
     let (url, key) = configured(data_dir, url).ok_or(UNAVAILABLE)?;
-    let fetch = |path: &str| get(&url, path, &key, VIEW_LIMIT).ok_or(UNAVAILABLE);
+    let fetch = |path: &str| transport::get(&url, path, &key, VIEW_LIMIT).ok_or(UNAVAILABLE);
     match request {
         Request::Team => Ok(Data::Team(Team::decode(
             &fetch("/api/agents")?,
@@ -110,7 +116,23 @@ pub fn read(data_dir: &Path, url: Option<&str>, request: &Request) -> Result<Dat
                 return Err(UNREADABLE);
             }
             let path = format!("/api/agents/{name}/inspect");
-            Ok(Data::Agent(Box::new(Agent::decode(&fetch(&path)?)?)))
+            let mut agent = Agent::decode(&fetch(&path)?)?;
+            agent.launch = items_of::<Launch>(&fetch("/api/config/agents")?)
+                .into_iter()
+                .find(|launch| &launch.name == name);
+            agent.permissions = read_permissions(&agent.runtime, &agent.dir);
+            Ok(Data::Agent(Box::new(agent)))
+        }
+        Request::Policies(name) => {
+            if !valid_agent(name) {
+                return Err(UNREADABLE);
+            }
+            let path = format!("/api/agents/{name}/instructions");
+            match transport::fetch(&url, &path, &key, VIEW_LIMIT) {
+                Ok(body) => Ok(Data::Policies(Instructions::decode(&body)?)),
+                Err(Some(404 | 405)) => Err(NOT_SERVED),
+                Err(_) => Err(UNAVAILABLE),
+            }
         }
     }
 }
@@ -515,6 +537,199 @@ pub struct Agent {
     /// Its most recent deliveries.
     #[serde(skip)]
     pub received: Vec<Received>,
+    /// How Backbone launches it, when Backbone configures it.
+    #[serde(skip)]
+    pub launch: Option<Launch>,
+    /// What its CLI lets it do without asking.
+    #[serde(skip)]
+    pub permissions: Permissions,
+}
+
+/// How Backbone launches an agent, from its configuration.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct Launch {
+    /// Agent name.
+    pub name: String,
+    /// Started without permission prompts.
+    pub unattended: bool,
+    /// Kept running.
+    pub always_on: bool,
+    /// Receives messages only through its inbox.
+    pub inbox_only: bool,
+}
+
+/// One settings file a CLI reads its rules from.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RuleFile {
+    /// Its path.
+    pub path: String,
+    /// Whether it exists and was read.
+    pub read: bool,
+}
+
+/// What an agent's CLI lets it do without asking, from the CLI's own
+/// settings files. Only the files named here are read.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Permissions {
+    /// The files consulted, in the CLI's order.
+    pub files: Vec<RuleFile>,
+    /// Actions allowed without asking.
+    pub allow: Vec<String>,
+    /// Actions always refused.
+    pub deny: Vec<String>,
+    /// Actions that always ask.
+    pub ask: Vec<String>,
+    /// Other settings that decide approval, as name and value.
+    pub modes: Vec<(String, String)>,
+}
+
+fn read_bounded(path: &Path) -> Option<String> {
+    use std::io::Read;
+    let mut text = String::new();
+    std::fs::File::open(path)
+        .ok()?
+        .take(1024 * 1024)
+        .read_to_string(&mut text)
+        .ok()?;
+    Some(text)
+}
+
+/// Read the approval rules of `runtime` for an agent working in `dir`.
+/// Claude Code: `~/.claude/settings.json`, then the directory's
+/// `.claude/settings.json` and `.claude/settings.local.json`. Codex:
+/// `~/.codex/config.toml`. Other CLIs: nothing.
+pub fn read_permissions(runtime: &str, dir: &str) -> Permissions {
+    rules(
+        runtime,
+        dir,
+        std::env::var_os("HOME").map(std::path::PathBuf::from),
+    )
+}
+
+fn rules(runtime: &str, dir: &str, home: Option<std::path::PathBuf>) -> Permissions {
+    let mut permissions = Permissions::default();
+    let add = |path: std::path::PathBuf, permissions: &mut Permissions| {
+        let text = read_bounded(&path);
+        permissions.files.push(RuleFile {
+            path: path.display().to_string(),
+            read: text.is_some(),
+        });
+        text
+    };
+    match runtime {
+        "claude" => {
+            let mut files = Vec::new();
+            files.extend(home.map(|home| home.join(".claude/settings.json")));
+            if Path::new(dir).is_absolute() {
+                files.push(Path::new(dir).join(".claude/settings.json"));
+                files.push(Path::new(dir).join(".claude/settings.local.json"));
+            }
+            for path in files {
+                #[derive(Deserialize, Default)]
+                #[serde(default, rename_all = "camelCase")]
+                struct Rules {
+                    allow: Vec<String>,
+                    deny: Vec<String>,
+                    ask: Vec<String>,
+                    default_mode: Option<String>,
+                }
+                #[derive(Deserialize, Default)]
+                #[serde(default)]
+                struct Settings {
+                    permissions: Rules,
+                }
+                let Some(text) = add(path, &mut permissions) else {
+                    continue;
+                };
+                let rules = serde_json::from_str::<Settings>(&text)
+                    .unwrap_or_default()
+                    .permissions;
+                for (into, from) in [
+                    (&mut permissions.allow, rules.allow),
+                    (&mut permissions.deny, rules.deny),
+                    (&mut permissions.ask, rules.ask),
+                ] {
+                    for rule in from {
+                        if !into.contains(&rule) {
+                            into.push(rule);
+                        }
+                    }
+                }
+                if let Some(mode) = rules.default_mode {
+                    permissions.modes.retain(|(name, _)| name != "defaultMode");
+                    permissions.modes.push(("defaultMode".into(), mode));
+                }
+            }
+        }
+        "codex" => {
+            if let Some(home) = home
+                && let Some(text) = add(home.join(".codex/config.toml"), &mut permissions)
+            {
+                // Only the top-level approval settings, before any table.
+                for line in text
+                    .lines()
+                    .take_while(|line| !line.trim_start().starts_with('['))
+                {
+                    if let Some((name, value)) = line.split_once('=') {
+                        let name = name.trim();
+                        if ["approval_policy", "sandbox_mode"].contains(&name) {
+                            let value = value
+                                .split('#')
+                                .next()
+                                .unwrap_or("")
+                                .trim()
+                                .trim_matches('"');
+                            permissions.modes.push((name.into(), value.into()));
+                        }
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    permissions
+}
+
+/// One source of an agent's startup instructions.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct Source {
+    /// The policy's name, or `base` or `swarm`.
+    pub name: String,
+    /// Its file.
+    pub path: String,
+    /// Why the agent gets it: `base`, `global`, `tag:…` or `swarm`.
+    pub scope: String,
+    /// Whether it is applied at the next start.
+    pub applied: bool,
+    /// The file's text, when Backbone could read it.
+    pub text: Option<String>,
+}
+
+/// The instructions one agent receives at its next start, in order.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct Instructions {
+    /// Agent name.
+    pub name: String,
+    /// Its CLI.
+    pub runtime: String,
+    /// How the brief reaches it.
+    pub mode: String,
+    /// Whether a brief is injected.
+    pub enabled: bool,
+    /// The sources, in the order the agent receives them.
+    pub sources: Vec<Source>,
+    /// Backbone's notes about this preview.
+    pub notices: Vec<String>,
+}
+
+impl Instructions {
+    fn decode(body: &[u8]) -> Result<Self, &'static str> {
+        document(body)?;
+        serde_json::from_slice(body).map_err(|_| UNREADABLE)
+    }
 }
 
 /// An outside source an agent receives messages from.
@@ -589,6 +804,18 @@ fn document(body: &[u8]) -> Result<Document<'_>, &'static str> {
         return Err(UNREADABLE);
     }
     serde_json::from_slice(body).map_err(|_| UNREADABLE)
+}
+
+// A top-level array, skipping entries that do not decode.
+fn items_of<T: DeserializeOwned>(body: &[u8]) -> Vec<T> {
+    if body.len() > VIEW_LIMIT || !within_depth(body) {
+        return Vec::new();
+    }
+    serde_json::from_slice::<Vec<&RawValue>>(body)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|item| serde_json::from_str(item.get()).ok())
+        .collect()
 }
 
 // The required `items` array, skipping entries that do not decode.
@@ -688,6 +915,41 @@ mod tests {
         let (text, cut) = read_skill(path).unwrap();
         assert!(cut && text.len() == SKILL_LIMIT - 1);
         assert!(read_skill("relative").is_err());
+    }
+
+    #[test]
+    fn claude_rules_merge_across_files_and_policies_decode() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join(".claude")).unwrap();
+        std::fs::write(
+            dir.path().join(".claude/settings.json"),
+            r#"{"permissions":{"allow":["Bash(git *)"],"deny":["Read(.env)"],"defaultMode":"acceptEdits"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join(".claude/settings.local.json"),
+            r#"{"permissions":{"allow":["Bash(git *)","Bash(make *)"]}}"#,
+        )
+        .unwrap();
+        let rules = rules("claude", dir.path().to_str().unwrap(), None);
+        assert_eq!(rules.allow, ["Bash(git *)", "Bash(make *)"]);
+        assert_eq!(rules.deny, ["Read(.env)"]);
+        assert_eq!(
+            rules.modes,
+            [("defaultMode".to_owned(), "acceptEdits".to_owned())]
+        );
+        assert_eq!(rules.files.iter().filter(|file| file.read).count(), 2);
+        assert_eq!(read_permissions("other", "/").files.len(), 0);
+
+        let brief = Instructions::decode(
+            br##"{"name":"worker","runtime":"claude","mode":"system","enabled":true,
+            "sources":[{"name":"base","path":"/t/base.md","scope":"base","applied":true,"text":"# Base"},
+            {"name":"review","path":"/t/review.md","scope":"tag:review","applied":true,"text":null}],
+            "content":"...","notices":["note"]}"##,
+        )
+        .unwrap();
+        assert_eq!(brief.sources[1].scope, "tag:review");
+        assert_eq!(brief.sources[1].text, None);
     }
 
     #[test]

@@ -43,11 +43,19 @@ fn reach(skill: &Skill, everyone: bool) -> String {
 
 pub(super) fn body(pane: &ViewPane, skills: &Skills, cx: &mut Context<ViewPane>) -> AnyElement {
     let shown = shown(skills, pane.tag.as_deref(), &pane.query);
-    match &pane.reading {
-        Some(reading) if reading.index < shown.len() => {
-            detail(pane, shown[reading.index], shown.len(), cx)
-        }
-        _ => index(pane, skills, &shown, cx),
+    // The skill being read is found by name, so a refreshed or filtered list
+    // never puts another skill's details above its text.
+    let reading = pane.reading.as_ref().and_then(|reading| {
+        let skill = skills
+            .items
+            .iter()
+            .find(|skill| skill.name == reading.name)?;
+        let at = shown.iter().position(|shown| shown.name == reading.name);
+        Some((skill, at))
+    });
+    match reading {
+        Some((skill, at)) => detail(pane, skill, at, shown.len(), cx),
+        None => index(pane, skills, &shown, cx),
     }
 }
 
@@ -103,8 +111,8 @@ fn index(
         }))
         .child(chips);
     let mut rows = list("skill-rows").child(ui::view_heading("SHARED STORE", ""));
-    for (index, skill) in shown.iter().enumerate() {
-        let folder = skill.path.clone();
+    for skill in shown {
+        let (name, folder) = (skill.name.clone(), skill.path.clone());
         let (detail, detail_color) = match &skill.error {
             Some(error) => (line(error), c.attention_text),
             None => (line(&skill.description), c.muted),
@@ -157,9 +165,9 @@ fn index(
                         .child(reach(skill, true)),
                 )
                 .child(ui::icon("chevron-right", t.size.icon - 2.0, c.faint))
-                .on_click(
-                    cx.listener(move |pane, _, _, cx| pane.read_skill(index, folder.clone(), cx)),
-                ),
+                .on_click(cx.listener(move |pane, _, _, cx| {
+                    pane.read_skill(name.clone(), folder.clone(), cx)
+                })),
         );
     }
     if shown.is_empty() {
@@ -189,7 +197,13 @@ fn index(
         .into_any_element()
 }
 
-fn detail(pane: &ViewPane, skill: &Skill, count: usize, cx: &mut Context<ViewPane>) -> AnyElement {
+fn detail(
+    pane: &ViewPane,
+    skill: &Skill,
+    at: Option<usize>,
+    count: usize,
+    cx: &mut Context<ViewPane>,
+) -> AnyElement {
     let (t, c) = (tokens(), colors());
     let Some(reading) = &pane.reading else {
         return div().into_any_element();
@@ -234,8 +248,10 @@ fn detail(pane: &ViewPane, skill: &Skill, count: usize, cx: &mut Context<ViewPan
         .child(div().flex_1())
         .child(step("skill-previous", "chevron-left", -1, cx))
         .child(
-            ui::text(div().text_color(c.muted), &t.text.status)
-                .child(format!("{} of {count}", reading.index + 1)),
+            ui::text(div().text_color(c.muted), &t.text.status).child(match at {
+                Some(at) => format!("{} of {count}", at + 1),
+                None => "not in this list".into(),
+            }),
         )
         .child(step("skill-next", "chevron-right", 1, cx))
         .child(display);
