@@ -136,14 +136,6 @@ fn parent(path: &str) -> &str {
         .map_or("", |(parent, _)| parent)
 }
 
-/// The folder directly under `root` that `dir` lies in, when `dir` is
-/// deeper than that folder.
-fn top_folder(root: &str, dir: &str) -> Option<String> {
-    let rest = dir.strip_prefix(root)?.strip_prefix('/')?;
-    let (first, below) = rest.split_once('/')?;
-    (!first.is_empty() && !below.is_empty()).then(|| format!("{root}/{first}"))
-}
-
 /// Whether an agent coordinates its folder: its own folder is named so.
 fn coordinates(member: &Member) -> bool {
     name_of(&member.dir) == "coordinator"
@@ -162,8 +154,8 @@ fn card(
         card = card.child(agent_row(lead, "", group, true, cx));
         first = false;
     }
-    // A coordinator leads the agents in its own folder; others in the
-    // group follow without a guide.
+    // A coordinator leads the agents in its own folder; others on the card
+    // follow without a guide.
     let (led, rest): (Vec<&Member>, Vec<&Member>) = members
         .iter()
         .copied()
@@ -185,49 +177,69 @@ fn card(
     card
 }
 
-/// Agents by workspace folder: one section per folder under the common
-/// root, its coordinator first and the agents it leads beneath.
+/// Agents by the folder they work in, ordered by path so a folder's
+/// subfolders follow it, lone folders last. A folder's coordinator comes first and leads the
+/// others; a subfolder without one says which coordinator above leads it.
 fn folders(team: &Team, cx: &mut Context<ViewPane>) -> gpui::Div {
-    // The root most folders share, such as ~/ws; anything else is elsewhere.
-    let mut roots: BTreeMap<&str, usize> = BTreeMap::new();
-    for member in &team.members {
-        *roots.entry(parent(parent(&member.dir))).or_default() += 1;
-    }
-    let root = roots
-        .into_iter()
-        .filter(|(root, _)| !root.is_empty())
-        .max_by_key(|(_, count)| *count)
-        .map(|(root, _)| root)
-        .unwrap_or_default();
-    // Each agent belongs to the first folder under the root on its path,
-    // however deep its own folder is.
     let mut groups: BTreeMap<(bool, String), Vec<&Member>> = BTreeMap::new();
     for member in &team.members {
-        let key = top_folder(root, &member.dir).unwrap_or_default();
+        let folder = parent(&member.dir).to_owned();
         groups
-            .entry((key.is_empty(), key))
+            .entry((folder.is_empty(), folder))
             .or_default()
             .push(member);
     }
+    // Each folder's coordinator, to find the nearest one above a folder.
+    let leads: BTreeMap<&str, &Member> = groups
+        .iter()
+        .filter_map(|((_, folder), members)| {
+            let lead = members.iter().copied().find(|member| coordinates(member))?;
+            Some((folder.as_str(), lead))
+        })
+        .collect();
+    // Team folders first; a folder holding one agent that no coordinator
+    // leads, such as a scratch directory, follows them.
+    let mut order: Vec<_> = groups.iter().collect();
+    order.sort_by_key(|((empty, folder), members)| {
+        let lone = members.len() == 1
+            && !leads.contains_key(folder.as_str())
+            && led_from(&leads, folder).is_none();
+        (*empty, lone, folder.clone())
+    });
     let mut column = div();
-    for ((_, folder), mut members) in groups {
+    for ((_, folder), members) in order {
+        let mut members = members.clone();
         members.sort_by_key(|member| rank(member));
-        let lead = (!folder.is_empty())
-            .then(|| members.iter().copied().find(|member| coordinates(member)))
-            .flatten();
-        let (title, note) = if folder.is_empty() {
-            ("Elsewhere".to_owned(), plural(members.len()))
+        let lead = leads.get(folder.as_str()).copied();
+        let above = lead.is_none().then(|| led_from(&leads, folder)).flatten();
+        let (title, mut note) = if folder.is_empty() {
+            ("No folder".to_owned(), plural(members.len()))
         } else {
             (
-                name_of(&folder).to_owned(),
-                format!("{} · {}", home(&folder), plural(members.len())),
+                name_of(folder).to_owned(),
+                format!("{} · {}", home(folder), plural(members.len())),
             )
         };
+        if let Some(above) = above {
+            note.push_str(&format!(" · led by {}", above.name));
+        }
         column = column
             .child(ui::group_title(title, note))
-            .child(card(&members, &folder, lead, cx));
+            .child(card(&members, folder, lead, cx));
     }
     column
+}
+
+/// The coordinator of the nearest folder above `folder` that has one.
+fn led_from<'a>(leads: &BTreeMap<&str, &'a Member>, folder: &str) -> Option<&'a Member> {
+    let mut at = parent(folder);
+    while !at.is_empty() {
+        if let Some(lead) = leads.get(at) {
+            return Some(lead);
+        }
+        at = parent(at);
+    }
+    None
 }
 
 fn by_tag(team: &Team, cx: &mut Context<ViewPane>) -> gpui::Div {
@@ -427,11 +439,15 @@ mod tests {
         };
         assert!(coordinates(&lead));
         assert!(!coordinates(&Member::default()));
+        let lead = Member {
+            name: "lead".into(),
+            ..lead
+        };
+        let leads = BTreeMap::from([("/home/me/ws/learning", &lead)]);
         assert_eq!(
-            top_folder("/w", "/w/learning/rust/project").as_deref(),
-            Some("/w/learning")
+            led_from(&leads, "/home/me/ws/learning/rust").map(|m| m.name.as_str()),
+            Some("lead")
         );
-        assert_eq!(top_folder("/w", "/w/agent"), None);
-        assert_eq!(top_folder("/w", "/elsewhere/agent"), None);
+        assert!(led_from(&leads, "/home/me/ws/career").is_none());
     }
 }
