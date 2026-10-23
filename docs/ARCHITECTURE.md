@@ -95,6 +95,13 @@ bounded, read-only requests to an approved loopback endpoint. A failed refresh
 must not present an old agent state as current. The app remains useful without
 Backbone or the Python implementation. The `roster::views` adapter reads and
 decodes view data; `app::desktop::views` renders it in native panes.
+Team-wide libraries (`roster::views::library`) are gathered from per-agent
+reads, the store, each agent's skill preview and its brief, for at most 32
+agents per refresh, merged by file path so no row names an agent. They poll
+every 30 seconds. An agent view reads only the part its shown section needs.
+A saved view records the agent section it opens on (`view_section`); a pane
+saved by an earlier version as one agent's policies opens on that agent's
+Policies section and is written in the new form with the next change.
 
 ## Dependencies and licences
 

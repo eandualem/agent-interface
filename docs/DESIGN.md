@@ -168,6 +168,11 @@ All in `components.rs`; each takes its look from the tokens.
 | `fact` | A label and value, one line of an agent's card |
 | `choice_button`, `filter_frame`, `choice_frame`, `choice_key`, `hint_bar` | The chooser's two buttons, filter, selectable row with its ring, number key and centred key row |
 | `view_header`, `back_button`, `pill`, `info_card` | A view's 28 px header; the reading view's way back; a tag; a summary panel |
+| `tag` with `Tone` | How something is delivered: `Plain` for `all` and plain facts, `Tag` in the accent tint for a tag, `Quiet` outline for a direct assignment |
+| `layer_heading` | A library's layer: `layer_tile` numbered tile in `accent_soft` (`selected` when nobody receives it), uppercase label, mono path, note on the right |
+| `list_row` | An openable row: optional leading mark, mono name over a one-line description, pills or a note on the right, chevron; below `narrow_view` the right side moves under the description so a name is never cut |
+| `number_tile` | A round tile with a position, such as a policy's place in a brief |
+| `tag_card` | A tag on the left (`tag_card_label` wide) with how many agents carry it; labelled lines of mono names on the right, a dash when empty; `panel` fill for `all` |
 
 ## Backbone views
 
@@ -179,6 +184,23 @@ follows its design board with its own header (`view_header`), controls, list
 and footer; a view pane has no generic pane header.
 A view keeps its last data when Backbone stops answering and says so in a
 band at the bottom.
+
+Views follow four rules:
+
+- **A view is a pane.** It never opens or takes over another pane by itself;
+  only an explicit choice such as ⌥-click in Team opens one beside it.
+- **List, then document, in the same pane.** Choosing a skill or policy
+  replaces the list with the reader (`views/reader.rs`): a `back_button` named
+  after where it returns ("Skills", "Policies", "worker's brief"), the
+  document's place in that list, Rendered or Source, a summary `info_card` and
+  the text. Esc goes back; `[` and `]` move through the list; S shows the
+  source.
+- **One agent's things live in the agent view.** Its Skills, Policies and
+  Usage are sections of the Agent view. The team-wide Skills, Policies and
+  Tags views never name agents in their rows; they say how a thing is
+  delivered (layer, tag, `all`) and how many agents that reaches.
+- **Read only.** Every view only reads; nothing approves, tags, edits or
+  starts anything.
 
 Agent states always pair a shape with a colour, so they read without colour.
 Backbone's states fold onto four (`AgentState::from_report`): needs you
