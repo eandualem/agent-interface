@@ -41,7 +41,7 @@ libghostty-vt = "=0.2.2"
 libghostty-vt-sys = "=0.2.2"
 # macOS bindings for the display measurements of gates 2 to 4: ScreenCaptureKit,
 # Core Graphics window lists and key events, Core Media and Core Video. They
-# are the versions GPUI's macOS backend uses, so they add no second copies
+# are the versions GPUI's macOS backend uses, so they add no second copies.
 block2 = "0.6.2"
 dispatch2 = { version = "0.3.1", default-features = false, features = ["std", "block2", "objc2"] }
 objc2 = "0.6.5"
