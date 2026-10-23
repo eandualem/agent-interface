@@ -13,7 +13,7 @@ use crate::desktop::{
 
 struct Row<'a> {
     agent: &'a str,
-    runtime: &'a str,
+    runtimes: Vec<&'a str>,
     sessions: usize,
     models: Vec<&'a str>,
     tokens: Tokens,
@@ -46,13 +46,16 @@ pub(super) fn body(usage: &Usage, range: Range, cx: &mut Context<ViewPane>) -> A
     for session in &usage.sessions {
         let row = agents.entry(&session.agent).or_insert_with(|| Row {
             agent: &session.agent,
-            runtime: &session.runtime,
+            runtimes: Vec::new(),
             sessions: 0,
             models: Vec::new(),
             tokens: Tokens::default(),
             coverage: &session.coverage,
         });
         row.sessions += 1;
+        if !row.runtimes.contains(&session.runtime.as_str()) {
+            row.runtimes.push(&session.runtime);
+        }
         row.tokens += session.tokens;
         for model in &session.models {
             if !row.models.contains(&model.as_str()) {
@@ -139,7 +142,7 @@ pub(super) fn body(usage: &Usage, range: Range, cx: &mut Context<ViewPane>) -> A
             div().h(px(t.size.row + t.space.s2)),
             [
                 mono(row.agent.to_owned()).into_any_element(),
-                mono(row.runtime.to_owned())
+                mono(row.runtimes.join(", "))
                     .text_color(c.muted)
                     .into_any_element(),
                 div()

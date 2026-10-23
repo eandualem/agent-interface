@@ -176,7 +176,10 @@ impl ViewPane {
             self.range = range;
             // The old range's totals must not appear under the new label.
             self.data = None;
-            self.error = None;
+            // Without a worker nothing will arrive, so keep saying why.
+            if self.source.is_some() {
+                self.error = None;
+            }
             if let Some(source) = &self.source {
                 source.set_request(self.request());
             }

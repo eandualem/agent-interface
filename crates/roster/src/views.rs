@@ -144,6 +144,8 @@ pub struct Member {
     pub current_issue: Option<u64>,
     /// When the state began, in seconds since the Unix epoch.
     pub state_since: Option<f64>,
+    /// False for a tmux session Backbone lists but does not manage.
+    pub configured: Option<bool>,
 }
 
 /// A running swarm.
@@ -172,7 +174,7 @@ impl Team {
         }
         let members = items::<Member>(&document(agents)?)?
             .into_iter()
-            .filter(|member| valid_agent(&member.name))
+            .filter(|member| valid_agent(&member.name) && member.configured != Some(false))
             .collect();
         let swarms = items::<RawSwarm>(&document(swarms)?)?
             .into_iter()
@@ -634,6 +636,7 @@ mod tests {
             {"name":"worker","runtime":"claude","repo":"example/app","tags":["coder"],
              "state":"busy","current_issue":7,"state_since":1792740000.5,"extra":{"x":1}},
             {"name":"bad name","state":"idle"},
+            {"name":"scratch","state":"idle","configured":false},
             {"name":"reviewer","state":"waiting_for_human","reason":"question"}],"total":3}"#;
         let swarms = br#"{"items":[
             {"name":"fix","repo":"example/app","issue_number":7,"status":"running",
