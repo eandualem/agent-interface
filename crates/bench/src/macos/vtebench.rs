@@ -51,7 +51,7 @@ pub const CASES: [&str; 12] = [
 const BINARY: &str = "target/release/vtebench";
 /// The line that finds the pane's terminal in seven of vtebench's scripts at
 /// [`COMMIT`]. On macOS, `ps` pads the terminal's name with spaces, so the
-/// path names no file and `tput` reads no size from it (0022).
+/// path names no file and `tput` reads no size from it.
 const TTY_LINE: &str = r#"tty="/dev/$(ps -o tty= -p $$)""#;
 /// [`TTY_LINE`] as the gate runs it, without the padding.
 const TTY_FIXED: &str = r#"tty="/dev/$(ps -o tty= -p $$ | tr -d ' ')""#;
