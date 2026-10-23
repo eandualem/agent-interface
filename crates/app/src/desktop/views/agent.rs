@@ -429,9 +429,7 @@ fn skips_prompts(rules: &tmux_workspaces_roster::views::Permissions) -> bool {
     rules.modes.iter().any(|(name, value)| {
         matches!(
             (name.as_str(), value.as_str()),
-            ("defaultMode", "bypassPermissions")
-                | ("approval_policy", "never")
-                | ("sandbox_mode", "danger-full-access")
+            ("defaultMode", "bypassPermissions") | ("approval_policy", "never")
         )
     })
 }

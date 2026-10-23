@@ -980,6 +980,30 @@ impl Browser {
         cx.notify();
     }
 
+    /// Open a terminal from an empty pane's chooser, only if the pane is
+    /// still empty once shared changes are applied.
+    fn open_terminal_in_empty(&mut self, pane: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(update) = self.library.as_ref().and_then(Library::take_update) {
+            self.apply(update);
+        }
+        let empty = self
+            .layout
+            .as_ref()
+            .and_then(|layout| layout.model().tab())
+            .is_some_and(|tab| {
+                tab.tree
+                    .leaves()
+                    .iter()
+                    .any(|leaf| leaf.id == pane && leaf.empty)
+            });
+        if empty {
+            self.open_terminal(pane, window, cx);
+        } else {
+            self.save_notice = Some("The pane changed. Choose again.".into());
+            cx.notify();
+        }
+    }
+
     fn open_terminal(&mut self, pane: &str, window: &mut Window, cx: &mut Context<Self>) {
         if self.saving || self.save_failed {
             return;
@@ -1138,6 +1162,12 @@ impl Browser {
         let Some(destination) = AttachmentEdit::capture(layout.model()) else {
             return;
         };
+        // Another window may have filled the pane since the chooser drew it.
+        if !destination.empty {
+            self.save_notice = Some("The pane changed. Choose again.".into());
+            cx.notify();
+            return;
+        }
         let attachment = Attachment {
             session: name.into(),
             source_socket: Some(source),
@@ -1597,7 +1627,7 @@ impl Render for Browser {
                         let pane = chooser.read(cx).pane().to_owned();
                         match event {
                             new_pane::NewPaneEvent::OpenTerminal => {
-                                browser.open_terminal(&pane, window, cx)
+                                browser.open_terminal_in_empty(&pane, window, cx)
                             }
                             new_pane::NewPaneEvent::Attach(name) => {
                                 browser.attach_into(&pane, name, window, cx)
