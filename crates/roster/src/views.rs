@@ -172,11 +172,17 @@ pub fn read(
             &api.get("/api/swarms")?,
         )?)),
         Request::Usage(range) => Ok(Data::Usage(Usage::decode(&api.get(&usage_path(*range))?)?)),
-        Request::Activity => Ok(Data::Activity(Activity::decode(
-            &api.get("/api/deliveries?limit=200")?,
-            &api.get("/api/events?limit=200")?,
-            &api.get("/api/agents")?,
-        )?)),
+        Request::Activity => {
+            // History is an addition: when it cannot be read, the timeline
+            // shows deliveries and states now, as without it.
+            let changes = history(&api, now().saturating_sub(3_600)).unwrap_or(None);
+            Ok(Data::Activity(Activity::decode(
+                &api.get("/api/deliveries?limit=200")?,
+                &api.get("/api/events?limit=200")?,
+                &api.get("/api/agents")?,
+                changes,
+            )?))
+        }
         Request::Skills => Ok(Data::Skills(Box::new(SkillLibrary::read(&api)?))),
         Request::Policies => {
             let agents = library::agents(&api)?;
@@ -485,13 +491,91 @@ pub struct Entry {
     pub agent: String,
 }
 
-/// Recent deliveries and events, newest first, and each agent's state now.
+/// Recent deliveries and events, newest first, each agent's state now, and
+/// the state changes Backbone observed in the last hour.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Activity {
     /// The records.
     pub entries: Vec<Entry>,
     /// The configured agents with their current states.
     pub members: Vec<Member>,
+    /// Observed state changes, oldest first; none when this Backbone does
+    /// not keep state history.
+    pub history: Option<Vec<Change>>,
+}
+
+/// A state Backbone observed for an agent. `at` is when it was observed, not
+/// the exact moment it changed; changes between observations can be missed.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Change {
+    /// Agent name.
+    pub agent: String,
+    /// Its state, as Backbone reports it.
+    pub state: String,
+    /// Why it is waiting or blocked, when reported.
+    pub reason: Option<String>,
+    /// When it was observed, in seconds since the Unix epoch.
+    pub at: Option<f64>,
+}
+
+impl Change {
+    /// One page of state history: its changes, whether more exist, and the
+    /// cursor for the next page.
+    fn page(body: &[u8]) -> Result<(Vec<Self>, bool, Option<i64>), &'static str> {
+        #[derive(Deserialize, Default)]
+        #[serde(default)]
+        struct Raw {
+            agent: String,
+            state: String,
+            reason: Option<String>,
+            at: String,
+        }
+        let document = document(body)?;
+        let changes = items::<Raw>(&document)?
+            .into_iter()
+            .filter(|raw| valid_agent(&raw.agent))
+            .map(|raw| Self {
+                at: epoch_seconds(&raw.at),
+                agent: raw.agent,
+                state: raw.state,
+                reason: raw.reason,
+            })
+            .collect();
+        let more = document.get("has_more").map(|raw| raw.get()) == Some("true");
+        let next = document
+            .get("next_before_id")
+            .and_then(|raw| serde_json::from_str(raw.get()).ok());
+        Ok((changes, more, next))
+    }
+}
+
+/// The most pages of state history one refresh reads.
+const HISTORY_PAGES: usize = 4;
+
+/// State changes observed since `since`, oldest first, following Backbone's
+/// cursor. `None` when Backbone does not serve state history.
+fn history(api: &Api<'_>, since: u64) -> Result<Option<Vec<Change>>, &'static str> {
+    let mut changes = Vec::new();
+    let mut before: Option<i64> = None;
+    for _ in 0..HISTORY_PAGES {
+        let cursor = before
+            .map(|id| format!("&before_id={id}"))
+            .unwrap_or_default();
+        let path = format!("/api/agents/states?since={}&limit=500{cursor}", iso(since));
+        let body = match transport::fetch(&api.url, &path, &api.key, VIEW_LIMIT) {
+            Ok(body) => body,
+            Err(Some(404 | 405)) => return Ok(None),
+            Err(_) => return Err(UNAVAILABLE),
+        };
+        let (page, more, next) = Change::page(&body)?;
+        changes.extend(page);
+        before = next;
+        if !more || before.is_none() {
+            break;
+        }
+    }
+    changes.sort_by(|a, b| a.at.unwrap_or(0.0).total_cmp(&b.at.unwrap_or(0.0)));
+    Ok(Some(changes))
 }
 
 #[derive(Deserialize, Default)]
@@ -527,7 +611,12 @@ impl From<Delivery> for Entry {
 }
 
 impl Activity {
-    fn decode(deliveries: &[u8], events: &[u8], agents: &[u8]) -> Result<Self, &'static str> {
+    fn decode(
+        deliveries: &[u8],
+        events: &[u8],
+        agents: &[u8],
+        history: Option<Vec<Change>>,
+    ) -> Result<Self, &'static str> {
         #[derive(Deserialize, Default)]
         #[serde(default)]
         struct Event {
@@ -572,7 +661,11 @@ impl Activity {
             .into_iter()
             .filter(|member| valid_agent(&member.name) && member.configured != Some(false))
             .collect();
-        Ok(Self { entries, members })
+        Ok(Self {
+            entries,
+            members,
+            history,
+        })
     }
 }
 
@@ -1158,6 +1251,22 @@ mod tests {
     }
 
     #[test]
+    fn state_history_pages_decode_with_their_cursor() {
+        let (changes, more, next) = Change::page(
+            br#"{"items":[{"id":42,"agent":"worker","state":"busy","reason":null,
+            "at":"2026-10-23T14:02:00.000000Z"},{"id":41,"agent":"bad name","state":"idle",
+            "at":"2026-10-23T14:01:00Z"}],"has_more":true,"next_before_id":41}"#,
+        )
+        .unwrap();
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].state, "busy");
+        assert_eq!(changes[0].at, epoch_seconds("2026-10-23T14:02:00Z"));
+        assert!(more);
+        assert_eq!(next, Some(41));
+        assert!(Change::page(br#"{"items":{}}"#).is_err());
+    }
+
+    #[test]
     fn activity_merges_deliveries_and_events_newest_first() {
         let deliveries = br#"{"items":[{"kind":"direct_message","session_name":"worker",
             "outcome":"delivered","preview":"hello","created_at":"2026-10-23T07:00:00Z"}]}"#;
@@ -1165,7 +1274,7 @@ mod tests {
             "event_type":"comment_created","sender":"someone","summary":"a comment",
             "received_at":"2026-10-23T08:00:00Z","outcome":null}]}"#;
         let agents = br#"{"items":[{"name":"worker","state":"busy"}]}"#;
-        let activity = Activity::decode(deliveries, events, agents).unwrap();
+        let activity = Activity::decode(deliveries, events, agents, None).unwrap();
         assert_eq!(activity.entries.len(), 2);
         assert!(activity.entries[0].inbound);
         assert_eq!(

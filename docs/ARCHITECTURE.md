@@ -99,9 +99,11 @@ Team-wide libraries (`roster::views::library`) are gathered from per-agent
 reads, the store, each agent's skill preview and its brief, for at most 32
 agents per refresh, merged by file path so no row names an agent. They poll
 every 30 seconds. An agent view reads only the part its shown section needs.
-The Activity timeline shows deliveries in the last hour and each agent's
-state now; Backbone keeps no state history yet, so earlier states are not
-drawn.
+The Activity timeline draws the last hour from `/api/agents/states`, the
+states Backbone observed (following its `before_id` cursor for up to four
+pages), with deliveries as ticks and each agent's state now beside its lane.
+A Backbone that answers 404 or 405 keeps no history; the timeline then shows
+deliveries and current states only.
 A saved view records the agent section it opens on (`view_section`); a pane
 saved by an earlier version as one agent's policies opens on that agent's
 Policies section and is written in the new form with the next change.

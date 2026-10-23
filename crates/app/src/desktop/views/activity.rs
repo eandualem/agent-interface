@@ -56,12 +56,21 @@ fn state_label(member: &Member) -> gpui::Div {
         .child(word)
 }
 
-/// One lane per agent that received something in the last hour or is not
-/// idle now, most recently active first: when each delivery arrived, as a
-/// share of the hour, and its state now.
-fn lanes(activity: &Activity, end: f64) -> Vec<(&Member, Vec<f32>)> {
+/// One agent's line on the timeline, as shares of the hour.
+struct Lane<'a> {
+    member: &'a Member,
+    /// When each delivery reached it.
+    ticks: Vec<f32>,
+    /// Each observed state: where it starts, where it ends, the state.
+    spans: Vec<(f32, f32, &'a str)>,
+}
+
+/// One lane per agent that received something in the last hour, was busy or
+/// waiting in it, or is now, most recently active first.
+fn lanes(activity: &Activity, end: f64) -> Vec<Lane<'_>> {
     let start = end - HOUR;
-    let mut lanes: Vec<(&Member, Vec<f32>, f64)> = Vec::new();
+    let share = |at: f64| ((at.clamp(start, end) - start) / HOUR) as f32;
+    let mut lanes: Vec<(Lane<'_>, f64)> = Vec::new();
     for member in &activity.members {
         let ticks: Vec<f64> = activity
             .entries
@@ -69,26 +78,74 @@ fn lanes(activity: &Activity, end: f64) -> Vec<(&Member, Vec<f32>)> {
             .filter(|entry| entry.agent == member.name && delivered(entry))
             .filter_map(|entry| entry.at.filter(|at| *at >= start && *at <= end))
             .collect();
+        // Observed states, each lasting until the next observation. Before
+        // the first one in the hour the lane says nothing.
+        let observed: Vec<(f64, &str)> = activity
+            .history
+            .iter()
+            .flatten()
+            .filter(|change| change.agent == member.name)
+            .filter_map(|change| change.at.map(|at| (at, change.state.as_str())))
+            .filter(|(at, _)| *at <= end)
+            .collect();
+        let spans: Vec<(f32, f32, &str)> = observed
+            .iter()
+            .enumerate()
+            .map(|(at, (from, state))| {
+                let to = observed.get(at + 1).map_or(end, |(next, _)| *next);
+                (share(*from), share(to), *state)
+            })
+            .filter(|(from, to, _)| to > from)
+            .collect();
         let (_, _, active) = state_now(member);
-        if ticks.is_empty() && !active {
+        // Observations of an idle or offline agent are not activity: Backbone
+        // records one for every agent when it starts keeping history.
+        let worked = spans.iter().any(|(_, _, state)| {
+            matches!(
+                AgentState::from_report(state),
+                AgentState::Working | AgentState::NeedsYou
+            )
+        });
+        if ticks.is_empty() && !active && !worked {
             continue;
         }
         let latest = ticks
             .iter()
+            .chain(observed.iter().map(|(at, _)| at))
             .copied()
             .fold(if active { end } else { start }, f64::max);
-        let shares = ticks
-            .iter()
-            .map(|at| ((at - start) / HOUR) as f32)
-            .collect();
-        lanes.push((member, shares, latest));
+        lanes.push((
+            Lane {
+                member,
+                ticks: ticks.into_iter().map(share).collect(),
+                spans,
+            },
+            latest,
+        ));
     }
-    lanes.sort_by(|a, b| b.2.total_cmp(&a.2).then(a.0.name.cmp(&b.0.name)));
+    lanes.sort_by(|a, b| {
+        b.1.total_cmp(&a.1)
+            .then(a.0.member.name.cmp(&b.0.member.name))
+    });
     lanes
         .into_iter()
         .take(LANES)
-        .map(|(member, ticks, _)| (member, ticks))
+        .map(|(lane, _)| lane)
         .collect()
+}
+
+/// The colour a state is drawn in on the timeline.
+fn span_color(state: &str) -> Rgba {
+    let c = colors();
+    if state == "offline" {
+        return c.selected;
+    }
+    match AgentState::from_report(state) {
+        AgentState::NeedsYou => c.attention,
+        AgentState::Working => c.accent,
+        AgentState::Idle => c.line_strong,
+        AgentState::Unknown => c.selected,
+    }
 }
 
 fn timeline(activity: &Activity) -> gpui::Div {
@@ -128,7 +185,12 @@ fn timeline(activity: &Activity) -> gpui::Div {
             "No message reached an agent in the last hour, and no agent is busy or waiting.",
         );
     }
-    for (member, ticks) in lanes {
+    for Lane {
+        member,
+        ticks,
+        spans,
+    } in lanes
+    {
         let mut track = div()
             .relative()
             .flex_1()
@@ -136,6 +198,17 @@ fn timeline(activity: &Activity) -> gpui::Div {
             .rounded(px(t.radius.key))
             .bg(c.panel)
             .overflow_hidden();
+        for (from, to, state) in spans {
+            track = track.child(
+                div()
+                    .absolute()
+                    .top(px(t.space.s2))
+                    .bottom(px(t.space.s2))
+                    .left(relative(from))
+                    .w(relative(to - from))
+                    .bg(span_color(state)),
+            );
+        }
         for share in ticks {
             track = track.child(
                 div()
@@ -170,17 +243,23 @@ fn timeline(activity: &Activity) -> gpui::Div {
             .child(div().size(px(t.space.s8)).rounded(px(t.space.s2)).bg(color))
             .child(label)
     };
-    section.child(
-        div()
-            .flex()
-            .flex_wrap()
-            .items_center()
-            .gap(px(t.space.s16))
-            .pl(px(name_width))
-            .pt(px(t.space.s4))
-            .child(swatch(c.text_2, "message delivered"))
-            .child("state now on the right; earlier states need Backbone's state history"),
-    )
+    let legend = div()
+        .flex()
+        .flex_wrap()
+        .items_center()
+        .gap(px(t.space.s16))
+        .pl(px(name_width))
+        .pt(px(t.space.s4))
+        .child(swatch(c.text_2, "message delivered"));
+    section.child(if activity.history.is_some() {
+        legend
+            .child(swatch(c.accent, "busy"))
+            .child(swatch(c.attention, "waiting or blocked"))
+            .child(swatch(c.line_strong, "idle"))
+            .child("states as Backbone observed them; brief changes between looks can be missed")
+    } else {
+        legend.child("state now on the right; this Backbone keeps no state history")
+    })
 }
 
 fn held(entry: &Entry) -> bool {
@@ -352,10 +431,41 @@ mod tests {
                 member("builder", "busy"),
                 member("waiter", "idle"),
             ],
+            history: None,
         };
         let lanes = lanes(&activity, end);
-        let names: Vec<&str> = lanes.iter().map(|(m, _)| m.name.as_str()).collect();
+        let names: Vec<&str> = lanes.iter().map(|lane| lane.member.name.as_str()).collect();
         assert_eq!(names, ["builder", "worker"]);
-        assert_eq!(lanes[1].1, [0.75]);
+        assert_eq!(lanes[1].ticks, [0.75]);
+        assert!(lanes[1].spans.is_empty());
+    }
+
+    #[test]
+    fn observed_states_span_until_the_next_observation() {
+        let change = |state: &str, at: f64| tmux_workspaces_roster::views::Change {
+            agent: "worker".into(),
+            state: state.into(),
+            at: Some(at),
+            ..Default::default()
+        };
+        let end = 10_000.0;
+        let activity = Activity {
+            members: vec![Member {
+                name: "worker".into(),
+                state: "idle".into(),
+                ..Member::default()
+            }],
+            history: Some(vec![
+                change("idle", end - 2.0 * HOUR),
+                change("busy", end - 1_800.0),
+                change("idle", end - 900.0),
+            ]),
+            ..Activity::default()
+        };
+        let lanes = lanes(&activity, end);
+        assert_eq!(
+            lanes[0].spans,
+            [(0.0, 0.5, "idle"), (0.5, 0.75, "busy"), (0.75, 1.0, "idle")]
+        );
     }
 }
