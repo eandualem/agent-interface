@@ -1247,6 +1247,7 @@ mod tests {
         assert!(idle_margin.needs_capture);
         assert_eq!(idle_margin.recovery_deadline, None);
         drop(seed);
+        client.kill().unwrap();
         client.wait().unwrap();
         let mut margin = b"\x1b[2J\x1b[H".to_vec();
         margin.extend(vec![b'x'; usize::from(layout.panes[0].cols)]);
@@ -1826,17 +1827,24 @@ mod tests {
             .unwrap();
         // tmux 3.3 and 3.4 already emit CSI-u. Newer versions expose a
         // format option; select CSI-u there without skipping any input checks.
-        if server
+        let configurable_extended_keys = server
             .run(&["show-options", "-s"])
             .unwrap()
             .lines()
-            .any(|line| line.starts_with("extended-keys-format "))
-        {
+            .any(|line| line.starts_with("extended-keys-format "));
+        if configurable_extended_keys {
             server
                 .run(&["set-option", "-s", "extended-keys-format", "csi-u"])
                 .unwrap();
         }
-        let script = "stty raw -echo; printf '\\033[>4;2m\\033[?1h\\033[2J\\033[Harrow-ready'; arrow=$(dd bs=1 count=3 2>/dev/null | od -An -tx1 | tr -d '[:space:]'); printf '\\033[2J\\033[Hextended-ready%s' \"$arrow\"; extended=$(dd bs=1 count=7 2>/dev/null | od -An -tx1 | tr -d '[:space:]'); printf '\\033[?2004h\\033[2J\\033[Hpaste-ready%s' \"$extended\"; pasted=$(dd bs=1 count=15 2>/dev/null | od -An -tx1 | tr -d '[:space:]'); printf '\\033[?1000h\\033[?1006h\\033[2J\\033[Hpaste:%s' \"$pasted\"; mouse=$(dd bs=1 count=28 2>/dev/null | od -An -tx1 | tr -d '[:space:]'); printf '\\033[?1002h\\033[2J\\033[Hmouse:%s' \"$mouse\"; drag=$(dd bs=1 count=28 2>/dev/null | od -An -tx1 | tr -d '[:space:]'); printf '\\033[2J\\033[Hdrag:%s' \"$drag\"; exec cat";
+        // Before tmux 3.5, shifted letters keep the lowercase codepoint.
+        // Read the whole server-encoded key so no byte spills into the paste.
+        let extended = if configurable_extended_keys {
+            "1b5b37323b3675" // CSI 72;6u
+        } else {
+            "1b5b3130343b3675" // CSI 104;6u
+        };
+        let script = "stty raw -echo; printf '\\033[>4;2m\\033[?1h\\033[2J\\033[Harrow-ready'; arrow=$(dd bs=1 count=3 2>/dev/null | od -An -tx1 | tr -d '[:space:]'); printf '\\033[2J\\033[Hextended-ready%s' \"$arrow\"; extended=$(dd bs=1 count=$1 2>/dev/null | od -An -tx1 | tr -d '[:space:]'); printf '\\033[?2004h\\033[2J\\033[Hpaste-ready%s' \"$extended\"; pasted=$(dd bs=1 count=15 2>/dev/null | od -An -tx1 | tr -d '[:space:]'); printf '\\033[?1000h\\033[?1006h\\033[2J\\033[Hpaste:%s' \"$pasted\"; mouse=$(dd bs=1 count=28 2>/dev/null | od -An -tx1 | tr -d '[:space:]'); printf '\\033[?1002h\\033[2J\\033[Hmouse:%s' \"$mouse\"; drag=$(dd bs=1 count=28 2>/dev/null | od -An -tx1 | tr -d '[:space:]'); printf '\\033[2J\\033[Hdrag:%s' \"$drag\"; exec cat";
         server
             .run(&[
                 "respawn-pane",
@@ -1846,6 +1854,8 @@ mod tests {
                 "sh",
                 "-c",
                 script,
+                "input-fixture",
+                &(extended.len() / 2).to_string(),
             ])
             .unwrap();
         let layout = layout(&server);
@@ -1886,7 +1896,7 @@ mod tests {
                 }),
             )
             .unwrap();
-        wait_for_row(&panes, &woken, pane, "paste-ready1b5b37323b3675");
+        wait_for_row(&panes, &woken, pane, &format!("paste-ready{extended}"));
         panes
             .send_encoded_input(pane, Input::Paste("ok\n".into()))
             .unwrap();

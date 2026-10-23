@@ -62,6 +62,9 @@ RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 cargo deny check
 ```
 
+When running the tests in Docker, start the container with `--init` so exited
+tmux processes are reaped.
+
 `cargo deny check` audits licences, security advisories, crate sources and the
 dependency direction between the project's crates. Install the version CI
 uses with `cargo install cargo-deny --version 0.20.2 --locked`.
