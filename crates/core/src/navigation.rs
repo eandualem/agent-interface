@@ -143,7 +143,7 @@ impl Layout {
 fn same_input_tree(current: &Node, previous: &Node) -> bool {
     match (current, previous) {
         (Node::Leaf(a), Node::Leaf(b)) => {
-            a.id == b.id && a.attachment == b.attachment && a.empty == b.empty
+            a.id == b.id && a.attachment == b.attachment && a.empty == b.empty && a.view == b.view
         }
         (
             Node::Split {
@@ -182,6 +182,7 @@ mod tests {
             attachment: None,
             cwd: None,
             empty: false,
+            view: None,
         })
     }
 
@@ -312,6 +313,7 @@ mod tests {
             }),
             cwd: None,
             empty: false,
+            view: None,
         });
         assert!(incoming.retain_navigation(&previous));
         assert_eq!(incoming.selected, "000000000006");

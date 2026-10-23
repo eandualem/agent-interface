@@ -35,6 +35,9 @@ attention_text = "#f2785c"  # attention used as text
 on_attention = "#1c0d08"    # text on an attention fill
 attention_soft = "#f2785c1f" # attention tint fills (12 %)
 ok = "#8bc48a"              # saved light, connected
+info = "#7fa7d8"            # state changes; cache reads in usage
+violet = "#c39bd3"          # cache writes in usage
+green = "#a9c77e"           # output tokens in usage
 shadow = "#00000073"        # popover shadow
 pane_dim = 0.72             # opacity of unfocused panes' content
 
@@ -63,6 +66,9 @@ attention_text = "#b23c0b"
 on_attention = "#ffffff"
 attention_soft = "#c2410c1a"
 ok = "#2e7d32"
+info = "#2f5f9e"
+violet = "#7f4fa0"
+green = "#4f7a1f"
 shadow = "#281e1424"
 pane_dim = 0.8
 
@@ -122,6 +128,9 @@ weight = 600
 [text.body]                 # explanatory text in empty states and Settings
 size = 12.5
 weight = 400
+[text.figure]               # the headline number in a view
+size = 26.0
+weight = 600
 
 # ---------------------------------------------------------------- spacing
 
@@ -147,6 +156,7 @@ row = 7.0                   # rows, fields, buttons
 slot = 8.0                  # workspace slots, tiles
 pane = 9.0
 popover = 10.0              # popovers, cards
+pill = 11.0                 # filter chips
 
 # ---------------------------------------------------------------- sizes
 
@@ -198,6 +208,14 @@ hairline = 1.0              # rules, borders and separators
 minimap_stroke = 1.0        # tab layout thumbnail lines
 workspace_block_padding = 8.0
 pane_number_width = 8.0     # tab and pane numbers
+view_toolbar = 36.0         # a view's control row
+view_footer = 30.0          # a view's key-hint row
+view_choice = 46.0          # a row in the new-pane views list
+view_tile = 28.0            # the icon tile in that row
+chip = 22.0                 # filter chips and segmented controls
+meter = 6.0                 # a bar in a table cell
+meter_large = 10.0          # the stacked bar under a view's headline
+fact_label = 110.0          # the label column of an agent card
 
 # ---------------------------------------------------------------- motion
 

@@ -8,7 +8,7 @@ use std::{
     time::Duration,
 };
 
-use tmux_workspaces_roster::Snapshot;
+use tmux_workspaces_roster::{Snapshot, views};
 
 mod location;
 pub use location::provider_directory;
@@ -79,6 +79,81 @@ impl Drop for RosterSource {
         if let Some(worker) = self.worker.take() {
             // Finish the current configuration read/request, interrupt the
             // polling wait, and leave no worker running after this handle.
+            let _ = worker.join();
+        }
+    }
+}
+
+/// The newest data for one Backbone view, or why there is none.
+pub type ViewUpdate = Result<views::Data, &'static str>;
+
+/// Polls the data of one view while its pane is shown, on its own I/O worker.
+///
+/// The request can change in place, such as a new usage range, and is read
+/// again at once. Dropping the handle stops polling. Like the roster, every
+/// read re-resolves configuration and nothing is written to Backbone.
+pub struct ViewSource {
+    request: Arc<Mutex<views::Request>>,
+    updates: Arc<Mutex<Option<ViewUpdate>>>,
+    stop: mpsc::Sender<()>,
+    worker: Option<JoinHandle<()>>,
+}
+
+impl ViewSource {
+    /// Read immediately, then `every` after each completed read.
+    pub fn start(
+        data_dir: PathBuf,
+        request: views::Request,
+        every: Duration,
+        wake: impl Fn() + Send + 'static,
+    ) -> io::Result<Self> {
+        let request = Arc::new(Mutex::new(request));
+        let updates = Arc::new(Mutex::new(None));
+        let (shared, pending) = (Arc::clone(&request), Arc::clone(&updates));
+        let (stop, stopped) = mpsc::channel();
+        let worker = thread::Builder::new()
+            .name("view polling".into())
+            .spawn(move || {
+                loop {
+                    let request = shared.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                    let update = views::read(&data_dir, None, &request);
+                    *pending.lock().unwrap_or_else(|e| e.into_inner()) = Some(update);
+                    wake();
+                    match stopped.recv_timeout(every) {
+                        Err(mpsc::RecvTimeoutError::Timeout) | Ok(()) => {}
+                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    }
+                }
+            })?;
+        Ok(Self {
+            request,
+            updates,
+            stop,
+            worker: Some(worker),
+        })
+    }
+
+    /// Replace the request and read it now.
+    pub fn set_request(&self, request: views::Request) {
+        *self.request.lock().unwrap_or_else(|e| e.into_inner()) = request;
+        let _ = self.stop.send(());
+    }
+
+    /// Take the newest read, if one arrived since the last call.
+    pub fn take_update(&self) -> Option<ViewUpdate> {
+        self.updates
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take()
+    }
+}
+
+impl Drop for ViewSource {
+    fn drop(&mut self) {
+        let (stop, _) = mpsc::channel();
+        // Dropping the only sender disconnects the worker's wait.
+        drop(std::mem::replace(&mut self.stop, stop));
+        if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
     }

@@ -10,7 +10,7 @@ use gpui::{
 };
 use gpui_platform::application;
 use tmux_workspaces_core::{
-    Attachment, AttachmentTarget, Direction, Layout, Leaf, NameEdit, RenameOutcome, Tab,
+    Attachment, AttachmentTarget, Direction, Layout, Leaf, NameEdit, RenameOutcome, Tab, View,
 };
 use tmux_workspaces_store::Document;
 
@@ -34,6 +34,7 @@ mod sidebar;
 mod split_resize;
 mod status;
 mod terminal;
+mod views;
 mod workspace;
 use name::{NameEvent, NameField};
 use terminal::{LiveTerminal, Target};
@@ -408,6 +409,12 @@ struct Browser {
     resize: Option<split_resize::Drag>,
     split_bounds: Rc<RefCell<HashMap<String, Bounds<gpui::Pixels>>>>,
     resize_activation: Option<gpui::Subscription>,
+    /// Agent Backbone's data directory, when it is set up.
+    backbone: Option<PathBuf>,
+    /// The view in each shown view pane, with its event subscription.
+    views: HashMap<String, (gpui::Entity<views::ViewPane>, gpui::Subscription)>,
+    /// The empty pane whose chooser lists views, and whether it lists agents.
+    view_menu: Option<(String, bool)>,
 }
 
 impl Browser {
@@ -463,6 +470,7 @@ impl Browser {
         let Ok(Some(directory)) = crate::roster::provider_directory(None, None, None, false) else {
             return;
         };
+        self.backbone = Some(directory.clone());
         let (wake, mut woken) = mpsc::unbounded();
         let Ok(roster) = crate::roster::RosterSource::start(directory, None, move || {
             let _ = wake.unbounded_send(());
@@ -1011,6 +1019,47 @@ impl Browser {
         self.save(cx);
     }
 
+    /// Show a view in an empty pane. Like opening a terminal, the pane changes
+    /// only once the library has saved it.
+    fn open_view(&mut self, pane: &str, view: View, window: &mut Window, cx: &mut Context<Self>) {
+        self.view_menu = None;
+        if self.saving || self.save_failed {
+            return;
+        }
+        if let Some(update) = self.library.as_ref().and_then(Library::take_update) {
+            self.apply(update);
+        }
+        let Some(layout) = &mut self.layout else {
+            return;
+        };
+        if !layout
+            .model()
+            .tab()
+            .is_some_and(|tab| !layout.model().focus || tab.focus == pane)
+            || !layout.model_mut().choose_pane(pane)
+        {
+            return;
+        }
+        let Some(target) = AttachmentEdit::capture(layout.model()) else {
+            return;
+        };
+        let (base, mut proposed) = layout.save_snapshot();
+        if !target.displayed(&proposed) || !proposed.show_view(&target.tab, &target.pane, view) {
+            self.save_notice = Some("The pane changed. Choose the view again.".into());
+            cx.notify();
+            return;
+        }
+        let _ = layout.model_mut().retain_navigation(&proposed);
+        self.pending_save = Some((base, proposed));
+        self.editing = None;
+        self.chooser = None;
+        self.tab_menu = None;
+        if let Some(focus) = &self.navigation {
+            window.focus(focus, cx);
+        }
+        self.save(cx);
+    }
+
     fn open_attach(&mut self, pane: &str, window: &mut Window, cx: &mut Context<Self>) {
         if self.saving || self.save_failed {
             return;
@@ -1331,7 +1380,7 @@ impl Render for Browser {
                 tab.tree
                     .leaves()
                     .into_iter()
-                    .filter(|leaf| !leaf.empty)
+                    .filter(|leaf| leaf.runs_terminal())
                     .cloned()
                     .collect::<Vec<_>>()
             })
@@ -1383,15 +1432,53 @@ impl Render for Browser {
                 );
             }
         }
+        let shown: Vec<(String, View)> = self
+            .layout
+            .as_ref()
+            .and_then(|layout| layout.model().tab())
+            .map(|tab| {
+                tab.tree
+                    .leaves()
+                    .into_iter()
+                    .filter_map(|leaf| Some((leaf.id.clone(), leaf.view.clone()?)))
+                    .collect()
+            })
+            .unwrap_or_default();
+        self.views.retain(|id, (pane, _)| {
+            shown
+                .iter()
+                .any(|(leaf, view)| leaf == id && &pane.read(cx).view == view)
+        });
+        for (id, view) in shown {
+            if !self.views.contains_key(&id) {
+                let backbone = self.backbone.clone();
+                let pane = cx.new(|cx| views::ViewPane::new(view, backbone, cx));
+                let events =
+                    cx.subscribe_in(&pane, window, |browser, _, event, window, cx| match event {
+                        views::ViewEvent::ShowAgent(name) => browser.go_to_agent(name, window, cx),
+                    });
+                self.views.insert(id, (pane, events));
+            }
+        }
+        if self.view_menu.as_ref().is_some_and(|(pane, _)| {
+            !self.layout.as_ref().is_some_and(|layout| {
+                layout.model().tab().is_some_and(|tab| {
+                    tab.tree
+                        .leaves()
+                        .iter()
+                        .any(|leaf| &leaf.id == pane && leaf.empty)
+                })
+            })
+        }) {
+            self.view_menu = None;
+        }
         if let Some(request) = self.shell_to_open.take()
             && let Some(layout) = &self.layout
             && let Some(tab) = layout.model().tab()
             && (!layout.model().focus || tab.focus == request.id)
-            && let Some(leaf) = tab
-                .tree
-                .leaves()
-                .into_iter()
-                .find(|leaf| leaf.id == request.id && !leaf.empty && leaf.attachment.is_none())
+            && let Some(leaf) = tab.tree.leaves().into_iter().find(|leaf| {
+                leaf.id == request.id && leaf.runs_terminal() && leaf.attachment.is_none()
+            })
             && let Some(terminal) = self.terminals.get(&request.id)
             && let Some(Ok(environment)) = &self.shell_environment
         {

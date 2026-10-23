@@ -100,6 +100,14 @@ impl Browser {
             focus: &tab.focus,
             numbers: &numbers,
             terminals: &self.terminals,
+            views: &self.views,
+            view_menu: self.view_menu.as_ref(),
+            backbone: self.backbone.is_some(),
+            agents: self
+                .agents
+                .as_ref()
+                .map(|snapshot| snapshot.states.keys().cloned().collect())
+                .unwrap_or_default(),
             chooser: self.chooser.as_ref(),
             split_bounds: &self.split_bounds,
             leaf_states,

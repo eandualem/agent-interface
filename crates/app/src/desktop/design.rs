@@ -45,7 +45,8 @@ group!(
         on_accent: Rgba = color, accent_soft: Rgba = color, focus: Rgba = color,
         focus_halo: Rgba = color, attention: Rgba = color,
         attention_text: Rgba = color, on_attention: Rgba = color,
-        attention_soft: Rgba = color, ok: Rgba = color, shadow: Rgba = color,
+        attention_soft: Rgba = color, ok: Rgba = color, info: Rgba = color,
+        violet: Rgba = color, green: Rgba = color, shadow: Rgba = color,
         pane_dim: f32 = number,
     }
 );
@@ -72,6 +73,7 @@ group!(
         row: TextStyle = style, row_selected: TextStyle = style,
         status: TextStyle = style, meta: TextStyle = style, label: TextStyle = style,
         key: TextStyle = style, empty_title: TextStyle = style, body: TextStyle = style,
+        figure: TextStyle = style,
     }
 );
 
@@ -89,7 +91,7 @@ group!(
     Radius {
         key: f32 = number, icon_button: f32 = number, menu_item: f32 = number,
         row: f32 = number,
-        slot: f32 = number, pane: f32 = number, popover: f32 = number,
+        slot: f32 = number, pane: f32 = number, popover: f32 = number, pill: f32 = number,
     }
 );
 
@@ -116,7 +118,10 @@ group!(
         empty_icon: f32 = number, empty_width: f32 = number,
         menu_heading: f32 = number, keycap: f32 = number, hairline: f32 = number,
         minimap_stroke: f32 = number, workspace_block_padding: f32 = number,
-        pane_number_width: f32 = number,
+        pane_number_width: f32 = number, view_toolbar: f32 = number,
+        view_footer: f32 = number, view_choice: f32 = number, view_tile: f32 = number,
+        chip: f32 = number, meter: f32 = number, meter_large: f32 = number,
+        fact_label: f32 = number,
     }
 );
 

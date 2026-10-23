@@ -111,6 +111,13 @@ impl<'a> Projection<'a> {
                 } else {
                     item.remove("empty");
                 }
+                let view = leaf.view.as_ref();
+                optional(&mut item, "view", view.map(|view| view.kind.as_str()));
+                optional(
+                    &mut item,
+                    "view_agent",
+                    view.and_then(|view| view.agent.as_deref()),
+                );
                 item
             }
             Node::Split {
@@ -120,8 +127,18 @@ impl<'a> Projection<'a> {
                 first,
                 second,
             } => {
-                let mut item =
-                    self.object(id, &["first", "second", "agent", "cwd", "source_socket"])?;
+                let mut item = self.object(
+                    id,
+                    &[
+                        "first",
+                        "second",
+                        "agent",
+                        "cwd",
+                        "source_socket",
+                        "view",
+                        "view_agent",
+                    ],
+                )?;
                 item.insert(
                     "direction".into(),
                     value(match direction {

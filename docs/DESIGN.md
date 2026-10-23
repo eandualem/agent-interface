@@ -107,6 +107,7 @@ Each theme defines the same names (`[color.dark]`, `[color.light]` in
 | `focus`, `focus_halo` | Focused pane border and focus rings; glow around the focused pane |
 | `attention`, `attention_text`, `on_attention`, `attention_soft` | Needs you, destructive actions, errors |
 | `ok` | Saved light, connected |
+| `info`, `violet`, `green` | Inbound events and cache reads; cache writes; output tokens (Backbone views) |
 | `shadow` | Popover shadow |
 | `pane_dim` | Opacity of unfocused panes' content |
 
@@ -130,12 +131,13 @@ weight, applied with `components::text`:
 | `label` | Uppercase section labels (TABS, AGENTS) |
 | `key` | Keycaps and numbers, in `mono` |
 | `empty_title`, `body` | Empty and error states; explanatory text |
+| `figure` | The headline number in a view |
 
 ## Spacing, radii and sizes
 
 - `[space]`: a 2 px scale named by value (`s2` … `s24`). Views use these names.
 - `[radius]`: by use — `key`, `icon_button`, `menu_item`, `row`, `slot`,
-  `pane`, `popover`.
+  `pane`, `popover`, `pill`.
 - `[size]`: every component dimension, from `titlebar` and `panel_width` to
   `row`, `pane_header`, `status_row`, `slot`, `keycap`, `hairline` and the
   Settings window. Each is commented in `tokens.toml`.
@@ -158,6 +160,22 @@ All in `components.rs`; each takes its look from the tokens.
 | `minimap` | A tab's layout thumbnail: one frame, split once, or split twice |
 | `empty_tile`, `empty_state` | Icon tile, title, explanation and actions, centred |
 | `field_frame` | Text field frame, `accent` border when focused |
+| `view_heading`, `view_toolbar`, `view_footer` | A view's uppercase section label with a note; its control row; its bottom row of keys and a note |
+| `chip`, `segments`, `segment` | Filter pill, filled when on; a segmented control's frame and its choices |
+| `meter`, `stacked_meter`, `legend` | A bar filled to a share; a bar split by shares; a swatch, label and value |
+| `badge` | Small mono label, such as an agent's CLI |
+| `view_choice` | A row of the new-pane views list: icon tile, label, description, scope |
+| `fact` | A label and value, one line of an agent's card |
+
+## Backbone views
+
+A pane can show a view instead of a terminal.
+The new-pane chooser offers **Skills, usage, team…** when Agent Backbone is set
+up; it lists the views, and Agent then asks which agent. Each view lives in
+`desktop/views/` and is built from the components above: a toolbar, a
+scrolling list and a footer. The pane header shows the view's icon and title.
+A view keeps its last data when Backbone stops answering and says so in a
+band at the bottom.
 
 Agent states always pair a shape with a colour, so they read without colour.
 Backbone's states fold onto four (`AgentState::from_report`): needs you

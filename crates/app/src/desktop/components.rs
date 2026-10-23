@@ -439,6 +439,307 @@ pub fn field_frame(focused: bool) -> Div {
     .when(!focused, |el| el.border_color(c.line))
 }
 
+// ---------------------------------------------------------------- views
+//
+// The pieces Backbone views are built from. Each view composes these, so a
+// view never styles its own headings, controls, bars or footers.
+
+/// A view's section heading: an uppercase label, and a note on the right.
+pub fn view_heading(label: impl Into<SharedString>, note: impl Into<SharedString>) -> Div {
+    let (t, c) = (tokens(), colors());
+    text(
+        div()
+            .flex()
+            .flex_shrink_0()
+            .items_end()
+            .justify_between()
+            .gap(px(t.space.s8))
+            .h(px(t.size.row))
+            .px(px(t.space.s8))
+            .pb(px(t.space.s6))
+            .text_color(c.muted),
+        &t.text.label,
+    )
+    .child(label.into())
+    .child(text(div().overflow_hidden().whitespace_nowrap(), &t.text.meta).child(note.into()))
+}
+
+/// The row of controls under a view's header.
+pub fn view_toolbar() -> Div {
+    let (t, c) = (tokens(), colors());
+    text(
+        div()
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .gap(px(t.space.s8))
+            .h(px(t.size.view_toolbar))
+            .px(px(t.space.s12))
+            .border_b(px(t.size.hairline))
+            .border_color(c.line)
+            .text_color(c.muted),
+        &t.text.status,
+    )
+}
+
+/// A view's bottom row: keys with what they do, then a note on the right.
+pub fn view_footer(hints: &[(&'static str, &'static str)], note: impl Into<SharedString>) -> Div {
+    let (t, c) = (tokens(), colors());
+    let mut footer = text(
+        div()
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .gap(px(t.space.s16))
+            .h(px(t.size.view_footer))
+            .px(px(t.space.s14))
+            .border_t(px(t.size.hairline))
+            .border_color(c.line)
+            .text_color(c.muted)
+            .overflow_hidden()
+            .whitespace_nowrap(),
+        &t.text.meta,
+    );
+    for (key, action) in hints {
+        footer = footer.child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(t.space.s4))
+                .child(key_hint(*key).text_color(c.text_2))
+                .child(*action),
+        );
+    }
+    footer.child(div().flex_1()).child(note.into())
+}
+
+/// A pill that filters a list; filled while it is on.
+pub fn chip(
+    id: impl Into<SharedString>,
+    label: impl Into<SharedString>,
+    on: bool,
+) -> Stateful<Div> {
+    let (t, c) = (tokens(), colors());
+    text(
+        div()
+            .id(id.into())
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .h(px(t.size.chip))
+            .px(px(t.space.s10))
+            .rounded(px(t.radius.pill))
+            .border(px(t.size.hairline))
+            .cursor_pointer(),
+        &t.text.meta,
+    )
+    .when(on, |el| {
+        el.bg(c.selected)
+            .border_color(c.selected)
+            .text_color(c.text)
+    })
+    .when(!on, |el| {
+        el.border_color(c.line_strong)
+            .text_color(c.muted)
+            .hover(|el| el.text_color(colors().text))
+    })
+    .child(label.into())
+}
+
+/// The frame of a segmented control; its children are [`segment`]s.
+pub fn segments() -> Div {
+    let (t, c) = (tokens(), colors());
+    div()
+        .flex()
+        .flex_shrink_0()
+        .gap(px(t.size.hairline))
+        .p(px(t.space.s2))
+        .rounded(px(t.radius.icon_button))
+        .bg(c.panel)
+}
+
+/// One choice in a segmented control.
+pub fn segment(
+    id: impl Into<SharedString>,
+    label: impl Into<SharedString>,
+    on: bool,
+) -> Stateful<Div> {
+    let (t, c) = (tokens(), colors());
+    text(
+        div()
+            .id(id.into())
+            .flex()
+            .items_center()
+            .h(px(t.size.chip - t.space.s4))
+            .px(px(t.space.s10))
+            .rounded(px(t.radius.key))
+            .cursor_pointer(),
+        &t.text.meta,
+    )
+    .when(on, |el| el.bg(c.selected).text_color(c.text))
+    .when(!on, |el| {
+        el.text_color(c.muted)
+            .hover(|el| el.text_color(colors().text))
+    })
+    .child(label.into())
+}
+
+/// A short bar filled to `fraction` of its width.
+pub fn meter(fraction: f32, color: Rgba) -> Div {
+    let (t, c) = (tokens(), colors());
+    div()
+        .flex_1()
+        .min_w_0()
+        .h(px(t.size.meter))
+        .rounded(px(t.size.meter / 2.0))
+        .bg(c.selected)
+        .overflow_hidden()
+        .child(
+            div()
+                .h_full()
+                .w(gpui::relative(fraction.clamp(0.0, 1.0)))
+                .rounded(px(t.size.meter / 2.0))
+                .bg(color),
+        )
+}
+
+/// A bar split into coloured parts by their shares of the whole.
+pub fn stacked_meter(parts: &[(f32, Rgba)]) -> Div {
+    let t = tokens();
+    let total: f32 = parts.iter().map(|(share, _)| share.max(0.0)).sum();
+    let mut bar = div()
+        .flex()
+        .w_full()
+        .h(px(t.size.meter_large))
+        .gap(px(t.space.s2))
+        .rounded(px(t.size.meter_large / 2.0))
+        .overflow_hidden();
+    for (share, color) in parts {
+        if *share > 0.0 && total > 0.0 {
+            bar = bar.child(
+                div()
+                    .h_full()
+                    .flex_grow(*share / total)
+                    .flex_basis(px(0.0))
+                    .bg(*color),
+            );
+        }
+    }
+    bar
+}
+
+/// A legend entry: a colour swatch, its label and its value.
+pub fn legend(color: Rgba, label: impl Into<SharedString>, value: impl Into<SharedString>) -> Div {
+    let (t, c) = (tokens(), colors());
+    div()
+        .flex()
+        .items_center()
+        .gap(px(t.space.s6))
+        .text_color(c.muted)
+        .child(
+            div()
+                .size(px(t.size.dot + t.space.s2 + 1.0))
+                .rounded(px(t.space.s2))
+                .bg(color),
+        )
+        .child(label.into())
+        .child(div().text_color(c.text).child(value.into()))
+}
+
+/// A small mono badge, such as the CLI an agent runs in.
+pub fn badge(label: impl Into<SharedString>) -> Div {
+    let (t, c) = (tokens(), colors());
+    text(
+        div()
+            .flex_shrink_0()
+            .px(px(t.space.s4 + 1.0))
+            .h(px(t.size.keycap))
+            .flex()
+            .items_center()
+            .rounded(px(t.radius.key))
+            .bg(c.hover)
+            .font_family(t.font.mono.clone())
+            .text_color(c.muted),
+        &t.text.key,
+    )
+    .child(label.into())
+}
+
+/// A row of the new-pane views list: an icon tile, a label and description,
+/// and on the right what it covers.
+pub fn view_choice(
+    id: impl Into<SharedString>,
+    name: &str,
+    label: impl Into<SharedString>,
+    description: impl Into<SharedString>,
+    scope: impl Into<SharedString>,
+) -> Stateful<Div> {
+    let (t, c) = (tokens(), colors());
+    div()
+        .id(id.into())
+        .flex()
+        .flex_shrink_0()
+        .items_center()
+        .gap(px(t.space.s12))
+        .h(px(t.size.view_choice))
+        .px(px(t.space.s10))
+        .rounded(px(t.radius.row))
+        .cursor_pointer()
+        .hover(|el| el.bg(colors().selected))
+        .child(
+            div()
+                .flex_shrink_0()
+                .size(px(t.size.view_tile))
+                .rounded(px(t.radius.row))
+                .bg(c.selected)
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(icon(name, t.size.icon, c.text_2)),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap(px(t.space.s2))
+                .child(text(div().text_color(c.text), &t.text.row_selected).child(label.into()))
+                .child(
+                    text(
+                        div()
+                            .text_color(c.muted)
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis(),
+                        &t.text.meta,
+                    )
+                    .child(description.into()),
+                ),
+        )
+        .child(text(div().flex_shrink_0().text_color(c.muted), &t.text.meta).child(scope.into()))
+}
+
+/// A label and its value, one line of an agent's facts.
+pub fn fact(label: impl Into<SharedString>, value: impl IntoElement) -> Div {
+    let (t, c) = (tokens(), colors());
+    text(
+        div()
+            .flex()
+            .gap(px(t.space.s12))
+            .min_h(px(t.size.keycap + t.space.s4)),
+        &t.text.body,
+    )
+    .child(
+        div()
+            .flex_shrink_0()
+            .w(px(t.size.fact_label))
+            .text_color(c.muted)
+            .child(label.into()),
+    )
+    .child(div().flex_1().min_w_0().text_color(c.text_2).child(value))
+}
+
 #[cfg(test)]
 mod tests {
     use super::AgentState;

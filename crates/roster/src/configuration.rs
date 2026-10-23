@@ -15,21 +15,23 @@ impl Snapshot {
     /// Configuration failures preserve metadata with the same fixed stale error
     /// as a failed request; no secret or underlying error is retained or logged.
     pub fn fetch_configured(&mut self, data_dir: &Path, url: Option<&str>) {
-        let configured = (|| {
-            let key = environment("BACKBONE_API_KEY")?;
-            let port = if url.is_some_and(|url| !url.is_empty()) {
-                String::new()
-            } else {
-                environment("BACKBONE_PORT")?
-            };
-            read(data_dir, url, &key, &port)
-        })();
-        if let Some((url, key)) = configured {
+        if let Some((url, key)) = configured(data_dir, url) {
             self.fetch(&url, &key);
         } else {
             self.unavailable();
         }
     }
+}
+
+/// The validated address and key for an enabled provider, re-read on each call.
+pub(crate) fn configured(data_dir: &Path, url: Option<&str>) -> Option<(String, String)> {
+    let key = environment("BACKBONE_API_KEY")?;
+    let port = if url.is_some_and(|url| !url.is_empty()) {
+        String::new()
+    } else {
+        environment("BACKBONE_PORT")?
+    };
+    read(data_dir, url, &key, &port)
 }
 
 fn environment(name: &str) -> Option<String> {
@@ -58,7 +60,7 @@ fn read(data_dir: &Path, url: Option<&str>, key: &str, port: &str) -> Option<(St
         let port = if port.is_empty() { &saved_port } else { port };
         format!("http://{host}:{port}")
     };
-    crate::transport::endpoint(&url)?;
+    crate::transport::endpoint(&url, "/api/agents")?;
     Some((url.trim_end_matches('/').to_owned(), key))
 }
 

@@ -87,6 +87,9 @@ icons!(
     "circle-check",
     "agent-arc",
     "agent-play",
+    "activity",
+    "chevron-left",
+    "layout-grid",
 );
 
 /// Icons a workspace can show, in the order the picker offers them.

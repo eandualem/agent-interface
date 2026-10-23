@@ -2,7 +2,7 @@
 
 use rusqlite::Connection;
 use std::path::Path;
-use tmux_workspaces_core::{Direction, Node};
+use tmux_workspaces_core::{Direction, Node, View, ViewKind};
 use tmux_workspaces_store::{Document, MAX_RECORD_BYTES, Store};
 
 const RECORD: &str = r#"{
@@ -713,4 +713,70 @@ fn a_native_icon_name_round_trips_and_clearing_it_shows_the_number() {
         serde_json::from_str(document.with_model(&model, path).unwrap().raw_json()).unwrap();
     assert!(cleared["workspaces"][0]["symbol"].is_null());
     assert!(cleared["workspaces"][0]["icon"].is_null());
+}
+
+#[test]
+fn view_panes_round_trip_and_reject_mixed_or_unknown_views() {
+    let view = RECORD.replacen(
+        "\"agent\": null, \"empty\": true",
+        "\"agent\": null, \"view\": \"agent\", \"view_agent\": \"worker-1\"",
+        1,
+    );
+    let document = parse(&view).unwrap();
+    let Node::Split { second, .. } = &document.model().workspaces[0].tabs[0].tree else {
+        panic!("expected a split");
+    };
+    let Node::Leaf(leaf) = second.as_ref() else {
+        panic!("expected a leaf");
+    };
+    let expected = View {
+        kind: ViewKind::Agent,
+        agent: Some("worker-1".into()),
+    };
+    assert_eq!(leaf.view.as_ref(), Some(&expected));
+    assert!(!leaf.runs_terminal());
+
+    let mut model = document.model().clone();
+    let Node::Split { second, .. } = &mut model.workspaces[0].tabs[0].tree else {
+        unreachable!();
+    };
+    let Node::Leaf(leaf) = second.as_mut() else {
+        unreachable!();
+    };
+    leaf.view = Some(View {
+        kind: ViewKind::Usage,
+        agent: None,
+    });
+    let saved = document
+        .with_model(&model, Path::new("layouts.db"))
+        .unwrap();
+    let value: serde_json::Value = serde_json::from_str(saved.raw_json()).unwrap();
+    let pane = &value["workspaces"][0]["tabs"][0]["tree"]["second"];
+    assert_eq!(pane["view"], "usage");
+    assert!(pane.get("view_agent").is_none());
+    assert_eq!(saved.model(), &model);
+
+    for (before, after) in [
+        ("\"view\": \"agent\"", "\"view\": \"future\""),
+        ("\"view\": \"agent\"", "\"view\": \"usage\""),
+        (
+            "\"view_agent\": \"worker-1\"",
+            "\"view_agent\": \"bad name\"",
+        ),
+        ("\"agent\": null, \"view\"", "\"agent\": \"work\", \"view\""),
+        (
+            "\"agent\": null, \"view\"",
+            "\"agent\": null, \"empty\": true, \"view\"",
+        ),
+    ] {
+        let text = view.replacen(before, after, 1);
+        assert_ne!(text, view);
+        assert!(parse(&text).is_err(), "accepted {after}");
+    }
+    let stray = RECORD.replacen(
+        "\"direction\": \"right\"",
+        "\"direction\": \"right\", \"view\": \"usage\"",
+        1,
+    );
+    assert!(parse(&stray).is_err());
 }

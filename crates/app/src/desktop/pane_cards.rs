@@ -7,7 +7,7 @@ use gpui::{
     AnyElement, Bounds, BoxShadow, Context, Entity, Pixels, SharedString, div, point, prelude::*,
     px,
 };
-use tmux_workspaces_core::{Direction, Leaf, Node};
+use tmux_workspaces_core::{Direction, Leaf, Node, View, ViewKind};
 
 use super::{
     Attaching, Browser, components as ui,
@@ -15,6 +15,7 @@ use super::{
     settings::{self, PaneHeaders},
     shortcuts::{self, Command},
     terminal::LiveTerminal,
+    views::{self, ViewPane},
 };
 use ui::AgentState;
 
@@ -23,6 +24,13 @@ pub(super) struct Cards<'a> {
     pub focus: &'a str,
     pub numbers: &'a [String],
     pub terminals: &'a HashMap<String, Entity<LiveTerminal>>,
+    pub views: &'a HashMap<String, (Entity<ViewPane>, gpui::Subscription)>,
+    /// The empty pane listing views, and whether it lists agents.
+    pub view_menu: Option<&'a (String, bool)>,
+    /// Whether Agent Backbone is set up, so views can be offered.
+    pub backbone: bool,
+    /// Agent names, for choosing an agent view.
+    pub agents: Vec<String>,
     pub chooser: Option<&'a Attaching>,
     pub split_bounds: &'a Rc<RefCell<HashMap<String, Bounds<Pixels>>>>,
     /// The agent state shown in each pane, by leaf.
@@ -130,10 +138,16 @@ impl Browser {
             .filter(|chooser| chooser.destination.pane == leaf.id)
         {
             chooser.view.clone().into_any_element()
+        } else if let Some((view, _)) = cards.views.get(&leaf.id) {
+            view.clone().into_any_element()
         } else if let Some(terminal) = cards.terminals.get(&leaf.id) {
             terminal.clone().into_any_element()
         } else {
-            Self::new_pane(&leaf.id, cx)
+            match cards.view_menu.filter(|(pane, _)| pane == &leaf.id) {
+                Some((_, false)) => Self::view_list(&leaf.id, cx),
+                Some((_, true)) => Self::agent_list(&leaf.id, &cards.agents, cx),
+                None => Self::new_pane(&leaf.id, cards.backbone, cx),
+            }
         };
         div()
             .id(SharedString::from(format!("pane-{id}")))
@@ -352,6 +366,27 @@ impl Browser {
                     .as_deref()
                     .map(|path| home_relative(path, std::env::var("HOME").ok().as_deref()))
                     .unwrap_or_default();
+                if let Some(view) = &leaf.view {
+                    return row
+                        .child(ui::icon(
+                            views::about(view.kind).icon,
+                            t.size.icon - t.space.s2 / 2.0,
+                            icon_color,
+                        ))
+                        .child(div().text_color(title_color).child(ViewPane::title(view)))
+                        .when(view.agent.is_some(), |row| {
+                            row.child(div().child(views::about(view.kind).label))
+                        })
+                        .child(div().flex_1())
+                        .child(
+                            div()
+                                .w(px(t.size.pane_number_width))
+                                .flex_shrink_0()
+                                .font_family(t.font.mono.clone())
+                                .text_size(t.text.key.size())
+                                .child(number.to_string()),
+                        );
+                }
                 row = row
                     .child(ui::icon(
                         "terminal",
@@ -404,10 +439,11 @@ impl Browser {
     }
 
     /// An empty pane asks what it should run; nothing is created until then.
-    fn new_pane(pane: &str, cx: &mut Context<Self>) -> AnyElement {
+    fn new_pane(pane: &str, backbone: bool, cx: &mut Context<Self>) -> AnyElement {
         let (t, c) = (tokens(), colors());
         let terminal = pane.to_owned();
         let attach = pane.to_owned();
+        let views = pane.to_owned();
         div()
             .size_full()
             .flex()
@@ -460,7 +496,25 @@ impl Browser {
                                         browser.open_attach(&attach, window, cx);
                                     },
                                 )),
-                            ),
+                            )
+                            .when(backbone, |choices| {
+                                choices.child(
+                                    ui::button(
+                                        SharedString::from(format!("views-{pane}")),
+                                        "Skills, usage, team…",
+                                        ui::Button::Secondary,
+                                    )
+                                    .child(div().flex_1())
+                                    .child(ui::icon("layout-grid", t.size.icon, c.muted))
+                                    .on_click(cx.listener(
+                                        move |browser, _, _, cx| {
+                                            cx.stop_propagation();
+                                            browser.view_menu = Some((views.clone(), false));
+                                            cx.notify();
+                                        },
+                                    )),
+                                )
+                            }),
                     ),
             )
             .child(
@@ -479,6 +533,106 @@ impl Browser {
                 .child("Nothing is created until you choose."),
             )
             .into_any_element()
+    }
+    /// The new-pane views list: open a view here, or go back to the choices.
+    fn view_list(pane: &str, cx: &mut Context<Self>) -> AnyElement {
+        let mut rows = Self::menu_frame("AGENT BACKBONE · LIVE, READ-ONLY", pane, false, cx);
+        for kind in ViewKind::ALL {
+            let about = views::about(kind);
+            let pane = pane.to_owned();
+            rows = rows.child(
+                ui::view_choice(
+                    SharedString::from(format!("view-{}-{pane}", kind.as_str())),
+                    about.icon,
+                    about.label,
+                    about.description,
+                    about.scope,
+                )
+                .on_click(cx.listener(move |browser, _, window, cx| {
+                    cx.stop_propagation();
+                    if kind == ViewKind::Agent {
+                        browser.view_menu = Some((pane.clone(), true));
+                        cx.notify();
+                    } else {
+                        browser.open_view(&pane, View { kind, agent: None }, window, cx);
+                    }
+                })),
+            );
+        }
+        rows.into_any_element()
+    }
+
+    /// Choose the agent an agent view describes.
+    fn agent_list(pane: &str, agents: &[String], cx: &mut Context<Self>) -> AnyElement {
+        let c = colors();
+        let mut rows = Self::menu_frame("WHICH AGENT?", pane, true, cx);
+        if agents.is_empty() {
+            rows = rows.child(
+                ui::text(
+                    div().px(px(tokens().space.s10)).text_color(c.muted),
+                    &tokens().text.body,
+                )
+                .child("No agents yet. Backbone has not answered."),
+            );
+        }
+        for agent in agents {
+            let (pane, name) = (pane.to_owned(), agent.clone());
+            rows = rows.child(
+                ui::row(
+                    SharedString::from(format!("view-agent-{agent}-{pane}")),
+                    false,
+                )
+                .child(ui::icon("user", tokens().size.icon, c.muted))
+                .child(agent.clone())
+                .on_click(cx.listener(move |browser, _, window, cx| {
+                    cx.stop_propagation();
+                    let view = View {
+                        kind: ViewKind::Agent,
+                        agent: Some(name.clone()),
+                    };
+                    browser.open_view(&pane, view, window, cx);
+                })),
+            );
+        }
+        rows.into_any_element()
+    }
+
+    // A scrolling list under a heading with a way back.
+    fn menu_frame(
+        heading: &'static str,
+        pane: &str,
+        agents: bool,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let (t, c) = (tokens(), colors());
+        let back = pane.to_owned();
+        div()
+            .id(SharedString::from(format!("view-menu-{pane}")))
+            .size_full()
+            .flex()
+            .flex_col()
+            .gap(px(t.space.s2))
+            .overflow_y_scroll()
+            .px(px(t.space.s24))
+            .py(px(t.space.s16))
+            .child(
+                ui::view_heading(heading, "").child(
+                    div()
+                        .id(SharedString::from(format!("view-menu-back-{pane}")))
+                        .flex()
+                        .items_center()
+                        .gap(px(t.space.s4))
+                        .cursor_pointer()
+                        .text_color(c.accent_text)
+                        .child(ui::icon("chevron-left", t.size.icon, c.accent_text))
+                        .child(if agents { "views" } else { "back" })
+                        .on_click(cx.listener(move |browser, _, _, cx| {
+                            cx.stop_propagation();
+                            browser.view_menu = agents.then(|| (back.clone(), false));
+                            cx.notify();
+                        })),
+                ),
+            )
     }
 }
 

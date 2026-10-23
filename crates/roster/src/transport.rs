@@ -17,14 +17,16 @@ impl Snapshot {
     /// nonempty, is sent only as the validated endpoint's bearer token. Every
     /// failure marks the existing snapshot stale with the same fixed diagnostic.
     pub fn fetch(&mut self, url: &str, key: &str) {
-        match response(url, key) {
+        match get(url, "/api/agents", key, RESPONSE_LIMIT) {
             Some(bytes) => self.update(&bytes),
             None => self.unavailable(),
         }
     }
 }
 
-pub(super) fn endpoint(url: &str) -> Option<Uri> {
+/// The validated loopback address of `path`, which the caller builds from
+/// fixed text and validated values only.
+pub(super) fn endpoint(url: &str, path: &str) -> Option<Uri> {
     let uri: Uri = url.parse().ok()?;
     let authority = uri.authority()?;
     if uri.scheme_str() != Some("http")
@@ -38,13 +40,13 @@ pub(super) fn endpoint(url: &str) -> Option<Uri> {
     {
         return None;
     }
-    format!("{}/api/agents", url.trim_end_matches('/'))
-        .parse()
-        .ok()
+    format!("{}{path}", url.trim_end_matches('/')).parse().ok()
 }
 
-fn response(url: &str, key: &str) -> Option<Vec<u8>> {
-    let uri = endpoint(url)?;
+/// One bounded GET of a fixed read path, returning at most `limit` plus one
+/// bytes so the caller can reject an oversized body.
+pub(super) fn get(url: &str, path: &str, key: &str, limit: usize) -> Option<Vec<u8>> {
+    let uri = endpoint(url, path)?;
     let client = reqwest::blocking::Client::builder()
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
@@ -76,7 +78,7 @@ fn response(url: &str, key: &str) -> Option<Vec<u8>> {
     // one. Snapshot::update keeps the inclusive limit when decoding.
     let mut bytes = Vec::new();
     response
-        .take(RESPONSE_LIMIT as u64 + 1)
+        .take(limit as u64 + 1)
         .read_to_end(&mut bytes)
         .ok()?;
     Some(bytes)
@@ -150,7 +152,12 @@ pub(super) mod tests {
             "http://LOCALHOST/prefix/",
             "http://[::1]:7120",
         ] {
-            assert!(endpoint(url).unwrap().path().ends_with("/api/agents"));
+            assert!(
+                endpoint(url, "/api/agents")
+                    .unwrap()
+                    .path()
+                    .ends_with("/api/agents")
+            );
         }
         for url in [
             "https://localhost",
@@ -169,7 +176,7 @@ pub(super) mod tests {
             "http://[::1]:65536",
             "http://localhost:",
         ] {
-            assert!(endpoint(url).is_none(), "{url}");
+            assert!(endpoint(url, "/api/agents").is_none(), "{url}");
         }
     }
 

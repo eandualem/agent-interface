@@ -98,6 +98,66 @@ pub struct Leaf {
     pub cwd: Option<String>,
     /// Show the new-pane chooser instead of an ordinary shell.
     pub empty: bool,
+    /// Show an Agent Backbone view instead of a terminal.
+    pub view: Option<View>,
+}
+
+impl Leaf {
+    /// Whether this area shows a terminal: neither the new-pane chooser nor a view.
+    pub fn runs_terminal(&self) -> bool {
+        !self.empty && self.view.is_none()
+    }
+}
+
+/// Information shown in a pane in place of a terminal. It starts no process.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct View {
+    /// What the pane shows.
+    pub kind: ViewKind,
+    /// The agent an agent view describes; none for every other kind.
+    pub agent: Option<String>,
+}
+
+/// The views a pane can show.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ViewKind {
+    /// Agents by repository, with their states.
+    Team,
+    /// Token usage by agent.
+    Usage,
+    /// Recent deliveries and inbound events.
+    Activity,
+    /// The shared skills store.
+    Skills,
+    /// One agent's card.
+    Agent,
+}
+
+impl ViewKind {
+    /// Every kind, in the order the new-pane chooser lists them.
+    pub const ALL: [Self; 5] = [
+        Self::Skills,
+        Self::Agent,
+        Self::Usage,
+        Self::Activity,
+        Self::Team,
+    ];
+
+    /// The saved name.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Team => "team",
+            Self::Usage => "usage",
+            Self::Activity => "activity",
+            Self::Skills => "skills",
+            Self::Agent => "agent",
+        }
+    }
+
+    /// The kind with this saved name.
+    pub fn parse(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|kind| kind.as_str() == name)
+    }
 }
 
 /// A session name on its original tmux server, even while offline.
