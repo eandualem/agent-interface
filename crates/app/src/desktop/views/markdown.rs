@@ -22,7 +22,10 @@ pub(super) enum Block {
 /// The blocks of `text`, after any front matter between `---` lines.
 pub(super) fn parse(text: &str) -> Vec<Block> {
     let mut lines = text.lines().peekable();
-    if lines.peek().is_some_and(|line| line.trim() == "---") {
+    // Front matter only when a closing line follows; otherwise `---` is a rule.
+    if lines.peek().is_some_and(|line| line.trim() == "---")
+        && text.lines().skip(1).any(|line| line.trim() == "---")
+    {
         lines.next();
         for line in lines.by_ref() {
             if line.trim() == "---" {
@@ -200,6 +203,7 @@ mod tests {
                 Block::Paragraph("after".into()),
             ]
         );
+        assert_eq!(parse("---\nText"), [Block::Paragraph("--- Text".into())]);
         let (plain, spans) = inline("a `b` c");
         assert_eq!(plain, "a b c");
         assert_eq!(spans.first(), Some(&(2..3)));

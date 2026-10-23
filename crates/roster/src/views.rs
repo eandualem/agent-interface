@@ -666,22 +666,11 @@ fn rules(runtime: &str, dir: &str, home: Option<std::path::PathBuf>) -> Permissi
             if let Some(home) = home
                 && let Some(text) = add(home.join(".codex/config.toml"), &mut permissions)
             {
-                // Only the top-level approval settings, before any table.
-                for line in text
-                    .lines()
-                    .take_while(|line| !line.trim_start().starts_with('['))
-                {
-                    if let Some((name, value)) = line.split_once('=') {
-                        let name = name.trim();
-                        if ["approval_policy", "sandbox_mode"].contains(&name) {
-                            let value = value
-                                .split('#')
-                                .next()
-                                .unwrap_or("")
-                                .trim()
-                                .trim_matches('"');
-                            permissions.modes.push((name.into(), value.into()));
-                        }
+                // Only the top-level approval settings.
+                let table = text.parse::<toml::Table>().unwrap_or_default();
+                for name in ["approval_policy", "sandbox_mode"] {
+                    if let Some(value) = table.get(name).and_then(toml::Value::as_str) {
+                        permissions.modes.push((name.into(), value.into()));
                     }
                 }
             }
@@ -940,6 +929,18 @@ mod tests {
         );
         assert_eq!(rules.files.iter().filter(|file| file.read).count(), 2);
         assert_eq!(read_permissions("other", "/").files.len(), 0);
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir(home.path().join(".codex")).unwrap();
+        std::fs::write(
+            home.path().join(".codex/config.toml"),
+            "approval_policy = 'never' # quiet\n[profiles.x]\nsandbox_mode = \"read-only\"\n",
+        )
+        .unwrap();
+        let codex = super::rules("codex", "/", Some(home.path().to_owned()));
+        assert_eq!(
+            codex.modes,
+            [("approval_policy".to_owned(), "never".to_owned())]
+        );
 
         let brief = Instructions::decode(
             br##"{"name":"worker","runtime":"claude","mode":"system","enabled":true,
