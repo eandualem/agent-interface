@@ -95,7 +95,7 @@ def main():
         "-Ctarget-cpu=generic",
     ])
     # Never infer optimization from Cargo's debug-info setting.
-    build = subprocess.Popen(["cargo", "build", "--release", "--locked", "-p", "tmux-workspaces-app",
+    build = subprocess.Popen(["cargo", "build", "--release", "--locked", "--target", target, "-p", "tmux-workspaces-app",
                               "--bin", "tmux-workspaces", "--message-format=json-render-diagnostics"],
                              cwd=ROOT, env=env, stdout=subprocess.PIPE, text=True)
     binary = None

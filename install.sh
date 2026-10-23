@@ -73,6 +73,8 @@ lock=$parent/.tmux-workspaces-install.lock
 mkdir "$lock" 2>/dev/null || fail "Another install is active. If it was interrupted, remove $lock and retry."
 staging=
 backup=
+launcher_stage=
+launcher_backup=
 installed=false
 new_link=false
 new_launcher=false
@@ -80,29 +82,32 @@ cleanup() {
     status=$?
     trap - EXIT HUP INT TERM
     set +e
+    rollback_ok=true
     if [ "$status" -ne 0 ]; then
         if [ "$installed" = true ]; then rm -rf "$destination"; fi
         if [ "$new_link" = true ]; then rm -f "$link"; fi
+        if [ -n "$backup" ] && [ -e "$backup" ]; then
+            if ! mv "$backup" "$destination"; then
+                printf 'Previous app retained at %s\n' "$backup" >&2
+                rollback_ok=false
+            fi
+        fi
         if [ "$new_launcher" = true ]; then
-            if [ -f "$staging/previous-launcher" ]; then
-                mv "$staging/previous-launcher" "$launcher"
+            if [ -n "$launcher_backup" ]; then
+                if ! mv -f "$launcher_backup" "$launcher"; then
+                    printf 'Previous launcher retained at %s\n' "$launcher_backup" >&2
+                    rollback_ok=false
+                fi
             else
                 rm -f "$launcher"
             fi
         fi
     fi
-    if [ -n "$backup" ] && [ -e "$backup" ]; then
-        if [ "$status" -ne 0 ]; then
-            if ! mv "$backup" "$destination"; then
-                printf 'Rollback needs attention. Previous app retained at %s\n' "$backup" >&2
-                rmdir "$lock"
-                exit 1
-            fi
-        else
-            rm -rf "$backup"
-        fi
+    if [ "$rollback_ok" = true ]; then
+        [ -z "$staging" ] || rm -rf "$staging"
+        [ -z "$launcher_backup" ] || rm -f "$launcher_backup"
     fi
-    [ -z "$staging" ] || rm -rf "$staging"
+    [ -z "$launcher_stage" ] || rm -f "$launcher_stage"
     rmdir "$lock"
     exit "$status"
 }
@@ -150,9 +155,15 @@ fi
 "$prepared/$executable" --version || fail 'The binary cannot run on this system. Check the documented runtime requirements.'
 if [ "$platform" = unknown-linux-gnu ]; then
     mkdir -p "$data/applications" "$HOME/.local/bin"
+    # Stage beside the launcher so replacement stays atomic with a separate XDG volume.
+    launcher_stage=$(mktemp "$data/applications/.tmux-workspaces-launcher.XXXXXX")
+    if [ -f "$launcher" ]; then
+        launcher_backup=$(mktemp "$data/applications/.tmux-workspaces-previous.XXXXXX")
+        cp "$launcher" "$launcher_backup"
+    fi
     # Exec has both desktop-string and command-argument escaping layers.
     escaped=$(printf '%s' "$destination/$executable" | sed 's/\\/\\\\\\\\/g; s/"/\\\\"/g; s/`/\\\\`/g; s/\$/\\\\$/g; s/%/%%/g')
-    cat > "$staging/launcher" <<EOF
+    cat > "$launcher_stage" <<EOF
 [Desktop Entry]
 Type=Application
 Name=tmux-workspaces
@@ -173,13 +184,13 @@ fi
 mv "$prepared" "$destination"
 installed=true
 if [ "$platform" = unknown-linux-gnu ]; then
-    # Both destinations were checked before any replacement.
-    ln -s "$destination/$executable" "$staging/link"
-    if [ ! -L "$link" ]; then new_link=true; fi
-    mv -f "$staging/link" "$link"
-    if [ -f "$launcher" ]; then cp "$launcher" "$staging/previous-launcher"; fi
-    mv -f "$staging/launcher" "$launcher"
+    # An existing owned symlink already points at the updated installation.
+    if [ ! -L "$link" ]; then
+        new_link=true
+        ln -s "$destination/$executable" "$link"
+    fi
     new_launcher=true
+    mv -f "$launcher_stage" "$launcher"
     if command -v update-desktop-database >/dev/null 2>&1; then
         update-desktop-database "$data/applications" >/dev/null 2>&1 || true
     fi

@@ -95,10 +95,24 @@ class InstallTests(unittest.TestCase):
     def test_rollback_after_launcher_failure(self):
         self.install(self.package())
         before = self.launcher.read_bytes()
-        self.command("mv", 'for last do :; done\ncase "$last" in *.desktop) exit 1;; esac\nexec /bin/mv "$@"')
+        # Model a cross-filesystem move that damages the destination before failing.
+        self.command("mv", 'for last do :; done\ncase "$last" in *.desktop)\n'
+                     'case "$*" in *launcher.*) echo partial > "$last"; exit 1;; esac;; esac\n'
+                     'exec /bin/mv "$@"')
         self.install(self.package("0.0.1"), success=False)
         self.assertEqual(subprocess.check_output([self.link, "--version"], text=True).strip(), "tmux-workspaces 0.0.0")
         self.assertEqual(self.launcher.read_bytes(), before)
+
+    def test_preserve_launcher_backup_when_restore_fails(self):
+        self.install(self.package())
+        before = self.launcher.read_bytes()
+        self.command("mv", 'for last do :; done\ncase "$last" in *.desktop) '
+                     'echo partial > "$last"; exit 1;; esac\nexec /bin/mv "$@"')
+        self.install(self.package("0.0.1"), success=False)
+        self.assertEqual(subprocess.check_output([self.link, "--version"], text=True).strip(), "tmux-workspaces 0.0.0")
+        backups = list(self.launcher.parent.glob(".tmux-workspaces-previous.*"))
+        self.assertEqual(len(backups), 1)
+        self.assertEqual(backups[0].read_bytes(), before)
 
 
 if __name__ == "__main__":
