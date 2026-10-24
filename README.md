@@ -30,21 +30,32 @@ for compatibility. The product and repository are **Agent Interface**.
 
 ## Get started
 
-Native release downloads are being prepared. To run the app now, follow the
-[source setup](CONTRIBUTING.md#set-up) for Rust, Zig 0.15.2 and the platform
-libraries, then:
+Agent Interface runs on macOS and Linux and needs tmux 3.3 or newer. On macOS,
+install tmux with `brew install tmux`.
+
+Install the latest release:
 
 ```sh
-git clone https://github.com/eandualem/agent-interface.git
-cd agent-interface
-python3 scripts/prepare-native.py
-LIBGHOSTTY_VT_SYS_OPTIMIZE=ReleaseSafe cargo run -p tmux-workspaces-app
+curl -fsSL https://raw.githubusercontent.com/eandualem/agent-interface/main/install.sh | sh
 ```
 
-Terminal sessions require tmux 3.3 or newer. Agent views connect to a running
+The installer picks the build for your computer and checks its checksum. On
+macOS it installs `tmux-workspaces.app` in `~/Applications`; on Linux, launch
+**Agent Interface** from the applications menu. The first time macOS opens the
+app, it may ask you to confirm it in **System Settings → Privacy & Security**.
+
+To install a build you already have, for example on a second computer, put the
+archive and its `.sha256` file in one folder and run the installer with it:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/eandualem/agent-interface/main/install.sh -o install.sh
+sh install.sh --archive tmux-workspaces-aarch64-apple-darwin.tar.gz
+```
+
+The [installation guide](docs/INSTALL.md) covers supported platforms, Linux
+libraries, updates and removal. To build from source, follow
+[Contributing](CONTRIBUTING.md#set-up). Agent views connect to a running
 Agent Backbone.
-The [installation guide](docs/INSTALL.md) covers native packages, prerequisites,
-updates and macOS first launch once release downloads are available.
 
 The first launch creates an empty workspace. Add a tab with **+** or
 Command-T, then choose **Open terminal** or **Attach a session**. On Linux,
@@ -56,8 +67,6 @@ select its folder. The shortcut is Command-O on macOS or Ctrl+Shift+O on Linux.
 
 This release uses tmux sessions on the same computer. It does not connect to
 sessions on another host or synchronize live sessions between computers.
-
-To build from source, follow [Contributing](CONTRIBUTING.md#set-up).
 
 ## Guides
 
