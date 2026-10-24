@@ -27,8 +27,9 @@ fn describe(server: &TmuxServer, target: &str, format: &str) -> String {
 
 /// Decode the PTY stream with the native terminal core, retaining parser state.
 fn screen_with(client: &Reference, terminal: &mut Terminal, offset: &mut usize, text: &str) {
+    let deadline = Instant::now() + TIMEOUT;
     let mut drawn = String::new();
-    wait_for(|| {
+    loop {
         let bytes = client.bytes_from(*offset);
         *offset += bytes.len();
         terminal.write(&bytes);
@@ -41,8 +42,16 @@ fn screen_with(client: &Reference, terminal: &mut Terminal, offset: &mut usize, 
             }
             drawn.push('\n');
         }
-        drawn.contains(text)
-    });
+        if drawn.contains(text) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "PTY screen timed out waiting for {text:?}; decoded {} bytes; grid:\n{drawn}",
+            *offset
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
     eprintln!("native grid contains {text:?}");
 }
 

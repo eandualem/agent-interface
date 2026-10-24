@@ -85,6 +85,14 @@ pub fn run(directory: Option<PathBuf>) -> Result<(), String> {
                 KeyBinding::new(shortcuts::platform_key("cmd-,"), OpenSettings, None),
                 KeyBinding::new(shortcuts::platform_key("cmd-w"), CloseWindow, None),
             ]);
+            cx.on_app_quit(|_| {
+                // The synchronous observer runs before GPUI's short async quit
+                // deadline. These workers finish without a foreground update.
+                layout_edit::finish_saves(std::time::Duration::from_secs(10));
+                settings::finish_saves(std::time::Duration::from_secs(2));
+                std::future::ready(())
+            })
+            .detach();
             // Defer: a window that is dispatching this action cannot be updated
             // until dispatch returns.
             cx.on_action(|_: &OpenSettings, cx| cx.defer(settings_window::show));
@@ -105,7 +113,6 @@ pub fn run(directory: Option<PathBuf>) -> Result<(), String> {
                 }
             });
             cx.on_action(|_: &Quit, cx| {
-                settings::finish_saves(std::time::Duration::from_secs(2));
                 cx.quit();
             });
             cx.on_action(|_: &NewWindow, cx| {
@@ -136,7 +143,6 @@ pub fn run(directory: Option<PathBuf>) -> Result<(), String> {
             }]);
             cx.on_window_closed(|cx, _| {
                 if cx.windows().is_empty() {
-                    settings::finish_saves(std::time::Duration::from_secs(2));
                     cx.quit();
                 }
             })
@@ -781,7 +787,9 @@ impl Browser {
         self.error = None;
         // Closing this window does not cancel a save while the app is running.
         // SQLite and its busy timeout never run on the UI thread.
+        let pending = layout_edit::PendingSave::start();
         let work = cx.background_executor().spawn(async move {
+            let _pending = pending;
             let result = layout_edit::save(
                 directory.as_deref(),
                 &mut base,
