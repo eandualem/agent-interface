@@ -148,7 +148,12 @@ pub(super) fn body(pane: &ViewPane, page: &ReportPage, cx: &mut Context<ViewPane
             ))
             .into_any_element();
     }
-    let mut toolbar = ui::view_toolbar().flex_wrap().gap(px(t.space.s6));
+    let mut toolbar = ui::view_toolbar()
+        .h_auto()
+        .min_h(px(t.size.view_toolbar))
+        .py(px(t.space.s6))
+        .flex_wrap()
+        .gap(px(t.space.s6));
     for (query, name) in [
         (ReportQuery::Latest(None), "Waiting on you"),
         (ReportQuery::Recent(None), "Recent updates"),
