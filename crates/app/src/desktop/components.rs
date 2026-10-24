@@ -464,6 +464,7 @@ pub fn view_header(name: &str, title: impl Into<SharedString>) -> Div {
     let (t, c) = (tokens(), colors());
     text(
         div()
+            .cursor(gpui::CursorStyle::OpenHand)
             .flex()
             .flex_shrink_0()
             .items_center()

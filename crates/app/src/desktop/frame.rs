@@ -110,10 +110,21 @@ impl Browser {
             new_panes: &self.new_panes,
             chooser: self.chooser.as_ref(),
             split_bounds: &self.split_bounds,
+            pane_bounds: &self.pane_bounds,
+            drop_target: self
+                .pane_drag
+                .as_ref()
+                .filter(|drag| drag.dragging)
+                .and_then(|drag| drag.destination.as_ref()),
             leaf_states,
         };
         let node = tree
             .as_ref()
+            .or_else(|| {
+                self.pane_drag
+                    .as_ref()
+                    .and_then(super::pane_drag::Drag::tree)
+            })
             .or_else(|| self.resize.as_ref().map(split_resize::Drag::tree))
             .unwrap_or(&tab.tree)
             .clone();

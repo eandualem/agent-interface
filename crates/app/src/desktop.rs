@@ -28,6 +28,7 @@ mod icons;
 mod jump;
 mod menus;
 mod pane_cards;
+mod pane_drag;
 mod settings;
 mod settings_window;
 mod shortcuts;
@@ -510,6 +511,8 @@ struct Browser {
     shell_after_save: Option<Leaf>,
     shell_to_open: Option<Leaf>,
     resize: Option<split_resize::Drag>,
+    pane_drag: Option<pane_drag::Drag>,
+    pane_bounds: Rc<RefCell<HashMap<String, Bounds<gpui::Pixels>>>>,
     split_bounds: Rc<RefCell<HashMap<String, Bounds<gpui::Pixels>>>>,
     resize_activation: Option<gpui::Subscription>,
     /// Agent Backbone's data directory, when it is set up.
@@ -649,6 +652,7 @@ impl Browser {
         self.shell_after_save = None;
         self.shell_to_open = None;
         self.resize = None;
+        self.pane_drag = None;
         self.name_click = None;
         self.tab_menu = None;
         self.save_notice = None;
@@ -1035,6 +1039,7 @@ impl Browser {
         self.shell_after_save = None;
         self.shell_to_open = None;
         self.resize = None;
+        self.pane_drag = None;
         self.save_failed = false;
         self.save_notice = None;
         self.error = None;
@@ -1552,6 +1557,7 @@ impl Browser {
         if self.saving || self.save_failed {
             return;
         }
+        self.pane_drag = None;
         if let Some(update) = self.library.as_ref().and_then(Library::take_update) {
             self.apply(update);
         }
@@ -1594,9 +1600,13 @@ impl Browser {
     fn resize_motion(
         &mut self,
         event: &gpui::MouseMoveEvent,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.pane_drag.as_ref().is_some_and(|drag| drag.dragging) {
+            self.pane_drag_motion(event, window, cx);
+            return;
+        }
         if let Some((start, width)) = self.sidebar_drag {
             if event.dragging() {
                 let width = f32::from(width + event.position.x - start).round();
@@ -1638,6 +1648,10 @@ impl Browser {
         if event.button != gpui::MouseButton::Left {
             return;
         }
+        if self.pane_drag.as_ref().is_some_and(|drag| drag.dragging) {
+            self.finish_pane_drag(event, cx);
+            return;
+        }
         if self.sidebar_drag.is_some() {
             self.finish_sidebar_drag(cx);
             return;
@@ -1671,11 +1685,15 @@ impl Render for Browser {
         if self.resize_activation.is_none() {
             self.resize_activation =
                 Some(cx.observe_window_activation(window, |browser, window, cx| {
-                    if !window.is_window_active()
-                        && browser.resize.as_ref().is_some_and(|drag| drag.dragging)
-                    {
-                        browser.resize = None;
-                        cx.notify();
+                    if !window.is_window_active() {
+                        if browser.resize.as_ref().is_some_and(|drag| drag.dragging) {
+                            browser.resize = None;
+                            cx.notify();
+                        }
+                        if browser.pane_drag.as_ref().is_some_and(|drag| drag.dragging) {
+                            browser.pane_drag = None;
+                            cx.notify();
+                        }
                     }
                 }));
         }
@@ -1688,6 +1706,15 @@ impl Render for Browser {
             self.resize = None;
         }
         self.split_bounds.borrow_mut().clear();
+        if self.pane_drag.as_ref().is_some_and(|drag| {
+            !self
+                .layout
+                .as_ref()
+                .is_some_and(|layout| drag.valid(layout.model()))
+        }) {
+            self.pane_drag = None;
+        }
+        self.pane_bounds.borrow_mut().clear();
         let resize_motion = cx.listener(Self::resize_motion);
         let resize_end = cx.listener(Self::finish_resize);
         if self.chooser.as_ref().is_some_and(|chooser| {
@@ -1928,6 +1955,14 @@ impl Render for Browser {
             .when_some(self.navigation.clone(), |el, focus| el.track_focus(&focus))
             .capture_key_down(
                 cx.listener(|browser, event: &gpui::KeyDownEvent, window, cx| {
+                    if browser.pane_drag.as_ref().is_some_and(|drag| drag.dragging) {
+                        browser.pane_drag = None;
+                        cx.notify();
+                        if event.keystroke.key == "escape" {
+                            cx.stop_propagation();
+                            return;
+                        }
+                    }
                     if browser.resize.as_ref().is_some_and(|drag| drag.dragging) {
                         browser.resize = None;
                         cx.notify();

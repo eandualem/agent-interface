@@ -49,6 +49,14 @@ Development-only crates are separate: `test-support` provides disposable tmux
 fixtures, `bench` runs measurements, and `bench-rio` provides an isolated
 comparison-engine executable.
 
+Pane rearrangement lives in `app::desktop::pane_drag`; `core` moves an existing
+leaf within its tab and collapses its previous parent. Dragging paints only a
+destination highlight, so pointer motion does not resize terminal sessions.
+On release, the UI previews the detached tree while the existing save worker
+commits it. Leaf identities retain their terminal/view entities. A changed
+tab, tree or pane geometry cancels an in-progress drag; persistence keeps the
+existing schema and conflict rules.
+
 ## Output, drawing and input
 
 A background reader decodes tmux control messages into pane output, command

@@ -567,6 +567,53 @@ impl Layout {
         true
     }
 
+    /// Move an existing pane beside another in the selected tab. All leaf
+    /// identities and contents survive; the old parent collapses and the new
+    /// split shares its space equally. Invalid destinations change nothing.
+    pub fn move_pane(
+        &mut self,
+        source: &str,
+        destination: &str,
+        direction: Direction,
+        before: bool,
+    ) -> bool {
+        if source == destination {
+            return false;
+        }
+        let Some(tab) = self.tab_mut() else {
+            return false;
+        };
+        let leaves = tab.tree.leaves();
+        let Some(leaf) = leaves.iter().find(|leaf| leaf.id == source) else {
+            return false;
+        };
+        if !leaves.iter().any(|leaf| leaf.id == destination) {
+            return false;
+        }
+        let moved = Node::Leaf((*leaf).clone());
+        let Some(mut tree) = remove_leaf(tab.tree.clone(), source) else {
+            return false;
+        };
+        let Some(target) = find_leaf(&mut tree, destination) else {
+            return false;
+        };
+        let (first, second) = if before {
+            (moved, target.clone())
+        } else {
+            (target.clone(), moved)
+        };
+        *target = Node::Split {
+            id: identity(),
+            direction,
+            ratio: 0.5,
+            first: Box::new(first),
+            second: Box::new(second),
+        };
+        tab.tree = tree;
+        tab.focus = source.into();
+        true
+    }
+
     /// Change only the focused leaf's attachment reference and end its chooser
     /// state. Names, cwd and the ordinary shell identity remain unchanged.
     /// The caller validates the session/socket reference before saving.
@@ -698,6 +745,72 @@ mod tests {
     use super::*;
     use crate::ViewKind;
     use std::collections::HashSet;
+
+    #[test]
+    fn moving_panes_preserves_contents_and_collapses_the_old_parent() {
+        let mut model = Layout::initial("/tmp".into());
+        model.attach(Some(Attachment {
+            session: "fixture".into(),
+            source_socket: None,
+        }));
+        let source = model.pane().unwrap().id.clone();
+        model.split(Direction::Right, "/tmp".into(), true);
+        let destination = model.pane().unwrap().id.clone();
+        assert!(model.show_view(
+            &model.tab().unwrap().id.clone(),
+            &destination,
+            View::of(ViewKind::Team),
+        ));
+        model.split(Direction::Below, "/tmp".into(), true);
+        let third = model.pane().unwrap().id.clone();
+        let original = model.clone();
+        let contents: Vec<_> = original
+            .tab()
+            .unwrap()
+            .tree
+            .leaves()
+            .into_iter()
+            .cloned()
+            .collect();
+        for direction in [Direction::Right, Direction::Below] {
+            for before in [false, true] {
+                let mut moved = original.clone();
+                assert!(moved.move_pane(&source, &destination, direction, before));
+                let tab = moved.tab().unwrap();
+                assert_eq!(tab.focus, source);
+                assert_eq!(tab.tree.leaves().len(), 3);
+                for leaf in &contents {
+                    assert!(tab.tree.leaves().contains(&leaf));
+                }
+                let Node::Split { first, second, .. } = &tab.tree else {
+                    panic!("outer split")
+                };
+                assert!(matches!(second.as_ref(), Node::Leaf(leaf) if leaf.id == third));
+                let Node::Split {
+                    direction: actual,
+                    first,
+                    second,
+                    ..
+                } = first.as_ref()
+                else {
+                    panic!("destination split")
+                };
+                assert_eq!(*actual, direction);
+                assert_eq!(
+                    first.leaves()[0].id,
+                    if before { &source } else { &destination }.as_str()
+                );
+                assert_eq!(
+                    second.leaves()[0].id,
+                    if before { &destination } else { &source }.as_str()
+                );
+            }
+        }
+        assert!(!model.move_pane(&source, &source, Direction::Below, false));
+        assert!(!model.move_pane("missing", &destination, Direction::Below, false));
+        assert!(!model.move_pane(&source, "missing", Direction::Below, false));
+        assert_eq!(model, original);
+    }
 
     #[test]
     fn attachment_choices_keep_their_destination_and_refuse_changed_targets() {
