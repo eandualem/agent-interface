@@ -950,7 +950,7 @@ impl Render for TerminalView {
 }
 
 pub(crate) struct InputQueue {
-    sender: Option<std::sync::mpsc::Sender<(PaneId, Input, InputReservation)>>,
+    sender: Option<std::sync::mpsc::Sender<(PaneId, Input, Arc<InputReservation>)>>,
     drained: Option<std::sync::mpsc::Receiver<()>>,
     budget: Arc<InputBudget>,
 }
@@ -964,7 +964,7 @@ struct InputBudget {
     bytes: std::sync::atomic::AtomicUsize,
 }
 
-struct InputReservation {
+pub(crate) struct InputReservation {
     budget: Arc<InputBudget>,
     bytes: usize,
 }
@@ -1009,10 +1009,10 @@ impl InputQueue {
             self.budget.count.fetch_sub(1, Ordering::AcqRel);
             return Err(());
         }
-        let reservation = InputReservation {
+        let reservation = Arc::new(InputReservation {
             budget: Arc::clone(&self.budget),
             bytes,
-        };
+        });
         sender.send((event.0, event.1, reservation)).map_err(|_| ())
     }
 }
@@ -1021,15 +1021,15 @@ pub(crate) fn input_queue(
     panes: Arc<Panes>,
     report: impl Fn(Option<String>) + Send + 'static,
 ) -> InputQueue {
-    let (sender, pending) = std::sync::mpsc::channel::<(PaneId, Input, InputReservation)>();
+    let (sender, pending) = std::sync::mpsc::channel::<(PaneId, Input, Arc<InputReservation>)>();
     let (finished, drained) = std::sync::mpsc::channel();
     let budget = Arc::new(InputBudget::default());
     std::thread::spawn(move || {
-        while let Ok((pane, input, _reservation)) = pending.recv() {
+        while let Ok((pane, input, reservation)) = pending.recv() {
             // A retired pane is a local rejection, not a failed connection.
             report(
                 panes
-                    .send_encoded_input(pane, input)
+                    .send_reserved_input(pane, input, Some(Arc::clone(&reservation)))
                     .err()
                     .map(|e| e.to_string()),
             );
@@ -1635,7 +1635,12 @@ mod tests {
             ))
             .unwrap();
         assert_eq!(queue.budget.count.load(Ordering::Acquire), 3);
+        // An encoding request can outlive its caller's timeout. Its payload
+        // must remain charged until that worker releases its shared reservation.
+        let encoding_reservation = Arc::clone(&inflight.2);
         drop(inflight);
+        assert!(queue.try_send((pane, Input::Paste("x".into()))).is_err());
+        drop(encoding_reservation);
         queue.try_send((pane, Input::Paste("x".into()))).unwrap();
         drop(receiver);
         assert_eq!(queue.budget.bytes.load(Ordering::Acquire), 0);

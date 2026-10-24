@@ -1,3 +1,6 @@
+// Modified from gpui-pre-macos 0.3.9 for native accessibility focus routing,
+// initial key-window focus, and accessibility-tree preparation at startup.
+
 use crate::{
     BoolExt, MacDisplay, NSRange, NSStringExt, TISCopyCurrentKeyboardInputSource,
     TISGetInputSourceProperty, WindowFrameSource, events::platform_input_from_native,

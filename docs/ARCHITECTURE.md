@@ -70,14 +70,16 @@ are encoded for the destination pane's reported input modes and sent as literal
 bytes to that exact pane. Navigation does not redirect queued input to another
 pane. Input waits until a newly selected destination is ready.
 Each view admits at most 64 outstanding input operations and 8 MiB of payload,
-including the operation in flight, with a reserved slot and 64 bytes for a
+including input retained by an encoding request after its caller times out,
+with a reserved slot and 64 bytes for a
 mouse release. A single paste remains limited to 4 MiB. Excess input is rejected
 visibly without blocking the UI.
 
 The focused terminal exposes its active pane and input caret through GPUI's
 native accessibility bridge. Text ranges preserve terminal grapheme clusters
 and cell positions. The caret follows an in-viewport program cursor even when
-the program hides its drawing; an off-viewport cursor is not exposed. Embedded
+the program hides its drawing. An off-viewport cursor or capture-only recovery
+placeholder is not exposed. Embedded
 terminals bypass GPUI's drawing cache while accessibility is active, because
 that cache does not replay accessibility nodes or focus. On macOS accessibility
 is active from window creation, so embedded terminals always bypass this cache.

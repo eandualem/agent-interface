@@ -105,12 +105,11 @@ fn text_run(screen: &Screen, row: u16, width: f64) -> (Node, usize) {
                 end -= 1;
             }
             lengths.push(end as u8);
-            positions.push((f64::from(col) * width) as f32);
-            widths.push(if first {
-                (width * if cell.width == Width::Wide { 2.0 } else { 1.0 }) as f32
-            } else {
-                0.0
-            });
+            // Byte-length continuations belong at the glyph's trailing edge:
+            // native range bounds use the final entry's position plus width.
+            let glyph_width = width * if cell.width == Width::Wide { 2.0 } else { 1.0 };
+            positions.push((f64::from(col) * width + if first { 0.0 } else { glyph_width }) as f32);
+            widths.push(if first { glyph_width as f32 } else { 0.0 });
             remaining = &remaining[end..];
             first = false;
         }
@@ -180,12 +179,14 @@ mod tests {
         assert_eq!(text_run(&screen, 0, 8.0).0.value(), Some("a😀e\u{301} "));
 
         let long_cluster = format!("e{}", "\u{301}".repeat(150));
-        screen.clear(1, 1);
+        screen.clear(2, 1);
         assert!(!screen.cursor_in_viewport());
         screen.push(&long_cluster, Width::Narrow, Style::default());
+        screen.push("x", Width::Narrow, Style::default());
         let (run, _) = text_run(&screen, 0, 8.0);
-        assert_eq!(run.value(), Some(long_cluster.as_str()));
-        assert_eq!(run.character_lengths(), &[255, 46]);
-        assert_eq!(run.character_widths(), Some([8.0, 0.0].as_slice()));
+        assert_eq!(run.value(), Some(format!("{long_cluster}x").as_str()));
+        assert_eq!(run.character_lengths(), &[255, 46, 1]);
+        assert_eq!(run.character_positions(), Some([0.0, 8.0, 8.0].as_slice()));
+        assert_eq!(run.character_widths(), Some([8.0, 0.0, 8.0].as_slice()));
     }
 }
