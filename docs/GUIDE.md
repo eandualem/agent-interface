@@ -74,6 +74,9 @@ with separate Navigation, Terminal and Application groups. Click **Change**
 beside a shortcut and press the new keys. Changes apply and save immediately;
 Escape or **Cancel** stops editing. A conflict is shown beside the shortcut.
 Rows marked **Fixed** cannot be changed in this editor.
+If a new Close or Detach default conflicts with a saved shortcut after an
+upgrade, your saved shortcut wins; the new command shows **Not assigned** until
+you choose keys for it.
 
 **Close Pane** (Command-W on macOS, Ctrl+Shift+W on Linux) removes only the focused
 pane after saving. Closing the last pane closes its tab. **Close Tab**

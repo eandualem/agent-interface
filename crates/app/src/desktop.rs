@@ -182,25 +182,24 @@ pub fn run(directory: Option<PathBuf>) -> Result<(), String> {
     failure.borrow_mut().take().map_or(Ok(()), Err)
 }
 
-fn application_bindings(bindings: &shortcuts::Bindings) -> [KeyBinding; 7] {
+fn application_bindings(bindings: &shortcuts::Bindings) -> Vec<KeyBinding> {
     use shortcuts::Command;
-    [
+    let mut keys = vec![
         KeyBinding::new(shortcuts::platform_key("cmd-q"), Quit, None),
         KeyBinding::new(shortcuts::platform_key("cmd-n"), NewWindow, None),
         KeyBinding::new(shortcuts::platform_key("cmd-o"), OpenLibrary, None),
         KeyBinding::new(shortcuts::platform_key("cmd-,"), OpenSettings, None),
-        KeyBinding::new(
-            &bindings.chord(Command::ClosePane).to_text(),
-            ClosePane,
-            None,
-        ),
-        KeyBinding::new(&bindings.chord(Command::CloseTab).to_text(), CloseTab, None),
-        KeyBinding::new(
-            &bindings.chord(Command::Detach).to_text(),
-            DetachSession,
-            None,
-        ),
-    ]
+    ];
+    if let Some(chord) = bindings.chord(Command::ClosePane) {
+        keys.push(KeyBinding::new(&chord.to_text(), ClosePane, None));
+    }
+    if let Some(chord) = bindings.chord(Command::CloseTab) {
+        keys.push(KeyBinding::new(&chord.to_text(), CloseTab, None));
+    }
+    if let Some(chord) = bindings.chord(Command::Detach) {
+        keys.push(KeyBinding::new(&chord.to_text(), DetachSession, None));
+    }
+    keys
 }
 
 /// Replace menu bindings when preferences change, removing the previous chords.
@@ -2315,6 +2314,32 @@ mod tests {
             native
                 .iter()
                 .any(|binding| binding.match_keystrokes(&[key("ctrl-alt-w")]) == Some(false))
+        );
+
+        // New defaults must not take keys away from previously saved commands.
+        let upgraded = Bindings::from_entries([
+            ("jump", shortcuts::platform_key("cmd-shift-x")),
+            ("new-tab", shortcuts::platform_key("cmd-shift-w")),
+        ]);
+        assert_eq!(
+            upgraded.command_for(&key("cmd-shift-x")),
+            Some(Command::Jump)
+        );
+        assert_eq!(
+            upgraded.command_for(&key("cmd-shift-w")),
+            Some(Command::NewTab)
+        );
+        assert_eq!(upgraded.chord(Command::Detach), None);
+        assert_eq!(upgraded.chord(Command::CloseTab), None);
+        let native = application_bindings(&upgraded);
+        assert!(native.iter().all(|binding| {
+            binding.match_keystrokes(&[key("cmd-shift-x")]).is_none()
+                && binding.match_keystrokes(&[key("cmd-shift-w")]).is_none()
+        }));
+        let changes = upgraded.changed();
+        assert_eq!(
+            Bindings::from_entries(changes.iter().map(|(id, chord)| (*id, chord.as_str()))),
+            upgraded
         );
     }
 

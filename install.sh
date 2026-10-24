@@ -150,6 +150,11 @@ fi
 [ "$actual" = "$expected" ] || fail 'Archive checksum mismatch; nothing was installed.'
 # Packages contain only regular files/directories inside a single known root.
 tar -tzf "$staging/download.tar.gz" > "$staging/members"
+# Older Mac packages keep their original root, but install under the new name.
+if [ "$platform" = apple-darwin ] &&
+    [ "$(awk -F/ 'NR == 1 {print $1; exit}' "$staging/members")" = tmux-workspaces.app ]; then
+    payload=tmux-workspaces.app
+fi
 awk -v root="$payload" '
     $0 != root && index($0, root "/") != 1 {exit 1}
     /(^|\/)\.\.(\/|$)/ {exit 1}

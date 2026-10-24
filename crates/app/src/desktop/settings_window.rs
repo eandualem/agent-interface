@@ -584,8 +584,10 @@ impl SettingsWindow {
                             .on_click(cx.listener(
                                 move |view, _, _, cx| {
                                     let mut bindings = shortcuts::current();
-                                    let chord =
-                                        shortcuts::Bindings::default().chord(command).clone();
+                                    let chord = shortcuts::Bindings::default()
+                                        .chord(command)
+                                        .unwrap()
+                                        .clone();
                                     match bindings.assign(command, chord) {
                                         Ok(()) => {
                                             view.recording = None;
@@ -620,7 +622,10 @@ impl SettingsWindow {
                                 if recording {
                                     "Press keys…".into()
                                 } else {
-                                    bindings.chord(command).label()
+                                    bindings.chord(command).map_or_else(
+                                        || "Not assigned".into(),
+                                        shortcuts::Chord::label,
+                                    )
                                 },
                                 recording,
                             ))

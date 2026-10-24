@@ -5,7 +5,7 @@
 //! Settings, New Window, Open Library, Quit) stay fixed.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{LazyLock, RwLock},
 };
 
@@ -416,7 +416,8 @@ impl Chord {
     }
 }
 
-/// The chord assigned to every command.
+/// Assigned chords. A new command may be unassigned after an upgrade if its
+/// default was already used by a saved shortcut.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Bindings(HashMap<Command, Chord>);
 
@@ -437,8 +438,8 @@ impl Default for Bindings {
 }
 
 impl Bindings {
-    pub fn chord(&self, command: Command) -> &Chord {
-        &self.0[&command]
+    pub fn chord(&self, command: Command) -> Option<&Chord> {
+        self.0.get(&command)
     }
 
     /// The command a key press runs.
@@ -474,35 +475,60 @@ impl Bindings {
         let defaults = Self::default();
         COMMANDS
             .iter()
-            .filter(|(command, ..)| self.0[command] != defaults.0[command])
-            .map(|(command, id, ..)| (*id, self.0[command].to_text()))
+            .filter(|(command, ..)| self.0.get(command) != defaults.0.get(command))
+            .map(|(command, id, ..)| {
+                (
+                    *id,
+                    self.0.get(command).map(Chord::to_text).unwrap_or_default(),
+                )
+            })
             .collect()
     }
 
     /// Apply saved entries together, so two commands may swap keys. Unknown
     /// commands and unusable chords are ignored; a saved chord that clashes
-    /// with another command's returns that command to its default.
+    /// with another command's returns that command to its default. New commands
+    /// yield their defaults to saved shortcuts instead; an empty entry preserves
+    /// that unassigned state on the next load.
     pub fn from_entries<'a>(entries: impl IntoIterator<Item = (&'a str, &'a str)>) -> Self {
         let defaults = Self::default();
         let mut bindings = defaults.clone();
+        let mut saved = HashSet::new();
         for (id, text) in entries {
-            if let (Some((command, ..)), Some(chord)) = (
-                COMMANDS.iter().find(|(_, candidate, ..)| *candidate == id),
-                Chord::parse(text),
-            ) && chord.unusable().is_none()
+            let Some((command, ..)) = COMMANDS.iter().find(|(_, candidate, ..)| *candidate == id)
+            else {
+                continue;
+            };
+            if text.is_empty() {
+                bindings.0.remove(command);
+                saved.insert(*command);
+            } else if let Some(chord) = Chord::parse(text)
+                && chord.unusable().is_none()
             {
                 bindings.0.insert(*command, chord);
+                saved.insert(*command);
+            }
+        }
+        for command in [Command::ClosePane, Command::CloseTab, Command::Detach] {
+            if !saved.contains(&command)
+                && bindings.0.iter().any(|(other, chord)| {
+                    *other != command && saved.contains(other) && *chord == defaults.0[&command]
+                })
+            {
+                bindings.0.remove(&command);
             }
         }
         while let Some(command) = COMMANDS
             .iter()
             .map(|(command, ..)| *command)
             .find(|command| {
-                bindings.0[command] != defaults.0[command]
-                    && bindings
-                        .0
-                        .iter()
-                        .any(|(other, chord)| other != command && *chord == bindings.0[command])
+                bindings.0.get(command).is_some_and(|bound| {
+                    *bound != defaults.0[command]
+                        && bindings
+                            .0
+                            .iter()
+                            .any(|(other, chord)| other != command && chord == bound)
+                })
             })
         {
             bindings.0.insert(command, defaults.0[&command].clone());
@@ -539,7 +565,7 @@ pub fn label(command: Command) -> String {
         .read()
         .unwrap_or_else(|error| error.into_inner())
         .chord(command)
-        .label()
+        .map_or_else(|| "Not assigned".into(), Chord::label)
 }
 
 #[cfg(test)]
@@ -614,15 +640,15 @@ mod tests {
             Bindings::default()
         );
         let swapped = Bindings::from_entries([("new-tab", "cmd-d"), ("split-right", "cmd-t")]);
-        assert_eq!(swapped.chord(Command::NewTab), &chord("cmd-d"));
-        assert_eq!(swapped.chord(Command::SplitRight), &chord("cmd-t"));
+        assert_eq!(swapped.chord(Command::NewTab), Some(&chord("cmd-d")));
+        assert_eq!(swapped.chord(Command::SplitRight), Some(&chord("cmd-t")));
     }
 
     #[test]
     fn platform_defaults_leave_terminal_control_keys_and_preserve_saved_chords() {
         let defaults = Bindings::default();
         for (command, ..) in COMMANDS {
-            let chord = defaults.chord(*command);
+            let chord = defaults.chord(*command).unwrap();
             assert!(chord.unusable().is_none(), "{}", chord.to_text());
             let event = gpui::Keystroke::parse(&chord.to_text()).unwrap();
             assert_eq!(defaults.command_for(&event), Some(*command));
@@ -642,7 +668,10 @@ mod tests {
             );
         }
         let saved = Bindings::from_entries([("new-tab", "ctrl-alt-t")]);
-        assert_eq!(saved.chord(Command::NewTab).to_text(), "ctrl-alt-t");
+        assert_eq!(
+            saved.chord(Command::NewTab).unwrap().to_text(),
+            "ctrl-alt-t"
+        );
         let entries = saved.changed();
         assert_eq!(
             Bindings::from_entries(entries.iter().map(|(id, text)| (*id, text.as_str()))),

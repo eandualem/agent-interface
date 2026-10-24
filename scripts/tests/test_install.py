@@ -35,10 +35,11 @@ class InstallTests(unittest.TestCase):
         path.write_text("#!/bin/sh\n" + body + "\n")
         path.chmod(0o755)
 
-    def package(self, version="0.0.0", target="x86_64-unknown-linux-gnu", extra=None):
+    def package(self, version="0.0.0", target="x86_64-unknown-linux-gnu", extra=None, legacy_mac=False):
         archive = self.root / "app.tar.gz"
         mac = target.endswith("apple-darwin")
-        root = "Agent Interface.app/Contents" if mac else "tmux-workspaces"
+        bundle = "tmux-workspaces.app" if legacy_mac else "Agent Interface.app"
+        root = bundle + "/Contents" if mac else "tmux-workspaces"
         resources = root + "/Resources" if mac else root
         executable = root + ("/MacOS" if mac else "/bin") + "/tmux-workspaces"
         files = {resources + "/INSTALLER": APP_ID + "\n",
@@ -101,7 +102,7 @@ class InstallTests(unittest.TestCase):
         self.command("codesign", "exit 0")
         destination = self.home / "Applications/Agent Interface.app"
         legacy = self.home / "Applications/tmux-workspaces.app"
-        self.install(self.package(target="aarch64-apple-darwin"))
+        self.install(self.package(target="aarch64-apple-darwin", legacy_mac=True))
         destination.rename(legacy)
         # Failed replacement restores the old bundle under its original name.
         self.command("mv", 'case "$1" in */"Agent Interface.app") exit 1;; esac\nexec /bin/mv "$@"')
