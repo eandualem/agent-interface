@@ -25,6 +25,7 @@ impl EventEmitter<Focus> for ArtifactPane {}
 pub(super) struct ArtifactPane {
     directory: Option<PathBuf>,
     catalog: Catalog,
+    catalog_error: Option<String>,
     error: Option<String>,
     selected: Option<Entry>,
     html: Option<Arc<str>>,
@@ -51,11 +52,9 @@ impl ArtifactPane {
                             match catalog {
                                 Ok(catalog) => {
                                     pane.catalog = catalog;
-                                    if pane.selected.is_none() {
-                                        pane.error = None;
-                                    }
+                                    pane.catalog_error = None;
                                 }
-                                Err(error) => pane.error = Some(error.to_string()),
+                                Err(error) => pane.catalog_error = Some(error.to_string()),
                             }
                             if pane.selected.is_none() {
                                 cx.notify();
@@ -72,6 +71,7 @@ impl ArtifactPane {
         Self {
             directory,
             catalog: Catalog::default(),
+            catalog_error: None,
             error: None,
             selected: None,
             html: None,
@@ -184,6 +184,7 @@ impl Render for ArtifactPane {
                         {
                             cx.defer(move |cx| {
                                 let _ = entity.update(cx, |pane, cx| {
+                                    pane.surface.borrow_mut().clear();
                                     pane.error = Some(error);
                                     cx.notify();
                                 });
@@ -246,7 +247,7 @@ impl Render for ArtifactPane {
                 list = list.child(ui::text(div().p(px(t.space.s16)).text_color(c.muted), &t.text.body)
                     .child("No artifacts yet. Agents can publish a self-contained HTML file with the app’s artifact publish command."));
             }
-            if let Some(error) = &self.error {
+            if let Some(error) = &self.catalog_error {
                 list = list.child(div().text_color(c.attention_text).child(error.clone()));
             }
             if self.catalog.unreadable > 0 {

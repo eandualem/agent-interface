@@ -19,6 +19,26 @@ pub(super) struct State {
     pub open: Option<ReportItem>,
 }
 
+impl State {
+    /// Authored text is immutable; correction metadata can change after opening.
+    pub fn observe(&mut self, page: &ReportPage) {
+        let Some(open) = &mut self.open else { return };
+        let Some(fresh) = page.items.iter().find(|item| item.id == open.id) else {
+            return;
+        };
+        if let (
+            ReportContent::Response { superseded_by, .. },
+            ReportContent::Response {
+                superseded_by: updated,
+                ..
+            },
+        ) = (&mut open.content, &fresh.content)
+        {
+            *superseded_by = *updated;
+        }
+    }
+}
+
 fn first(query: &ReportQuery) -> ReportQuery {
     match query {
         ReportQuery::Latest(_) => ReportQuery::Latest(None),
@@ -107,7 +127,7 @@ pub(super) fn body(pane: &ViewPane, page: &ReportPage, cx: &mut Context<ViewPane
                 ui::back_button("reports-back", "Reports & updates").on_click(cx.listener(
                     |pane, _, _, cx| {
                         pane.reports.open = None;
-                        cx.notify();
+                        pane.refetch(true, cx);
                     },
                 )),
             ))
@@ -184,7 +204,7 @@ pub(super) fn body(pane: &ViewPane, page: &ReportPage, cx: &mut Context<ViewPane
                 .child(ui::text(div().text_color(c.text), &t.text.body).child(line(summary)))
                 .on_click(cx.listener(move |pane, _, _, cx| {
                     pane.reports.open = Some(open.clone());
-                    cx.notify();
+                    pane.refetch(false, cx);
                 })),
         );
     }
@@ -245,4 +265,37 @@ pub(super) fn body(pane: &ViewPane, page: &ReportPage, cx: &mut Context<ViewPane
             },
         ))
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_open_answer_keeps_its_text_but_observes_a_correction() {
+        let item = |answer: &str, superseded_by| ReportItem {
+            id: 7,
+            author: "worker".into(),
+            created_at: "2026-10-24T10:00:00Z".into(),
+            content: ReportContent::Response {
+                question: "What happened?".into(),
+                answer: answer.into(),
+                action: "Read the result.".into(),
+                superseded_by,
+            },
+        };
+        let mut state = State {
+            open: Some(item("Original answer", None)),
+            ..State::default()
+        };
+        state.observe(&ReportPage {
+            items: vec![item("A different body", Some(9))],
+            next: None,
+        });
+        let open = state.open.unwrap();
+        assert_eq!(label(&open), "corrected by #9");
+        assert!(
+            matches!(open.content, ReportContent::Response { answer, .. } if answer == "Original answer")
+        );
+    }
 }

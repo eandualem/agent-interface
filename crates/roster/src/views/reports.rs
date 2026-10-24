@@ -179,6 +179,34 @@ pub(super) fn read(api: &Api<'_>, query: &ReportQuery) -> Result<ReportPage, &'s
     decode(&api.get(&query.path())?, query)
 }
 
+pub(super) fn read_response(api: &Api<'_>, id: u64) -> Result<ReportPage, &'static str> {
+    decode_response(&api.get(&format!("/api/responses/{id}"))?)
+}
+
+fn response_item(record: Record<Response>) -> ReportItem {
+    let text = record.content.response;
+    ReportItem {
+        id: record.id,
+        author: record.agent_name.unwrap_or(record.author_name),
+        created_at: record.created_at,
+        content: ReportContent::Response {
+            question: text.question,
+            answer: text.answer,
+            action: text.action,
+            superseded_by: record.content.superseded_by,
+        },
+    }
+}
+
+fn decode_response(body: &[u8]) -> Result<ReportPage, &'static str> {
+    document(body)?;
+    let record = serde_json::from_slice(body).map_err(|_| UNREADABLE)?;
+    Ok(ReportPage {
+        items: vec![response_item(record)],
+        next: None,
+    })
+}
+
 fn decode(body: &[u8], query: &ReportQuery) -> Result<ReportPage, &'static str> {
     let doc = document(body)?;
     let has_more: bool = doc
@@ -232,18 +260,7 @@ fn decode(body: &[u8], query: &ReportQuery) -> Result<ReportPage, &'static str> 
         }
         ReportQuery::Responses(_) => {
             for record in super::items::<Record<Response>>(&doc)? {
-                let text = record.content.response;
-                items.push(ReportItem {
-                    id: record.id,
-                    author: record.agent_name.unwrap_or(record.author_name),
-                    created_at: record.created_at,
-                    content: ReportContent::Response {
-                        question: text.question,
-                        answer: text.answer,
-                        action: text.action,
-                        superseded_by: record.content.superseded_by,
-                    },
-                });
+                items.push(response_item(record));
             }
             if has_more {
                 let id: u64 = doc
@@ -297,6 +314,9 @@ mod tests {
         .unwrap();
         assert_eq!(page.items[0].author, "worker");
         assert!(!page.items[0].needs_owner());
+        let detail = decode_response(&serde_json::to_vec(&answers["items"][0]).unwrap()).unwrap();
+        assert_eq!(detail.items, page.items);
+        assert!(detail.next.is_none());
         assert_eq!(
             page.next.unwrap().path(),
             "/api/responses?limit=20&before_id=7"

@@ -46,6 +46,8 @@ pub enum Request {
     Activity,
     /// Authored progress reports or retained answers, one page at a time.
     Reports(ReportQuery),
+    /// Refresh an open answer independently of its former list page.
+    Response(u64),
     /// Every skill an agent can load, team-wide.
     Skills,
     /// The layers a brief is built from, team-wide.
@@ -187,6 +189,7 @@ pub fn read(
         )?)),
         Request::Usage(range) => Ok(Data::Usage(Usage::decode(&api.get(&usage_path(*range))?)?)),
         Request::Reports(query) => Ok(Data::Reports(reports::read(&api, query)?)),
+        Request::Response(id) => Ok(Data::Reports(reports::read_response(&api, *id)?)),
         Request::Activity => {
             // History is an addition: when it cannot be read, the timeline
             // still shows deliveries and states now, and says why.

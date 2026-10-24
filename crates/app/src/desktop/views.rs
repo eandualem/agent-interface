@@ -269,6 +269,9 @@ impl ViewPane {
                         }
                         match update {
                             Ok(mut data) => {
+                                if let Data::Reports(page) = &data {
+                                    pane.reports.observe(page);
+                                }
                                 // A section whose own read failed keeps its
                                 // last data, so an open document stays open.
                                 pane.error = agent::keep_section(pane.data.as_ref(), &mut data);
@@ -296,7 +299,12 @@ impl ViewPane {
             ViewKind::Skills => Request::Skills,
             ViewKind::Policies => Request::Policies,
             ViewKind::Tags => Request::Tags,
-            ViewKind::Reports => Request::Reports(self.reports.query.clone()),
+            ViewKind::Reports => match &self.reports.open {
+                Some(item) if matches!(item.content, views::ReportContent::Response { .. }) => {
+                    Request::Response(item.id)
+                }
+                _ => Request::Reports(self.reports.query.clone()),
+            },
             ViewKind::Artifacts => unreachable!("artifacts have no Backbone source"),
             ViewKind::Agent => Request::Agent(
                 self.view.agent.clone().unwrap_or_default(),
@@ -415,7 +423,7 @@ impl ViewPane {
         }
         if self.reports.open.is_some() && key.key == "escape" {
             self.reports.open = None;
-            cx.notify();
+            self.refetch(true, cx);
             return true;
         }
         if self.open.is_none() {

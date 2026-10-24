@@ -1851,6 +1851,12 @@ impl Render for Browser {
                         views::ViewEvent::Focus => {
                             if let Some(layout) = &mut browser.layout {
                                 layout.model_mut().choose_pane(&leaf);
+                                // GPUI also handles key equivalents forwarded by
+                                // child webviews. Leave any terminal's dispatch
+                                // path without changing AppKit's first responder.
+                                if let Some(focus) = &browser.navigation {
+                                    window.focus(focus, cx);
+                                }
                                 cx.notify();
                             }
                         }

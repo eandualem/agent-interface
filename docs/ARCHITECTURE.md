@@ -191,6 +191,8 @@ Reports use Backbone's existing read-only `/api/reports` and `/api/responses`
 feeds. The native pane keeps report history, latest owner blockers and retained
 answers distinct. Pagination follows each feed's cursor; Refresh starts at the
 newest page. An open record keeps its contents through background refreshes.
+An open Response is polled by ID so its correction metadata stays current even
+after newer publications move it off its former list page.
 Authored status and blocker text do not change runtime state or grant approval.
 
 The experimental Artifacts pane is independent of Backbone. `app::artifacts`
