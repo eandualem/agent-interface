@@ -107,7 +107,15 @@ enum Row {
     Pick(String),
 }
 
-fn reconcile_selection(rows: &[Row], selected: &mut Option<String>, disarmed: &mut bool) {
+fn reconcile_selection(
+    rows: &[Row],
+    selected: &mut Option<String>,
+    disarmed: &mut bool,
+    refreshing: bool,
+) {
+    if refreshing && selected.is_some() {
+        return;
+    }
     let mut choices = rows.iter().filter(|row| NewPane::selectable(row));
     if let Some(key) = selected {
         if !choices.any(|row| row_key(row) == *key) {
@@ -443,9 +451,7 @@ impl Render for NewPane {
             Mode::Agents => self.team_loading,
             Mode::Views => false,
         };
-        if !refreshing {
-            reconcile_selection(&rows, &mut self.selected, &mut self.disarmed);
-        }
+        reconcile_selection(&rows, &mut self.selected, &mut self.disarmed, refreshing);
         let views = self.mode != Mode::Sessions;
         let buttons = div()
             .flex()
@@ -756,18 +762,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn row_reconciliation_skips_headings_and_never_retargets_a_removed_selection() {
+    fn row_reconciliation_keeps_pending_selection_without_delaying_the_first_choice() {
         let rows = vec![Row::Heading("SESSIONS", ""), Row::Session("worker".into())];
         let (mut selected, mut disarmed) = (None, false);
-        reconcile_selection(&rows, &mut selected, &mut disarmed);
+        reconcile_selection(&rows, &mut selected, &mut disarmed, true);
+        assert_eq!(selected.as_deref(), Some("worker"));
+        // A reveal may briefly have no rows while fresh data is being read.
+        reconcile_selection(&[], &mut selected, &mut disarmed, true);
         assert_eq!(selected.as_deref(), Some("worker"));
         let reordered = vec![Row::Session("other".into()), Row::Session("worker".into())];
-        reconcile_selection(&reordered, &mut selected, &mut disarmed);
+        reconcile_selection(&reordered, &mut selected, &mut disarmed, false);
         assert_eq!(selected.as_deref(), Some("worker"));
-        reconcile_selection(&reordered[..1], &mut selected, &mut disarmed);
+        reconcile_selection(&reordered[..1], &mut selected, &mut disarmed, false);
         assert!(selected.is_none());
         assert!(disarmed);
-        reconcile_selection(&rows, &mut selected, &mut disarmed);
+        reconcile_selection(&rows, &mut selected, &mut disarmed, false);
         assert!(selected.is_none());
     }
 }
