@@ -25,6 +25,7 @@ pub(crate) struct Seed<I = ChildStdin, O = ChildStdout> {
 pub(crate) enum Event {
     Output(PaneId, Vec<u8>),
     Layout(Vec<u8>),
+    Exit(Vec<u8>),
 }
 
 /// Reads the attach reply, checks recovery hooks and server version, then
@@ -211,13 +212,14 @@ fn capture<I: Write, O: Read>(
                                 .and_then(|id| id.parse::<u32>().ok());
                             if actual != session { return Err(io::Error::other("source session changed during capture")); }
                         }
-                        Message::Notification(line)
-                            if line.starts_with(b"%exit") && snapshots.is_none() =>
-                        {
-                            return Err(io::Error::new(
-                                io::ErrorKind::UnexpectedEof,
-                                "exit during capture",
-                            ));
+                        Message::Notification(line) if line == b"%exit" || line.starts_with(b"%exit ") => {
+                            if snapshots.is_none() {
+                                return Err(io::Error::new(
+                                    io::ErrorKind::UnexpectedEof,
+                                    "exit during capture",
+                                ));
+                            }
+                            events.push(Event::Exit(line.strip_prefix(b"%exit ").unwrap_or_default().to_vec()));
                         }
                         _ => {}
                     }
@@ -421,7 +423,23 @@ mod tests {
         let seed = capture(Vec::new(), exited.as_bytes(), 1, None, 100).unwrap();
         assert_eq!(seed.snapshots[0].state.cursor, (6, 0));
         assert_eq!(seed.layout.panes[0].id, PaneId(7));
-        assert_eq!(seed.events, [Event::Output(PaneId(7), b"more".to_vec())]);
+        assert_eq!(
+            seed.events,
+            [
+                Event::Output(PaneId(7), b"more".to_vec()),
+                Event::Exit(Vec::new())
+            ]
+        );
+
+        let exited = format!("{wire}%exit too far behind\n");
+        let seed = capture(Vec::new(), exited.as_bytes(), 1, None, 100).unwrap();
+        assert_eq!(
+            seed.events,
+            [
+                Event::Output(PaneId(7), b"more".to_vec()),
+                Event::Exit(b"too far behind".to_vec())
+            ]
+        );
 
         let layout = b"%layout-change @1 abcd,80x24,0,0,7 abcd,80x24,0,0,7 *";
         let with_layout = format!(

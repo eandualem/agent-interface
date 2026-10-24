@@ -107,6 +107,26 @@ enum Row {
     Pick(String),
 }
 
+fn reconcile_selection(
+    rows: &[Row],
+    selected: &mut Option<String>,
+    disarmed: &mut bool,
+    refreshing: bool,
+) {
+    if refreshing && selected.is_some() {
+        return;
+    }
+    let mut choices = rows.iter().filter(|row| NewPane::selectable(row));
+    if let Some(key) = selected {
+        if !choices.any(|row| row_key(row) == *key) {
+            *selected = None;
+            *disarmed = true;
+        }
+    } else if !*disarmed {
+        *selected = choices.next().map(row_key);
+    }
+}
+
 pub(super) struct NewPane {
     pane: String,
     field: Entity<NameField>,
@@ -123,6 +143,8 @@ pub(super) struct NewPane {
     sessions_error: Option<String>,
     loading: bool,
     team: Option<Team>,
+    team_loading: bool,
+    visible: bool,
     backbone: bool,
     scroll: ScrollHandle,
     session_source: Option<SessionSource>,
@@ -194,6 +216,8 @@ impl NewPane {
             sessions_error: None,
             loading: session_source.is_some(),
             team: None,
+            team_loading: team_source.is_some(),
+            visible: true,
             backbone: backbone.is_some(),
             scroll: ScrollHandle::new(),
             session_source,
@@ -203,7 +227,29 @@ impl NewPane {
         }
     }
 
+    pub fn set_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
+        if self.visible == visible {
+            return;
+        }
+        self.visible = visible;
+        if let Some(source) = &self.session_source {
+            source.set_active(visible);
+        }
+        if let Some(source) = &self.team_source {
+            source.set_active(visible);
+        }
+        self.sessions.clear();
+        self.sessions_error = None;
+        self.team = None;
+        self.loading = self.session_source.is_some();
+        self.team_loading = self.team_source.is_some();
+        cx.notify();
+    }
+
     fn refresh(&mut self, cx: &mut Context<Self>) {
+        if !self.visible {
+            return;
+        }
         if let Some(observation) = self
             .session_source
             .as_ref()
@@ -215,6 +261,7 @@ impl NewPane {
             cx.notify();
         }
         if let Some((_, update)) = self.team_source.as_ref().and_then(ViewSource::take_update) {
+            self.team_loading = false;
             // Without a current read, show plain sessions rather than old states.
             self.team = match update {
                 Ok(Data::Team(team)) => Some(team),
@@ -243,8 +290,8 @@ impl NewPane {
                     .collect();
                 agents.sort_by_key(|member| {
                     let rank = match AgentState::from_report(&member.state) {
-                        AgentState::NeedsYou => 0,
-                        AgentState::Working => 1,
+                        AgentState::NeedsYou | AgentState::Blocked => 0,
+                        AgentState::Working | AgentState::Starting => 1,
                         _ => 2,
                     };
                     (rank, member.name.to_ascii_lowercase())
@@ -253,11 +300,10 @@ impl NewPane {
                     .sessions
                     .iter()
                     .filter(|name| {
-                        !agents.iter().any(|agent| &&agent.name == name)
-                            && !self
-                                .team
-                                .iter()
-                                .any(|team| team.members.iter().any(|m| &&m.name == name))
+                        !self
+                            .team
+                            .iter()
+                            .any(|team| team.members.iter().any(|m| &&m.name == name))
                     })
                     .filter(|name| self.matches(name))
                     .cloned()
@@ -400,16 +446,12 @@ impl Render for NewPane {
         let (t, c) = (tokens(), colors());
         let rows = self.rows();
         let count = rows.iter().filter(|row| Self::selectable(row)).count();
-        let choices = self.choices();
-        match self.selected_index(&choices) {
-            Some(_) => {}
-            None if self.selected.is_some() => {
-                self.selected = None;
-                self.disarmed = true;
-            }
-            None if !self.disarmed => self.selected = choices.first().map(row_key),
-            None => {}
-        }
+        let refreshing = match self.mode {
+            Mode::Sessions => self.loading || self.team_loading,
+            Mode::Agents => self.team_loading,
+            Mode::Views => false,
+        };
+        reconcile_selection(&rows, &mut self.selected, &mut self.disarmed, refreshing);
         let views = self.mode != Mode::Sessions;
         let buttons = div()
             .flex()
@@ -667,14 +709,17 @@ fn agent_row(
     let (t, c) = (tokens(), colors());
     let state = AgentState::from_report(&member.state);
     let (word, color) = match state {
-        AgentState::NeedsYou => (
-            member.reason.clone().unwrap_or_else(|| "waiting".into()),
+        AgentState::NeedsYou | AgentState::Blocked => (
+            member.reason.as_ref().map_or_else(
+                || state.word().to_owned(),
+                |reason| format!("{} · {reason}", state.word()),
+            ),
             c.attention_text,
         ),
-        AgentState::Working => (
+        AgentState::Working | AgentState::Starting => (
             match member.current_issue {
-                Some(issue) => format!("busy · #{issue}"),
-                None => "busy".into(),
+                Some(issue) => format!("{} · #{issue}", state.word()),
+                None => state.word().into(),
             },
             c.accent_text,
         ),
@@ -713,4 +758,28 @@ fn mono(text: impl Into<SharedString>) -> gpui::Div {
         .whitespace_nowrap()
         .text_ellipsis()
         .child(text.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn row_reconciliation_keeps_pending_selection_without_delaying_the_first_choice() {
+        let rows = vec![Row::Heading("SESSIONS", ""), Row::Session("worker".into())];
+        let (mut selected, mut disarmed) = (None, false);
+        reconcile_selection(&rows, &mut selected, &mut disarmed, true);
+        assert_eq!(selected.as_deref(), Some("worker"));
+        // A reveal may briefly have no rows while fresh data is being read.
+        reconcile_selection(&[], &mut selected, &mut disarmed, true);
+        assert_eq!(selected.as_deref(), Some("worker"));
+        let reordered = vec![Row::Session("other".into()), Row::Session("worker".into())];
+        reconcile_selection(&reordered, &mut selected, &mut disarmed, false);
+        assert_eq!(selected.as_deref(), Some("worker"));
+        reconcile_selection(&reordered[..1], &mut selected, &mut disarmed, false);
+        assert!(selected.is_none());
+        assert!(disarmed);
+        reconcile_selection(&rows, &mut selected, &mut disarmed, false);
+        assert!(selected.is_none());
+    }
 }

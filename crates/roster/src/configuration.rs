@@ -1,4 +1,10 @@
-use std::{env, fs, path::Path, time::Duration};
+use std::{
+    env, fs,
+    io::{self, Read},
+    os::unix::fs::OpenOptionsExt,
+    path::Path,
+    time::Duration,
+};
 
 use rusqlite::{Connection, OpenFlags};
 use serde_json::value::RawValue;
@@ -42,12 +48,34 @@ fn environment(name: &str) -> Option<String> {
     }
 }
 
+/// Follow ordinary file symlinks, but never wait for a pipe's writer.
+pub(super) fn regular_file(path: &Path) -> io::Result<fs::File> {
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(io::Error::other("not a regular file"));
+    }
+    Ok(file)
+}
+
 fn read(data_dir: &Path, url: Option<&str>, key: &str, port: &str) -> Option<(String, String)> {
     let mut key = key.to_owned();
     if key.is_empty() {
         let path = data_dir.join(".env");
         if path.try_exists().ok()? {
-            key = dotenv_key(&fs::read_to_string(path).ok()?)?;
+            const LIMIT: usize = 1024 * 1024;
+            let mut text = String::new();
+            regular_file(&path)
+                .ok()?
+                .take((LIMIT + 1) as u64)
+                .read_to_string(&mut text)
+                .ok()?;
+            if text.len() > LIMIT {
+                return None;
+            }
+            key = dotenv_key(&text)?;
         }
     }
     let url = if let Some(url) = url.filter(|url| !url.is_empty()) {
@@ -206,6 +234,28 @@ mod tests {
                 [key, value],
             )
             .unwrap();
+    }
+
+    #[test]
+    fn dotenv_reads_reject_special_and_oversized_files_and_recover() {
+        let directory = tempfile::tempdir().unwrap();
+        let target = directory.path().join("source");
+        let path = directory.path().join(".env");
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+        assert!(
+            Command::new("mkfifo")
+                .arg(&target)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let read = || super::read(directory.path(), Some("http://127.0.0.1"), "", "");
+        assert!(read().is_none());
+        fs::remove_file(&target).unwrap();
+        fs::write(&target, " ".repeat(1024 * 1024 + 1)).unwrap();
+        assert!(read().is_none());
+        fs::write(&target, "BACKBONE_API_KEY=fixture").unwrap();
+        assert_eq!(read(), Some(("http://127.0.0.1".into(), "fixture".into())));
     }
 
     #[test]

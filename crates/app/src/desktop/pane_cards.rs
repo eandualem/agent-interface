@@ -117,19 +117,24 @@ impl Browser {
         let is_view = leaf.view.is_some();
         let state = cards.leaf_states.get(&leaf.id).copied();
         let group: SharedString = format!("pane-group-{id}").into();
-        let border = if state == Some(AgentState::NeedsYou) {
+        let border = if state.is_some_and(AgentState::needs_you) {
             c.attention
         } else if focused {
             c.focus
         } else {
             c.edge
         };
-        let header = Self::pane_header(leaf, focused, state, cards, cx);
         let (inline, overlay) = match settings::pane_headers() {
             // A view draws its own header, as in the design.
             _ if is_view => (None, None),
-            PaneHeaders::Always => (Some(header), None),
-            PaneHeaders::Hover => (None, Some(header)),
+            PaneHeaders::Always => (
+                Some(Self::pane_header(leaf, focused, state, cards, cx)),
+                None,
+            ),
+            PaneHeaders::Hover => (
+                None,
+                Some(Self::pane_header(leaf, focused, state, cards, cx)),
+            ),
             PaneHeaders::Off => (None, None),
         };
         let body = if let Some(chooser) = cards
@@ -351,12 +356,16 @@ impl Browser {
                         );
                 }
                 row = match state {
-                    Some(AgentState::Working) => {
-                        row.child(Self::chip("working", c.accent_soft, c.accent_text))
-                    }
-                    Some(AgentState::NeedsYou) => {
-                        row.child(Self::chip("needs you", c.attention_soft, c.attention_text))
-                    }
+                    Some(AgentState::Working | AgentState::Starting) => row.child(Self::chip(
+                        state.unwrap().word(),
+                        c.accent_soft,
+                        c.accent_text,
+                    )),
+                    Some(AgentState::NeedsYou | AgentState::Blocked) => row.child(Self::chip(
+                        state.unwrap().word(),
+                        c.attention_soft,
+                        c.attention_text,
+                    )),
                     _ => row,
                 };
                 if !several {

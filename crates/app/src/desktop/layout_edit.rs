@@ -3,6 +3,7 @@
 use std::{
     collections::HashMap,
     path::Path,
+    sync::atomic::{AtomicU32, Ordering},
     time::{Duration, Instant},
 };
 
@@ -10,6 +11,32 @@ use tmux_workspaces_core::{Direction, Layout, Node, Tab};
 
 use crate::library;
 use tmux_workspaces_store::{Document, Error, Reconciliation, Store};
+
+static PENDING: AtomicU32 = AtomicU32::new(0);
+
+/// Keep an accepted write alive in the shutdown count, even after its window closes.
+pub(super) struct PendingSave;
+
+impl PendingSave {
+    pub fn start() -> Self {
+        PENDING.fetch_add(1, Ordering::SeqCst);
+        Self
+    }
+}
+
+impl Drop for PendingSave {
+    fn drop(&mut self) {
+        PENDING.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Wait only for file workers, never their foreground result handlers.
+pub(super) fn finish_saves(limit: Duration) {
+    let deadline = Instant::now() + limit;
+    while PENDING.load(Ordering::SeqCst) > 0 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
 
 #[derive(Clone, Copy)]
 pub(super) enum Create {
@@ -141,6 +168,43 @@ mod tests {
     use super::*;
     use crate::library::WindowLayout;
     use tmux_workspaces_core::Attachment;
+
+    #[test]
+    fn shutdown_waits_for_an_accepted_layout_write_behind_a_database_lock() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut base = Store::open_or_create(directory.path())
+            .unwrap()
+            .load()
+            .unwrap();
+        let mut local = base.model().clone();
+        local.workspaces[0].name = "Saved before quit".into();
+        let lock = rusqlite::Connection::open(directory.path().join("layouts.db")).unwrap();
+        lock.execute_batch("BEGIN IMMEDIATE").unwrap();
+        let pending = PendingSave::start();
+        let path = directory.path().to_owned();
+        let write = std::thread::spawn(move || {
+            let _pending = pending;
+            let result = save(Some(&path), &mut base, &mut local, None, None).unwrap();
+            assert!(!result.conflict);
+        });
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            lock.execute_batch("COMMIT").unwrap();
+        });
+        finish_saves(Duration::from_secs(2));
+        assert_eq!(
+            Store::open(directory.path())
+                .unwrap()
+                .load()
+                .unwrap()
+                .model()
+                .workspaces[0]
+                .name,
+            "Saved before quit"
+        );
+        write.join().unwrap();
+        release.join().unwrap();
+    }
 
     #[test]
     fn creation_waits_for_commit_retries_the_same_ids_and_respects_navigation() {

@@ -120,7 +120,7 @@ if [ -n "$archive" ]; then
     cp "$archive.sha256" "$staging/checksum"
 else
     command -v curl >/dev/null 2>&1 || fail 'Install curl and retry.'
-    base=https://github.com/eandualem/tmux-workspaces-rs/releases/latest/download
+    base=https://github.com/eandualem/agent-interface/releases/latest/download
     name=tmux-workspaces-$target.tar.gz
     printf 'Downloading %s\n' "$name"
     curl --fail --location --silent --show-error --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 600 \
@@ -166,7 +166,7 @@ if [ "$platform" = unknown-linux-gnu ]; then
     cat > "$launcher_stage" <<EOF
 [Desktop Entry]
 Type=Application
-Name=tmux-workspaces
+Name=Agent Interface
 Comment=Organize tmux sessions into native workspaces
 Exec="$escaped"
 Icon=utilities-terminal
@@ -197,11 +197,12 @@ if [ "$platform" = unknown-linux-gnu ]; then
 fi
 printf '\nInstalled %s\n' "$destination"
 if [ "$platform" = apple-darwin ]; then
-    printf '%s\n' 'Open it from Applications in Finder.' \
+    printf '%s\n' 'Open ~/Applications in Finder and launch tmux-workspaces.app.' \
+        'Or run: open "$HOME/Applications/tmux-workspaces.app"' \
         'This app is ad-hoc signed, not notarized. If macOS blocks the first launch,' \
         'use System Settings > Privacy & Security > Open Anyway for this app.'
 else
-    printf '%s\n' 'Open tmux-workspaces from your applications menu.' \
+    printf '%s\n' 'Open Agent Interface from your applications menu.' \
         "For the command line, add $HOME/.local/bin to PATH if needed."
 fi
 if ! command -v tmux >/dev/null 2>&1 && [ ! -x /opt/homebrew/bin/tmux ] && [ ! -x /usr/local/bin/tmux ]; then

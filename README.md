@@ -1,46 +1,61 @@
-# tmux-workspaces (Rust)
+# Agent Interface
 
-A native desktop app for organizing tmux sessions into workspaces, tabs and
-split panes. Open a shell, attach a session you already use, and return to the
-same arrangement later. tmux owns the processes, so ordinary shells keep
-running when you close the app.
+**A native workspace for your agents and terminals.**
+
+Keep terminal agents, shells and live [Agent Backbone](https://github.com/eandualem/agent-backbone)
+views together in saved workspaces, tabs and split panes. Attach the tmux sessions
+you already use and move between them without disconnecting. tmux owns the
+processes; Agent Interface provides the desktop around them.
+
+[Get started](#get-started) · [User guide](docs/GUIDE.md) · [Contribute](CONTRIBUTING.md) · [Architecture](docs/ARCHITECTURE.md)
+
+## What you can do
 
 - Arrange terminal panes in saved tabs and workspaces.
 - Attach existing tmux sessions and switch between their windows.
 - Search tabs, panes and commands with Jump.
 - Choose a light or dark theme and customize keyboard shortcuts.
-- Show agent status when Agent Backbone is installed.
+- Follow live agent states, with animation while agents work.
+- With Agent Backbone, open Team, Activity, Usage, Skills, Policies and Tags
+  alongside terminals, or inspect an individual agent.
+- Detach a session to reuse its pane, or close a tab while tmux manages its sessions.
 
 The app draws terminals natively and needs neither Python nor Agent Backbone
 at runtime. It can open existing schema-v2 libraries from
 [tmux-workspaces](https://github.com/eandualem/tmux-workspaces).
 
-## Install
-
-See the [installation guide](docs/INSTALL.md) for native macOS and Linux packages,
-single-command installation, runtime prerequisites and unsigned macOS launch.
+The executable and existing installation and data paths remain `tmux-workspaces`
+for compatibility. The product and repository are **Agent Interface**.
 
 ## Get started
 
-Build from source using the [setup instructions](CONTRIBUTING.md#set-up).
-You need Rust, Zig 0.15.2, a C toolchain, and tmux 3.3 or newer for terminals.
-Python is used only to prepare the native source during the build.
+Native release downloads are being prepared. To run the app now, follow the
+[source setup](CONTRIBUTING.md#set-up) for Rust, Zig 0.15.2 and the platform
+libraries, then:
 
 ```sh
+git clone https://github.com/eandualem/agent-interface.git
+cd agent-interface
 python3 scripts/prepare-native.py
-export LIBGHOSTTY_VT_SYS_OPTIMIZE=ReleaseSafe
-cargo run --release -p tmux-workspaces-app --bin tmux-workspaces
+LIBGHOSTTY_VT_SYS_OPTIMIZE=ReleaseSafe cargo run -p tmux-workspaces-app
 ```
+
+Terminal sessions require tmux 3.3 or newer; Agent Backbone is optional.
+The [installation guide](docs/INSTALL.md) covers native packages, prerequisites,
+updates and macOS first launch once release downloads are available.
 
 The first launch creates an empty workspace. Add a tab with **+** or
 Command-T, then choose **Open terminal** or **Attach a session**. On Linux,
 use Ctrl+Shift+T. Click a terminal before typing.
+Close the selected tab with Command-W, or Ctrl+Shift+W on Linux.
 
-To open a particular library:
+To open another saved library, open Settings, choose **Open another**, and
+select its folder. The shortcut is Command-O on macOS or Ctrl+Shift+O on Linux.
 
-```sh
-cargo run --release -p tmux-workspaces-app --bin tmux-workspaces -- --data-dir /path/to/library
-```
+This release uses tmux sessions on the same computer. It does not connect to
+sessions on another host or synchronize live sessions between computers.
+
+To build from source, follow [Contributing](CONTRIBUTING.md#set-up).
 
 ## Guides
 
@@ -52,10 +67,9 @@ cargo run --release -p tmux-workspaces-app --bin tmux-workspaces -- --data-dir /
 
 ## Platform support
 
-The app is in early development. macOS is the primary platform. Native builds
-and automated tests have been verified on Ubuntu 24.04 (ARM64) with tmux 3.4.
-Linux has Wayland and X11 backends, but desktop interaction has not yet been
-fully verified there. Windows is not currently supported by the app.
+The app runs natively on macOS and Linux, with Wayland and X11 backends on Linux.
+See the [installation guide](docs/INSTALL.md) for package architectures and
+runtime requirements. Native Windows is not supported. WSL has not been verified.
 
 Terminal input methods, accessible terminal text, key-release events and
 selection across history pages are not yet implemented. See the

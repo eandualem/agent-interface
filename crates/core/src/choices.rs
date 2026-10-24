@@ -63,6 +63,23 @@ impl SessionChoices {
     /// Accepted edits select the first match, which must be presented before
     /// activation. Matching uses full Unicode case folding, without normalization.
     pub fn edit(&mut self, key: char) {
+        if self.edit_query(key) {
+            self.finish_edit();
+        }
+    }
+
+    /// Replace the filter with one text-field update, filtering once.
+    /// Characters follow the same rules as [`Self::edit`]. The new selection
+    /// must be presented before activation, including an empty replacement.
+    pub fn replace_query(&mut self, query: &str) {
+        self.query.clear();
+        for key in query.chars() {
+            self.edit_query(key);
+        }
+        self.finish_edit();
+    }
+
+    fn edit_query(&mut self, key: char) -> bool {
         match key {
             '\u{15}' => self.query.clear(),
             '\u{7f}' | '\u{8}' => {
@@ -77,8 +94,12 @@ impl SessionChoices {
             {
                 self.query.push(ch);
             }
-            _ => return,
+            _ => return false,
         }
+        true
+    }
+
+    fn finish_edit(&mut self) {
         self.index = 0;
         self.active = None;
         self.displayed = None;
@@ -151,6 +172,37 @@ impl SessionChoices {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn replacing_the_query_preserves_edits_and_requires_presenting_the_selection() {
+        let mut choices = SessionChoices::default();
+        choices.update(["STRASSE", "Straße", "ΟΣ", "worker "].map(str::to_owned));
+        choices.select(2);
+        choices.presented();
+        choices.update(["STRASSE", "Straße", "ΟΣ"].map(str::to_owned));
+
+        choices.replace_query("strasse");
+        assert_eq!(choices.rows(), ["STRASSE", "Straße"]);
+        assert_eq!(choices.index(), Some(0));
+        assert_eq!(choices.choice(), None);
+        choices.presented();
+        assert_eq!(choices.choice(), Some("STRASSE"));
+
+        choices.replace_query("ab\u{8}c\u{7f}\u{15}ος\n\u{a0}");
+        assert_eq!(choices.query(), "ος");
+        assert_eq!(choices.rows(), ["ΟΣ"]);
+        assert_eq!(choices.choice(), None);
+        choices.replace_query(&"é".repeat(81));
+        assert_eq!(choices.query().chars().count(), 80);
+        assert!(choices.rows().is_empty());
+        choices.replace_query(" ");
+        assert_eq!(choices.query(), " ");
+        choices.replace_query("");
+        assert_eq!(choices.rows(), ["STRASSE", "Straße", "ΟΣ"]);
+        assert_eq!(choices.choice(), None);
+        choices.presented();
+        assert_eq!(choices.choice(), Some("STRASSE"));
+    }
 
     #[test]
     fn filtering_folds_unicode_preserves_spaces_and_bounds_edits() {

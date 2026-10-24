@@ -54,6 +54,8 @@ actions!(
         OpenLibrary,
         /// Show the Settings window.
         OpenSettings,
+        /// Close the selected tab, leaving its sessions under tmux's ownership.
+        CloseTab,
         /// Close the active window; its sessions keep running.
         CloseWindow
     ]
@@ -69,7 +71,7 @@ pub fn run(directory: Option<PathBuf>) -> Result<(), String> {
     application()
         .with_assets(icons::Assets)
         .run(move |cx: &mut App| {
-            cx.set_app_identity(APP_ID, "tmux-workspaces");
+            cx.set_app_identity(APP_ID, "Agent Interface");
             if cfg!(target_os = "linux") && cx.graphical_environment().is_none() {
                 *opened.borrow_mut() =
                     Some("the workspace browser requires a graphical desktop".into());
@@ -83,11 +85,32 @@ pub fn run(directory: Option<PathBuf>) -> Result<(), String> {
                 KeyBinding::new(shortcuts::platform_key("cmd-n"), NewWindow, None),
                 KeyBinding::new(shortcuts::platform_key("cmd-o"), OpenLibrary, None),
                 KeyBinding::new(shortcuts::platform_key("cmd-,"), OpenSettings, None),
-                KeyBinding::new(shortcuts::platform_key("cmd-w"), CloseWindow, None),
+                KeyBinding::new(shortcuts::platform_key("cmd-w"), CloseTab, None),
             ]);
+            cx.on_app_quit(|_| {
+                // The synchronous observer runs before GPUI's short async quit
+                // deadline. These workers finish without a foreground update.
+                layout_edit::finish_saves(std::time::Duration::from_secs(10));
+                settings::finish_saves(std::time::Duration::from_secs(2));
+                std::future::ready(())
+            })
+            .detach();
             // Defer: a window that is dispatching this action cannot be updated
             // until dispatch returns.
             cx.on_action(|_: &OpenSettings, cx| cx.defer(settings_window::show));
+            cx.on_action(|_: &CloseTab, cx| {
+                if let Some(window) = cx.active_window() {
+                    cx.defer(move |cx| {
+                        if let Some(browser) = window.downcast::<Browser>() {
+                            let _ = browser.update(cx, |browser, window, cx| {
+                                browser.close_tab(window, cx);
+                            });
+                        } else {
+                            let _ = window.update(cx, |_, window, _| window.remove_window());
+                        }
+                    });
+                }
+            });
             cx.on_action(|_: &CloseWindow, cx| {
                 if let Some(window) = cx.active_window() {
                     cx.defer(move |cx| {
@@ -105,7 +128,6 @@ pub fn run(directory: Option<PathBuf>) -> Result<(), String> {
                 }
             });
             cx.on_action(|_: &Quit, cx| {
-                settings::finish_saves(std::time::Duration::from_secs(2));
                 cx.quit();
             });
             cx.on_action(|_: &NewWindow, cx| {
@@ -124,19 +146,19 @@ pub fn run(directory: Option<PathBuf>) -> Result<(), String> {
                 }
             });
             cx.set_menus(vec![Menu {
-                name: "tmux-workspaces".into(),
+                name: "Agent Interface".into(),
                 items: vec![
                     MenuItem::action("New Window", NewWindow),
                     MenuItem::action("Open Library…", OpenLibrary),
                     MenuItem::action("Settings…", OpenSettings),
+                    MenuItem::action("Close Tab", CloseTab),
                     MenuItem::action("Close Window", CloseWindow),
-                    MenuItem::action("Quit tmux-workspaces", Quit),
+                    MenuItem::action("Quit Agent Interface", Quit),
                 ],
                 disabled: false,
             }]);
             cx.on_window_closed(|cx, _| {
                 if cx.windows().is_empty() {
-                    settings::finish_saves(std::time::Duration::from_secs(2));
                     cx.quit();
                 }
             })
@@ -183,7 +205,7 @@ fn open_browser(
             px(design::tokens().size.window_min_height),
         )),
         titlebar: Some(TitlebarOptions {
-            title: Some("tmux-workspaces".into()),
+            title: Some("Agent Interface".into()),
             // The window controls sit in the panel's top strip.
             appears_transparent: true,
             traffic_light_position: Some(point(
@@ -260,6 +282,7 @@ enum TabAction {
     Rename,
     Attach,
     ReturnToShell,
+    Detach,
     OpenTerminal,
     Split(Direction),
     Focus,
@@ -372,6 +395,18 @@ struct Attaching {
     _events: gpui::Subscription,
 }
 
+fn close_tab_proposal(
+    layout: &WindowLayout,
+    workspace: &str,
+    tab: &str,
+) -> Option<(Document, Layout)> {
+    let (base, mut proposed) = layout.save_snapshot();
+    if proposed.selected != workspace || proposed.tab()?.id != tab {
+        return None;
+    }
+    proposed.close_tab().then_some((base, proposed))
+}
+
 #[derive(Default)]
 struct Browser {
     library: Option<Library>,
@@ -424,6 +459,61 @@ struct Browser {
 }
 
 impl Browser {
+    fn close_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.saving || self.save_failed {
+            return;
+        }
+        let Some(model) = self.layout.as_ref().map(WindowLayout::model) else {
+            return;
+        };
+        let Some(tab) = model.tab().map(|tab| tab.id.clone()) else {
+            return;
+        };
+        let workspace = model.selected.clone();
+        if let Some(update) = self.library.as_ref().and_then(Library::take_update) {
+            self.apply(update);
+        }
+        let Some(layout) = &self.layout else {
+            return;
+        };
+        let Some(proposal) = close_tab_proposal(layout, &workspace, &tab) else {
+            cx.notify();
+            return;
+        };
+        self.pending_save = Some(proposal);
+        self.editing = None;
+        self.chooser = None;
+        self.close_menus();
+        if let Some(focus) = &self.navigation {
+            window.focus(focus, cx);
+        }
+        self.save(cx);
+    }
+
+    fn detach_terminal(&mut self, target: &Target, window: &mut Window, cx: &mut Context<Self>) {
+        if self.saving || self.save_failed {
+            return;
+        }
+        if let Some(update) = self.library.as_ref().and_then(Library::take_update) {
+            self.apply(update);
+        }
+        let Some(layout) = &self.layout else {
+            return;
+        };
+        let (base, mut proposed) = layout.save_snapshot();
+        if !target.detach_from(&mut proposed) {
+            return;
+        }
+        self.pending_save = Some((base, proposed));
+        self.editing = None;
+        self.chooser = None;
+        self.close_menus();
+        if let Some(focus) = &self.navigation {
+            window.focus(focus, cx);
+        }
+        self.save(cx);
+    }
+
     fn open_another(&mut self, cx: &mut Context<Self>) {
         let source = self
             .source
@@ -781,7 +871,9 @@ impl Browser {
         self.error = None;
         // Closing this window does not cancel a save while the app is running.
         // SQLite and its busy timeout never run on the UI thread.
+        let pending = layout_edit::PendingSave::start();
         let work = cx.background_executor().spawn(async move {
+            let _pending = pending;
             let result = layout_edit::save(
                 directory.as_deref(),
                 &mut base,
@@ -913,6 +1005,16 @@ impl Browser {
         }
         match action {
             TabAction::ReturnToShell => unreachable!("handled before the whole-tab move guard"),
+            TabAction::Detach => {
+                if let Some(terminal) = layout
+                    .model()
+                    .pane()
+                    .and_then(|leaf| self.terminals.get(&leaf.id))
+                {
+                    let target = terminal.read(cx).target.clone();
+                    self.detach_terminal(&target, window, cx);
+                }
+            }
             TabAction::Rename => self.begin_name(true, window, cx),
             TabAction::Attach => {
                 if let Some(pane) = layout.model().pane().map(|pane| pane.id.clone()) {
@@ -1512,7 +1614,8 @@ impl Render for Browser {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
-        // Keep only the source-bound choice, not hidden clients or renderers.
+        // Hidden tabs retain their clients. Record window choices for targets
+        // that may need to reconnect after a saved arrangement changes.
         for (id, terminal) in &self.terminals {
             let terminal = terminal.read(cx);
             if let Some(selected) = terminal.selection() {
@@ -1521,20 +1624,16 @@ impl Render for Browser {
             }
         }
         self.window_choices.retain(|_, (target, _)| {
-            self.layout.as_ref().is_some_and(|layout| {
-                layout.model().workspaces.iter().any(|workspace| {
-                    workspace.tabs.iter().any(|tab| {
-                        tab.tree
-                            .leaves()
-                            .into_iter()
-                            .any(|leaf| target.matches_leaf(leaf))
-                    })
-                })
-            })
+            self.layout
+                .as_ref()
+                .is_some_and(|layout| target.exists_in(layout.model()))
         });
-        self.terminals
-            .retain(|id, _| leaves.iter().any(|leaf| &leaf.id == id));
-        for leaf in leaves {
+        self.terminals.retain(|_, terminal| {
+            self.layout
+                .as_ref()
+                .is_some_and(|layout| terminal.read(cx).target.exists_in(layout.model()))
+        });
+        for leaf in &leaves {
             let target = Target {
                 leaf: leaf.clone(),
                 directory: self.directory.clone(),
@@ -1553,10 +1652,17 @@ impl Render for Browser {
                     .get(&leaf.id)
                     .filter(|(previous, _)| previous.same_session(&target))
                     .map(|(_, selected)| selected.clone());
-                self.terminals.insert(
-                    leaf.id,
-                    cx.new(|cx| LiveTerminal::new(target, selected, cx)),
-                );
+                let terminal = cx.new(|cx| LiveTerminal::new(target, selected, cx));
+                cx.subscribe_in(
+                    &terminal,
+                    window,
+                    |browser, terminal, _: &terminal::Detach, window, cx| {
+                        let target = terminal.read(cx).target.clone();
+                        browser.detach_terminal(&target, window, cx);
+                    },
+                )
+                .detach();
+                self.terminals.insert(leaf.id.clone(), terminal);
             }
         }
         let shown: Vec<(String, View)> = self
@@ -1606,6 +1712,13 @@ impl Render for Browser {
                 .then(|| model.tab().map(|tab| tab.focus.as_str()))
                 .flatten()
         });
+        for (id, terminal) in &self.terminals {
+            if !leaves.iter().any(|leaf| &leaf.id == id)
+                || expanded.is_some_and(|focused| focused != id)
+            {
+                terminal.update(cx, |terminal, cx| terminal.hide(cx));
+            }
+        }
         for (id, (view, _)) in &self.views {
             view.read(cx)
                 .set_visible(expanded.is_none_or(|focused| focused == id));
@@ -1648,6 +1761,11 @@ impl Render for Browser {
                     });
                 self.new_panes.insert(id, (chooser, events));
             }
+        }
+        for (id, (chooser, _)) in &self.new_panes {
+            chooser.update(cx, |chooser, cx| {
+                chooser.set_visible(expanded.is_none_or(|focused| focused == id), cx);
+            });
         }
         if let Some(request) = self.shell_to_open.take()
             && let Some(layout) = &self.layout
@@ -1938,23 +2056,10 @@ fn agent_destination(
 fn navigate_key(model: &mut tmux_workspaces_core::Layout, key: &gpui::Keystroke) -> bool {
     // Numbered selection stays fixed; other navigation comes from settings.
     if let Some((number, workspace)) = shortcuts::numbered(key) {
-        let id = if workspace {
-            model
-                .workspaces
-                .get(number - 1)
-                .map(|space| space.id.clone())
+        if workspace {
+            model.choose_workspace_number(number);
         } else {
-            model
-                .workspace()
-                .and_then(|space| space.tabs.get(number - 1))
-                .map(|tab| tab.id.clone())
-        };
-        if let Some(id) = id {
-            if workspace {
-                model.choose_workspace(&id);
-            } else {
-                model.choose_tab(&id);
-            }
+            model.choose_tab_number(number);
         }
         return true;
     }
@@ -1991,6 +2096,70 @@ fn navigate_key(model: &mut tmux_workspaces_core::Layout, key: &gpui::Keystroke)
 mod tests {
     use super::*;
     use tmux_workspaces_store::{Document, Error, Store};
+
+    #[test]
+    fn close_tab_does_not_remove_the_refresh_fallback() {
+        let path = std::path::Path::new("layouts.db");
+        let raw = r#"{"version":2,"workspaces":[{"id":"000000000001","name":"Workspace","tabs":[],"selected":""}],"selected":"000000000001","focus":false}"#;
+        let document = Document::parse(raw.into(), path).unwrap();
+        let mut model = document.model().clone();
+        model.add_tab(Some("Closing".into()), "/tmp".into(), true);
+        let mut peer = model.clone();
+        peer.add_tab(Some("Survivor".into()), "/tmp".into(), true);
+        let survivor = peer.tab().unwrap().id.clone();
+        peer.choose_tab(&model.tab().unwrap().id);
+        let document = document.with_model(&peer, path).unwrap();
+        let mut layout = WindowLayout::new(document.clone());
+        let workspace = layout.model().selected.clone();
+        let tab = layout.model().tab().unwrap().id.clone();
+        assert!(close_tab_proposal(&layout, &workspace, &tab).is_some());
+
+        peer.close_tab();
+        let refreshed = layout
+            .refresh(document.with_model(&peer, path).unwrap(), path)
+            .unwrap();
+        assert!(!refreshed.conflict);
+        assert!(refreshed.active_tree_changed);
+        assert_eq!(layout.model().tab().unwrap().id, survivor);
+        assert!(close_tab_proposal(&layout, &workspace, &tab).is_none());
+        assert_eq!(layout.model().workspace().unwrap().tabs.len(), 1);
+    }
+
+    #[test]
+    fn detaching_and_closing_a_tab_apply_only_after_saving() {
+        let directory = tempfile::tempdir().unwrap();
+        drop(Store::open_or_create(directory.path()).unwrap());
+        let mut store = Store::open_existing_writable(directory.path()).unwrap();
+        let mut base = store.load().unwrap();
+        let mut model = base.model().clone();
+        model.add_tab(None, "/work".into(), true);
+        model.attach(Some(Attachment {
+            session: "worker".into(),
+            source_socket: Some("/fixture/source".into()),
+        }));
+        assert!(!store.save(&mut base, &model).unwrap().conflict);
+        let mut layout = WindowLayout::new(store.load().unwrap());
+        let target = Target {
+            leaf: layout.model().pane().unwrap().clone(),
+            directory: Some(directory.path().into()),
+            source: Ok("/fixture/source".into()),
+        };
+        let (mut base, mut proposed) = layout.save_snapshot();
+        assert!(target.detach_from(&mut proposed));
+        assert!(layout.model().pane().unwrap().attachment.is_some());
+        let result = store.save(&mut base, &proposed).unwrap();
+        layout.saved(base, &result);
+        assert!(layout.model().pane().unwrap().empty);
+        assert!(store.load().unwrap().model().pane().unwrap().empty);
+        let (mut base, mut proposed) = layout.save_snapshot();
+        assert!(proposed.close_tab());
+        assert!(layout.model().tab().is_some());
+        let result = store.save(&mut base, &proposed).unwrap();
+        layout.saved(base, &result);
+        assert!(layout.model().tab().is_none());
+        assert_eq!(layout.model().workspaces.len(), 1);
+        assert!(store.load().unwrap().model().tab().is_none());
+    }
 
     #[test]
     fn attachment_guards_empty_displayed_panes_and_keeps_the_original_destination() {
@@ -2300,11 +2469,51 @@ mod tests {
         model.add_workspace("Other".into());
         navigate_key(&mut model, &key(shortcuts::platform_key("cmd-alt-right")));
         assert_eq!(model.selected, workspace);
+        let tab_number = if cfg!(target_os = "macos") {
+            "cmd-2"
+        } else {
+            "alt-2"
+        };
+        assert!(navigate_key(&mut model, &key(tab_number)));
+        assert_eq!(
+            model.tab().unwrap().id,
+            model.workspace().unwrap().tabs[1].id
+        );
+        let space_number = if cfg!(target_os = "macos") {
+            "cmd-alt-2"
+        } else {
+            "ctrl-alt-2"
+        };
+        assert!(navigate_key(&mut model, &key(space_number)));
+        assert_eq!(model.selected, model.workspaces[1].id);
         let before = model.clone();
+        let missing = if cfg!(target_os = "macos") {
+            "cmd-9"
+        } else {
+            "alt-9"
+        };
+        assert!(navigate_key(&mut model, &key(missing)));
         assert!(!navigate_key(&mut model, &key("ctrl-]")));
         assert!(!navigate_key(&mut model, &key("cmd-alt-]")));
         assert!(!navigate_key(&mut model, &key("cmd-ctrl-1")));
         assert_eq!(model, before);
+    }
+
+    #[test]
+    fn agent_state_lookup_omits_offline_and_unavailable_states() {
+        let mut browser = Browser::default();
+        let mut snapshot = tmux_workspaces_roster::Snapshot::default();
+        snapshot.update(br#"{"items":[{"name":"worker","state":"busy"},{"name":"idle","state":""},{"name":"gone","state":"offline"}]}"#);
+        browser.agents = Some(snapshot);
+        let states = browser.agent_states().unwrap();
+        assert_eq!(states.len(), 2);
+        assert_eq!(states["worker"], components::AgentState::Working);
+        assert_eq!(
+            states["idle"],
+            components::AgentState::from_report("unknown")
+        );
+        browser.agents.as_mut().unwrap().update(b"invalid");
+        assert!(browser.agent_states().is_none());
     }
 
     #[test]

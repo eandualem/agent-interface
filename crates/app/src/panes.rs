@@ -397,6 +397,8 @@ impl Panes {
         let prefix = format!("%layout-change @{} ", layout.window);
         let mut queue = VecDeque::new();
         let mut visible: Vec<_> = layout.panes.iter().map(|pane| pane.id).collect();
+        let mut closed = false;
+        let mut transport_failure = None;
         for event in events {
             match event {
                 crate::seed::Event::Output(pane, bytes) if visible.contains(&pane) => {
@@ -415,6 +417,15 @@ impl Panes {
                         }
                     }
                 }
+                crate::seed::Event::Exit(reason) => {
+                    closed = true;
+                    if !reason.is_empty() {
+                        transport_failure = Some(format!(
+                            "tmux disconnected: {}",
+                            String::from_utf8_lossy(&reason)
+                        ));
+                    }
+                }
                 _ => {}
             }
         }
@@ -422,6 +433,8 @@ impl Panes {
             state: Mutex::new(State {
                 queued: queue.iter().map(Event::size).sum(),
                 queue,
+                closed,
+                transport_failure,
                 ..State::default()
             }),
             changed: Condvar::new(),
@@ -476,15 +489,19 @@ impl Panes {
         // (for example, switching top to bottom pane border status). Its format
         // subscriptions report these changes, at most once per second. Also
         // refresh the source server's extended-key format when it changes.
-        panes.control.send(&format!(
-            "refresh-client -B 'content-geometry:@{}:#{{P:#{{pane_id}}/#{{pane_left}}/#{{pane_top}}/#{{pane_width}}/#{{pane_height}};}}/#{{extended-keys-format}}'\n",
-            layout.window,
-        ), ReplyOwner::GeometrySubscription)?;
-        if session.is_some() {
-            panes.control.send(
-                "refresh-client -B 'source-window::#{session_id}/#{W:#{window_id};}'\n",
-                ReplyOwner::SourceSubscription,
-            )?;
+        // A complete snapshot can arrive with the client's exit. Keep that last
+        // screen and reason without sending subscriptions to the exited client.
+        if !closed {
+            panes.control.send(&format!(
+                "refresh-client -B 'content-geometry:@{}:#{{P:#{{pane_id}}/#{{pane_left}}/#{{pane_top}}/#{{pane_width}}/#{{pane_height}};}}/#{{extended-keys-format}}'\n",
+                layout.window,
+            ), ReplyOwner::GeometrySubscription)?;
+            if session.is_some() {
+                panes.control.send(
+                    "refresh-client -B 'source-window::#{session_id}/#{W:#{window_id};}'\n",
+                    ReplyOwner::SourceSubscription,
+                )?;
+            }
         }
         let (ready, initialized) = mpsc::channel();
         panes.threads.push(spawn("terminal worker", {
@@ -607,6 +624,12 @@ impl Panes {
             ),
             ReplyOwner::Size,
         )
+    }
+
+    /// Keep the client connected without contributing to tmux window sizing.
+    pub(crate) fn ignore_size(&self) -> io::Result<()> {
+        self.control
+            .send("refresh-client -f ignore-size\n", ReplyOwner::Size)
     }
 
     /// Returns a terminal recovery or input transport failure.

@@ -35,9 +35,15 @@ pub struct Observation {
 /// overlays must not turn a failed query into an online claim. Updates coalesce
 /// into one slot, including failures replacing unread successes.
 pub struct SessionSource {
-    updates: Arc<Mutex<Option<Observation>>>,
+    state: Arc<Mutex<PollState>>,
     stop: mpsc::Sender<()>,
     worker: Option<JoinHandle<()>>,
+}
+
+struct PollState {
+    active: bool,
+    generation: u64,
+    update: Option<Observation>,
 }
 
 impl SessionSource {
@@ -45,13 +51,34 @@ impl SessionSource {
     /// resolves `socket` first. No default-server lookup or attachment occurs.
     /// `wake` runs on the worker after each complete observation is published.
     pub fn start(socket: PathBuf, wake: impl Fn() + Send + 'static) -> io::Result<Self> {
-        let updates = Arc::new(Mutex::new(None));
-        let pending = Arc::clone(&updates);
+        let state = Arc::new(Mutex::new(PollState {
+            active: true,
+            generation: 0,
+            update: None,
+        }));
+        let pending = Arc::clone(&state);
         let (stop, stopped) = mpsc::channel();
         let worker = thread::Builder::new()
             .name("session discovery".into())
             .spawn(move || {
                 loop {
+                    loop {
+                        match stopped.try_recv() {
+                            Ok(()) => {}
+                            Err(mpsc::TryRecvError::Empty) => break,
+                            Err(mpsc::TryRecvError::Disconnected) => return,
+                        }
+                    }
+                    let (active, generation) = {
+                        let state = pending.lock().unwrap_or_else(|e| e.into_inner());
+                        (state.active, state.generation)
+                    };
+                    if !active {
+                        if stopped.recv().is_err() {
+                            break;
+                        }
+                        continue;
+                    }
                     let observation = match read_sessions(&socket) {
                         Ok(sessions) => Observation {
                             sessions,
@@ -64,36 +91,59 @@ impl SessionSource {
                             observed_at: None,
                         },
                     };
-                    *pending.lock().unwrap_or_else(|e| e.into_inner()) = Some(observation);
-                    wake();
-                    if !matches!(
-                        stopped.recv_timeout(Duration::from_secs(5)),
-                        Err(mpsc::RecvTimeoutError::Timeout)
-                    ) {
-                        break;
+                    let published = {
+                        let mut state = pending.lock().unwrap_or_else(|e| e.into_inner());
+                        if state.active && state.generation == generation {
+                            state.update = Some(observation);
+                            true
+                        } else {
+                            false
+                        }
+                    };
+                    if published {
+                        wake();
+                    }
+                    match stopped.recv_timeout(Duration::from_secs(5)) {
+                        Err(mpsc::RecvTimeoutError::Timeout) | Ok(()) => {}
+                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
                     }
                 }
             })?;
         Ok(Self {
-            updates,
+            state,
             stop,
             worker: Some(worker),
         })
     }
 
+    /// Pause discovery while hidden. Discard pending observations and refresh
+    /// immediately on reveal; a read begun before the change cannot publish.
+    pub fn set_active(&self, active: bool) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.active != active {
+            state.active = active;
+            state.generation = state.generation.wrapping_add(1);
+            state.update = None;
+            let _ = self.stop.send(());
+        }
+    }
+
     /// Take the newest complete observation. Replace previous availability even
     /// when it carries an error; old names are not evidence of live sessions.
     pub fn take_update(&self) -> Option<Observation> {
-        self.updates
+        self.state
             .lock()
             .unwrap_or_else(|e| e.into_inner())
+            .update
             .take()
     }
 }
 
 impl Drop for SessionSource {
     fn drop(&mut self) {
-        let _ = self.stop.send(());
+        self.set_active(false);
+        let (stop, _) = mpsc::channel();
+        drop(std::mem::replace(&mut self.stop, stop));
         if let Some(worker) = self.worker.take() {
             // A running query has its own three-second deadline. No child or
             // polling thread outlives this handle after the join completes.
@@ -126,7 +176,14 @@ mod tests {
         // Leave the successful observation unread so a later failure must
         // replace it, rather than preserve an old claim of availability.
         assert_eq!(
-            sessions.updates.lock().unwrap().as_ref().unwrap().sessions,
+            sessions
+                .state
+                .lock()
+                .unwrap()
+                .update
+                .as_ref()
+                .unwrap()
+                .sessions,
             [TmuxServer::SESSION]
         );
         std::fs::remove_file(&source).unwrap();
@@ -152,6 +209,32 @@ mod tests {
         assert!(recovered.observed_at > empty.observed_at);
         drop(sessions);
         assert!(woken.recv_timeout(Duration::from_secs(1)).is_err());
+        assert!(server.run(&["list-clients"]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn hidden_discovery_discards_pending_names_and_refreshes_on_reveal() {
+        let server = TmuxServer::start().unwrap();
+        let socket = server
+            .run(&["display-message", "-p", "#{socket_path}"])
+            .unwrap();
+        let (wake, woken) = mpsc::channel();
+        let source = SessionSource::start(socket.trim_end().into(), move || {
+            let _ = wake.send(());
+        })
+        .unwrap();
+        woken.recv_timeout(Duration::from_secs(10)).unwrap();
+        source.set_active(false);
+        assert!(source.take_update().is_none());
+        server
+            .run(&["rename-session", "-t", TmuxServer::SESSION, "renamed"])
+            .unwrap();
+        assert!(woken.recv_timeout(Duration::from_millis(5200)).is_err());
+        source.set_active(true);
+        // This is shorter than the normal five-second polling interval.
+        woken.recv_timeout(Duration::from_secs(3)).unwrap();
+        assert_eq!(source.take_update().unwrap().sessions, ["renamed"]);
+        drop(source);
         assert!(server.run(&["list-clients"]).unwrap().is_empty());
     }
 }

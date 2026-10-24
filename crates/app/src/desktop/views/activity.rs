@@ -23,7 +23,10 @@ fn state_now(member: &Member) -> (Option<AgentState>, &'static str, bool) {
         return (None, "offline", false);
     }
     let state = AgentState::from_report(&member.state);
-    let active = matches!(state, AgentState::Working | AgentState::NeedsYou);
+    let active = matches!(
+        state,
+        AgentState::Working | AgentState::Starting | AgentState::NeedsYou | AgentState::Blocked
+    );
     (Some(state), state.word(), active)
 }
 
@@ -38,8 +41,8 @@ fn state_label(member: &Member) -> gpui::Div {
     let (t, c) = (tokens(), colors());
     let (state, word, _) = state_now(member);
     let color = match state {
-        Some(AgentState::NeedsYou) => c.attention_text,
-        Some(AgentState::Working) => c.accent_text,
+        Some(AgentState::NeedsYou | AgentState::Blocked) => c.attention_text,
+        Some(AgentState::Working | AgentState::Starting) => c.accent_text,
         _ => c.muted,
     };
     div()
@@ -103,7 +106,10 @@ fn lanes(activity: &Activity, end: f64) -> Vec<Lane<'_>> {
         let worked = spans.iter().any(|(_, _, state)| {
             matches!(
                 AgentState::from_report(state),
-                AgentState::Working | AgentState::NeedsYou
+                AgentState::Working
+                    | AgentState::Starting
+                    | AgentState::NeedsYou
+                    | AgentState::Blocked
             )
         });
         if ticks.is_empty() && !active && !worked {
@@ -141,8 +147,8 @@ fn span_color(state: &str) -> Rgba {
         return c.selected;
     }
     match AgentState::from_report(state) {
-        AgentState::NeedsYou => c.attention,
-        AgentState::Working => c.accent,
+        AgentState::NeedsYou | AgentState::Blocked => c.attention,
+        AgentState::Working | AgentState::Starting => c.accent,
         AgentState::Idle => c.line_strong,
         AgentState::Unknown => c.selected,
     }
@@ -222,6 +228,7 @@ fn timeline(activity: &Activity) -> gpui::Div {
         }
         section = section.child(
             div()
+                .id(SharedString::from(format!("activity-lane-{}", member.name)))
                 .flex()
                 .items_center()
                 .h(px(t.space.s20))

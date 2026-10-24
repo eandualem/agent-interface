@@ -1,6 +1,6 @@
 [package]
 name = "tmux-workspaces-app"
-description = "The tmux-workspaces desktop app"
+description = "Agent Interface: native workspaces for agents and tmux terminals"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

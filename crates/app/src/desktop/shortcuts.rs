@@ -2,7 +2,7 @@
 //!
 //! Each command has a default chord; the settings file can replace it. Keys
 //! the terminal or the application menu own (copy, paste, numbered selection,
-//! Settings, New Window, Open Library, Close Window, Quit) stay fixed.
+//! Settings, New Window, Open Library, Close Tab, Quit) stay fixed.
 
 use std::{
     collections::HashMap,

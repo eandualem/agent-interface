@@ -131,6 +131,7 @@ struct Grid {
     selection: Option<Selection>,
     /// The size last declared to tmux for an embedded view, in cells.
     requested: Option<(u16, u16)>,
+    contributes_size: bool,
 }
 
 impl TerminalView {
@@ -251,6 +252,7 @@ impl TerminalView {
                 font,
                 selection: None,
                 requested: None,
+                contributes_size: false,
             })),
             input: (!embedded).then_some(input),
             initial_input: input,
@@ -302,6 +304,17 @@ impl TerminalView {
 
     fn panes(&self) -> &Panes {
         self.panes.as_deref().expect("terminal entity is alive")
+    }
+
+    /// A retained hidden view must not constrain a displayed client's size.
+    pub(crate) fn hide(&mut self, cx: &mut Context<Self>) {
+        let mut grid = self.grid.borrow_mut();
+        if grid.contributes_size && self.panes().ignore_size().is_ok() {
+            grid.contributes_size = false;
+            // The next paint restores participation even at the same size.
+            grid.requested = None;
+            cx.notify();
+        }
     }
 
     pub(crate) fn suspend_input(&mut self, cx: &mut Context<Self>) {
@@ -891,6 +904,7 @@ impl Render for TerminalView {
                                 && panes.set_size(size.0, size.1).is_ok()
                             {
                                 grid.requested = Some(size);
+                                grid.contributes_size = true;
                             }
                             grid.fit(bounds);
                         }
