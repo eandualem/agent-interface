@@ -79,9 +79,11 @@ The focused terminal exposes its active pane and input caret through GPUI's
 native accessibility bridge. Text ranges preserve terminal grapheme clusters
 and cell positions. The caret follows an in-viewport program cursor even when
 the program hides its drawing. An off-viewport cursor or capture-only recovery
-placeholder is not exposed. Embedded
-terminals bypass GPUI's drawing cache while accessibility is active, because
-that cache does not replay accessibility nodes or focus. On macOS accessibility
+placeholder is not exposed. When that position is unavailable, the node exposes
+output as a plain value without text-run children, disabling native text-range
+attributes rather than letting the macOS adapter invent a selection at zero.
+Embedded terminals bypass GPUI's drawing cache while accessibility is active,
+because that cache does not replay accessibility nodes or focus. On macOS accessibility
 is active from window creation, so embedded terminals always bypass this cache.
 The terminal role distinguishes inspectable program output from an editable
 document: dictation tools can locate the input and send a normal
