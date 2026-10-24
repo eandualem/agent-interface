@@ -12,6 +12,7 @@ pub(super) fn terminal(
     grid: &Grid,
     pane: PaneId,
     display_scale: f32,
+    embedded: bool,
 ) {
     let Some(screen) = grid.screens.get(&pane) else {
         return;
@@ -39,9 +40,13 @@ pub(super) fn terminal(
     // Match the grid's fit while the server is still resizing the viewport.
     let original_width = f64::from(f32::from(grid.original_cell.width) * display_scale);
     let original_height = f64::from(f32::from(grid.original_cell.height) * display_scale);
-    let scale = (bounds.width() / (f64::from(cols) * original_width))
-        .min(bounds.height() / (f64::from(rows) * original_height))
-        .clamp(0.01, 1.0);
+    let scale = if embedded {
+        (bounds.width() / (f64::from(cols) * original_width))
+            .min(bounds.height() / (f64::from(rows) * original_height))
+            .clamp(0.01, 1.0)
+    } else {
+        1.0
+    };
     let width = original_width * scale;
     let height = original_height * scale;
     let cursor = screen.cursor();
@@ -57,7 +62,7 @@ pub(super) fn terminal(
         ));
         let id = builder.synthetic_node_id((pane.0, row));
         builder.push_child(id, run);
-        if row == cursor.row {
+        if cursor.visible && row == cursor.row {
             let caret = TextPosition {
                 node: id,
                 character_index: caret,
@@ -89,15 +94,25 @@ fn text_run(screen: &Screen, row: u16, width: f64) -> (Node, usize) {
             continue;
         }
         let value = if value.is_empty() { " " } else { value };
-        for (index, ch) in value.chars().enumerate() {
-            text.push(ch);
-            lengths.push(ch.len_utf8() as u8);
+        text.push_str(value);
+        // A terminal cell holds one grapheme cluster. AccessKit characters
+        // must not split it, except for the u8 limit on a character's bytes.
+        let mut remaining = value;
+        let mut first = true;
+        while !remaining.is_empty() {
+            let mut end = remaining.len().min(usize::from(u8::MAX));
+            while !remaining.is_char_boundary(end) {
+                end -= 1;
+            }
+            lengths.push(end as u8);
             positions.push((f64::from(col) * width) as f32);
-            widths.push(if index == 0 {
+            widths.push(if first {
                 (width * if cell.width == Width::Wide { 2.0 } else { 1.0 }) as f32
             } else {
                 0.0
             });
+            remaining = &remaining[end..];
+            first = false;
         }
     }
     if screen.cursor().col >= screen.cols() {
@@ -143,18 +158,31 @@ mod tests {
         });
         let (run, caret) = text_run(&screen, 0, 8.0);
         assert_eq!(run.value(), Some("a😀e\u{301} \n"));
-        assert_eq!(run.character_lengths(), &[1, 4, 1, 2, 1, 1]);
+        assert_eq!(run.character_lengths(), &[1, 4, 3, 1, 1]);
         assert_eq!(
             run.value()
                 .unwrap()
-                .chars()
-                .take(caret)
-                .map(char::len_utf16)
-                .sum::<usize>(),
+                .get(
+                    ..run.character_lengths()[..caret]
+                        .iter()
+                        .map(|&len| usize::from(len))
+                        .sum()
+                )
+                .unwrap()
+                .encode_utf16()
+                .count(),
             5
         );
         assert_eq!(run.character_positions().unwrap()[caret], 32.0);
         screen.set_row_wrapped(0, true);
         assert_eq!(text_run(&screen, 0, 8.0).0.value(), Some("a😀e\u{301} "));
+
+        let long_cluster = format!("e{}", "\u{301}".repeat(150));
+        screen.clear(1, 1);
+        screen.push(&long_cluster, Width::Narrow, Style::default());
+        let (run, _) = text_run(&screen, 0, 8.0);
+        assert_eq!(run.value(), Some(long_cluster.as_str()));
+        assert_eq!(run.character_lengths(), &[255, 46]);
+        assert_eq!(run.character_widths(), Some([8.0, 0.0].as_slice()));
     }
 }

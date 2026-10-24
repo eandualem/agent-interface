@@ -786,7 +786,7 @@ impl Render for TerminalView {
                     .role(gpui::Role::Terminal)
                     .aria_label("Terminal input")
                     .a11y_synthetic_children(move |builder| {
-                        accessibility::terminal(builder, &accessible_grid.borrow(), pane, display_scale);
+                        accessibility::terminal(builder, &accessible_grid.borrow(), pane, display_scale, embedded);
                     })
             })
             .on_key_down(cx.listener(Self::key_down))

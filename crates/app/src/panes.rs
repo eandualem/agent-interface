@@ -1242,8 +1242,6 @@ fn missing_pane(reply: &Reply, pane: PaneId) -> bool {
             .any(|line| line == format!("can't find pane: %{}", pane.0).as_bytes())
 }
 
-/// Returns the panes in `changed` that the waiting update does not hold, or
-/// `None` when there are none, no update waits or the panes are being dropped.
 // A frame is published only if every requested copy succeeded. A failed copy
 // may have modified its spare, but never replaces the UI's last complete frame.
 fn copy_screens(
@@ -1264,6 +1262,8 @@ fn copy_screens(
     Ok(screens)
 }
 
+/// Returns the panes in `changed` that the waiting update does not hold, or
+/// `None` when there are none, no update waits or the panes are being dropped.
 fn joining(state: &State, changed: &[PaneId]) -> Option<Vec<PaneId>> {
     let waiting = state.update.as_ref().filter(|_| !state.cancelled)?;
     let absent: Vec<PaneId> = changed
