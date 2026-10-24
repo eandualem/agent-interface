@@ -155,7 +155,7 @@ All in `components.rs`; each takes its look from the tokens.
 | `button` | `Primary` (accent fill), `Secondary` (field with border), `Danger` (attention text) |
 | `dot` | Small filled mark: needs you on tabs and slots, the saved light |
 | `menu`, `menu_item`, `menu_heading`, `menu_rule` | Popover frame on `field` with shadow; item with mark slot, label and key; uppercase heading; rule |
-| `agent_symbol` | Needs you: filled `attention` circle with "!". Working: static `accent` arc with a play mark. Idle: `faint` ring. Unknown: dashed `muted` ring with "?" |
+| `agent_symbol` | Needs you: filled `attention` circle with "!". Working/starting: rotating `accent` arc with a play mark (`motion.spinner_ms` per turn). Idle: `faint` ring. Unknown: dashed `muted` ring with "?" |
 | `minimap` | A tab's layout thumbnail: one frame, split once, or split twice |
 | `empty_tile`, `empty_state` | Icon tile, title, explanation and actions, centred |
 | `field_frame` | Text field frame, `accent` border when focused |
@@ -206,9 +206,11 @@ Views follow four rules:
   `coordinator` first and the others beneath it.
 
 Agent states always pair a shape with a colour, so they read without colour.
-Backbone's states fold onto four (`AgentState::from_report`): needs you
-(`waiting_for_human`, `blocked`), working (`busy`, `starting`), idle (`idle`,
-`running`) and unknown (anything else).
+Backbone's states use four visual categories (`AgentState::from_report`):
+attention (`waiting_for_human`, `blocked`), active (`busy`, `starting`), idle
+(`idle`, `running`) and unknown. Labels preserve the difference between
+blocked and waiting, and between starting and working. The active arc rotates;
+other indicators stay still.
 
 ## Interaction patterns
 

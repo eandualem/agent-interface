@@ -20,8 +20,8 @@ fn state(member: &Member) -> Option<AgentState> {
 
 fn rank(member: &Member) -> (u8, String) {
     let rank = match state(member) {
-        Some(AgentState::NeedsYou) => 0,
-        Some(AgentState::Working) => 1,
+        Some(AgentState::NeedsYou | AgentState::Blocked) => 0,
+        Some(AgentState::Working | AgentState::Starting) => 1,
         Some(_) => 2,
         None => 3,
     };
@@ -57,6 +57,16 @@ pub(super) fn body(pane: &ViewPane, team: &Team, cx: &mut Context<ViewPane>) -> 
 
     let tally =
         |wanted: Option<AgentState>| team.members.iter().filter(|m| state(m) == wanted).count();
+    let needing = team
+        .members
+        .iter()
+        .filter(|m| state(m).is_some_and(AgentState::needs_you))
+        .count();
+    let working = team
+        .members
+        .iter()
+        .filter(|m| state(m).is_some_and(AgentState::working))
+        .count();
     let summary = ui::text(
         div()
             .flex()
@@ -77,7 +87,7 @@ pub(super) fn body(pane: &ViewPane, team: &Team, cx: &mut Context<ViewPane>) -> 
             .gap(px(t.space.s6))
             .text_color(c.attention_text)
             .child(ui::agent_symbol(AgentState::NeedsYou))
-            .child(format!("{} need you", tally(Some(AgentState::NeedsYou)))),
+            .child(format!("{needing} need you")),
     )
     .child(
         div()
@@ -85,8 +95,12 @@ pub(super) fn body(pane: &ViewPane, team: &Team, cx: &mut Context<ViewPane>) -> 
             .items_center()
             .gap(px(t.space.s6))
             .text_color(c.accent_text)
-            .child(ui::agent_symbol(AgentState::Working))
-            .child(format!("{} working", tally(Some(AgentState::Working)))),
+            .child(ui::agent_symbol(if working > 0 {
+                AgentState::Working
+            } else {
+                AgentState::Idle
+            }))
+            .child(format!("{working} active")),
     )
     .child(
         div()
@@ -326,17 +340,20 @@ pub(super) fn agent_row(
     let id = SharedString::from(format!("team-{group}-{name}-{}", guide.len()));
     let word = match (state, &member.reason) {
         (None, _) => "offline".to_owned(),
-        (Some(AgentState::NeedsYou), Some(reason)) => format!("waiting · {reason}"),
-        (Some(AgentState::NeedsYou), None) => "waiting".to_owned(),
-        (Some(AgentState::Working), _) => match member.current_issue {
-            Some(issue) => format!("busy · #{issue}"),
-            None => "busy".to_owned(),
-        },
+        (Some(state @ (AgentState::NeedsYou | AgentState::Blocked)), Some(reason)) => {
+            format!("{} · {reason}", state.word())
+        }
+        (Some(state @ (AgentState::Working | AgentState::Starting)), _) => {
+            match member.current_issue {
+                Some(issue) => format!("{} · #{issue}", state.word()),
+                None => state.word().to_owned(),
+            }
+        }
         (Some(state), _) => state.word().to_owned(),
     };
     let word_color = match state {
-        Some(AgentState::NeedsYou) => c.attention_text,
-        Some(AgentState::Working) => c.accent_text,
+        Some(AgentState::NeedsYou | AgentState::Blocked) => c.attention_text,
+        Some(AgentState::Working | AgentState::Starting) => c.accent_text,
         _ => c.muted,
     };
     div()

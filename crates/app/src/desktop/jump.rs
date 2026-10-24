@@ -179,9 +179,7 @@ impl Browser {
         }
         if let Some(states) = &states {
             let mut agents: Vec<_> = states.iter().collect();
-            agents.sort_by_key(|(name, state)| {
-                (**state != AgentState::NeedsYou, name.to_lowercase())
-            });
+            agents.sort_by_key(|(name, state)| (!state.needs_you(), name.to_lowercase()));
             for (name, state) in agents {
                 if matches(name) {
                     hits.push(Hit {

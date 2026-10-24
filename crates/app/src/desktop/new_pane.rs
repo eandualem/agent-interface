@@ -290,8 +290,8 @@ impl NewPane {
                     .collect();
                 agents.sort_by_key(|member| {
                     let rank = match AgentState::from_report(&member.state) {
-                        AgentState::NeedsYou => 0,
-                        AgentState::Working => 1,
+                        AgentState::NeedsYou | AgentState::Blocked => 0,
+                        AgentState::Working | AgentState::Starting => 1,
                         _ => 2,
                     };
                     (rank, member.name.to_ascii_lowercase())
@@ -709,14 +709,17 @@ fn agent_row(
     let (t, c) = (tokens(), colors());
     let state = AgentState::from_report(&member.state);
     let (word, color) = match state {
-        AgentState::NeedsYou => (
-            member.reason.clone().unwrap_or_else(|| "waiting".into()),
+        AgentState::NeedsYou | AgentState::Blocked => (
+            member.reason.as_ref().map_or_else(
+                || state.word().to_owned(),
+                |reason| format!("{} · {reason}", state.word()),
+            ),
             c.attention_text,
         ),
-        AgentState::Working => (
+        AgentState::Working | AgentState::Starting => (
             match member.current_issue {
-                Some(issue) => format!("busy · #{issue}"),
-                None => "busy".into(),
+                Some(issue) => format!("{} · #{issue}", state.word()),
+                None => state.word().into(),
             },
             c.accent_text,
         ),

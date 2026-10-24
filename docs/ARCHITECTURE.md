@@ -1,6 +1,6 @@
 # Architecture
 
-tmux-workspaces is a native desktop client for tmux. The app owns the window
+Agent Interface is a native desktop client for tmux. The app owns the window
 and saved arrangement; tmux owns sessions and their processes. Terminals are
 drawn with GPUI, using Ghostty's terminal core to interpret output. There is no
 web view and no app daemon.
@@ -12,10 +12,14 @@ tabs and split layouts. Each leaf in a layout either opens an ordinary shell
 on the library's persistent tmux server or attaches to an existing tmux session.
 An empty leaf starts no shell.
 
-Only leaves in the selected tab keep live control-mode clients (`tmux -C`).
-Switching tabs detaches those clients; returning reconnects and restores their
-screens from tmux. Ordinary shells keep running. An attached session retains
-its own lifetime policy, including tmux's `destroy-unattached` option.
+Leaves connect on first display and retain their control-mode clients (`tmux -C`)
+when tabs or workspaces change. The owning native window keeps each connection
+until its target is removed or replaced, the library changes, or the window
+closes. Hidden terminals continue consuming output, preserving their state at
+the cost of retaining their workers and scrollback. A saved Detach action clears
+the attachment and returns the same pane to its chooser. Neither Detach nor
+Close Tab sends a session-termination command. An attached session retains its
+own lifetime policy, including tmux's `destroy-unattached` option.
 
 Each native viewport participates in tmux's window sizing. Resizing it can
 change the geometry seen by other clients of the same window. Choosing a tmux
@@ -86,8 +90,8 @@ to repeat the edit; failed saves offer Retry or Discard.
 
 Workspace and tab selection, pane expansion, and attachment-window selection
 are local to each native window. Ordinary-shell identities belong to the saved
-library. Navigating or closing a native window detaches clients without issuing
-session-termination commands.
+library. Closing a native window detaches its clients without issuing
+session-termination commands; navigation keeps them attached.
 
 ## Appearance and optional integrations
 
@@ -121,8 +125,12 @@ reader waiting for a writer. The `.env` read is limited to 1 MiB; permission
 files retain their 1 MiB read limit and skill previews their 256 KiB limit.
 
 Pane bodies cache unchanged render trees; output, data, size, focus and appearance
-changes invalidate them. Working-agent indicators are static, so they do not
-request continuous frames while the UI is idle.
+changes invalidate them. Visible working and starting indicators animate using GPUI; other states are
+static. State labels retain the distinction between starting and busy, and
+between blocked and waiting for a person. The roster reads immediately and then
+two seconds after each completed request; Team and agent-card views poll every
+three seconds after a read. Requests have a three-second deadline, and failures
+mark cached observations stale.
 Team-wide libraries (`roster::views::library`) are gathered from per-agent
 reads, the store, each agent's skill preview and its brief, for at most 32
 agents per refresh, merged by file path so no row names an agent. They poll

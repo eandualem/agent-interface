@@ -1,8 +1,8 @@
-# tmux-workspaces (Rust) — project instructions
+# Agent Interface — project instructions
 
 Applies to every agent and all work in this repository.
 
-This repository reimplements
+Agent Interface reimplements
 [tmux-workspaces](https://github.com/eandualem/tmux-workspaces) in Rust as a
 native desktop app. The binary is `tmux-workspaces` from day one.
 

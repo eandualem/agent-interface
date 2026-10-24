@@ -116,7 +116,8 @@ impl Browser {
     ) -> bool {
         tab.tree.leaves().into_iter().any(|leaf| {
             leaf.attachment.as_ref().is_some_and(|attachment| {
-                self.attachment_state(attachment, states) == Some(AgentState::NeedsYou)
+                self.attachment_state(attachment, states)
+                    .is_some_and(AgentState::needs_you)
             })
         })
     }
@@ -522,13 +523,24 @@ impl Browser {
         let needing = entries.as_ref().map_or(0, |entries| {
             entries
                 .iter()
-                .filter(|(_, state)| *state == AgentState::NeedsYou)
+                .filter(|(_, state)| state.needs_you())
                 .count()
+        });
+        let working = entries.as_ref().map_or(0, |entries| {
+            entries.iter().filter(|(_, state)| state.working()).count()
         });
         let (summary, summary_color) = match &entries {
             None if self.agents.is_some() => ("unavailable".to_owned(), c.attention_text),
             None => (String::new(), c.muted),
             Some(_) if needing > 0 => (format!("{needing} need you"), c.attention_text),
+            Some(_) if working > 0 => (format!("{working} active"), c.accent_text),
+            Some(entries)
+                if entries
+                    .iter()
+                    .any(|(_, state)| *state == AgentState::Unknown) =>
+            {
+                ("status unknown".to_owned(), c.muted)
+            }
             Some(_) => ("all quiet".to_owned(), c.muted),
         };
         let quiet = |label: &'static str, icon: Option<&'static str>| {
@@ -593,6 +605,10 @@ impl Browser {
                                     .text_ellipsis()
                                     .text_color(if calm { c.muted } else { c.text })
                                     .child(name.clone()),
+                            )
+                            .child(
+                                ui::text(div().flex_shrink_0().text_color(c.muted), &t.text.meta)
+                                    .child(state.word()),
                             )
                             .children(tabs_by_session.get(name).map(|tab| {
                                 ui::text(div().flex_shrink_0().text_color(c.muted), &t.text.meta)

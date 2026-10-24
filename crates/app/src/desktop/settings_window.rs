@@ -24,7 +24,7 @@ const FIXED: &[(&str, &str)] = &[
     ("Settings", "⌘,"),
     ("New window", "⌘N"),
     ("Open library", "⌘O"),
-    ("Close window", "⌘W"),
+    ("Close tab", "⌘W"),
     ("Quit", "⌘Q"),
 ];
 
@@ -39,7 +39,7 @@ const FIXED: &[(&str, &str)] = &[
     ("Settings", "Ctrl+,"),
     ("New window", "Ctrl+Shift+N"),
     ("Open library", "Ctrl+Shift+O"),
-    ("Close window", "Ctrl+Shift+W"),
+    ("Close tab", "Ctrl+Shift+W"),
     ("Quit", "Ctrl+Shift+Q"),
 ];
 

@@ -1,9 +1,8 @@
-# Use tmux-workspaces
+# Use Agent Interface
 
-Install a native package using the [installation guide](INSTALL.md), then open
-the app. Packages need no Rust, Zig or Python. Terminal sessions require tmux
-3.3 or newer; Agent Backbone is optional. To build from source, follow
-[Contributing](../CONTRIBUTING.md#set-up).
+Start with the [installation guide](INSTALL.md), which covers source builds
+and native packages. Terminal sessions require tmux 3.3 or newer;
+Agent Backbone is optional.
 
 If no library exists, the first launch creates one empty workspace. Add a tab
 with **+**, Command-T on macOS, or Ctrl+Shift+T on Linux, then choose **Open
@@ -65,8 +64,18 @@ whether panes show headers (always, on hover or never) and editable shortcuts;
 changes apply to every window at once and are saved in
 `$XDG_CONFIG_HOME/tmux-workspaces/settings.toml`, or
 `~/.config/tmux-workspaces/settings.toml` when that variable is unset.
-**Close Window** (Command-W) detaches that window's clients. Ordinary shells
-keep running; external sessions retain their own tmux lifetime policy.
+**Close Tab** (Command-W on macOS, Ctrl+Shift+W on Linux) removes the selected
+tab after saving and detaches its clients. Closing the last tab leaves the
+window open. Use the window close control or **Close Window** in the application
+menu to close the whole window. Ordinary shells keep running; external sessions
+retain their own tmux lifetime policy.
+
+The agent roster refreshes immediately, then two seconds after each completed
+request. Team and agent views refresh three seconds after each read. A rotating
+ring marks working or starting agents; labels distinguish starting, working,
+blocked, needs you, idle and unknown. Failed requests show unavailable or stale
+data, rather than treating the last successful state as current. These are
+polled observations, so changes appear after the next successful response.
 
 ## Organize workspaces and tabs
 
@@ -116,9 +125,16 @@ session directories. Failed reads retain saved paths. Return to shell in tab opt
 after saving; choose Open terminal if that shell is absent. The chooser lists tmux sessions
 without optional agent metadata.
 
-Missing sessions show an error with **Reconnect** instead of starting a shell.
-Changing tabs or closing the app detaches its clients; the source’s existing
-session-lifetime policy still applies. Connections preserve
+Missing sessions show **Reconnect** to retry the same session and **Detach**
+to clear the attachment and return the pane to its chooser. **Detach session**
+in tab options also works while connected. Detaching keeps the pane and its
+saved directory, so you can attach a different session or open a terminal. The
+change takes effect after saving; it sends no session-termination command.
+
+Switching tabs, workspaces or pane focus keeps existing connections alive.
+A connection ends when its session disconnects, you detach or replace its pane,
+remove its tab, open another library, or close its native window. The source’s
+session-lifetime policy still applies to an explicit detach. Connections preserve
 the session environment. A displayed
 terminal sizes its session to the pane under tmux's `window-size` option; text
 scales down only while another client keeps the window larger.
@@ -183,7 +199,7 @@ Control keys such as Ctrl-C, Ctrl-D and Ctrl-R still reach the terminal.
 | Focus panel / Jump | Ctrl+Shift+B / Ctrl+Shift+K |
 | Select tab / workspace 1–9 | Alt+1–9 / Ctrl+Alt+1–9 |
 | Copy / paste | Ctrl+Shift+C / Ctrl+Shift+V |
-| New / close window | Ctrl+Shift+N / Ctrl+Shift+W |
+| New window / close tab | Ctrl+Shift+N / Ctrl+Shift+W |
 | Open library / Settings / Quit | Ctrl+Shift+O / Ctrl+, / Ctrl+Shift+Q |
 
 The defaults avoid Super keys and Ctrl+Alt+arrow keys commonly used by the desktop.

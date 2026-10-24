@@ -238,3 +238,6 @@ hint_bar = 34.0             # the chooser's centred row of keys
 tag_card_label = 132.0      # the tag column of a tag card
 grouped_width = 880.0       # the widest a grouped list's column grows
 group_row = 36.0            # a row on a grouped list's card
+
+[motion]
+spinner_ms = 1100           # one turn of the working-agent arc

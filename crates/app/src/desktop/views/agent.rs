@@ -43,14 +43,16 @@ pub(super) fn body(pane: &ViewPane, agent: &Agent, cx: &mut Context<ViewPane>) -
     let state = AgentState::from_report(&agent.state);
     let (word, color) = match (agent.online, state) {
         (false, _) => ("offline".to_owned(), c.muted),
-        (true, AgentState::NeedsYou) => (
+        (true, AgentState::NeedsYou | AgentState::Blocked) => (
             match &agent.reason {
-                Some(reason) => format!("waiting for a person · {reason}"),
-                None => "waiting for a person".to_owned(),
+                Some(reason) => format!("{} · {reason}", state.word()),
+                None => state.word().to_owned(),
             },
             c.attention_text,
         ),
-        (true, AgentState::Working) => ("working".to_owned(), c.accent_text),
+        (true, AgentState::Working | AgentState::Starting) => {
+            (state.word().to_owned(), c.accent_text)
+        }
         (true, state) => (state.word().to_owned(), c.muted),
     };
     let name = agent.name.clone();
@@ -661,7 +663,7 @@ fn overview(agent: &Agent, state: AgentState) -> AnyElement {
         .px(px(t.space.s18))
         .py(px(t.space.s16))
         .gap(px(t.space.s16));
-    if agent.online && state == AgentState::NeedsYou {
+    if agent.online && state.needs_you() {
         body = body.child(
             div()
                 .flex_shrink_0()
