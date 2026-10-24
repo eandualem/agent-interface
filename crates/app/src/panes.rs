@@ -112,6 +112,9 @@ struct InputRequest {
     pane: PaneId,
     input: Input,
     reply: mpsc::Sender<Result<Vec<u8>, String>>,
+    // An encoding timeout does not remove this request from the worker queue.
+    // Keep its input charged until both the caller and worker release it.
+    _reservation: Option<Arc<crate::view::InputReservation>>,
 }
 
 #[derive(Clone, Copy)]
@@ -282,6 +285,9 @@ impl WindowState {
                 .terminal
                 .read_screen(screen)
                 .map_err(|error| error.to_string())?;
+            if terminal.captured {
+                screen.clear_cursor();
+            }
             Ok(true)
         })
     }
@@ -605,6 +611,15 @@ impl Panes {
     /// then deliver it as one ordered input operation. Call off the UI thread.
     /// Recovery may delay encoding, bounded by the same capture deadline.
     pub fn send_encoded_input(&self, pane: PaneId, input: Input) -> io::Result<()> {
+        self.send_reserved_input(pane, input, None)
+    }
+
+    pub(crate) fn send_reserved_input(
+        &self,
+        pane: PaneId,
+        input: Input,
+        reservation: Option<Arc<crate::view::InputReservation>>,
+    ) -> io::Result<()> {
         if input.size() > INPUT_LIMIT {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -612,7 +627,12 @@ impl Panes {
             ));
         }
         let (reply, encoded) = mpsc::channel();
-        let event = Event::Encode(InputRequest { pane, input, reply });
+        let event = Event::Encode(InputRequest {
+            pane,
+            input,
+            reply,
+            _reservation: reservation,
+        });
         {
             let mut state = self.shared.lock();
             if state.closed || state.cancelled || state.finished || state.failure.is_some() {
@@ -1306,6 +1326,38 @@ mod tests {
         })
         .unwrap();
         assert_eq!(screens[0].1.cols(), 10);
+    }
+
+    #[test]
+    fn capture_only_screens_do_not_publish_a_placeholder_cursor() {
+        let mut window = WindowState {
+            layout: layout::Change {
+                window: 0,
+                panes: vec![],
+            },
+            terminals: vec![(
+                PaneId(1),
+                LivePane {
+                    terminal: Terminal::new(10, 2, 0).unwrap(),
+                    size: (10, 2),
+                    offset: (0, 0),
+                    captured: false,
+                    needs_capture: false,
+                    recovery_deadline: None,
+                },
+            )],
+            geometry_changed: false,
+            settle_at: None,
+            generation: 0,
+            inputs: vec![],
+        };
+        let mut spare = vec![];
+        let screens = window.copy_screens([PaneId(1)], &mut spare).unwrap();
+        assert!(screens[0].1.cursor_in_viewport());
+        window.terminals[0].1.captured = true;
+        let screens = window.copy_screens([PaneId(1)], &mut spare).unwrap();
+        assert!(!screens[0].1.cursor_in_viewport());
+        assert!(!screens[0].1.cursor().visible);
     }
 
     #[test]

@@ -197,8 +197,7 @@ impl Screen {
         self.rows = rows;
         self.cells.clear();
         self.text.clear();
-        self.cursor = Cursor::default();
-        self.cursor_in_viewport = false;
+        self.clear_cursor();
         self.mouse_input = false;
         self.wrapped.clear();
         self.wrapped.resize(usize::from(rows), false);
@@ -226,6 +225,12 @@ impl Screen {
         if let Some(value) = self.wrapped.get_mut(usize::from(row)) {
             *value = wrapped;
         }
+    }
+
+    /// Clears a cursor whose actual position is unavailable.
+    pub fn clear_cursor(&mut self) {
+        self.cursor = Cursor::default();
+        self.cursor_in_viewport = false;
     }
 
     /// Sets the cursor at an in-viewport position.
