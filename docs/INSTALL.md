@@ -3,9 +3,9 @@
 Native packages need no Rust, Zig, or Python installation. It uses **tmux 3.3 or
 newer** for terminal sessions.
 
-The executable, archive names, application bundle path and data directories retain
-`tmux-workspaces` for compatibility with existing installations and libraries.
-The product and repository are named Agent Interface.
+The executable, archive names, Linux installation paths and data directories
+retain `tmux-workspaces` for compatibility with existing installations and
+libraries. The product, macOS app and repository are named Agent Interface.
 
 ## Runtime prerequisites
 
@@ -79,11 +79,12 @@ compiler and native optimization settings.
 
 ## macOS
 
-The installer places `tmux-workspaces.app` in `~/Applications`. Open
-`~/Applications` in Finder and launch `tmux-workspaces.app`, or run:
+The installer places `Agent Interface.app` in `~/Applications`, replacing an
+older `tmux-workspaces.app` installed by this installer. Open `~/Applications`
+in Finder and launch `Agent Interface.app`, or run:
 
 ```sh
-open "$HOME/Applications/tmux-workspaces.app"
+open "$HOME/Applications/Agent Interface.app"
 ```
 
 The app uses the normal Dock and application menu.
@@ -110,7 +111,7 @@ checks the replacement before updating its own installation. Existing layouts,
 settings, and tmux sessions are preserved. It refuses to overwrite an installation
 it does not recognize; move that installation yourself if you want to replace it.
 
-To remove the macOS app, quit it and move `~/Applications/tmux-workspaces.app` to
+To remove the macOS app, quit it and move `~/Applications/Agent Interface.app` to
 the Trash. On Linux, quit it and remove these installation files:
 
 ```sh

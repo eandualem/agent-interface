@@ -1,8 +1,8 @@
 # Use Agent Interface
 
 Start with the [installation guide](INSTALL.md), which covers source builds
-and native packages. Terminal sessions require tmux 3.3 or newer;
-Agent Backbone is optional.
+and native packages. Terminal sessions require tmux 3.3 or newer. Agent views
+connect to a running Agent Backbone.
 
 If no library exists, the first launch creates one empty workspace. Add a tab
 with **+**, Command-T on macOS, or Ctrl+Shift+T on Linux, then choose **Open
@@ -14,6 +14,11 @@ Sessions run on the same computer as the app. Connecting to another host or
 synchronizing live sessions between computers is not supported.
 
 ## Navigate and use terminals
+
+A **workspace** is a collection of tabs. A **tab** contains one or more
+**panes**. Each pane holds a terminal session or a native view, such as Skills.
+A session is the running work shown inside a terminal pane; closing its pane
+does not send a session-termination command.
 
 Use the workspace heading to choose a workspace, then choose a tab. The saved
 split layout contains actual sessions; click a terminal before typing. Command-1
@@ -64,8 +69,19 @@ whether panes show headers (always, on hover or never) and editable shortcuts;
 changes apply to every window at once and are saved in
 `$XDG_CONFIG_HOME/tmux-workspaces/settings.toml`, or
 `~/.config/tmux-workspaces/settings.toml` when that variable is unset.
-**Close Tab** (Command-W on macOS, Ctrl+Shift+W on Linux) removes the selected
-tab after saving and detaches its clients. Closing the last tab leaves the
+In **Settings → Shortcuts**, commands are grouped by Workspace, Tab and Pane,
+with separate Navigation, Terminal and Application groups. Click **Change**
+beside a shortcut and press the new keys. Changes apply and save immediately;
+Escape or **Cancel** stops editing. A conflict is shown beside the shortcut.
+Rows marked **Fixed** cannot be changed in this editor.
+If a new Close or Detach default conflicts with a saved shortcut after an
+upgrade, your saved shortcut wins; the new command shows **Not assigned** until
+you choose keys for it.
+
+**Close Pane** (Command-W on macOS, Ctrl+Shift+W on Linux) removes only the focused
+pane after saving. Closing the last pane closes its tab. **Close Tab**
+(Command-Shift-W on macOS, Ctrl+Alt+Shift+W on Linux) removes the whole selected
+tab and detaches its clients. Closing the last tab leaves the
 window open. Use the window close control or **Close Window** in the application
 menu to close the whole window. Ordinary shells keep running; external sessions
 retain their own tmux lifetime policy.
@@ -88,6 +104,8 @@ workspace and leaves its tabs and sessions intact.
 
 Click **+** beside TABS or press Command-T to add an empty tab. Command-D splits
 right; Command-Shift-D splits below. Both split actions are also in tab options.
+Drag a tab onto another tab in the sidebar to move it to that position;
+the order is saved while the selected tab stays selected.
 The existing pane remains intact and the new pane asks what it should run: Open
 terminal, or Attach a session. New tabs
 use the launch directory; splits inherit the ordinary shell’s remembered directory.
@@ -127,7 +145,8 @@ without optional agent metadata.
 
 Missing sessions show **Reconnect** to retry the same session and **Detach**
 to clear the attachment and return the pane to its chooser. **Detach session**
-in tab options also works while connected. Detaching keeps the pane and its
+in tab options, or Command-Shift-X (Ctrl+Shift+X on Linux), also works while
+connected. Detaching keeps the pane and its
 saved directory, so you can attach a different session or open a terminal. The
 change takes effect after saving; it sends no session-termination command.
 
@@ -173,8 +192,8 @@ and key-release events are not yet wired into the product UI.
 Omit `--data-dir` to use `TMUX_WORKSPACES_DATA_DIR`, then
 `$XDG_DATA_HOME/tmux-workspaces`, or `~/.local/share/tmux-workspaces` by default.
 On first launch, an absent library is created with one empty workspace. Add a
-tab and choose **Open terminal** or **Attach a session** to start working; neither
-Python nor Agent Backbone is required. Existing libraries are opened without
+tab and choose **Open terminal** or **Attach a session** to start working; no other
+setup is required. Existing libraries are opened without
 initialization or repair. An unreadable or invalid library shows an error and
 can be replaced through **Open Library…**. Keep its database and journal files
 for recovery; the app never overwrites them with an empty arrangement.
@@ -199,7 +218,9 @@ Control keys such as Ctrl-C, Ctrl-D and Ctrl-R still reach the terminal.
 | Focus panel / Jump | Ctrl+Shift+B / Ctrl+Shift+K |
 | Select tab / workspace 1–9 | Alt+1–9 / Ctrl+Alt+1–9 |
 | Copy / paste | Ctrl+Shift+C / Ctrl+Shift+V |
-| New window / close tab | Ctrl+Shift+N / Ctrl+Shift+W |
+| Close pane / close tab | Ctrl+Shift+W / Ctrl+Alt+Shift+W |
+| Detach session from pane | Ctrl+Shift+X |
+| New window | Ctrl+Shift+N |
 | Open library / Settings / Quit | Ctrl+Shift+O / Ctrl+, / Ctrl+Shift+Q |
 
 The defaults avoid Super keys and Ctrl+Alt+arrow keys commonly used by the desktop.

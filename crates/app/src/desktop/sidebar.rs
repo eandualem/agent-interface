@@ -6,7 +6,7 @@ use std::{
     path::PathBuf,
 };
 
-use gpui::{AnyElement, Context, SharedString, Window, div, prelude::*, px};
+use gpui::{AnyElement, Context, EntityId, SharedString, Window, div, prelude::*, px};
 
 use super::{
     Browser, Popover, components as ui,
@@ -15,6 +15,47 @@ use super::{
 };
 use crate::desktop::layout_edit::Create;
 use ui::AgentState;
+
+#[derive(Clone)]
+struct TabDrag {
+    browser: EntityId,
+    workspace: String,
+    tab: String,
+    name: String,
+}
+
+impl Render for TabDrag {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        ui::row("dragged-tab", true)
+            .bg(colors().panel)
+            .text_color(colors().text)
+            .child(self.name.clone())
+    }
+}
+
+fn reorder_tab_proposal(
+    layout: &crate::library::WindowLayout,
+    workspace: &str,
+    source: &str,
+    destination: &str,
+) -> Option<(
+    tmux_workspaces_store::Document,
+    tmux_workspaces_core::Layout,
+)> {
+    let (base, mut proposed) = layout.save_snapshot();
+    if proposed.selected != workspace || source == destination {
+        return None;
+    }
+    let space = proposed
+        .workspaces
+        .iter_mut()
+        .find(|space| space.id == workspace)?;
+    let from = space.tabs.iter().position(|tab| tab.id == source)?;
+    let to = space.tabs.iter().position(|tab| tab.id == destination)?;
+    let tab = space.tabs.remove(from);
+    space.tabs.insert(to, tab);
+    Some((base, proposed))
+}
 
 /// Socket identities resolved by a background worker, never while drawing.
 #[derive(Default)]
@@ -42,6 +83,31 @@ impl SourceMatches {
 }
 
 impl Browser {
+    fn drop_tab(&mut self, dragged: &TabDrag, destination: &str, cx: &mut Context<Self>) {
+        if dragged.browser != cx.entity_id() || self.saving || self.save_failed {
+            return;
+        }
+        if let Some(update) = self
+            .library
+            .as_ref()
+            .and_then(crate::library::Library::take_update)
+        {
+            self.apply(update);
+        }
+        let Some(layout) = &self.layout else {
+            return;
+        };
+        let Some(proposal) =
+            reorder_tab_proposal(layout, &dragged.workspace, &dragged.tab, destination)
+        else {
+            return;
+        };
+        self.pending_save = Some(proposal);
+        self.name_click = None;
+        self.close_menus();
+        self.save(cx);
+    }
+
     /// Each agent's state, or none while Agent Backbone is unreachable.
     pub(super) fn agent_states(&self) -> Option<HashMap<String, AgentState>> {
         let snapshot = self.agents.as_ref()?;
@@ -408,9 +474,23 @@ impl Browser {
                 .into_any_element()
             };
             let options_id = id.clone();
+            let dragged = TabDrag {
+                browser: cx.entity_id(),
+                workspace: space.id.clone(),
+                tab: id.clone(),
+                name: tab.name.clone(),
+            };
+            let destination = id.clone();
             list = list.child(
                 ui::row(SharedString::from(format!("tab-{id}")), selected)
                     .group(group.clone())
+                    .when(!editing && !self.saving && !self.save_failed, |el| {
+                        el.on_drag(dragged, |dragged, _, _, cx| cx.new(|_| dragged.clone()))
+                            .drag_over::<TabDrag>(|style, _, _, _| style.bg(colors().accent_soft))
+                            .on_drop(cx.listener(move |browser, dragged: &TabDrag, _, cx| {
+                                browser.drop_tab(dragged, &destination, cx);
+                            }))
+                    })
                     .on_mouse_down(gpui::MouseButton::Right, cx.listener({
                         let id = id.clone();
                         move |browser, event: &gpui::MouseDownEvent, window, cx| {
@@ -767,7 +847,43 @@ impl Browser {
 
 #[cfg(test)]
 mod tests {
-    use super::SourceMatches;
+    use super::{SourceMatches, reorder_tab_proposal};
+
+    #[test]
+    fn dragging_tabs_reorders_in_both_directions_without_changing_selection() {
+        let directory = tempfile::tempdir().unwrap();
+        drop(tmux_workspaces_store::Store::open_or_create(directory.path()).unwrap());
+        let mut store =
+            tmux_workspaces_store::Store::open_existing_writable(directory.path()).unwrap();
+        let mut base = store.load().unwrap();
+        let mut model = base.model().clone();
+        for name in ["First", "Second", "Third"] {
+            model.add_tab(Some(name.into()), "/work".into(), true);
+        }
+        assert!(!store.save(&mut base, &model).unwrap().conflict);
+        let layout = crate::library::WindowLayout::new(store.load().unwrap());
+        let space = model.workspace().unwrap();
+        let (first, second, third) = (&space.tabs[0].id, &space.tabs[1].id, &space.tabs[2].id);
+        let (mut base, down) = reorder_tab_proposal(&layout, &space.id, first, third).unwrap();
+        assert_eq!(
+            down.workspace()
+                .unwrap()
+                .tabs
+                .iter()
+                .map(|tab| &tab.id)
+                .collect::<Vec<_>>(),
+            [second, third, first]
+        );
+        assert_eq!(down.workspace().unwrap().selected, space.selected);
+        assert!(!store.save(&mut base, &down).unwrap().conflict);
+        let layout = crate::library::WindowLayout::new(store.load().unwrap());
+        let (_, up) = reorder_tab_proposal(&layout, &space.id, first, second).unwrap();
+        assert_eq!(up.workspace().unwrap().tabs, space.tabs);
+        assert_eq!(up.workspace().unwrap().selected, space.selected);
+        assert!(reorder_tab_proposal(&layout, &space.id, "removed", second).is_none());
+        assert!(reorder_tab_proposal(&layout, "other-workspace", first, third).is_none());
+        assert!(reorder_tab_proposal(&layout, &space.id, first, "removed").is_none());
+    }
 
     #[test]
     fn socket_matches_cache_aliases_and_never_match_failed_resolutions() {

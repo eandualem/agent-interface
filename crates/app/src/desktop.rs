@@ -54,8 +54,12 @@ actions!(
         OpenLibrary,
         /// Show the Settings window.
         OpenSettings,
+        /// Close the focused pane; the last pane closes its tab.
+        ClosePane,
         /// Close the selected tab, leaving its sessions under tmux's ownership.
         CloseTab,
+        /// Detach the focused session while keeping its pane.
+        DetachSession,
         /// Close the active window; its sessions keep running.
         CloseWindow
     ]
@@ -80,13 +84,7 @@ pub fn run(directory: Option<PathBuf>) -> Result<(), String> {
                 cx.spawn(async |cx| cx.update(|cx| cx.quit())).detach();
                 return;
             }
-            cx.bind_keys([
-                KeyBinding::new(shortcuts::platform_key("cmd-q"), Quit, None),
-                KeyBinding::new(shortcuts::platform_key("cmd-n"), NewWindow, None),
-                KeyBinding::new(shortcuts::platform_key("cmd-o"), OpenLibrary, None),
-                KeyBinding::new(shortcuts::platform_key("cmd-,"), OpenSettings, None),
-                KeyBinding::new(shortcuts::platform_key("cmd-w"), CloseTab, None),
-            ]);
+            configure_menu(cx);
             cx.on_app_quit(|_| {
                 // The synchronous observer runs before GPUI's short async quit
                 // deadline. These workers finish without a foreground update.
@@ -98,6 +96,19 @@ pub fn run(directory: Option<PathBuf>) -> Result<(), String> {
             // Defer: a window that is dispatching this action cannot be updated
             // until dispatch returns.
             cx.on_action(|_: &OpenSettings, cx| cx.defer(settings_window::show));
+            cx.on_action(|_: &ClosePane, cx| {
+                if let Some(window) = cx.active_window() {
+                    cx.defer(move |cx| {
+                        if let Some(browser) = window.downcast::<Browser>() {
+                            let _ = browser.update(cx, |browser, window, cx| {
+                                browser.close_pane(window, cx);
+                            });
+                        } else {
+                            let _ = window.update(cx, |_, window, _| window.remove_window());
+                        }
+                    });
+                }
+            });
             cx.on_action(|_: &CloseTab, cx| {
                 if let Some(window) = cx.active_window() {
                     cx.defer(move |cx| {
@@ -105,9 +116,19 @@ pub fn run(directory: Option<PathBuf>) -> Result<(), String> {
                             let _ = browser.update(cx, |browser, window, cx| {
                                 browser.close_tab(window, cx);
                             });
-                        } else {
-                            let _ = window.update(cx, |_, window, _| window.remove_window());
                         }
+                    });
+                }
+            });
+            cx.on_action(|_: &DetachSession, cx| {
+                if let Some(window) = cx
+                    .active_window()
+                    .and_then(|window| window.downcast::<Browser>())
+                {
+                    cx.defer(move |cx| {
+                        let _ = window.update(cx, |browser, window, cx| {
+                            browser.detach_focused(window, cx);
+                        });
                     });
                 }
             });
@@ -145,18 +166,6 @@ pub fn run(directory: Option<PathBuf>) -> Result<(), String> {
                     }),
                 }
             });
-            cx.set_menus(vec![Menu {
-                name: "Agent Interface".into(),
-                items: vec![
-                    MenuItem::action("New Window", NewWindow),
-                    MenuItem::action("Open Library…", OpenLibrary),
-                    MenuItem::action("Settings…", OpenSettings),
-                    MenuItem::action("Close Tab", CloseTab),
-                    MenuItem::action("Close Window", CloseWindow),
-                    MenuItem::action("Quit Agent Interface", Quit),
-                ],
-                disabled: false,
-            }]);
             cx.on_window_closed(|cx, _| {
                 if cx.windows().is_empty() {
                     cx.quit();
@@ -171,6 +180,46 @@ pub fn run(directory: Option<PathBuf>) -> Result<(), String> {
             cx.activate(true);
         });
     failure.borrow_mut().take().map_or(Ok(()), Err)
+}
+
+fn application_bindings(bindings: &shortcuts::Bindings) -> Vec<KeyBinding> {
+    use shortcuts::Command;
+    let mut keys = vec![
+        KeyBinding::new(shortcuts::platform_key("cmd-q"), Quit, None),
+        KeyBinding::new(shortcuts::platform_key("cmd-n"), NewWindow, None),
+        KeyBinding::new(shortcuts::platform_key("cmd-o"), OpenLibrary, None),
+        KeyBinding::new(shortcuts::platform_key("cmd-,"), OpenSettings, None),
+    ];
+    if let Some(chord) = bindings.chord(Command::ClosePane) {
+        keys.push(KeyBinding::new(&chord.to_text(), ClosePane, None));
+    }
+    if let Some(chord) = bindings.chord(Command::CloseTab) {
+        keys.push(KeyBinding::new(&chord.to_text(), CloseTab, None));
+    }
+    if let Some(chord) = bindings.chord(Command::Detach) {
+        keys.push(KeyBinding::new(&chord.to_text(), DetachSession, None));
+    }
+    keys
+}
+
+/// Replace menu bindings when preferences change, removing the previous chords.
+fn configure_menu(cx: &mut App) {
+    cx.clear_key_bindings();
+    cx.bind_keys(application_bindings(&shortcuts::current()));
+    cx.set_menus(vec![Menu {
+        name: "Agent Interface".into(),
+        items: vec![
+            MenuItem::action("New Window", NewWindow),
+            MenuItem::action("Open Library…", OpenLibrary),
+            MenuItem::action("Settings…", OpenSettings),
+            MenuItem::action("Close Pane", ClosePane),
+            MenuItem::action("Detach Session", DetachSession),
+            MenuItem::action("Close Tab", CloseTab),
+            MenuItem::action("Close Window", CloseWindow),
+            MenuItem::action("Quit Agent Interface", Quit),
+        ],
+        disabled: false,
+    }]);
 }
 
 /// The active workspace window, else any open one, for application commands
@@ -407,6 +456,19 @@ fn close_tab_proposal(
     proposed.close_tab().then_some((base, proposed))
 }
 
+fn close_pane_proposal(
+    layout: &WindowLayout,
+    workspace: &str,
+    tab: &str,
+    pane: &Leaf,
+) -> Option<(Document, Layout)> {
+    let (base, mut proposed) = layout.save_snapshot();
+    if proposed.selected != workspace || proposed.tab()?.id != tab || proposed.pane()? != pane {
+        return None;
+    }
+    proposed.close_pane().then_some((base, proposed))
+}
+
 #[derive(Default)]
 struct Browser {
     library: Option<Library>,
@@ -459,6 +521,49 @@ struct Browser {
 }
 
 impl Browser {
+    fn close_pane(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.saving || self.save_failed {
+            return;
+        }
+        let Some(model) = self.layout.as_ref().map(WindowLayout::model) else {
+            return;
+        };
+        let Some((tab, pane)) = model.tab().zip(model.pane()) else {
+            return;
+        };
+        let (workspace, tab, pane) = (model.selected.clone(), tab.id.clone(), pane.clone());
+        if let Some(update) = self.library.as_ref().and_then(Library::take_update) {
+            self.apply(update);
+        }
+        let Some(layout) = &self.layout else {
+            return;
+        };
+        let Some(proposal) = close_pane_proposal(layout, &workspace, &tab, &pane) else {
+            cx.notify();
+            return;
+        };
+        self.pending_save = Some(proposal);
+        self.editing = None;
+        self.chooser = None;
+        self.close_menus();
+        if let Some(focus) = &self.navigation {
+            window.focus(focus, cx);
+        }
+        self.save(cx);
+    }
+
+    fn detach_focused(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(terminal) = self
+            .layout
+            .as_ref()
+            .and_then(|layout| layout.model().pane())
+            .and_then(|pane| self.terminals.get(&pane.id))
+        {
+            let target = terminal.read(cx).target.clone();
+            self.detach_terminal(&target, window, cx);
+        }
+    }
+
     fn close_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.saving || self.save_failed {
             return;
@@ -1890,6 +1995,18 @@ impl Render for Browser {
                     }
                     let command = shortcuts::command_for(key);
                     let handled = match command {
+                        Some(shortcuts::Command::ClosePane) => {
+                            browser.close_pane(window, cx);
+                            true
+                        }
+                        Some(shortcuts::Command::CloseTab) => {
+                            browser.close_tab(window, cx);
+                            true
+                        }
+                        Some(shortcuts::Command::Detach) => {
+                            browser.detach_focused(window, cx);
+                            true
+                        }
                         Some(shortcuts::Command::NewWorkspace) => {
                             browser.begin_workspace(window, cx);
                             true
@@ -2123,6 +2240,107 @@ mod tests {
         assert_eq!(layout.model().tab().unwrap().id, survivor);
         assert!(close_tab_proposal(&layout, &workspace, &tab).is_none());
         assert_eq!(layout.model().workspace().unwrap().tabs.len(), 1);
+    }
+
+    #[test]
+    fn close_pane_preserves_siblings_and_rejects_a_refreshed_target() {
+        let directory = tempfile::tempdir().unwrap();
+        drop(Store::open_or_create(directory.path()).unwrap());
+        let mut store = Store::open_existing_writable(directory.path()).unwrap();
+        let mut base = store.load().unwrap();
+        let mut model = base.model().clone();
+        model.add_tab(None, "/work".into(), true);
+        let first = model.pane().unwrap().clone();
+        model.split(Direction::Right, "/work".into(), true);
+        let closing = model.pane().unwrap().clone();
+        assert!(!store.save(&mut base, &model).unwrap().conflict);
+        let mut layout = WindowLayout::new(store.load().unwrap());
+        let workspace = model.selected.clone();
+        let tab = model.tab().unwrap().id.clone();
+        let (mut base, proposed) =
+            close_pane_proposal(&layout, &workspace, &tab, &closing).unwrap();
+        assert_eq!(layout.model().tab().unwrap().tree.leaves().len(), 2);
+        let result = store.save(&mut base, &proposed).unwrap();
+        layout.saved(base, &result);
+        assert_eq!(layout.model().tab().unwrap().id, tab);
+        assert_eq!(layout.model().pane(), Some(&first));
+        assert_eq!(store.load().unwrap().model().pane(), Some(&first));
+        assert!(close_pane_proposal(&layout, &workspace, &tab, &closing).is_none());
+        let (_, proposed) = close_pane_proposal(&layout, &workspace, &tab, &first).unwrap();
+        assert!(
+            proposed.tab().is_none(),
+            "closing the final pane closes its tab"
+        );
+    }
+
+    #[test]
+    fn edited_close_shortcuts_replace_native_bindings_and_round_trip() {
+        use shortcuts::{Bindings, Chord, Command};
+        let key = |text| gpui::Keystroke::parse(shortcuts::platform_key(text)).unwrap();
+        let mut bindings = Bindings::default();
+        assert_eq!(
+            bindings.command_for(&key("cmd-w")),
+            Some(Command::ClosePane)
+        );
+        assert_eq!(
+            bindings.command_for(&key("cmd-shift-w")),
+            Some(Command::CloseTab)
+        );
+        assert_eq!(
+            bindings.command_for(&key("cmd-shift-x")),
+            Some(Command::Detach)
+        );
+        bindings
+            .assign(Command::ClosePane, Chord::parse("ctrl-alt-w").unwrap())
+            .unwrap();
+        bindings
+            .assign(
+                Command::NewTab,
+                Chord::parse(shortcuts::platform_key("cmd-w")).unwrap(),
+            )
+            .unwrap();
+        let changes = bindings.changed();
+        let restored =
+            Bindings::from_entries(changes.iter().map(|(id, chord)| (*id, chord.as_str())));
+        assert_eq!(restored, bindings);
+        assert_eq!(restored.command_for(&key("cmd-w")), Some(Command::NewTab));
+        let native = application_bindings(&restored);
+        assert!(
+            native
+                .iter()
+                .all(|binding| binding.match_keystrokes(&[key("cmd-w")]).is_none())
+        );
+        assert!(
+            native
+                .iter()
+                .any(|binding| binding.match_keystrokes(&[key("ctrl-alt-w")]) == Some(false))
+        );
+
+        // New defaults must not take keys away from previously saved commands.
+        let upgraded = Bindings::from_entries([
+            ("jump", shortcuts::platform_key("cmd-shift-x")),
+            ("new-tab", shortcuts::platform_key("cmd-shift-w")),
+        ]);
+        assert_eq!(
+            upgraded.command_for(&key("cmd-shift-x")),
+            Some(Command::Jump)
+        );
+        assert_eq!(
+            upgraded.command_for(&key("cmd-shift-w")),
+            Some(Command::NewTab)
+        );
+        assert_eq!(upgraded.chord(Command::Detach), None);
+        assert_eq!(upgraded.chord(Command::CloseTab), None);
+        let native = application_bindings(&upgraded);
+        assert!(native.iter().all(|binding| {
+            binding.match_keystrokes(&[key("cmd-shift-x")]).is_none()
+                && binding.match_keystrokes(&[key("cmd-shift-w")]).is_none()
+        }));
+        let changes = upgraded.changed();
+        assert_eq!(
+            Bindings::from_entries(changes.iter().map(|(id, chord)| (*id, chord.as_str()))),
+            upgraded
+        );
     }
 
     #[test]

@@ -115,7 +115,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="package-", dir=dist) as temporary:
         stage = Path(temporary)
         mac = target.endswith("apple-darwin")
-        bundle = stage / ("tmux-workspaces.app" if mac else "tmux-workspaces")
+        bundle = stage / ("Agent Interface.app" if mac else "tmux-workspaces")
         bin_dir = bundle / ("Contents/MacOS" if mac else "bin")
         resources = bundle / "Contents/Resources" if mac else bundle
         bin_dir.mkdir(parents=True)
@@ -125,6 +125,8 @@ def main():
         executable.chmod(0o755)
         run("strip", "-x" if mac else "--strip-unneeded", str(executable))
         notices(resources, target, native, env)
+        shutil.copyfile(ROOT / ("packaging/icon/AppIcon.icns" if mac else "packaging/icon/agent-interface.png"),
+                        resources / ("AppIcon.icns" if mac else "agent-interface.png"))
         (resources / "INSTALLER").write_text(APP_ID + "\n")
         (resources / "TARGET").write_text(target + "\n")
         (resources / "BUILD.json").write_text(json.dumps({
@@ -136,7 +138,7 @@ def main():
         if mac:
             with (bundle / "Contents/Info.plist").open("wb") as stream:
                 plistlib.dump({"CFBundleIdentifier": APP_ID, "CFBundleName": "Agent Interface",
-                               "CFBundleExecutable": "tmux-workspaces", "CFBundlePackageType": "APPL",
+                               "CFBundleExecutable": "tmux-workspaces", "CFBundleIconFile": "AppIcon", "CFBundlePackageType": "APPL",
                                "CFBundleShortVersionString": version, "CFBundleVersion": version,
                                "LSMinimumSystemVersion": "11.0", "NSHighResolutionCapable": True}, stream)
             run("codesign", "--force", "--sign", "-", str(bundle))

@@ -1,6 +1,6 @@
 [package]
 name = "tmux-workspaces-tmux"
-description = "tmux control-mode protocol and connections for tmux-workspaces"
+description = "tmux control-mode protocol and connections for Agent Interface"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

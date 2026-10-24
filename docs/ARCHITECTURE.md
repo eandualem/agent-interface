@@ -17,9 +17,10 @@ when tabs or workspaces change. The owning native window keeps each connection
 until its target is removed or replaced, the library changes, or the window
 closes. Hidden terminals continue consuming output, preserving their state at
 the cost of retaining their workers and scrollback. A saved Detach action clears
-the attachment and returns the same pane to its chooser. Neither Detach nor
-Close Tab sends a session-termination command. An attached session retains its
-own lifetime policy, including tmux's `destroy-unattached` option.
+the attachment and returns the same pane to its chooser. Detach, Close Pane and
+Close Tab never send a session-termination command. Closing the final pane closes
+its tab. An attached session retains its own lifetime policy, including tmux's
+`destroy-unattached` option.
 
 Each displayed native viewport participates in tmux's window sizing. Hidden
 clients keep their connections with `ignore-size`; their next paint restores
@@ -36,7 +37,7 @@ another client's selected window.
 | `store` | Initializing, reading and transactionally saving schema-v2 `layouts.db` files |
 | `tmux` | Server discovery and validation, control-mode protocol, pane capture, recovery and input commands |
 | `term` | Terminal engine ownership, input encoding and owned display snapshots |
-| `roster` | Optional, read-only Agent Backbone roster and pane-view data, with bounded loopback requests and stale-state handling |
+| `roster` | Read-only Agent Backbone roster and pane-view data, with bounded loopback requests and stale-state handling |
 | `app` | Native windows, input routing, storage and terminal workers, and integration between the other crates |
 
 `app` connects the product crates. `store` also depends on `core`; the other
@@ -95,7 +96,7 @@ are local to each native window. Ordinary-shell identities belong to the saved
 library. Closing a native window detaches its clients without issuing
 session-termination commands; navigation keeps them attached.
 
-## Appearance and optional integrations
+## Appearance and integrations
 
 Native appearance and shortcuts are saved separately in `settings.toml` under
 `$XDG_CONFIG_HOME/tmux-workspaces`, or `~/.config/tmux-workspaces`. Shared colors,
@@ -111,9 +112,9 @@ The compatibility theme reader validates the legacy theme format but does not
 control native appearance. Likewise, the legacy keymap inspection commands do
 not replace native Settings shortcuts.
 
-Agent Backbone is optional. Its adapter resolves configuration lazily and uses
+The Agent Backbone adapter resolves configuration lazily and uses
 bounded, read-only requests to an approved loopback endpoint. A failed refresh
-must not present an old agent state as current. The app remains useful without
+must not present an old agent state as current. The core does not depend on
 Backbone or the Python implementation. The `roster::views` adapter reads and
 decodes view data; `app::desktop::views` renders it in native panes. Each
 polling worker reuses its HTTP client while validating the endpoint and
@@ -191,15 +192,18 @@ servers from real sessions.
 
 `scripts/package.py` builds the product binary in release mode for the host,
 with Ghostty explicitly set to `ReleaseFast` and the baseline CPU target. It
-packages embedded UI assets, dependency notices and source/build metadata.
-macOS receives an ad-hoc-signed application bundle; Linux receives a glibc
+packages embedded UI assets, the app icon from `packaging/icon/`, dependency
+notices and source/build metadata.
+macOS receives an ad-hoc-signed `Agent Interface.app` bundle; Linux receives a glibc
 binary linked to the system desktop libraries. Neither package includes a
 Python runtime, build toolchain, tmux server or application daemon.
 
 The shell installer verifies the archive checksum and target, stages a
 per-user replacement, and preserves the data directories. Linux desktop and
 window identifiers use `io.github.eandualem.tmux-workspaces`; macOS uses the same
-bundle identifier. The Linux launcher uses the desktop's terminal icon.
+bundle identifier. The installer replaces its owned legacy `tmux-workspaces.app`
+bundle with `Agent Interface.app`, restoring the old name if installation fails.
+The Linux launcher uses the packaged Agent Interface icon.
 
 Build-only `cargo-about` 0.9.2 (MIT OR Apache-2.0) generates Rust dependency
 notices. Hash-pinned native notices supplement Cargo's graph for Ghostty,
