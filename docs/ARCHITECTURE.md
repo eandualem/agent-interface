@@ -93,7 +93,13 @@ session-termination commands.
 
 Native appearance and shortcuts are saved separately in `settings.toml` under
 `$XDG_CONFIG_HOME/tmux-workspaces`, or `~/.config/tmux-workspaces`. Shared colors,
-spacing and components are described in [Design](DESIGN.md).
+spacing and components are described in [Design](DESIGN.md). The settings reader
+accepts regular files up to 64 KiB, including symlinks to them; unreadable,
+oversized or invalid settings keep the defaults without waiting on a pipe.
+Application shutdown waits up to ten seconds for accepted layout writes and
+two seconds for settings writes, including writes from already-closed windows.
+The wait tracks file workers, independently of their UI result handlers. A
+write still blocked beyond that shutdown allowance may remain unfinished.
 
 The compatibility theme reader validates the legacy theme format but does not
 control native appearance. Likewise, the legacy keymap inspection commands do
@@ -108,6 +114,9 @@ polling worker reuses its HTTP client while validating the endpoint and
 credentials for every request. Selection changes coalesce and cancel obsolete
 request chains. Views hidden by an expanded pane pause their polling. Agent
 Usage refreshes every 15 seconds, like the team-wide Usage view.
+Local provider files must resolve to regular files, so pipes cannot leave a
+reader waiting for a writer. The `.env` read is limited to 1 MiB; permission
+files retain their 1 MiB read limit and skill previews their 256 KiB limit.
 
 Pane bodies cache unchanged render trees; output, data, size, focus and appearance
 changes invalidate them. Working-agent indicators are static, so they do not
@@ -146,6 +155,8 @@ advisories and permitted sources.
   its native binding. MIT OR Apache-2.0; Ghostty's core is MIT-licensed.
 - **`rusqlite`:** transactional access to the existing SQLite library format.
   MIT. Its bundled SQLite uses SQLite's public-domain dedication.
+- **`libc`:** Unix constants for nonblocking configuration reads in the app
+  and roster, and the existing process integration. MIT OR Apache-2.0.
 - **`alacritty_terminal` and `rio-vt`:** development-only comparison engines.
   Apache-2.0 and MIT respectively.
 

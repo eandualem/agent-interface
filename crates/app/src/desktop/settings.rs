@@ -2,7 +2,8 @@
 //! configuration directory. A missing or invalid file leaves the defaults.
 
 use std::{
-    io::{self, Write},
+    io::{self, Read, Write},
+    os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
     sync::atomic::{AtomicU32, Ordering},
 };
@@ -209,8 +210,29 @@ fn path_from(
 /// Read the saved settings, or the defaults.
 pub fn load() -> Settings {
     path()
-        .and_then(|path| std::fs::read_to_string(path).ok())
-        .map_or_else(Settings::default, |text| Settings::parse(&text))
+        .and_then(|path| load_from(&path).ok())
+        .unwrap_or_default()
+}
+
+const MAX_SETTINGS_BYTES: usize = 64 * 1024;
+
+fn load_from(path: &Path) -> io::Result<Settings> {
+    // Check the opened handle so a special file or a replaced symlink cannot
+    // leave startup waiting for a writer. Ordinary dotfile symlinks still work.
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(io::Error::other("settings is not a regular file"));
+    }
+    let mut text = String::new();
+    file.take((MAX_SETTINGS_BYTES + 1) as u64)
+        .read_to_string(&mut text)?;
+    if text.len() > MAX_SETTINGS_BYTES {
+        return Err(io::Error::other("settings exceeds 64 KiB"));
+    }
+    Ok(Settings::parse(&text))
 }
 
 static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -288,6 +310,33 @@ pub fn save(settings: &Settings, path: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn settings_reads_are_bounded_and_reject_special_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.toml");
+        let text = "theme = 'light'\n";
+        std::fs::write(&path, text).unwrap();
+        let alias = directory.path().join("alias.toml");
+        std::os::unix::fs::symlink(&path, &alias).unwrap();
+        assert_eq!(load_from(&alias).unwrap(), Settings::parse(text));
+
+        let boundary = format!("{text}#{}", " ".repeat(MAX_SETTINGS_BYTES - text.len() - 1));
+        std::fs::write(&path, &boundary).unwrap();
+        assert_eq!(load_from(&path).unwrap(), Settings::parse(text));
+        std::fs::write(&path, format!("{boundary} ")).unwrap();
+        assert!(load_from(&path).is_err());
+
+        std::fs::remove_file(&path).unwrap();
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(&path)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(load_from(&alias).is_err());
+    }
 
     #[test]
     fn the_settings_file_follows_xdg_then_home_then_the_account() {

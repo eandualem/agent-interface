@@ -875,7 +875,7 @@ pub struct Permissions {
 fn read_bounded(path: &Path) -> Option<String> {
     use std::io::Read;
     let mut text = String::new();
-    std::fs::File::open(path)
+    crate::configuration::regular_file(path)
         .ok()?
         .take(1024 * 1024)
         .read_to_string(&mut text)
@@ -1034,7 +1034,7 @@ pub fn read_skill(folder: &str) -> Result<(String, bool), &'static str> {
     if !path.is_absolute() {
         return Err(MISSING);
     }
-    let file = std::fs::File::open(path.join("SKILL.md")).map_err(|_| MISSING)?;
+    let file = crate::configuration::regular_file(&path.join("SKILL.md")).map_err(|_| MISSING)?;
     let mut bytes = Vec::new();
     file.take(SKILL_LIMIT as u64 + 1)
         .read_to_end(&mut bytes)
@@ -1180,6 +1180,30 @@ fn civil_from_days(days: i64) -> (i64, i64, i64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn document_reads_reject_special_files_and_keep_regular_symlinks() {
+        let directory = tempfile::tempdir().unwrap();
+        let target = directory.path().join("source");
+        let path = directory.path().join("SKILL.md");
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(&target)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(read_bounded(&path).is_none());
+        assert!(read_skill(directory.path().to_str().unwrap()).is_err());
+        std::fs::remove_file(&target).unwrap();
+        std::fs::write(&target, "# Document\n").unwrap();
+        assert_eq!(read_bounded(&path).as_deref(), Some("# Document\n"));
+        assert_eq!(
+            read_skill(directory.path().to_str().unwrap()),
+            Ok(("# Document\n".into(), false))
+        );
+    }
 
     #[test]
     fn skill_text_is_bounded_at_a_whole_character() {

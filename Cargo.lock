@@ -5519,6 +5519,7 @@ name = "tmux-workspaces-roster"
 version = "0.0.0"
 dependencies = [
  "http",
+ "libc",
  "log",
  "reqwest",
  "rusqlite",
