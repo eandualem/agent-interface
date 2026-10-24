@@ -118,6 +118,13 @@ This declares the native viewport's size to tmux. Its `window-size` policy
 can change the shared window geometry seen by other clients. A changed tab or
 split tree cancels the gesture. Save errors offer the usual Retry or Discard.
 
+To rearrange panes within a tab, drag a pane's header onto the left, right,
+top or bottom edge of another pane. The highlight shows its destination.
+Release to move it into an equal split; its session or view stays intact.
+Drop in the center, outside the panes, or press Escape to cancel. Restore an
+expanded pane before rearranging it. Terminal headers must be set to Always
+or On hover in Settings. Saving uses the same Retry and Discard controls.
+
 ## Open a shell or attach a session
 
 Choose **Open terminal** in an empty pane or tab options to start its
