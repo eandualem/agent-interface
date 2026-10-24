@@ -79,9 +79,10 @@ native accessibility bridge. Text ranges preserve terminal grapheme clusters
 and cell positions. The caret follows an in-viewport program cursor even when
 the program hides its drawing; an off-viewport cursor is not exposed. Embedded
 terminals bypass GPUI's drawing cache while accessibility is active, because
-that cache does not replay accessibility nodes or focus. The terminal role
-distinguishes inspectable program output from
-an editable document: dictation tools can locate the input and send a normal
+that cache does not replay accessibility nodes or focus. On macOS accessibility
+is active from window creation, so embedded terminals always bypass this cache.
+The terminal role distinguishes inspectable program output from an editable
+document: dictation tools can locate the input and send a normal
 paste, while replacing the output buffer through a value setter is unsupported.
 
 Closing a pane allows queued input, including a final mouse release, up to one
@@ -150,7 +151,7 @@ permission files reject input beyond 1 MiB and skill previews retain their
 read, size and parse failures, showing incomplete results explicitly. Rule
 deduplication preserves file order and first occurrence with set membership.
 
-Pane bodies cache unchanged render trees; output, data, size, focus and appearance
+Agent views cache unchanged render trees; data, size, focus and appearance
 changes invalidate them. Visible working and starting indicators animate using GPUI; other states are
 static. State labels retain the distinction between starting and busy, and
 between blocked and waiting for a person. The roster reads immediately and then
