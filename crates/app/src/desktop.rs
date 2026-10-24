@@ -1832,7 +1832,8 @@ impl Render for Browser {
         for (id, view) in shown {
             if !self.views.contains_key(&id) {
                 let backbone = self.backbone.clone();
-                let pane = cx.new(|cx| views::ViewPane::new(view, backbone, window, cx));
+                let directory = self.directory.clone();
+                let pane = cx.new(|cx| views::ViewPane::new(view, backbone, directory, window, cx));
                 let leaf = id.clone();
                 let events = cx.subscribe_in(
                     &pane,
@@ -1845,6 +1846,12 @@ impl Render for Browser {
                         views::ViewEvent::ReturnFocus => {
                             if let Some(focus) = &browser.navigation {
                                 window.focus(focus, cx);
+                            }
+                        }
+                        views::ViewEvent::Focus => {
+                            if let Some(layout) = &mut browser.layout {
+                                layout.model_mut().choose_pane(&leaf);
+                                cx.notify();
                             }
                         }
                     },
@@ -1868,7 +1875,21 @@ impl Render for Browser {
         }
         for (id, (view, _)) in &self.views {
             view.read(cx)
-                .set_visible(expanded.is_none_or(|focused| focused == id));
+                .set_visible(expanded.is_none_or(|focused| focused == id), cx);
+            // Native child views are above GPUI drawing. Hide them while a
+            // popover or geometry gesture needs that space or its pointer input.
+            view.read(cx).occlude_web(
+                self.workspace_menu
+                    || self.icon_picker
+                    || self.tab_menu.is_some()
+                    || self.editing.is_some()
+                    || self.chooser.is_some()
+                    || self.jump.is_some()
+                    || self.resize.is_some()
+                    || self.sidebar_drag.is_some()
+                    || self.pane_drag.as_ref().is_some_and(|drag| drag.dragging),
+                cx,
+            );
         }
         let empty: Vec<String> = self
             .layout
@@ -1968,6 +1989,13 @@ impl Render for Browser {
             .font_family(t.font.ui.clone())
             .text_size(t.text.row.size())
             .when_some(self.navigation.clone(), |el, focus| el.track_focus(&focus))
+            .capture_any_mouse_down(cx.listener(|browser, _, _, cx| {
+                // A GPUI focus handle alone does not change AppKit's first
+                // responder. Native clicks must leave an embedded HTML field.
+                for (view, _) in browser.views.values() {
+                    view.read(cx).focus_native(cx);
+                }
+            }))
             .capture_key_down(
                 cx.listener(|browser, event: &gpui::KeyDownEvent, window, cx| {
                     if let Some(drag) = &mut browser.pane_drag

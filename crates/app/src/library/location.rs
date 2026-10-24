@@ -23,7 +23,7 @@ pub fn library_directory(explicit: Option<&Path>) -> Result<PathBuf, Error> {
 }
 
 /// Select a library location before first-run creation; perform no writes.
-pub(super) fn library_location(explicit: Option<&Path>) -> Result<PathBuf, Error> {
+pub(crate) fn library_location(explicit: Option<&Path>) -> Result<PathBuf, Error> {
     resolve(explicit, &|name| std::env::var_os(name), &user_home)
 }
 

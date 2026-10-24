@@ -59,14 +59,20 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
-cargo deny check
+for target in aarch64-apple-darwin x86_64-apple-darwin aarch64-unknown-linux-gnu x86_64-unknown-linux-gnu; do
+  cargo deny --locked --target "$target" check
+done
 ```
 
 When running the tests in Docker, start the container with `--init` so exited
 tmux processes are reaped.
 
-`cargo deny check` audits licences, security advisories, crate sources and the
-dependency direction between the project's crates. Install the version CI
+`cargo deny` audits licences, security advisories, crate sources and the
+dependency direction between the project's crates. Audit each supported target
+separately: combining platforms can include impossible paths through dependencies
+enabled only on macOS to their own Linux- or Android-only dependencies. Keep
+all features enabled within each graph, as configured in `deny.toml`.
+Install the version CI
 uses with `cargo install cargo-deny --version 0.20.2 --locked`.
 
 The CI workflow defines the same checks with `--locked` for macOS
