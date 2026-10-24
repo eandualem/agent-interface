@@ -6,7 +6,7 @@
 //! Team-wide libraries are gathered in the private `library` module.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashSet},
     path::Path,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -852,8 +852,10 @@ pub struct Launch {
 pub struct RuleFile {
     /// Its path.
     pub path: String,
-    /// Whether it exists and was read.
+    /// Whether it was read completely and parsed successfully.
     pub read: bool,
+    /// A fixed diagnostic when inspection failed; missing optional files are normal.
+    pub error: Option<&'static str>,
 }
 
 /// What an agent's CLI lets it do without asking, from the CLI's own
@@ -872,15 +874,42 @@ pub struct Permissions {
     pub modes: Vec<(String, String)>,
 }
 
-fn read_bounded(path: &Path) -> Option<String> {
+const RULE_FILE_LIMIT: usize = 1024 * 1024;
+
+fn read_bounded(path: &Path) -> Result<Option<String>, &'static str> {
     use std::io::Read;
-    let mut text = String::new();
-    crate::configuration::regular_file(path)
-        .ok()?
-        .take(1024 * 1024)
-        .read_to_string(&mut text)
-        .ok()?;
-    Some(text)
+    let file = match crate::configuration::regular_file(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err("Could not read file."),
+    };
+    let mut bytes = Vec::new();
+    file.take((RULE_FILE_LIMIT + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "Could not read file.")?;
+    if bytes.len() > RULE_FILE_LIMIT {
+        return Err("File exceeds 1 MiB.");
+    }
+    String::from_utf8(bytes)
+        .map(Some)
+        .map_err(|_| "File is not UTF-8.")
+}
+
+fn rule_file<T>(
+    path: &Path,
+    permissions: &mut Permissions,
+    parse: impl FnOnce(&str) -> Option<T>,
+) -> Option<T> {
+    let result = read_bounded(path).and_then(|text| {
+        text.map(|text| parse(&text).ok_or("Could not parse file."))
+            .transpose()
+    });
+    permissions.files.push(RuleFile {
+        path: path.display().to_string(),
+        read: matches!(result, Ok(Some(_))),
+        error: result.as_ref().err().copied(),
+    });
+    result.ok().flatten()
 }
 
 /// Read the approval rules of `runtime` for an agent working in `dir`.
@@ -897,16 +926,9 @@ pub fn read_permissions(runtime: &str, dir: &str) -> Permissions {
 
 fn rules(runtime: &str, dir: &str, home: Option<std::path::PathBuf>) -> Permissions {
     let mut permissions = Permissions::default();
-    let add = |path: std::path::PathBuf, permissions: &mut Permissions| {
-        let text = read_bounded(&path);
-        permissions.files.push(RuleFile {
-            path: path.display().to_string(),
-            read: text.is_some(),
-        });
-        text
-    };
     match runtime {
         "claude" => {
+            let mut seen = [HashSet::new(), HashSet::new(), HashSet::new()];
             let mut files = Vec::new();
             files.extend(home.map(|home| home.join(".claude/settings.json")));
             if Path::new(dir).is_absolute() {
@@ -927,19 +949,22 @@ fn rules(runtime: &str, dir: &str, home: Option<std::path::PathBuf>) -> Permissi
                 struct Settings {
                     permissions: Rules,
                 }
-                let Some(text) = add(path, &mut permissions) else {
+                let Some(settings) = rule_file(&path, &mut permissions, |text| {
+                    serde_json::from_str::<Settings>(text).ok()
+                }) else {
                     continue;
                 };
-                let rules = serde_json::from_str::<Settings>(&text)
-                    .unwrap_or_default()
-                    .permissions;
-                for (into, from) in [
+                let rules = settings.permissions;
+                for ((into, from), seen) in [
                     (&mut permissions.allow, rules.allow),
                     (&mut permissions.deny, rules.deny),
                     (&mut permissions.ask, rules.ask),
-                ] {
+                ]
+                .into_iter()
+                .zip(&mut seen)
+                {
                     for rule in from {
-                        if !into.contains(&rule) {
+                        if seen.insert(rule.clone()) {
                             into.push(rule);
                         }
                     }
@@ -952,10 +977,12 @@ fn rules(runtime: &str, dir: &str, home: Option<std::path::PathBuf>) -> Permissi
         }
         "codex" => {
             if let Some(home) = home
-                && let Some(text) = add(home.join(".codex/config.toml"), &mut permissions)
+                && let Some(table) =
+                    rule_file(&home.join(".codex/config.toml"), &mut permissions, |text| {
+                        text.parse::<toml::Table>().ok()
+                    })
             {
                 // Only the top-level approval settings.
-                let table = text.parse::<toml::Table>().unwrap_or_default();
                 for name in ["approval_policy", "sandbox_mode"] {
                     if let Some(value) = table.get(name).and_then(toml::Value::as_str) {
                         permissions.modes.push((name.into(), value.into()));
@@ -1182,6 +1209,55 @@ mod tests {
     use super::*;
 
     #[test]
+    fn permission_inspection_distinguishes_missing_invalid_and_incomplete_files() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir(home.path().join(".codex")).unwrap();
+        let path = home.path().join(".codex/config.toml");
+        let inspect = || rules("codex", "/", Some(home.path().to_owned()));
+        assert_eq!(inspect().files[0].error, None);
+        assert!(!inspect().files[0].read);
+        let prefix = "approval_policy = 'never'\n#";
+        for length in [RULE_FILE_LIMIT - 1, RULE_FILE_LIMIT, RULE_FILE_LIMIT + 1] {
+            std::fs::write(
+                &path,
+                format!("{prefix}{}", " ".repeat(length - prefix.len())),
+            )
+            .unwrap();
+            let rules = inspect();
+            assert_eq!(rules.files[0].read, length <= RULE_FILE_LIMIT);
+            assert_eq!(rules.files[0].error.is_some(), length > RULE_FILE_LIMIT);
+            assert_eq!(rules.modes.is_empty(), length > RULE_FILE_LIMIT);
+        }
+        std::fs::write(&path, "invalid = [").unwrap();
+        assert_eq!(inspect().files[0].error, Some("Could not parse file."));
+        std::fs::write(&path, "").unwrap();
+        assert!(inspect().files[0].read);
+        assert!(inspect().modes.is_empty());
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert_eq!(inspect().files[0].error, Some("Could not read file."));
+
+        std::fs::create_dir(home.path().join(".claude")).unwrap();
+        let path = home.path().join(".claude/settings.json");
+        std::fs::write(&path, "{").unwrap();
+        assert_eq!(
+            rules("claude", "", Some(home.path().to_owned())).files[0].error,
+            Some("Could not parse file.")
+        );
+        let entries: Vec<_> = (0..4096).map(|i| format!("rule-{i}")).collect();
+        let duplicated = [entries.clone(), entries.clone()].concat();
+        std::fs::write(
+            &path,
+            serde_json::json!({"permissions":{"allow":duplicated}}).to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            rules("claude", "", Some(home.path().to_owned())).allow,
+            entries
+        );
+    }
+
+    #[test]
     fn document_reads_reject_special_files_and_keep_regular_symlinks() {
         let directory = tempfile::tempdir().unwrap();
         let target = directory.path().join("source");
@@ -1194,11 +1270,14 @@ mod tests {
                 .unwrap()
                 .success()
         );
-        assert!(read_bounded(&path).is_none());
+        assert!(read_bounded(&path).is_err());
         assert!(read_skill(directory.path().to_str().unwrap()).is_err());
         std::fs::remove_file(&target).unwrap();
         std::fs::write(&target, "# Document\n").unwrap();
-        assert_eq!(read_bounded(&path).as_deref(), Some("# Document\n"));
+        assert_eq!(
+            read_bounded(&path).unwrap().as_deref(),
+            Some("# Document\n")
+        );
         assert_eq!(
             read_skill(directory.path().to_str().unwrap()),
             Ok(("# Document\n".into(), false))

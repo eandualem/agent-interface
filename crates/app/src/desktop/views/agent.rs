@@ -1047,10 +1047,17 @@ fn permissions(agent: &Agent) -> AnyElement {
         .filter(|file| file.read)
         .map(|file| file.path.clone())
         .collect();
+    let incomplete = rules.files.iter().any(|file| file.error.is_some());
     let chips = |items: &[String]| {
         let mut chips = div().flex_1().flex().flex_wrap().gap(px(t.space.s4 + 1.0));
         if items.is_empty() {
-            chips = chips.child(ui::text(div().text_color(c.muted), &t.text.status).child("none"));
+            chips = chips.child(
+                ui::text(div().text_color(c.muted), &t.text.status).child(if incomplete {
+                    "unavailable"
+                } else {
+                    "none"
+                }),
+            );
         }
         for item in items {
             chips = chips.child(
@@ -1092,6 +1099,12 @@ fn permissions(agent: &Agent) -> AnyElement {
                 .px(px(0.0))
                 .child(mono(files.join(" · ")).text_color(c.muted)),
         )
+        .children(rules.files.iter().filter_map(|file| {
+            file.error.map(|error| {
+                ui::text(div().text_color(c.attention_text), &t.text.status)
+                    .child(format!("Incomplete inspection: {}: {error}", file.path))
+            })
+        }))
         .child(if rules.files.is_empty() {
             ui::text(div().text_color(c.muted), &t.text.status).child(format!(
                 "This app does not read {}'s settings.",

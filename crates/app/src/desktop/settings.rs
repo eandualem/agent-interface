@@ -243,10 +243,25 @@ static WRITTEN: std::sync::Mutex<u64> = std::sync::Mutex::new(0);
 /// the windows. Saves run one at a time and an older one never replaces a
 /// newer one. `done` receives the outcome.
 pub fn save_in_background(settings: Settings, done: impl FnOnce(io::Result<()>) + Send + 'static) {
+    spawn_save(settings, done, |task| {
+        std::thread::Builder::new().spawn(task).map(|_| ())
+    });
+}
+
+fn spawn_save(
+    settings: Settings,
+    done: impl FnOnce(io::Result<()>) + Send + 'static,
+    spawn: impl FnOnce(Box<dyn FnOnce() + Send>) -> io::Result<()>,
+) {
     let generation = GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
     PENDING.fetch_add(1, Ordering::SeqCst);
-    std::thread::spawn(move || {
-        let _pending = Pending;
+    // Capturing the guard also balances accounting if spawning drops the task.
+    let pending = Pending;
+    let done = std::sync::Arc::new(std::sync::Mutex::new(Some(done)));
+    let callback = std::sync::Arc::clone(&done);
+    let result = spawn(Box::new(move || {
+        let _pending = pending;
+        let done = callback.lock().unwrap().take().unwrap();
         let mut written = WRITTEN.lock().unwrap_or_else(|error| error.into_inner());
         if *written > generation {
             return done(Ok(()));
@@ -258,7 +273,11 @@ pub fn save_in_background(settings: Settings, done: impl FnOnce(io::Result<()>) 
             *written = generation;
         }
         done(result);
-    });
+    }));
+    if let Err(error) = result {
+        let done = done.lock().unwrap().take().unwrap();
+        done(Err(error));
+    }
 }
 
 struct Pending;
@@ -292,17 +311,20 @@ pub fn save(settings: &Settings, path: &Path) -> io::Result<()> {
         std::process::id(),
         SAVES.fetch_add(1, Ordering::Relaxed)
     ));
-    let written = std::fs::OpenOptions::new()
+    save_to_temporary(settings, path, &temporary)
+}
+
+fn save_to_temporary(settings: &Settings, path: &Path, temporary: &Path) -> io::Result<()> {
+    let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
-        .open(&temporary)
-        .and_then(|mut file| {
-            file.write_all(settings.to_toml().as_bytes())?;
-            file.sync_all()
-        })
-        .and_then(|()| std::fs::rename(&temporary, path));
+        .open(temporary)?;
+    let written = file
+        .write_all(settings.to_toml().as_bytes())
+        .and_then(|()| file.sync_all())
+        .and_then(|()| std::fs::rename(temporary, path));
     if written.is_err() {
-        let _ = std::fs::remove_file(&temporary);
+        let _ = std::fs::remove_file(temporary);
     }
     written
 }
@@ -310,6 +332,39 @@ pub fn save(settings: &Settings, path: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn save_cleanup_only_removes_its_own_temporary() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.toml");
+        let temporary = directory.path().join("temporary");
+        std::fs::write(&path, "original").unwrap();
+        std::fs::write(&temporary, "other save").unwrap();
+        assert!(save_to_temporary(&Settings::default(), &path, &temporary).is_err());
+        assert_eq!(std::fs::read_to_string(&temporary).unwrap(), "other save");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "original");
+        std::fs::remove_file(&temporary).unwrap();
+        let destination = directory.path().join("directory");
+        std::fs::create_dir(&destination).unwrap();
+        assert!(save_to_temporary(&Settings::default(), &destination, &temporary).is_err());
+        assert!(!temporary.exists());
+        save_to_temporary(&Settings::default(), &path, &temporary).unwrap();
+        assert_eq!(load_from(&path).unwrap(), Settings::default());
+    }
+
+    #[test]
+    fn failed_save_thread_reports_once_and_balances_pending() {
+        let before = PENDING.load(Ordering::SeqCst);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        spawn_save(
+            Settings::default(),
+            move |result| sender.send(result.unwrap_err().kind()).unwrap(),
+            |_task| Err(io::Error::from(io::ErrorKind::WouldBlock)),
+        );
+        assert_eq!(receiver.recv().unwrap(), io::ErrorKind::WouldBlock);
+        assert!(receiver.recv().is_err());
+        assert_eq!(PENDING.load(Ordering::SeqCst), before);
+    }
 
     #[test]
     fn settings_reads_are_bounded_and_reject_special_files() {

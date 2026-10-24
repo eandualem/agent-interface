@@ -3,6 +3,7 @@
 # direction between them.
 [workspace]
 resolver = "3"
+exclude = ["native/gpui-macos"]
 members = [
     "crates/core",
     "crates/store",
@@ -75,3 +76,7 @@ uuid = { version = "=1.28.0", features = ["v4"] }
 
 [workspace.lints.rust]
 missing_docs = "warn"
+
+# Native focus queries must reach the content-view accessibility adapter.
+[patch.crates-io]
+gpui-pre-macos = { path = "native/gpui-macos" }
