@@ -23,6 +23,7 @@ use ui::AgentState;
 pub(super) struct Cards<'a> {
     pub focus: &'a str,
     pub focus_changed: bool,
+    pub accessibility_active: bool,
     pub numbers: &'a [String],
     pub terminals: &'a HashMap<String, Entity<LiveTerminal>>,
     pub views: &'a HashMap<String, (Entity<ViewPane>, gpui::Subscription)>,
@@ -151,7 +152,9 @@ impl Browser {
                     .into_any_element()
             }
         } else if let Some(terminal) = cards.terminals.get(&leaf.id) {
-            if cards.focus_changed {
+            // GPUI's cached prepaint replays drawing and input, but not the
+            // accessibility nodes or focus. Rebuild those on every active frame.
+            if cards.focus_changed || cards.accessibility_active {
                 terminal.clone().into_any_element()
             } else {
                 terminal

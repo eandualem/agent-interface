@@ -112,6 +112,9 @@ struct InputRequest {
     pane: PaneId,
     input: Input,
     reply: mpsc::Sender<Result<Vec<u8>, String>>,
+    // An encoding timeout does not remove this request from the worker queue.
+    // Keep its input charged until both the caller and worker release it.
+    _reservation: Option<Arc<crate::view::InputReservation>>,
 }
 
 #[derive(Clone, Copy)]
@@ -269,6 +272,26 @@ struct WindowState {
 }
 
 impl WindowState {
+    fn copy_screens(
+        &mut self,
+        panes: impl IntoIterator<Item = PaneId>,
+        spare: &mut Vec<Screen>,
+    ) -> Result<Vec<(PaneId, Screen)>, String> {
+        copy_screens(panes, spare, |pane, screen| {
+            let Some((_, terminal)) = self.terminals.iter_mut().find(|(id, _)| *id == pane) else {
+                return Ok(false);
+            };
+            terminal
+                .terminal
+                .read_screen(screen)
+                .map_err(|error| error.to_string())?;
+            if terminal.captured {
+                screen.clear_cursor();
+            }
+            Ok(true)
+        })
+    }
+
     fn encode_ready_inputs(&mut self, changed: &mut Vec<PaneId>) {
         self.inputs.retain(|request| {
             let terminal = self
@@ -588,6 +611,15 @@ impl Panes {
     /// then deliver it as one ordered input operation. Call off the UI thread.
     /// Recovery may delay encoding, bounded by the same capture deadline.
     pub fn send_encoded_input(&self, pane: PaneId, input: Input) -> io::Result<()> {
+        self.send_reserved_input(pane, input, None)
+    }
+
+    pub(crate) fn send_reserved_input(
+        &self,
+        pane: PaneId,
+        input: Input,
+        reservation: Option<Arc<crate::view::InputReservation>>,
+    ) -> io::Result<()> {
         if input.size() > INPUT_LIMIT {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -595,7 +627,12 @@ impl Panes {
             ));
         }
         let (reply, encoded) = mpsc::channel();
-        let event = Event::Encode(InputRequest { pane, input, reply });
+        let event = Event::Encode(InputRequest {
+            pane,
+            input,
+            reply,
+            _reservation: reservation,
+        });
         {
             let mut state = self.shared.lock();
             if state.closed || state.cancelled || state.finished || state.failure.is_some() {
@@ -939,19 +976,16 @@ fn work(
         {
             let mut spare = std::mem::take(&mut state.spare);
             drop(state);
-            let mut update = Vec::with_capacity(changed.len());
-            for pane in changed.drain(..) {
-                let Some((_, terminal)) = window.terminals.iter_mut().find(|(id, _)| *id == pane)
-                else {
-                    continue;
-                };
-                let mut screen = spare.pop().unwrap_or_default();
-                if terminal.terminal.read_screen(&mut screen).is_ok() {
-                    update.push((pane, screen));
-                }
-            }
+            let update = window.copy_screens(changed.drain(..), &mut spare);
             state = shared.lock();
             state.spare.extend(spare);
+            let update = match update {
+                Ok(update) => update,
+                Err(error) => {
+                    state.failure = Some(error);
+                    break;
+                }
+            };
             state.update = Some(Update {
                 layout: window
                     .layout
@@ -983,18 +1017,16 @@ fn work(
             // a key's echo, does not wait a frame behind a busy neighbour.
             let mut spare = std::mem::take(&mut state.spare);
             drop(state);
-            let mut copies = Vec::with_capacity(joining.len());
-            for &pane in &joining {
-                let Some((_, terminal)) = window.terminals.iter_mut().find(|(id, _)| *id == pane)
-                else {
-                    continue;
-                };
-                let mut screen = spare.pop().unwrap_or_default();
-                if terminal.terminal.read_screen(&mut screen).is_ok() {
-                    copies.push((pane, screen));
-                }
-            }
+            let copies = window.copy_screens(joining.iter().copied(), &mut spare);
             state = shared.lock();
+            let copies = match copies {
+                Ok(copies) => copies,
+                Err(error) => {
+                    state.spare.extend(spare);
+                    state.failure = Some(error);
+                    break;
+                }
+            };
             if let Some(waiting) = state.update.as_mut() {
                 changed.retain(|pane| !joining.contains(pane));
                 waiting.screens.extend(copies);
@@ -1230,6 +1262,26 @@ fn missing_pane(reply: &Reply, pane: PaneId) -> bool {
             .any(|line| line == format!("can't find pane: %{}", pane.0).as_bytes())
 }
 
+// A frame is published only if every requested copy succeeded. A failed copy
+// may have modified its spare, but never replaces the UI's last complete frame.
+fn copy_screens(
+    panes: impl IntoIterator<Item = PaneId>,
+    spare: &mut Vec<Screen>,
+    mut copy: impl FnMut(PaneId, &mut Screen) -> Result<bool, String>,
+) -> Result<Vec<(PaneId, Screen)>, String> {
+    let panes = panes.into_iter();
+    let mut screens = Vec::with_capacity(panes.size_hint().0);
+    for pane in panes {
+        let mut screen = spare.pop().unwrap_or_default();
+        match copy(pane, &mut screen) {
+            Ok(true) => screens.push((pane, screen)),
+            Ok(false) => spare.push(screen),
+            Err(error) => return Err(format!("Could not refresh pane %{}: {error}", pane.0)),
+        }
+    }
+    Ok(screens)
+}
+
 /// Returns the panes in `changed` that the waiting update does not hold, or
 /// `None` when there are none, no update waits or the panes are being dropped.
 fn joining(state: &State, changed: &[PaneId]) -> Option<Vec<PaneId>> {
@@ -1250,6 +1302,63 @@ mod tests {
     use tmux_workspaces_test_support::TmuxServer;
 
     use super::*;
+
+    #[test]
+    fn screen_copy_failure_never_returns_a_partial_update() {
+        for failed in [PaneId(1), PaneId(2)] {
+            let mut spare = vec![Screen::default(), Screen::default()];
+            let result = copy_screens([PaneId(1), PaneId(2)], &mut spare, |pane, screen| {
+                screen.clear(10, 2);
+                if pane == failed {
+                    Err("copy failed".into())
+                } else {
+                    Ok(true)
+                }
+            });
+            assert_eq!(
+                result.unwrap_err(),
+                format!("Could not refresh pane %{}: copy failed", failed.0)
+            );
+        }
+        let screens = copy_screens([PaneId(1)], &mut Vec::new(), |_, screen| {
+            screen.clear(10, 2);
+            Ok(true)
+        })
+        .unwrap();
+        assert_eq!(screens[0].1.cols(), 10);
+    }
+
+    #[test]
+    fn capture_only_screens_do_not_publish_a_placeholder_cursor() {
+        let mut window = WindowState {
+            layout: layout::Change {
+                window: 0,
+                panes: vec![],
+            },
+            terminals: vec![(
+                PaneId(1),
+                LivePane {
+                    terminal: Terminal::new(10, 2, 0).unwrap(),
+                    size: (10, 2),
+                    offset: (0, 0),
+                    captured: false,
+                    needs_capture: false,
+                    recovery_deadline: None,
+                },
+            )],
+            geometry_changed: false,
+            settle_at: None,
+            generation: 0,
+            inputs: vec![],
+        };
+        let mut spare = vec![];
+        let screens = window.copy_screens([PaneId(1)], &mut spare).unwrap();
+        assert!(screens[0].1.cursor_in_viewport());
+        window.terminals[0].1.captured = true;
+        let screens = window.copy_screens([PaneId(1)], &mut spare).unwrap();
+        assert!(!screens[0].1.cursor_in_viewport());
+        assert!(!screens[0].1.cursor().visible);
+    }
 
     #[test]
     fn shutdown_unblocks_a_stopped_clients_writer_without_stopping_its_session() {

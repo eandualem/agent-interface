@@ -24,6 +24,7 @@ pub struct Screen {
     /// Every cell's text, concatenated in row-major order.
     text: String,
     cursor: Cursor,
+    pub(crate) cursor_in_viewport: bool,
     wrapped: Vec<bool>,
     pub(crate) mouse_input: bool,
 }
@@ -158,6 +159,11 @@ impl Screen {
         self.cursor
     }
 
+    /// Whether the program cursor is in this viewport, even if its drawing is hidden.
+    pub fn cursor_in_viewport(&self) -> bool {
+        self.cursor_in_viewport
+    }
+
     /// Whether the displayed live program owns unmodified mouse clicks.
     pub fn mouse_input(&self) -> bool {
         self.mouse_input
@@ -191,7 +197,7 @@ impl Screen {
         self.rows = rows;
         self.cells.clear();
         self.text.clear();
-        self.cursor = Cursor::default();
+        self.clear_cursor();
         self.mouse_input = false;
         self.wrapped.clear();
         self.wrapped.resize(usize::from(rows), false);
@@ -221,8 +227,15 @@ impl Screen {
         }
     }
 
-    /// Sets the cursor.
+    /// Clears a cursor whose actual position is unavailable.
+    pub fn clear_cursor(&mut self) {
+        self.cursor = Cursor::default();
+        self.cursor_in_viewport = false;
+    }
+
+    /// Sets the cursor at an in-viewport position.
     pub fn set_cursor(&mut self, cursor: Cursor) {
         self.cursor = cursor;
+        self.cursor_in_viewport = true;
     }
 }

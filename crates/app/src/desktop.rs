@@ -1889,7 +1889,7 @@ impl Render for Browser {
             });
         }
         let sidebar = self.sidebar(window, cx);
-        let content = self.content(cx);
+        let content = self.content(window, cx);
         let status = self.status_bar(window, cx);
         let overlay = self.popover(window, cx);
         let t = design::tokens();

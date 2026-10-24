@@ -29,6 +29,7 @@ use tmux_workspaces_tmux::control::PaneId;
 
 use crate::panes::{PaneLayout, Panes};
 
+mod accessibility;
 mod scroll;
 mod selection;
 use scroll::WheelGesture;
@@ -755,6 +756,9 @@ impl Render for TerminalView {
                 }));
         }
         let grid = Rc::clone(&self.grid);
+        let accessible_grid = Rc::clone(&self.grid);
+        let display_scale = window.scale_factor();
+        let input = self.input.filter(|_| !self.panes().is_finished());
         let selection_move = Rc::new(cx.listener(Self::selection_move));
         let background = self.grid.borrow().appearance.background;
         let embedded = self.embedded;
@@ -771,11 +775,20 @@ impl Render for TerminalView {
                 })
             });
         div()
+            .id(("terminal-input", cx.entity_id()))
             .size_full()
             .overflow_hidden()
             .relative()
             .bg(background)
             .track_focus(&self.focus)
+            .when_some(input, |element, pane| {
+                element
+                    .role(gpui::Role::Terminal)
+                    .aria_label("Terminal input")
+                    .a11y_synthetic_children(move |builder| {
+                        accessibility::terminal(builder, &accessible_grid.borrow(), pane, display_scale, embedded);
+                    })
+            })
             .on_key_down(cx.listener(Self::key_down))
             .on_mouse_move(cx.listener(Self::hover_mouse))
             .on_scroll_wheel(cx.listener(|view, event: &gpui::ScrollWheelEvent, window, cx| {
@@ -937,9 +950,31 @@ impl Render for TerminalView {
 }
 
 pub(crate) struct InputQueue {
-    sender: Option<std::sync::mpsc::Sender<(PaneId, Input)>>,
+    sender: Option<std::sync::mpsc::Sender<(PaneId, Input, Arc<InputReservation>)>>,
     drained: Option<std::sync::mpsc::Receiver<()>>,
-    queued: Arc<std::sync::atomic::AtomicUsize>,
+    budget: Arc<InputBudget>,
+}
+
+// Allow two maximum-size pastes per view, including the operation in flight.
+const INPUT_BYTES: usize = 2 * crate::panes::INPUT_LIMIT;
+
+#[derive(Default)]
+struct InputBudget {
+    count: std::sync::atomic::AtomicUsize,
+    bytes: std::sync::atomic::AtomicUsize,
+}
+
+pub(crate) struct InputReservation {
+    budget: Arc<InputBudget>,
+    bytes: usize,
+}
+
+impl Drop for InputReservation {
+    fn drop(&mut self) {
+        use std::sync::atomic::Ordering;
+        self.budget.bytes.fetch_sub(self.bytes, Ordering::AcqRel);
+        self.budget.count.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 impl InputQueue {
@@ -953,21 +988,32 @@ impl InputQueue {
         let sender = self.sender.as_ref().ok_or(())?;
         // A view owns at most one outstanding press. Its release must fit even
         // when ordinary input has filled all 64 slots.
-        let limit = if matches!(event.1, Input::Mouse(_, MouseAction::Release(_))) {
-            65
-        } else {
-            64
-        };
-        self.queued
+        let release = matches!(event.1, Input::Mouse(_, MouseAction::Release(_)));
+        let limit = if release { 65 } else { 64 };
+        self.budget
+            .count
             .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
                 (count < limit).then_some(count + 1)
             })
             .map_err(|_| ())?;
-        if sender.send(event).is_err() {
-            self.queued.fetch_sub(1, Ordering::AcqRel);
+        let bytes = event.1.size();
+        let byte_limit = INPUT_BYTES + if release { 64 } else { 0 };
+        if self
+            .budget
+            .bytes
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |used| {
+                used.checked_add(bytes).filter(|total| *total <= byte_limit)
+            })
+            .is_err()
+        {
+            self.budget.count.fetch_sub(1, Ordering::AcqRel);
             return Err(());
         }
-        Ok(())
+        let reservation = Arc::new(InputReservation {
+            budget: Arc::clone(&self.budget),
+            bytes,
+        });
+        sender.send((event.0, event.1, reservation)).map_err(|_| ())
     }
 }
 
@@ -975,17 +1021,15 @@ pub(crate) fn input_queue(
     panes: Arc<Panes>,
     report: impl Fn(Option<String>) + Send + 'static,
 ) -> InputQueue {
-    let (sender, pending) = std::sync::mpsc::channel::<(PaneId, Input)>();
+    let (sender, pending) = std::sync::mpsc::channel::<(PaneId, Input, Arc<InputReservation>)>();
     let (finished, drained) = std::sync::mpsc::channel();
-    let queued = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let waiting = Arc::clone(&queued);
+    let budget = Arc::new(InputBudget::default());
     std::thread::spawn(move || {
-        while let Ok((pane, input)) = pending.recv() {
-            waiting.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+        while let Ok((pane, input, reservation)) = pending.recv() {
             // A retired pane is a local rejection, not a failed connection.
             report(
                 panes
-                    .send_encoded_input(pane, input)
+                    .send_reserved_input(pane, input, Some(Arc::clone(&reservation)))
                     .err()
                     .map(|e| e.to_string()),
             );
@@ -995,7 +1039,7 @@ pub(crate) fn input_queue(
     InputQueue {
         sender: Some(sender),
         drained: Some(drained),
-        queued,
+        budget,
     }
 }
 
@@ -1527,7 +1571,7 @@ mod tests {
         let mut queue = InputQueue {
             sender: Some(sender),
             drained: None,
-            queued: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            budget: Arc::new(InputBudget::default()),
         };
         let pane = PaneId(1);
         let pointer = Pointer::default();
@@ -1565,6 +1609,44 @@ mod tests {
             events[64].1,
             Input::Mouse(_, MouseAction::Release(Button::Left))
         ));
+    }
+
+    #[test]
+    fn input_byte_budget_includes_inflight_work_and_rolls_back_failed_sends() {
+        use std::sync::atomic::Ordering;
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let queue = InputQueue {
+            sender: Some(sender),
+            drained: None,
+            budget: Arc::new(InputBudget::default()),
+        };
+        let pane = PaneId(1);
+        for _ in 0..2 {
+            queue
+                .try_send((pane, Input::Paste("x".repeat(crate::panes::INPUT_LIMIT))))
+                .unwrap();
+        }
+        let inflight = receiver.recv().unwrap();
+        assert!(queue.try_send((pane, Input::Paste("x".into()))).is_err());
+        queue
+            .try_send((
+                pane,
+                Input::Mouse(Pointer::default(), MouseAction::Release(Button::Left)),
+            ))
+            .unwrap();
+        assert_eq!(queue.budget.count.load(Ordering::Acquire), 3);
+        // An encoding request can outlive its caller's timeout. Its payload
+        // must remain charged until that worker releases its shared reservation.
+        let encoding_reservation = Arc::clone(&inflight.2);
+        drop(inflight);
+        assert!(queue.try_send((pane, Input::Paste("x".into()))).is_err());
+        drop(encoding_reservation);
+        queue.try_send((pane, Input::Paste("x".into()))).unwrap();
+        drop(receiver);
+        assert_eq!(queue.budget.bytes.load(Ordering::Acquire), 0);
+        assert!(queue.try_send((pane, Input::Paste("x".into()))).is_err());
+        assert_eq!(queue.budget.bytes.load(Ordering::Acquire), 0);
+        assert_eq!(queue.budget.count.load(Ordering::Acquire), 0);
     }
 
     #[test]
