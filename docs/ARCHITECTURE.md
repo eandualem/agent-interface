@@ -191,7 +191,8 @@ servers from real sessions.
 
 `scripts/package.py` builds the product binary in release mode for the host,
 with Ghostty explicitly set to `ReleaseFast` and the baseline CPU target. It
-packages embedded UI assets, dependency notices and source/build metadata.
+packages embedded UI assets, the app icon from `packaging/icon/`, dependency
+notices and source/build metadata.
 macOS receives an ad-hoc-signed application bundle; Linux receives a glibc
 binary linked to the system desktop libraries. Neither package includes a
 Python runtime, build toolchain, tmux server or application daemon.

@@ -63,7 +63,7 @@ class InstallTests(unittest.TestCase):
         library.write_bytes(b"preserve")
         self.install(self.package())
         self.assertEqual(subprocess.check_output([self.link, "--version"], text=True).strip(), "tmux-workspaces 0.0.0")
-        self.assertIn('Icon=utilities-terminal', self.launcher.read_text())
+        self.assertIn(f"Icon={self.destination}/agent-interface.png\n", self.launcher.read_text())
         self.install(self.package("0.0.1"))
         self.assertEqual(subprocess.check_output([self.link, "--version"], text=True).strip(), "tmux-workspaces 0.0.1")
         self.assertEqual(library.read_bytes(), b"preserve")

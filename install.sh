@@ -163,13 +163,14 @@ if [ "$platform" = unknown-linux-gnu ]; then
     fi
     # Exec has both desktop-string and command-argument escaping layers.
     escaped=$(printf '%s' "$destination/$executable" | sed 's/\\/\\\\\\\\/g; s/"/\\\\"/g; s/`/\\\\`/g; s/\$/\\\\$/g; s/%/%%/g')
+    icon=$(printf '%s' "$destination/agent-interface.png" | sed 's/\\/\\\\/g')
     cat > "$launcher_stage" <<EOF
 [Desktop Entry]
 Type=Application
 Name=Agent Interface
 Comment=Organize tmux sessions into native workspaces
 Exec="$escaped"
-Icon=utilities-terminal
+Icon=$icon
 Terminal=false
 Categories=Development;System;TerminalEmulator;
 Keywords=tmux;terminal;workspace;
