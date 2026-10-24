@@ -395,6 +395,18 @@ struct Attaching {
     _events: gpui::Subscription,
 }
 
+fn close_tab_proposal(
+    layout: &WindowLayout,
+    workspace: &str,
+    tab: &str,
+) -> Option<(Document, Layout)> {
+    let (base, mut proposed) = layout.save_snapshot();
+    if proposed.selected != workspace || proposed.tab()?.id != tab {
+        return None;
+    }
+    proposed.close_tab().then_some((base, proposed))
+}
+
 #[derive(Default)]
 struct Browser {
     library: Option<Library>,
@@ -451,17 +463,24 @@ impl Browser {
         if self.saving || self.save_failed {
             return;
         }
+        let Some(model) = self.layout.as_ref().map(WindowLayout::model) else {
+            return;
+        };
+        let Some(tab) = model.tab().map(|tab| tab.id.clone()) else {
+            return;
+        };
+        let workspace = model.selected.clone();
         if let Some(update) = self.library.as_ref().and_then(Library::take_update) {
             self.apply(update);
         }
         let Some(layout) = &self.layout else {
             return;
         };
-        let (base, mut proposed) = layout.save_snapshot();
-        if !proposed.close_tab() {
+        let Some(proposal) = close_tab_proposal(layout, &workspace, &tab) else {
+            cx.notify();
             return;
-        }
-        self.pending_save = Some((base, proposed));
+        };
+        self.pending_save = Some(proposal);
         self.editing = None;
         self.chooser = None;
         self.close_menus();
@@ -2070,6 +2089,34 @@ fn navigate_key(model: &mut tmux_workspaces_core::Layout, key: &gpui::Keystroke)
 mod tests {
     use super::*;
     use tmux_workspaces_store::{Document, Error, Store};
+
+    #[test]
+    fn close_tab_does_not_remove_the_refresh_fallback() {
+        let path = std::path::Path::new("layouts.db");
+        let raw = r#"{"version":2,"workspaces":[{"id":"000000000001","name":"Workspace","tabs":[],"selected":""}],"selected":"000000000001","focus":false}"#;
+        let document = Document::parse(raw.into(), path).unwrap();
+        let mut model = document.model().clone();
+        model.add_tab(Some("Closing".into()), "/tmp".into(), true);
+        let mut peer = model.clone();
+        peer.add_tab(Some("Survivor".into()), "/tmp".into(), true);
+        let survivor = peer.tab().unwrap().id.clone();
+        peer.choose_tab(&model.tab().unwrap().id);
+        let document = document.with_model(&peer, path).unwrap();
+        let mut layout = WindowLayout::new(document.clone());
+        let workspace = layout.model().selected.clone();
+        let tab = layout.model().tab().unwrap().id.clone();
+        assert!(close_tab_proposal(&layout, &workspace, &tab).is_some());
+
+        peer.close_tab();
+        let refreshed = layout
+            .refresh(document.with_model(&peer, path).unwrap(), path)
+            .unwrap();
+        assert!(!refreshed.conflict);
+        assert!(refreshed.active_tree_changed);
+        assert_eq!(layout.model().tab().unwrap().id, survivor);
+        assert!(close_tab_proposal(&layout, &workspace, &tab).is_none());
+        assert_eq!(layout.model().workspace().unwrap().tabs.len(), 1);
+    }
 
     #[test]
     fn detaching_and_closing_a_tab_apply_only_after_saving() {

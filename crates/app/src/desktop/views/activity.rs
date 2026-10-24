@@ -228,6 +228,7 @@ fn timeline(activity: &Activity) -> gpui::Div {
         }
         section = section.child(
             div()
+                .id(SharedString::from(format!("activity-lane-{}", member.name)))
                 .flex()
                 .items_center()
                 .h(px(t.space.s20))
