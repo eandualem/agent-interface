@@ -66,9 +66,9 @@ sh install.sh --archive "$HOME/Downloads/tmux-workspaces-aarch64-apple-darwin.ta
 ```
 
 Building packages is described in
-[Contributing](../CONTRIBUTING.md#build-installable-packages). The source tree's
-initial development version is `0.0.0`; a package's `BUILD.json` records its exact
-source revision, dirty state, target, compiler and native optimization settings.
+[Contributing](../CONTRIBUTING.md#build-installable-packages). A package's
+`BUILD.json` records its version, exact source revision, dirty state, target,
+compiler and native optimization settings.
 
 ## macOS
 

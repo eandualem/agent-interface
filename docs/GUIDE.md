@@ -8,8 +8,8 @@ the app. Packages need no Rust, Zig or Python. Terminal sessions require tmux
 If no library exists, the first launch creates one empty workspace. Add a tab
 with **+**, Command-T on macOS, or Ctrl+Shift+T on Linux, then choose **Open
 terminal** or **Attach a session**. Opening an empty workspace does not start a
-shell. To open another saved library, choose **Open Library…** from the
-application menu and select its folder.
+shell. To open another saved library, open Settings, choose **Open another**,
+and select its folder. The shortcut is Command-O on macOS or Ctrl+Shift+O on Linux.
 
 Sessions run on the same computer as the app. Connecting to another host or
 synchronizing live sessions between computers is not supported.
@@ -42,8 +42,8 @@ simultaneous left/right button chords are unsupported.
 Hold Shift to keep scrolling local to the native viewer.
 Command-N or **New Window** opens another native window on the current library,
 with independent navigation and terminal connections. Closing one leaves the
-other windows open. **Open Library…** in the application menu, or Command-O,
-chooses another folder containing `layouts.db`.
+other windows open. Command-O (Ctrl+Shift+O on Linux), or **Open another** in
+Settings, chooses another folder containing `layouts.db`.
 
 ## Find work and change appearance
 

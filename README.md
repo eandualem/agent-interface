@@ -30,8 +30,8 @@ The first launch creates an empty workspace. Add a tab with **+** or
 Command-T, then choose **Open terminal** or **Attach a session**. On Linux,
 use Ctrl+Shift+T. Click a terminal before typing.
 
-To open another saved library, choose **Open Library…** from the application
-menu and select its folder.
+To open another saved library, open Settings, choose **Open another**, and
+select its folder. The shortcut is Command-O on macOS or Ctrl+Shift+O on Linux.
 
 This release uses tmux sessions on the same computer. It does not connect to
 sessions on another host or synchronize live sessions between computers.

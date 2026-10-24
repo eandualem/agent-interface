@@ -5449,7 +5449,7 @@ checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
 
 [[package]]
 name = "tmux-workspaces-app"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "futures",
  "gpui-pre",
@@ -5472,7 +5472,7 @@ dependencies = [
 
 [[package]]
 name = "tmux-workspaces-bench"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "alacritty_terminal",
  "block2 0.6.2",
@@ -5494,7 +5494,7 @@ dependencies = [
 
 [[package]]
 name = "tmux-workspaces-bench-rio"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "alacritty_terminal",
  "libc",
@@ -5504,7 +5504,7 @@ dependencies = [
 
 [[package]]
 name = "tmux-workspaces-core"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "caseless",
  "serde_json",
@@ -5515,7 +5515,7 @@ dependencies = [
 
 [[package]]
 name = "tmux-workspaces-roster"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "http",
  "libc",
@@ -5530,7 +5530,7 @@ dependencies = [
 
 [[package]]
 name = "tmux-workspaces-store"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "rusqlite",
  "serde",
@@ -5543,7 +5543,7 @@ dependencies = [
 
 [[package]]
 name = "tmux-workspaces-term"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "libghostty-vt",
  "libghostty-vt-sys",
@@ -5555,7 +5555,7 @@ dependencies = [
 
 [[package]]
 name = "tmux-workspaces-test-support"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "signal-hook",
  "tempfile",
@@ -5563,7 +5563,7 @@ dependencies = [
 
 [[package]]
 name = "tmux-workspaces-tmux"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "libc",
  "memchr",
