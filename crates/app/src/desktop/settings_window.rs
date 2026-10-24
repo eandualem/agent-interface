@@ -14,33 +14,31 @@ use super::{
 };
 
 #[cfg(target_os = "macos")]
-const FIXED: &[(&str, &str)] = &[
-    ("Select tab 1–9", "⌘1–9"),
-    ("Select workspace 1–9", "⌥⌘1–9"),
-    ("Copy selection", "⌘C"),
-    ("Paste", "⌘V"),
-    ("Scroll history", "⇧PgUp  ⇧PgDn"),
-    ("Select locally in mouse programs", "⇧ drag"),
-    ("Settings", "⌘,"),
-    ("New window", "⌘N"),
-    ("Open library", "⌘O"),
-    ("Close tab", "⌘W"),
-    ("Quit", "⌘Q"),
+const FIXED: &[(&str, &str, &str)] = &[
+    ("Select tab 1–9", "⌘1–9", "Tabs"),
+    ("Select workspace 1–9", "⌥⌘1–9", "Workspaces"),
+    ("Copy selection", "⌘C", "Terminal"),
+    ("Paste", "⌘V", "Terminal"),
+    ("Scroll history", "⇧PgUp  ⇧PgDn", "Terminal"),
+    ("Select locally in mouse programs", "⇧ drag", "Terminal"),
+    ("Settings", "⌘,", "Application"),
+    ("New window", "⌘N", "Application"),
+    ("Open library", "⌘O", "Application"),
+    ("Quit", "⌘Q", "Application"),
 ];
 
 #[cfg(not(target_os = "macos"))]
-const FIXED: &[(&str, &str)] = &[
-    ("Select tab 1–9", "Alt+1–9"),
-    ("Select workspace 1–9", "Ctrl+Alt+1–9"),
-    ("Copy selection", "Ctrl+Shift+C"),
-    ("Paste", "Ctrl+Shift+V"),
-    ("Scroll history", "Shift+PgUp  Shift+PgDn"),
-    ("Select locally in mouse programs", "Shift+drag"),
-    ("Settings", "Ctrl+,"),
-    ("New window", "Ctrl+Shift+N"),
-    ("Open library", "Ctrl+Shift+O"),
-    ("Close tab", "Ctrl+Shift+W"),
-    ("Quit", "Ctrl+Shift+Q"),
+const FIXED: &[(&str, &str, &str)] = &[
+    ("Select tab 1–9", "Alt+1–9", "Tabs"),
+    ("Select workspace 1–9", "Ctrl+Alt+1–9", "Workspaces"),
+    ("Copy selection", "Ctrl+Shift+C", "Terminal"),
+    ("Paste", "Ctrl+Shift+V", "Terminal"),
+    ("Scroll history", "Shift+PgUp  Shift+PgDn", "Terminal"),
+    ("Select locally in mouse programs", "Shift+drag", "Terminal"),
+    ("Settings", "Ctrl+,", "Application"),
+    ("New window", "Ctrl+Shift+N", "Application"),
+    ("Open library", "Ctrl+Shift+O", "Application"),
+    ("Quit", "Ctrl+Shift+Q", "Application"),
 ];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -100,7 +98,7 @@ pub fn show(cx: &mut App) {
         let id = window.window_handle().window_id();
         cx.new(|cx| {
             // Record before shortcut dispatch, so keys such as Command-W are
-            // refused instead of closing the window.
+            // assigned instead of closing the window.
             let view = cx.entity().downgrade();
             let keys = cx.intercept_keystrokes(move |event, window, cx| {
                 if window.window_handle().window_id() != id {
@@ -135,6 +133,7 @@ impl SettingsWindow {
         let mut next = Settings::current();
         update(&mut next);
         next.apply();
+        super::configure_menu(cx);
         // Apply at once; save on a worker and report the outcome when it ends.
         let (done, saved) = futures::channel::oneshot::channel();
         settings::save_in_background(next, move |result| {
@@ -287,7 +286,7 @@ impl SettingsWindow {
                 Self::label("VERSION").into_any_element(),
                 div()
                     .text_color(colors().text_2)
-                    .child(concat!("tmux-workspaces ", env!("CARGO_PKG_VERSION")))
+                    .child(concat!("Agent Interface ", env!("CARGO_PKG_VERSION")))
                     .into_any_element(),
             ]))
     }
@@ -511,18 +510,9 @@ impl SettingsWindow {
             .flex_col()
             .child(Self::heading("Shortcuts"))
             .child(
-                Self::note("Click a shortcut, then press the new keys. Escape cancels.")
+                Self::note("Click Change, then press the new shortcut. Changes save automatically; Escape cancels.")
                     .pb(px(t.space.s12)),
-            )
-            .when_some(self.refusal.clone(), |el, refusal| {
-                el.child(
-                    ui::text(
-                        div().pb(px(t.space.s12)).text_color(c.attention_text),
-                        &t.text.status,
-                    )
-                    .child(refusal),
-                )
-            });
+            );
         let keycap = |label: String, recording: bool| {
             ui::text(
                 div()
@@ -549,17 +539,31 @@ impl SettingsWindow {
             )
             .child(label)
         };
-        let mut group = "";
-        for (command, id, label, section, _) in shortcuts::COMMANDS {
-            if *section != group {
-                group = section;
-                page = page.child(Self::label(section.to_uppercase()).pt(px(t.space.s8)));
-            }
-            let command = *command;
-            let recording = self.recording == Some(command);
-            let changed = bindings.chord(command) != defaults.chord(command);
-            page = page.child(
-                div()
+        for (section, description) in [
+            ("Workspaces", "A workspace is a collection of tabs."),
+            ("Tabs", "A tab contains one or more panes."),
+            (
+                "Panes",
+                "A pane holds a terminal session or a native view, such as Skills. Close removes the pane; Detach keeps it and returns to the chooser.",
+            ),
+            (
+                "Navigation",
+                "Find work and move between the sidebar and content.",
+            ),
+            ("Terminal", "Standard terminal controls."),
+            ("Application", "Window and application controls."),
+        ] {
+            page = page
+                .child(Self::label(section.to_uppercase()).pt(px(t.space.s8)))
+                .child(Self::note(description).pb(px(t.space.s8)));
+            for (command, id, label, _, _) in shortcuts::COMMANDS
+                .iter()
+                .filter(|(_, _, _, group, _)| *group == section)
+            {
+                let command = *command;
+                let recording = self.recording == Some(command);
+                let changed = bindings.chord(command) != defaults.chord(command);
+                let row = div()
                     .flex()
                     .items_center()
                     .gap(px(t.space.s10))
@@ -580,10 +584,13 @@ impl SettingsWindow {
                             .on_click(cx.listener(
                                 move |view, _, _, cx| {
                                     let mut bindings = shortcuts::current();
-                                    let chord =
-                                        shortcuts::Bindings::default().chord(command).clone();
+                                    let chord = shortcuts::Bindings::default()
+                                        .chord(command)
+                                        .unwrap()
+                                        .clone();
                                     match bindings.assign(command, chord) {
                                         Ok(()) => {
+                                            view.recording = None;
                                             view.refusal = None;
                                             view.change(
                                                 |settings| settings.shortcuts = bindings,
@@ -591,6 +598,7 @@ impl SettingsWindow {
                                             );
                                         }
                                         Err(reason) => {
+                                            view.recording = Some(command);
                                             view.refusal = Some(reason);
                                             cx.notify();
                                         }
@@ -602,23 +610,57 @@ impl SettingsWindow {
                     .child(
                         div()
                             .id(SharedString::from(format!("shortcut-{id}")))
+                            .flex()
+                            .items_center()
+                            .gap(px(t.space.s8))
                             .cursor_pointer()
+                            .child(
+                                ui::text(div().text_color(c.accent_text), &t.text.status)
+                                    .child(if recording { "Cancel" } else { "Change" }),
+                            )
                             .child(keycap(
                                 if recording {
                                     "Press keys…".into()
                                 } else {
-                                    bindings.chord(command).label()
+                                    bindings.chord(command).map_or_else(
+                                        || "Not assigned".into(),
+                                        shortcuts::Chord::label,
+                                    )
                                 },
                                 recording,
                             ))
                             .on_click(cx.listener(move |view, _, window, cx| {
-                                view.recording = Some(command);
+                                view.recording =
+                                    (view.recording != Some(command)).then_some(command);
                                 view.refusal = None;
                                 window.focus(&view.focus, cx);
                                 cx.notify();
                             })),
-                    ),
-            );
+                    );
+                page = page.child(div().child(row).when(recording, |el| {
+                    el.when_some(self.refusal.clone(), |el, refusal| {
+                        el.child(
+                            Self::note(refusal)
+                                .text_color(c.attention_text)
+                                .py(px(t.space.s8)),
+                        )
+                    })
+                }));
+            }
+            for (action, key, _) in FIXED.iter().filter(|(_, _, group)| *group == section) {
+                page = page.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(t.space.s10))
+                        .h(px(t.size.slot))
+                        .border_b(px(t.size.hairline))
+                        .border_color(c.line)
+                        .child(div().flex_1().text_color(c.muted).child(*action))
+                        .child(Self::note("Fixed"))
+                        .child(keycap((*key).into(), false)),
+                );
+            }
         }
         page = page.child(
             div().pt(px(t.space.s12)).pb(px(t.space.s20)).child(
@@ -637,19 +679,6 @@ impl SettingsWindow {
                 })),
             ),
         );
-        page = page.child(Self::label("FIXED"));
-        for (action, key) in FIXED {
-            page = page.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .h(px(t.size.slot))
-                    .border_b(px(t.size.hairline))
-                    .border_color(c.line)
-                    .child(div().flex_1().text_color(c.muted).child(*action))
-                    .child(keycap((*key).into(), false)),
-            );
-        }
         page
     }
 

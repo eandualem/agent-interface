@@ -2,16 +2,19 @@
 //!
 //! Each command has a default chord; the settings file can replace it. Keys
 //! the terminal or the application menu own (copy, paste, numbered selection,
-//! Settings, New Window, Open Library, Close Tab, Quit) stay fixed.
+//! Settings, New Window, Open Library, Quit) stay fixed.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{LazyLock, RwLock},
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Command {
     NewTab,
+    CloseTab,
+    ClosePane,
+    Detach,
     SplitRight,
     SplitBelow,
     Attach,
@@ -31,74 +34,89 @@ pub enum Command {
 
 /// Every configurable command: its settings key, label, group and default.
 pub const COMMANDS: &[(Command, &str, &str, &str, &str)] = &[
+    (Command::NewTab, "new-tab", "New tab", "Tabs", "cmd-t"),
     (
-        Command::NewTab,
-        "new-tab",
-        "New tab",
-        "Tabs and panes",
-        "cmd-t",
+        Command::CloseTab,
+        "close-tab",
+        "Close tab",
+        "Tabs",
+        "cmd-shift-w",
+    ),
+    (
+        Command::ClosePane,
+        "close-pane",
+        "Close pane",
+        "Panes",
+        "cmd-w",
+    ),
+    (
+        Command::Detach,
+        "detach",
+        "Detach session from pane",
+        "Panes",
+        "cmd-shift-x",
     ),
     (
         Command::SplitRight,
         "split-right",
         "Split right",
-        "Tabs and panes",
+        "Panes",
         "cmd-d",
     ),
     (
         Command::SplitBelow,
         "split-below",
         "Split below",
-        "Tabs and panes",
+        "Panes",
         "cmd-shift-d",
     ),
     (
         Command::Attach,
         "attach",
-        "Attach session",
-        "Tabs and panes",
+        "Attach session to pane",
+        "Panes",
         "cmd-shift-a",
     ),
     (
         Command::RenameTab,
         "rename-tab",
         "Rename tab",
-        "Tabs and panes",
+        "Tabs",
         "cmd-r",
     ),
     (
         Command::NextPane,
         "next-pane",
         "Next pane",
-        "Tabs and panes",
+        "Panes",
         "cmd-]",
     ),
     (
         Command::PreviousPane,
         "previous-pane",
         "Previous pane",
-        "Tabs and panes",
+        "Panes",
         "cmd-[",
     ),
     (
         Command::NextTab,
         "next-tab",
         "Next tab",
-        "Tabs and panes",
+        "Tabs",
         "cmd-shift-]",
     ),
     (
         Command::PreviousTab,
         "previous-tab",
         "Previous tab",
-        "Tabs and panes",
+        "Tabs",
         "cmd-shift-[",
     ),
     (
         Command::FocusPane,
         "focus-pane",
-        "Focus one pane / restore",
-        "Tabs and panes",
+        "Expand pane / restore layout",
+        "Panes",
         "cmd-shift-enter",
     ),
     (
@@ -133,14 +151,14 @@ pub const COMMANDS: &[(Command, &str, &str, &str, &str)] = &[
         Command::FocusPanel,
         "focus-panel",
         "Focus the panel",
-        "Workspaces",
+        "Navigation",
         "cmd-b",
     ),
     (
         Command::Jump,
         "jump",
         "Jump to tab, pane or agent",
-        "Workspaces",
+        "Navigation",
         "cmd-k",
     ),
 ];
@@ -172,6 +190,8 @@ pub fn platform_key(mac: &str) -> &str {
         "cmd-n" => "ctrl-shift-n",
         "cmd-o" => "ctrl-shift-o",
         "cmd-w" => "ctrl-shift-w",
+        "cmd-shift-w" => "ctrl-alt-shift-w",
+        "cmd-shift-x" => "ctrl-shift-x",
         "cmd-," => "ctrl-,",
         "cmd-c" => "ctrl-shift-c",
         "cmd-v" => "ctrl-shift-v",
@@ -207,7 +227,6 @@ const RESERVED: &[&str] = &[
     "cmd-q",
     "cmd-n",
     "cmd-o",
-    "cmd-w",
     "cmd-,",
     "ctrl-shift-c",
     "ctrl-shift-v",
@@ -397,7 +416,8 @@ impl Chord {
     }
 }
 
-/// The chord assigned to every command.
+/// Assigned chords. A new command may be unassigned after an upgrade if its
+/// default was already used by a saved shortcut.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Bindings(HashMap<Command, Chord>);
 
@@ -418,8 +438,8 @@ impl Default for Bindings {
 }
 
 impl Bindings {
-    pub fn chord(&self, command: Command) -> &Chord {
-        &self.0[&command]
+    pub fn chord(&self, command: Command) -> Option<&Chord> {
+        self.0.get(&command)
     }
 
     /// The command a key press runs.
@@ -455,35 +475,60 @@ impl Bindings {
         let defaults = Self::default();
         COMMANDS
             .iter()
-            .filter(|(command, ..)| self.0[command] != defaults.0[command])
-            .map(|(command, id, ..)| (*id, self.0[command].to_text()))
+            .filter(|(command, ..)| self.0.get(command) != defaults.0.get(command))
+            .map(|(command, id, ..)| {
+                (
+                    *id,
+                    self.0.get(command).map(Chord::to_text).unwrap_or_default(),
+                )
+            })
             .collect()
     }
 
     /// Apply saved entries together, so two commands may swap keys. Unknown
     /// commands and unusable chords are ignored; a saved chord that clashes
-    /// with another command's returns that command to its default.
+    /// with another command's returns that command to its default. New commands
+    /// yield their defaults to saved shortcuts instead; an empty entry preserves
+    /// that unassigned state on the next load.
     pub fn from_entries<'a>(entries: impl IntoIterator<Item = (&'a str, &'a str)>) -> Self {
         let defaults = Self::default();
         let mut bindings = defaults.clone();
+        let mut saved = HashSet::new();
         for (id, text) in entries {
-            if let (Some((command, ..)), Some(chord)) = (
-                COMMANDS.iter().find(|(_, candidate, ..)| *candidate == id),
-                Chord::parse(text),
-            ) && chord.unusable().is_none()
+            let Some((command, ..)) = COMMANDS.iter().find(|(_, candidate, ..)| *candidate == id)
+            else {
+                continue;
+            };
+            if text.is_empty() {
+                bindings.0.remove(command);
+                saved.insert(*command);
+            } else if let Some(chord) = Chord::parse(text)
+                && chord.unusable().is_none()
             {
                 bindings.0.insert(*command, chord);
+                saved.insert(*command);
+            }
+        }
+        for command in [Command::ClosePane, Command::CloseTab, Command::Detach] {
+            if !saved.contains(&command)
+                && bindings.0.iter().any(|(other, chord)| {
+                    *other != command && saved.contains(other) && *chord == defaults.0[&command]
+                })
+            {
+                bindings.0.remove(&command);
             }
         }
         while let Some(command) = COMMANDS
             .iter()
             .map(|(command, ..)| *command)
             .find(|command| {
-                bindings.0[command] != defaults.0[command]
-                    && bindings
-                        .0
-                        .iter()
-                        .any(|(other, chord)| other != command && *chord == bindings.0[command])
+                bindings.0.get(command).is_some_and(|bound| {
+                    *bound != defaults.0[command]
+                        && bindings
+                            .0
+                            .iter()
+                            .any(|(other, chord)| other != command && chord == bound)
+                })
             })
         {
             bindings.0.insert(command, defaults.0[&command].clone());
@@ -520,7 +565,7 @@ pub fn label(command: Command) -> String {
         .read()
         .unwrap_or_else(|error| error.into_inner())
         .chord(command)
-        .label()
+        .map_or_else(|| "Not assigned".into(), Chord::label)
 }
 
 #[cfg(test)]
@@ -595,15 +640,15 @@ mod tests {
             Bindings::default()
         );
         let swapped = Bindings::from_entries([("new-tab", "cmd-d"), ("split-right", "cmd-t")]);
-        assert_eq!(swapped.chord(Command::NewTab), &chord("cmd-d"));
-        assert_eq!(swapped.chord(Command::SplitRight), &chord("cmd-t"));
+        assert_eq!(swapped.chord(Command::NewTab), Some(&chord("cmd-d")));
+        assert_eq!(swapped.chord(Command::SplitRight), Some(&chord("cmd-t")));
     }
 
     #[test]
     fn platform_defaults_leave_terminal_control_keys_and_preserve_saved_chords() {
         let defaults = Bindings::default();
         for (command, ..) in COMMANDS {
-            let chord = defaults.chord(*command);
+            let chord = defaults.chord(*command).unwrap();
             assert!(chord.unusable().is_none(), "{}", chord.to_text());
             let event = gpui::Keystroke::parse(&chord.to_text()).unwrap();
             assert_eq!(defaults.command_for(&event), Some(*command));
@@ -623,7 +668,10 @@ mod tests {
             );
         }
         let saved = Bindings::from_entries([("new-tab", "ctrl-alt-t")]);
-        assert_eq!(saved.chord(Command::NewTab).to_text(), "ctrl-alt-t");
+        assert_eq!(
+            saved.chord(Command::NewTab).unwrap().to_text(),
+            "ctrl-alt-t"
+        );
         let entries = saved.changed();
         assert_eq!(
             Bindings::from_entries(entries.iter().map(|(id, text)| (*id, text.as_str()))),

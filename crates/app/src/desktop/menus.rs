@@ -14,7 +14,8 @@ impl Browser {
     /// A tab's options, opened from its ⋯ or a right-click.
     pub(super) fn tab_options(&self, cx: &mut Context<Self>) -> Div {
         let mut menu = ui::menu();
-        let key = |command| Some(shortcuts::label(command));
+        let bindings = shortcuts::current();
+        let key = |command| bindings.chord(command).map(shortcuts::Chord::label);
         // Naming and pane actions, then reordering, then moving elsewhere.
         let mut items: Vec<Option<(String, TabAction, Option<String>)>> = vec![
             Some((
@@ -47,7 +48,11 @@ impl Browser {
                 ("Open terminal".into(), TabAction::OpenTerminal, None)
             }));
             if tab_menu.shell.is_some() {
-                items.push(Some(("Detach session".into(), TabAction::Detach, None)));
+                items.push(Some((
+                    "Detach session".into(),
+                    TabAction::Detach,
+                    key(Command::Detach),
+                )));
             }
             let focus = if model.focus {
                 "Restore layout"

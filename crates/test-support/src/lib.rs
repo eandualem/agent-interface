@@ -1,4 +1,4 @@
-//! Test fixtures shared by the tmux-workspaces crates.
+//! Test fixtures shared by the Agent Interface crates.
 //!
 //! [`TmuxServer`] is the only way tests, benchmarks and spikes start tmux
 //! (`docs/ARCHITECTURE.md`), so tmux

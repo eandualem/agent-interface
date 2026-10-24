@@ -2,10 +2,10 @@
 
 **A native workspace for your agents and terminals.**
 
-Keep terminal agents, shells and live [Agent Backbone](https://github.com/eandualem/agent-backbone)
-views together in saved workspaces, tabs and split panes. Attach the tmux sessions
-you already use and move between them without disconnecting. tmux owns the
-processes; Agent Interface provides the desktop around them.
+Run agents and shells in full native terminals, arranged in saved workspaces,
+tabs and split panes. Open live views of your agents' work right beside them,
+and attach the tmux sessions you already use without disconnecting. tmux keeps
+every process running; Agent Interface is the desktop around them.
 
 [Get started](#get-started) · [User guide](docs/GUIDE.md) · [Contribute](CONTRIBUTING.md) · [Architecture](docs/ARCHITECTURE.md)
 
@@ -16,33 +16,46 @@ processes; Agent Interface provides the desktop around them.
 - Search tabs, panes and commands with Jump.
 - Choose a light or dark theme and customize keyboard shortcuts.
 - Follow live agent states, with animation while agents work.
-- With Agent Backbone, open Team, Activity, Usage, Skills, Policies and Tags
-  alongside terminals, or inspect an individual agent.
+- Open Team, Activity, Usage, Skills, Policies and Tags views beside your
+  terminals, or inspect a single agent, through the built-in
+  [Agent Backbone](https://github.com/eandualem/agent-backbone) integration.
 - Detach a session to reuse its pane, or close a tab while tmux manages its sessions.
 
-The app draws terminals natively and needs neither Python nor Agent Backbone
-at runtime. It can open existing schema-v2 libraries from
+The app draws terminals natively and needs no Python runtime. It can open
+existing schema-v2 libraries from
 [tmux-workspaces](https://github.com/eandualem/tmux-workspaces).
 
-The executable and existing installation and data paths remain `tmux-workspaces`
-for compatibility. The product and repository are **Agent Interface**.
+The executable, data paths and Linux installation paths remain `tmux-workspaces`
+for compatibility. The product, macOS app and repository are **Agent Interface**.
 
 ## Get started
 
-Native release downloads are being prepared. To run the app now, follow the
-[source setup](CONTRIBUTING.md#set-up) for Rust, Zig 0.15.2 and the platform
-libraries, then:
+Agent Interface runs on macOS and Linux and needs tmux 3.3 or newer. On macOS,
+install tmux with `brew install tmux`.
+
+Install the latest release:
 
 ```sh
-git clone https://github.com/eandualem/agent-interface.git
-cd agent-interface
-python3 scripts/prepare-native.py
-LIBGHOSTTY_VT_SYS_OPTIMIZE=ReleaseSafe cargo run -p tmux-workspaces-app
+curl -fsSL https://raw.githubusercontent.com/eandualem/agent-interface/main/install.sh | sh
 ```
 
-Terminal sessions require tmux 3.3 or newer; Agent Backbone is optional.
-The [installation guide](docs/INSTALL.md) covers native packages, prerequisites,
-updates and macOS first launch once release downloads are available.
+The installer picks the build for your computer and checks its checksum. On
+macOS it installs `Agent Interface.app` in `~/Applications`; on Linux, launch
+**Agent Interface** from the applications menu. The first time macOS opens the
+app, it may ask you to confirm it in **System Settings → Privacy & Security**.
+
+To install a build you already have, for example on a second computer, put the
+archive and its `.sha256` file in one folder and run the installer with it:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/eandualem/agent-interface/main/install.sh -o install.sh
+sh install.sh --archive tmux-workspaces-aarch64-apple-darwin.tar.gz
+```
+
+The [installation guide](docs/INSTALL.md) covers supported platforms, Linux
+libraries, updates and removal. To build from source, follow
+[Contributing](CONTRIBUTING.md#set-up). Agent views connect to a running
+Agent Backbone.
 
 The first launch creates an empty workspace. Add a tab with **+** or
 Command-T, then choose **Open terminal** or **Attach a session**. On Linux,
@@ -54,8 +67,6 @@ select its folder. The shortcut is Command-O on macOS or Ctrl+Shift+O on Linux.
 
 This release uses tmux sessions on the same computer. It does not connect to
 sessions on another host or synchronize live sessions between computers.
-
-To build from source, follow [Contributing](CONTRIBUTING.md#set-up).
 
 ## Guides
 
