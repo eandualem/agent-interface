@@ -1,8 +1,8 @@
 # Use Agent Interface
 
 Start with the [installation guide](INSTALL.md), which covers source builds
-and native packages. Terminal sessions require tmux 3.3 or newer;
-Agent Backbone is optional.
+and native packages. Terminal sessions require tmux 3.3 or newer. Agent views
+connect to a running Agent Backbone.
 
 If no library exists, the first launch creates one empty workspace. Add a tab
 with **+**, Command-T on macOS, or Ctrl+Shift+T on Linux, then choose **Open
@@ -173,8 +173,8 @@ and key-release events are not yet wired into the product UI.
 Omit `--data-dir` to use `TMUX_WORKSPACES_DATA_DIR`, then
 `$XDG_DATA_HOME/tmux-workspaces`, or `~/.local/share/tmux-workspaces` by default.
 On first launch, an absent library is created with one empty workspace. Add a
-tab and choose **Open terminal** or **Attach a session** to start working; neither
-Python nor Agent Backbone is required. Existing libraries are opened without
+tab and choose **Open terminal** or **Attach a session** to start working; no other
+setup is required. Existing libraries are opened without
 initialization or repair. An unreadable or invalid library shows an error and
 can be replaced through **Open Library…**. Keep its database and journal files
 for recovery; the app never overwrites them with an empty arrangement.

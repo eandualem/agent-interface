@@ -36,7 +36,7 @@ another client's selected window.
 | `store` | Initializing, reading and transactionally saving schema-v2 `layouts.db` files |
 | `tmux` | Server discovery and validation, control-mode protocol, pane capture, recovery and input commands |
 | `term` | Terminal engine ownership, input encoding and owned display snapshots |
-| `roster` | Optional, read-only Agent Backbone roster and pane-view data, with bounded loopback requests and stale-state handling |
+| `roster` | Read-only Agent Backbone roster and pane-view data, with bounded loopback requests and stale-state handling |
 | `app` | Native windows, input routing, storage and terminal workers, and integration between the other crates |
 
 `app` connects the product crates. `store` also depends on `core`; the other
@@ -95,7 +95,7 @@ are local to each native window. Ordinary-shell identities belong to the saved
 library. Closing a native window detaches its clients without issuing
 session-termination commands; navigation keeps them attached.
 
-## Appearance and optional integrations
+## Appearance and integrations
 
 Native appearance and shortcuts are saved separately in `settings.toml` under
 `$XDG_CONFIG_HOME/tmux-workspaces`, or `~/.config/tmux-workspaces`. Shared colors,
@@ -111,9 +111,9 @@ The compatibility theme reader validates the legacy theme format but does not
 control native appearance. Likewise, the legacy keymap inspection commands do
 not replace native Settings shortcuts.
 
-Agent Backbone is optional. Its adapter resolves configuration lazily and uses
+The Agent Backbone adapter resolves configuration lazily and uses
 bounded, read-only requests to an approved loopback endpoint. A failed refresh
-must not present an old agent state as current. The app remains useful without
+must not present an old agent state as current. The core does not depend on
 Backbone or the Python implementation. The `roster::views` adapter reads and
 decodes view data; `app::desktop::views` renders it in native panes. Each
 polling worker reuses its HTTP client while validating the endpoint and

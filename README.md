@@ -2,10 +2,10 @@
 
 **A native workspace for your agents and terminals.**
 
-Keep terminal agents, shells and live [Agent Backbone](https://github.com/eandualem/agent-backbone)
-views together in saved workspaces, tabs and split panes. Attach the tmux sessions
-you already use and move between them without disconnecting. tmux owns the
-processes; Agent Interface provides the desktop around them.
+Run agents and shells in full native terminals, arranged in saved workspaces,
+tabs and split panes. Open live views of your agents' work right beside them,
+and attach the tmux sessions you already use without disconnecting. tmux keeps
+every process running; Agent Interface is the desktop around them.
 
 [Get started](#get-started) · [User guide](docs/GUIDE.md) · [Contribute](CONTRIBUTING.md) · [Architecture](docs/ARCHITECTURE.md)
 
@@ -16,12 +16,13 @@ processes; Agent Interface provides the desktop around them.
 - Search tabs, panes and commands with Jump.
 - Choose a light or dark theme and customize keyboard shortcuts.
 - Follow live agent states, with animation while agents work.
-- With Agent Backbone, open Team, Activity, Usage, Skills, Policies and Tags
-  alongside terminals, or inspect an individual agent.
+- Open Team, Activity, Usage, Skills, Policies and Tags views beside your
+  terminals, or inspect a single agent, through the built-in
+  [Agent Backbone](https://github.com/eandualem/agent-backbone) integration.
 - Detach a session to reuse its pane, or close a tab while tmux manages its sessions.
 
-The app draws terminals natively and needs neither Python nor Agent Backbone
-at runtime. It can open existing schema-v2 libraries from
+The app draws terminals natively and needs no Python runtime. It can open
+existing schema-v2 libraries from
 [tmux-workspaces](https://github.com/eandualem/tmux-workspaces).
 
 The executable and existing installation and data paths remain `tmux-workspaces`
@@ -40,7 +41,8 @@ python3 scripts/prepare-native.py
 LIBGHOSTTY_VT_SYS_OPTIMIZE=ReleaseSafe cargo run -p tmux-workspaces-app
 ```
 
-Terminal sessions require tmux 3.3 or newer; Agent Backbone is optional.
+Terminal sessions require tmux 3.3 or newer. Agent views connect to a running
+Agent Backbone.
 The [installation guide](docs/INSTALL.md) covers native packages, prerequisites,
 updates and macOS first launch once release downloads are available.
 
