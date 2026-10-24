@@ -75,8 +75,12 @@ mouse release. A single paste remains limited to 4 MiB. Excess input is rejected
 visibly without blocking the UI.
 
 The focused terminal exposes its active pane and input caret through GPUI's
-native accessibility bridge. Text ranges include Unicode character lengths and
-cell positions. The terminal role distinguishes inspectable program output from
+native accessibility bridge. Text ranges preserve terminal grapheme clusters
+and cell positions. The caret follows an in-viewport program cursor even when
+the program hides its drawing; an off-viewport cursor is not exposed. Embedded
+terminals bypass GPUI's drawing cache while accessibility is active, because
+that cache does not replay accessibility nodes or focus. The terminal role
+distinguishes inspectable program output from
 an editable document: dictation tools can locate the input and send a normal
 paste, while replacing the output buffer through a value setter is unsupported.
 
@@ -177,7 +181,14 @@ versions, `Cargo.lock` records the resolved graph, and `deny.toml` checks licenc
 advisories and permitted sources.
 
 - **GPUI (`gpui-pre` and platform packages):** native windowing and GPU drawing,
-  pinned as one package family. Apache-2.0.
+  pinned as one package family. Apache-2.0. The macOS 0.3.9 backend is
+  [vendored with a narrow native focus correction](../native/gpui-macos/README.md):
+  window focus queries reach the content-view accessibility adapter, and the
+  adapter starts with the window's current key status. Accessibility is primed
+  on window creation so the first external query sees the rendered text tree.
+  This builds accessibility data during rendering even before a client connects;
+  it trades some rendering work for reliable first-use dictation detection.
+  The dependency graph remains unchanged.
 - **Plasma Wayland protocols:** GPUI's Linux backend uses the MIT-licensed
   `wayland-protocols-plasma` wrapper. Its vendored protocol definitions also
   carry LGPL-2.1-or-later, MIT-CMU and BSD terms, preserved in the

@@ -62,7 +62,7 @@ pub(super) fn terminal(
         ));
         let id = builder.synthetic_node_id((pane.0, row));
         builder.push_child(id, run);
-        if cursor.visible && row == cursor.row {
+        if screen.cursor_in_viewport() && row == cursor.row {
             let caret = TextPosition {
                 node: id,
                 character_index: caret,
@@ -156,6 +156,8 @@ mod tests {
             col: 4,
             ..Cursor::default()
         });
+        assert!(!screen.cursor().visible);
+        assert!(screen.cursor_in_viewport());
         let (run, caret) = text_run(&screen, 0, 8.0);
         assert_eq!(run.value(), Some("a😀e\u{301} \n"));
         assert_eq!(run.character_lengths(), &[1, 4, 3, 1, 1]);
@@ -179,6 +181,7 @@ mod tests {
 
         let long_cluster = format!("e{}", "\u{301}".repeat(150));
         screen.clear(1, 1);
+        assert!(!screen.cursor_in_viewport());
         screen.push(&long_cluster, Width::Narrow, Style::default());
         let (run, _) = text_run(&screen, 0, 8.0);
         assert_eq!(run.value(), Some(long_cluster.as_str()));

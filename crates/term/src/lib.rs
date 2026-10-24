@@ -197,7 +197,8 @@ impl Terminal {
             }
         }
         let visible = snapshot.cursor_visible().map_err(Error)?;
-        let cursor = match snapshot.cursor_viewport().map_err(Error)? {
+        let position = snapshot.cursor_viewport().map_err(Error)?;
+        let cursor = match position {
             Some(position) => Cursor {
                 col: position.x,
                 row: position.y,
@@ -206,6 +207,7 @@ impl Terminal {
             None => Cursor::default(),
         };
         screen.set_cursor(cursor);
+        screen.cursor_in_viewport = position.is_some();
         Ok(())
     }
 

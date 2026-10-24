@@ -14,7 +14,7 @@ use super::{
 
 impl Browser {
     /// The selected tab's panes, or the state that replaces them.
-    pub(super) fn content(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn content(&mut self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let (t, c) = (tokens(), colors());
         let area = div()
             .flex_1()
@@ -103,6 +103,7 @@ impl Browser {
         let cards = super::pane_cards::Cards {
             focus: &tab.focus,
             focus_changed,
+            accessibility_active: window.is_a11y_active(),
             numbers: &numbers,
             terminals: &self.terminals,
             views: &self.views,
