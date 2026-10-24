@@ -197,7 +197,8 @@ if [ "$platform" = unknown-linux-gnu ]; then
 fi
 printf '\nInstalled %s\n' "$destination"
 if [ "$platform" = apple-darwin ]; then
-    printf '%s\n' 'Open it from Applications in Finder.' \
+    printf '%s\n' 'Open ~/Applications in Finder and launch tmux-workspaces.app.' \
+        'Or run: open "$HOME/Applications/tmux-workspaces.app"' \
         'This app is ad-hoc signed, not notarized. If macOS blocks the first launch,' \
         'use System Settings > Privacy & Security > Open Anyway for this app.'
 else

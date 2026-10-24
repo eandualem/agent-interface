@@ -1,17 +1,18 @@
 # Use tmux-workspaces
 
-Complete the [source build setup](../CONTRIBUTING.md#build-and-test), including
-native-source preparation and the build-mode environment variable, then run:
+Install a native package using the [installation guide](INSTALL.md), then open
+the app. Packages need no Rust, Zig or Python. Terminal sessions require tmux
+3.3 or newer; Agent Backbone is optional. To build from source, follow
+[Contributing](../CONTRIBUTING.md#set-up).
 
-```sh
-cargo run --release -p tmux-workspaces-app --bin tmux-workspaces
-```
+If no library exists, the first launch creates one empty workspace. Add a tab
+with **+**, Command-T on macOS, or Ctrl+Shift+T on Linux, then choose **Open
+terminal** or **Attach a session**. Opening an empty workspace does not start a
+shell. To open another saved library, choose **Open Library…** from the
+application menu and select its folder.
 
-If no library exists, the first launch creates one empty workspace. Add a tab,
-then choose **Open
-terminal** or **Attach a session**. To use a specific library, append
-`-- --data-dir /path/to/library` to the command. tmux 3.3 or newer must be in
-`PATH` to use terminals; opening an empty workspace does not start a shell.
+Sessions run on the same computer as the app. Connecting to another host or
+synchronizing live sessions between computers is not supported.
 
 ## Navigate and use terminals
 

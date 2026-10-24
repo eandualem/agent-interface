@@ -22,25 +22,21 @@ single-command installation, runtime prerequisites and unsigned macOS launch.
 
 ## Get started
 
-Build from source using the [setup instructions](CONTRIBUTING.md#set-up).
-You need Rust, Zig 0.15.2, a C toolchain, and tmux 3.3 or newer for terminals.
-Python is used only to prepare the native source during the build.
-
-```sh
-python3 scripts/prepare-native.py
-export LIBGHOSTTY_VT_SYS_OPTIMIZE=ReleaseSafe
-cargo run --release -p tmux-workspaces-app --bin tmux-workspaces
-```
+Install a native package using the [installation guide](docs/INSTALL.md), then
+open the app. Packages need no Rust, Zig or Python. Terminal sessions require
+tmux 3.3 or newer; Agent Backbone is optional.
 
 The first launch creates an empty workspace. Add a tab with **+** or
 Command-T, then choose **Open terminal** or **Attach a session**. On Linux,
 use Ctrl+Shift+T. Click a terminal before typing.
 
-To open a particular library:
+To open another saved library, choose **Open Library…** from the application
+menu and select its folder.
 
-```sh
-cargo run --release -p tmux-workspaces-app --bin tmux-workspaces -- --data-dir /path/to/library
-```
+This release uses tmux sessions on the same computer. It does not connect to
+sessions on another host or synchronize live sessions between computers.
+
+To build from source, follow [Contributing](CONTRIBUTING.md#set-up).
 
 ## Guides
 
@@ -52,10 +48,9 @@ cargo run --release -p tmux-workspaces-app --bin tmux-workspaces -- --data-dir /
 
 ## Platform support
 
-The app is in early development. macOS is the primary platform. Native builds
-and automated tests have been verified on Ubuntu 24.04 (ARM64) with tmux 3.4.
-Linux has Wayland and X11 backends, but desktop interaction has not yet been
-fully verified there. Windows is not currently supported by the app.
+The app runs natively on macOS and Linux, with Wayland and X11 backends on Linux.
+See the [installation guide](docs/INSTALL.md) for package architectures and
+runtime requirements. Native Windows is not supported. WSL has not been verified.
 
 Terminal input methods, accessible terminal text, key-release events and
 selection across history pages are not yet implemented. See the
