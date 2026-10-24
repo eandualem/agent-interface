@@ -78,6 +78,7 @@ pub(super) struct Drag {
     bounds: HashMap<String, Bounds<Pixels>>,
     start: Point<Pixels>,
     preview: Option<Node>,
+    cancelled: bool,
 }
 
 impl Drag {
@@ -103,11 +104,13 @@ impl Drag {
             bounds: bounds.clone(),
             start: position,
             preview: None,
+            cancelled: false,
         })
     }
 
     pub fn valid(&self, model: &Layout) -> bool {
-        !model.focus
+        !self.cancelled
+            && !model.focus
             && model.selected == self.workspace
             && model
                 .tab()
@@ -118,8 +121,17 @@ impl Drag {
         &self.bounds == bounds
     }
 
+    /// Keep the gesture until release so cancellation cannot become a click.
+    pub fn cancel(&mut self) {
+        self.cancelled = true;
+        self.destination = None;
+    }
+
     /// Repaint only when the gesture starts or the highlighted edge changes.
     pub fn motion(&mut self, position: Point<Pixels>) -> bool {
+        if self.cancelled {
+            return false;
+        }
         let was_active = self.active;
         let delta = position - self.start;
         self.active |= f32::from(delta.x).hypot(f32::from(delta.y)) >= 6.;
@@ -190,7 +202,7 @@ impl Browser {
                 .is_some_and(|layout| drag.valid(layout.model()))
             || !drag.same_bounds(&self.pane_bounds.borrow())
         {
-            self.pane_drag = None;
+            drag.cancel();
             cx.notify();
             return;
         }
@@ -211,11 +223,11 @@ impl Browser {
             return;
         };
         drag.motion(event.position);
-        if !drag.active {
+        if !drag.active && !drag.cancelled {
             return;
         }
-        // Consume a real drag even if cancelled, so dropping on a header button
-        // never also activates that button.
+        // Called at the front of the bubble phase: GPUI has already cleared
+        // button presses during capture, but has not fired their click handlers.
         cx.stop_propagation();
         if let Some(update) = self
             .library
@@ -316,5 +328,16 @@ mod tests {
             .split(Direction::Below, "/tmp".into(), true);
         assert!(drag.proposal(&window).is_none());
         assert!(!drag.same_bounds(&HashMap::new()));
+
+        let window = WindowLayout::new(store.load().unwrap());
+        let mut cancelled =
+            Drag::begin(window.model(), &source, &bounds, point(px(20.), px(10.))).unwrap();
+        cancelled.motion(point(px(308.), px(190.)));
+        cancelled.cancel();
+        assert!(cancelled.dragging);
+        assert!(cancelled.active);
+        assert_eq!(cancelled.destination, None);
+        assert!(!cancelled.motion(point(px(308.), px(10.))));
+        assert!(cancelled.proposal(&window).is_none());
     }
 }

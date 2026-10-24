@@ -1649,7 +1649,7 @@ impl Browser {
             return;
         }
         if self.pane_drag.as_ref().is_some_and(|drag| drag.dragging) {
-            self.finish_pane_drag(event, cx);
+            // Pane dragging ends after button presses have cleared in capture.
             return;
         }
         if self.sidebar_drag.is_some() {
@@ -1690,8 +1690,10 @@ impl Render for Browser {
                             browser.resize = None;
                             cx.notify();
                         }
-                        if browser.pane_drag.as_ref().is_some_and(|drag| drag.dragging) {
-                            browser.pane_drag = None;
+                        if let Some(drag) = &mut browser.pane_drag
+                            && drag.dragging
+                        {
+                            drag.cancel();
                             cx.notify();
                         }
                     }
@@ -1712,11 +1714,24 @@ impl Render for Browser {
                 .as_ref()
                 .is_some_and(|layout| drag.valid(layout.model()))
         }) {
-            self.pane_drag = None;
+            if let Some(drag) = &mut self.pane_drag
+                && drag.dragging
+            {
+                drag.cancel();
+            } else {
+                self.pane_drag = None;
+            }
         }
         self.pane_bounds.borrow_mut().clear();
         let resize_motion = cx.listener(Self::resize_motion);
         let resize_end = cx.listener(Self::finish_resize);
+        let pane_drag_end = cx.listener(|browser, event: &gpui::MouseUpEvent, _, cx| {
+            if event.button == gpui::MouseButton::Left
+                && browser.pane_drag.as_ref().is_some_and(|drag| drag.dragging)
+            {
+                browser.finish_pane_drag(event, cx);
+            }
+        });
         if self.chooser.as_ref().is_some_and(|chooser| {
             !self
                 .layout
@@ -1955,8 +1970,10 @@ impl Render for Browser {
             .when_some(self.navigation.clone(), |el, focus| el.track_focus(&focus))
             .capture_key_down(
                 cx.listener(|browser, event: &gpui::KeyDownEvent, window, cx| {
-                    if browser.pane_drag.as_ref().is_some_and(|drag| drag.dragging) {
-                        browser.pane_drag = None;
+                    if let Some(drag) = &mut browser.pane_drag
+                        && drag.dragging
+                    {
+                        drag.cancel();
                         cx.notify();
                         if event.keystroke.key == "escape" {
                             cx.stop_propagation();
@@ -2176,6 +2193,24 @@ impl Render for Browser {
             )
             .child(status)
             .children(overlay)
+            // Last painted means first in the bubble phase. Let every button
+            // clear its press in capture before suppressing drag-generated clicks.
+            .child(
+                gpui::canvas(
+                    |_, _, _| (),
+                    move |_, (), window, _| {
+                        window.on_mouse_event(
+                            move |event: &gpui::MouseUpEvent, phase, window, cx| {
+                                if phase.bubble() {
+                                    pane_drag_end(event, window, cx);
+                                }
+                            },
+                        );
+                    },
+                )
+                .absolute()
+                .size_full(),
+            )
     }
 }
 
