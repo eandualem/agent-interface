@@ -1,6 +1,6 @@
 [package]
 name = "tmux-workspaces-test-support"
-description = "Test fixtures for tmux-workspaces, including the private tmux server"
+description = "Test fixtures for Agent Interface, including the private tmux server"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

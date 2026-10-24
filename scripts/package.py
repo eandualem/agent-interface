@@ -115,7 +115,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="package-", dir=dist) as temporary:
         stage = Path(temporary)
         mac = target.endswith("apple-darwin")
-        bundle = stage / ("tmux-workspaces.app" if mac else "tmux-workspaces")
+        bundle = stage / ("Agent Interface.app" if mac else "tmux-workspaces")
         bin_dir = bundle / ("Contents/MacOS" if mac else "bin")
         resources = bundle / "Contents/Resources" if mac else bundle
         bin_dir.mkdir(parents=True)

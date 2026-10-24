@@ -1,4 +1,4 @@
-"""Exercise installer transactions with inert Linux payloads in private homes."""
+"""Exercise installer transactions with inert payloads in private homes."""
 
 import hashlib
 import io
@@ -37,9 +37,13 @@ class InstallTests(unittest.TestCase):
 
     def package(self, version="0.0.0", target="x86_64-unknown-linux-gnu", extra=None):
         archive = self.root / "app.tar.gz"
-        files = {"tmux-workspaces/INSTALLER": APP_ID + "\n",
-                 "tmux-workspaces/TARGET": target + "\n",
-                 "tmux-workspaces/bin/tmux-workspaces": f"#!/bin/sh\necho 'tmux-workspaces {version}'\n"}
+        mac = target.endswith("apple-darwin")
+        root = "Agent Interface.app/Contents" if mac else "tmux-workspaces"
+        resources = root + "/Resources" if mac else root
+        executable = root + ("/MacOS" if mac else "/bin") + "/tmux-workspaces"
+        files = {resources + "/INSTALLER": APP_ID + "\n",
+                 resources + "/TARGET": target + "\n",
+                 executable: f"#!/bin/sh\necho 'tmux-workspaces {version}'\n"}
         if extra:
             files.update(extra)
         with tarfile.open(archive, "w:gz") as tar:
@@ -47,7 +51,7 @@ class InstallTests(unittest.TestCase):
                 info = tarfile.TarInfo(name)
                 data = text.encode()
                 info.size = len(data)
-                info.mode = 0o755 if name.endswith("bin/tmux-workspaces") else 0o644
+                info.mode = 0o755 if name == executable else 0o644
                 tar.addfile(info, io.BytesIO(data))
         archive.with_suffix(".gz.sha256").write_text(hashlib.sha256(archive.read_bytes()).hexdigest() + "  app.tar.gz\n")
         return archive
@@ -91,6 +95,35 @@ class InstallTests(unittest.TestCase):
         (self.destination / "mine").write_text("preserve")
         self.install(self.package(), success=False)
         self.assertEqual((self.destination / "mine").read_text(), "preserve")
+
+    def test_mac_rename_update_and_rollback(self):
+        self.command("uname", 'case "$1" in -s) echo Darwin;; -m) echo arm64;; esac')
+        self.command("codesign", "exit 0")
+        destination = self.home / "Applications/Agent Interface.app"
+        legacy = self.home / "Applications/tmux-workspaces.app"
+        self.install(self.package(target="aarch64-apple-darwin"))
+        destination.rename(legacy)
+        # Failed replacement restores the old bundle under its original name.
+        self.command("mv", 'case "$1" in */"Agent Interface.app") exit 1;; esac\nexec /bin/mv "$@"')
+        self.install(self.package("0.0.1", target="aarch64-apple-darwin"), success=False)
+        self.assertTrue(legacy.exists())
+        self.assertFalse(destination.exists())
+        (self.tools / "mv").unlink()
+        self.install(self.package("0.0.1", target="aarch64-apple-darwin"))
+        self.assertFalse(legacy.exists())
+        binary = destination / "Contents/MacOS/tmux-workspaces"
+        self.assertEqual(subprocess.check_output([binary, "--version"], text=True).strip(), "tmux-workspaces 0.0.1")
+        self.install(self.package("0.0.2", target="aarch64-apple-darwin"))
+        self.assertEqual(subprocess.check_output([binary, "--version"], text=True).strip(), "tmux-workspaces 0.0.2")
+
+    def test_mac_preserves_unmanaged_legacy_app(self):
+        self.command("uname", 'case "$1" in -s) echo Darwin;; -m) echo arm64;; esac')
+        legacy = self.home / "Applications/tmux-workspaces.app"
+        legacy.mkdir(parents=True)
+        (legacy / "mine").write_text("preserve")
+        self.install(self.package(target="aarch64-apple-darwin"), success=False)
+        self.assertEqual((legacy / "mine").read_text(), "preserve")
+        self.assertFalse((self.home / "Applications/Agent Interface.app").exists())
 
     def test_rollback_after_launcher_failure(self):
         self.install(self.package())

@@ -1,6 +1,6 @@
 [package]
 name = "tmux-workspaces-store"
-description = "Reading and writing the tmux-workspaces layout library"
+description = "Reading and writing the Agent Interface layout library"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

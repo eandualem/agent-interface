@@ -5,7 +5,7 @@ set -eu
 # Wait for the complete script before changing anything when piped from curl.
 main() {
 
-fail() { printf 'tmux-workspaces: %s\n' "$*" >&2; exit 1; }
+fail() { printf 'Agent Interface: %s\n' "$*" >&2; exit 1; }
 usage() {
     printf '%s\n' 'Usage: sh install.sh [--archive PATH]' \
         'Installs the latest published build, or a local archive with its .sha256 file.' \
@@ -39,10 +39,12 @@ esac
 if printf '%s' "$HOME${XDG_DATA_HOME:-}" | LC_ALL=C grep -q '[[:cntrl:]]'; then
     fail 'Installation paths must not contain control characters.'
 fi
+legacy=
 if [ "$platform" = apple-darwin ]; then
     parent=$HOME/Applications
-    destination=$parent/tmux-workspaces.app
-    payload=tmux-workspaces.app
+    destination="$parent/Agent Interface.app"
+    legacy=$parent/tmux-workspaces.app
+    payload='Agent Interface.app'
     executable=Contents/MacOS/tmux-workspaces
     marker=Contents/Resources/INSTALLER
 else
@@ -63,16 +65,19 @@ else
         [ -L "$link" ] && [ "$(readlink "$link")" = "$destination/$executable" ] || fail "Refusing to replace $link."
     fi
 fi
-if [ -e "$destination" ] || [ -L "$destination" ]; then
-    [ ! -L "$destination" ] && [ -f "$destination/$marker" ] &&
-        [ "$(cat "$destination/$marker")" = io.github.eandualem.tmux-workspaces ] ||
-        fail "Refusing to replace an installation not owned by this installer: $destination"
-fi
+for existing in "$destination" "$legacy"; do
+    if [ -e "$existing" ] || [ -L "$existing" ]; then
+        [ ! -L "$existing" ] && [ -f "$existing/$marker" ] &&
+            [ "$(cat "$existing/$marker")" = io.github.eandualem.tmux-workspaces ] ||
+            fail "Refusing to replace an installation not owned by this installer: $existing"
+    fi
+done
 mkdir -p "$parent"
 lock=$parent/.tmux-workspaces-install.lock
 mkdir "$lock" 2>/dev/null || fail "Another install is active. If it was interrupted, remove $lock and retry."
 staging=
 backup=
+legacy_backup=
 launcher_stage=
 launcher_backup=
 installed=false
@@ -89,6 +94,12 @@ cleanup() {
         if [ -n "$backup" ] && [ -e "$backup" ]; then
             if ! mv "$backup" "$destination"; then
                 printf 'Previous app retained at %s\n' "$backup" >&2
+                rollback_ok=false
+            fi
+        fi
+        if [ -n "$legacy_backup" ] && [ -e "$legacy_backup" ]; then
+            if ! mv "$legacy_backup" "$legacy"; then
+                printf 'Previous app retained at %s\n' "$legacy_backup" >&2
                 rollback_ok=false
             fi
         fi
@@ -182,6 +193,10 @@ if [ -e "$destination" ]; then
     backup=$staging/previous
     mv "$destination" "$backup"
 fi
+if [ -n "$legacy" ] && [ -e "$legacy" ]; then
+    legacy_backup=$staging/legacy
+    mv "$legacy" "$legacy_backup"
+fi
 mv "$prepared" "$destination"
 installed=true
 if [ "$platform" = unknown-linux-gnu ]; then
@@ -198,8 +213,8 @@ if [ "$platform" = unknown-linux-gnu ]; then
 fi
 printf '\nInstalled %s\n' "$destination"
 if [ "$platform" = apple-darwin ]; then
-    printf '%s\n' 'Open ~/Applications in Finder and launch tmux-workspaces.app.' \
-        'Or run: open "$HOME/Applications/tmux-workspaces.app"' \
+    printf '%s\n' 'Open ~/Applications in Finder and launch Agent Interface.app.' \
+        'Or run: open "$HOME/Applications/Agent Interface.app"' \
         'This app is ad-hoc signed, not notarized. If macOS blocks the first launch,' \
         'use System Settings > Privacy & Security > Open Anyway for this app.'
 else

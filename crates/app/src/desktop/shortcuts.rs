@@ -2,7 +2,7 @@
 //!
 //! Each command has a default chord; the settings file can replace it. Keys
 //! the terminal or the application menu own (copy, paste, numbered selection,
-//! Settings, New Window, Open Library, Close Tab, Quit) stay fixed.
+//! Settings, New Window, Open Library, Quit) stay fixed.
 
 use std::{
     collections::HashMap,
@@ -12,6 +12,9 @@ use std::{
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Command {
     NewTab,
+    CloseTab,
+    ClosePane,
+    Detach,
     SplitRight,
     SplitBelow,
     Attach,
@@ -31,74 +34,89 @@ pub enum Command {
 
 /// Every configurable command: its settings key, label, group and default.
 pub const COMMANDS: &[(Command, &str, &str, &str, &str)] = &[
+    (Command::NewTab, "new-tab", "New tab", "Tabs", "cmd-t"),
     (
-        Command::NewTab,
-        "new-tab",
-        "New tab",
-        "Tabs and panes",
-        "cmd-t",
+        Command::CloseTab,
+        "close-tab",
+        "Close tab",
+        "Tabs",
+        "cmd-shift-w",
+    ),
+    (
+        Command::ClosePane,
+        "close-pane",
+        "Close pane",
+        "Panes",
+        "cmd-w",
+    ),
+    (
+        Command::Detach,
+        "detach",
+        "Detach session from pane",
+        "Panes",
+        "cmd-shift-x",
     ),
     (
         Command::SplitRight,
         "split-right",
         "Split right",
-        "Tabs and panes",
+        "Panes",
         "cmd-d",
     ),
     (
         Command::SplitBelow,
         "split-below",
         "Split below",
-        "Tabs and panes",
+        "Panes",
         "cmd-shift-d",
     ),
     (
         Command::Attach,
         "attach",
-        "Attach session",
-        "Tabs and panes",
+        "Attach session to pane",
+        "Panes",
         "cmd-shift-a",
     ),
     (
         Command::RenameTab,
         "rename-tab",
         "Rename tab",
-        "Tabs and panes",
+        "Tabs",
         "cmd-r",
     ),
     (
         Command::NextPane,
         "next-pane",
         "Next pane",
-        "Tabs and panes",
+        "Panes",
         "cmd-]",
     ),
     (
         Command::PreviousPane,
         "previous-pane",
         "Previous pane",
-        "Tabs and panes",
+        "Panes",
         "cmd-[",
     ),
     (
         Command::NextTab,
         "next-tab",
         "Next tab",
-        "Tabs and panes",
+        "Tabs",
         "cmd-shift-]",
     ),
     (
         Command::PreviousTab,
         "previous-tab",
         "Previous tab",
-        "Tabs and panes",
+        "Tabs",
         "cmd-shift-[",
     ),
     (
         Command::FocusPane,
         "focus-pane",
-        "Focus one pane / restore",
-        "Tabs and panes",
+        "Expand pane / restore layout",
+        "Panes",
         "cmd-shift-enter",
     ),
     (
@@ -133,14 +151,14 @@ pub const COMMANDS: &[(Command, &str, &str, &str, &str)] = &[
         Command::FocusPanel,
         "focus-panel",
         "Focus the panel",
-        "Workspaces",
+        "Navigation",
         "cmd-b",
     ),
     (
         Command::Jump,
         "jump",
         "Jump to tab, pane or agent",
-        "Workspaces",
+        "Navigation",
         "cmd-k",
     ),
 ];
@@ -172,6 +190,8 @@ pub fn platform_key(mac: &str) -> &str {
         "cmd-n" => "ctrl-shift-n",
         "cmd-o" => "ctrl-shift-o",
         "cmd-w" => "ctrl-shift-w",
+        "cmd-shift-w" => "ctrl-alt-shift-w",
+        "cmd-shift-x" => "ctrl-shift-x",
         "cmd-," => "ctrl-,",
         "cmd-c" => "ctrl-shift-c",
         "cmd-v" => "ctrl-shift-v",
@@ -207,7 +227,6 @@ const RESERVED: &[&str] = &[
     "cmd-q",
     "cmd-n",
     "cmd-o",
-    "cmd-w",
     "cmd-,",
     "ctrl-shift-c",
     "ctrl-shift-v",

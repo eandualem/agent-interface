@@ -25,8 +25,8 @@ The app draws terminals natively and needs no Python runtime. It can open
 existing schema-v2 libraries from
 [tmux-workspaces](https://github.com/eandualem/tmux-workspaces).
 
-The executable and existing installation and data paths remain `tmux-workspaces`
-for compatibility. The product and repository are **Agent Interface**.
+The executable, data paths and Linux installation paths remain `tmux-workspaces`
+for compatibility. The product, macOS app and repository are **Agent Interface**.
 
 ## Get started
 
@@ -40,7 +40,7 @@ curl -fsSL https://raw.githubusercontent.com/eandualem/agent-interface/main/inst
 ```
 
 The installer picks the build for your computer and checks its checksum. On
-macOS it installs `tmux-workspaces.app` in `~/Applications`; on Linux, launch
+macOS it installs `Agent Interface.app` in `~/Applications`; on Linux, launch
 **Agent Interface** from the applications menu. The first time macOS opens the
 app, it may ask you to confirm it in **System Settings → Privacy & Security**.
 

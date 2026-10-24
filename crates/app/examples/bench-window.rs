@@ -120,7 +120,7 @@ fn run() -> Result<(), String> {
                 None => Bounds::centered(None, content, cx),
             })),
             titlebar: Some(TitlebarOptions {
-                title: Some("tmux-workspaces benchmark".into()),
+                title: Some("Agent Interface benchmark".into()),
                 ..Default::default()
             }),
             // Output keeps arriving while another window has focus, so the
