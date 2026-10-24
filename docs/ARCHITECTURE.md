@@ -21,7 +21,9 @@ the attachment and returns the same pane to its chooser. Neither Detach nor
 Close Tab sends a session-termination command. An attached session retains its
 own lifetime policy, including tmux's `destroy-unattached` option.
 
-Each native viewport participates in tmux's window sizing. Resizing it can
+Each displayed native viewport participates in tmux's window sizing. Hidden
+clients keep their connections with `ignore-size`; their next paint restores
+sizing participation at the current viewport dimensions. Resizing a viewport can
 change the geometry seen by other clients of the same window. Choosing a tmux
 window within an attachment is local to that native leaf; it does not switch
 another client's selected window.

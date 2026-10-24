@@ -1633,7 +1633,7 @@ impl Render for Browser {
                 .as_ref()
                 .is_some_and(|layout| terminal.read(cx).target.exists_in(layout.model()))
         });
-        for leaf in leaves {
+        for leaf in &leaves {
             let target = Target {
                 leaf: leaf.clone(),
                 directory: self.directory.clone(),
@@ -1662,7 +1662,7 @@ impl Render for Browser {
                     },
                 )
                 .detach();
-                self.terminals.insert(leaf.id, terminal);
+                self.terminals.insert(leaf.id.clone(), terminal);
             }
         }
         let shown: Vec<(String, View)> = self
@@ -1712,6 +1712,13 @@ impl Render for Browser {
                 .then(|| model.tab().map(|tab| tab.focus.as_str()))
                 .flatten()
         });
+        for (id, terminal) in &self.terminals {
+            if !leaves.iter().any(|leaf| &leaf.id == id)
+                || expanded.is_some_and(|focused| focused != id)
+            {
+                terminal.update(cx, |terminal, cx| terminal.hide(cx));
+            }
+        }
         for (id, (view, _)) in &self.views {
             view.read(cx)
                 .set_visible(expanded.is_none_or(|focused| focused == id));

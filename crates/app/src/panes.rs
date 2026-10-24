@@ -626,6 +626,12 @@ impl Panes {
         )
     }
 
+    /// Keep the client connected without contributing to tmux window sizing.
+    pub(crate) fn ignore_size(&self) -> io::Result<()> {
+        self.control
+            .send("refresh-client -f ignore-size\n", ReplyOwner::Size)
+    }
+
     /// Returns a terminal recovery or input transport failure.
     pub fn failure(&self) -> Option<String> {
         let state = self.shared.lock();

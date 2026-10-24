@@ -155,6 +155,12 @@ pub(super) struct Detach;
 impl gpui::EventEmitter<Detach> for LiveTerminal {}
 
 impl LiveTerminal {
+    pub fn hide(&mut self, cx: &mut Context<Self>) {
+        if let Some(view) = &self.view {
+            view.update(cx, |view, cx| view.hide(cx));
+        }
+    }
+
     /// Whether this leaf's terminal has keyboard focus.
     pub fn has_focus(&self, window: &Window, cx: &gpui::App) -> bool {
         self.view
@@ -683,7 +689,7 @@ mod tests {
                 ])
                 .unwrap()
         };
-        let ready = connect(Target {
+        let target = Target {
             leaf: Leaf {
                 id: "abcdef123456".into(),
                 cwd: None,
@@ -696,8 +702,8 @@ mod tests {
             },
             directory: None,
             source: Err("use explicit source".into()),
-        })
-        .unwrap();
+        };
+        let ready = connect(target.clone()).unwrap();
         // Connecting alone leaves the session's geometry alone.
         assert_eq!(sizes().trim(), "100x30\n100x30");
         let panes = ready.panes.as_ref().unwrap();
@@ -722,6 +728,26 @@ mod tests {
         // As with the source's nested clients, every window of the session
         // follows the client under tmux's default window-size policy.
         assert_eq!(sizes().trim(), "60x20\n60x20");
+        server
+            .run(&["set-window-option", "-g", "window-size", "smallest"])
+            .unwrap();
+        let wide = connect(target).unwrap();
+        wide.panes.as_ref().unwrap().set_size(80, 25).unwrap();
+        let wait_size = |expected: &str| {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while sizes().trim() != expected {
+                assert!(Instant::now() < deadline, "size did not reach {expected}");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        };
+        panes.ignore_size().unwrap();
+        wait_size("80x25\n80x25");
+        assert_eq!(server.run(&["list-clients"]).unwrap().lines().count(), 2);
+        // Revealing the same-sized narrow view restores sizing participation.
+        panes.set_size(60, 20).unwrap();
+        wait_size("60x20\n60x20");
+        assert_eq!(server.run(&["list-clients"]).unwrap().lines().count(), 2);
+        drop(wide);
         drop(ready);
         assert!(server.run(&["has-session", "-t", "=sized:"]).is_ok());
     }
