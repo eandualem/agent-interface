@@ -1657,6 +1657,11 @@ impl Render for Browser {
                 self.new_panes.insert(id, (chooser, events));
             }
         }
+        for (id, (chooser, _)) in &self.new_panes {
+            chooser.update(cx, |chooser, cx| {
+                chooser.set_visible(expanded.is_none_or(|focused| focused == id), cx);
+            });
+        }
         if let Some(request) = self.shell_to_open.take()
             && let Some(layout) = &self.layout
             && let Some(tab) = layout.model().tab()
@@ -1946,23 +1951,10 @@ fn agent_destination(
 fn navigate_key(model: &mut tmux_workspaces_core::Layout, key: &gpui::Keystroke) -> bool {
     // Numbered selection stays fixed; other navigation comes from settings.
     if let Some((number, workspace)) = shortcuts::numbered(key) {
-        let id = if workspace {
-            model
-                .workspaces
-                .get(number - 1)
-                .map(|space| space.id.clone())
+        if workspace {
+            model.choose_workspace_number(number);
         } else {
-            model
-                .workspace()
-                .and_then(|space| space.tabs.get(number - 1))
-                .map(|tab| tab.id.clone())
-        };
-        if let Some(id) = id {
-            if workspace {
-                model.choose_workspace(&id);
-            } else {
-                model.choose_tab(&id);
-            }
+            model.choose_tab_number(number);
         }
         return true;
     }
@@ -2308,11 +2300,51 @@ mod tests {
         model.add_workspace("Other".into());
         navigate_key(&mut model, &key(shortcuts::platform_key("cmd-alt-right")));
         assert_eq!(model.selected, workspace);
+        let tab_number = if cfg!(target_os = "macos") {
+            "cmd-2"
+        } else {
+            "alt-2"
+        };
+        assert!(navigate_key(&mut model, &key(tab_number)));
+        assert_eq!(
+            model.tab().unwrap().id,
+            model.workspace().unwrap().tabs[1].id
+        );
+        let space_number = if cfg!(target_os = "macos") {
+            "cmd-alt-2"
+        } else {
+            "ctrl-alt-2"
+        };
+        assert!(navigate_key(&mut model, &key(space_number)));
+        assert_eq!(model.selected, model.workspaces[1].id);
         let before = model.clone();
+        let missing = if cfg!(target_os = "macos") {
+            "cmd-9"
+        } else {
+            "alt-9"
+        };
+        assert!(navigate_key(&mut model, &key(missing)));
         assert!(!navigate_key(&mut model, &key("ctrl-]")));
         assert!(!navigate_key(&mut model, &key("cmd-alt-]")));
         assert!(!navigate_key(&mut model, &key("cmd-ctrl-1")));
         assert_eq!(model, before);
+    }
+
+    #[test]
+    fn agent_state_lookup_omits_offline_and_unavailable_states() {
+        let mut browser = Browser::default();
+        let mut snapshot = tmux_workspaces_roster::Snapshot::default();
+        snapshot.update(br#"{"items":[{"name":"worker","state":"busy"},{"name":"idle","state":""},{"name":"gone","state":"offline"}]}"#);
+        browser.agents = Some(snapshot);
+        let states = browser.agent_states().unwrap();
+        assert_eq!(states.len(), 2);
+        assert_eq!(states["worker"], components::AgentState::Working);
+        assert_eq!(
+            states["idle"],
+            components::AgentState::from_report("unknown")
+        );
+        browser.agents.as_mut().unwrap().update(b"invalid");
+        assert!(browser.agent_states().is_none());
     }
 
     #[test]

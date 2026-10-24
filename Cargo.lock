@@ -5486,7 +5486,6 @@ dependencies = [
  "objc2-core-video",
  "objc2-foundation 0.3.2",
  "objc2-screen-capture-kit",
- "rio-vt",
  "tempfile",
  "tmux-workspaces-term",
  "tmux-workspaces-test-support",

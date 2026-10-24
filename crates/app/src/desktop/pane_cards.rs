@@ -124,12 +124,17 @@ impl Browser {
         } else {
             c.edge
         };
-        let header = Self::pane_header(leaf, focused, state, cards, cx);
         let (inline, overlay) = match settings::pane_headers() {
             // A view draws its own header, as in the design.
             _ if is_view => (None, None),
-            PaneHeaders::Always => (Some(header), None),
-            PaneHeaders::Hover => (None, Some(header)),
+            PaneHeaders::Always => (
+                Some(Self::pane_header(leaf, focused, state, cards, cx)),
+                None,
+            ),
+            PaneHeaders::Hover => (
+                None,
+                Some(Self::pane_header(leaf, focused, state, cards, cx)),
+            ),
             PaneHeaders::Off => (None, None),
         };
         let body = if let Some(chooser) = cards
