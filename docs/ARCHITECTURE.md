@@ -55,6 +55,9 @@ A background reader decodes tmux control messages into pane output, command
 replies and layout events. A terminal worker owns the engine handles and feeds
 output into each pane's terminal state. It publishes owned `Screen` data for the
 UI thread to draw, so drawing does not borrow a live engine or wait for I/O.
+If copying a screen fails, the worker reports a connection failure and stops
+publishing updates. Partially copied frames never replace the last complete
+display; embedded terminals offer the existing reconnect action.
 
 On connection or recovery, the worker captures the pane's current state and
 only the history its local scrollback retains, then continues with subsequent
@@ -66,6 +69,16 @@ The UI handles application shortcuts first. Other keys and paste operations
 are encoded for the destination pane's reported input modes and sent as literal
 bytes to that exact pane. Navigation does not redirect queued input to another
 pane. Input waits until a newly selected destination is ready.
+Each view admits at most 64 outstanding input operations and 8 MiB of payload,
+including the operation in flight, with a reserved slot and 64 bytes for a
+mouse release. A single paste remains limited to 4 MiB. Excess input is rejected
+visibly without blocking the UI.
+
+The focused terminal exposes its active pane and input caret through GPUI's
+native accessibility bridge. Text ranges include Unicode character lengths and
+cell positions. The terminal role distinguishes inspectable program output from
+an editable document: dictation tools can locate the input and send a normal
+paste, while replacing the output buffer through a value setter is unsupported.
 
 Closing a pane allows queued input, including a final mouse release, up to one
 second to drain, then cancels the connection. A control client that cannot
@@ -103,6 +116,9 @@ Native appearance and shortcuts are saved separately in `settings.toml` under
 spacing and components are described in [Design](DESIGN.md). The settings reader
 accepts regular files up to 64 KiB, including symlinks to them; unreadable,
 oversized or invalid settings keep the defaults without waiting on a pipe.
+Saves replace the destination atomically and clean up only temporaries they
+created. Failure to start a save worker follows the normal save-error callback
+and releases its pending-write accounting.
 Application shutdown waits up to ten seconds for accepted layout writes and
 two seconds for settings writes, including writes from already-closed windows.
 The wait tracks file workers, independently of their UI result handlers. A
@@ -124,8 +140,11 @@ their polling. Revealing a chooser refreshes session availability and Team data,
 preserving its filter and selection while those reads finish. Agent Usage
 refreshes every 15 seconds, like the team-wide Usage view.
 Local provider files must resolve to regular files, so pipes cannot leave a
-reader waiting for a writer. The `.env` read is limited to 1 MiB; permission
-files retain their 1 MiB read limit and skill previews their 256 KiB limit.
+reader waiting for a writer. The `.env` read is limited to 1 MiB;
+permission files reject input beyond 1 MiB and skill previews retain their
+256 KiB limit. Permission inspection distinguishes missing optional files from
+read, size and parse failures, showing incomplete results explicitly. Rule
+deduplication preserves file order and first occurrence with set membership.
 
 Pane bodies cache unchanged render trees; output, data, size, focus and appearance
 changes invalidate them. Visible working and starting indicators animate using GPUI; other states are

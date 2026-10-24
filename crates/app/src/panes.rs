@@ -269,6 +269,23 @@ struct WindowState {
 }
 
 impl WindowState {
+    fn copy_screens(
+        &mut self,
+        panes: impl IntoIterator<Item = PaneId>,
+        spare: &mut Vec<Screen>,
+    ) -> Result<Vec<(PaneId, Screen)>, String> {
+        copy_screens(panes, spare, |pane, screen| {
+            let Some((_, terminal)) = self.terminals.iter_mut().find(|(id, _)| *id == pane) else {
+                return Ok(false);
+            };
+            terminal
+                .terminal
+                .read_screen(screen)
+                .map_err(|error| error.to_string())?;
+            Ok(true)
+        })
+    }
+
     fn encode_ready_inputs(&mut self, changed: &mut Vec<PaneId>) {
         self.inputs.retain(|request| {
             let terminal = self
@@ -939,19 +956,16 @@ fn work(
         {
             let mut spare = std::mem::take(&mut state.spare);
             drop(state);
-            let mut update = Vec::with_capacity(changed.len());
-            for pane in changed.drain(..) {
-                let Some((_, terminal)) = window.terminals.iter_mut().find(|(id, _)| *id == pane)
-                else {
-                    continue;
-                };
-                let mut screen = spare.pop().unwrap_or_default();
-                if terminal.terminal.read_screen(&mut screen).is_ok() {
-                    update.push((pane, screen));
-                }
-            }
+            let update = window.copy_screens(changed.drain(..), &mut spare);
             state = shared.lock();
             state.spare.extend(spare);
+            let update = match update {
+                Ok(update) => update,
+                Err(error) => {
+                    state.failure = Some(error);
+                    break;
+                }
+            };
             state.update = Some(Update {
                 layout: window
                     .layout
@@ -983,18 +997,16 @@ fn work(
             // a key's echo, does not wait a frame behind a busy neighbour.
             let mut spare = std::mem::take(&mut state.spare);
             drop(state);
-            let mut copies = Vec::with_capacity(joining.len());
-            for &pane in &joining {
-                let Some((_, terminal)) = window.terminals.iter_mut().find(|(id, _)| *id == pane)
-                else {
-                    continue;
-                };
-                let mut screen = spare.pop().unwrap_or_default();
-                if terminal.terminal.read_screen(&mut screen).is_ok() {
-                    copies.push((pane, screen));
-                }
-            }
+            let copies = window.copy_screens(joining.iter().copied(), &mut spare);
             state = shared.lock();
+            let copies = match copies {
+                Ok(copies) => copies,
+                Err(error) => {
+                    state.spare.extend(spare);
+                    state.failure = Some(error);
+                    break;
+                }
+            };
             if let Some(waiting) = state.update.as_mut() {
                 changed.retain(|pane| !joining.contains(pane));
                 waiting.screens.extend(copies);
@@ -1232,6 +1244,26 @@ fn missing_pane(reply: &Reply, pane: PaneId) -> bool {
 
 /// Returns the panes in `changed` that the waiting update does not hold, or
 /// `None` when there are none, no update waits or the panes are being dropped.
+// A frame is published only if every requested copy succeeded. A failed copy
+// may have modified its spare, but never replaces the UI's last complete frame.
+fn copy_screens(
+    panes: impl IntoIterator<Item = PaneId>,
+    spare: &mut Vec<Screen>,
+    mut copy: impl FnMut(PaneId, &mut Screen) -> Result<bool, String>,
+) -> Result<Vec<(PaneId, Screen)>, String> {
+    let panes = panes.into_iter();
+    let mut screens = Vec::with_capacity(panes.size_hint().0);
+    for pane in panes {
+        let mut screen = spare.pop().unwrap_or_default();
+        match copy(pane, &mut screen) {
+            Ok(true) => screens.push((pane, screen)),
+            Ok(false) => spare.push(screen),
+            Err(error) => return Err(format!("Could not refresh pane %{}: {error}", pane.0)),
+        }
+    }
+    Ok(screens)
+}
+
 fn joining(state: &State, changed: &[PaneId]) -> Option<Vec<PaneId>> {
     let waiting = state.update.as_ref().filter(|_| !state.cancelled)?;
     let absent: Vec<PaneId> = changed
@@ -1250,6 +1282,31 @@ mod tests {
     use tmux_workspaces_test_support::TmuxServer;
 
     use super::*;
+
+    #[test]
+    fn screen_copy_failure_never_returns_a_partial_update() {
+        for failed in [PaneId(1), PaneId(2)] {
+            let mut spare = vec![Screen::default(), Screen::default()];
+            let result = copy_screens([PaneId(1), PaneId(2)], &mut spare, |pane, screen| {
+                screen.clear(10, 2);
+                if pane == failed {
+                    Err("copy failed".into())
+                } else {
+                    Ok(true)
+                }
+            });
+            assert_eq!(
+                result.unwrap_err(),
+                format!("Could not refresh pane %{}: copy failed", failed.0)
+            );
+        }
+        let screens = copy_screens([PaneId(1)], &mut Vec::new(), |_, screen| {
+            screen.clear(10, 2);
+            Ok(true)
+        })
+        .unwrap();
+        assert_eq!(screens[0].1.cols(), 10);
+    }
 
     #[test]
     fn shutdown_unblocks_a_stopped_clients_writer_without_stopping_its_session() {
