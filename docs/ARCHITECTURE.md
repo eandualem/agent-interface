@@ -190,7 +190,11 @@ Policies section and is written in the new form with the next change.
 Reports use Backbone's existing read-only `/api/reports` and `/api/responses`
 feeds. The native pane keeps report history, latest owner blockers and retained
 answers distinct. Pagination follows each feed's cursor; Refresh starts at the
-newest page. An open record keeps its contents through background refreshes.
+newest page. An optional agent filter is sent to both feeds and retained across
+view changes and pagination; choosing another agent restarts at the newest page.
+The picker reads configured agents, with page authors as a fallback when the
+roster is unavailable. Each row opens the complete authored record, including
+its sections and links. An open record keeps its contents through background refreshes.
 An open Response is polled by ID so its correction metadata stays current even
 after newer publications move it off its former list page.
 Authored status and blocker text do not change runtime state or grant approval.

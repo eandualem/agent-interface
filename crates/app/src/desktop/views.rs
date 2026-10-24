@@ -210,7 +210,7 @@ impl ViewPane {
             pane.artifacts = Some(artifacts);
             return pane;
         }
-        if pane.view.kind == ViewKind::Skills {
+        if matches!(pane.view.kind, ViewKind::Skills | ViewKind::Reports) {
             let field = cx.new(|cx| NameField::filter(window, cx));
             pane._search
                 .push(cx.subscribe(&field, |pane, _, event, cx| {
@@ -303,7 +303,7 @@ impl ViewPane {
                 Some(item) if matches!(item.content, views::ReportContent::Response { .. }) => {
                     Request::Response(item.id)
                 }
-                _ => Request::Reports(self.reports.query.clone()),
+                _ => Request::Reports(self.reports.query.clone(), self.reports.agent.clone()),
             },
             ViewKind::Artifacts => unreachable!("artifacts have no Backbone source"),
             ViewKind::Agent => Request::Agent(

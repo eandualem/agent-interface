@@ -45,7 +45,7 @@ pub enum Request {
     /// Recent deliveries and inbound events.
     Activity,
     /// Authored progress reports or retained answers, one page at a time.
-    Reports(ReportQuery),
+    Reports(ReportQuery, Option<String>),
     /// Refresh an open answer independently of its former list page.
     Response(u64),
     /// Every skill an agent can load, team-wide.
@@ -188,7 +188,9 @@ pub fn read(
             &api.get("/api/swarms")?,
         )?)),
         Request::Usage(range) => Ok(Data::Usage(Usage::decode(&api.get(&usage_path(*range))?)?)),
-        Request::Reports(query) => Ok(Data::Reports(reports::read(&api, query)?)),
+        Request::Reports(query, agent) => {
+            Ok(Data::Reports(reports::read(&api, query, agent.as_deref())?))
+        }
         Request::Response(id) => Ok(Data::Reports(reports::read_response(&api, *id)?)),
         Request::Activity => {
             // History is an addition: when it cannot be read, the timeline

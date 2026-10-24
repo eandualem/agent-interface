@@ -22,8 +22,8 @@ impl Default for ReportQuery {
 }
 
 impl ReportQuery {
-    fn path(&self) -> String {
-        match self {
+    fn path(&self, agent: Option<&str>) -> String {
+        let mut path = match self {
             Self::Latest(cursor) | Self::Recent(cursor) => {
                 let mut path = format!(
                     "/api/reports?limit=20&history={}",
@@ -31,15 +31,7 @@ impl ReportQuery {
                 );
                 if let Some(cursor) = cursor {
                     path.push_str("&cursor=");
-                    // Cursors are opaque. Encode bytes rather than interpreting them.
-                    for byte in cursor.bytes() {
-                        if byte.is_ascii_alphanumeric() || b"-._~".contains(&byte) {
-                            path.push(char::from(byte));
-                        } else {
-                            use std::fmt::Write;
-                            let _ = write!(path, "%{byte:02X}");
-                        }
-                    }
+                    path.push_str(&encode(cursor));
                 }
                 path
             }
@@ -50,8 +42,26 @@ impl ReportQuery {
                 }
                 path
             }
+        };
+        if let Some(agent) = agent {
+            path.push_str("&agent=");
+            path.push_str(&encode(agent));
+        }
+        path
+    }
+}
+
+fn encode(value: &str) -> String {
+    let mut encoded = String::new();
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || b"-._~".contains(&byte) {
+            encoded.push(char::from(byte));
+        } else {
+            use std::fmt::Write;
+            let _ = write!(encoded, "%{byte:02X}");
         }
     }
+    encoded
 }
 
 /// One authored section; its links are shown only after a user chooses the record.
@@ -135,6 +145,8 @@ pub struct ReportPage {
     pub items: Vec<ReportItem>,
     /// Continue this same feed without changing its filters.
     pub next: Option<ReportQuery>,
+    /// Configured agents and this page's authors, for choosing a feed filter.
+    pub agents: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -175,8 +187,21 @@ struct ResponseText {
     action: String,
 }
 
-pub(super) fn read(api: &Api<'_>, query: &ReportQuery) -> Result<ReportPage, &'static str> {
-    decode(&api.get(&query.path())?, query)
+pub(super) fn read(
+    api: &Api<'_>,
+    query: &ReportQuery,
+    agent: Option<&str>,
+) -> Result<ReportPage, &'static str> {
+    let mut page = decode(&api.get(&query.path(agent))?, query)?;
+    // An unavailable roster must not prevent reading reports. Authors on the
+    // current page still provide choices, including retained historical names.
+    if let Ok(agents) = super::library::agents(api) {
+        page.agents
+            .extend(agents.into_iter().map(|agent| agent.name));
+    }
+    page.agents.sort_unstable();
+    page.agents.dedup();
+    Ok(page)
 }
 
 pub(super) fn read_response(api: &Api<'_>, id: u64) -> Result<ReportPage, &'static str> {
@@ -204,6 +229,7 @@ fn decode_response(body: &[u8]) -> Result<ReportPage, &'static str> {
     Ok(ReportPage {
         items: vec![response_item(record)],
         next: None,
+        agents: Vec::new(),
     })
 }
 
@@ -276,7 +302,12 @@ fn decode(body: &[u8], query: &ReportQuery) -> Result<ReportPage, &'static str> 
             }
         }
     };
-    Ok(ReportPage { items, next })
+    let agents = items.iter().map(|item| item.author.clone()).collect();
+    Ok(ReportPage {
+        items,
+        next,
+        agents,
+    })
 }
 
 #[cfg(test)]
@@ -301,7 +332,7 @@ mod tests {
         assert_eq!(page.items[0].author, "renamed");
         assert!(page.items[0].needs_owner());
         assert_eq!(
-            page.next.unwrap().path(),
+            page.next.unwrap().path(None),
             "/api/reports?limit=20&history=false&cursor=opaque%2B%2F%3D%20value"
         );
         let answers = json!({"items":[{"id":7,"author_name":"worker","agent_name":null,
@@ -318,8 +349,32 @@ mod tests {
         assert_eq!(detail.items, page.items);
         assert!(detail.next.is_none());
         assert_eq!(
-            page.next.unwrap().path(),
+            page.next.unwrap().path(None),
             "/api/responses?limit=20&before_id=7"
         );
+    }
+
+    #[test]
+    fn agent_filters_apply_to_each_feed_and_its_pagination() {
+        for (query, expected) in [
+            (
+                ReportQuery::Latest(Some("page+2".into())),
+                "/api/reports?limit=20&history=false&cursor=page%2B2",
+            ),
+            (
+                ReportQuery::Recent(None),
+                "/api/reports?limit=20&history=true",
+            ),
+            (
+                ReportQuery::Responses(Some(7)),
+                "/api/responses?limit=20&before_id=7",
+            ),
+        ] {
+            assert_eq!(
+                query.path(Some("worker&history=false")),
+                format!("{expected}&agent=worker%26history%3Dfalse")
+            );
+            assert_eq!(query.path(None), expected);
+        }
     }
 }

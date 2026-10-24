@@ -14,12 +14,22 @@ use crate::desktop::{
 #[derive(Default)]
 pub(super) struct State {
     pub query: ReportQuery,
+    pub agent: Option<String>,
+    choosing_agent: bool,
     previous: Vec<ReportQuery>,
     /// Records are immutable: keep the opened answer through list refreshes.
     pub open: Option<ReportItem>,
 }
 
 impl State {
+    fn select_agent(&mut self, agent: Option<String>) {
+        self.agent = agent;
+        self.query = first(&self.query);
+        self.previous.clear();
+        self.open = None;
+        self.choosing_agent = false;
+    }
+
     /// Authored text is immutable; correction metadata can change after opening.
     pub fn observe(&mut self, page: &ReportPage) {
         let Some(open) = &mut self.open else { return };
@@ -157,6 +167,65 @@ pub(super) fn body(pane: &ViewPane, page: &ReportPage, cx: &mut Context<ViewPane
             })),
         );
     }
+    toolbar = toolbar.child(
+        ui::chip(
+            "reports-agent",
+            SharedString::from(format!(
+                "{} ▾",
+                pane.reports.agent.as_deref().unwrap_or("All agents")
+            )),
+            pane.reports.agent.is_some(),
+        )
+        .on_click(cx.listener(|pane, _, _, cx| {
+            pane.reports.choosing_agent = !pane.reports.choosing_agent;
+            cx.notify();
+        })),
+    );
+    let mut agent_choices = div().flex().flex_col().flex_shrink_0();
+    if pane.reports.choosing_agent {
+        if let Some(search) = &pane.search {
+            agent_choices = agent_choices.child(
+                ui::view_toolbar()
+                    .gap(px(t.space.s8))
+                    .child(ui::text(div().text_color(c.muted), &t.text.meta).child("Find agent"))
+                    .child(div().flex_1().min_w_0().child(search.clone())),
+            );
+        }
+        let mut choices = div()
+            .id("report-agents")
+            .max_h(px(180.))
+            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .px(px(t.space.s12));
+        let filter = pane.query.trim().to_lowercase();
+        for agent in std::iter::once(None).chain(
+            page.agents
+                .iter()
+                .filter(|name| name.to_lowercase().contains(&filter))
+                .cloned()
+                .map(Some),
+        ) {
+            let name = agent.as_deref().unwrap_or("All agents");
+            choices = choices.child(
+                ui::row(
+                    SharedString::from(format!("reports-agent-{name}")),
+                    pane.reports.agent == agent,
+                )
+                .flex_shrink_0()
+                .child(name.to_owned())
+                .on_click(cx.listener(move |pane, _, _, cx| {
+                    pane.reports.select_agent(agent.clone());
+                    pane.query.clear();
+                    if let Some(search) = &pane.search {
+                        search.update(cx, |field, cx| field.clear(cx));
+                    }
+                    pane.refetch(true, cx);
+                })),
+            );
+        }
+        agent_choices = agent_choices.child(choices);
+    }
     let waiting = matches!(pane.reports.query, ReportQuery::Latest(_));
     let mut rows = list("reports-rows").gap(px(t.space.s6));
     let mut count = 0;
@@ -202,6 +271,12 @@ pub(super) fn body(pane: &ViewPane, page: &ReportPage, cx: &mut Context<ViewPane
                     )),
                 )
                 .child(ui::text(div().text_color(c.text), &t.text.body).child(line(summary)))
+                .child(ui::text(div().text_color(c.accent), &t.text.meta).child(
+                    match item.content {
+                        ReportContent::Progress { .. } => "Read full report →",
+                        ReportContent::Response { .. } => "Read full response →",
+                    },
+                ))
                 .on_click(cx.listener(move |pane, _, _, cx| {
                     pane.reports.open = Some(open.clone());
                     pane.refetch(false, cx);
@@ -254,6 +329,7 @@ pub(super) fn body(pane: &ViewPane, page: &ReportPage, cx: &mut Context<ViewPane
         .flex_col()
         .child(header)
         .child(toolbar)
+        .child(agent_choices)
         .child(rows)
         .child(navigation)
         .child(ui::view_footer(
@@ -291,11 +367,29 @@ mod tests {
         state.observe(&ReportPage {
             items: vec![item("A different body", Some(9))],
             next: None,
+            agents: Vec::new(),
         });
         let open = state.open.unwrap();
         assert_eq!(label(&open), "corrected by #9");
         assert!(
             matches!(open.content, ReportContent::Response { answer, .. } if answer == "Original answer")
         );
+    }
+
+    #[test]
+    fn changing_agent_restarts_the_current_feed() {
+        let mut state = State {
+            query: ReportQuery::Responses(Some(7)),
+            previous: vec![ReportQuery::Responses(None)],
+            choosing_agent: true,
+            ..State::default()
+        };
+        state.select_agent(Some("worker".into()));
+        assert_eq!(state.query, ReportQuery::Responses(None));
+        assert_eq!(state.agent.as_deref(), Some("worker"));
+        assert!(state.previous.is_empty());
+        assert!(!state.choosing_agent);
+        state.select_agent(None);
+        assert!(state.agent.is_none());
     }
 }
