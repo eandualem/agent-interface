@@ -2142,6 +2142,9 @@ impl Render for Browser {
                         _ => false,
                     };
                     if handled {
+                        for (view, _) in browser.views.values() {
+                            view.read(cx).focus_native(cx);
+                        }
                         cx.stop_propagation();
                         return;
                     }
@@ -2188,6 +2191,11 @@ impl Render for Browser {
                         .as_mut()
                         .is_some_and(|layout| navigate_key(layout.model_mut(), key));
                     if sidebar || navigated {
+                        // Keyboard navigation needs the same native responder
+                        // handoff as a click outside the HTML document.
+                        for (view, _) in browser.views.values() {
+                            view.read(cx).focus_native(cx);
+                        }
                         if let Some(focus) = &browser.navigation {
                             window.focus(focus, cx);
                         }
