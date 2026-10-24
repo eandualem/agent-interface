@@ -1,7 +1,11 @@
-# Install tmux-workspaces
+# Install Agent Interface
 
-The native app needs no Rust, Zig, or Python installation. It uses **tmux 3.3 or
+Native packages need no Rust, Zig, or Python installation. It uses **tmux 3.3 or
 newer** for terminal sessions.
+
+The executable, archive names, application bundle path and data directories retain
+`tmux-workspaces` for compatibility with existing installations and libraries.
+The product and repository are named Agent Interface.
 
 ## Runtime prerequisites
 
@@ -36,11 +40,14 @@ Run `tmux -V` and confirm it reports 3.3 or newer.
 
 ## Install a package
 
-Once native packages are available on the [releases page](https://github.com/eandualem/tmux-workspaces-rs/releases),
+Native packages have not been published yet. To run the app now, follow the
+[source build instructions](../CONTRIBUTING.md#set-up).
+
+Once native packages are available on the [releases page](https://github.com/eandualem/agent-interface/releases),
 install the latest build with:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/eandualem/tmux-workspaces-rs/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/eandualem/agent-interface/main/install.sh | sh
 ```
 
 The installer downloads the matching archive and checks its SHA-256 checksum
@@ -61,7 +68,7 @@ Download the installer, inspect it, then point it at your archive. This example
 uses Apple silicon; substitute the matching filename for your computer.
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/eandualem/tmux-workspaces-rs/main/install.sh -o install.sh
+curl -fsSL https://raw.githubusercontent.com/eandualem/agent-interface/main/install.sh -o install.sh
 sh install.sh --archive "$HOME/Downloads/tmux-workspaces-aarch64-apple-darwin.tar.gz"
 ```
 
@@ -94,7 +101,7 @@ does not remove quarantine attributes or disable Gatekeeper.
 The installer places the app in `~/.local/lib/tmux-workspaces`, adds a command in
 `~/.local/bin`, and creates a desktop launcher under
 `${XDG_DATA_HOME:-~/.local/share}/applications`. Add `~/.local/bin` to your shell's
-`PATH` if needed, or launch **tmux-workspaces** from the applications menu.
+`PATH` if needed, or launch **Agent Interface** from the applications menu.
 
 ## Update or remove
 

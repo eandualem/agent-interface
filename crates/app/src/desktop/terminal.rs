@@ -21,6 +21,29 @@ pub(super) struct Target {
 }
 
 impl Target {
+    /// Clear only the attachment the user acted on, in the selected tab.
+    pub fn detach_from(&self, layout: &mut tmux_workspaces_core::Layout) -> bool {
+        layout.tab().is_some_and(|tab| {
+            tab.tree
+                .leaves()
+                .into_iter()
+                .any(|leaf| self.matches_leaf(leaf))
+        }) && layout.choose_pane(&self.leaf.id)
+            && layout.detach_attachment()
+    }
+
+    /// A hidden tab still owns its connection until the saved target changes.
+    pub fn exists_in(&self, layout: &tmux_workspaces_core::Layout) -> bool {
+        layout.workspaces.iter().any(|workspace| {
+            workspace.tabs.iter().any(|tab| {
+                tab.tree
+                    .leaves()
+                    .into_iter()
+                    .any(|leaf| self.matches_leaf(leaf))
+            })
+        })
+    }
+
     pub fn matches_leaf(&self, leaf: &Leaf) -> bool {
         self.leaf.id == leaf.id
             && self.leaf.attachment == leaf.attachment
@@ -126,6 +149,10 @@ pub(super) struct LiveTerminal {
     closed: Option<gpui::Subscription>,
     _windows: Task<()>,
 }
+
+pub(super) struct Detach;
+
+impl gpui::EventEmitter<Detach> for LiveTerminal {}
 
 impl LiveTerminal {
     /// Whether this leaf's terminal has keyboard focus.
@@ -368,12 +395,20 @@ impl Render for LiveTerminal {
             .when(!self.connecting && self.error.is_some(), |el| {
                 el.child(
                     div()
+                        .flex()
+                        .gap(gpui::px(t.space.s8))
                         .px(gpui::px(t.space.s12))
                         .pb(gpui::px(t.space.s8))
                         .child(
                             ui::button("reconnect", "Reconnect", ui::Button::Secondary)
                                 .on_click(cx.listener(|terminal, _, _, cx| terminal.start(cx))),
-                        ),
+                        )
+                        .when(self.target.leaf.attachment.is_some(), |el| {
+                            el.child(
+                                ui::button("detach", "Detach", ui::Button::Secondary)
+                                    .on_click(cx.listener(|_, _, _, cx| cx.emit(Detach))),
+                            )
+                        }),
                 )
             })
     }
@@ -402,6 +437,56 @@ mod tests {
     use tmux_workspaces_core::Attachment;
     use tmux_workspaces_term::Screen;
     use tmux_workspaces_test_support::TmuxServer;
+
+    #[test]
+    fn attachment_survives_navigation_and_detach_returns_the_same_pane_to_its_chooser() {
+        let mut model = tmux_workspaces_core::Layout::initial("/work".into());
+        model.attach(Some(Attachment {
+            session: "worker".into(),
+            source_socket: Some("/fixture/source".into()),
+        }));
+        let target = Target {
+            leaf: model.pane().unwrap().clone(),
+            directory: None,
+            source: Ok("/fixture/source".into()),
+        };
+        let workspace = model.selected.clone();
+        let tab = model.tab().unwrap().id.clone();
+        model.add_tab(None, "/other".into(), true);
+        assert!(target.exists_in(&model));
+        assert!(!target.detach_from(&mut model));
+        model.add_workspace("Other".into());
+        assert!(target.exists_in(&model));
+        model.choose_workspace(&workspace);
+        model.choose_tab(&tab);
+        model.split(
+            tmux_workspaces_core::Direction::Right,
+            "/other".into(),
+            true,
+        );
+        model.focus = true;
+        assert!(target.exists_in(&model));
+        model.focus = false;
+        assert!(target.detach_from(&mut model));
+        let pane = model.pane().unwrap();
+        assert!(pane.empty && pane.attachment.is_none());
+        assert_eq!(pane.id, target.leaf.id);
+        assert_eq!(pane.cwd, target.leaf.cwd);
+        assert!(!target.exists_in(&model));
+        assert!(model.fill_pane(
+            &tab,
+            &target.leaf.id,
+            Some(Attachment {
+                session: "replacement".into(),
+                source_socket: Some("/fixture/source".into()),
+            })
+        ));
+        assert!(!target.detach_from(&mut model));
+        assert_eq!(
+            model.pane().unwrap().attachment.as_ref().unwrap().session,
+            "replacement"
+        );
+    }
 
     fn text(screen: &Screen) -> String {
         (0..screen.rows())

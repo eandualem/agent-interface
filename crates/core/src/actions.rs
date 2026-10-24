@@ -590,6 +590,19 @@ impl Layout {
         true
     }
 
+    /// Forget the focused attachment and return its pane to the chooser.
+    /// The pane identity and directory survive; no tmux session is stopped.
+    pub fn detach_attachment(&mut self) -> bool {
+        let Some(pane) = self.pane_mut() else {
+            return false;
+        };
+        if pane.attachment.take().is_none() {
+            return false;
+        }
+        pane.empty = true;
+        true
+    }
+
     /// Remove the selected tab record and select the first remaining tab.
     /// No shell or attachment session is stopped by this model operation.
     pub fn close_tab(&mut self) -> bool {

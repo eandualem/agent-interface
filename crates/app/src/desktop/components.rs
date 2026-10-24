@@ -5,8 +5,8 @@
 //! each component and its states.
 
 use gpui::{
-    AnyElement, BoxShadow, Div, Rgba, SharedString, Stateful, Svg, div, point, prelude::*, px,
-    relative, svg,
+    Animation, AnimationExt, AnyElement, BoxShadow, Div, Rgba, SharedString, Stateful, Svg,
+    Transformation, div, percentage, point, prelude::*, px, relative, svg,
 };
 
 use super::{
@@ -257,27 +257,41 @@ pub fn menu_rule() -> Div {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AgentState {
     NeedsYou,
+    Blocked,
     Working,
+    Starting,
     Idle,
     Unknown,
 }
 
 impl AgentState {
-    /// Fold a reported state onto the four the design shows.
+    /// Preserve reported states while sharing their visual categories.
     pub fn from_report(state: &str) -> Self {
         match state {
-            "waiting_for_human" | "blocked" => Self::NeedsYou,
-            "busy" | "starting" => Self::Working,
+            "waiting_for_human" => Self::NeedsYou,
+            "blocked" => Self::Blocked,
+            "busy" => Self::Working,
+            "starting" => Self::Starting,
             "idle" | "running" => Self::Idle,
             _ => Self::Unknown,
         }
+    }
+
+    pub fn needs_you(self) -> bool {
+        matches!(self, Self::NeedsYou | Self::Blocked)
+    }
+
+    pub fn working(self) -> bool {
+        matches!(self, Self::Working | Self::Starting)
     }
 
     /// The short word shown beside a working or needs-you agent.
     pub fn word(self) -> &'static str {
         match self {
             Self::NeedsYou => "needs you",
+            Self::Blocked => "blocked",
             Self::Working => "working",
+            Self::Starting => "starting",
             Self::Idle => "idle",
             Self::Unknown => "unknown",
         }
@@ -301,11 +315,11 @@ pub fn agent_symbol(state: AgentState) -> Div {
             .child(glyph)
     };
     match state {
-        AgentState::NeedsYou => frame
+        AgentState::NeedsYou | AgentState::Blocked => frame
             .rounded_full()
             .bg(c.attention)
             .child(mark("!", c.on_attention)),
-        AgentState::Working => frame
+        AgentState::Working | AgentState::Starting => frame
             .child(
                 div()
                     .absolute()
@@ -315,10 +329,18 @@ pub fn agent_symbol(state: AgentState) -> Div {
                     .border_color(c.accent_soft),
             )
             .child(
-                div()
-                    .absolute()
-                    .inset_0()
-                    .child(icon("agent-arc", size, c.accent)),
+                div().absolute().inset_0().child(
+                    icon("agent-arc", size, c.accent).with_animation(
+                        "working-arc",
+                        Animation::new(std::time::Duration::from_millis(
+                            t.motion.spinner_ms as u64,
+                        ))
+                        .repeat(),
+                        |arc, delta| {
+                            arc.with_transformation(Transformation::rotate(percentage(delta)))
+                        },
+                    ),
+                ),
             )
             .child(icon("agent-play", size, c.accent)),
         AgentState::Idle => frame.child(
@@ -1259,14 +1281,19 @@ mod tests {
     use super::AgentState;
 
     #[test]
-    fn reported_states_fold_onto_the_four_the_design_shows() {
+    fn reported_states_keep_distinct_labels_and_visual_categories() {
         assert_eq!(
             AgentState::from_report("waiting_for_human"),
             AgentState::NeedsYou
         );
-        assert_eq!(AgentState::from_report("blocked"), AgentState::NeedsYou);
+        assert_eq!(AgentState::from_report("blocked"), AgentState::Blocked);
         assert_eq!(AgentState::from_report("busy"), AgentState::Working);
-        assert_eq!(AgentState::from_report("starting"), AgentState::Working);
+        assert_eq!(AgentState::from_report("starting"), AgentState::Starting);
+        assert!(AgentState::Blocked.needs_you());
+        assert!(AgentState::Starting.working());
+        assert!(!AgentState::Idle.working());
+        assert_eq!(AgentState::Blocked.word(), "blocked");
+        assert_eq!(AgentState::Starting.word(), "starting");
         assert_eq!(AgentState::from_report("idle"), AgentState::Idle);
         assert_eq!(AgentState::from_report(""), AgentState::Unknown);
         assert_eq!(

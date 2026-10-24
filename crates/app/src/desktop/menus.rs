@@ -46,6 +46,9 @@ impl Browser {
             } else {
                 ("Open terminal".into(), TabAction::OpenTerminal, None)
             }));
+            if tab_menu.shell.is_some() {
+                items.push(Some(("Detach session".into(), TabAction::Detach, None)));
+            }
             let focus = if model.focus {
                 "Restore layout"
             } else {

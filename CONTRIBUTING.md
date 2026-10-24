@@ -1,4 +1,4 @@
-# Contributing
+# Contributing to Agent Interface
 
 This guide covers setting up a machine, building and testing, the rules for
 tests that use tmux, and how changes are proposed. Read

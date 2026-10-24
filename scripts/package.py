@@ -135,7 +135,7 @@ def main():
         }, indent=2) + "\n")
         if mac:
             with (bundle / "Contents/Info.plist").open("wb") as stream:
-                plistlib.dump({"CFBundleIdentifier": APP_ID, "CFBundleName": "tmux-workspaces",
+                plistlib.dump({"CFBundleIdentifier": APP_ID, "CFBundleName": "Agent Interface",
                                "CFBundleExecutable": "tmux-workspaces", "CFBundlePackageType": "APPL",
                                "CFBundleShortVersionString": version, "CFBundleVersion": version,
                                "LSMinimumSystemVersion": "11.0", "NSHighResolutionCapable": True}, stream)

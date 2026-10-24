@@ -19,7 +19,7 @@ members = [
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
-repository = "https://github.com/eandualem/tmux-workspaces-rs"
+repository = "https://github.com/eandualem/agent-interface"
 publish = false
 
 [workspace.dependencies]
