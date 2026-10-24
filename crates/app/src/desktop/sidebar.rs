@@ -45,10 +45,14 @@ impl Browser {
     /// Each agent's state, or none while Agent Backbone is unreachable.
     pub(super) fn agent_states(&self) -> Option<HashMap<String, AgentState>> {
         let snapshot = self.agents.as_ref()?;
+        if snapshot.error.is_some() {
+            return None;
+        }
         Some(
             snapshot
-                .active_entries()?
-                .into_iter()
+                .states
+                .iter()
+                .filter(|(_, state)| state.as_str() != "offline")
                 .map(|(name, state)| (name.to_owned(), AgentState::from_report(state)))
                 .collect(),
         )

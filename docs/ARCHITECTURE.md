@@ -112,8 +112,10 @@ Backbone or the Python implementation. The `roster::views` adapter reads and
 decodes view data; `app::desktop::views` renders it in native panes. Each
 polling worker reuses its HTTP client while validating the endpoint and
 credentials for every request. Selection changes coalesce and cancel obsolete
-request chains. Views hidden by an expanded pane pause their polling. Agent
-Usage refreshes every 15 seconds, like the team-wide Usage view.
+request chains. Views and empty-pane choosers hidden by an expanded pane pause
+their polling. Revealing a chooser refreshes session availability and Team data,
+preserving its filter and selection while those reads finish. Agent Usage
+refreshes every 15 seconds, like the team-wide Usage view.
 Local provider files must resolve to regular files, so pipes cannot leave a
 reader waiting for a writer. The `.env` read is limited to 1 MiB; permission
 files retain their 1 MiB read limit and skill previews their 256 KiB limit.

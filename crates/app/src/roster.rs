@@ -155,12 +155,19 @@ impl ViewSource {
                         views::Request::Agent(_, views::Part::Usage(_)) => Duration::from_secs(15),
                         _ => every,
                     };
-                    if wanted.load(Ordering::Relaxed)
-                        && visible.load(Ordering::Relaxed)
-                        && current_generation.load(Ordering::Relaxed) == generation
-                    {
-                        *pending.lock().unwrap_or_else(|e| e.into_inner()) =
-                            Some((request, update));
+                    let published = {
+                        let mut pending = pending.lock().unwrap_or_else(|e| e.into_inner());
+                        if wanted.load(Ordering::Relaxed)
+                            && visible.load(Ordering::Relaxed)
+                            && current_generation.load(Ordering::Relaxed) == generation
+                        {
+                            *pending = Some((request, update));
+                            true
+                        } else {
+                            false
+                        }
+                    };
+                    if published {
                         wake();
                     }
                     match stopped.recv_timeout(interval) {
@@ -194,8 +201,10 @@ impl ViewSource {
     /// Pause reads while another pane is expanded, preserving this view's
     /// selection and data. Showing it again requests an immediate refresh.
     pub fn set_active(&self, active: bool) {
+        let mut pending = self.updates.lock().unwrap_or_else(|e| e.into_inner());
         if self.active.swap(active, Ordering::Relaxed) != active {
             self.generation.fetch_add(1, Ordering::Relaxed);
+            *pending = None;
             let _ = self.stop.send(());
         }
     }
@@ -327,11 +336,15 @@ mod tests {
         }
         fs::write(directory.join("changed"), "").unwrap();
         woken.recv_timeout(Duration::from_secs(5)).unwrap();
-        let (request, update) = source.take_update().unwrap();
-        assert_eq!(request, views::Request::Usage(views::Range::Week));
-        assert!(update.is_ok(), "{update:?}");
+        {
+            let pending = source.updates.lock().unwrap();
+            let (request, update) = pending.as_ref().unwrap();
+            assert_eq!(*request, views::Request::Usage(views::Range::Week));
+            assert!(update.is_ok(), "{update:?}");
+        }
         assert!(woken.recv_timeout(Duration::from_millis(200)).is_err());
         source.set_active(false);
+        assert!(source.take_update().is_none());
         source.set_request(views::Request::Usage(views::Range::Hour));
         assert!(woken.recv_timeout(Duration::from_millis(200)).is_err());
         source.set_active(true);
