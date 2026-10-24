@@ -39,10 +39,7 @@ impl SessionChooser {
         let input = cx.subscribe_in(&field, window, |chooser, _, event, _, cx| {
             match event {
                 NameEvent::Changed(query) => {
-                    chooser.choices.edit('\u{15}');
-                    for ch in query.chars() {
-                        chooser.choices.edit(ch);
-                    }
+                    chooser.choices.replace_query(query);
                     chooser.scroll.scroll_to_item(0);
                 }
                 NameEvent::Save => {
