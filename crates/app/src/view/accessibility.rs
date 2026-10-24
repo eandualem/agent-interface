@@ -23,6 +23,13 @@ pub(super) fn terminal(
     let Some(bounds) = builder.parent_node().bounds() else {
         return;
     };
+    if let Some(value) = plain_value(screen) {
+        // AccessKit's macOS adapter reports NSRange(0, 0) for text runs with
+        // no selection. A plain value keeps output readable without enabling
+        // native text-range attributes when the caret is unavailable.
+        builder.parent_node().set_value(value);
+        return;
+    }
     let cols = grid
         .layout
         .iter()
@@ -75,6 +82,23 @@ pub(super) fn terminal(
             });
         }
     }
+}
+
+fn plain_value(screen: &Screen) -> Option<String> {
+    if screen.cursor_in_viewport() {
+        return None;
+    }
+    Some(
+        (0..screen.rows())
+            .map(|row| {
+                text_run(screen, row, 0.0)
+                    .0
+                    .value()
+                    .unwrap_or_default()
+                    .to_owned()
+            })
+            .collect(),
+    )
 }
 
 fn text_run(screen: &Screen, row: u16, width: f64) -> (Node, usize) {
@@ -157,6 +181,7 @@ mod tests {
         });
         assert!(!screen.cursor().visible);
         assert!(screen.cursor_in_viewport());
+        assert!(plain_value(&screen).is_none());
         let (run, caret) = text_run(&screen, 0, 8.0);
         assert_eq!(run.value(), Some("a😀e\u{301} \n"));
         assert_eq!(run.character_lengths(), &[1, 4, 3, 1, 1]);
@@ -185,6 +210,7 @@ mod tests {
         screen.push("x", Width::Narrow, Style::default());
         let (run, _) = text_run(&screen, 0, 8.0);
         assert_eq!(run.value(), Some(format!("{long_cluster}x").as_str()));
+        assert_eq!(plain_value(&screen), Some(format!("{long_cluster}x")));
         assert_eq!(run.character_lengths(), &[255, 46, 1]);
         assert_eq!(run.character_positions(), Some([0.0, 8.0, 8.0].as_slice()));
         assert_eq!(run.character_widths(), Some([8.0, 0.0, 8.0].as_slice()));
