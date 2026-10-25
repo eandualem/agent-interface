@@ -200,9 +200,9 @@ impl Browser {
     pub(super) fn sidebar_top(&self, window: &Window) -> f32 {
         let t = tokens();
         if window.is_fullscreen() {
-            t.space.s8
+            t.size.titlebar / 2.0
         } else {
-            t.size.titlebar - t.space.s8
+            t.size.titlebar - t.space.s4
         }
     }
 
