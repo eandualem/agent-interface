@@ -309,11 +309,11 @@ impl PolicyLibrary {
                                 )
                             }),
                     ) {
-                        return Err(super::UNREADABLE);
+                        return Err(super::POLICY_LIMIT);
                     }
                     briefs.push(brief);
                 }
-                Err(super::NOT_SERVED) => return Err(super::NOT_SERVED),
+                Err(error @ (super::NOT_SERVED | super::POLICY_LIMIT)) => return Err(error),
                 // One agent's brief failing leaves the rest of the library.
                 Err(error) => failure = Some(error),
             }
@@ -588,57 +588,59 @@ mod tests {
             atomic::{AtomicBool, Ordering},
         };
 
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        listener.set_nonblocking(true).unwrap();
-        let url = format!("http://{}", listener.local_addr().unwrap());
-        let stop = Arc::new(AtomicBool::new(false));
-        let finished = stop.clone();
-        let server = std::thread::spawn(move || {
-            let mut requests = 0;
-            let deadline = Instant::now() + Duration::from_secs(5);
-            while !finished.load(Ordering::Relaxed) && Instant::now() < deadline {
-                let (mut socket, _) = match listener.accept() {
-                    Ok(client) => client,
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        std::thread::sleep(Duration::from_millis(1));
-                        continue;
+        for counts in [[2049, 2049, 1], [1, 4097, 1]] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            let stop = Arc::new(AtomicBool::new(false));
+            let finished = stop.clone();
+            let server = std::thread::spawn(move || {
+                let mut requests = 0;
+                let deadline = Instant::now() + Duration::from_secs(5);
+                while !finished.load(Ordering::Relaxed) && Instant::now() < deadline {
+                    let (mut socket, _) = match listener.accept() {
+                        Ok(client) => client,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(Duration::from_millis(1));
+                            continue;
+                        }
+                        Err(error) => panic!("{error}"),
+                    };
+                    socket
+                        .set_read_timeout(Some(Duration::from_secs(1)))
+                        .unwrap();
+                    let mut reader = BufReader::new(&socket);
+                    let mut line = String::new();
+                    while reader.read_line(&mut line).unwrap() != 0 {
+                        if line == "\r\n" {
+                            break;
+                        }
+                        line.clear();
                     }
-                    Err(error) => panic!("{error}"),
-                };
-                socket
-                    .set_read_timeout(Some(Duration::from_secs(1)))
+                    requests += 1;
+                    let rows = std::iter::repeat_n("{}", counts[requests - 1])
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    let body = format!("{{\"sources\":[{rows}]}}");
+                    write!(
+                        socket,
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
                     .unwrap();
-                let mut reader = BufReader::new(&socket);
-                let mut line = String::new();
-                while reader.read_line(&mut line).unwrap() != 0 {
-                    if line == "\r\n" {
-                        break;
-                    }
-                    line.clear();
                 }
-                requests += 1;
-                let rows = std::iter::repeat_n("{}", 2049)
-                    .collect::<Vec<_>>()
-                    .join(",");
-                let body = format!("{{\"sources\":[{rows}]}}");
-                write!(
-                    socket,
-                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                    body.len()
-                )
-                .unwrap();
-            }
-            requests
-        });
-        let api = Api::new(url, String::new(), &|| true);
-        let result = PolicyLibrary::read(
-            &api,
-            &[agent("one", &[]), agent("two", &[]), agent("three", &[])],
-        );
-        stop.store(true, Ordering::Relaxed);
-        let requests = server.join().unwrap();
-        assert_eq!(result.unwrap_err(), super::super::UNREADABLE);
-        assert_eq!(requests, 2);
+                requests
+            });
+            let api = Api::new(url, String::new(), &|| true);
+            let result = PolicyLibrary::read(
+                &api,
+                &[agent("one", &[]), agent("two", &[]), agent("three", &[])],
+            );
+            stop.store(true, Ordering::Relaxed);
+            let requests = server.join().unwrap();
+            assert_eq!(result.unwrap_err(), super::super::POLICY_LIMIT);
+            assert_eq!(requests, 2);
+        }
     }
 
     fn source(name: &str, scope: &str) -> Source {

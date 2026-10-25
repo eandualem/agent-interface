@@ -54,6 +54,8 @@ pub const NOT_SERVED: &str = "This Backbone does not serve policies yet; it need
 /// A response this version cannot read.
 pub const UNREADABLE: &str = "Backbone answered with data this version cannot read.";
 
+const POLICY_LIMIT: &str = "Backbone's policies exceed this view's limits.";
+
 /// What a view asks Backbone for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Request {
@@ -1139,7 +1141,15 @@ pub struct Instructions {
 impl Instructions {
     fn decode(body: &[u8]) -> Result<Self, &'static str> {
         document(body)?;
-        serde_json::from_slice(body).map_err(|_| UNREADABLE)
+        serde_json::from_slice(body).map_err(|error| {
+            // serde_json appends a location to our literal custom data error.
+            // Keep budget exhaustion distinct from malformed per-agent data.
+            if error.to_string().starts_with(POLICY_LIMIT) {
+                POLICY_LIMIT
+            } else {
+                UNREADABLE
+            }
+        })
     }
 }
 
@@ -1175,14 +1185,12 @@ fn policy_sources<'de, D: serde::Deserializer<'de>>(
                 rows = rows.saturating_add(count);
                 bytes = bytes.saturating_add(count.saturating_mul(size));
                 if rows > 4096 || bytes > 16 * 1024 * 1024 {
-                    return Err(serde::de::Error::custom(
-                        "policy sources exceed view limits",
-                    ));
+                    return Err(serde::de::Error::custom(POLICY_LIMIT));
                 }
                 sources.push(source);
             }
             if sequence.next_element::<serde::de::IgnoredAny>()?.is_some() {
-                return Err(serde::de::Error::custom("too many policy sources"));
+                return Err(serde::de::Error::custom(POLICY_LIMIT));
             }
             Ok(sources)
         }
@@ -1375,7 +1383,7 @@ mod tests {
         assert_eq!(
             super::Instructions::decode(format!("{{\"sources\":[{rows},{{}}]}}").as_bytes())
                 .unwrap_err(),
-            super::UNREADABLE
+            super::POLICY_LIMIT
         );
         let body = serde_json::to_vec(&serde_json::json!({"sources":[{
             "text": "x".repeat(17 * 1024),
@@ -1384,6 +1392,10 @@ mod tests {
         .unwrap();
         assert_eq!(
             super::Instructions::decode(&body).unwrap_err(),
+            super::POLICY_LIMIT
+        );
+        assert_eq!(
+            super::Instructions::decode(br#"{"sources":[null]}"#).unwrap_err(),
             super::UNREADABLE
         );
     }
