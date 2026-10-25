@@ -300,6 +300,22 @@ impl Browser {
                         .map(|(_, edge)| *edge);
                     move |area, (), window, _| {
                         bounds.borrow_mut().insert(id.clone(), area);
+                        // GPUI clips children to a rectangle. Cover the portions
+                        // outside the card's rounded outline after its children
+                        // paint; the card border is drawn over this afterwards.
+                        // An expanded border leaves a rounded, transparent hole.
+                        let outer = area.dilate(px(t.size.hairline));
+                        let radius = px(t.radius.pane)
+                            .min(outer.size.width / 2.0)
+                            .min(outer.size.height / 2.0);
+                        window.paint_quad(gpui::quad(
+                            outer.dilate(radius),
+                            radius * 2.0,
+                            gpui::transparent_black(),
+                            radius,
+                            c.ground,
+                            gpui::BorderStyle::Solid,
+                        ));
                         if let Some(edge) = edge {
                             let mut tint: gpui::Hsla = colors().focus.into();
                             tint.a = 0.18;

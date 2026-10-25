@@ -427,12 +427,12 @@ impl Render for LiveTerminal {
 
 /// The terminal font and colours from the current settings and design tokens.
 pub(super) fn appearance() -> Appearance {
-    let (tokens, colors, terminal) = (design::tokens(), design::colors(), design::terminal());
+    let (tokens, terminal) = (design::tokens(), design::terminal());
     Appearance {
         font_family: tokens.font.mono.clone().into(),
         font_size: super::settings::font_size(),
         foreground: terminal.text,
-        background: colors.surface,
+        background: terminal.background,
         cursor: terminal.cursor,
         palette: terminal.palette,
     }

@@ -74,10 +74,11 @@ code = "#8a6000"
 shadow = "#281e1424"
 pane_dim = 0.8
 
-# Terminal defaults per theme: text, cursor and the 16 ANSI colours.
+# Terminal defaults per theme: text, background, cursor and the 16 ANSI colours.
 # Dark keeps Ghostty's defaults; light is Tomorrow, darkened to pass 4.5:1.
 [terminal.dark]
 text = "#ffffff"
+background = "#18191d"
 cursor = "#e8a85f"
 palette = [
   "#1d1f21", "#cc6666", "#b5bd68", "#f0c674", "#81a2be", "#b294bb", "#8abeb7", "#c5c8c6",
@@ -86,10 +87,11 @@ palette = [
 
 [terminal.light]
 text = "#2f3033"
+background = "#f8f7f4"      # warm off-white for the terminal reading surface
 cursor = "#a35a16"
 palette = [
-  "#2f3033", "#c82829", "#5b7a00", "#8a6000", "#3b67a6", "#7f4fa0", "#2f7f86", "#d6d6d6",
-  "#7a7c80", "#c82829", "#5b7a00", "#8a6000", "#3b67a6", "#7f4fa0", "#2f7f86", "#1b1c1e",
+  "#2f3033", "#c82829", "#5b7a00", "#8a6000", "#3b67a6", "#7f4fa0", "#2d7c83", "#d6d6d6",
+  "#7a7c80", "#c82829", "#5b7a00", "#8a6000", "#3b67a6", "#7f4fa0", "#2d7c83", "#1b1c1e",
 ]
 
 # ---------------------------------------------------------------- type
