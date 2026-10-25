@@ -820,6 +820,7 @@ impl Skills {
                 skill.name.len()
                     + skill.path.len()
                     + skill.description.len()
+                    + skill.error.as_ref().map_or(0, String::len)
                     + skill.tags.iter().map(String::len).sum::<usize>(),
             )
         })) {
@@ -1295,6 +1296,13 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["first", "second"]
         );
+        // A small response must not fan out its error into large UI strings.
+        let body = serde_json::to_vec(&serde_json::json!({"items":[{
+            "name":"unreadable", "error":"x".repeat(17 * 1024),
+            "tags": (0..1024).map(|n| n.to_string()).collect::<Vec<_>>()
+        }]}))
+        .unwrap();
+        assert_eq!(super::Skills::decode(&body).unwrap_err(), super::UNREADABLE);
     }
 
     use super::*;
