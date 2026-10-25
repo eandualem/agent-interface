@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use gpui::{Context, Entity, Subscription, Window, div, prelude::*, px};
+use gpui::{Context, Entity, Subscription, Window, div, prelude::*, px, relative};
 use tmux_workspaces_roster::{
     feedback::{self, Outcome},
     views::ReportItem,
@@ -96,7 +96,7 @@ impl Render for Feedback {
             && !self.field.read(cx).composing()
             && !text.trim().is_empty()
             && !matches!(self.outcome, Some(Outcome::Unknown(_)));
-        div()
+        let content = div()
             .flex_shrink_0()
             .flex()
             .flex_col()
@@ -157,6 +157,13 @@ impl Render for Feedback {
                             })),
                     )
                 })
-            })
+            });
+        div()
+            .id("feedback-scroll")
+            .flex_shrink_0()
+            .max_h(relative(0.5))
+            .min_h(px(0.))
+            .overflow_y_scroll()
+            .child(content)
     }
 }

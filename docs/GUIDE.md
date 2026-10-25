@@ -234,8 +234,8 @@ author. Enter supports paragraphs; choose **Send feedback** to submit up to
 read. The app checks that the author is still registered before sending, and
 shows Backbone's delivery detail. Queued or held messages do not mean the author
 has read them. If delivery is uncertain, check with the author before starting a
-new reply. Drafts remain with their record while the pane stays open; closing
-the pane or app discards them. Feedback never changes the authored record.
+new reply. Drafts remain with their record when switching tabs or workspaces; detaching or
+closing the pane or app discards them. Feedback never changes the authored record.
 
 Opening a document loads that exact revision. **Check for update** refreshes its
 correction information; **Open newer revision** opens the linked correction.

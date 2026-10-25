@@ -218,7 +218,9 @@ after newer publications move it off its former list page.
 Authored status and blocker text do not change runtime state or grant approval.
 
 A native feedback composer sits outside the authored content. It retains drafts
-by provider, author and record identity while its pane is open. On explicit Send,
+by provider, author and record identity while its saved pane exists, including
+hidden tabs. Hidden readers pause polling and release their web surface; feedback
+workers can still finish and retain their result. On explicit Send,
 `roster::feedback` re-reads the exact record, checks the original stable author ID
 and current registered name, then uses the existing authenticated `/api/messages`
 POST as `agent-interface-app`. No authored HTML can invoke it. The message carries

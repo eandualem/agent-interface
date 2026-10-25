@@ -160,6 +160,11 @@ pub(super) struct ViewPane {
 impl EventEmitter<ViewEvent> for ViewPane {}
 
 impl ViewPane {
+    /// Keep drafts and in-flight delivery state while this saved pane is hidden.
+    pub fn has_feedback(&self) -> bool {
+        !self.feedback.is_empty()
+    }
+
     /// Native child views must repaint when an overlay stops occluding them.
     pub fn paints_webview(&self) -> bool {
         self.artifacts.is_some() || documents::selected(self).is_some()

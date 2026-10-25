@@ -147,8 +147,8 @@ pub(super) fn theme() -> String {
     };
     let css = format!(
         r#":root{{--ai-background:{}!important;--ai-surface:{}!important;--ai-text:{}!important;--ai-muted:{}!important;--ai-accent:{}!important;--ai-line:{}!important;color-scheme:{scheme}!important;}}
-html,body{{background:var(--ai-background)!important;color:var(--ai-text)!important;font-family:system-ui;}}
-body :not(svg,svg *,img,picture,video,canvas){{background-color:transparent!important;background-image:none!important;color:var(--ai-text)!important;border-color:var(--ai-line)!important;text-shadow:none!important;-webkit-user-select:text!important;user-select:text!important;}}
+html,body{{background:var(--ai-background)!important;color:var(--ai-text)!important;font-family:system-ui;-webkit-text-fill-color:currentColor!important;}}
+body :not(svg,svg *,img,picture,video,canvas){{background-color:transparent!important;background-image:none!important;color:var(--ai-text)!important;border-color:var(--ai-line)!important;text-shadow:none!important;-webkit-text-fill-color:currentColor!important;-webkit-user-select:text!important;user-select:text!important;}}
 body :is(pre,code,kbd,th,input,textarea,select,button){{background-color:var(--ai-surface)!important;}}
 body :is(a,a *){{color:var(--ai-accent)!important;}}
 body ::selection{{background:var(--ai-accent)!important;color:{}!important;}}"#,

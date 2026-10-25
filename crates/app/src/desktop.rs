@@ -502,6 +502,17 @@ fn close_pane_proposal(
     proposed.close_pane().then_some((base, proposed))
 }
 
+fn saved_view(layout: &Layout, id: &str, view: &View) -> bool {
+    layout.workspaces.iter().any(|workspace| {
+        workspace.tabs.iter().any(|tab| {
+            tab.tree
+                .leaves()
+                .into_iter()
+                .any(|leaf| leaf.id == id && leaf.view.as_ref() == Some(view))
+        })
+    })
+}
+
 #[derive(Default)]
 struct Browser {
     library: Option<Library>,
@@ -1898,11 +1909,17 @@ impl Render for Browser {
             })
             .unwrap_or_default();
         self.views.retain(|id, (pane, _)| {
+            let pane = pane.read(cx);
             shown
                 .iter()
-                .any(|(leaf, view)| leaf == id && &pane.read(cx).view == view)
+                .any(|(leaf, view)| leaf == id && &pane.view == view)
+                || (pane.has_feedback()
+                    && self
+                        .layout
+                        .as_ref()
+                        .is_some_and(|layout| saved_view(layout.model(), id, &pane.view)))
         });
-        for (id, view) in shown {
+        for (id, view) in shown.clone() {
             if !self.views.contains_key(&id) {
                 let backbone = self.backbone.clone();
                 let directory = self.directory.clone();
@@ -1953,8 +1970,11 @@ impl Render for Browser {
             }
         }
         for (id, (view, _)) in &self.views {
-            view.read(cx)
-                .set_visible(expanded.is_none_or(|focused| focused == id), cx);
+            view.read(cx).set_visible(
+                shown.iter().any(|(shown, _)| shown == id)
+                    && expanded.is_none_or(|focused| focused == id),
+                cx,
+            );
             // Native child views are above GPUI drawing. Hide them while a
             // popover or geometry gesture needs that space or its pointer input.
             view.read(cx).occlude_web(
@@ -2425,6 +2445,24 @@ fn navigate_key(model: &mut tmux_workspaces_core::Layout, key: &gpui::Keystroke)
 mod tests {
     use super::*;
     use tmux_workspaces_store::{Document, Error, Store};
+
+    #[test]
+    fn saved_reader_survives_tab_navigation_but_not_detach() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open_or_create(directory.path()).unwrap();
+        let mut model = store.load().unwrap().model().clone();
+        model.add_tab(None, "/work".into(), true);
+        let tab = model.tab().unwrap().id.clone();
+        let id = model.pane().unwrap().id.clone();
+        let view = View::of(tmux_workspaces_core::ViewKind::Reports);
+        assert!(model.show_view(&tab, &id, view.clone()));
+        model.add_tab(None, "/work".into(), true);
+        assert_ne!(model.tab().unwrap().id, tab);
+        assert!(saved_view(&model, &id, &view));
+        model.choose_tab(&tab);
+        assert!(model.detach_pane());
+        assert!(!saved_view(&model, &id, &view));
+    }
 
     #[test]
     fn close_tab_does_not_remove_the_refresh_fallback() {
