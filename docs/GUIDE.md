@@ -167,10 +167,10 @@ after saving; choose Open terminal if that shell is absent. The chooser lists tm
 without optional agent metadata.
 
 Missing sessions show **Reconnect** to retry the same session and **Detach**
-to clear the attachment and return the pane to its chooser. **Detach session**
-in tab options, or Command-Shift-X (Ctrl+Shift+X on Linux), also works while
-connected. Detaching keeps the pane and its
-saved directory, so you can attach a different session or open a terminal. The
+to return the pane to its chooser. **Detach** in tab options, or Command-Shift-X
+(Ctrl+Shift+X on Linux), works with attached sessions, ordinary terminals and
+native views such as skills and reports. Detaching keeps the pane and its saved
+directory, so you can choose new content or reopen the existing terminal. The
 change takes effect after saving; it sends no session-termination command.
 
 Switching tabs, workspaces or pane focus keeps existing connections alive.
@@ -246,8 +246,9 @@ Self-contained HTML is limited to 4 MiB, including inline assets. Network
 requests, external resources, new windows, downloads and host-command access
 are disabled. Native terminal rendering is unchanged.
 
-**Artifacts** holds agent-created HTML documents in the current library and
-works without Backbone. This experimental renderer is available on macOS.
+Existing **Artifacts** panes hold agent-created HTML documents in the current
+library and work without Backbone. This experimental renderer is available on
+macOS but is no longer offered in the new-pane chooser.
 To publish a document from the source build:
 
 ```sh
@@ -319,7 +320,7 @@ Control keys such as Ctrl-C, Ctrl-D and Ctrl-R still reach the terminal.
 | Select tab / workspace 1–9 | Alt+1–9 / Ctrl+Alt+1–9 |
 | Copy / paste | Ctrl+Shift+C / Ctrl+Shift+V |
 | Close pane / close tab | Ctrl+Shift+W / Ctrl+Alt+Shift+W |
-| Detach session from pane | Ctrl+Shift+X |
+| Detach pane contents | Ctrl+Shift+X |
 | New window | Ctrl+Shift+N |
 | Open library / Settings / Quit | Ctrl+Shift+O / Ctrl+, / Ctrl+Shift+Q |
 

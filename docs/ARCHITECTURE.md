@@ -17,8 +17,9 @@ when tabs or workspaces change. The owning native window keeps each connection
 until its target is removed or replaced, the library changes, or the window
 closes. Hidden terminals continue consuming output, preserving their state at
 the cost of retaining their workers and scrollback. A saved Detach action clears
-the attachment and returns the same pane to its chooser. Detach, Close Pane and
-Close Tab never send a session-termination command. Closing the final pane closes
+the pane’s attachment or view and returns the same pane to its chooser, including
+ordinary terminals. The ordinary shell remains available to reopen. Detach, Close
+Pane and Close Tab never send a session-termination command. Closing the final pane closes
 its tab. An attached session retains its own lifetime policy, including tmux's
 `destroy-unattached` option.
 

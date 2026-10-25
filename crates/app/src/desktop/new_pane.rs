@@ -1,6 +1,6 @@
 //! The new-pane chooser: what an empty pane offers before anything runs.
 //!
-//! Two buttons open a terminal or switch to the Backbone views. Under a filter,
+//! Buttons open a terminal, reports or the other Backbone views. Under a filter,
 //! the sessions list shows Backbone agents first, needing you first, then the
 //! other tmux sessions; the views list shows what a pane can display instead of
 //! a terminal. Nothing is created until a choice is made, and the owner makes
@@ -475,6 +475,19 @@ impl Render for NewPane {
                 buttons
                     .child(
                         ui::choice_button(
+                            "new-pane-reports",
+                            "message-square",
+                            "Reports & updates",
+                            "",
+                            false,
+                        )
+                        .on_click(cx.listener(|_, _, _, cx| {
+                            cx.stop_propagation();
+                            cx.emit(NewPaneEvent::OpenView(View::of(ViewKind::Reports)));
+                        })),
+                    )
+                    .child(
+                        ui::choice_button(
                             "new-pane-views",
                             "layout-grid",
                             "Skills, usage, team…",
@@ -489,27 +502,7 @@ impl Render for NewPane {
                             chooser.toggle(cx);
                         })),
                     )
-                    .child(
-                        ui::choice_button(
-                            "new-pane-reports",
-                            "message-square",
-                            "Reports & updates",
-                            "",
-                            false,
-                        )
-                        .on_click(cx.listener(|_, _, _, cx| {
-                            cx.stop_propagation();
-                            cx.emit(NewPaneEvent::OpenView(View::of(ViewKind::Reports)));
-                        })),
-                    )
-            })
-            .child(
-                ui::choice_button("new-pane-artifacts", "layout-grid", "Artifacts", "", false)
-                    .on_click(cx.listener(|_, _, _, cx| {
-                        cx.stop_propagation();
-                        cx.emit(NewPaneEvent::OpenView(View::of(ViewKind::Artifacts)));
-                    })),
-            );
+            });
         let mut list = div()
             .id(SharedString::from(format!("new-pane-rows-{}", self.pane)))
             .flex_1()

@@ -558,14 +558,21 @@ impl Browser {
     }
 
     fn detach_focused(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(terminal) = self
+        if let Some(leaf) = self
             .layout
             .as_ref()
             .and_then(|layout| layout.model().pane())
-            .and_then(|pane| self.terminals.get(&pane.id))
+            .cloned()
         {
-            let target = terminal.read(cx).target.clone();
-            self.detach_terminal(&target, window, cx);
+            let target = Target {
+                leaf,
+                directory: self.directory.clone(),
+                source: self
+                    .source
+                    .clone()
+                    .unwrap_or_else(|| Err("Source socket unavailable".into())),
+            };
+            self.detach_pane(&target, window, cx);
         }
     }
 
@@ -600,7 +607,7 @@ impl Browser {
         self.save(cx);
     }
 
-    fn detach_terminal(&mut self, target: &Target, window: &mut Window, cx: &mut Context<Self>) {
+    fn detach_pane(&mut self, target: &Target, window: &mut Window, cx: &mut Context<Self>) {
         if self.saving || self.save_failed {
             return;
         }
@@ -1118,14 +1125,7 @@ impl Browser {
         match action {
             TabAction::ReturnToShell => unreachable!("handled before the whole-tab move guard"),
             TabAction::Detach => {
-                if let Some(terminal) = layout
-                    .model()
-                    .pane()
-                    .and_then(|leaf| self.terminals.get(&leaf.id))
-                {
-                    let target = terminal.read(cx).target.clone();
-                    self.detach_terminal(&target, window, cx);
-                }
+                self.detach_focused(window, cx);
             }
             TabAction::Rename => self.begin_name(true, window, cx),
             TabAction::Attach => {
@@ -1807,7 +1807,7 @@ impl Render for Browser {
                     window,
                     |browser, terminal, _: &terminal::Detach, window, cx| {
                         let target = terminal.read(cx).target.clone();
-                        browser.detach_terminal(&target, window, cx);
+                        browser.detach_pane(&target, window, cx);
                     },
                 )
                 .detach();
@@ -2427,6 +2427,53 @@ mod tests {
             proposed.tab().is_none(),
             "closing the final pane closes its tab"
         );
+    }
+
+    #[test]
+    fn detach_saves_ordinary_terminals_and_views_as_the_same_empty_pane() {
+        let directory = tempfile::tempdir().unwrap();
+        drop(Store::open_or_create(directory.path()).unwrap());
+        let mut store = Store::open_existing_writable(directory.path()).unwrap();
+        let base = store.load().unwrap();
+        let mut model = base.model().clone();
+        model.add_tab(None, "/work".into(), true);
+        model.open_terminal();
+        let pane = model.pane().unwrap().clone();
+        let tab = model.tab().unwrap().id.clone();
+        for view in [None, Some(View::of(tmux_workspaces_core::ViewKind::Skills))] {
+            if let Some(view) = view {
+                assert!(model.detach_pane());
+                assert!(model.show_view(&tab, &pane.id, view));
+            }
+            let mut base = store.load().unwrap();
+            assert!(!store.save(&mut base, &model).unwrap().conflict);
+            let mut layout = WindowLayout::new(store.load().unwrap());
+            let target = Target {
+                leaf: layout.model().pane().unwrap().clone(),
+                directory: None,
+                source: Err("No source socket".into()),
+            };
+            let (mut base, mut proposed) = layout.save_snapshot();
+            assert!(target.detach_from(&mut proposed));
+            assert_eq!(layout.model().pane(), Some(&target.leaf));
+            let result = store.save(&mut base, &proposed).unwrap();
+            assert!(!result.conflict);
+            layout.saved(base, &result);
+            let saved = store.load().unwrap();
+            let empty = saved.model().pane().unwrap();
+            assert!(empty.empty && empty.view.is_none() && empty.attachment.is_none());
+            assert_eq!(empty.id, pane.id);
+            assert_eq!(empty.cwd, pane.cwd);
+            assert_eq!(layout.model().pane(), Some(empty));
+            assert_eq!(layout.model().tab().unwrap().id, tab);
+            assert!(!target.detach_from(layout.model_mut()));
+            assert!(layout.model_mut().show_view(
+                &tab,
+                &pane.id,
+                View::of(tmux_workspaces_core::ViewKind::Reports)
+            ));
+            assert!(!target.detach_from(layout.model_mut()));
+        }
     }
 
     #[test]
