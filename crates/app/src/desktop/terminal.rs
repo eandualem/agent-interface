@@ -759,6 +759,18 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(5));
             }
         };
+        // Finish the wide client's resize before hiding the narrow client,
+        // so that resize cannot incidentally apply the later flag change.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !server
+            .run(&["list-clients", "-F", "#{client_width}"])
+            .unwrap()
+            .lines()
+            .any(|width| width == "80")
+        {
+            assert!(Instant::now() < deadline, "wide client did not resize");
+            std::thread::sleep(Duration::from_millis(5));
+        }
         panes.ignore_size().unwrap();
         wait_size("80x25\n80x25");
         assert_eq!(server.run(&["list-clients"]).unwrap().lines().count(), 2);
@@ -767,6 +779,18 @@ mod tests {
         wait_size("60x20\n60x20");
         assert_eq!(server.run(&["list-clients"]).unwrap().lines().count(), 2);
         drop(wide);
+        // With no other client, ignoring size retains the last declaration.
+        panes.ignore_size().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !server
+            .run(&["list-clients", "-F", "#{client_flags}"])
+            .unwrap()
+            .contains("ignore-size")
+        {
+            assert!(Instant::now() < deadline, "last client still sizes windows");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(sizes().trim(), "60x20\n60x20");
         drop(ready);
         assert!(server.run(&["has-session", "-t", "=sized:"]).is_ok());
     }

@@ -86,6 +86,8 @@ struct State {
     /// A pipe failure is reported without abandoning already queued output.
     transport_failure: Option<String>,
     gone: Vec<PaneId>,
+    /// Last size queued for this client, retained when its view is hidden.
+    declared_size: Option<(u16, u16)>,
 }
 
 enum Event {
@@ -653,20 +655,31 @@ impl Panes {
     /// of `cols` by `rows` would. tmux then sizes the session's windows by its
     /// `window-size` option, counting this client from now on.
     pub fn set_size(&self, cols: u16, rows: u16) -> io::Result<()> {
+        let mut state = self.shared.lock();
+        let size = (cols.max(1), rows.max(1));
         self.control.send(
             &format!(
                 "refresh-client -f '!ignore-size' -C {}x{}\n",
-                cols.max(1),
-                rows.max(1)
+                size.0, size.1
             ),
             ReplyOwner::Size,
-        )
+        )?;
+        state.declared_size = Some(size);
+        Ok(())
     }
 
     /// Keep the client connected without contributing to tmux window sizing.
     pub(crate) fn ignore_size(&self) -> io::Result<()> {
-        self.control
-            .send("refresh-client -f ignore-size\n", ReplyOwner::Size)
+        let state = self.shared.lock();
+        let Some((cols, rows)) = state.declared_size else {
+            return Ok(());
+        };
+        // Changing flags alone does not recalculate background windows.
+        // Repeat the declared size to apply the flag to the whole session.
+        self.control.send(
+            &format!("refresh-client -f ignore-size -C {cols}x{rows}\n"),
+            ReplyOwner::Size,
+        )
     }
 
     /// Returns a terminal recovery or input transport failure.
