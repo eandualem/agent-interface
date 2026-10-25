@@ -16,7 +16,8 @@ synchronizing live sessions between computers is not supported.
 ## Navigate and use terminals
 
 A **workspace** is a collection of tabs. A **tab** contains one or more
-**panes**. Each pane holds a terminal session or a native view, such as Skills.
+**panes**. Each pane holds a terminal session, a native view such as Skills,
+or an experimental HTML artifact.
 A session is the running work shown inside a terminal pane; closing its pane
 does not send a session-termination command.
 
@@ -27,11 +28,16 @@ workspaces. Command-[ and Command-] cycle panes; add Shift to cycle tabs.
 Command-Option-Left/Right cycle workspaces, Command-Shift-Enter expands or
 restores the selected pane, and Command-B focuses the sidebar. Navigation focuses
 an already connected destination; if it is still connecting, click it when ready.
-Command-V pastes clipboard text (Control-Shift-V on Linux), using
-bracketed paste when the pane requests it. Keys follow the destination pane's
+Command-V pastes clipboard text or copied file paths (Control-Shift-V on Linux),
+using bracketed paste when the pane requests it. Drag files onto a terminal to
+insert their full paths; spaces and quotes in names are preserved. On macOS,
+you can also drag the floating screenshot thumbnail into a terminal. Temporary
+screenshots and image-only drops are received as private temporary PNG files,
+so the program in that terminal can read them. Keys follow the destination pane's
 application cursor and extended-key modes. Paste is limited to 4 MiB per operation.
-**Focus one pane** in tab options toggles the selected pane's view. Scroll over a
-terminal to read its retained history. Shift-Page Up/Down moves a page;
+Double-click a pane header to expand it, then double-click again or press Escape
+to restore the layout. **Focus one pane** in tab options does the same. Open
+menus and dialogs handle Escape first. Scroll over a terminal to read its retained history. Shift-Page Up/Down moves a page;
 Shift-Home/End goes to the oldest output or the live screen. Typing or pasting
 returns to live output. Drag to select visible text; double-click selects a word
 and triple-click selects a row. Command-C copies it (Control-Shift-C on Linux).
@@ -49,9 +55,20 @@ with independent navigation and terminal connections. Closing one leaves the
 other windows open. Command-O (Ctrl+Shift+O on Linux), or **Open another** in
 Settings, chooses another folder containing `layouts.db`.
 
+Text in Skills, policies, agent briefs and report readers supports drag selection,
+double-click word selection, and Command-C to copy (Control-C on Linux).
+Command-A selects the document text (Control-A on Linux). Source text uses the
+same selection behavior. The Edit menu offers Copy and Select All; on macOS
+these also work with selected text inside HTML Documents.
+
 ## Find work and change appearance
 
 The window follows the Quiet Instrument design ([design language](DESIGN.md)).
+The workspace icons at the bottom scroll horizontally when they do not fit.
+The agents list shows at most nine rows at once, with working and starting agents
+first; scroll to reach the remaining agents. Each row shows the name and its
+status symbol.
+
 The navigation panel on the left shows the current workspace (click it for the
 workspace menu), a **Jump** field (Command-K) that finds tabs, panes, agents and
 commands across every workspace, the tabs with a thumbnail of each layout, and,
@@ -118,6 +135,13 @@ This declares the native viewport's size to tmux. Its `window-size` policy
 can change the shared window geometry seen by other clients. A changed tab or
 split tree cancels the gesture. Save errors offer the usual Retry or Discard.
 
+To rearrange panes within a tab, drag a pane's header onto the left, right,
+top or bottom edge of another pane. The highlight shows its destination.
+Release to move it into an equal split; its session or view stays intact.
+Drop in the center, outside the panes, or press Escape to cancel. Restore an
+expanded pane before rearranging it. Terminal headers must be set to Always
+or On hover in Settings. Saving uses the same Retry and Discard controls.
+
 ## Open a shell or attach a session
 
 Choose **Open terminal** in an empty pane or tab options to start its
@@ -144,10 +168,10 @@ after saving; choose Open terminal if that shell is absent. The chooser lists tm
 without optional agent metadata.
 
 Missing sessions show **Reconnect** to retry the same session and **Detach**
-to clear the attachment and return the pane to its chooser. **Detach session**
-in tab options, or Command-Shift-X (Ctrl+Shift+X on Linux), also works while
-connected. Detaching keeps the pane and its
-saved directory, so you can attach a different session or open a terminal. The
+to return the pane to its chooser. **Detach** in tab options, or Command-Shift-X
+(Ctrl+Shift+X on Linux), works with attached sessions, ordinary terminals and
+native views such as skills and reports. Detaching keeps the pane and its saved
+directory, so you can choose new content or reopen the existing terminal. The
 change takes effect after saving; it sends no session-termination command.
 
 Switching tabs, workspaces or pane focus keeps existing connections alive.
@@ -187,6 +211,99 @@ The list follows tmux, checking every two seconds. Custom tmux
 prefix bindings, selection across history pages, terminal input methods
 and key-release events are not yet wired into the product UI.
 
+## Read reports and interactive artifacts
+
+In an empty pane, choose **Reports & updates** to read Agent Backbone's
+authored reports and retained answers. **Recent updates** shows report history;
+**Responses** shows questions, answers and their next actions. **Waiting on
+you** shows owner blockers from each agent's latest report. A report's age does
+not resolve its blocker, and an answer's action text is not a pending approval.
+Choose a row to read it; use Back or Escape to return. Previous/Next page browse
+older records, and Refresh returns to the newest page. Authored records cannot be
+edited in the reader.
+
+**Documents** shows lasting rich documents stored by Agent Backbone. Each row
+is the newest revision of one document. Use the same agent filter, or open a
+document and choose **More from this author** to follow its stable author even
+after an agent is renamed or removed. **Back** restores the selected page and
+filter. **Refresh** returns to the newest documents.
+
+Choose the small **Send feedback** button below an open report, Response or
+Document to open its reply editor. **Close** returns to reading and keeps the
+draft. Enter supports paragraphs; choose **Send feedback** in the editor to submit up to
+4,000 characters. The message includes a reference to the exact record being
+read. The app checks that the author is still registered before sending, and
+shows Backbone's delivery detail. Queued or held messages do not mean the author
+has read them. If delivery is uncertain, check with the author before starting a
+new reply. Drafts remain with their record when switching tabs or workspaces; detaching or
+closing the pane or app discards them. Feedback never changes the authored record.
+
+Opening a document loads that exact revision. **Check for update** refreshes its
+correction information; **Open newer revision** opens the linked correction.
+An update never silently replaces the revision being read. Documents remain
+stored across agent restarts and ordinary report retention. Inline controls
+reset when the document is closed or its pane is hidden.
+
+Publish from an agent's configured Backbone environment:
+
+```sh
+backbone documents publish --file explanation.html --title "Explanation"
+backbone documents publish --file revised.html --title "Explanation" --supersedes 7
+```
+
+Documents need an Agent Backbone version with the Documents API. Older or
+unavailable providers show an explicit error. Rich HTML renders inside the app
+on macOS; the Linux reader currently shows that HTML rendering is unavailable.
+Self-contained HTML is limited to 4 MiB, including inline assets. Network
+requests, external resources, new windows, downloads and host-command access
+are disabled. Native terminal rendering is unchanged.
+
+Existing **Artifacts** panes hold agent-created HTML documents in the current
+library and work without Backbone. This experimental renderer is available on
+macOS but is no longer offered in the new-pane chooser.
+To publish a document from the source build:
+
+```sh
+cargo run -p tmux-workspaces-app -- artifact publish report.html \
+  --title "Architecture report" --author "worker"
+```
+
+The installed binary accepts the same `artifact publish` arguments. Add
+`--data-dir PATH` to select another library, using the same path as its window.
+Publication prints JSON containing the new document's ID, title, author and
+time. It copies the file, so the source can subsequently move or change.
+The author label defaults to `BACKBONE_AGENT`, then `local`; it is attribution,
+not a verified identity. The open Artifacts list discovers publications within
+its next two-second refresh. Choose a document to open it in that pane.
+
+Write one self-contained UTF-8 HTML file, up to 4 MiB including its assets.
+Inline CSS and JavaScript, SVG, canvas, animations and data URLs are supported.
+External scripts, styles, images and network requests do not load. Links cannot
+leave the document; downloads, popups, frames and form submissions are disabled.
+The document cannot call terminal commands or the Backbone API. Store any
+results that must survive as part of the published HTML: document state resets
+when it is reloaded, closed or hidden by switching tabs or expanding another
+pane. Publication persists until its local artifact directory is removed.
+
+Documents follow the app’s active light or dark theme. The reader supplies text,
+surface, link and control colours. Authored layout, images, SVG and canvas remain
+intact; graphics should provide readable contrast in both themes. Stored HTML is unchanged. For themed graphics and standalone exports,
+consume these host CSS variables with fallback colours:
+`--ai-background`, `--ai-surface`, `--ai-text`, `--ai-muted`, `--ai-accent` and
+`--ai-line`. Do not redefine the host variables or force a fixed theme with
+important colour overrides. Keep text selectable. For example:
+
+```html
+<!doctype html>
+<style>
+  body { padding: 24px; }
+  body { color: var(--ai-text, #17202a); background: var(--ai-background, #fff); }
+  button { color: var(--ai-text, #17202a); background: var(--ai-surface, #f4f6f8); }
+</style>
+<h1>Architecture report</h1>
+<button onclick="this.textContent = 'Details opened'">Show details</button>
+```
+
 ## Choose and recover a library
 
 Omit `--data-dir` to use `TMUX_WORKSPACES_DATA_DIR`, then
@@ -219,7 +336,7 @@ Control keys such as Ctrl-C, Ctrl-D and Ctrl-R still reach the terminal.
 | Select tab / workspace 1–9 | Alt+1–9 / Ctrl+Alt+1–9 |
 | Copy / paste | Ctrl+Shift+C / Ctrl+Shift+V |
 | Close pane / close tab | Ctrl+Shift+W / Ctrl+Alt+Shift+W |
-| Detach session from pane | Ctrl+Shift+X |
+| Detach pane contents | Ctrl+Shift+X |
 | New window | Ctrl+Shift+N |
 | Open library / Settings / Quit | Ctrl+Shift+O / Ctrl+, / Ctrl+Shift+Q |
 

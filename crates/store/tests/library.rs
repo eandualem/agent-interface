@@ -734,21 +734,28 @@ fn view_panes_round_trip_and_reject_mixed_or_unknown_views() {
     assert!(!leaf.runs_terminal());
 
     let mut model = document.model().clone();
-    let Node::Split { second, .. } = &mut model.workspaces[0].tabs[0].tree else {
-        unreachable!();
-    };
-    let Node::Leaf(leaf) = second.as_mut() else {
-        unreachable!();
-    };
-    leaf.view = Some(View::of(ViewKind::Usage));
-    let saved = document
-        .with_model(&model, Path::new("layouts.db"))
-        .unwrap();
-    let value: serde_json::Value = serde_json::from_str(saved.raw_json()).unwrap();
-    let pane = &value["workspaces"][0]["tabs"][0]["tree"]["second"];
-    assert_eq!(pane["view"], "usage");
-    assert!(pane.get("view_agent").is_none());
-    assert_eq!(saved.model(), &model);
+    for (kind, name) in [
+        (ViewKind::Usage, "usage"),
+        (ViewKind::Reports, "reports"),
+        (ViewKind::Artifacts, "artifacts"),
+    ] {
+        let Node::Split { second, .. } = &mut model.workspaces[0].tabs[0].tree else {
+            unreachable!();
+        };
+        let Node::Leaf(leaf) = second.as_mut() else {
+            unreachable!();
+        };
+        leaf.view = Some(View::of(kind));
+        let saved = document
+            .with_model(&model, Path::new("layouts.db"))
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_str(saved.raw_json()).unwrap();
+        let pane = &value["workspaces"][0]["tabs"][0]["tree"]["second"];
+        assert_eq!(pane["view"], name);
+        assert!(pane.get("view_agent").is_none());
+        assert_eq!(saved.model(), &model);
+        assert_eq!(parse(saved.raw_json()).unwrap().model(), &model);
+    }
 
     for (before, after) in [
         ("\"view\": \"agent\"", "\"view\": \"future\""),

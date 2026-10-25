@@ -30,6 +30,8 @@ pub(super) struct Cards<'a> {
     pub new_panes: &'a HashMap<String, (Entity<NewPane>, gpui::Subscription)>,
     pub chooser: Option<&'a Attaching>,
     pub split_bounds: &'a Rc<RefCell<HashMap<String, Bounds<Pixels>>>>,
+    pub pane_bounds: &'a Rc<RefCell<HashMap<String, Bounds<Pixels>>>>,
+    pub drop_target: Option<&'a (String, super::pane_drag::Edge)>,
     /// The agent state shown in each pane, by leaf.
     pub leaf_states: HashMap<String, AgentState>,
 }
@@ -144,7 +146,7 @@ impl Browser {
         {
             chooser.view.clone().into_any_element()
         } else if let Some((view, _)) = cards.views.get(&leaf.id) {
-            if cards.focus_changed {
+            if cards.focus_changed || view.read(cx).paints_webview() {
                 view.clone().into_any_element()
             } else {
                 view.clone()
@@ -209,6 +211,32 @@ impl Browser {
                     };
                     if event.button == gpui::MouseButton::Left {
                         select(browser, cx);
+                        // Every pane header occupies the same top strip, including
+                        // headers owned by information views. Capture only arms the
+                        // gesture: ordinary clicks on header controls still work.
+                        let in_header = (is_view || settings::pane_headers() != PaneHeaders::Off)
+                            && browser
+                                .pane_bounds
+                                .borrow()
+                                .get(&leaf)
+                                .is_some_and(|bounds| {
+                                    event.position.y
+                                        < bounds.origin.y + px(tokens().size.pane_header)
+                                });
+                        if in_header && event.click_count == 2 {
+                            browser.pane_drag = None;
+                            if let Some(layout) = &mut browser.layout {
+                                layout.model_mut().focus = !layout.model().focus;
+                            }
+                            if let Some(terminal) = browser.terminals.get(&leaf) {
+                                terminal
+                                    .update(cx, |terminal, cx| terminal.focus_terminal(window, cx));
+                            }
+                            cx.stop_propagation();
+                            cx.notify();
+                        } else if in_header {
+                            browser.begin_pane_drag(&leaf, event.position);
+                        }
                         // A view takes no keys: stop a terminal beside it
                         // from receiving them once the view is selected.
                         if is_view && let Some(focus) = &browser.navigation {
@@ -263,6 +291,50 @@ impl Browser {
                     .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
                     .child(header)
             }))
+            .child(
+                gpui::canvas(|_, _, _| (), {
+                    let bounds = Rc::clone(cards.pane_bounds);
+                    let edge = cards
+                        .drop_target
+                        .filter(|(target, _)| target == &id)
+                        .map(|(_, edge)| *edge);
+                    move |area, (), window, _| {
+                        bounds.borrow_mut().insert(id.clone(), area);
+                        // GPUI clips children to a rectangle. Cover the portions
+                        // outside the card's rounded outline after its children
+                        // paint; the card border is drawn over this afterwards.
+                        // An expanded border leaves a rounded, transparent hole.
+                        let outer = area.dilate(px(t.size.hairline));
+                        let radius = px(t.radius.pane)
+                            .min(outer.size.width / 2.0)
+                            .min(outer.size.height / 2.0);
+                        let mut transparent_ground = c.ground;
+                        transparent_ground.a = 0.0;
+                        window.paint_quad(gpui::quad(
+                            outer.dilate(radius),
+                            radius * 2.0,
+                            transparent_ground,
+                            radius,
+                            c.ground,
+                            gpui::BorderStyle::Solid,
+                        ));
+                        if let Some(edge) = edge {
+                            let mut tint: gpui::Hsla = colors().focus.into();
+                            tint.a = 0.18;
+                            window.paint_quad(gpui::quad(
+                                edge.preview(area).inset(px(3.)),
+                                px(6.),
+                                tint,
+                                px(2.),
+                                colors().focus,
+                                gpui::BorderStyle::Solid,
+                            ));
+                        }
+                    }
+                })
+                .absolute()
+                .size_full(),
+            )
             .into_any_element()
     }
 
@@ -297,6 +369,7 @@ impl Browser {
                 .whitespace_nowrap(),
             &t.text.status,
         );
+        row = row.cursor(gpui::CursorStyle::OpenHand);
         let icon_color = if focused { c.accent } else { c.muted };
         let title_color = if focused { c.text } else { c.text_2 };
         let windows = terminal

@@ -17,8 +17,9 @@ when tabs or workspaces change. The owning native window keeps each connection
 until its target is removed or replaced, the library changes, or the window
 closes. Hidden terminals continue consuming output, preserving their state at
 the cost of retaining their workers and scrollback. A saved Detach action clears
-the attachment and returns the same pane to its chooser. Detach, Close Pane and
-Close Tab never send a session-termination command. Closing the final pane closes
+the pane’s attachment or view and returns the same pane to its chooser, including
+ordinary terminals. The ordinary shell remains available to reopen. Detach, Close
+Pane and Close Tab never send a session-termination command. Closing the final pane closes
 its tab. An attached session retains its own lifetime policy, including tmux's
 `destroy-unattached` option.
 
@@ -37,7 +38,7 @@ another client's selected window.
 | `store` | Initializing, reading and transactionally saving schema-v2 `layouts.db` files |
 | `tmux` | Server discovery and validation, control-mode protocol, pane capture, recovery and input commands |
 | `term` | Terminal engine ownership, input encoding and owned display snapshots |
-| `roster` | Read-only Agent Backbone roster and pane-view data, with bounded loopback requests and stale-state handling |
+| `roster` | Agent Backbone roster and pane-view reads, plus explicit user feedback through bounded loopback requests |
 | `app` | Native windows, input routing, storage and terminal workers, and integration between the other crates |
 
 `app` connects the product crates. `store` also depends on `core`; the other
@@ -48,6 +49,14 @@ in [`deny.toml`](../deny.toml).
 Development-only crates are separate: `test-support` provides disposable tmux
 fixtures, `bench` runs measurements, and `bench-rio` provides an isolated
 comparison-engine executable.
+
+Pane rearrangement lives in `app::desktop::pane_drag`; `core` moves an existing
+leaf within its tab and collapses its previous parent. Dragging paints only a
+destination highlight, so pointer motion does not resize terminal sessions.
+On release, the UI previews the detached tree while the existing save worker
+commits it. Leaf identities retain their terminal/view entities. A changed
+tab, tree or pane geometry cancels an in-progress drag; persistence keeps the
+existing schema and conflict rules.
 
 ## Output, drawing and input
 
@@ -114,7 +123,8 @@ arrangement. Conflicting edits refresh the shared arrangement and ask the user
 to repeat the edit; failed saves offer Retry or Discard.
 
 Workspace and tab selection, pane expansion, and attachment-window selection
-are local to each native window. Ordinary-shell identities belong to the saved
+are local to each native window. Header double-click and the pane shortcut toggle
+expansion without changing the saved split tree; Escape restores it. Ordinary-shell identities belong to the saved
 library. Closing a native window detaches its clients without issuing
 session-termination commands; navigation keeps them attached.
 
@@ -155,6 +165,22 @@ permission files reject input beyond 1 MiB and skill previews retain their
 read, size and parse failures, showing incomplete results explicitly. Rule
 deduplication preserves file order and first occurrence with set membership.
 
+Native document readers share selection state across styled text blocks and source
+text. GPUI text layouts map pointer positions to UTF-8 offsets, snapped to grapheme
+boundaries. Copy uses the displayed text; selection resets when that text changes.
+Native Copy and Select All menu actions follow the focused field or reader.
+WebKit handles those selectors through the macOS responder chain, without a
+clipboard JavaScript bridge.
+
+File pastes and drops share the terminal's bounded input queue. Copied file paths
+take precedence over Finder display names and are quoted for terminal input.
+The macOS adapter accepts file URLs and raw PNG, TIFF and JPEG drags. Raw images
+are staged as PNG in a private temporary directory. A single temporary image URL
+is also received as PNG at drop time, because access granted to the app need not
+extend to an already-running terminal process. Staged files are deleted on
+cancellation and retained after an accepted drop for the receiving program to
+read. This is invoked only by a user drag, with no screenshot monitoring.
+
 Agent views cache unchanged render trees; data, size, focus and appearance
 changes invalidate them. Visible working and starting indicators animate using GPUI; other states are
 static. State labels retain the distinction between starting and busy, and
@@ -179,11 +205,88 @@ A saved view records the agent section it opens on (`view_section`); a pane
 saved by an earlier version as one agent's policies opens on that agent's
 Policies section and is written in the new form with the next change.
 
+Reports use Backbone's existing read-only `/api/reports` and `/api/responses`
+feeds. The native pane keeps report history, latest owner blockers and retained
+answers distinct. Pagination follows each feed's cursor; Refresh starts at the
+newest page. An optional agent filter is sent to both feeds and retained across
+view changes and pagination; choosing another agent restarts at the newest page.
+The picker reads configured agents, with page authors as a fallback when the
+roster is unavailable. Each row opens the complete authored record, including
+its sections and links. An open record keeps its contents through background refreshes.
+An open Response is polled by ID so its correction metadata stays current even
+after newer publications move it off its former list page.
+Authored status and blocker text do not change runtime state or grant approval.
+
+A native feedback composer sits outside the authored content and opens only when
+the user chooses Send feedback. Closing it preserves the draft. It retains drafts
+by provider, author and record identity while its saved pane exists, including
+hidden tabs. Hidden readers pause polling and release their web surface; feedback
+workers can still finish and retain their result. On explicit Send,
+`roster::feedback` re-reads the exact record, checks the original stable author ID
+and current registered name, then uses the existing authenticated `/api/messages`
+POST as `agent-interface-app`. No authored HTML can invoke it. The message carries
+the record kind and ID plus the user's text, not the original content. This is
+ordinary feedback, without signed owner-confirmation provenance. The existing
+name-based API cannot make source lookup and recipient routing atomic. Duplicate
+clicks are blocked in flight; unknown delivery is retained without automatic
+resubmission. Drafts and status are window-owned, not a persistent message history.
+
+Durable Documents use Backbone's metadata-only `/api/documents` list and exact
+`/api/documents/{revision_id}` JSON reads. Backbone owns immutable revisions,
+stable document and author identities, publication authorization and retention;
+Interface owns native selection, filtering and rendering. The list is latest
+per document, not per author. Agent-name and stable-author filters persist across
+paging. The reader keeps the selected revision until an explicit navigation;
+checking for a correction does not replace its contents. Document lists and
+bodies refresh on explicit requests or reveal, rather than the report poll.
+An open HTML reader remains uncached so native child creation is replayed when
+overlays close; native report lists retain their usual rendering cache.
+
+Only exact-document reads allow a response of `6 × 4 MiB + 8192` bytes, covering
+JSON escaping of the bounded UTF-8 HTML. The native adapter validates the decoded
+body size, metadata envelope, revision ID, byte count and SHA-256 before passing
+HTML to the same isolated system-webview surface. Credentials remain in the
+native transport. Missing API support is distinct from an empty catalog. No
+local artifact is automatically imported under an authenticated author name.
+
+The experimental Artifacts pane is independent of Backbone. `app::artifacts`
+copies a UTF-8 HTML document and small metadata record into an immutable UUID
+directory under the selected library's `artifacts/`, publishing by atomic
+rename. The CLI does this without starting a window, tmux client or daemon.
+Discovery reads metadata off the UI thread every two seconds while visible;
+the catalog retains the newest 200 entries. HTML is read only on opening a
+document and is limited to 4 MiB, including inline assets.
+
+`desktop::views::artifact_web` is the system-webview boundary. On macOS it
+creates a Wry/WebKit child view only for an opened document, positions it in
+the pane's content rectangle, and updates its host theme stylesheet. Text,
+backgrounds and controls follow the active app theme; layout and media retain
+their authored presentation. Stored HTML is not rewritten. The view is
+hidden while native overlays or pane dragging need that space. Closing the
+document or hiding its pane releases the web view, so reopening starts a fresh
+document runtime. Native terminals, menus and report views do not use WebKit.
+WebKit's platform processes belong to the renderer; the app adds no daemon.
+Linux currently shows an explicit unsupported-renderer message: embedding
+WebKitGTK in GPUI's Wayland/X11 windows needs a separate integration.
+
+Artifacts use a private in-memory URL, an ephemeral browser session and a
+content policy that permits inline HTML/CSS/JavaScript, SVG, canvas and data
+assets but blocks external resources, network requests, frames and form
+submission. Navigation, downloads, new windows and permission requests are
+denied. The sole JavaScript bridge reports pointer focus to select the owning
+pane; it exposes no terminal commands, filesystem access or Backbone API.
+This isolates the integration, but does not make arbitrary animations free:
+visible documents still consume WebKit CPU and memory according to their code.
+
 ## Dependencies and licences
 
 The project is MIT-licensed. [`Cargo.toml`](../Cargo.toml) declares dependency
 versions, `Cargo.lock` records the resolved graph, and `deny.toml` checks licences,
 advisories and permitted sources.
+The audit runs separately for both architectures on macOS and Linux. Wry is
+reachable only in macOS graphs, so its unused GTK and Android dependencies are
+not part of any supported build. No advisory or licence exception is added for
+those dependencies.
 
 - **GPUI (`gpui-pre` and platform packages):** native windowing and GPU drawing,
   pinned as one package family. Apache-2.0. The macOS 0.3.9 backend is
@@ -205,6 +308,15 @@ advisories and permitted sources.
   MIT. Its bundled SQLite uses SQLite's public-domain dedication.
 - **`libc`:** Unix constants for nonblocking configuration reads in the app
   and roster, and the existing process integration. MIT OR Apache-2.0.
+- **`wry` 0.57.1:** macOS system WebKit child views for experimental HTML
+  artifacts, pinned exactly and enabled only on macOS. MIT OR Apache-2.0.
+  It does not render terminals or supply a bundled browser engine.
+- **`sha2`:** existing MIT OR Apache-2.0 workspace dependency, also used by
+  the document adapter to verify the server-provided HTML digest.
+- **`serde`, `serde_json`, `uuid` and `tempfile`:** existing workspace
+  dependencies also used by artifact metadata, publication IDs and atomic
+  staging. The macOS adapter also uses `tempfile` 3.27.0 (exact pin) for private
+  screenshot-drop staging. Each is MIT OR Apache-2.0.
 - **`alacritty_terminal` and `rio-vt`:** development-only comparison engines.
   Apache-2.0 and MIT respectively.
 

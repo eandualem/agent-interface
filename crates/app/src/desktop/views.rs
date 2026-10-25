@@ -1,13 +1,19 @@
-//! Agent Backbone views: information shown in a pane in place of a terminal.
+//! Native information views and local HTML artifacts shown beside terminals.
 //!
 //! A [`ViewPane`] exists only while its pane is shown, and polls its data on
 //! an I/O worker until then (`crate::roster::ViewSource`). Each view draws its
 //! data in its own module from the shared pieces in `components`, following
 //! the design boards. Every view stays inside its pane: choosing a skill or a
 //! policy opens it in the same pane through `reader`, with a way back. Backbone
-//! is only read; nothing here changes an agent.
+//! supplies record reads; a separate native composer sends explicit feedback.
+//! Artifacts have their own local catalog and an isolated system-webview renderer rather than a Backbone worker.
 
-use std::{collections::HashSet, path::PathBuf, time::Duration};
+use std::{
+    cell::RefCell,
+    collections::{HashMap, HashSet},
+    path::PathBuf,
+    time::Duration,
+};
 
 use futures::{StreamExt, channel::mpsc};
 use gpui::{
@@ -25,9 +31,15 @@ use crate::roster::ViewSource;
 
 mod activity;
 mod agent;
+mod artifact_web;
+mod artifacts;
+mod documents;
+mod feedback;
 mod markdown;
 mod policies;
 mod reader;
+mod reports;
+mod selection;
 mod skills;
 mod tags;
 mod team;
@@ -49,6 +61,8 @@ pub(super) fn about(kind: ViewKind) -> About {
         ViewKind::Activity => ("activity", "Activity"),
         ViewKind::Team => ("bot", "Team"),
         ViewKind::Tags => ("hash", "Tags"),
+        ViewKind::Reports => ("message-square", "Reports & updates"),
+        ViewKind::Artifacts => ("layout-grid", "Artifacts"),
     };
     About { icon, label }
 }
@@ -61,6 +75,8 @@ pub(super) enum ViewEvent {
     OpenBeside(View),
     /// A field in the view gave up focus; return it to the window's keys.
     ReturnFocus,
+    /// An embedded document received a pointer press; select its owning pane.
+    Focus,
 }
 
 /// How the team view groups agents.
@@ -131,6 +147,12 @@ pub(super) struct ViewPane {
     raw: bool,
     /// The tag whose agents the tags view lists in place of its cards.
     carriers_of: Option<String>,
+    selection: RefCell<selection::Selection>,
+    reports: reports::State,
+    backbone: Option<PathBuf>,
+    feedback: HashMap<String, Entity<feedback::Feedback>>,
+    documents: documents::State,
+    artifacts: Option<Entity<artifacts::ArtifactPane>>,
     _updates: Option<Task<()>>,
     _search: Vec<Subscription>,
 }
@@ -138,16 +160,47 @@ pub(super) struct ViewPane {
 impl EventEmitter<ViewEvent> for ViewPane {}
 
 impl ViewPane {
-    pub fn set_visible(&self, visible: bool) {
+    /// Keep drafts and in-flight delivery state while this saved pane is hidden.
+    pub fn has_feedback(&self) -> bool {
+        !self.feedback.is_empty()
+    }
+
+    /// Native child views must repaint when an overlay stops occluding them.
+    pub fn paints_webview(&self) -> bool {
+        self.artifacts.is_some() || documents::selected(self).is_some()
+    }
+
+    pub fn set_visible(&self, visible: bool, cx: &gpui::App) {
+        if !visible {
+            self.documents.surface.borrow_mut().clear();
+        }
         if let Some(source) = &self.source {
             source.set_active(visible);
         }
+        if let Some(artifacts) = &self.artifacts {
+            artifacts.read(cx).set_visible(visible);
+        }
     }
 
-    /// Start polling `view`. Without Backbone, the pane says so and polls nothing.
+    pub fn occlude_web(&self, occluded: bool, cx: &gpui::App) {
+        self.documents.surface.borrow_mut().occlude(occluded);
+        if let Some(artifacts) = &self.artifacts {
+            artifacts.read(cx).occlude(occluded);
+        }
+    }
+
+    pub fn focus_native(&self, cx: &gpui::App) {
+        self.documents.surface.borrow().focus_parent();
+        if let Some(artifacts) = &self.artifacts {
+            artifacts.read(cx).focus_parent();
+        }
+    }
+
+    /// Start the local artifact catalog or a read-only Backbone view worker.
     pub fn new(
         view: View,
         backbone: Option<PathBuf>,
+        directory: Option<PathBuf>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -169,11 +222,26 @@ impl ViewPane {
             open: None,
             raw: false,
             carriers_of: None,
+            selection: RefCell::default(),
+            reports: reports::State::default(),
+            backbone: backbone.clone(),
+            feedback: HashMap::new(),
+            documents: documents::State::default(),
+            artifacts: None,
             _updates: None,
             _search: Vec::new(),
             view,
         };
-        if pane.view.kind == ViewKind::Skills {
+        if pane.view.kind == ViewKind::Artifacts {
+            let artifacts = artifacts::create(directory, cx);
+            pane._search
+                .push(cx.subscribe(&artifacts, |_, _, _: &artifacts::Focus, cx| {
+                    cx.emit(ViewEvent::Focus)
+                }));
+            pane.artifacts = Some(artifacts);
+            return pane;
+        }
+        if matches!(pane.view.kind, ViewKind::Skills | ViewKind::Reports) {
             let field = cx.new(|cx| NameField::filter(window, cx));
             pane._search
                 .push(cx.subscribe(&field, |pane, _, event, cx| {
@@ -232,6 +300,13 @@ impl ViewPane {
                         }
                         match update {
                             Ok(mut data) => {
+                                if let Data::Document(document) = &data {
+                                    pane.documents.loaded = Some(document.clone());
+                                    pane.documents.error = None;
+                                }
+                                if let Data::Reports(page) = &data {
+                                    pane.reports.observe(page);
+                                }
                                 // A section whose own read failed keeps its
                                 // last data, so an open document stays open.
                                 pane.error = agent::keep_section(pane.data.as_ref(), &mut data);
@@ -259,6 +334,16 @@ impl ViewPane {
             ViewKind::Skills => Request::Skills,
             ViewKind::Policies => Request::Policies,
             ViewKind::Tags => Request::Tags,
+            ViewKind::Reports => match &self.reports.open {
+                Some(item) if matches!(item.content, views::ReportContent::Document(_)) => {
+                    Request::Document(item.id)
+                }
+                Some(item) if matches!(item.content, views::ReportContent::Response { .. }) => {
+                    Request::Response(item.id)
+                }
+                _ => Request::Reports(self.reports.query.clone(), self.reports.agent.clone()),
+            },
+            ViewKind::Artifacts => unreachable!("artifacts have no Backbone source"),
             ViewKind::Agent => Request::Agent(
                 self.view.agent.clone().unwrap_or_default(),
                 match self.section {
@@ -371,8 +456,17 @@ impl ViewPane {
     /// Keys a view understands while its pane is selected. Returns whether
     /// `key` was one of them.
     pub fn key(&mut self, key: &gpui::Keystroke, cx: &mut Context<Self>) -> bool {
+        if self.selection.borrow_mut().key(key, cx) {
+            return true;
+        }
         if key.modifiers.modified() {
             return false;
+        }
+        if self.reports.open.is_some() && key.key == "escape" {
+            self.documents.clear();
+            self.reports.open = None;
+            self.refetch(true, cx);
+            return true;
         }
         if self.open.is_none() {
             if self.carriers_of.is_some() && key.key == "escape" {
@@ -414,51 +508,101 @@ impl Drop for ViewPane {
 }
 
 impl Render for ViewPane {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if let Some(artifacts) = &self.artifacts {
+            return div().size_full().child(artifacts.clone());
+        }
         let (t, c) = (tokens(), colors());
+        let feedback =
+            self.reports
+                .open
+                .as_ref()
+                .zip(self.backbone.as_ref())
+                .map(|(item, directory)| {
+                    let key = format!(
+                        "{}\n{}\n{}",
+                        item.provider_url,
+                        item.author_id.as_deref().unwrap_or_default(),
+                        tmux_workspaces_roster::feedback::reference(item)
+                    );
+                    self.feedback
+                        .entry(key)
+                        .or_insert_with(|| {
+                            cx.new(|cx| {
+                                feedback::Feedback::new(
+                                    item.clone(),
+                                    directory.clone(),
+                                    self.documents.surface.clone(),
+                                    window,
+                                    cx,
+                                )
+                            })
+                        })
+                        .clone()
+                });
         let about = about(self.view.kind);
         // Lent to the body for this frame and put back below.
         let data = self.data.take();
-        let body = match &data {
-            None => {
-                let state = match self.error {
-                    Some(error) => ui::empty_state(
-                        ui::empty_tile("unplug", c.selected, c.muted),
-                        "No data",
-                        error,
-                    ),
-                    None => ui::empty_state(
-                        ui::empty_tile(about.icon, c.selected, c.muted),
-                        "Reading Agent Backbone…",
-                        "",
-                    ),
-                };
-                div()
-                    .size_full()
-                    .flex()
-                    .flex_col()
-                    .child(ui::view_header(about.icon, ViewPane::title(&self.view)))
-                    .when(self.view.kind == ViewKind::Usage, |el| {
-                        el.child(usage::toolbar(self, cx))
-                    })
-                    .child(state)
-                    .into_any_element()
+        let body = loop {
+            self.selection.borrow_mut().begin();
+            let body = if documents::selected(self).is_some() {
+                documents::reader(self, cx)
+            } else {
+                match &data {
+                    None => {
+                        let state = match self.error {
+                            Some(error) => ui::empty_state(
+                                ui::empty_tile("unplug", c.selected, c.muted),
+                                "No data",
+                                error,
+                            ),
+                            None => ui::empty_state(
+                                ui::empty_tile(about.icon, c.selected, c.muted),
+                                "Reading Agent Backbone…",
+                                "",
+                            ),
+                        };
+                        div()
+                            .size_full()
+                            .flex()
+                            .flex_col()
+                            .child(ui::view_header(about.icon, ViewPane::title(&self.view)))
+                            .when(self.view.kind == ViewKind::Usage, |el| {
+                                el.child(usage::toolbar(self, cx))
+                            })
+                            .when(self.view.kind == ViewKind::Reports, |el| {
+                                el.child(reports::refresh_toolbar(self, cx))
+                            })
+                            .child(state)
+                            .into_any_element()
+                    }
+                    Some(Data::Team(data)) => team::body(self, data, cx),
+                    Some(Data::Usage(data)) => usage::body(self, data, cx),
+                    Some(Data::Activity(data)) => activity::body(self, data, cx),
+                    Some(Data::Skills(data)) => skills::body(self, data, cx),
+                    Some(Data::Agent(data)) => agent::body(self, data, cx),
+                    Some(Data::Policies(data)) => policies::body(self, data, cx),
+                    Some(Data::Tags(data)) => tags::body(self, data, cx),
+                    Some(Data::Reports(data)) => reports::body(self, data, cx),
+                    Some(Data::Document(_)) => unreachable!("document data has a selected reader"),
+                }
+            };
+            if !self.selection.borrow_mut().finish() {
+                break body;
             }
-            Some(Data::Team(data)) => team::body(self, data, cx),
-            Some(Data::Usage(data)) => usage::body(self, data, cx),
-            Some(Data::Activity(data)) => activity::body(self, data, cx),
-            Some(Data::Skills(data)) => skills::body(self, data, cx),
-            Some(Data::Agent(data)) => agent::body(self, data, cx),
-            Some(Data::Policies(data)) => policies::body(self, data, cx),
-            Some(Data::Tags(data)) => tags::body(self, data, cx),
+            // A later block changed after earlier highlights were constructed.
+            // Rebuild with the cleared selection before this body can be cached.
         };
         self.data = data;
         div()
+            .relative()
             .size_full()
             .flex()
             .flex_col()
             .bg(c.surface)
             .child(div().flex_1().min_h_0().flex().flex_col().child(body))
+            .children(feedback)
+            .child(selection::events(cx))
             .children(
                 self.data
                     .is_some()

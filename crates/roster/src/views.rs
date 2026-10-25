@@ -16,7 +16,13 @@ use serde_json::value::RawValue;
 
 use crate::{configuration::configured, transport, valid_agent, within_depth};
 
+mod documents;
 mod library;
+mod reports;
+
+pub use documents::{DOCUMENT_HTML_LIMIT, DocumentMetadata, DocumentRevision};
+
+pub use reports::{ReportContent, ReportItem, ReportPage, ReportQuery, ReportSection};
 
 pub use library::{
     Loadout, LocalSkill, PREVIEW_LIMIT, Place, PolicyLibrary, Reason, SkillLibrary, TagCard,
@@ -41,6 +47,12 @@ pub enum Request {
     Usage(Range),
     /// Recent deliveries and inbound events.
     Activity,
+    /// Authored progress reports or retained answers, one page at a time.
+    Reports(ReportQuery, Option<String>),
+    /// Refresh an open answer independently of its former list page.
+    Response(u64),
+    /// One explicitly requested durable HTML revision. Never polled.
+    Document(u64),
     /// Every skill an agent can load, team-wide.
     Skills,
     /// The layers a brief is built from, team-wide.
@@ -106,6 +118,10 @@ pub enum Data {
     Usage(Usage),
     /// See [`Activity`].
     Activity(Activity),
+    /// See [`ReportPage`].
+    Reports(ReportPage),
+    /// See [`DocumentRevision`].
+    Document(DocumentRevision),
     /// See [`SkillLibrary`].
     Skills(Box<SkillLibrary>),
     /// See [`PolicyLibrary`].
@@ -173,12 +189,17 @@ pub fn read(
 ) -> Result<Data, &'static str> {
     let (url, key) = configured(data_dir, url).ok_or(UNAVAILABLE)?;
     let api = Api { url, key, live };
-    match request {
+    let data: Result<Data, &'static str> = match request {
         Request::Team => Ok(Data::Team(Team::decode(
             &api.get("/api/agents")?,
             &api.get("/api/swarms")?,
         )?)),
         Request::Usage(range) => Ok(Data::Usage(Usage::decode(&api.get(&usage_path(*range))?)?)),
+        Request::Reports(query, agent) => {
+            Ok(Data::Reports(reports::read(&api, query, agent.as_deref())?))
+        }
+        Request::Document(id) => Ok(Data::Document(documents::read(&api, *id)?)),
+        Request::Response(id) => Ok(Data::Reports(reports::read_response(&api, *id)?)),
         Request::Activity => {
             // History is an addition: when it cannot be read, the timeline
             // still shows deliveries and states now, and says why.
@@ -231,7 +252,14 @@ pub fn read(
             }
             Ok(Data::Agent(Box::new(agent)))
         }
+    };
+    let mut data = data?;
+    if let Data::Reports(page) = &mut data {
+        for item in &mut page.items {
+            item.provider_url = api.url.clone();
+        }
     }
+    Ok(data)
 }
 
 /// Agents and the swarms they work in.

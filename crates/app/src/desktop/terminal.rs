@@ -21,7 +21,7 @@ pub(super) struct Target {
 }
 
 impl Target {
-    /// Clear only the attachment the user acted on, in the selected tab.
+    /// Clear only the pane contents the user acted on, in the selected tab.
     pub fn detach_from(&self, layout: &mut tmux_workspaces_core::Layout) -> bool {
         layout.tab().is_some_and(|tab| {
             tab.tree
@@ -29,7 +29,7 @@ impl Target {
                 .into_iter()
                 .any(|leaf| self.matches_leaf(leaf))
         }) && layout.choose_pane(&self.leaf.id)
-            && layout.detach_attachment()
+            && layout.detach_pane()
     }
 
     /// A hidden tab still owns its connection until the saved target changes.
@@ -153,6 +153,7 @@ pub(super) struct LiveTerminal {
 pub(super) struct Detach;
 
 impl gpui::EventEmitter<Detach> for LiveTerminal {}
+impl gpui::EventEmitter<crate::view::Focus> for LiveTerminal {}
 
 impl LiveTerminal {
     pub fn hide(&mut self, cx: &mut Context<Self>) {
@@ -326,6 +327,10 @@ impl LiveTerminal {
                                 cx.notify();
                             },
                         ));
+                        cx.subscribe(&view, |_, _, _: &crate::view::Focus, cx| {
+                            cx.emit(crate::view::Focus);
+                        })
+                        .detach();
                         terminal.view = Some(view);
                     }
                     Err(error) => terminal.error = Some(error),
@@ -422,12 +427,12 @@ impl Render for LiveTerminal {
 
 /// The terminal font and colours from the current settings and design tokens.
 pub(super) fn appearance() -> Appearance {
-    let (tokens, colors, terminal) = (design::tokens(), design::colors(), design::terminal());
+    let (tokens, terminal) = (design::tokens(), design::terminal());
     Appearance {
         font_family: tokens.font.mono.clone().into(),
         font_size: super::settings::font_size(),
         foreground: terminal.text,
-        background: colors.surface,
+        background: terminal.background,
         cursor: terminal.cursor,
         palette: terminal.palette,
     }

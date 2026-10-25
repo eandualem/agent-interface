@@ -47,9 +47,9 @@ impl Browser {
             } else {
                 ("Open terminal".into(), TabAction::OpenTerminal, None)
             }));
-            if tab_menu.shell.is_some() {
+            if model.pane().is_some_and(|pane| !pane.empty) {
                 items.push(Some((
-                    "Detach session".into(),
+                    "Detach".into(),
                     TabAction::Detach,
                     key(Command::Detach),
                 )));

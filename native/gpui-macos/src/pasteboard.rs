@@ -1,5 +1,6 @@
 use core::slice;
 use std::ffi::{CStr, c_void};
+use std::io::Read;
 use std::path::PathBuf;
 
 use cocoa::{
@@ -10,7 +11,8 @@ use cocoa::{
     base::{id, nil},
     foundation::{NSArray, NSData, NSFastEnumeration, NSString},
 };
-use objc::{msg_send, rc::StrongPtr, runtime::Object, sel, sel_impl};
+use objc::{class, msg_send, rc::StrongPtr, runtime::Object, sel, sel_impl};
+use image::ImageDecoder as _;
 use smallvec::SmallVec;
 use strum::IntoEnumIterator as _;
 
@@ -39,7 +41,8 @@ impl Pasteboard {
         unsafe { Self::new(NSPasteboard::pasteboardWithUniqueName(nil)) }
     }
 
-    unsafe fn new(inner: id) -> Self {
+    /// The caller supplies a live AppKit pasteboard object on the main thread.
+    pub(crate) unsafe fn new(inner: id) -> Self {
         // These constructors return autoreleased objects, but a Pasteboard can
         // outlive the autorelease pool in which it was created.
         Self {
@@ -51,26 +54,12 @@ impl Pasteboard {
 
     pub fn read(&self) -> Option<ClipboardItem> {
         unsafe {
-            // Check for file paths first
-            let filenames = NSPasteboard::propertyListForType(*self.inner, NSFilenamesPboardType);
-            if filenames != nil && NSArray::count(filenames) > 0 {
-                let mut paths = SmallVec::new();
-                for file in filenames.iter() {
-                    let f = NSString::UTF8String(file);
-                    let path = CStr::from_ptr(f).to_string_lossy().into_owned();
-                    paths.push(PathBuf::from(path));
+            if let Some(paths) = self.read_paths() {
+                let mut entries = vec![ClipboardEntry::ExternalPaths(paths)];
+                if let Some(string_item) = self.read_string_from_pasteboard() {
+                    entries.push(string_item);
                 }
-                if !paths.is_empty() {
-                    let mut entries = vec![ClipboardEntry::ExternalPaths(ExternalPaths(paths))];
-
-                    // Also include the string representation so text editors can
-                    // paste the path as text.
-                    if let Some(string_item) = self.read_string_from_pasteboard() {
-                        entries.push(string_item);
-                    }
-
-                    return Some(ClipboardItem { entries });
-                }
+                return Some(ClipboardItem { entries });
             }
 
             // Next, check for a plain string.
@@ -88,6 +77,73 @@ impl Pasteboard {
             }
         }
 
+        None
+    }
+
+    /// File URLs are the current AppKit representation; retain legacy paths too.
+    pub(crate) fn read_paths(&self) -> Option<ExternalPaths> {
+        unsafe {
+            let mut paths = SmallVec::new();
+            let classes = NSArray::arrayWithObject(nil, class!(NSURL) as *const _ as id);
+            let urls: id = msg_send![*self.inner, readObjectsForClasses: classes options: nil];
+            if urls != nil {
+                for url in urls.iter() {
+                    let file: objc::runtime::BOOL = msg_send![url, isFileURL];
+                    if file == objc::runtime::YES {
+                        let path: id = msg_send![url, path];
+                        if path != nil {
+                            let value = CStr::from_ptr(NSString::UTF8String(path));
+                            paths.push(PathBuf::from(value.to_string_lossy().into_owned()));
+                        }
+                    }
+                }
+            }
+            if paths.is_empty() {
+                let filenames =
+                    NSPasteboard::propertyListForType(*self.inner, NSFilenamesPboardType);
+                if filenames != nil {
+                    for file in filenames.iter() {
+                        let value = CStr::from_ptr(NSString::UTF8String(file));
+                        paths.push(PathBuf::from(value.to_string_lossy().into_owned()));
+                    }
+                }
+            }
+            (!paths.is_empty()).then_some(ExternalPaths(paths))
+        }
+    }
+
+    pub(crate) fn read_drag(
+        &self,
+        receiving: bool,
+    ) -> Option<(ExternalPaths, Option<tempfile::TempDir>)> {
+        if let Some(paths) = self.read_paths() {
+            if receiving && paths.0.len() == 1 && is_temporary_image(&paths.0[0]) {
+                // A screenshot URL can grant this receiving app access without
+                // granting an already-running terminal process the same access.
+                // Receive its bytes while the drop is active, not during hover.
+                let image = self.drag_image().or_else(|| {
+                    stage_drag_image_file(&paths.0[0])
+                        .inspect_err(|error| log::warn!("Could not receive dragged image: {error}"))
+                        .ok()
+                })?;
+                return Some((image.0, Some(image.1)));
+            }
+            return Some((paths, None));
+        }
+        self.drag_image()
+            .map(|(paths, directory)| (paths, Some(directory)))
+    }
+
+    /// Some image drags offer bytes instead of an existing path.
+    /// Stage them only during an explicit drag, in a private temporary directory.
+    pub(crate) fn drag_image(&self) -> Option<(ExternalPaths, tempfile::TempDir)> {
+        for format in [ImageFormat::Png, ImageFormat::Tiff, ImageFormat::Jpeg] {
+            if let Some(item) = self.read_image(format)
+                && let Some(ClipboardEntry::Image(image)) = item.entries.first()
+            {
+                return stage_drag_image(&image.bytes).ok();
+            }
+        }
         None
     }
 
@@ -329,6 +385,62 @@ impl UTType {
     }
 }
 
+/// Keep a screenshot alive after a successful drop so the terminal program can
+/// read it asynchronously. A cancelled drag drops the directory normally.
+fn stage_drag_image(bytes: &[u8]) -> anyhow::Result<(ExternalPaths, tempfile::TempDir)> {
+    anyhow::ensure!(bytes.len() <= 64 * 1024 * 1024, "dragged image is too large");
+    let directory = tempfile::Builder::new()
+        .prefix("tmux-workspaces-drop-")
+        .tempdir()?;
+    let path = directory.path().join("Screenshot.png");
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format()?;
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(16384);
+    limits.max_image_height = Some(16384);
+    limits.max_alloc = Some(256 * 1024 * 1024);
+    reader.limits(limits.clone());
+    let mut decoder = reader.into_decoder()?;
+    let orientation = decoder.orientation()?;
+    limits.reserve(decoder.total_bytes())?;
+    if matches!(
+        orientation,
+        image::metadata::Orientation::Rotate90
+            | image::metadata::Orientation::Rotate270
+            | image::metadata::Orientation::Rotate90FlipH
+            | image::metadata::Orientation::Rotate270FlipH
+    ) {
+        // Quarter turns allocate a second pixel buffer instead of working in place.
+        limits.reserve(decoder.total_bytes())?;
+    }
+    decoder.set_limits(limits)?;
+    let mut decoded = image::DynamicImage::from_decoder(decoder)?;
+    decoded.apply_orientation(orientation);
+    decoded.save_with_format(&path, image::ImageFormat::Png)?;
+    Ok((ExternalPaths([path].into_iter().collect()), directory))
+}
+
+fn is_temporary_image(path: &std::path::Path) -> bool {
+    matches!(
+        image::ImageFormat::from_path(path),
+        Ok(image::ImageFormat::Png | image::ImageFormat::Tiff | image::ImageFormat::Jpeg)
+    ) && path
+        .canonicalize()
+        .ok()
+        .zip(std::env::temp_dir().canonicalize().ok())
+        .is_some_and(|(path, temporary)| path.starts_with(temporary))
+}
+
+fn stage_drag_image_file(
+    path: &std::path::Path,
+) -> anyhow::Result<(ExternalPaths, tempfile::TempDir)> {
+    anyhow::ensure!(std::fs::metadata(path)?.is_file(), "dragged image is not a file");
+    let file = std::fs::File::open(path)?;
+    anyhow::ensure!(file.metadata()?.is_file(), "dragged image is not a file");
+    let mut bytes = Vec::new();
+    file.take(64 * 1024 * 1024 + 1).read_to_end(&mut bytes)?;
+    stage_drag_image(&bytes)
+}
+
 #[cfg(test)]
 mod tests {
     use cocoa::{
@@ -342,6 +454,64 @@ mod tests {
     use objc::rc::autoreleasepool;
 
     use super::*;
+
+    #[test]
+    fn screenshot_drag_stages_png_and_cleans_up_when_cancelled() {
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgba8(2, 3)
+            .write_to(&mut bytes, image::ImageFormat::Tiff)
+            .unwrap();
+        let image = Image {
+            format: ImageFormat::Tiff,
+            bytes: bytes.into_inner(),
+            id: 0,
+        };
+        let (paths, directory) = stage_drag_image(&image.bytes).unwrap();
+        let path = paths.0[0].clone();
+        assert_eq!(image::open(&path).unwrap().width(), 2);
+        assert_eq!(path.extension().unwrap(), "png");
+        drop(directory);
+        assert!(!path.exists());
+        let (paths, directory) = stage_drag_image(&image.bytes).unwrap();
+        let kept = directory.keep();
+        assert!(paths.0[0].exists());
+        std::fs::remove_dir_all(kept).unwrap();
+    }
+
+    #[test]
+    fn temporary_screenshot_drop_receives_an_independent_image() {
+        let source = tempfile::tempdir().unwrap();
+        let path = source.path().join("Screenshot at 3.09.04 PM.jpg");
+        image::DynamicImage::new_rgb8(2, 3).save(&path).unwrap();
+        let mut bytes = std::fs::read(&path).unwrap();
+        // EXIF orientation 6: the displayed image is rotated 90 degrees.
+        bytes.splice(
+            2..2,
+            [
+                0xff, 0xe1, 0, 34, b'E', b'x', b'i', b'f', 0, 0, b'I', b'I', 42, 0, 8, 0, 0, 0,
+                1, 0, 0x12, 1, 3, 0, 1, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0,
+            ],
+        );
+        let mut oversized = bytes.clone();
+        let frame = oversized.windows(2).position(|pair| pair == [0xff, 0xc0]).unwrap();
+        // 8192x8192 RGB fits once, but rotation needs a second buffer.
+        oversized[frame + 5..frame + 9].copy_from_slice(&[0x20, 0, 0x20, 0]);
+        let error = stage_drag_image(&oversized).unwrap_err();
+        assert!(matches!(error.downcast_ref::<image::ImageError>(), Some(image::ImageError::Limits(_))));
+        std::fs::write(&path, bytes).unwrap();
+        let pasteboard = Pasteboard::unique();
+        unsafe { simulate_external_file_copy(&pasteboard, &[path.to_str().unwrap()]) };
+        let (hover_paths, hover_directory) = pasteboard.read_drag(false).unwrap();
+        assert_eq!(hover_paths.0[0], path);
+        assert!(hover_directory.is_none());
+        let (received, directory) = pasteboard.read_drag(true).unwrap();
+        assert_ne!(received.0[0], path);
+        assert!(path.exists());
+        drop(source);
+        assert_eq!(image::image_dimensions(&received.0[0]).unwrap(), (3, 2));
+        drop(directory);
+        assert!(!received.0[0].exists());
+    }
 
     unsafe fn simulate_external_file_copy(pasteboard: &Pasteboard, paths: &[&str]) {
         unsafe {

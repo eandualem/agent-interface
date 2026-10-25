@@ -119,6 +119,35 @@ fn client() -> Option<reqwest::blocking::Client> {
         .ok()
 }
 
+/// One explicit feedback submission. Never retry a POST with an unknown outcome.
+pub(super) fn post_message(url: &str, key: &str, body: Vec<u8>) -> Result<Vec<u8>, Option<u16>> {
+    let uri = endpoint(url, "/api/messages").ok_or(None)?;
+    let client = client().ok_or(None)?;
+    let mut request = client
+        .post(uri.to_string())
+        .timeout(Duration::from_secs(10))
+        .header("Content-Type", "application/json")
+        .body(body);
+    if !key.is_empty() {
+        let mut value = HeaderValue::from_str(&format!("Bearer {key}")).map_err(|_| None)?;
+        value.set_sensitive(true);
+        request = request.header("Authorization", value);
+    }
+    let response = request.send().map_err(|_| None)?;
+    if !response.status().is_success() {
+        return Err(Some(response.status().as_u16()));
+    }
+    let mut bytes = Vec::new();
+    response
+        .take(65537)
+        .read_to_end(&mut bytes)
+        .map_err(|_| None)?;
+    if bytes.len() > 65536 {
+        return Err(None);
+    }
+    Ok(bytes)
+}
+
 #[cfg(test)]
 pub(super) mod tests {
     use super::*;

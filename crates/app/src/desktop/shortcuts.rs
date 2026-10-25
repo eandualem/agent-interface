@@ -52,7 +52,7 @@ pub const COMMANDS: &[(Command, &str, &str, &str, &str)] = &[
     (
         Command::Detach,
         "detach",
-        "Detach session from pane",
+        "Detach pane contents",
         "Panes",
         "cmd-shift-x",
     ),
