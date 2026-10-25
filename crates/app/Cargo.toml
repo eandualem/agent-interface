@@ -23,6 +23,10 @@ gpui.workspace = true
 gpui_platform.workspace = true
 uzers.workspace = true
 sha2.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+tempfile.workspace = true
+uuid.workspace = true
 toml.workspace = true
 unicode-segmentation.workspace = true
 unicode-properties.workspace = true
@@ -31,6 +35,10 @@ tmux-workspaces-store = { path = "../store" }
 tmux-workspaces-roster = { path = "../roster" }
 tmux-workspaces-term = { path = "../term" }
 tmux-workspaces-tmux = { path = "../tmux" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# System WebKit embedding for the artifact experiment (MIT OR Apache-2.0).
+wry = { version = "=0.57.1", default-features = false, features = ["os-webview"] }
 
 [dev-dependencies]
 rusqlite.workspace = true

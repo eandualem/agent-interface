@@ -16,7 +16,8 @@ synchronizing live sessions between computers is not supported.
 ## Navigate and use terminals
 
 A **workspace** is a collection of tabs. A **tab** contains one or more
-**panes**. Each pane holds a terminal session or a native view, such as Skills.
+**panes**. Each pane holds a terminal session, a native view such as Skills,
+or an experimental HTML artifact.
 A session is the running work shown inside a terminal pane; closing its pane
 does not send a session-termination command.
 
@@ -193,6 +194,57 @@ the library starts from the source's current window again.
 The list follows tmux, checking every two seconds. Custom tmux
 prefix bindings, selection across history pages, terminal input methods
 and key-release events are not yet wired into the product UI.
+
+## Read reports and interactive artifacts
+
+In an empty pane, choose **Reports & updates** to read Agent Backbone's
+authored reports and retained answers. **Recent updates** shows report history;
+**Responses** shows questions, answers and their next actions. **Waiting on
+you** shows owner blockers from each agent's latest report. A report's age does
+not resolve its blocker, and an answer's action text is not a pending approval.
+Choose a row to read it; use Back or Escape to return. Previous/Next page browse
+older records, and Refresh returns to the newest page. These views are read-only.
+
+**Artifacts** holds agent-created HTML documents in the current library and
+works without Backbone. This experimental renderer is available on macOS.
+To publish a document from the source build:
+
+```sh
+cargo run -p tmux-workspaces-app -- artifact publish report.html \
+  --title "Architecture report" --author "worker"
+```
+
+The installed binary accepts the same `artifact publish` arguments. Add
+`--data-dir PATH` to select another library, using the same path as its window.
+Publication prints JSON containing the new document's ID, title, author and
+time. It copies the file, so the source can subsequently move or change.
+The author label defaults to `BACKBONE_AGENT`, then `local`; it is attribution,
+not a verified identity. The open Artifacts list discovers publications within
+its next two-second refresh. Choose a document to open it in that pane.
+
+Write one self-contained UTF-8 HTML file, up to 4 MiB including its assets.
+Inline CSS and JavaScript, SVG, canvas, animations and data URLs are supported.
+External scripts, styles, images and network requests do not load. Links cannot
+leave the document; downloads, popups, frames and form submissions are disabled.
+The document cannot call terminal commands or the Backbone API. Store any
+results that must survive as part of the published HTML: document state resets
+when it is reloaded, closed or hidden by switching tabs or expanding another
+pane. Publication persists until its local artifact directory is removed.
+
+Documents receive default app colours and a system font. Use these CSS variables
+to follow the current theme while keeping control over layout and styling:
+`--ai-background`, `--ai-surface`, `--ai-text`, `--ai-muted`, `--ai-accent` and
+`--ai-line`. For example:
+
+```html
+<!doctype html>
+<style>
+  body { padding: 24px; }
+  button { color: var(--ai-text); background: var(--ai-surface); }
+</style>
+<h1>Architecture report</h1>
+<button onclick="this.textContent = 'Details opened'">Show details</button>
+```
 
 ## Choose and recover a library
 

@@ -187,11 +187,54 @@ A saved view records the agent section it opens on (`view_section`); a pane
 saved by an earlier version as one agent's policies opens on that agent's
 Policies section and is written in the new form with the next change.
 
+Reports use Backbone's existing read-only `/api/reports` and `/api/responses`
+feeds. The native pane keeps report history, latest owner blockers and retained
+answers distinct. Pagination follows each feed's cursor; Refresh starts at the
+newest page. An optional agent filter is sent to both feeds and retained across
+view changes and pagination; choosing another agent restarts at the newest page.
+The picker reads configured agents, with page authors as a fallback when the
+roster is unavailable. Each row opens the complete authored record, including
+its sections and links. An open record keeps its contents through background refreshes.
+An open Response is polled by ID so its correction metadata stays current even
+after newer publications move it off its former list page.
+Authored status and blocker text do not change runtime state or grant approval.
+
+The experimental Artifacts pane is independent of Backbone. `app::artifacts`
+copies a UTF-8 HTML document and small metadata record into an immutable UUID
+directory under the selected library's `artifacts/`, publishing by atomic
+rename. The CLI does this without starting a window, tmux client or daemon.
+Discovery reads metadata off the UI thread every two seconds while visible;
+the catalog retains the newest 200 entries. HTML is read only on opening a
+document and is limited to 4 MiB, including inline assets.
+
+`desktop::views::artifact_web` is the system-webview boundary. On macOS it
+creates a Wry/WebKit child view only for an opened document, positions it in
+the pane's content rectangle, and updates its theme variables. The view is
+hidden while native overlays or pane dragging need that space. Closing the
+document or hiding its pane releases the web view, so reopening starts a fresh
+document runtime. Native terminals, menus and report views do not use WebKit.
+WebKit's platform processes belong to the renderer; the app adds no daemon.
+Linux currently shows an explicit unsupported-renderer message: embedding
+WebKitGTK in GPUI's Wayland/X11 windows needs a separate integration.
+
+Artifacts use a private in-memory URL, an ephemeral browser session and a
+content policy that permits inline HTML/CSS/JavaScript, SVG, canvas and data
+assets but blocks external resources, network requests, frames and form
+submission. Navigation, downloads, new windows and permission requests are
+denied. The sole JavaScript bridge reports pointer focus to select the owning
+pane; it exposes no terminal commands, filesystem access or Backbone API.
+This isolates the integration, but does not make arbitrary animations free:
+visible documents still consume WebKit CPU and memory according to their code.
+
 ## Dependencies and licences
 
 The project is MIT-licensed. [`Cargo.toml`](../Cargo.toml) declares dependency
 versions, `Cargo.lock` records the resolved graph, and `deny.toml` checks licences,
 advisories and permitted sources.
+The audit runs separately for both architectures on macOS and Linux. Wry is
+reachable only in macOS graphs, so its unused GTK and Android dependencies are
+not part of any supported build. No advisory or licence exception is added for
+those dependencies.
 
 - **GPUI (`gpui-pre` and platform packages):** native windowing and GPU drawing,
   pinned as one package family. Apache-2.0. The macOS 0.3.9 backend is
@@ -213,6 +256,12 @@ advisories and permitted sources.
   MIT. Its bundled SQLite uses SQLite's public-domain dedication.
 - **`libc`:** Unix constants for nonblocking configuration reads in the app
   and roster, and the existing process integration. MIT OR Apache-2.0.
+- **`wry` 0.57.1:** macOS system WebKit child views for experimental HTML
+  artifacts, pinned exactly and enabled only on macOS. MIT OR Apache-2.0.
+  It does not render terminals or supply a bundled browser engine.
+- **`serde`, `serde_json`, `uuid` and `tempfile`:** existing workspace
+  dependencies also used by artifact metadata, publication IDs and atomic
+  staging. Each is MIT OR Apache-2.0.
 - **`alacritty_terminal` and `rio-vt`:** development-only comparison engines.
   Apache-2.0 and MIT respectively.
 

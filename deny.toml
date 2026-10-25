@@ -1,9 +1,9 @@
 # cargo-deny configuration: licences, advisories, banned crates and sources,
-# checked in CI with `cargo deny check`.
+# checked in CI with `cargo deny --target TARGET check` for each supported target.
 
 [graph]
-# Check every target and feature, so a platform-specific dependency is audited
-# even when CI does not build that platform.
+# CI checks each supported target separately, including targets it does not
+# build. Keep every feature enabled within each platform's dependency graph.
 all-features = true
 
 [advisories]

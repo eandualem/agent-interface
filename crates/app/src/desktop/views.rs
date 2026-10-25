@@ -1,11 +1,12 @@
-//! Agent Backbone views: information shown in a pane in place of a terminal.
+//! Native information views and local HTML artifacts shown beside terminals.
 //!
 //! A [`ViewPane`] exists only while its pane is shown, and polls its data on
 //! an I/O worker until then (`crate::roster::ViewSource`). Each view draws its
 //! data in its own module from the shared pieces in `components`, following
 //! the design boards. Every view stays inside its pane: choosing a skill or a
 //! policy opens it in the same pane through `reader`, with a way back. Backbone
-//! is only read; nothing here changes an agent.
+//! is only read; nothing here changes an agent. Artifacts have their own local
+//! catalog and an isolated system-webview renderer rather than a Backbone worker.
 
 use std::{collections::HashSet, path::PathBuf, time::Duration};
 
@@ -25,9 +26,12 @@ use crate::roster::ViewSource;
 
 mod activity;
 mod agent;
+mod artifact_web;
+mod artifacts;
 mod markdown;
 mod policies;
 mod reader;
+mod reports;
 mod skills;
 mod tags;
 mod team;
@@ -49,6 +53,8 @@ pub(super) fn about(kind: ViewKind) -> About {
         ViewKind::Activity => ("activity", "Activity"),
         ViewKind::Team => ("bot", "Team"),
         ViewKind::Tags => ("hash", "Tags"),
+        ViewKind::Reports => ("message-square", "Reports & updates"),
+        ViewKind::Artifacts => ("layout-grid", "Artifacts"),
     };
     About { icon, label }
 }
@@ -61,6 +67,8 @@ pub(super) enum ViewEvent {
     OpenBeside(View),
     /// A field in the view gave up focus; return it to the window's keys.
     ReturnFocus,
+    /// An embedded document received a pointer press; select its owning pane.
+    Focus,
 }
 
 /// How the team view groups agents.
@@ -131,6 +139,8 @@ pub(super) struct ViewPane {
     raw: bool,
     /// The tag whose agents the tags view lists in place of its cards.
     carriers_of: Option<String>,
+    reports: reports::State,
+    artifacts: Option<Entity<artifacts::ArtifactPane>>,
     _updates: Option<Task<()>>,
     _search: Vec<Subscription>,
 }
@@ -138,16 +148,32 @@ pub(super) struct ViewPane {
 impl EventEmitter<ViewEvent> for ViewPane {}
 
 impl ViewPane {
-    pub fn set_visible(&self, visible: bool) {
+    pub fn set_visible(&self, visible: bool, cx: &gpui::App) {
         if let Some(source) = &self.source {
             source.set_active(visible);
         }
+        if let Some(artifacts) = &self.artifacts {
+            artifacts.read(cx).set_visible(visible);
+        }
     }
 
-    /// Start polling `view`. Without Backbone, the pane says so and polls nothing.
+    pub fn occlude_web(&self, occluded: bool, cx: &gpui::App) {
+        if let Some(artifacts) = &self.artifacts {
+            artifacts.read(cx).occlude(occluded);
+        }
+    }
+
+    pub fn focus_native(&self, cx: &gpui::App) {
+        if let Some(artifacts) = &self.artifacts {
+            artifacts.read(cx).focus_parent();
+        }
+    }
+
+    /// Start the local artifact catalog or a read-only Backbone view worker.
     pub fn new(
         view: View,
         backbone: Option<PathBuf>,
+        directory: Option<PathBuf>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -169,11 +195,22 @@ impl ViewPane {
             open: None,
             raw: false,
             carriers_of: None,
+            reports: reports::State::default(),
+            artifacts: None,
             _updates: None,
             _search: Vec::new(),
             view,
         };
-        if pane.view.kind == ViewKind::Skills {
+        if pane.view.kind == ViewKind::Artifacts {
+            let artifacts = artifacts::create(directory, cx);
+            pane._search
+                .push(cx.subscribe(&artifacts, |_, _, _: &artifacts::Focus, cx| {
+                    cx.emit(ViewEvent::Focus)
+                }));
+            pane.artifacts = Some(artifacts);
+            return pane;
+        }
+        if matches!(pane.view.kind, ViewKind::Skills | ViewKind::Reports) {
             let field = cx.new(|cx| NameField::filter(window, cx));
             pane._search
                 .push(cx.subscribe(&field, |pane, _, event, cx| {
@@ -232,6 +269,9 @@ impl ViewPane {
                         }
                         match update {
                             Ok(mut data) => {
+                                if let Data::Reports(page) = &data {
+                                    pane.reports.observe(page);
+                                }
                                 // A section whose own read failed keeps its
                                 // last data, so an open document stays open.
                                 pane.error = agent::keep_section(pane.data.as_ref(), &mut data);
@@ -259,6 +299,13 @@ impl ViewPane {
             ViewKind::Skills => Request::Skills,
             ViewKind::Policies => Request::Policies,
             ViewKind::Tags => Request::Tags,
+            ViewKind::Reports => match &self.reports.open {
+                Some(item) if matches!(item.content, views::ReportContent::Response { .. }) => {
+                    Request::Response(item.id)
+                }
+                _ => Request::Reports(self.reports.query.clone(), self.reports.agent.clone()),
+            },
+            ViewKind::Artifacts => unreachable!("artifacts have no Backbone source"),
             ViewKind::Agent => Request::Agent(
                 self.view.agent.clone().unwrap_or_default(),
                 match self.section {
@@ -374,6 +421,11 @@ impl ViewPane {
         if key.modifiers.modified() {
             return false;
         }
+        if self.reports.open.is_some() && key.key == "escape" {
+            self.reports.open = None;
+            self.refetch(true, cx);
+            return true;
+        }
         if self.open.is_none() {
             if self.carriers_of.is_some() && key.key == "escape" {
                 self.close(cx);
@@ -415,6 +467,9 @@ impl Drop for ViewPane {
 
 impl Render for ViewPane {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if let Some(artifacts) = &self.artifacts {
+            return div().size_full().child(artifacts.clone());
+        }
         let (t, c) = (tokens(), colors());
         let about = about(self.view.kind);
         // Lent to the body for this frame and put back below.
@@ -441,6 +496,9 @@ impl Render for ViewPane {
                     .when(self.view.kind == ViewKind::Usage, |el| {
                         el.child(usage::toolbar(self, cx))
                     })
+                    .when(self.view.kind == ViewKind::Reports, |el| {
+                        el.child(reports::refresh_toolbar(self, cx))
+                    })
                     .child(state)
                     .into_any_element()
             }
@@ -451,6 +509,7 @@ impl Render for ViewPane {
             Some(Data::Agent(data)) => agent::body(self, data, cx),
             Some(Data::Policies(data)) => policies::body(self, data, cx),
             Some(Data::Tags(data)) => tags::body(self, data, cx),
+            Some(Data::Reports(data)) => reports::body(self, data, cx),
         };
         self.data = data;
         div()

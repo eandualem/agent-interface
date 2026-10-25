@@ -146,7 +146,12 @@ impl Browser {
         {
             chooser.view.clone().into_any_element()
         } else if let Some((view, _)) = cards.views.get(&leaf.id) {
-            if cards.focus_changed {
+            if cards.focus_changed
+                || leaf
+                    .view
+                    .as_ref()
+                    .is_some_and(|view| view.kind == tmux_workspaces_core::ViewKind::Artifacts)
+            {
                 view.clone().into_any_element()
             } else {
                 view.clone()

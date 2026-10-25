@@ -9,7 +9,7 @@ use std::{
     process::ExitCode,
 };
 
-const USAGE: &str = "Usage: tmux-workspaces [--data-dir PATH]\n       tmux-workspaces [--keymap PATH | --no-keymap] --print-keymap <help|toml>\n\nOpen saved workspaces and connect their existing tmux sessions, or print the\neffective keymap without opening a window.\n";
+const USAGE: &str = "Usage: tmux-workspaces [--data-dir PATH]\n       tmux-workspaces [--keymap PATH | --no-keymap] --print-keymap <help|toml>\n       tmux-workspaces [--data-dir PATH] artifact publish FILE.html --title TITLE [--author NAME]\n\nOpen saved workspaces, print the effective keymap, or publish a self-contained\nHTML artifact to the library without opening a window.\n";
 
 fn main() -> ExitCode {
     match options(std::env::args_os().skip(1)) {
@@ -42,6 +42,28 @@ fn main() -> ExitCode {
             }
         }
         Ok(Options::Help) => print!("{USAGE}"),
+        Ok(Options::Artifact {
+            directory,
+            file,
+            title,
+            author,
+        }) => {
+            match tmux_workspaces_app::artifacts::publish(
+                directory.as_deref(),
+                &file,
+                &title,
+                &author,
+            ) {
+                Ok(entry) => println!(
+                    "{}",
+                    serde_json::to_string(&entry).expect("artifact metadata")
+                ),
+                Err(error) => {
+                    eprintln!("tmux-workspaces: {}", error.to_string().escape_debug());
+                    return ExitCode::FAILURE;
+                }
+            }
+        }
         Ok(Options::Version) => println!("tmux-workspaces {}", env!("CARGO_PKG_VERSION")),
         Err(error) => {
             eprintln!("tmux-workspaces: {}\n{USAGE}", error.escape_debug());
@@ -54,6 +76,12 @@ fn main() -> ExitCode {
 #[derive(Debug, PartialEq, Eq)]
 enum Options {
     Open(Option<PathBuf>),
+    Artifact {
+        directory: Option<PathBuf>,
+        file: PathBuf,
+        title: String,
+        author: String,
+    },
     Keymap {
         path: Option<PathBuf>,
         disabled: bool,
@@ -67,6 +95,7 @@ fn options(mut arguments: impl Iterator<Item = OsString>) -> Result<Options, Str
     use std::os::unix::ffi::{OsStrExt, OsStringExt};
     let mut directory = None;
     let (mut keymap, mut disabled, mut format) = (None, false, None);
+    let (mut artifact, mut title, mut author) = (None, None, None);
     while let Some(argument) = arguments.next() {
         if argument == "--help" || argument == "-h" {
             return Ok(Options::Help);
@@ -74,7 +103,24 @@ fn options(mut arguments: impl Iterator<Item = OsString>) -> Result<Options, Str
         if argument == "--version" || argument == "-V" {
             return Ok(Options::Version);
         }
-        if argument == "--no-keymap" {
+        if argument == "artifact" && artifact.is_none() {
+            if arguments.next().as_deref() != Some(std::ffi::OsStr::new("publish")) {
+                return Err("artifact requires publish FILE.html --title TITLE".into());
+            }
+            artifact = Some(PathBuf::from(
+                arguments.next().ok_or("artifact publish requires a file")?,
+            ));
+        } else if argument == "--title" || argument == "--author" {
+            let value = arguments
+                .next()
+                .and_then(|value| value.into_string().ok())
+                .ok_or("--title and --author require UTF-8 text")?;
+            if argument == "--title" {
+                title = Some(value);
+            } else {
+                author = Some(value);
+            }
+        } else if argument == "--no-keymap" {
             disabled = true;
         } else if argument == "--keymap" {
             keymap = Some(PathBuf::from(
@@ -100,6 +146,22 @@ fn options(mut arguments: impl Iterator<Item = OsString>) -> Result<Options, Str
         } else {
             return Err(format!("unknown argument: {}", argument.to_string_lossy()));
         }
+    }
+    if let Some(file) = artifact {
+        if keymap.is_some() || disabled || format.is_some() {
+            return Err("artifact publication cannot be combined with keymap options".into());
+        }
+        return Ok(Options::Artifact {
+            directory,
+            file,
+            title: title.ok_or("artifact publish requires --title")?,
+            author: author
+                .or_else(|| std::env::var("BACKBONE_AGENT").ok())
+                .unwrap_or_else(|| "local".into()),
+        });
+    }
+    if title.is_some() || author.is_some() {
+        return Err("--title and --author require artifact publish".into());
     }
     if let Some(format) = format {
         if format != "help" && format != "toml" {
@@ -138,5 +200,43 @@ mod tests {
         }
         assert!(parse(&["--data-dir"]).is_err());
         assert!(parse(&["--unknown"]).is_err());
+    }
+
+    #[test]
+    fn artifact_publication_keeps_the_library_and_author_explicit() {
+        let parse = |args: &[&str]| options(args.iter().map(OsString::from));
+        assert_eq!(
+            parse(&[
+                "--data-dir",
+                "library",
+                "artifact",
+                "publish",
+                "report.html",
+                "--title",
+                "A report",
+                "--author",
+                "worker",
+            ]),
+            Ok(Options::Artifact {
+                directory: Some("library".into()),
+                file: "report.html".into(),
+                title: "A report".into(),
+                author: "worker".into(),
+            })
+        );
+        assert!(parse(&["artifact", "publish", "report.html"]).is_err());
+        assert!(parse(&["--title", "A report"]).is_err());
+        assert!(
+            parse(&[
+                "artifact",
+                "publish",
+                "report.html",
+                "--title",
+                "A report",
+                "--print-keymap",
+                "help",
+            ])
+            .is_err()
+        );
     }
 }

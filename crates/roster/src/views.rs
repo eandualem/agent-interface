@@ -17,6 +17,9 @@ use serde_json::value::RawValue;
 use crate::{configuration::configured, transport, valid_agent, within_depth};
 
 mod library;
+mod reports;
+
+pub use reports::{ReportContent, ReportItem, ReportPage, ReportQuery, ReportSection};
 
 pub use library::{
     Loadout, LocalSkill, PREVIEW_LIMIT, Place, PolicyLibrary, Reason, SkillLibrary, TagCard,
@@ -41,6 +44,10 @@ pub enum Request {
     Usage(Range),
     /// Recent deliveries and inbound events.
     Activity,
+    /// Authored progress reports or retained answers, one page at a time.
+    Reports(ReportQuery, Option<String>),
+    /// Refresh an open answer independently of its former list page.
+    Response(u64),
     /// Every skill an agent can load, team-wide.
     Skills,
     /// The layers a brief is built from, team-wide.
@@ -106,6 +113,8 @@ pub enum Data {
     Usage(Usage),
     /// See [`Activity`].
     Activity(Activity),
+    /// See [`ReportPage`].
+    Reports(ReportPage),
     /// See [`SkillLibrary`].
     Skills(Box<SkillLibrary>),
     /// See [`PolicyLibrary`].
@@ -179,6 +188,10 @@ pub fn read(
             &api.get("/api/swarms")?,
         )?)),
         Request::Usage(range) => Ok(Data::Usage(Usage::decode(&api.get(&usage_path(*range))?)?)),
+        Request::Reports(query, agent) => {
+            Ok(Data::Reports(reports::read(&api, query, agent.as_deref())?))
+        }
+        Request::Response(id) => Ok(Data::Reports(reports::read_response(&api, *id)?)),
         Request::Activity => {
             // History is an addition: when it cannot be read, the timeline
             // still shows deliveries and states now, and says why.

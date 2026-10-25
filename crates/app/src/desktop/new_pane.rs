@@ -455,6 +455,7 @@ impl Render for NewPane {
         let views = self.mode != Mode::Sessions;
         let buttons = div()
             .flex()
+            .flex_wrap()
             .flex_shrink_0()
             .gap(px(t.space.s10))
             .child(
@@ -471,23 +472,44 @@ impl Render for NewPane {
                 })),
             )
             .when(self.backbone, |buttons| {
-                buttons.child(
-                    ui::choice_button(
-                        "new-pane-views",
-                        "layout-grid",
-                        "Skills, usage, team…",
-                        "⇥",
-                        views,
+                buttons
+                    .child(
+                        ui::choice_button(
+                            "new-pane-views",
+                            "layout-grid",
+                            "Skills, usage, team…",
+                            "⇥",
+                            views,
+                        )
+                        .on_click(cx.listener(|chooser, _, window, cx| {
+                            cx.stop_propagation();
+                            // Keys now belong to this list, not a terminal beside it.
+                            let focus = chooser.field.read(cx).focus.clone();
+                            window.focus(&focus, cx);
+                            chooser.toggle(cx);
+                        })),
                     )
-                    .on_click(cx.listener(|chooser, _, window, cx| {
+                    .child(
+                        ui::choice_button(
+                            "new-pane-reports",
+                            "message-square",
+                            "Reports & updates",
+                            "",
+                            false,
+                        )
+                        .on_click(cx.listener(|_, _, _, cx| {
+                            cx.stop_propagation();
+                            cx.emit(NewPaneEvent::OpenView(View::of(ViewKind::Reports)));
+                        })),
+                    )
+            })
+            .child(
+                ui::choice_button("new-pane-artifacts", "layout-grid", "Artifacts", "", false)
+                    .on_click(cx.listener(|_, _, _, cx| {
                         cx.stop_propagation();
-                        // Keys now belong to this list, not a terminal beside it.
-                        let focus = chooser.field.read(cx).focus.clone();
-                        window.focus(&focus, cx);
-                        chooser.toggle(cx);
+                        cx.emit(NewPaneEvent::OpenView(View::of(ViewKind::Artifacts)));
                     })),
-                )
-            });
+            );
         let mut list = div()
             .id(SharedString::from(format!("new-pane-rows-{}", self.pane)))
             .flex_1()

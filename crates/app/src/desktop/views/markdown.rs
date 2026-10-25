@@ -21,9 +21,19 @@ pub(super) enum Block {
 
 /// The blocks of `text`, after any front matter between `---` lines.
 pub(super) fn parse(text: &str) -> Vec<Block> {
+    parse_text(text, true)
+}
+
+/// Authored records contain no skill front matter; preserve all their text.
+pub(super) fn parse_authored(text: &str) -> Vec<Block> {
+    parse_text(text, false)
+}
+
+fn parse_text(text: &str, front_matter: bool) -> Vec<Block> {
     let mut lines = text.lines().peekable();
     // Front matter only when a closing line follows; otherwise `---` is a rule.
-    if lines.peek().is_some_and(|line| line.trim() == "---")
+    if front_matter
+        && lines.peek().is_some_and(|line| line.trim() == "---")
         && text.lines().skip(1).any(|line| line.trim() == "---")
     {
         lines.next();
@@ -188,6 +198,14 @@ pub(super) fn render(blocks: &[Block]) -> gpui::Div {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn authored_rules_do_not_hide_the_text_between_them() {
+        assert_eq!(
+            parse_authored("---\nKeep this answer\n---\nAfter"),
+            [Block::Paragraph("--- Keep this answer --- After".into())]
+        );
+    }
 
     #[test]
     fn documents_split_into_blocks_without_front_matter() {

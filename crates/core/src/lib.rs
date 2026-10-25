@@ -164,11 +164,15 @@ pub enum ViewKind {
     Policies,
     /// What each tag gives the agents that carry it.
     Tags,
+    /// Authored progress updates and retained answers.
+    Reports,
+    /// Locally published HTML documents.
+    Artifacts,
 }
 
 impl ViewKind {
     /// Every kind, in the order the new-pane chooser lists them.
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 9] = [
         Self::Skills,
         Self::Policies,
         Self::Tags,
@@ -176,6 +180,8 @@ impl ViewKind {
         Self::Usage,
         Self::Activity,
         Self::Agent,
+        Self::Reports,
+        Self::Artifacts,
     ];
 
     /// The saved name.
@@ -188,6 +194,8 @@ impl ViewKind {
             Self::Agent => "agent",
             Self::Policies => "policies",
             Self::Tags => "tags",
+            Self::Reports => "reports",
+            Self::Artifacts => "artifacts",
         }
     }
 
