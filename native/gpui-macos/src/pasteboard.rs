@@ -110,7 +110,7 @@ impl Pasteboard {
         }
     }
 
-    /// A floating screenshot offers image bytes instead of an existing path.
+    /// Some image drags offer bytes instead of an existing path.
     /// Stage them only during an explicit drag, in a private temporary directory.
     pub(crate) fn drag_image(&self) -> Option<(ExternalPaths, tempfile::TempDir)> {
         for format in [ImageFormat::Png, ImageFormat::Tiff, ImageFormat::Jpeg] {
