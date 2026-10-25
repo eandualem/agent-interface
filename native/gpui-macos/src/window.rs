@@ -3657,7 +3657,7 @@ extern "C" fn dragging_entered(this: &Object, _: Sel, dragging_info: id) -> NSDr
     let is_source_window = is_drag_from_this_window(this, dragging_info);
     let window_state = unsafe { get_window_state(this) };
     let position = drag_event_position(&window_state, dragging_info);
-    let prepared = external_paths_from_event(dragging_info);
+    let prepared = external_paths_from_event(dragging_info, false);
     let paths = prepared.map(|(paths, image)| {
         window_state.lock().dropped_image = image;
         paths
@@ -3697,6 +3697,16 @@ extern "C" fn dragging_exited(this: &Object, _: Sel, _: id) {
 extern "C" fn perform_drag_operation(this: &Object, _: Sel, dragging_info: id) -> BOOL {
     let window_state = unsafe { get_window_state(this) };
     let position = drag_event_position(&window_state, dragging_info);
+    // Read the actual drop again: temporary screenshot URLs need to be received
+    // by this app before another process can read them. Replace the hover payload.
+    let prepared = external_paths_from_event(dragging_info, true);
+    send_file_drop_event(window_state.clone(), FileDropEvent::Exited);
+    window_state.lock().dropped_image = None;
+    let Some((paths, image)) = prepared else {
+        return NO;
+    };
+    window_state.lock().dropped_image = image;
+    send_file_drop_event(window_state.clone(), FileDropEvent::Entered { position, paths });
     let accepted = send_file_drop_event(window_state.clone(), FileDropEvent::Submit { position });
     if let Some(image) = window_state.lock().dropped_image.take()
         && accepted
@@ -3710,18 +3720,14 @@ extern "C" fn perform_drag_operation(this: &Object, _: Sel, dragging_info: id) -
 
 fn external_paths_from_event(
     dragging_info: *mut Object,
+    receiving: bool,
 ) -> Option<(ExternalPaths, Option<tempfile::TempDir>)> {
     let pasteboard: id = unsafe { msg_send![dragging_info, draggingPasteboard] };
     if pasteboard == nil {
         return None;
     }
     let pasteboard = unsafe { crate::pasteboard::Pasteboard::new(pasteboard) };
-    if let Some(paths) = pasteboard.read_paths() {
-        return Some((paths, None));
-    }
-    pasteboard
-        .drag_image()
-        .map(|(paths, image)| (paths, Some(image)))
+    pasteboard.read_drag(receiving)
 }
 
 extern "C" fn conclude_drag_operation(this: &Object, _: Sel, _: id) {

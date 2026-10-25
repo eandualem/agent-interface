@@ -1,5 +1,6 @@
 use core::slice;
 use std::ffi::{CStr, c_void};
+use std::io::Read;
 use std::path::PathBuf;
 
 use cocoa::{
@@ -110,6 +111,28 @@ impl Pasteboard {
         }
     }
 
+    pub(crate) fn read_drag(
+        &self,
+        receiving: bool,
+    ) -> Option<(ExternalPaths, Option<tempfile::TempDir>)> {
+        if let Some(paths) = self.read_paths() {
+            if receiving && paths.0.len() == 1 && is_temporary_image(&paths.0[0]) {
+                // A screenshot URL can grant this receiving app access without
+                // granting an already-running terminal process the same access.
+                // Receive its bytes while the drop is active, not during hover.
+                let image = self.drag_image().or_else(|| {
+                    stage_drag_image_file(&paths.0[0])
+                        .inspect_err(|error| log::warn!("Could not receive dragged image: {error}"))
+                        .ok()
+                })?;
+                return Some((image.0, Some(image.1)));
+            }
+            return Some((paths, None));
+        }
+        self.drag_image()
+            .map(|(paths, directory)| (paths, Some(directory)))
+    }
+
     /// Some image drags offer bytes instead of an existing path.
     /// Stage them only during an explicit drag, in a private temporary directory.
     pub(crate) fn drag_image(&self) -> Option<(ExternalPaths, tempfile::TempDir)> {
@@ -117,7 +140,7 @@ impl Pasteboard {
             if let Some(item) = self.read_image(format)
                 && let Some(ClipboardEntry::Image(image)) = item.entries.first()
             {
-                return stage_drag_image(image).ok();
+                return stage_drag_image(&image.bytes).ok();
             }
         }
         None
@@ -363,17 +386,13 @@ impl UTType {
 
 /// Keep a screenshot alive after a successful drop so the terminal program can
 /// read it asynchronously. A cancelled drag drops the directory normally.
-fn stage_drag_image(image: &Image) -> anyhow::Result<(ExternalPaths, tempfile::TempDir)> {
-    anyhow::ensure!(
-        image.bytes.len() <= 64 * 1024 * 1024,
-        "dragged image is too large"
-    );
+fn stage_drag_image(bytes: &[u8]) -> anyhow::Result<(ExternalPaths, tempfile::TempDir)> {
+    anyhow::ensure!(bytes.len() <= 64 * 1024 * 1024, "dragged image is too large");
     let directory = tempfile::Builder::new()
         .prefix("tmux-workspaces-drop-")
         .tempdir()?;
     let path = directory.path().join("Screenshot.png");
-    let mut reader =
-        image::ImageReader::new(std::io::Cursor::new(&image.bytes)).with_guessed_format()?;
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format()?;
     let mut limits = image::Limits::default();
     limits.max_image_width = Some(16384);
     limits.max_image_height = Some(16384);
@@ -383,6 +402,28 @@ fn stage_drag_image(image: &Image) -> anyhow::Result<(ExternalPaths, tempfile::T
         .decode()?
         .save_with_format(&path, image::ImageFormat::Png)?;
     Ok((ExternalPaths([path].into_iter().collect()), directory))
+}
+
+fn is_temporary_image(path: &std::path::Path) -> bool {
+    matches!(
+        image::ImageFormat::from_path(path),
+        Ok(image::ImageFormat::Png | image::ImageFormat::Tiff | image::ImageFormat::Jpeg)
+    ) && path
+        .canonicalize()
+        .ok()
+        .zip(std::env::temp_dir().canonicalize().ok())
+        .is_some_and(|(path, temporary)| path.starts_with(temporary))
+}
+
+fn stage_drag_image_file(
+    path: &std::path::Path,
+) -> anyhow::Result<(ExternalPaths, tempfile::TempDir)> {
+    anyhow::ensure!(std::fs::metadata(path)?.is_file(), "dragged image is not a file");
+    let file = std::fs::File::open(path)?;
+    anyhow::ensure!(file.metadata()?.is_file(), "dragged image is not a file");
+    let mut bytes = Vec::new();
+    file.take(64 * 1024 * 1024 + 1).read_to_end(&mut bytes)?;
+    stage_drag_image(&bytes)
 }
 
 #[cfg(test)]
@@ -410,16 +451,35 @@ mod tests {
             bytes: bytes.into_inner(),
             id: 0,
         };
-        let (paths, directory) = stage_drag_image(&image).unwrap();
+        let (paths, directory) = stage_drag_image(&image.bytes).unwrap();
         let path = paths.0[0].clone();
         assert_eq!(image::open(&path).unwrap().width(), 2);
         assert_eq!(path.extension().unwrap(), "png");
         drop(directory);
         assert!(!path.exists());
-        let (paths, directory) = stage_drag_image(&image).unwrap();
+        let (paths, directory) = stage_drag_image(&image.bytes).unwrap();
         let kept = directory.keep();
         assert!(paths.0[0].exists());
         std::fs::remove_dir_all(kept).unwrap();
+    }
+
+    #[test]
+    fn temporary_screenshot_drop_receives_an_independent_image() {
+        let source = tempfile::tempdir().unwrap();
+        let path = source.path().join("Screenshot at 3.09.04 PM.png");
+        image::DynamicImage::new_rgba8(2, 3).save(&path).unwrap();
+        let pasteboard = Pasteboard::unique();
+        unsafe { simulate_external_file_copy(&pasteboard, &[path.to_str().unwrap()]) };
+        let (hover_paths, hover_directory) = pasteboard.read_drag(false).unwrap();
+        assert_eq!(hover_paths.0[0], path);
+        assert!(hover_directory.is_none());
+        let (received, directory) = pasteboard.read_drag(true).unwrap();
+        assert_ne!(received.0[0], path);
+        assert!(path.exists());
+        drop(source);
+        assert_eq!(image::image_dimensions(&received.0[0]).unwrap(), (2, 3));
+        drop(directory);
+        assert!(!received.0[0].exists());
     }
 
     unsafe fn simulate_external_file_copy(pasteboard: &Pasteboard, paths: &[&str]) {

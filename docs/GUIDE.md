@@ -31,9 +31,9 @@ an already connected destination; if it is still connecting, click it when ready
 Command-V pastes clipboard text or copied file paths (Control-Shift-V on Linux),
 using bracketed paste when the pane requests it. Drag files onto a terminal to
 insert their full paths; spaces and quotes in names are preserved. On macOS,
-you can also drag the floating screenshot thumbnail into a terminal. The image
-uses its supplied file path, or is saved as a temporary PNG when only image data
-is supplied, so the program in that terminal can read it. Keys follow the destination pane's
+you can also drag the floating screenshot thumbnail into a terminal. Temporary
+screenshots and image-only drops are received as private temporary PNG files,
+so the program in that terminal can read them. Keys follow the destination pane's
 application cursor and extended-key modes. Paste is limited to 4 MiB per operation.
 Double-click a pane header to expand it, then double-click again or press Escape
 to restore the layout. **Focus one pane** in tab options does the same. Open

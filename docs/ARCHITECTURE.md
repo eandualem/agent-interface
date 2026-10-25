@@ -170,10 +170,12 @@ boundaries. Copy uses the displayed text; selection resets when that text change
 
 File pastes and drops share the terminal's bounded input queue. Copied file paths
 take precedence over Finder display names and are quoted for terminal input.
-The macOS adapter accepts file URLs and raw PNG, TIFF and JPEG drags. A raw image
-is staged as PNG in a private temporary directory, deleted on cancellation and
-retained after an accepted drop for the receiving program to read. This is invoked
-only by a user drag, with no screenshot monitoring.
+The macOS adapter accepts file URLs and raw PNG, TIFF and JPEG drags. Raw images
+are staged as PNG in a private temporary directory. A single temporary image URL
+is also received as PNG at drop time, because access granted to the app need not
+extend to an already-running terminal process. Staged files are deleted on
+cancellation and retained after an accepted drop for the receiving program to
+read. This is invoked only by a user drag, with no screenshot monitoring.
 
 Agent views cache unchanged render trees; data, size, focus and appearance
 changes invalidate them. Visible working and starting indicators animate using GPUI; other states are
