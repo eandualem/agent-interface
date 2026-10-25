@@ -86,6 +86,8 @@ struct State {
     /// A pipe failure is reported without abandoning already queued output.
     transport_failure: Option<String>,
     gone: Vec<PaneId>,
+    /// Last size queued for this client, retained when its view is hidden.
+    declared_size: Option<(u16, u16)>,
 }
 
 enum Event {
@@ -653,20 +655,31 @@ impl Panes {
     /// of `cols` by `rows` would. tmux then sizes the session's windows by its
     /// `window-size` option, counting this client from now on.
     pub fn set_size(&self, cols: u16, rows: u16) -> io::Result<()> {
+        let mut state = self.shared.lock();
+        let size = (cols.max(1), rows.max(1));
         self.control.send(
             &format!(
                 "refresh-client -f '!ignore-size' -C {}x{}\n",
-                cols.max(1),
-                rows.max(1)
+                size.0, size.1
             ),
             ReplyOwner::Size,
-        )
+        )?;
+        state.declared_size = Some(size);
+        Ok(())
     }
 
     /// Keep the client connected without contributing to tmux window sizing.
     pub(crate) fn ignore_size(&self) -> io::Result<()> {
-        self.control
-            .send("refresh-client -f ignore-size\n", ReplyOwner::Size)
+        let state = self.shared.lock();
+        let Some((cols, rows)) = state.declared_size else {
+            return Ok(());
+        };
+        // Changing flags alone does not recalculate background windows.
+        // Repeat the declared size to apply the flag to the whole session.
+        self.control.send(
+            &format!("refresh-client -f ignore-size -C {cols}x{rows}\n"),
+            ReplyOwner::Size,
+        )
     }
 
     /// Returns a terminal recovery or input transport failure.
@@ -2628,6 +2641,12 @@ mod tests {
         })
         .unwrap();
         wait_for_row(&panes, &woken, quiet, "");
+        // Consume partial echoes before holding the old rectangle. The final
+        // byte alone must trigger recovery, without an earlier partial screen
+        // joining the waiting update.
+        let prefix = "x".repeat(usize::from(layout.panes[0].cols) - 1);
+        panes.send_input(quiet, prefix.as_bytes()).unwrap();
+        wait_for_row(&panes, &woken, quiet, &prefix);
         // Remove the fixture's subscription to reproduce the interval before its
         // next notification deterministically. This changes only this client.
         panes
@@ -2644,13 +2663,18 @@ mod tests {
         }
         // Drain any subscription-seeded frame, then hold a neighbor-only update.
         loop {
-            if panes
-                .shared
-                .lock()
-                .update
-                .as_ref()
-                .is_some_and(|update| !update.screens.iter().any(|(id, _)| *id == quiet))
+            if let Some(update) = panes.shared.lock().update.as_ref()
+                && !update.screens.iter().any(|(id, _)| *id == quiet)
             {
+                assert_eq!(
+                    update
+                        .layout
+                        .iter()
+                        .find(|pane| pane.id == quiet)
+                        .unwrap()
+                        .top,
+                    1
+                );
                 break;
             }
             panes.take_update();
@@ -2668,9 +2692,7 @@ mod tests {
                 "wait-for -S recovered-geometry",
             ])
             .unwrap();
-        panes
-            .send_input(quiet, &vec![b'x'; usize::from(layout.panes[0].cols)])
-            .unwrap();
+        panes.send_input(quiet, b"x").unwrap();
         server.run(&["wait-for", "recovered-geometry"]).unwrap();
         while !panes.control.pending.lock().unwrap().is_empty() {
             assert!(Instant::now() < deadline);
@@ -2688,6 +2710,7 @@ mod tests {
                     (rectangle.cols, rectangle.rows),
                     (screen.cols(), screen.rows())
                 );
+                assert!((0..screen.cols()).all(|col| screen.cell(0, col).unwrap().0 == "x"));
                 break;
             }
             let _ = woken.recv_timeout(Duration::from_millis(10));
