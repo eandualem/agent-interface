@@ -12,6 +12,7 @@ use cocoa::{
     foundation::{NSArray, NSData, NSFastEnumeration, NSString},
 };
 use objc::{class, msg_send, rc::StrongPtr, runtime::Object, sel, sel_impl};
+use image::ImageDecoder as _;
 use smallvec::SmallVec;
 use strum::IntoEnumIterator as _;
 
@@ -398,9 +399,11 @@ fn stage_drag_image(bytes: &[u8]) -> anyhow::Result<(ExternalPaths, tempfile::Te
     limits.max_image_height = Some(16384);
     limits.max_alloc = Some(256 * 1024 * 1024);
     reader.limits(limits);
-    reader
-        .decode()?
-        .save_with_format(&path, image::ImageFormat::Png)?;
+    let mut decoder = reader.into_decoder()?;
+    let orientation = decoder.orientation()?;
+    let mut decoded = image::DynamicImage::from_decoder(decoder)?;
+    decoded.apply_orientation(orientation);
+    decoded.save_with_format(&path, image::ImageFormat::Png)?;
     Ok((ExternalPaths([path].into_iter().collect()), directory))
 }
 
@@ -466,8 +469,18 @@ mod tests {
     #[test]
     fn temporary_screenshot_drop_receives_an_independent_image() {
         let source = tempfile::tempdir().unwrap();
-        let path = source.path().join("Screenshot at 3.09.04 PM.png");
-        image::DynamicImage::new_rgba8(2, 3).save(&path).unwrap();
+        let path = source.path().join("Screenshot at 3.09.04 PM.jpg");
+        image::DynamicImage::new_rgb8(2, 3).save(&path).unwrap();
+        let mut bytes = std::fs::read(&path).unwrap();
+        // EXIF orientation 6: the displayed image is rotated 90 degrees.
+        bytes.splice(
+            2..2,
+            [
+                0xff, 0xe1, 0, 34, b'E', b'x', b'i', b'f', 0, 0, b'I', b'I', 42, 0, 8, 0, 0, 0,
+                1, 0, 0x12, 1, 3, 0, 1, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0,
+            ],
+        );
+        std::fs::write(&path, bytes).unwrap();
         let pasteboard = Pasteboard::unique();
         unsafe { simulate_external_file_copy(&pasteboard, &[path.to_str().unwrap()]) };
         let (hover_paths, hover_directory) = pasteboard.read_drag(false).unwrap();
@@ -477,7 +490,7 @@ mod tests {
         assert_ne!(received.0[0], path);
         assert!(path.exists());
         drop(source);
-        assert_eq!(image::image_dimensions(&received.0[0]).unwrap(), (2, 3));
+        assert_eq!(image::image_dimensions(&received.0[0]).unwrap(), (3, 2));
         drop(directory);
         assert!(!received.0[0].exists());
     }
