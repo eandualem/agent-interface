@@ -217,7 +217,8 @@ An open Response is polled by ID so its correction metadata stays current even
 after newer publications move it off its former list page.
 Authored status and blocker text do not change runtime state or grant approval.
 
-A native feedback composer sits outside the authored content. It retains drafts
+A native feedback composer sits outside the authored content and opens only when
+the user chooses Send feedback. Closing it preserves the draft. It retains drafts
 by provider, author and record identity while its saved pane exists, including
 hidden tabs. Hidden readers pause polling and release their web surface; feedback
 workers can still finish and retain their result. On explicit Send,

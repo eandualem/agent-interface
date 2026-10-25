@@ -228,8 +228,9 @@ document and choose **More from this author** to follow its stable author even
 after an agent is renamed or removed. **Back** restores the selected page and
 filter. **Refresh** returns to the newest documents.
 
-Use the feedback box below an open report, Response or Document to reply to its
-author. Enter supports paragraphs; choose **Send feedback** to submit up to
+Choose the small **Send feedback** button below an open report, Response or
+Document to open its reply editor. **Close** returns to reading and keeps the
+draft. Enter supports paragraphs; choose **Send feedback** in the editor to submit up to
 4,000 characters. The message includes a reference to the exact record being
 read. The app checks that the author is still registered before sending, and
 shows Backbone's delivery detail. Queued or held messages do not mean the author

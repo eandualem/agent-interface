@@ -18,6 +18,8 @@ pub(super) struct Feedback {
     item: ReportItem,
     directory: PathBuf,
     field: Entity<NameField>,
+    expanded: bool,
+    return_focus: Option<gpui::FocusHandle>,
     sending: bool,
     outcome: Option<Outcome>,
     _input: Subscription,
@@ -46,6 +48,8 @@ impl Feedback {
             item,
             directory,
             field,
+            expanded: false,
+            return_focus: None,
             sending: false,
             outcome: None,
             _input: input,
@@ -90,6 +94,26 @@ impl Feedback {
 impl Render for Feedback {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (t, c) = (tokens(), colors());
+        if !self.expanded {
+            return div()
+                .flex_shrink_0()
+                .flex()
+                .justify_end()
+                .px(px(t.space.s10))
+                .py(px(t.space.s4))
+                .child(
+                    ui::chip("open-feedback", "Send feedback", false).on_click(cx.listener(
+                        |composer, _, window, cx| {
+                            composer.return_focus = window.focused(cx);
+                            composer.expanded = true;
+                            let focus = composer.field.read(cx).focus.clone();
+                            window.focus(&focus, cx);
+                            cx.notify();
+                        },
+                    )),
+                )
+                .into_any_element();
+        }
         let text = self.field.read(cx).value();
         let count = text.chars().count();
         let can_send = !self.sending
@@ -106,10 +130,29 @@ impl Render for Feedback {
             .border_color(c.line)
             .bg(c.surface)
             .child(
-                ui::text(div().text_color(c.muted), &t.text.meta).child(format!(
-                    "Feedback to {} · #{}",
-                    self.item.author, self.item.id
-                )),
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(t.space.s6))
+                    .child(
+                        ui::text(div().text_color(c.muted), &t.text.meta).child(format!(
+                            "Feedback to {} · #{}",
+                            self.item.author, self.item.id
+                        )),
+                    )
+                    .child(
+                        ui::chip("close-feedback", "Close", false).on_click(cx.listener(
+                            |composer, _, window, cx| {
+                                composer.expanded = false;
+                                match composer.return_focus.take() {
+                                    Some(focus) => window.focus(&focus, cx),
+                                    None => window.blur(cx),
+                                }
+                                cx.notify();
+                            },
+                        )),
+                    ),
             )
             .child(self.field.clone())
             .child(
@@ -165,5 +208,6 @@ impl Render for Feedback {
             .min_h(px(0.))
             .overflow_y_scroll()
             .child(content)
+            .into_any_element()
     }
 }
