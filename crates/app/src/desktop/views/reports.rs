@@ -17,7 +17,7 @@ pub(super) struct State {
     pub agent: Option<String>,
     choosing_agent: bool,
     agents: Vec<String>,
-    previous: Vec<ReportQuery>,
+    pub(super) previous: Vec<ReportQuery>,
     /// Records are immutable: keep the opened answer through list refreshes.
     pub open: Option<ReportItem>,
 }
@@ -25,7 +25,10 @@ pub(super) struct State {
 impl State {
     fn select_agent(&mut self, agent: Option<String>) {
         self.agent = agent;
-        self.query = first(&self.query);
+        self.query = match &self.query {
+            ReportQuery::Documents(..) => ReportQuery::Documents(None, None),
+            _ => first(&self.query),
+        };
         self.previous.clear();
         self.open = None;
         self.choosing_agent = false;
@@ -58,6 +61,7 @@ fn first(query: &ReportQuery) -> ReportQuery {
         ReportQuery::Latest(_) => ReportQuery::Latest(None),
         ReportQuery::Recent(_) => ReportQuery::Recent(None),
         ReportQuery::Responses(_) => ReportQuery::Responses(None),
+        ReportQuery::Documents(_, author) => ReportQuery::Documents(None, author.clone()),
     }
 }
 
@@ -80,6 +84,7 @@ pub(super) fn refresh_toolbar(pane: &ViewPane, cx: &mut Context<ViewPane>) -> gp
 
 fn label(item: &ReportItem) -> String {
     match &item.content {
+        ReportContent::Document(_) => "document".into(),
         ReportContent::Progress { status, .. } => status.clone(),
         ReportContent::Response {
             superseded_by: Some(id),
@@ -115,6 +120,7 @@ pub(super) fn body(pane: &ViewPane, page: &ReportPage, cx: &mut Context<ViewPane
                 .child(markdown::render(&markdown::parse_authored(text)))
         };
         match &item.content {
+            ReportContent::Document(_) => unreachable!("document has an isolated reader"),
             ReportContent::Progress { sections, .. } => {
                 for (name, value) in sections {
                     let mut block = section(name, &value.text);
@@ -206,11 +212,13 @@ pub(super) fn body(pane: &ViewPane, page: &ReportPage, cx: &mut Context<ViewPane
                 .child(ui::text(div().text_color(c.text), &t.text.body).child(line(summary)))
                 .child(ui::text(div().text_color(c.accent), &t.text.meta).child(
                     match item.content {
+                        ReportContent::Document(_) => "Open document →",
                         ReportContent::Progress { .. } => "Read full report →",
                         ReportContent::Response { .. } => "Read full response →",
                     },
                 ))
                 .on_click(cx.listener(move |pane, _, _, cx| {
+                    pane.documents.clear();
                     pane.reports.open = Some(open.clone());
                     pane.refetch(false, cx);
                 })),
@@ -287,12 +295,13 @@ fn controls(pane: &ViewPane, agents: &[String], cx: &mut Context<ViewPane>) -> g
         (ReportQuery::Latest(None), "Waiting on you"),
         (ReportQuery::Recent(None), "Recent updates"),
         (ReportQuery::Responses(None), "Responses"),
+        (ReportQuery::Documents(None, None), "Documents"),
     ] {
         toolbar = toolbar.child(
             ui::chip(
                 SharedString::from(format!("reports-{name}")),
                 name,
-                first(&pane.reports.query) == query,
+                std::mem::discriminant(&pane.reports.query) == std::mem::discriminant(&query),
             )
             .on_click(cx.listener(move |pane, _, _, cx| {
                 pane.reports.query = query.clone();
@@ -306,7 +315,13 @@ fn controls(pane: &ViewPane, agents: &[String], cx: &mut Context<ViewPane>) -> g
             "reports-agent",
             SharedString::from(format!(
                 "{} ▾",
-                pane.reports.agent.as_deref().unwrap_or("All agents")
+                pane.reports.agent.as_deref().unwrap_or(
+                    if matches!(pane.reports.query, ReportQuery::Documents(_, Some(_))) {
+                        "Selected author"
+                    } else {
+                        "All agents"
+                    }
+                )
             )),
             pane.reports.agent.is_some(),
         )

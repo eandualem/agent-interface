@@ -151,6 +151,11 @@ impl ViewSource {
                             && visible.load(Ordering::Relaxed)
                             && current_generation.load(Ordering::Relaxed) == generation
                     });
+                    let explicit = matches!(
+                        request,
+                        views::Request::Document(_)
+                            | views::Request::Reports(views::ReportQuery::Documents(..), _)
+                    );
                     let interval = match request {
                         views::Request::Agent(_, views::Part::Usage(_)) => Duration::from_secs(15),
                         _ => every,
@@ -169,6 +174,12 @@ impl ViewSource {
                     };
                     if published {
                         wake();
+                    }
+                    if explicit {
+                        if stopped.recv().is_err() {
+                            break;
+                        }
+                        continue;
                     }
                     match stopped.recv_timeout(interval) {
                         Err(mpsc::RecvTimeoutError::Timeout) | Ok(()) => {}
@@ -304,10 +315,12 @@ mod tests {
             let _ = child.kill();
         }
         assert!(child.wait().unwrap().success());
-        assert_eq!(paths.len(), 3, "{paths:?}");
+        assert_eq!(paths.len(), 5, "{paths:?}");
         assert!(paths[0].starts_with("GET /api/agents "));
         assert!(paths[1].starts_with("GET /api/usage?"));
         assert!(paths[2].starts_with("GET /api/usage?"));
+        assert!(paths[3].starts_with("GET /api/documents/7 "));
+        assert!(paths[4].starts_with("GET /api/documents/7 "));
     }
 
     #[test]
@@ -353,6 +366,24 @@ mod tests {
             source.take_update().unwrap().0,
             views::Request::Usage(views::Range::Hour)
         );
+        drop(source);
+
+        // Document reads, including failed reads, wait for an explicit refresh.
+        let (wake, woken) = mpsc::channel();
+        let source = ViewSource::start(
+            directory,
+            views::Request::Document(7),
+            Duration::from_millis(30),
+            move || {
+                let _ = wake.send(());
+            },
+        )
+        .unwrap();
+        woken.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(source.take_update().unwrap().1.is_err());
+        assert!(woken.recv_timeout(Duration::from_millis(200)).is_err());
+        source.set_request(views::Request::Document(7));
+        woken.recv_timeout(Duration::from_secs(5)).unwrap();
         drop(source);
     }
 

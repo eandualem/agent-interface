@@ -205,6 +205,32 @@ not resolve its blocker, and an answer's action text is not a pending approval.
 Choose a row to read it; use Back or Escape to return. Previous/Next page browse
 older records, and Refresh returns to the newest page. These views are read-only.
 
+**Documents** shows lasting rich documents stored by Agent Backbone. Each row
+is the newest revision of one document. Use the same agent filter, or open a
+document and choose **More from this author** to follow its stable author even
+after an agent is renamed or removed. **Back** restores the selected page and
+filter. **Refresh** returns to the newest documents.
+
+Opening a document loads that exact revision. **Check for update** refreshes its
+correction information; **Open newer revision** opens the linked correction.
+An update never silently replaces the revision being read. Documents remain
+stored across agent restarts and ordinary report retention. Inline controls
+reset when the document is closed or its pane is hidden.
+
+Publish from an agent's configured Backbone environment:
+
+```sh
+backbone documents publish --file explanation.html --title "Explanation"
+backbone documents publish --file revised.html --title "Explanation" --supersedes 7
+```
+
+Documents need an Agent Backbone version with the Documents API. Older or
+unavailable providers show an explicit error. Rich HTML renders inside the app
+on macOS; the Linux reader currently shows that HTML rendering is unavailable.
+Self-contained HTML is limited to 4 MiB, including inline assets. Network
+requests, external resources, new windows, downloads and host-command access
+are disabled. Native terminal rendering is unchanged.
+
 **Artifacts** holds agent-created HTML documents in the current library and
 works without Backbone. This experimental renderer is available on macOS.
 To publish a document from the source build:

@@ -199,6 +199,24 @@ An open Response is polled by ID so its correction metadata stays current even
 after newer publications move it off its former list page.
 Authored status and blocker text do not change runtime state or grant approval.
 
+Durable Documents use Backbone's metadata-only `/api/documents` list and exact
+`/api/documents/{revision_id}` JSON reads. Backbone owns immutable revisions,
+stable document and author identities, publication authorization and retention;
+Interface owns native selection, filtering and rendering. The list is latest
+per document, not per author. Agent-name and stable-author filters persist across
+paging. The reader keeps the selected revision until an explicit navigation;
+checking for a correction does not replace its contents. Document lists and
+bodies refresh on explicit requests or reveal, rather than the report poll.
+An open HTML reader remains uncached so native child creation is replayed when
+overlays close; native report lists retain their usual rendering cache.
+
+Only exact-document reads allow a response of `6 × 4 MiB + 8192` bytes, covering
+JSON escaping of the bounded UTF-8 HTML. The native adapter validates the decoded
+body size, metadata envelope, revision ID, byte count and SHA-256 before passing
+HTML to the same isolated system-webview surface. Credentials remain in the
+native transport. Missing API support is distinct from an empty catalog. No
+local artifact is automatically imported under an authenticated author name.
+
 The experimental Artifacts pane is independent of Backbone. `app::artifacts`
 copies a UTF-8 HTML document and small metadata record into an immutable UUID
 directory under the selected library's `artifacts/`, publishing by atomic
@@ -259,6 +277,8 @@ those dependencies.
 - **`wry` 0.57.1:** macOS system WebKit child views for experimental HTML
   artifacts, pinned exactly and enabled only on macOS. MIT OR Apache-2.0.
   It does not render terminals or supply a bundled browser engine.
+- **`sha2`:** existing MIT OR Apache-2.0 workspace dependency, also used by
+  the document adapter to verify the server-provided HTML digest.
 - **`serde`, `serde_json`, `uuid` and `tempfile`:** existing workspace
   dependencies also used by artifact metadata, publication IDs and atomic
   staging. Each is MIT OR Apache-2.0.

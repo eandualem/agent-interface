@@ -13,6 +13,8 @@ pub enum ReportQuery {
     Recent(Option<String>),
     /// Answers, newest publication first; the ID is exclusive.
     Responses(Option<u64>),
+    /// Latest revision per durable document, optionally by stable author.
+    Documents(Option<u64>, Option<String>),
 }
 
 impl Default for ReportQuery {
@@ -35,6 +37,7 @@ impl ReportQuery {
                 }
                 path
             }
+            Self::Documents(..) => unreachable!("documents have their own endpoint"),
             Self::Responses(before) => {
                 let mut path = "/api/responses?limit=20".to_owned();
                 if let Some(id) = before {
@@ -51,7 +54,7 @@ impl ReportQuery {
     }
 }
 
-fn encode(value: &str) -> String {
+pub(super) fn encode(value: &str) -> String {
     let mut encoded = String::new();
     for byte in value.bytes() {
         if byte.is_ascii_alphanumeric() || b"-._~".contains(&byte) {
@@ -89,6 +92,8 @@ pub struct ReportLink {
 /// Authored text, distinct from runtime state or a permission request.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ReportContent {
+    /// Metadata only; HTML is fetched on explicit open.
+    Document(super::DocumentMetadata),
     /// Progress report sections in their original order.
     Progress {
         /// Authored active/blocked/complete/inactive status.
@@ -126,6 +131,7 @@ impl ReportItem {
     /// The row's complete title.
     pub fn title(&self) -> &str {
         match &self.content {
+            ReportContent::Document(metadata) => &metadata.title,
             ReportContent::Progress { sections, .. } => &sections[0].1.text,
             ReportContent::Response { question, .. } => question,
         }
@@ -192,6 +198,9 @@ pub(super) fn read(
     query: &ReportQuery,
     agent: Option<&str>,
 ) -> Result<ReportPage, &'static str> {
+    if let ReportQuery::Documents(before, author) = query {
+        return super::documents::read_list(api, *before, author.as_deref(), agent);
+    }
     let mut page = decode(&api.get(&query.path(agent))?, query)?;
     // An unavailable roster must not prevent reading reports. Authors on the
     // current page still provide choices, including retained historical names.
@@ -241,6 +250,7 @@ fn decode(body: &[u8], query: &ReportQuery) -> Result<ReportPage, &'static str> 
         .ok_or(UNREADABLE)?;
     let mut items = Vec::new();
     let next = match query {
+        ReportQuery::Documents(..) => return Err(UNREADABLE),
         ReportQuery::Latest(_) | ReportQuery::Recent(_) => {
             #[derive(Deserialize)]
             struct Entry {
