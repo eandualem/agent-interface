@@ -779,6 +779,11 @@ mod tests {
         wait_size("60x20\n60x20");
         assert_eq!(server.run(&["list-clients"]).unwrap().lines().count(), 2);
         drop(wide);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while server.run(&["list-clients"]).unwrap().lines().count() != 1 {
+            assert!(Instant::now() < deadline, "wide client did not detach");
+            std::thread::sleep(Duration::from_millis(5));
+        }
         // With no other client, ignoring size retains the last declaration.
         panes.ignore_size().unwrap();
         let deadline = Instant::now() + Duration::from_secs(10);
