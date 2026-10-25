@@ -54,6 +54,8 @@ pub const NOT_SERVED: &str = "This Backbone does not serve policies yet; it need
 /// A response this version cannot read.
 pub const UNREADABLE: &str = "Backbone answered with data this version cannot read.";
 
+const POLICY_LIMIT: &str = "Backbone's policies exceed this view's limits.";
+
 /// What a view asks Backbone for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Request {
@@ -1130,6 +1132,7 @@ pub struct Instructions {
     /// Whether a brief is injected.
     pub enabled: bool,
     /// The sources, in the order the agent receives them.
+    #[serde(deserialize_with = "policy_sources")]
     pub sources: Vec<Source>,
     /// Backbone's notes about this preview.
     pub notices: Vec<String>,
@@ -1138,8 +1141,61 @@ pub struct Instructions {
 impl Instructions {
     fn decode(body: &[u8]) -> Result<Self, &'static str> {
         document(body)?;
-        serde_json::from_slice(body).map_err(|_| UNREADABLE)
+        serde_json::from_slice(body).map_err(|error| {
+            // serde_json appends a location to our literal custom data error.
+            // Keep budget exhaustion distinct from malformed per-agent data.
+            if error.to_string().starts_with(POLICY_LIMIT) {
+                POLICY_LIMIT
+            } else {
+                UNREADABLE
+            }
+        })
     }
+}
+
+// Both the team library and an individual agent use this decoder. Reject excess
+// rows before constructing the full list, including defaultable empty objects.
+fn policy_sources<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<Source>, D::Error> {
+    struct Sources;
+    impl<'de> serde::de::Visitor<'de> for Sources {
+        type Value = Vec<Source>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("a bounded list of policy sources")
+        }
+
+        fn visit_seq<A: serde::de::SeqAccess<'de>>(
+            self,
+            mut sequence: A,
+        ) -> Result<Self::Value, A::Error> {
+            let mut sources = Vec::new();
+            let mut rows = 0usize;
+            let mut bytes = 0usize;
+            while sources.len() < 4096 {
+                let Some(source) = sequence.next_element::<Source>()? else {
+                    return Ok(sources);
+                };
+                let count = source.scope.split(", ").count();
+                let size = source.name.len()
+                    + source.path.len()
+                    + source.scope.len()
+                    + source.text.as_ref().map_or(0, |text| text.len());
+                rows = rows.saturating_add(count);
+                bytes = bytes.saturating_add(count.saturating_mul(size));
+                if rows > 4096 || bytes > 16 * 1024 * 1024 {
+                    return Err(serde::de::Error::custom(POLICY_LIMIT));
+                }
+                sources.push(source);
+            }
+            if sequence.next_element::<serde::de::IgnoredAny>()?.is_some() {
+                return Err(serde::de::Error::custom(POLICY_LIMIT));
+            }
+            Ok(sources)
+        }
+    }
+    deserializer.deserialize_seq(Sources)
 }
 
 /// An outside source an agent receives messages from.
@@ -1312,6 +1368,38 @@ fn civil_from_days(days: i64) -> (i64, i64, i64) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn policy_decoding_bounds_rows_and_expanded_content_for_every_view() {
+        let rows = std::iter::repeat_n("{}", 4096)
+            .collect::<Vec<_>>()
+            .join(",");
+        assert_eq!(
+            super::Instructions::decode(format!("{{\"sources\":[{rows}]}}").as_bytes())
+                .unwrap()
+                .sources
+                .len(),
+            4096
+        );
+        assert_eq!(
+            super::Instructions::decode(format!("{{\"sources\":[{rows},{{}}]}}").as_bytes())
+                .unwrap_err(),
+            super::POLICY_LIMIT
+        );
+        let body = serde_json::to_vec(&serde_json::json!({"sources":[{
+            "text": "x".repeat(17 * 1024),
+            "scope": (0..1024).map(|n| format!("tag:{n}")).collect::<Vec<_>>().join(", ")
+        }]}))
+        .unwrap();
+        assert_eq!(
+            super::Instructions::decode(&body).unwrap_err(),
+            super::POLICY_LIMIT
+        );
+        assert_eq!(
+            super::Instructions::decode(br#"{"sources":[null]}"#).unwrap_err(),
+            super::UNREADABLE
+        );
+    }
+
     #[test]
     fn expanded_groups_are_bounded_before_rendering() {
         assert!(super::bounded_groups([(2, 1024)].into_iter()));

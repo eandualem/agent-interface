@@ -165,10 +165,33 @@ impl Store {
                 "terminal_layout table is missing; open this library once with the Python tool",
             ));
         }
-        let stored: bool = self.read(|| self.connection.query_row(
-            "SELECT (SELECT type = 'table' FROM pragma_table_list WHERE schema = 'main' AND name = 'terminal_layout') AND count(*) = 2 AND min(hidden) = 0 AND max(hidden) = 0 FROM pragma_table_xinfo('terminal_layout') WHERE name IN ('id', 'value')",
-            [], |row| row.get(0),
-        ))?;
+        let stored = self.read(|| {
+            // Dedicated PRAGMA statements cannot resolve database-defined
+            // tables or views that shadow the pragma_* table-valued forms.
+            let kind: String = self.connection.query_row(
+                "PRAGMA main.table_list('terminal_layout')",
+                [],
+                |row| row.get(2),
+            )?;
+            if kind != "table" {
+                return Ok(false);
+            }
+            let mut statement = self
+                .connection
+                .prepare("PRAGMA main.table_xinfo('terminal_layout')")?;
+            let mut columns = statement.query([])?;
+            let mut count = 0;
+            while let Some(column) = columns.next()? {
+                let name: String = column.get(1)?;
+                if matches!(name.as_str(), "id" | "value") {
+                    if column.get::<_, i64>(6)? != 0 {
+                        return Ok(false);
+                    }
+                    count += 1;
+                }
+            }
+            Ok(count == 2)
+        })?;
         if !stored {
             return Err(self.failure("layout id and value must be ordinary stored columns"));
         }
