@@ -122,7 +122,8 @@ arrangement. Conflicting edits refresh the shared arrangement and ask the user
 to repeat the edit; failed saves offer Retry or Discard.
 
 Workspace and tab selection, pane expansion, and attachment-window selection
-are local to each native window. Ordinary-shell identities belong to the saved
+are local to each native window. Header double-click and the pane shortcut toggle
+expansion without changing the saved split tree; Escape restores it. Ordinary-shell identities belong to the saved
 library. Closing a native window detaches its clients without issuing
 session-termination commands; navigation keeps them attached.
 
@@ -162,6 +163,19 @@ permission files reject input beyond 1 MiB and skill previews retain their
 256 KiB limit. Permission inspection distinguishes missing optional files from
 read, size and parse failures, showing incomplete results explicitly. Rule
 deduplication preserves file order and first occurrence with set membership.
+
+Native document readers share selection state across styled text blocks and source
+text. GPUI text layouts map pointer positions to UTF-8 offsets, snapped to grapheme
+boundaries. Copy uses the displayed text; selection resets when that text changes.
+
+File pastes and drops share the terminal's bounded input queue. Copied file paths
+take precedence over Finder display names and are quoted for terminal input.
+The macOS adapter accepts file URLs and raw PNG, TIFF and JPEG drags. Raw images
+are staged as PNG in a private temporary directory. A single temporary image URL
+is also received as PNG at drop time, because access granted to the app need not
+extend to an already-running terminal process. Staged files are deleted on
+cancellation and retained after an accepted drop for the receiving program to
+read. This is invoked only by a user drag, with no screenshot monitoring.
 
 Agent views cache unchanged render trees; data, size, focus and appearance
 changes invalidate them. Visible working and starting indicators animate using GPUI; other states are
@@ -281,7 +295,8 @@ those dependencies.
   the document adapter to verify the server-provided HTML digest.
 - **`serde`, `serde_json`, `uuid` and `tempfile`:** existing workspace
   dependencies also used by artifact metadata, publication IDs and atomic
-  staging. Each is MIT OR Apache-2.0.
+  staging. The macOS adapter also uses `tempfile` 3.27.0 (exact pin) for private
+  screenshot-drop staging. Each is MIT OR Apache-2.0.
 - **`alacritty_terminal` and `rio-vt`:** development-only comparison engines.
   Apache-2.0 and MIT respectively.
 

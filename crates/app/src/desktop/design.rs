@@ -53,7 +53,10 @@ group!(
 
 group!(
     /// A theme's terminal defaults.
-    Terminal { text: Rgba = color, cursor: Rgba = color, palette: [Rgba; 16] = palette }
+    Terminal {
+        text: Rgba = color, background: Rgba = color,
+        cursor: Rgba = color, palette: [Rgba; 16] = palette,
+    }
 );
 
 group!(

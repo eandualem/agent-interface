@@ -196,6 +196,16 @@ impl Browser {
             .min((window.viewport_size().width - px(t.size.panel_width)).max(px(t.size.panel_min)))
     }
 
+    /// Leave room for window controls only while they are visible.
+    pub(super) fn sidebar_top(&self, window: &Window) -> f32 {
+        let t = tokens();
+        if window.is_fullscreen() {
+            t.size.titlebar / 2.0
+        } else {
+            t.size.titlebar - t.space.s4
+        }
+    }
+
     pub(super) fn sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let (t, c) = (tokens(), colors());
         let width = self.sidebar_width(window);
@@ -217,7 +227,7 @@ impl Browser {
             .child(
                 div()
                     .id("titlebar")
-                    .h(px(t.size.titlebar))
+                    .h(px(self.sidebar_top(window)))
                     .flex_shrink_0()
                     .on_mouse_down(gpui::MouseButton::Left, |event, window, _| {
                         if event.click_count == 2 {
@@ -235,7 +245,7 @@ impl Browser {
                 )),
             )
             .child(self.tab_list(states.as_ref(), cx))
-            .children(self.agents_block(states.as_ref(), window, cx))
+            .children(self.agents_block(window, cx))
             .child(self.switcher(states.as_ref(), width, cx))
             .child(
                 // The right edge resizes the panel.
@@ -577,12 +587,7 @@ impl Browser {
     }
 
     /// Agents from Agent Backbone, pinned above the switcher.
-    fn agents_block(
-        &mut self,
-        states: Option<&HashMap<String, AgentState>>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Option<AnyElement> {
+    fn agents_block(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         let show = self
             .layout
             .as_ref()
@@ -594,10 +599,12 @@ impl Browser {
         let entries: Option<Vec<(String, AgentState)>> =
             self.agents.as_ref().and_then(|snapshot| {
                 snapshot.active_entries().map(|entries| {
-                    entries
+                    let mut entries: Vec<_> = entries
                         .into_iter()
                         .map(|(name, state)| (name.to_owned(), AgentState::from_report(state)))
-                        .collect()
+                        .collect();
+                    entries.sort_by_key(|(_, state)| !state.working());
+                    entries
                 })
             });
         let needing = entries.as_ref().map_or(0, |entries| {
@@ -643,25 +650,11 @@ impl Browser {
             .flex_col()
             .gap(px(t.size.hairline))
             .px(px(t.space.s8))
-            .max_h(window.viewport_size().height * 0.4)
+            .max_h(
+                (window.viewport_size().height * 0.4)
+                    .min(px(t.size.row * 9.0 + t.size.hairline * 8.0)),
+            )
             .overflow_y_scroll();
-        // Where each agent's session is shown, for the row's meta.
-        let mut tabs_by_session: HashMap<String, String> = HashMap::new();
-        if let Some(layout) = &self.layout {
-            for space in &layout.model().workspaces {
-                for tab in &space.tabs {
-                    for leaf in tab.tree.leaves() {
-                        if let Some(attachment) = &leaf.attachment
-                            && self.is_window_source(attachment.source_socket.as_deref())
-                        {
-                            tabs_by_session
-                                .entry(attachment.session.clone())
-                                .or_insert_with(|| tab.name.clone());
-                        }
-                    }
-                }
-            }
-        }
         match &entries {
             None if self.agents.is_some() => {
                 rows = rows.child(quiet("Agent Backbone unavailable", Some("unplug")))
@@ -686,14 +679,6 @@ impl Browser {
                                     .text_color(if calm { c.muted } else { c.text })
                                     .child(name.clone()),
                             )
-                            .child(
-                                ui::text(div().flex_shrink_0().text_color(c.muted), &t.text.meta)
-                                    .child(state.word()),
-                            )
-                            .children(tabs_by_session.get(name).map(|tab| {
-                                ui::text(div().flex_shrink_0().text_color(c.muted), &t.text.meta)
-                                    .child(tab.clone())
-                            }))
                             .on_click(cx.listener(move |browser, _, window, cx| {
                                 browser.go_to_agent(&agent, window, cx)
                             })),
@@ -701,7 +686,6 @@ impl Browser {
                 }
             }
         }
-        let _ = states;
         Some(
             div()
                 .flex()
@@ -729,7 +713,7 @@ impl Browser {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let (t, c) = (tokens(), colors());
-        let mut row = div()
+        let row = div()
             .flex()
             .flex_shrink_0()
             .items_center()
@@ -750,13 +734,29 @@ impl Browser {
                 .rounded(px(tokens().radius.slot))
                 .cursor_pointer()
         };
+        let mut slots = div()
+            .id("workspace-slots")
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .items_center()
+            .gap(px(t.space.s4))
+            .overflow_x_scroll()
+            .track_scroll(&self.workspaces_scroll);
         if let Some(layout) = &self.layout {
             let model = layout.model();
-            let room = (f32::from(width) - t.space.s20 - t.size.slot) / (t.size.slot + t.space.s4);
-            let capacity = room.floor().max(1.0) as usize;
-            let overflow = model.workspaces.len() > capacity;
-            let shown = if overflow { capacity - 1 } else { capacity };
-            for (index, space) in model.workspaces.iter().take(shown).enumerate() {
+            let selection = (model.selected.clone(), width);
+            if self.shown_workspace.as_ref() != Some(&selection) {
+                if let Some(index) = model
+                    .workspaces
+                    .iter()
+                    .position(|space| space.id == model.selected)
+                {
+                    self.workspaces_scroll.scroll_to_item(index);
+                }
+                self.shown_workspace = Some(selection);
+            }
+            for (index, space) in model.workspaces.iter().enumerate() {
                 let id = space.id.clone();
                 let current = model.selected == id;
                 let needs_you = space.tabs.iter().any(|tab| self.tab_needs_you(tab, states));
@@ -770,7 +770,7 @@ impl Browser {
                     None => ui::text(element.text_color(color), &t.text.row_selected)
                         .child((index + 1).to_string()),
                 };
-                row = row.child(
+                slots = slots.child(
                     element
                         .when(needs_you, |el| {
                             el.child(
@@ -815,23 +815,8 @@ impl Browser {
                         })),
                 );
             }
-            if overflow {
-                row = row.child(
-                    ui::text(
-                        slot("workspace-more".into()).text_color(c.muted),
-                        &t.text.row_selected,
-                    )
-                    .hover(|el| el.bg(colors().hover))
-                    .child("⋯")
-                    .on_click(cx.listener(
-                        |browser, event: &gpui::ClickEvent, window, cx| {
-                            browser.open_menu(Popover::Workspace, event.position(), window, cx);
-                        },
-                    )),
-                );
-            }
         }
-        row.child(div().flex_1())
+        row.child(slots)
             .child(
                 slot("open-settings".into())
                     .hover(|el| el.bg(colors().hover))

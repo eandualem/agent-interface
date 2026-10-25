@@ -5,7 +5,7 @@
 
 use gpui::{AnyElement, Context, Div, SharedString, div, prelude::*, px};
 
-use super::{ViewPane, markdown, mono};
+use super::{ViewPane, markdown, mono, selection};
 use crate::desktop::{
     components as ui,
     design::{colors, tokens},
@@ -103,9 +103,9 @@ pub(super) fn render(
                     div().font_family(t.font.mono.clone()).text_color(c.text_2),
                     &t.text.status,
                 )
-                .child(text.to_owned())
+                .child(selection::text(pane, text, &[], cx))
             } else {
-                markdown::render(&markdown::parse(text))
+                markdown::render(&markdown::parse(text), pane, cx)
             })
             .when(cut, |el| {
                 el.child(

@@ -4,7 +4,9 @@
 
 use std::ops::Range;
 
-use gpui::{HighlightStyle, StyledText, div, prelude::*, px};
+use gpui::{Context, div, prelude::*, px};
+
+use super::{ViewPane, selection};
 
 use crate::desktop::{
     components as ui,
@@ -123,19 +125,13 @@ fn inline(text: &str) -> (String, Vec<Range<usize>>) {
     (plain, spans)
 }
 
-fn styled(text: &str) -> StyledText {
-    let c = colors();
+fn styled(text: &str, pane: &ViewPane, cx: &mut Context<ViewPane>) -> impl IntoElement {
     let (plain, spans) = inline(text);
-    let code = HighlightStyle {
-        color: Some(c.code.into()),
-        background_color: Some(c.selected.into()),
-        ..HighlightStyle::default()
-    };
-    StyledText::new(plain).with_highlights(spans.into_iter().map(|span| (span, code)))
+    selection::text(pane, &plain, &spans, cx)
 }
 
 /// Draw the blocks as a document.
-pub(super) fn render(blocks: &[Block]) -> gpui::Div {
+pub(super) fn render(blocks: &[Block], pane: &ViewPane, cx: &mut Context<ViewPane>) -> gpui::Div {
     let (t, c) = (tokens(), colors());
     let mut document = ui::text(
         div()
@@ -149,15 +145,15 @@ pub(super) fn render(blocks: &[Block]) -> gpui::Div {
     for block in blocks {
         document = document.child(match block {
             Block::Heading(1, text) => ui::text(div().text_color(c.text), &t.text.doc_title)
-                .child(styled(text))
+                .child(styled(text, pane, cx))
                 .into_any_element(),
             Block::Heading(_, text) => ui::text(
                 div().mt(px(t.space.s4)).text_color(c.text),
                 &t.text.doc_heading,
             )
-            .child(styled(text))
+            .child(styled(text, pane, cx))
             .into_any_element(),
-            Block::Paragraph(text) => div().child(styled(text)).into_any_element(),
+            Block::Paragraph(text) => div().child(styled(text, pane, cx)).into_any_element(),
             Block::List(items) => {
                 let mut list = div()
                     .flex()
@@ -170,7 +166,7 @@ pub(super) fn render(blocks: &[Block]) -> gpui::Div {
                             .flex()
                             .gap(px(t.space.s8))
                             .child(div().flex_shrink_0().text_color(c.muted).child("•"))
-                            .child(div().flex_1().min_w_0().child(styled(item))),
+                            .child(div().flex_1().min_w_0().child(styled(item, pane, cx))),
                     );
                 }
                 list.into_any_element()
@@ -188,7 +184,7 @@ pub(super) fn render(blocks: &[Block]) -> gpui::Div {
                     .overflow_hidden(),
                 &t.text.status,
             )
-            .child(code.clone())
+            .child(selection::text(pane, code, &[], cx))
             .into_any_element(),
         });
     }

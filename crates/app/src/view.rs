@@ -30,6 +30,7 @@ use tmux_workspaces_tmux::control::PaneId;
 use crate::panes::{PaneLayout, Panes};
 
 mod accessibility;
+mod clipboard;
 mod scroll;
 mod selection;
 use scroll::WheelGesture;
@@ -114,6 +115,9 @@ pub struct TerminalView {
 
 pub(crate) struct Disconnected(pub Option<String>);
 impl gpui::EventEmitter<Disconnected> for TerminalView {}
+
+pub(crate) struct Focus;
+impl gpui::EventEmitter<Focus> for TerminalView {}
 
 /// What the grid draws, shared with the paint callback of each frame.
 struct Grid {
@@ -464,29 +468,70 @@ impl TerminalView {
         } else if paste {
             cx.stop_propagation();
             cx.read_from_clipboard()
-                .and_then(|clipboard| clipboard.text())
+                .and_then(clipboard::text)
                 .map(Input::Paste)
         } else {
             input_key(key, event.is_held)
         };
         if let Some(operation) = operation {
-            if operation.size() > crate::panes::INPUT_LIMIT {
-                self.input_rejection = Some(
-                    "Input was not sent: paste exceeds 4 MiB. Click the terminal to dismiss."
-                        .into(),
-                );
-                cx.notify();
-                return;
-            }
-            // The input thread waits for mode-aware encoding on the terminal
-            // worker before writing, preserving key/paste order without UI I/O.
-            if self.input_queue.try_send((input, operation)).is_err() {
-                self.input_rejection = Some("Input was not sent: terminal queue is busy or disconnected. Click the terminal to dismiss.".into());
-                cx.notify();
-            } else {
-                self.clear_selection(cx);
-            }
+            self.send_input(input, operation, cx);
         }
+    }
+
+    fn send_input(&mut self, input: PaneId, operation: Input, cx: &mut Context<Self>) -> bool {
+        if operation.size() > crate::panes::INPUT_LIMIT {
+            self.input_rejection = Some(
+                "Input was not sent: paste exceeds 4 MiB. Click the terminal to dismiss.".into(),
+            );
+            cx.notify();
+            return false;
+        }
+        // Both keyboard pastes and drops use the same ordered, bounded queue.
+        if self.input_queue.try_send((input, operation)).is_err() {
+            self.input_rejection = Some("Input was not sent: terminal queue is busy or disconnected. Click the terminal to dismiss.".into());
+            cx.notify();
+            false
+        } else {
+            self.clear_selection(cx);
+            true
+        }
+    }
+
+    fn drop_files(
+        &mut self,
+        paths: &gpui::ExternalPaths,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.panes().is_finished() {
+            return;
+        }
+        let input = {
+            let grid = self.grid.borrow();
+            grid.bounds.and_then(|bounds| {
+                hit_pane(
+                    &grid.layout,
+                    &grid.screens,
+                    grid.cell,
+                    bounds,
+                    window.mouse_position(),
+                )
+            })
+        };
+        let Some(input) = input else { return };
+        let Some(text) = clipboard::paths(paths) else {
+            return;
+        };
+        self.input = Some(input);
+        window.focus(&self.focus, cx);
+        cx.emit(Focus);
+        if self.send_input(input, Input::Paste(text), cx) {
+            // GPUI consumes every on_drop invocation, including a rejected one.
+            // Mark native acceptance only after this terminal queued the paste.
+            window.prevent_default();
+        }
+        cx.stop_propagation();
+        cx.notify();
     }
 
     fn clear_selection(&mut self, cx: &mut Context<Self>) {
@@ -790,6 +835,7 @@ impl Render for TerminalView {
                     })
             })
             .on_key_down(cx.listener(Self::key_down))
+            .on_drop(cx.listener(Self::drop_files))
             .on_mouse_move(cx.listener(Self::hover_mouse))
             .on_scroll_wheel(cx.listener(|view, event: &gpui::ScrollWheelEvent, window, cx| {
                 let previous_gesture = view.wheel_gesture.id();

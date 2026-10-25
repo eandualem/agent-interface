@@ -111,19 +111,19 @@ pub(super) fn body(pane: &ViewPane, page: &ReportPage, cx: &mut Context<ViewPane
                     item.id
                 )),
             );
-        let section = |name: &'static str, text: &str| {
+        let section = |name: &'static str, text: &str, cx: &mut Context<ViewPane>| {
             div()
                 .flex()
                 .flex_col()
                 .gap(px(t.space.s8))
                 .child(ui::text(div().text_color(c.text), &t.text.doc_heading).child(name))
-                .child(markdown::render(&markdown::parse_authored(text)))
+                .child(markdown::render(&markdown::parse_authored(text), pane, cx))
         };
         match &item.content {
             ReportContent::Document(_) => unreachable!("document has an isolated reader"),
             ReportContent::Progress { sections, .. } => {
                 for (name, value) in sections {
-                    let mut block = section(name, &value.text);
+                    let mut block = section(name, &value.text, cx);
                     for link in &value.links {
                         block = block.child(
                             ui::text(div().text_color(c.muted), &t.text.meta)
@@ -140,9 +140,9 @@ pub(super) fn body(pane: &ViewPane, page: &ReportPage, cx: &mut Context<ViewPane
                 ..
             } => {
                 content = content
-                    .child(section("Question", question))
-                    .child(section("Answer", answer))
-                    .child(section("Action", action));
+                    .child(section("Question", question, cx))
+                    .child(section("Answer", answer, cx))
+                    .child(section("Action", action, cx));
             }
         }
         return div()
