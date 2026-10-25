@@ -308,10 +308,12 @@ impl Browser {
                         let radius = px(t.radius.pane)
                             .min(outer.size.width / 2.0)
                             .min(outer.size.height / 2.0);
+                        let mut transparent_ground = c.ground;
+                        transparent_ground.a = 0.0;
                         window.paint_quad(gpui::quad(
                             outer.dilate(radius),
                             radius * 2.0,
-                            gpui::transparent_black(),
+                            transparent_ground,
                             radius,
                             c.ground,
                             gpui::BorderStyle::Solid,
