@@ -813,7 +813,8 @@ impl Skills {
 
     fn decode(body: &[u8]) -> Result<Self, &'static str> {
         let document = document(body)?;
-        let items: Vec<Skill> = items(&document)?;
+        let items =
+            skill_items(document.get("items").ok_or(UNREADABLE)?).map_err(|_| UNREADABLE)?;
         if !bounded_groups(items.iter().map(|skill| {
             (
                 skill.tags.len().max(1),
@@ -833,6 +834,38 @@ impl Skills {
             items,
         })
     }
+}
+
+// Limit input rows while decoding, before allocating the complete skill list.
+fn skill_items(raw: &RawValue) -> Result<Vec<Skill>, serde_json::Error> {
+    struct Rows;
+    impl<'de> serde::de::Visitor<'de> for Rows {
+        type Value = Vec<Skill>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("at most 4096 skill rows")
+        }
+
+        fn visit_seq<A: serde::de::SeqAccess<'de>>(
+            self,
+            mut sequence: A,
+        ) -> Result<Self::Value, A::Error> {
+            let mut items = Vec::new();
+            let mut rows = 0;
+            while let Some(raw) = sequence.next_element::<&RawValue>()? {
+                if rows == 4096 {
+                    return Err(serde::de::Error::custom("too many skill rows"));
+                }
+                rows += 1;
+                // Preserve the existing behavior of skipping malformed entries.
+                if let Ok(item) = serde_json::from_str(raw.get()) {
+                    items.push(item);
+                }
+            }
+            Ok(items)
+        }
+    }
+    serde::Deserializer::deserialize_seq(&mut serde_json::Deserializer::from_str(raw.get()), Rows)
 }
 
 /// A recent delivery to one agent.
@@ -1303,6 +1336,21 @@ mod tests {
         }]}))
         .unwrap();
         assert_eq!(super::Skills::decode(&body).unwrap_err(), super::UNREADABLE);
+        let rows = std::iter::repeat_n("{}", 4096)
+            .collect::<Vec<_>>()
+            .join(",");
+        assert_eq!(
+            super::Skills::decode(format!("{{\"items\":[{rows}]}}").as_bytes())
+                .unwrap()
+                .items
+                .len(),
+            4096
+        );
+        // Invalid rows still consume input work; do not decode an unlimited tail.
+        assert_eq!(
+            super::Skills::decode(format!("{{\"items\":[{rows},null]}}").as_bytes()).unwrap_err(),
+            super::UNREADABLE
+        );
     }
 
     use super::*;

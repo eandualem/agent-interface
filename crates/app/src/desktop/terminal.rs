@@ -936,16 +936,17 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         let queue = crate::view::input_queue(Arc::clone(panes), |_| {});
+        // Single-line input also works when older tmux omits paste-mode state.
         queue
             .try_send((
                 retired,
-                tmux_workspaces_term::input::Input::Paste("discarded\n".into()),
+                tmux_workspaces_term::input::Input::Paste("discarded".into()),
             ))
             .unwrap();
         queue
             .try_send((
                 ready.input,
-                tmux_workspaces_term::input::Input::Paste("surviving-input\n".into()),
+                tmux_workspaces_term::input::Input::Paste("surviving-input".into()),
             ))
             .unwrap();
         wait(&mut screens, "surviving-input");

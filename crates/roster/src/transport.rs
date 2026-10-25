@@ -268,6 +268,42 @@ pub(super) mod tests {
         (url, thread)
     }
 
+    fn tcp_server(reply: String) -> (String, thread::JoinHandle<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let worker = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut socket = loop {
+                match listener.accept() {
+                    Ok((socket, _)) => break socket,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(Instant::now() < deadline, "fixture received no request");
+                        thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(error) => panic!("{error}"),
+                }
+            };
+            socket.set_nonblocking(false).unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            socket
+                .set_write_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                let mut byte = [0];
+                socket.read_exact(&mut byte).unwrap();
+                request.push(byte[0]);
+                assert!(request.len() < 8192);
+            }
+            socket.write_all(reply.as_bytes()).unwrap();
+            String::from_utf8(request).unwrap()
+        });
+        (url, worker)
+    }
+
     pub(crate) fn ok(body: &str) -> String {
         format!(
             "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
@@ -346,6 +382,14 @@ pub(super) mod tests {
             assert_eq!(snapshot.states["worker"], "busy");
             assert_eq!(snapshot.observed_at, observed);
         }
+        let (url, worker) = tcp_server(format!(
+            "HTTP/1.1 302 Found\r\nLocation: http://{}/api/agents\r\nContent-Length: 0\r\n\r\n",
+            redirect.local_addr().unwrap()
+        ));
+        snapshot.fetch(&url, "");
+        worker.join().unwrap();
+        assert_eq!(snapshot.error, Some(crate::UNAVAILABLE));
+        assert_eq!(snapshot.observed_at, observed);
         assert_eq!(
             redirect.accept().unwrap_err().kind(),
             std::io::ErrorKind::WouldBlock
@@ -379,28 +423,32 @@ pub(super) mod tests {
     fn proxy_environment_cannot_receive_the_request() {
         let proxy = TcpListener::bind("127.0.0.1:0").unwrap();
         proxy.set_nonblocking(true).unwrap();
-        let (url, worker) = server(ok(BODY), Duration::ZERO);
-        let mut child = Command::new(std::env::current_exe().unwrap());
-        child
-            .args([
-                "--exact",
-                "transport::tests::proxy_fixture_child",
-                "--nocapture",
-            ])
-            .env("ROSTER_FIXTURE_URL", url.replace("127.0.0.1", "localhost"));
-        for name in [
-            "ALL_PROXY",
-            "all_proxy",
-            "HTTP_PROXY",
-            "http_proxy",
-            "HTTPS_PROXY",
-            "https_proxy",
-        ] {
-            child.env(name, format!("http://{}", proxy.local_addr().unwrap()));
+        for (url, worker) in [server(ok(BODY), Duration::ZERO), tcp_server(ok(BODY))] {
+            let mut child = Command::new(std::env::current_exe().unwrap());
+            child
+                .args([
+                    "--exact",
+                    "transport::tests::proxy_fixture_child",
+                    "--nocapture",
+                ])
+                .env("ROSTER_FIXTURE_URL", url.replace("127.0.0.1", "localhost"));
+            for name in [
+                "ALL_PROXY",
+                "all_proxy",
+                "HTTP_PROXY",
+                "http_proxy",
+                "HTTPS_PROXY",
+                "https_proxy",
+            ] {
+                child.env(name, format!("http://{}", proxy.local_addr().unwrap()));
+            }
+            child.env_remove("NO_PROXY").env_remove("no_proxy");
+            assert!(child.status().unwrap().success());
+            assert_eq!(
+                worker.join().unwrap().contains("fixture-token"),
+                url.starts_with("unix:")
+            );
         }
-        child.env_remove("NO_PROXY").env_remove("no_proxy");
-        assert!(child.status().unwrap().success());
-        assert!(worker.join().unwrap().contains("fixture-token"));
         assert_eq!(
             proxy.accept().unwrap_err().kind(),
             std::io::ErrorKind::WouldBlock
@@ -429,7 +477,12 @@ pub(super) mod tests {
         // The Unix client may emit no logs; prove the capture is active anyway.
         log::trace!("fixture log capture active");
         let mut snapshot = Snapshot::default();
-        snapshot.fetch(&url, "fixture-token-ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ");
+        let key = if url.starts_with("unix:") {
+            "fixture-token-ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ"
+        } else {
+            ""
+        };
+        snapshot.fetch(&url, key);
         assert!(snapshot.error.is_none());
         assert_eq!(snapshot.states["worker"], "busy");
         let logs = LOGS.0.lock().unwrap();

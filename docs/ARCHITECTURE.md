@@ -338,12 +338,12 @@ those dependencies.
   artifacts, pinned exactly and enabled only on macOS. MIT OR Apache-2.0.
   It does not render terminals or supply a bundled browser engine.
 - **Hyper 1.12.0, hyper-util 0.1.21, http-body-util 0.1.5 and Tokio 1.53.3:**
-  existing MIT HTTP/runtime dependencies, now exact-pinned direct dependencies
-  for HTTP over a connected Unix socket whose peer identity is checked first.
-  **rustix 1.1.5** adds effective-UID access (MIT OR Apache-2.0 OR
-  Apache-2.0 WITH LLVM-exception). No new package versions are introduced.
-- **`objc2-web-kit` 0.3.2:** existing MIT-licensed bindings, now a direct exact-pinned
-  dependency of the macOS bridge to configure WebKit peer connections and its
+  MIT HTTP/runtime dependencies, pinned exactly, for HTTP over a connected
+  Unix socket after the peer identity check.
+- **`rustix` 1.1.5:** effective-UID access for that check. MIT OR Apache-2.0
+  OR Apache-2.0 WITH LLVM-exception.
+- **`objc2-web-kit` 0.3.2:** MIT-licensed bindings, pinned exactly, used by the
+  macOS bridge to configure WebKit peer connections and its
   ephemeral data store before document execution. The app calls a safe bridge
   function through the existing GPUI macOS package, pinned to 0.3.9.
 - **`sha2`:** existing MIT OR Apache-2.0 workspace dependency, also used by

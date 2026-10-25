@@ -254,6 +254,21 @@ mod tests {
     }
 
     #[test]
+    fn symlink_expansion_has_a_separate_component_budget() {
+        let directory = tempfile::tempdir().unwrap();
+        for n in 0..22 {
+            let target = format!("{}link{}", "x/../".repeat(100), n + 1);
+            std::os::unix::fs::symlink(target, directory.path().join(format!("link{n}"))).unwrap();
+        }
+        assert_eq!(
+            resolve_path(&directory.path().join("link0"))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidInput
+        );
+    }
+
+    #[test]
     fn source_selection_uses_launcher_precedence_without_creating_a_socket() {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path().canonicalize().unwrap();
