@@ -121,6 +121,10 @@ pub struct ReportItem {
     pub id: u64,
     /// Current agent name, falling back to the original author name.
     pub author: String,
+    /// Stable author identity used to validate feedback routing.
+    pub author_id: Option<String>,
+    /// Provider address from which this record was read.
+    pub provider_url: String,
     /// Server publication timestamp.
     pub created_at: String,
     /// The record itself.
@@ -159,6 +163,8 @@ pub struct ReportPage {
 struct Record<T> {
     id: u64,
     author_name: String,
+    #[serde(default)]
+    author_id: Option<String>,
     agent_name: Option<String>,
     created_at: String,
     #[serde(flatten)]
@@ -222,6 +228,8 @@ fn response_item(record: Record<Response>) -> ReportItem {
     ReportItem {
         id: record.id,
         author: record.agent_name.unwrap_or(record.author_name),
+        author_id: record.author_id,
+        provider_url: String::new(),
         created_at: record.created_at,
         content: ReportContent::Response {
             question: text.question,
@@ -271,6 +279,8 @@ fn decode(body: &[u8], query: &ReportQuery) -> Result<ReportPage, &'static str> 
                 items.push(ReportItem {
                     id: record.id,
                     author: record.agent_name.unwrap_or(record.author_name),
+                    author_id: record.author_id,
+                    provider_url: String::new(),
                     created_at: record.created_at,
                     content: ReportContent::Progress {
                         status: text.status,

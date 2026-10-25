@@ -159,6 +159,8 @@ fn decode_list(body: &[u8], author_id: Option<&str>) -> Result<ReportPage, &'sta
         .map(|metadata| ReportItem {
             id: metadata.id,
             author: metadata.author().to_owned(),
+            author_id: Some(metadata.author_id.clone()),
+            provider_url: String::new(),
             created_at: metadata.created_at.clone(),
             content: ReportContent::Document(metadata),
         })

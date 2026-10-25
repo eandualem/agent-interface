@@ -5,7 +5,7 @@ use tmux_workspaces_roster::views::{
     ReportContent, ReportItem, ReportPage, ReportQuery, epoch_seconds,
 };
 
-use super::{ViewPane, line, list, markdown, since};
+use super::{ViewPane, line, list, markdown, selection, since};
 use crate::desktop::{
     components as ui,
     design::{colors, tokens},
@@ -125,10 +125,15 @@ pub(super) fn body(pane: &ViewPane, page: &ReportPage, cx: &mut Context<ViewPane
                 for (name, value) in sections {
                     let mut block = section(name, &value.text, cx);
                     for link in &value.links {
-                        block = block.child(
-                            ui::text(div().text_color(c.muted), &t.text.meta)
-                                .child(format!("{}: {}", link.title, link.url)),
-                        );
+                        block =
+                            block.child(ui::text(div().text_color(c.muted), &t.text.meta).child(
+                                selection::text(
+                                    pane,
+                                    &format!("{}: {}", link.title, link.url),
+                                    &[],
+                                    cx,
+                                ),
+                            ));
                     }
                     content = content.child(block);
                 }
@@ -392,6 +397,8 @@ mod tests {
         let item = |answer: &str, superseded_by| ReportItem {
             id: 7,
             author: "worker".into(),
+            author_id: None,
+            provider_url: String::new(),
             created_at: "2026-10-24T10:00:00Z".into(),
             content: ReportContent::Response {
                 question: "What happened?".into(),

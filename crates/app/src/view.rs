@@ -396,15 +396,7 @@ impl TerminalView {
                 && !key.modifiers.alt
                 && key.key == "c");
         if copy {
-            if let Some(selection) = self
-                .grid
-                .borrow()
-                .selection
-                .as_ref()
-                .filter(|selection| !selection.is_empty())
-            {
-                cx.write_to_clipboard(gpui::ClipboardItem::new_string(selection.text()));
-            }
+            self.copy(cx);
             cx.stop_propagation();
             return;
         }
@@ -475,6 +467,18 @@ impl TerminalView {
         };
         if let Some(operation) = operation {
             self.send_input(input, operation, cx);
+        }
+    }
+
+    fn copy(&self, cx: &mut Context<Self>) {
+        if let Some(selection) = self
+            .grid
+            .borrow()
+            .selection
+            .as_ref()
+            .filter(|selection| !selection.is_empty())
+        {
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string(selection.text()));
         }
     }
 
@@ -835,6 +839,7 @@ impl Render for TerminalView {
                     })
             })
             .on_key_down(cx.listener(Self::key_down))
+            .on_action(cx.listener(|view, _: &crate::desktop::Copy, _, cx| view.copy(cx)))
             .on_drop(cx.listener(Self::drop_files))
             .on_mouse_move(cx.listener(Self::hover_mouse))
             .on_scroll_wheel(cx.listener(|view, event: &gpui::ScrollWheelEvent, window, cx| {

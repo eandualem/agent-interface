@@ -12,6 +12,15 @@ pub(super) struct Surface {
 }
 
 impl Surface {
+    pub fn focus(&self) {
+        #[cfg(target_os = "macos")]
+        if !self.occluded
+            && let Some(view) = &self.view
+        {
+            let _ = view.focus();
+        }
+    }
+
     pub fn focus_parent(&self) {
         #[cfg(target_os = "macos")]
         if let Some(view) = &self.view {
@@ -73,6 +82,8 @@ impl Surface {
                     view.set_bounds(rect).map_err(|error| error.to_string())?;
                 }
                 if self.theme != theme {
+                    view.set_background_color(background())
+                        .map_err(|error| error.to_string())?;
                     view.evaluate_script(theme)
                         .map_err(|error| error.to_string())?;
                 }
@@ -83,7 +94,7 @@ impl Surface {
                 let body = html.as_bytes().to_vec();
                 let view = WebViewBuilder::new()
                     .with_bounds(rect).with_focused(false).with_incognito(true)
-                    .with_background_color((0, 0, 0, 255))
+                    .with_background_color(background())
                     .with_custom_protocol("artifact".into(), move |_, request| {
                         let valid = request.uri().host() == Some("document") && request.uri().path() == "/index.html";
                         wry::http::Response::builder().status(if valid { 200 } else { 404 })
@@ -115,7 +126,19 @@ impl Surface {
     }
 }
 
-/// Publish theme variables and default document colours without replacing authored CSS.
+/// The web surface starts with the same reading background as native readers.
+#[cfg(target_os = "macos")]
+fn background() -> wry::RGBA {
+    let color = crate::desktop::design::colors().surface;
+    (
+        (color.r * 255.).round() as u8,
+        (color.g * 255.).round() as u8,
+        (color.b * 255.).round() as u8,
+        255,
+    )
+}
+
+/// The host owns document text and surface colours; authored layout and media remain intact.
 pub(super) fn theme() -> String {
     let c = crate::desktop::design::colors();
     let color = |value: gpui::Rgba| {
@@ -126,17 +149,28 @@ pub(super) fn theme() -> String {
             (value.b * 255.).round() as u8
         )
     };
+    let scheme = if crate::desktop::design::is_light() {
+        "light"
+    } else {
+        "dark"
+    };
     let css = format!(
-        ":root{{--ai-background:{};--ai-surface:{};--ai-text:{};--ai-muted:{};--ai-accent:{};--ai-line:{};}}body{{background:var(--ai-background);color:var(--ai-text);font-family:system-ui;}}",
-        color(c.ground),
+        r#":root{{--ai-background:{}!important;--ai-surface:{}!important;--ai-text:{}!important;--ai-muted:{}!important;--ai-accent:{}!important;--ai-line:{}!important;color-scheme:{scheme}!important;}}
+html,body{{background:var(--ai-background)!important;color:var(--ai-text)!important;font-family:system-ui;-webkit-text-fill-color:currentColor!important;}}
+body :not(svg,svg *,img,picture,video,canvas){{background-color:transparent!important;background-image:none!important;color:var(--ai-text)!important;border-color:var(--ai-line)!important;text-shadow:none!important;-webkit-text-fill-color:currentColor!important;-webkit-user-select:text!important;user-select:text!important;}}
+body :is(pre,code,kbd,th,input,textarea,select,button){{background-color:var(--ai-surface)!important;}}
+body :is(a,a *){{color:var(--ai-accent)!important;}}
+body ::selection{{background:var(--ai-accent)!important;color:{}!important;}}"#,
         color(c.surface),
+        color(c.selected),
         color(c.text),
         color(c.muted),
         color(c.accent),
-        color(c.line)
+        color(c.line),
+        color(c.on_accent)
     );
     format!(
-        "(()=>{{const apply=()=>{{let s=document.getElementById('agent-interface-theme');if(!s){{s=document.createElement('style');s.id='agent-interface-theme';document.head.prepend(s);}}s.textContent={};}};if(document.head)apply();else document.addEventListener('DOMContentLoaded',apply,{{once:true}});}})();",
+        "(()=>{{const apply=()=>{{let s=document.getElementById('agent-interface-theme');if(!s){{s=document.createElement('style');s.id='agent-interface-theme';}}s.textContent={};document.head.append(s);}};if(document.head)apply();else document.addEventListener('DOMContentLoaded',apply,{{once:true}});}})();",
         serde_json::to_string(&css).expect("CSS string")
     )
 }

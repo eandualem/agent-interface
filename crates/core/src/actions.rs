@@ -637,15 +637,17 @@ impl Layout {
         true
     }
 
-    /// Forget the focused attachment and return its pane to the chooser.
+    /// Clear the focused pane's contents and return it to the chooser.
     /// The pane identity and directory survive; no tmux session is stopped.
-    pub fn detach_attachment(&mut self) -> bool {
+    pub fn detach_pane(&mut self) -> bool {
         let Some(pane) = self.pane_mut() else {
             return false;
         };
-        if pane.attachment.take().is_none() {
+        if pane.empty {
             return false;
         }
+        pane.attachment = None;
+        pane.view = None;
         pane.empty = true;
         true
     }

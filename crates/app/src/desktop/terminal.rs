@@ -21,7 +21,7 @@ pub(super) struct Target {
 }
 
 impl Target {
-    /// Clear only the attachment the user acted on, in the selected tab.
+    /// Clear only the pane contents the user acted on, in the selected tab.
     pub fn detach_from(&self, layout: &mut tmux_workspaces_core::Layout) -> bool {
         layout.tab().is_some_and(|tab| {
             tab.tree
@@ -29,7 +29,7 @@ impl Target {
                 .into_iter()
                 .any(|leaf| self.matches_leaf(leaf))
         }) && layout.choose_pane(&self.leaf.id)
-            && layout.detach_attachment()
+            && layout.detach_pane()
     }
 
     /// A hidden tab still owns its connection until the saved target changes.

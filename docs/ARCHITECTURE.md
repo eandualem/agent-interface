@@ -17,8 +17,9 @@ when tabs or workspaces change. The owning native window keeps each connection
 until its target is removed or replaced, the library changes, or the window
 closes. Hidden terminals continue consuming output, preserving their state at
 the cost of retaining their workers and scrollback. A saved Detach action clears
-the attachment and returns the same pane to its chooser. Detach, Close Pane and
-Close Tab never send a session-termination command. Closing the final pane closes
+the pane’s attachment or view and returns the same pane to its chooser, including
+ordinary terminals. The ordinary shell remains available to reopen. Detach, Close
+Pane and Close Tab never send a session-termination command. Closing the final pane closes
 its tab. An attached session retains its own lifetime policy, including tmux's
 `destroy-unattached` option.
 
@@ -37,7 +38,7 @@ another client's selected window.
 | `store` | Initializing, reading and transactionally saving schema-v2 `layouts.db` files |
 | `tmux` | Server discovery and validation, control-mode protocol, pane capture, recovery and input commands |
 | `term` | Terminal engine ownership, input encoding and owned display snapshots |
-| `roster` | Read-only Agent Backbone roster and pane-view data, with bounded loopback requests and stale-state handling |
+| `roster` | Agent Backbone roster and pane-view reads, plus explicit user feedback through bounded loopback requests |
 | `app` | Native windows, input routing, storage and terminal workers, and integration between the other crates |
 
 `app` connects the product crates. `store` also depends on `core`; the other
@@ -167,6 +168,9 @@ deduplication preserves file order and first occurrence with set membership.
 Native document readers share selection state across styled text blocks and source
 text. GPUI text layouts map pointer positions to UTF-8 offsets, snapped to grapheme
 boundaries. Copy uses the displayed text; selection resets when that text changes.
+Native Copy and Select All menu actions follow the focused field or reader.
+WebKit handles those selectors through the macOS responder chain, without a
+clipboard JavaScript bridge.
 
 File pastes and drops share the terminal's bounded input queue. Copied file paths
 take precedence over Finder display names and are quoted for terminal input.
@@ -213,6 +217,20 @@ An open Response is polled by ID so its correction metadata stays current even
 after newer publications move it off its former list page.
 Authored status and blocker text do not change runtime state or grant approval.
 
+A native feedback composer sits outside the authored content and opens only when
+the user chooses Send feedback. Closing it preserves the draft. It retains drafts
+by provider, author and record identity while its saved pane exists, including
+hidden tabs. Hidden readers pause polling and release their web surface; feedback
+workers can still finish and retain their result. On explicit Send,
+`roster::feedback` re-reads the exact record, checks the original stable author ID
+and current registered name, then uses the existing authenticated `/api/messages`
+POST as `agent-interface-app`. No authored HTML can invoke it. The message carries
+the record kind and ID plus the user's text, not the original content. This is
+ordinary feedback, without signed owner-confirmation provenance. The existing
+name-based API cannot make source lookup and recipient routing atomic. Duplicate
+clicks are blocked in flight; unknown delivery is retained without automatic
+resubmission. Drafts and status are window-owned, not a persistent message history.
+
 Durable Documents use Backbone's metadata-only `/api/documents` list and exact
 `/api/documents/{revision_id}` JSON reads. Backbone owns immutable revisions,
 stable document and author identities, publication authorization and retention;
@@ -241,7 +259,9 @@ document and is limited to 4 MiB, including inline assets.
 
 `desktop::views::artifact_web` is the system-webview boundary. On macOS it
 creates a Wry/WebKit child view only for an opened document, positions it in
-the pane's content rectangle, and updates its theme variables. The view is
+the pane's content rectangle, and updates its host theme stylesheet. Text,
+backgrounds and controls follow the active app theme; layout and media retain
+their authored presentation. Stored HTML is not rewritten. The view is
 hidden while native overlays or pane dragging need that space. Closing the
 document or hiding its pane releases the web view, so reopening starts a fresh
 document runtime. Native terminals, menus and report views do not use WebKit.

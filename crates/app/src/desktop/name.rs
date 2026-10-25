@@ -1,4 +1,4 @@
-//! Native single-line input for names and session filters, including composition.
+//! Native name, filter and multiline feedback input, including composition.
 
 use std::ops::Range;
 
@@ -23,6 +23,7 @@ struct Text {
     cursor: usize,
     marked: Option<Range<usize>>,
     search: bool,
+    feedback: bool,
 }
 
 impl Text {
@@ -49,7 +50,7 @@ impl Text {
         let inserted: String = text
             .chars()
             .filter(|ch| {
-                !ch.is_control()
+                ((!ch.is_control()) || (self.feedback && matches!(ch, '\n' | '\t')))
                     && (!self.search
                         || *ch == ' '
                         || !matches!(
@@ -57,7 +58,14 @@ impl Text {
                             GeneralCategoryGroup::Other | GeneralCategoryGroup::Separator
                         ))
             })
-            .take(80usize.saturating_sub(remaining))
+            .take(
+                (if self.feedback {
+                    tmux_workspaces_roster::feedback::TEXT_LIMIT
+                } else {
+                    80usize
+                })
+                .saturating_sub(remaining),
+            )
             .collect();
         let end = range.start + inserted.len();
         self.value.replace_range(range.clone(), &inserted);
@@ -122,6 +130,9 @@ pub(super) struct NameField {
     text: Text,
     pub focus: FocusHandle,
     line: Option<ShapedLine>,
+    feedback_lines: Vec<gpui::WrappedLine>,
+    feedback_text: String,
+    line_height: Pixels,
     bounds: Option<Bounds<Pixels>>,
     scroll: Pixels,
     dragging: bool,
@@ -148,6 +159,9 @@ impl NameField {
             },
             focus,
             line: None,
+            feedback_lines: Vec::new(),
+            feedback_text: String::new(),
+            line_height: px(20.),
             bounds: None,
             scroll: px(0.),
             dragging: false,
@@ -175,6 +189,14 @@ impl NameField {
         field
     }
 
+    /// A multiline feedback field that keeps the current keyboard focus.
+    pub fn feedback(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let mut field = Self::filter(window, cx);
+        field.text.search = false;
+        field.text.feedback = true;
+        field
+    }
+
     /// Empty the field without announcing a change.
     pub fn clear(&mut self, cx: &mut Context<Self>) {
         self.text.value.clear();
@@ -193,6 +215,28 @@ impl NameField {
     }
 
     fn hit(&self, position: Point<Pixels>) -> usize {
+        if self.text.feedback {
+            let Some(bounds) = self
+                .bounds
+                .filter(|_| self.feedback_text == self.text.value)
+            else {
+                return self.text.cursor;
+            };
+            let mut point = position - bounds.origin + gpui::point(px(0.), self.scroll);
+            let mut start = 0;
+            for line in &self.feedback_lines {
+                let height = line.size(self.line_height).height;
+                if point.y < height {
+                    let byte = line
+                        .closest_index_for_position(point, self.line_height)
+                        .unwrap_or_else(|byte| byte);
+                    return self.text.snap(start + byte);
+                }
+                start += line.len() + 1;
+                point.y -= height;
+            }
+            return self.text.value.len();
+        }
         match (&self.line, self.bounds) {
             (Some(line), Some(bounds)) if line.text.as_ref() == self.text.value => self
                 .text
@@ -217,6 +261,9 @@ impl NameField {
         let range = self.text.selection();
         match key.key.as_str() {
             "escape" => cx.emit(NameEvent::Cancel),
+            "enter" if self.text.feedback && !mods.platform && !mods.control && !mods.alt => {
+                self.text.replace(None, "\n", false);
+            }
             "enter" if !mods.platform && !mods.control && !mods.alt && !mods.shift => {
                 cx.emit(NameEvent::Save)
             }
@@ -254,6 +301,21 @@ impl NameField {
                     self.text.anchor = self.text.cursor;
                 }
             }
+            "up" | "down" if self.text.feedback && !mods.alt && !mods.control && !mods.platform => {
+                if let (Some(at), Some(bounds)) =
+                    (self.feedback_position(self.text.cursor), self.bounds)
+                {
+                    let direction = if key.key == "up" { -1. } else { 1. };
+                    self.text.cursor = self.hit(
+                        bounds.origin
+                            + at
+                            + point(px(0.), self.line_height * direction - self.scroll),
+                    );
+                    if !mods.shift {
+                        self.text.anchor = self.text.cursor;
+                    }
+                }
+            }
             "backspace" | "delete" if !mods.alt && !mods.control && !mods.platform => {
                 if range.is_empty() {
                     self.text.anchor = self.text.boundary(key.key == "delete");
@@ -271,6 +333,10 @@ impl NameField {
     }
 
     fn paint(&mut self, bounds: Bounds<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+        if self.text.feedback {
+            self.paint_feedback(bounds, window, cx);
+            return;
+        }
         let style = window.text_style();
         let run = TextRun {
             len: self.text.value.len(),
@@ -335,6 +401,113 @@ impl NameField {
         self.line = Some(line);
         self.bounds = Some(bounds);
     }
+
+    fn feedback_position(&self, index: usize) -> Option<Point<Pixels>> {
+        if self.feedback_text != self.text.value {
+            return None;
+        }
+        let mut start = 0;
+        let mut y = px(0.);
+        for line in &self.feedback_lines {
+            if index <= start + line.len() {
+                return line
+                    .position_for_index(index - start, self.line_height)
+                    .map(|at| at + point(px(0.), y));
+            }
+            start += line.len() + 1;
+            y += line.size(self.line_height).height;
+        }
+        None
+    }
+
+    fn paint_feedback(
+        &mut self,
+        bounds: Bounds<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let style = window.text_style();
+        let font_size = style.font_size.to_pixels(window.rem_size());
+        self.line_height = font_size * 1.5;
+        let selected = self.text.selection();
+        let mut boundaries = vec![0, self.text.value.len(), selected.start, selected.end];
+        if let Some(marked) = &self.text.marked {
+            boundaries.extend([marked.start, marked.end]);
+        }
+        boundaries.sort_unstable();
+        boundaries.dedup();
+        let runs: Vec<_> = boundaries
+            .windows(2)
+            .map(|span| TextRun {
+                len: span[1] - span[0],
+                font: style.font(),
+                color: style.color,
+                background_color: selected
+                    .contains(&span[0])
+                    .then_some(super::design::colors().accent_soft.into()),
+                underline: self
+                    .text
+                    .marked
+                    .as_ref()
+                    .filter(|range| range.contains(&span[0]))
+                    .map(|_| gpui::UnderlineStyle {
+                        thickness: px(1.),
+                        color: Some(super::design::colors().accent.into()),
+                        wavy: false,
+                    }),
+                strikethrough: None,
+            })
+            .collect();
+        let Ok(lines) = window.text_system().shape_text(
+            self.text.value.clone().into(),
+            font_size,
+            &runs,
+            Some(bounds.size.width - px(2.)),
+            None,
+        ) else {
+            return;
+        };
+        self.feedback_lines = lines.into_vec();
+        self.feedback_text.clone_from(&self.text.value);
+        let caret = self.feedback_position(self.text.cursor).unwrap_or_default();
+        self.scroll = self
+            .scroll
+            .min(caret.y)
+            .max(caret.y + self.line_height - bounds.size.height)
+            .max(px(0.));
+        let mut origin = bounds.origin - point(px(0.), self.scroll);
+        window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
+            for line in &self.feedback_lines {
+                let _ = line.paint_background(
+                    origin,
+                    self.line_height,
+                    gpui::TextAlign::Left,
+                    None,
+                    window,
+                    cx,
+                );
+                let _ = line.paint(
+                    origin,
+                    self.line_height,
+                    gpui::TextAlign::Left,
+                    None,
+                    window,
+                    cx,
+                );
+                origin.y += line.size(self.line_height).height;
+            }
+            if selected.is_empty() && self.focus.is_focused(window) {
+                window.paint_quad(fill(
+                    Bounds::new(
+                        bounds.origin + caret - point(px(0.), self.scroll),
+                        size(px(1.), self.line_height),
+                    ),
+                    super::design::colors().accent,
+                ));
+            }
+        });
+        self.bounds = Some(bounds);
+    }
 }
 
 impl EntityInputHandler for NameField {
@@ -367,6 +540,9 @@ impl EntityInputHandler for NameField {
         self.text.marked = None;
         self.text.anchor = self.text.snap(self.text.anchor);
         self.text.cursor = self.text.snap(self.text.cursor);
+        if self.text.feedback {
+            cx.emit(NameEvent::Changed(self.text.value.clone()));
+        }
         cx.notify();
     }
     fn replace_text_in_range(
@@ -399,6 +575,14 @@ impl EntityInputHandler for NameField {
         _: &mut Window,
         _: &mut Context<Self>,
     ) -> Option<Bounds<Pixels>> {
+        if self.text.feedback {
+            let range = self.text.bytes(range);
+            let at = self.feedback_position(range.start)?;
+            return Some(Bounds::new(
+                bounds.origin + at - point(px(0.), self.scroll),
+                size(px(1.), self.line_height),
+            ));
+        }
         let line = self.line.as_ref()?;
         if line.text.as_ref() != self.text.value {
             return None;
@@ -435,7 +619,9 @@ impl Render for NameField {
         div()
             .w_full()
             .min_w_0()
-            .h(px(if search {
+            .h(px(if self.text.feedback {
+                100.
+            } else if search {
                 super::design::tokens().size.jump_field
             } else {
                 super::design::tokens().size.row - super::design::tokens().space.s8
@@ -451,6 +637,12 @@ impl Render for NameField {
             .track_focus(&self.focus)
             .cursor_text()
             .on_key_down(cx.listener(Self::key))
+            .on_action(cx.listener(|field, _: &super::Copy, window, cx| {
+                field.key(&super::edit_key("c"), window, cx);
+            }))
+            .on_action(cx.listener(|field, _: &super::SelectAll, window, cx| {
+                field.key(&super::edit_key("a"), window, cx);
+            }))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|field, event: &gpui::MouseDownEvent, window, cx| {
@@ -504,6 +696,27 @@ impl Render for NameField {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn feedback_preserves_paragraphs_and_unicode_beyond_the_name_limit() {
+        let mut text = Text {
+            feedback: true,
+            ..Text::default()
+        };
+        let message = format!("{}\nSecond paragraph 👩‍💻", "Long feedback. ".repeat(20));
+        text.replace(None, &message, false);
+        assert_eq!(text.value, message);
+        assert_eq!(text.cursor, message.len());
+        text.replace(
+            None,
+            &"x".repeat(tmux_workspaces_roster::feedback::TEXT_LIMIT),
+            false,
+        );
+        assert_eq!(
+            text.value.chars().count(),
+            tmux_workspaces_roster::feedback::TEXT_LIMIT
+        );
+    }
 
     #[test]
     fn insertion_snaps_to_the_end_of_a_joined_grapheme_except_during_composition() {

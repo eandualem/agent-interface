@@ -59,8 +59,12 @@ actions!(
         ClosePane,
         /// Close the selected tab, leaving its sessions under tmux's ownership.
         CloseTab,
-        /// Detach the focused session while keeping its pane.
+        /// Return the focused pane to its chooser.
         DetachSession,
+        /// Copy selected text in the focused reader, field or terminal.
+        Copy,
+        /// Select all text in the focused reader or field.
+        SelectAll,
         /// Close the active window; its sessions keep running.
         CloseWindow
     ]
@@ -191,6 +195,10 @@ fn application_bindings(bindings: &shortcuts::Bindings) -> Vec<KeyBinding> {
         KeyBinding::new(shortcuts::platform_key("cmd-o"), OpenLibrary, None),
         KeyBinding::new(shortcuts::platform_key("cmd-,"), OpenSettings, None),
     ];
+    if cfg!(target_os = "macos") {
+        keys.push(KeyBinding::new("cmd-c", Copy, None));
+        keys.push(KeyBinding::new("cmd-a", SelectAll, None));
+    }
     if let Some(chord) = bindings.chord(Command::ClosePane) {
         keys.push(KeyBinding::new(&chord.to_text(), ClosePane, None));
     }
@@ -207,20 +215,44 @@ fn application_bindings(bindings: &shortcuts::Bindings) -> Vec<KeyBinding> {
 fn configure_menu(cx: &mut App) {
     cx.clear_key_bindings();
     cx.bind_keys(application_bindings(&shortcuts::current()));
-    cx.set_menus(vec![Menu {
-        name: "Agent Interface".into(),
-        items: vec![
-            MenuItem::action("New Window", NewWindow),
-            MenuItem::action("Open Library…", OpenLibrary),
-            MenuItem::action("Settings…", OpenSettings),
-            MenuItem::action("Close Pane", ClosePane),
-            MenuItem::action("Detach Session", DetachSession),
-            MenuItem::action("Close Tab", CloseTab),
-            MenuItem::action("Close Window", CloseWindow),
-            MenuItem::action("Quit Agent Interface", Quit),
-        ],
-        disabled: false,
-    }]);
+    cx.set_menus(vec![
+        Menu {
+            name: "Agent Interface".into(),
+            items: vec![
+                MenuItem::action("New Window", NewWindow),
+                MenuItem::action("Open Library…", OpenLibrary),
+                MenuItem::action("Settings…", OpenSettings),
+                MenuItem::action("Close Pane", ClosePane),
+                MenuItem::action("Detach", DetachSession),
+                MenuItem::action("Close Tab", CloseTab),
+                MenuItem::action("Close Window", CloseWindow),
+                MenuItem::action("Quit Agent Interface", Quit),
+            ],
+            disabled: false,
+        },
+        Menu {
+            name: "Edit".into(),
+            items: vec![
+                MenuItem::os_action("Copy", Copy, gpui::OsAction::Copy),
+                MenuItem::os_action("Select All", SelectAll, gpui::OsAction::SelectAll),
+            ],
+            disabled: false,
+        },
+    ]);
+}
+
+/// Feed a native menu action through the same editor path as its shortcut.
+fn edit_key(key: &str) -> gpui::KeyDownEvent {
+    let modifier = if cfg!(target_os = "macos") {
+        "cmd"
+    } else {
+        "ctrl"
+    };
+    gpui::KeyDownEvent {
+        keystroke: gpui::Keystroke::parse(&format!("{modifier}-{key}")).expect("editing shortcut"),
+        is_held: false,
+        prefer_character_input: false,
+    }
 }
 
 /// The active workspace window, else any open one, for application commands
@@ -470,6 +502,17 @@ fn close_pane_proposal(
     proposed.close_pane().then_some((base, proposed))
 }
 
+fn saved_view(layout: &Layout, id: &str, view: &View) -> bool {
+    layout.workspaces.iter().any(|workspace| {
+        workspace.tabs.iter().any(|tab| {
+            tab.tree
+                .leaves()
+                .into_iter()
+                .any(|leaf| leaf.id == id && leaf.view.as_ref() == Some(view))
+        })
+    })
+}
+
 #[derive(Default)]
 struct Browser {
     library: Option<Library>,
@@ -526,6 +569,24 @@ struct Browser {
 }
 
 impl Browser {
+    fn reader_edit(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let handled = self
+            .navigation
+            .as_ref()
+            .is_some_and(|focus| focus.is_focused(window))
+            && self
+                .layout
+                .as_ref()
+                .and_then(|layout| layout.model().pane())
+                .and_then(|pane| self.views.get(&pane.id))
+                .is_some_and(|(view, _)| {
+                    view.update(cx, |view, cx| view.key(&edit_key(key).keystroke, cx))
+                });
+        if !handled {
+            cx.propagate();
+        }
+    }
+
     fn close_pane(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.saving || self.save_failed {
             return;
@@ -558,14 +619,21 @@ impl Browser {
     }
 
     fn detach_focused(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(terminal) = self
+        if let Some(leaf) = self
             .layout
             .as_ref()
             .and_then(|layout| layout.model().pane())
-            .and_then(|pane| self.terminals.get(&pane.id))
+            .cloned()
         {
-            let target = terminal.read(cx).target.clone();
-            self.detach_terminal(&target, window, cx);
+            let target = Target {
+                leaf,
+                directory: self.directory.clone(),
+                source: self
+                    .source
+                    .clone()
+                    .unwrap_or_else(|| Err("Source socket unavailable".into())),
+            };
+            self.detach_pane(&target, window, cx);
         }
     }
 
@@ -600,7 +668,7 @@ impl Browser {
         self.save(cx);
     }
 
-    fn detach_terminal(&mut self, target: &Target, window: &mut Window, cx: &mut Context<Self>) {
+    fn detach_pane(&mut self, target: &Target, window: &mut Window, cx: &mut Context<Self>) {
         if self.saving || self.save_failed {
             return;
         }
@@ -1118,14 +1186,7 @@ impl Browser {
         match action {
             TabAction::ReturnToShell => unreachable!("handled before the whole-tab move guard"),
             TabAction::Detach => {
-                if let Some(terminal) = layout
-                    .model()
-                    .pane()
-                    .and_then(|leaf| self.terminals.get(&leaf.id))
-                {
-                    let target = terminal.read(cx).target.clone();
-                    self.detach_terminal(&target, window, cx);
-                }
+                self.detach_focused(window, cx);
             }
             TabAction::Rename => self.begin_name(true, window, cx),
             TabAction::Attach => {
@@ -1807,7 +1868,7 @@ impl Render for Browser {
                     window,
                     |browser, terminal, _: &terminal::Detach, window, cx| {
                         let target = terminal.read(cx).target.clone();
-                        browser.detach_terminal(&target, window, cx);
+                        browser.detach_pane(&target, window, cx);
                     },
                 )
                 .detach();
@@ -1848,11 +1909,17 @@ impl Render for Browser {
             })
             .unwrap_or_default();
         self.views.retain(|id, (pane, _)| {
+            let pane = pane.read(cx);
             shown
                 .iter()
-                .any(|(leaf, view)| leaf == id && &pane.read(cx).view == view)
+                .any(|(leaf, view)| leaf == id && &pane.view == view)
+                || (pane.has_feedback()
+                    && self
+                        .layout
+                        .as_ref()
+                        .is_some_and(|layout| saved_view(layout.model(), id, &pane.view)))
         });
-        for (id, view) in shown {
+        for (id, view) in shown.clone() {
             if !self.views.contains_key(&id) {
                 let backbone = self.backbone.clone();
                 let directory = self.directory.clone();
@@ -1903,8 +1970,11 @@ impl Render for Browser {
             }
         }
         for (id, (view, _)) in &self.views {
-            view.read(cx)
-                .set_visible(expanded.is_none_or(|focused| focused == id), cx);
+            view.read(cx).set_visible(
+                shown.iter().any(|(shown, _)| shown == id)
+                    && expanded.is_none_or(|focused| focused == id),
+                cx,
+            );
             // Native child views are above GPUI drawing. Hide them while a
             // popover or geometry gesture needs that space or its pointer input.
             view.read(cx).occlude_web(
@@ -2018,6 +2088,12 @@ impl Render for Browser {
             .font_family(t.font.ui.clone())
             .text_size(t.text.row.size())
             .when_some(self.navigation.clone(), |el, focus| el.track_focus(&focus))
+            .on_action(
+                cx.listener(|browser, _: &Copy, window, cx| browser.reader_edit("c", window, cx)),
+            )
+            .on_action(cx.listener(|browser, _: &SelectAll, window, cx| {
+                browser.reader_edit("a", window, cx)
+            }))
             .capture_any_mouse_down(cx.listener(|browser, _, _, cx| {
                 // A GPUI focus handle alone does not change AppKit's first
                 // responder. Native clicks must leave an embedded HTML field.
@@ -2371,6 +2447,24 @@ mod tests {
     use tmux_workspaces_store::{Document, Error, Store};
 
     #[test]
+    fn saved_reader_survives_tab_navigation_but_not_detach() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open_or_create(directory.path()).unwrap();
+        let mut model = store.load().unwrap().model().clone();
+        model.add_tab(None, "/work".into(), true);
+        let tab = model.tab().unwrap().id.clone();
+        let id = model.pane().unwrap().id.clone();
+        let view = View::of(tmux_workspaces_core::ViewKind::Reports);
+        assert!(model.show_view(&tab, &id, view.clone()));
+        model.add_tab(None, "/work".into(), true);
+        assert_ne!(model.tab().unwrap().id, tab);
+        assert!(saved_view(&model, &id, &view));
+        model.choose_tab(&tab);
+        assert!(model.detach_pane());
+        assert!(!saved_view(&model, &id, &view));
+    }
+
+    #[test]
     fn close_tab_does_not_remove_the_refresh_fallback() {
         let path = std::path::Path::new("layouts.db");
         let raw = r#"{"version":2,"workspaces":[{"id":"000000000001","name":"Workspace","tabs":[],"selected":""}],"selected":"000000000001","focus":false}"#;
@@ -2427,6 +2521,53 @@ mod tests {
             proposed.tab().is_none(),
             "closing the final pane closes its tab"
         );
+    }
+
+    #[test]
+    fn detach_saves_ordinary_terminals_and_views_as_the_same_empty_pane() {
+        let directory = tempfile::tempdir().unwrap();
+        drop(Store::open_or_create(directory.path()).unwrap());
+        let mut store = Store::open_existing_writable(directory.path()).unwrap();
+        let base = store.load().unwrap();
+        let mut model = base.model().clone();
+        model.add_tab(None, "/work".into(), true);
+        model.open_terminal();
+        let pane = model.pane().unwrap().clone();
+        let tab = model.tab().unwrap().id.clone();
+        for view in [None, Some(View::of(tmux_workspaces_core::ViewKind::Skills))] {
+            if let Some(view) = view {
+                assert!(model.detach_pane());
+                assert!(model.show_view(&tab, &pane.id, view));
+            }
+            let mut base = store.load().unwrap();
+            assert!(!store.save(&mut base, &model).unwrap().conflict);
+            let mut layout = WindowLayout::new(store.load().unwrap());
+            let target = Target {
+                leaf: layout.model().pane().unwrap().clone(),
+                directory: None,
+                source: Err("No source socket".into()),
+            };
+            let (mut base, mut proposed) = layout.save_snapshot();
+            assert!(target.detach_from(&mut proposed));
+            assert_eq!(layout.model().pane(), Some(&target.leaf));
+            let result = store.save(&mut base, &proposed).unwrap();
+            assert!(!result.conflict);
+            layout.saved(base, &result);
+            let saved = store.load().unwrap();
+            let empty = saved.model().pane().unwrap();
+            assert!(empty.empty && empty.view.is_none() && empty.attachment.is_none());
+            assert_eq!(empty.id, pane.id);
+            assert_eq!(empty.cwd, pane.cwd);
+            assert_eq!(layout.model().pane(), Some(empty));
+            assert_eq!(layout.model().tab().unwrap().id, tab);
+            assert!(!target.detach_from(layout.model_mut()));
+            assert!(layout.model_mut().show_view(
+                &tab,
+                &pane.id,
+                View::of(tmux_workspaces_core::ViewKind::Reports)
+            ));
+            assert!(!target.detach_from(layout.model_mut()));
+        }
     }
 
     #[test]
