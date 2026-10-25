@@ -79,6 +79,7 @@ pub(super) fn reader(pane: &ViewPane, cx: &mut Context<ViewPane>) -> AnyElement 
         .child(
             ui::chip("document-refresh", "Check for update", false).on_click(cx.listener(
                 |pane, _, _, cx| {
+                    pane.documents.error = None;
                     pane.refetch(false, cx);
                 },
             )),

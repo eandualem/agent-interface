@@ -207,6 +207,8 @@ per document, not per author. Agent-name and stable-author filters persist acros
 paging. The reader keeps the selected revision until an explicit navigation;
 checking for a correction does not replace its contents. Document lists and
 bodies refresh on explicit requests or reveal, rather than the report poll.
+An open HTML reader remains uncached so native child creation is replayed when
+overlays close; native report lists retain their usual rendering cache.
 
 Only exact-document reads allow a response of `6 × 4 MiB + 8192` bytes, covering
 JSON escaping of the bounded UTF-8 HTML. The native adapter validates the decoded

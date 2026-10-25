@@ -150,6 +150,11 @@ pub(super) struct ViewPane {
 impl EventEmitter<ViewEvent> for ViewPane {}
 
 impl ViewPane {
+    /// Native child views must repaint when an overlay stops occluding them.
+    pub fn paints_webview(&self) -> bool {
+        self.artifacts.is_some() || documents::selected(self).is_some()
+    }
+
     pub fn set_visible(&self, visible: bool, cx: &gpui::App) {
         if !visible {
             self.documents.surface.borrow_mut().clear();
@@ -279,6 +284,7 @@ impl ViewPane {
                             Ok(mut data) => {
                                 if let Data::Document(document) = &data {
                                     pane.documents.loaded = Some(document.clone());
+                                    pane.documents.error = None;
                                 }
                                 if let Data::Reports(page) = &data {
                                     pane.reports.observe(page);
