@@ -146,10 +146,12 @@ fn decode_list(body: &[u8], author_id: Option<&str>) -> Result<ReportPage, &'sta
     } else {
         None
     };
+    // A forgotten author's historical name is not a current-agent filter.
+    // Its retained work remains reachable through the stable author ID.
     let agents = page
         .items
         .iter()
-        .map(|item| item.author().to_owned())
+        .filter_map(|item| item.agent_name.clone())
         .collect();
     let items = page
         .items
@@ -276,6 +278,7 @@ mod tests {
             Some(ReportQuery::Documents(Some(7), Some(author)))
         );
         assert_eq!(decoded.items[0].author, "worker");
+        assert!(decoded.agents.is_empty());
         page["next_before_id"] = serde_json::Value::Null;
         assert!(decode_list(&serde_json::to_vec(&page).unwrap(), None).is_err());
     }
