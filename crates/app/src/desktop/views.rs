@@ -497,7 +497,7 @@ impl Render for ViewPane {
                         el.child(usage::toolbar(self, cx))
                     })
                     .when(self.view.kind == ViewKind::Reports, |el| {
-                        el.child(reports::refresh_toolbar(cx))
+                        el.child(reports::refresh_toolbar(self, cx))
                     })
                     .child(state)
                     .into_any_element()

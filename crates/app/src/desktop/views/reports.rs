@@ -16,6 +16,7 @@ pub(super) struct State {
     pub query: ReportQuery,
     pub agent: Option<String>,
     choosing_agent: bool,
+    agents: Vec<String>,
     previous: Vec<ReportQuery>,
     /// Records are immutable: keep the opened answer through list refreshes.
     pub open: Option<ReportItem>,
@@ -32,6 +33,9 @@ impl State {
 
     /// Authored text is immutable; correction metadata can change after opening.
     pub fn observe(&mut self, page: &ReportPage) {
+        if !page.agents.is_empty() {
+            self.agents = page.agents.clone();
+        }
         let Some(open) = &mut self.open else { return };
         let Some(fresh) = page.items.iter().find(|item| item.id == open.id) else {
             return;
@@ -57,14 +61,21 @@ fn first(query: &ReportQuery) -> ReportQuery {
     }
 }
 
-pub(super) fn refresh_toolbar(cx: &mut Context<ViewPane>) -> gpui::Div {
-    ui::view_toolbar().child(
-        ui::chip("reports-reset", "Refresh", false).on_click(cx.listener(|pane, _, _, cx| {
-            pane.reports.query = first(&pane.reports.query);
-            pane.reports.previous.clear();
-            pane.refetch(true, cx);
-        })),
-    )
+pub(super) fn refresh_toolbar(pane: &ViewPane, cx: &mut Context<ViewPane>) -> gpui::Div {
+    div()
+        .flex()
+        .flex_col()
+        .flex_shrink_0()
+        .child(controls(pane, &pane.reports.agents, cx))
+        .child(
+            ui::view_toolbar().child(ui::chip("reports-reset", "Refresh", false).on_click(
+                cx.listener(|pane, _, _, cx| {
+                    pane.reports.query = first(&pane.reports.query);
+                    pane.reports.previous.clear();
+                    pane.refetch(true, cx);
+                }),
+            )),
+        )
 }
 
 fn label(item: &ReportItem) -> String {
@@ -101,7 +112,7 @@ pub(super) fn body(pane: &ViewPane, page: &ReportPage, cx: &mut Context<ViewPane
                 .flex_col()
                 .gap(px(t.space.s8))
                 .child(ui::text(div().text_color(c.text), &t.text.doc_heading).child(name))
-                .child(markdown::render(&markdown::parse(text)))
+                .child(markdown::render(&markdown::parse_authored(text)))
         };
         match &item.content {
             ReportContent::Progress { sections, .. } => {
@@ -147,89 +158,6 @@ pub(super) fn body(pane: &ViewPane, page: &ReportPage, cx: &mut Context<ViewPane
                 "authored record · read-only",
             ))
             .into_any_element();
-    }
-    let mut toolbar = ui::view_toolbar()
-        .h_auto()
-        .min_h(px(t.size.view_toolbar))
-        .py(px(t.space.s6))
-        .flex_wrap()
-        .gap(px(t.space.s6));
-    for (query, name) in [
-        (ReportQuery::Latest(None), "Waiting on you"),
-        (ReportQuery::Recent(None), "Recent updates"),
-        (ReportQuery::Responses(None), "Responses"),
-    ] {
-        toolbar = toolbar.child(
-            ui::chip(
-                SharedString::from(format!("reports-{name}")),
-                name,
-                first(&pane.reports.query) == query,
-            )
-            .on_click(cx.listener(move |pane, _, _, cx| {
-                pane.reports.query = query.clone();
-                pane.reports.previous.clear();
-                pane.refetch(true, cx);
-            })),
-        );
-    }
-    toolbar = toolbar.child(
-        ui::chip(
-            "reports-agent",
-            SharedString::from(format!(
-                "{} ▾",
-                pane.reports.agent.as_deref().unwrap_or("All agents")
-            )),
-            pane.reports.agent.is_some(),
-        )
-        .on_click(cx.listener(|pane, _, _, cx| {
-            pane.reports.choosing_agent = !pane.reports.choosing_agent;
-            cx.notify();
-        })),
-    );
-    let mut agent_choices = div().flex().flex_col().flex_shrink_0();
-    if pane.reports.choosing_agent {
-        if let Some(search) = &pane.search {
-            agent_choices = agent_choices.child(
-                ui::view_toolbar()
-                    .gap(px(t.space.s8))
-                    .child(ui::text(div().text_color(c.muted), &t.text.meta).child("Find agent"))
-                    .child(div().flex_1().min_w_0().child(search.clone())),
-            );
-        }
-        let mut choices = div()
-            .id("report-agents")
-            .max_h(px(180.))
-            .overflow_y_scroll()
-            .flex()
-            .flex_col()
-            .px(px(t.space.s12));
-        let filter = pane.query.trim().to_lowercase();
-        for agent in std::iter::once(None).chain(
-            page.agents
-                .iter()
-                .filter(|name| name.to_lowercase().contains(&filter))
-                .cloned()
-                .map(Some),
-        ) {
-            let name = agent.as_deref().unwrap_or("All agents");
-            choices = choices.child(
-                ui::row(
-                    SharedString::from(format!("reports-agent-{name}")),
-                    pane.reports.agent == agent,
-                )
-                .flex_shrink_0()
-                .child(name.to_owned())
-                .on_click(cx.listener(move |pane, _, _, cx| {
-                    pane.reports.select_agent(agent.clone());
-                    pane.query.clear();
-                    if let Some(search) = &pane.search {
-                        search.update(cx, |field, cx| field.clear(cx));
-                    }
-                    pane.refetch(true, cx);
-                })),
-            );
-        }
-        agent_choices = agent_choices.child(choices);
     }
     let waiting = matches!(pane.reports.query, ReportQuery::Latest(_));
     let mut rows = list("reports-rows").gap(px(t.space.s6));
@@ -333,8 +261,7 @@ pub(super) fn body(pane: &ViewPane, page: &ReportPage, cx: &mut Context<ViewPane
         .flex()
         .flex_col()
         .child(header)
-        .child(toolbar)
-        .child(agent_choices)
+        .child(controls(pane, &page.agents, cx))
         .child(rows)
         .child(navigation)
         .child(ui::view_footer(
@@ -346,6 +273,99 @@ pub(super) fn body(pane: &ViewPane, page: &ReportPage, cx: &mut Context<ViewPane
             },
         ))
         .into_any_element()
+}
+
+fn controls(pane: &ViewPane, agents: &[String], cx: &mut Context<ViewPane>) -> gpui::Div {
+    let (t, c) = (tokens(), colors());
+    let mut toolbar = ui::view_toolbar()
+        .h_auto()
+        .min_h(px(t.size.view_toolbar))
+        .py(px(t.space.s6))
+        .flex_wrap()
+        .gap(px(t.space.s6));
+    for (query, name) in [
+        (ReportQuery::Latest(None), "Waiting on you"),
+        (ReportQuery::Recent(None), "Recent updates"),
+        (ReportQuery::Responses(None), "Responses"),
+    ] {
+        toolbar = toolbar.child(
+            ui::chip(
+                SharedString::from(format!("reports-{name}")),
+                name,
+                first(&pane.reports.query) == query,
+            )
+            .on_click(cx.listener(move |pane, _, _, cx| {
+                pane.reports.query = query.clone();
+                pane.reports.previous.clear();
+                pane.refetch(true, cx);
+            })),
+        );
+    }
+    toolbar = toolbar.child(
+        ui::chip(
+            "reports-agent",
+            SharedString::from(format!(
+                "{} ▾",
+                pane.reports.agent.as_deref().unwrap_or("All agents")
+            )),
+            pane.reports.agent.is_some(),
+        )
+        .on_click(cx.listener(|pane, _, _, cx| {
+            pane.reports.choosing_agent = !pane.reports.choosing_agent;
+            cx.notify();
+        })),
+    );
+    let mut agent_choices = div().flex().flex_col().flex_shrink_0();
+    if pane.reports.choosing_agent {
+        if let Some(search) = &pane.search {
+            agent_choices = agent_choices.child(
+                ui::view_toolbar()
+                    .gap(px(t.space.s8))
+                    .child(ui::text(div().text_color(c.muted), &t.text.meta).child("Find agent"))
+                    .child(div().flex_1().min_w_0().child(search.clone())),
+            );
+        }
+        let mut choices = div()
+            .id("report-agents")
+            .max_h(px(180.))
+            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .px(px(t.space.s12));
+        let filter = pane.query.trim().to_lowercase();
+        for agent in std::iter::once(None).chain(
+            agents
+                .iter()
+                .filter(|name| name.to_lowercase().contains(&filter))
+                .cloned()
+                .map(Some),
+        ) {
+            let name = agent.as_deref().unwrap_or("All agents");
+            choices = choices.child(
+                ui::row(
+                    SharedString::from(format!("reports-agent-{name}")),
+                    pane.reports.agent == agent,
+                )
+                .flex_shrink_0()
+                .child(name.to_owned())
+                .on_click(cx.listener(move |pane, _, _, cx| {
+                    pane.reports.select_agent(agent.clone());
+                    pane.query.clear();
+                    if let Some(search) = &pane.search {
+                        search.update(cx, |field, cx| field.clear(cx));
+                    }
+                    pane.refetch(true, cx);
+                })),
+            );
+        }
+        agent_choices = agent_choices.child(choices);
+    }
+    div()
+        .flex()
+        .flex_col()
+        .flex_shrink_0()
+        .child(toolbar)
+        .child(agent_choices)
 }
 
 #[cfg(test)]
