@@ -529,7 +529,13 @@ impl Render for ViewPane {
                         .entry(key)
                         .or_insert_with(|| {
                             cx.new(|cx| {
-                                feedback::Feedback::new(item.clone(), directory.clone(), window, cx)
+                                feedback::Feedback::new(
+                                    item.clone(),
+                                    directory.clone(),
+                                    self.documents.surface.clone(),
+                                    window,
+                                    cx,
+                                )
                             })
                         })
                         .clone()

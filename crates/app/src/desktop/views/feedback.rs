@@ -1,6 +1,6 @@
 //! A native reply composer outside the authored document's web surface.
 
-use std::path::PathBuf;
+use std::{cell::RefCell, path::PathBuf, rc::Rc};
 
 use gpui::{Context, Entity, Subscription, Window, div, prelude::*, px, relative};
 use tmux_workspaces_roster::{
@@ -18,6 +18,7 @@ pub(super) struct Feedback {
     item: ReportItem,
     directory: PathBuf,
     field: Entity<NameField>,
+    surface: Rc<RefCell<super::artifact_web::Surface>>,
     expanded: bool,
     return_focus: Option<gpui::FocusHandle>,
     sending: bool,
@@ -29,6 +30,7 @@ impl Feedback {
     pub fn new(
         item: ReportItem,
         directory: PathBuf,
+        surface: Rc<RefCell<super::artifact_web::Surface>>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -48,6 +50,7 @@ impl Feedback {
             item,
             directory,
             field,
+            surface,
             expanded: false,
             return_focus: None,
             sending: false,
@@ -149,6 +152,7 @@ impl Render for Feedback {
                                     Some(focus) => window.focus(&focus, cx),
                                     None => window.blur(cx),
                                 }
+                                composer.surface.borrow().focus();
                                 cx.notify();
                             },
                         )),

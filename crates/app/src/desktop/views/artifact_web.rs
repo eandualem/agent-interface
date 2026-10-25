@@ -12,6 +12,15 @@ pub(super) struct Surface {
 }
 
 impl Surface {
+    pub fn focus(&self) {
+        #[cfg(target_os = "macos")]
+        if !self.occluded
+            && let Some(view) = &self.view
+        {
+            let _ = view.focus();
+        }
+    }
+
     pub fn focus_parent(&self) {
         #[cfg(target_os = "macos")]
         if let Some(view) = &self.view {
