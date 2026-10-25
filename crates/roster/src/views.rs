@@ -189,7 +189,7 @@ pub fn read(
 ) -> Result<Data, &'static str> {
     let (url, key) = configured(data_dir, url).ok_or(UNAVAILABLE)?;
     let api = Api { url, key, live };
-    match request {
+    let data: Result<Data, &'static str> = match request {
         Request::Team => Ok(Data::Team(Team::decode(
             &api.get("/api/agents")?,
             &api.get("/api/swarms")?,
@@ -252,7 +252,14 @@ pub fn read(
             }
             Ok(Data::Agent(Box::new(agent)))
         }
+    };
+    let mut data = data?;
+    if let Data::Reports(page) = &mut data {
+        for item in &mut page.items {
+            item.provider_url = api.url.clone();
+        }
     }
+    Ok(data)
 }
 
 /// Agents and the swarms they work in.

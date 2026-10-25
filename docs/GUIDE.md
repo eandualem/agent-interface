@@ -58,7 +58,8 @@ Settings, chooses another folder containing `layouts.db`.
 Text in Skills, policies, agent briefs and report readers supports drag selection,
 double-click word selection, and Command-C to copy (Control-C on Linux).
 Command-A selects the document text (Control-A on Linux). Source text uses the
-same selection behavior.
+same selection behavior. The Edit menu offers Copy and Select All; on macOS
+these also work with selected text inside HTML Documents.
 
 ## Find work and change appearance
 
@@ -218,13 +219,23 @@ authored reports and retained answers. **Recent updates** shows report history;
 you** shows owner blockers from each agent's latest report. A report's age does
 not resolve its blocker, and an answer's action text is not a pending approval.
 Choose a row to read it; use Back or Escape to return. Previous/Next page browse
-older records, and Refresh returns to the newest page. These views are read-only.
+older records, and Refresh returns to the newest page. Authored records cannot be
+edited in the reader.
 
 **Documents** shows lasting rich documents stored by Agent Backbone. Each row
 is the newest revision of one document. Use the same agent filter, or open a
 document and choose **More from this author** to follow its stable author even
 after an agent is renamed or removed. **Back** restores the selected page and
 filter. **Refresh** returns to the newest documents.
+
+Use the feedback box below an open report, Response or Document to reply to its
+author. Enter supports paragraphs; choose **Send feedback** to submit up to
+4,000 characters. The message includes a reference to the exact record being
+read. The app checks that the author is still registered before sending, and
+shows Backbone's delivery detail. Queued or held messages do not mean the author
+has read them. If delivery is uncertain, check with the author before starting a
+new reply. Drafts remain with their record while the pane stays open; closing
+the pane or app discards them. Feedback never changes the authored record.
 
 Opening a document loads that exact revision. **Check for update** refreshes its
 correction information; **Open newer revision** opens the linked correction.
@@ -273,16 +284,20 @@ results that must survive as part of the published HTML: document state resets
 when it is reloaded, closed or hidden by switching tabs or expanding another
 pane. Publication persists until its local artifact directory is removed.
 
-Documents receive default app colours and a system font. Use these CSS variables
-to follow the current theme while keeping control over layout and styling:
+Documents follow the app’s active light or dark theme. The reader supplies text,
+surface, link and control colours. Authored layout, images, SVG and canvas remain
+intact; graphics should provide readable contrast in both themes. Stored HTML is unchanged. For themed graphics and standalone exports,
+consume these host CSS variables with fallback colours:
 `--ai-background`, `--ai-surface`, `--ai-text`, `--ai-muted`, `--ai-accent` and
-`--ai-line`. For example:
+`--ai-line`. Do not redefine the host variables or force a fixed theme with
+important colour overrides. Keep text selectable. For example:
 
 ```html
 <!doctype html>
 <style>
   body { padding: 24px; }
-  button { color: var(--ai-text); background: var(--ai-surface); }
+  body { color: var(--ai-text, #17202a); background: var(--ai-background, #fff); }
+  button { color: var(--ai-text, #17202a); background: var(--ai-surface, #f4f6f8); }
 </style>
 <h1>Architecture report</h1>
 <button onclick="this.textContent = 'Details opened'">Show details</button>

@@ -5,10 +5,15 @@
 //! data in its own module from the shared pieces in `components`, following
 //! the design boards. Every view stays inside its pane: choosing a skill or a
 //! policy opens it in the same pane through `reader`, with a way back. Backbone
-//! is only read; nothing here changes an agent. Artifacts have their own local
-//! catalog and an isolated system-webview renderer rather than a Backbone worker.
+//! supplies record reads; a separate native composer sends explicit feedback.
+//! Artifacts have their own local catalog and an isolated system-webview renderer rather than a Backbone worker.
 
-use std::{cell::RefCell, collections::HashSet, path::PathBuf, time::Duration};
+use std::{
+    cell::RefCell,
+    collections::{HashMap, HashSet},
+    path::PathBuf,
+    time::Duration,
+};
 
 use futures::{StreamExt, channel::mpsc};
 use gpui::{
@@ -29,6 +34,7 @@ mod agent;
 mod artifact_web;
 mod artifacts;
 mod documents;
+mod feedback;
 mod markdown;
 mod policies;
 mod reader;
@@ -143,6 +149,8 @@ pub(super) struct ViewPane {
     carriers_of: Option<String>,
     selection: RefCell<selection::Selection>,
     reports: reports::State,
+    backbone: Option<PathBuf>,
+    feedback: HashMap<String, Entity<feedback::Feedback>>,
     documents: documents::State,
     artifacts: Option<Entity<artifacts::ArtifactPane>>,
     _updates: Option<Task<()>>,
@@ -211,6 +219,8 @@ impl ViewPane {
             carriers_of: None,
             selection: RefCell::default(),
             reports: reports::State::default(),
+            backbone: backbone.clone(),
+            feedback: HashMap::new(),
             documents: documents::State::default(),
             artifacts: None,
             _updates: None,
@@ -493,11 +503,32 @@ impl Drop for ViewPane {
 }
 
 impl Render for ViewPane {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if let Some(artifacts) = &self.artifacts {
             return div().size_full().child(artifacts.clone());
         }
         let (t, c) = (tokens(), colors());
+        let feedback =
+            self.reports
+                .open
+                .as_ref()
+                .zip(self.backbone.as_ref())
+                .map(|(item, directory)| {
+                    let key = format!(
+                        "{}\n{}\n{}",
+                        item.provider_url,
+                        item.author_id.as_deref().unwrap_or_default(),
+                        tmux_workspaces_roster::feedback::reference(item)
+                    );
+                    self.feedback
+                        .entry(key)
+                        .or_insert_with(|| {
+                            cx.new(|cx| {
+                                feedback::Feedback::new(item.clone(), directory.clone(), window, cx)
+                            })
+                        })
+                        .clone()
+                });
         let about = about(self.view.kind);
         // Lent to the body for this frame and put back below.
         let data = self.data.take();
@@ -559,6 +590,7 @@ impl Render for ViewPane {
             .flex_col()
             .bg(c.surface)
             .child(div().flex_1().min_h_0().flex().flex_col().child(body))
+            .children(feedback)
             .child(selection::events(cx))
             .children(
                 self.data

@@ -1,5 +1,5 @@
-//! The optional, read-only agents roster and the Backbone views: their
-//! transport and response types.
+//! Optional Backbone roster and view reads, plus explicit user feedback.
+//! Transport and response types stay separate from polling.
 //!
 //! This crate depends on no other project crate. Response decoding stays
 //! separate from polling. See `docs/ARCHITECTURE.md`.
@@ -12,6 +12,7 @@ use std::time::Instant;
 use serde_json::value::RawValue;
 
 mod configuration;
+pub mod feedback;
 mod transport;
 pub mod views;
 

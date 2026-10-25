@@ -59,8 +59,12 @@ actions!(
         ClosePane,
         /// Close the selected tab, leaving its sessions under tmux's ownership.
         CloseTab,
-        /// Detach the focused session while keeping its pane.
+        /// Return the focused pane to its chooser.
         DetachSession,
+        /// Copy selected text in the focused reader, field or terminal.
+        Copy,
+        /// Select all text in the focused reader or field.
+        SelectAll,
         /// Close the active window; its sessions keep running.
         CloseWindow
     ]
@@ -191,6 +195,10 @@ fn application_bindings(bindings: &shortcuts::Bindings) -> Vec<KeyBinding> {
         KeyBinding::new(shortcuts::platform_key("cmd-o"), OpenLibrary, None),
         KeyBinding::new(shortcuts::platform_key("cmd-,"), OpenSettings, None),
     ];
+    if cfg!(target_os = "macos") {
+        keys.push(KeyBinding::new("cmd-c", Copy, None));
+        keys.push(KeyBinding::new("cmd-a", SelectAll, None));
+    }
     if let Some(chord) = bindings.chord(Command::ClosePane) {
         keys.push(KeyBinding::new(&chord.to_text(), ClosePane, None));
     }
@@ -207,20 +215,44 @@ fn application_bindings(bindings: &shortcuts::Bindings) -> Vec<KeyBinding> {
 fn configure_menu(cx: &mut App) {
     cx.clear_key_bindings();
     cx.bind_keys(application_bindings(&shortcuts::current()));
-    cx.set_menus(vec![Menu {
-        name: "Agent Interface".into(),
-        items: vec![
-            MenuItem::action("New Window", NewWindow),
-            MenuItem::action("Open Library…", OpenLibrary),
-            MenuItem::action("Settings…", OpenSettings),
-            MenuItem::action("Close Pane", ClosePane),
-            MenuItem::action("Detach Session", DetachSession),
-            MenuItem::action("Close Tab", CloseTab),
-            MenuItem::action("Close Window", CloseWindow),
-            MenuItem::action("Quit Agent Interface", Quit),
-        ],
-        disabled: false,
-    }]);
+    cx.set_menus(vec![
+        Menu {
+            name: "Agent Interface".into(),
+            items: vec![
+                MenuItem::action("New Window", NewWindow),
+                MenuItem::action("Open Library…", OpenLibrary),
+                MenuItem::action("Settings…", OpenSettings),
+                MenuItem::action("Close Pane", ClosePane),
+                MenuItem::action("Detach", DetachSession),
+                MenuItem::action("Close Tab", CloseTab),
+                MenuItem::action("Close Window", CloseWindow),
+                MenuItem::action("Quit Agent Interface", Quit),
+            ],
+            disabled: false,
+        },
+        Menu {
+            name: "Edit".into(),
+            items: vec![
+                MenuItem::os_action("Copy", Copy, gpui::OsAction::Copy),
+                MenuItem::os_action("Select All", SelectAll, gpui::OsAction::SelectAll),
+            ],
+            disabled: false,
+        },
+    ]);
+}
+
+/// Feed a native menu action through the same editor path as its shortcut.
+fn edit_key(key: &str) -> gpui::KeyDownEvent {
+    let modifier = if cfg!(target_os = "macos") {
+        "cmd"
+    } else {
+        "ctrl"
+    };
+    gpui::KeyDownEvent {
+        keystroke: gpui::Keystroke::parse(&format!("{modifier}-{key}")).expect("editing shortcut"),
+        is_held: false,
+        prefer_character_input: false,
+    }
 }
 
 /// The active workspace window, else any open one, for application commands
@@ -526,6 +558,24 @@ struct Browser {
 }
 
 impl Browser {
+    fn reader_edit(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let handled = self
+            .navigation
+            .as_ref()
+            .is_some_and(|focus| focus.is_focused(window))
+            && self
+                .layout
+                .as_ref()
+                .and_then(|layout| layout.model().pane())
+                .and_then(|pane| self.views.get(&pane.id))
+                .is_some_and(|(view, _)| {
+                    view.update(cx, |view, cx| view.key(&edit_key(key).keystroke, cx))
+                });
+        if !handled {
+            cx.propagate();
+        }
+    }
+
     fn close_pane(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.saving || self.save_failed {
             return;
@@ -2018,6 +2068,12 @@ impl Render for Browser {
             .font_family(t.font.ui.clone())
             .text_size(t.text.row.size())
             .when_some(self.navigation.clone(), |el, focus| el.track_focus(&focus))
+            .on_action(
+                cx.listener(|browser, _: &Copy, window, cx| browser.reader_edit("c", window, cx)),
+            )
+            .on_action(cx.listener(|browser, _: &SelectAll, window, cx| {
+                browser.reader_edit("a", window, cx)
+            }))
             .capture_any_mouse_down(cx.listener(|browser, _, _, cx| {
                 // A GPUI focus handle alone does not change AppKit's first
                 // responder. Native clicks must leave an embedded HTML field.

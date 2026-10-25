@@ -392,6 +392,8 @@ mod tests {
         let item = |answer: &str, superseded_by| ReportItem {
             id: 7,
             author: "worker".into(),
+            author_id: None,
+            provider_url: String::new(),
             created_at: "2026-10-24T10:00:00Z".into(),
             content: ReportContent::Response {
                 question: "What happened?".into(),
