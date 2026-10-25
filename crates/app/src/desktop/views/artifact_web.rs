@@ -62,7 +62,7 @@ impl Surface {
         #[cfg(target_os = "macos")]
         {
             use wry::{
-                Rect, WebViewBuilder,
+                Rect, WebViewBuilder, WebViewBuilderExtMacos,
                 dpi::{LogicalPosition, LogicalSize},
             };
             let rect = Rect {
@@ -93,6 +93,7 @@ impl Surface {
             {
                 let body = html.as_bytes().to_vec();
                 let view = WebViewBuilder::new()
+                    .with_webview_configuration(gpui_macos::artifact_configuration()?)
                     .with_bounds(rect).with_focused(false).with_incognito(true)
                     .with_background_color(background())
                     .with_custom_protocol("artifact".into(), move |_, request| {

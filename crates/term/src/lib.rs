@@ -52,6 +52,7 @@ pub struct Terminal {
     /// is given.
     grapheme: String,
     extended_keys_csi_u: bool,
+    bracketed_paste_known: bool,
     wheel_owner: Option<(u64, bool)>,
     last_mouse_motion: Vec<u8>,
     mouse_button: Option<input::Button>,
@@ -86,6 +87,7 @@ impl Terminal {
             cells: CellIterator::new().map_err(Error)?,
             grapheme: String::new(),
             extended_keys_csi_u: false,
+            bracketed_paste_known: true,
             wheel_owner: None,
             last_mouse_motion: Vec::new(),
             mouse_button: None,
@@ -104,6 +106,15 @@ impl Terminal {
         rename.filter(bytes, |part| {
             controls::filter(part, |part| engine.vt_write(part));
         });
+        // Older tmux snapshots omit this mode. Observing it enabled establishes
+        // the live state; until then, an unframed multiline paste is unsafe.
+        if !self.bracketed_paste_known
+            && engine
+                .mode(Mode::BRACKETED_PASTE)
+                .is_ok_and(|enabled| enabled)
+        {
+            self.bracketed_paste_known = true;
+        }
     }
 
     /// Returns the number of lines of history the terminal holds.

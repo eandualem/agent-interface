@@ -38,7 +38,7 @@ another client's selected window.
 | `store` | Initializing, reading and transactionally saving schema-v2 `layouts.db` files |
 | `tmux` | Server discovery and validation, control-mode protocol, pane capture, recovery and input commands |
 | `term` | Terminal engine ownership, input encoding and owned display snapshots |
-| `roster` | Agent Backbone roster and pane-view reads, plus explicit user feedback through bounded loopback requests |
+| `roster` | Agent Backbone roster and pane-view reads, plus explicit user feedback through bounded local requests |
 | `app` | Native windows, input routing, storage and terminal workers, and integration between the other crates |
 
 `app` connects the product crates. `store` also depends on `core`; the other
@@ -70,14 +70,17 @@ display; embedded terminals offer the existing reconnect action.
 
 On connection or recovery, the worker captures the pane's current state and
 only the history its local scrollback retains, then continues with subsequent
-output. Initial snapshots are released after restoration. The reader queues
+output. Capture and restore segments share immutable hyperlink strings, avoiding
+per-segment copies of long targets. Initial snapshots are released after restoration. The reader queues
 output only for panes in its selected window. Recovery uses the state tmux
 can report; it cannot reconstruct every historical parser or input mode.
 
 The UI handles application shortcuts first. Other keys and paste operations
 are encoded for the destination pane's reported input modes and sent as literal
 bytes to that exact pane. Navigation does not redirect queued input to another
-pane. Input waits until a newly selected destination is ready.
+pane. Input waits until a newly selected destination is ready. If an older tmux
+server cannot report bracketed-paste state, multiline paste is refused until the
+shell enables that mode in observed output; single-line paste remains available.
 Each view admits at most 64 outstanding input operations and 8 MiB of payload,
 including input retained by an encoding request after its caller times out,
 with a reserved slot and 64 bytes for a
@@ -112,8 +115,14 @@ UI thread.
 
 ## Saving and shared libraries
 
-An absent library is initialized with one empty workspace. Existing databases
-are opened without automatic repair or replacement. Invalid or unreadable files
+An absent library is initialized with one empty workspace. SQLite builds the
+initial database in memory; its serialized bytes are written through the securely
+created staging file handle, so SQLite never reopens a replaceable staging path.
+Reads validate ordinary stored columns and the record in one database snapshot.
+SQLite values are bounded to the 16 MiB record budget plus 1 KiB for row metadata.
+Writes require the canonical table declaration without added constraints, triggers
+or indexes; object association checks follow SQLite's case-insensitive identifiers.
+Existing databases are opened without automatic repair or replacement. Invalid or unreadable files
 remain intact and produce an error in the UI.
 
 A storage worker polls for changes made by other windows or compatible library
@@ -148,12 +157,20 @@ control native appearance. Likewise, the legacy keymap inspection commands do
 not replace native Settings shortcuts.
 
 The Agent Backbone adapter resolves configuration lazily and uses
-bounded, read-only requests to an approved loopback endpoint. A failed refresh
+bounded, read-only requests to a local endpoint. Credential-bearing requests
+require `BACKBONE_SOCKET_PATH`, an absolute Unix socket path. The socket must
+be owned by the app's effective user with mode 0600, inside a directory owned
+by that user with mode 0700. The connected peer's UID must match before HTTP
+or credentials are sent. This authenticates the OS account, not an individual
+process within that account. HTTP paths and bearer authentication are unchanged.
+There is no TCP fallback when the socket is missing or invalid; loopback TCP
+is supported only for anonymous requests. A failed refresh
 must not present an old agent state as current. The core does not depend on
 Backbone or the Python implementation. The `roster::views` adapter reads and
 decodes view data; `app::desktop::views` renders it in native panes. Each
-polling worker reuses its HTTP client while validating the endpoint and
-credentials for every request. Selection changes coalesce and cancel obsolete
+Unix request owns a short-lived runtime and connection so timeouts cancel all
+associated work. Anonymous TCP reads reuse a client per polling worker.
+Configuration and credentials are re-read for every request. Selection changes coalesce and cancel obsolete
 request chains. Views and empty-pane choosers hidden by an expanded pane pause
 their polling. Revealing a chooser refreshes session availability and Team data,
 preserving its filter and selection while those reads finish. Agent Usage
@@ -175,7 +192,8 @@ clipboard JavaScript bridge.
 File pastes and drops share the terminal's bounded input queue. Copied file paths
 take precedence over Finder display names and are quoted for terminal input.
 The macOS adapter accepts file URLs and raw PNG, TIFF and JPEG drags. Raw images
-are staged as PNG in a private temporary directory. A single temporary image URL
+are checked against those formats before constructing a decoder and staged as
+PNG in a private temporary directory. A single temporary image URL
 is also received as PNG at drop time, because access granted to the app need not
 extend to an already-running terminal process. Staged files are deleted on
 cancellation and retained after an accepted drop for the receiving program to
@@ -190,7 +208,10 @@ three seconds after a read. Requests have a three-second deadline, and failures
 mark cached observations stale.
 Team-wide libraries (`roster::views::library`) are gathered from per-agent
 reads, the store, each agent's skill preview and its brief, for at most 32
-agents per refresh, merged by file path so no row names an agent. They poll
+agents per refresh, merged by file path so no row names an agent. Skill paths and
+tag membership use indexed lookup. Policy text and metadata share immutable
+allocations between groups. Expanded skill and policy groups are limited to 4,096
+rows and 16 MiB of display work; excessive responses leave the last view stale. They poll
 every 30 seconds. An agent view reads only the part its shown section needs.
 The Activity timeline draws the last hour from `/api/agents/states`, the
 states Backbone observed. It reads from six hours before the hour, so a state
@@ -273,7 +294,11 @@ Artifacts use a private in-memory URL, an ephemeral browser session and a
 content policy that permits inline HTML/CSS/JavaScript, SVG, canvas and data
 assets but blocks external resources, network requests, frames and form
 submission. Navigation, downloads, new windows and permission requests are
-denied. The sole JavaScript bridge reports pointer focus to select the owning
+denied. WebRTC peer connections are disabled in native WebKit preferences before
+loading content, because CSP does not govern their sockets. This uses WebKit's
+private preference SPI, checked at runtime; if unavailable or ineffective, HTML
+rendering fails closed. The supplied configuration explicitly keeps an ephemeral
+data store. The sole JavaScript bridge reports pointer focus to select the owning
 pane; it exposes no terminal commands, filesystem access or Backbone API.
 This isolates the integration, but does not make arbitrary animations free:
 visible documents still consume WebKit CPU and memory according to their code.
@@ -305,12 +330,22 @@ those dependencies.
 - **`libghostty-vt`:** terminal emulation behind the `term` boundary, pinned with
   its native binding. MIT OR Apache-2.0; Ghostty's core is MIT-licensed.
 - **`rusqlite`:** transactional access to the existing SQLite library format.
-  MIT. Its bundled SQLite uses SQLite's public-domain dedication.
+  MIT. Its bundled SQLite uses SQLite's public-domain dedication. Runtime limits
+  bound values; serialization writes the initial database through an open file handle.
 - **`libc`:** Unix constants for nonblocking configuration reads in the app
   and roster, and the existing process integration. MIT OR Apache-2.0.
 - **`wry` 0.57.1:** macOS system WebKit child views for experimental HTML
   artifacts, pinned exactly and enabled only on macOS. MIT OR Apache-2.0.
   It does not render terminals or supply a bundled browser engine.
+- **Hyper 1.12.0, hyper-util 0.1.21, http-body-util 0.1.5 and Tokio 1.53.3:**
+  existing MIT HTTP/runtime dependencies, now exact-pinned direct dependencies
+  for HTTP over a connected Unix socket whose peer identity is checked first.
+  **rustix 1.1.5** adds effective-UID access (MIT OR Apache-2.0 OR
+  Apache-2.0 WITH LLVM-exception). No new package versions are introduced.
+- **`objc2-web-kit` 0.3.2:** existing MIT-licensed bindings, now a direct exact-pinned
+  dependency of the macOS bridge to configure WebKit peer connections and its
+  ephemeral data store before document execution. The app calls a safe bridge
+  function through the existing GPUI macOS package, pinned to 0.3.9.
 - **`sha2`:** existing MIT OR Apache-2.0 workspace dependency, also used by
   the document adapter to verify the server-provided HTML digest.
 - **`serde`, `serde_json`, `uuid` and `tempfile`:** existing workspace

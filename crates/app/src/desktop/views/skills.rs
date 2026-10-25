@@ -72,10 +72,14 @@ fn sections<'a>(pane: &ViewPane, library: &'a SkillLibrary) -> Vec<Section<'a>> 
         .iter()
         .filter(|skill| matches(&query, &skill.name, &skill.description))
         .collect();
+    let by_tag = library.store.by_tag();
+    let carriers = tmux_workspaces_roster::views::tag_carriers(&library.agents);
     let tagged = |tag: &str| -> Vec<Row<'a>> {
-        store
-            .iter()
-            .filter(|skill| skill.tags.iter().any(|t| t == tag))
+        by_tag
+            .get(tag)
+            .into_iter()
+            .flatten()
+            .filter(|skill| matches(&query, &skill.name, &skill.description))
             .map(|skill| Row::Store(skill))
             .collect()
     };
@@ -94,11 +98,7 @@ fn sections<'a>(pane: &ViewPane, library: &'a SkillLibrary) -> Vec<Section<'a>> 
     tags.sort_unstable();
     tags.dedup();
     for tag in tags {
-        let carriers = library
-            .agents
-            .iter()
-            .filter(|agent| agent.tags.iter().any(|t| t == tag))
-            .count();
+        let carriers = carriers.get(tag).copied().unwrap_or(0);
         shared.push(Group {
             label: tag.to_owned(),
             tone: Some(Tone::Tag),

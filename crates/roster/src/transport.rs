@@ -1,10 +1,12 @@
+mod local;
+
 use std::{
     io::Read,
     net::{Ipv6Addr, SocketAddr},
     time::Duration,
 };
 
-use http::{HeaderValue, Uri};
+use http::Uri;
 
 use crate::{RESPONSE_LIMIT, Snapshot};
 
@@ -18,9 +20,10 @@ impl Snapshot {
     /// Read one agents response from an explicitly supplied local API address.
     ///
     /// This blocks for at most three seconds and belongs on an I/O worker.
-    /// It reads no configuration or credentials itself. Only HTTP loopback
-    /// addresses are accepted; redirects and proxies are disabled. `key`, when
-    /// nonempty, is sent only as the validated endpoint's bearer token. Every
+    /// It reads no configuration or credentials itself. Credentials require a
+    /// `unix:/absolute/socket` endpoint with verified ownership and peer identity.
+    /// Anonymous loopback HTTP reads remain supported; redirects and proxies are
+    /// disabled. Every
     /// failure marks the existing snapshot stale with the same fixed diagnostic.
     pub fn fetch(&mut self, url: &str, key: &str) {
         match get(url, "/api/agents", key, RESPONSE_LIMIT) {
@@ -71,6 +74,20 @@ fn fetch_inner(
     key: &str,
     limit: usize,
 ) -> Option<Result<Vec<u8>, Option<u16>>> {
+    if let Some(socket) = url.strip_prefix("unix:") {
+        return Some(local::request(
+            socket,
+            path,
+            key,
+            None,
+            limit,
+            Duration::from_secs(3),
+        ));
+    }
+    // A loopback TCP listener has no authenticated owner. Never send a key there.
+    if !key.is_empty() {
+        return None;
+    }
     let uri = endpoint(url, path)?;
     let client = CLIENT.with(|cached| {
         let mut cached = cached.borrow_mut();
@@ -81,12 +98,7 @@ fn fetch_inner(
     })?;
     // Set the request's total deadline, including the response body, rather
     // than only a timeout renewed for each blocking read.
-    let mut request = client.get(uri.to_string()).timeout(Duration::from_secs(3));
-    if !key.is_empty() {
-        let mut value = HeaderValue::from_str(&format!("Bearer {key}")).ok()?;
-        value.set_sensitive(true);
-        request = request.header("Authorization", value);
-    }
+    let request = client.get(uri.to_string()).timeout(Duration::from_secs(3));
     let response = request.send().ok()?;
     if !response.status().is_success() {
         return Some(Err(Some(response.status().as_u16())));
@@ -121,18 +133,27 @@ fn client() -> Option<reqwest::blocking::Client> {
 
 /// One explicit feedback submission. Never retry a POST with an unknown outcome.
 pub(super) fn post_message(url: &str, key: &str, body: Vec<u8>) -> Result<Vec<u8>, Option<u16>> {
+    if let Some(socket) = url.strip_prefix("unix:") {
+        let bytes = local::request(
+            socket,
+            "/api/messages",
+            key,
+            Some(body),
+            65536,
+            Duration::from_secs(10),
+        )?;
+        return (bytes.len() <= 65536).then_some(bytes).ok_or(None);
+    }
+    if !key.is_empty() {
+        return Err(None);
+    }
     let uri = endpoint(url, "/api/messages").ok_or(None)?;
     let client = client().ok_or(None)?;
-    let mut request = client
+    let request = client
         .post(uri.to_string())
         .timeout(Duration::from_secs(10))
         .header("Content-Type", "application/json")
         .body(body);
-    if !key.is_empty() {
-        let mut value = HeaderValue::from_str(&format!("Bearer {key}")).map_err(|_| None)?;
-        value.set_sensitive(true);
-        request = request.header("Authorization", value);
-    }
     let response = request.send().map_err(|_| None)?;
     if !response.status().is_success() {
         return Err(Some(response.status().as_u16()));
@@ -153,50 +174,63 @@ pub(super) mod tests {
     use super::*;
     use std::io::{Read, Write};
     use std::net::TcpListener;
+    use std::os::unix::{fs::PermissionsExt, net::UnixListener};
     use std::process::Command;
     use std::thread;
     use std::time::Instant;
 
     const BODY: &str = r#"{"items":[{"name":"worker","state":"busy"}]}"#;
 
+    pub(crate) fn local_listener() -> (tempfile::TempDir, UnixListener, String) {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let path = directory.path().join("api.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let url = format!("unix:{}", path.display());
+        (directory, listener, url)
+    }
+
     #[test]
-    fn consecutive_reads_reuse_the_connection_with_current_credentials() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let url = format!("http://{}", listener.local_addr().unwrap());
-        let worker = thread::spawn(move || {
-            let (mut socket, _) = listener.accept().unwrap();
-            socket
-                .set_read_timeout(Some(Duration::from_secs(3)))
-                .unwrap();
-            for key in ["first", "second"] {
-                let mut request = Vec::new();
-                while !request.ends_with(b"\r\n\r\n") {
-                    let mut byte = [0];
-                    socket.read_exact(&mut byte).unwrap();
-                    request.push(byte[0]);
-                }
-                assert!(
-                    String::from_utf8(request)
-                        .unwrap()
-                        .to_ascii_lowercase()
-                        .contains(&format!("authorization: bearer {key}\r\n"))
-                );
-                socket
-                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}")
-                    .unwrap();
-            }
-        });
-        for key in ["first", "second"] {
-            assert_eq!(get(&url, "/api/agents", key, 20).unwrap(), b"{}");
+    fn credentials_require_a_private_socket_and_never_fall_back_to_tcp() {
+        let tcp = TcpListener::bind("127.0.0.1:0").unwrap();
+        tcp.set_nonblocking(true).unwrap();
+        let url = format!("http://{}", tcp.local_addr().unwrap());
+        assert!(get(&url, "/api/agents", "secret", 20).is_none());
+        assert!(post_message(&url, "secret", vec![]).is_err());
+        assert_eq!(
+            tcp.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        let (directory, listener, url) = local_listener();
+        listener.set_nonblocking(true).unwrap();
+        for (path, mode) in [
+            (directory.path().join("api.sock"), 0o666),
+            (directory.path().to_owned(), 0o755),
+        ] {
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+            assert!(get(&url, "/api/agents", "secret", 20).is_none());
+            assert_eq!(
+                listener.accept().unwrap_err().kind(),
+                std::io::ErrorKind::WouldBlock
+            );
+            std::fs::set_permissions(
+                &path,
+                std::fs::Permissions::from_mode(if path == directory.path() {
+                    0o700
+                } else {
+                    0o600
+                }),
+            )
+            .unwrap();
         }
-        worker.join().unwrap();
     }
 
     pub(crate) fn server(reply: String, pause: Duration) -> (String, thread::JoinHandle<String>) {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let url = format!("http://{}", listener.local_addr().unwrap());
+        let (directory, listener, url) = local_listener();
         listener.set_nonblocking(true).unwrap();
         let thread = thread::spawn(move || {
+            let _directory = directory;
             let deadline = Instant::now() + Duration::from_secs(10);
             let mut socket = loop {
                 match listener.accept() {
@@ -281,9 +315,9 @@ pub(super) mod tests {
     fn reads_are_bounded_and_failures_preserve_stale_metadata_until_recovery() {
         let mut snapshot = Snapshot::default();
         let (url, worker) = server(ok(BODY), Duration::ZERO);
-        snapshot.fetch(&format!("{url}/prefix/"), "fixture-token");
+        snapshot.fetch(&url, "fixture-token");
         let request = worker.join().unwrap().to_ascii_lowercase();
-        assert!(request.starts_with("get /prefix/api/agents http/1.1\r\n"));
+        assert!(request.starts_with("get /api/agents http/1.1\r\n"));
         assert!(request.contains("authorization: bearer fixture-token\r\n"));
         assert_eq!(snapshot.states["worker"], "busy");
 
@@ -392,6 +426,8 @@ pub(super) mod tests {
         static LOGS: Logs = Logs(std::sync::Mutex::new(String::new()));
         log::set_logger(&LOGS).unwrap();
         log::set_max_level(log::LevelFilter::Trace);
+        // The Unix client may emit no logs; prove the capture is active anyway.
+        log::trace!("fixture log capture active");
         let mut snapshot = Snapshot::default();
         snapshot.fetch(&url, "fixture-token-ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ");
         assert!(snapshot.error.is_none());

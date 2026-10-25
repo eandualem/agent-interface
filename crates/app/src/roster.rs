@@ -263,6 +263,7 @@ mod tests {
                 "--nocapture",
             ])
             .env("VIEW_POLL_FIXTURE_DIR", directory.path())
+            .env_remove("BACKBONE_SOCKET_PATH")
             .env("BACKBONE_API_KEY", "")
             .env(
                 "BACKBONE_PORT",
@@ -389,8 +390,12 @@ mod tests {
 
     #[test]
     fn polling_rereads_configuration_coalesces_failures_and_recovers() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port().to_string();
+        use std::os::unix::{fs::PermissionsExt, net::UnixListener};
+        let socket_directory = tempfile::tempdir().unwrap();
+        fs::set_permissions(socket_directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let socket_path = socket_directory.path().join("api.sock");
+        let listener = UnixListener::bind(&socket_path).unwrap();
+        fs::set_permissions(&socket_path, fs::Permissions::from_mode(0o600)).unwrap();
         listener.set_nonblocking(true).unwrap();
         let server = thread::spawn(move || {
             let mut requests = Vec::new();
@@ -444,7 +449,7 @@ mod tests {
             ])
             .env("ROSTER_POLL_FIXTURE_DIR", directory.path())
             .env("BACKBONE_API_KEY", "")
-            .env("BACKBONE_PORT", port)
+            .env("BACKBONE_SOCKET_PATH", &socket_path)
             .status()
             .unwrap();
         assert!(status.success());

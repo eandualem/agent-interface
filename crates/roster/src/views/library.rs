@@ -8,7 +8,7 @@
 //! keeps its last data and says it is stale.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     time::{Duration, Instant},
 };
 
@@ -132,21 +132,43 @@ pub struct Place {
 }
 
 impl Place {
-    fn add(places: &mut Vec<Place>, label: &str, directory: &str, skill: &LocalSkill) {
-        let at = match places.iter().position(|place| place.directory == directory) {
-            Some(at) => at,
-            None => {
-                places.push(Place {
-                    label: label.to_owned(),
-                    directory: directory.to_owned(),
-                    skills: Vec::new(),
-                });
-                places.len() - 1
-            }
-        };
-        let place = &mut places[at];
-        if !place.skills.iter().any(|known| known.path == skill.path) {
-            place.skills.push(skill.clone());
+    fn index(places: &[Place]) -> BTreeMap<String, (usize, BTreeSet<String>)> {
+        places
+            .iter()
+            .enumerate()
+            .map(|(at, place)| {
+                (
+                    place.directory.clone(),
+                    (
+                        at,
+                        place
+                            .skills
+                            .iter()
+                            .map(|skill| skill.path.clone())
+                            .collect(),
+                    ),
+                )
+            })
+            .collect()
+    }
+
+    fn add(
+        places: &mut Vec<Place>,
+        index: &mut BTreeMap<String, (usize, BTreeSet<String>)>,
+        label: &str,
+        directory: &str,
+        skill: &LocalSkill,
+    ) {
+        let (at, paths) = index.entry(directory.to_owned()).or_insert_with(|| {
+            places.push(Place {
+                label: label.to_owned(),
+                directory: directory.to_owned(),
+                skills: Vec::new(),
+            });
+            (places.len() - 1, BTreeSet::new())
+        });
+        if paths.insert(skill.path.clone()) {
+            places[*at].skills.push(skill.clone());
         }
     }
 }
@@ -197,6 +219,8 @@ impl SkillLibrary {
     }
 
     fn merge(&mut self, agent: &Member, loadout: &Loadout) {
+        let mut repositories = Place::index(&self.repositories);
+        let mut user = Place::index(&self.user);
         for skill in &loadout.repository {
             let project = project_of(&skill.path);
             let label = if agent.repo.is_empty() {
@@ -204,7 +228,13 @@ impl SkillLibrary {
             } else {
                 agent.repo.clone()
             };
-            Place::add(&mut self.repositories, &label, &project, skill);
+            Place::add(
+                &mut self.repositories,
+                &mut repositories,
+                &label,
+                &project,
+                skill,
+            );
         }
         for skill in &loadout.user {
             let directory = loadout
@@ -213,7 +243,7 @@ impl SkillLibrary {
                 .find(|directory| skill.path.starts_with(directory.as_str()))
                 .cloned()
                 .unwrap_or_else(|| parent(&skill.path));
-            Place::add(&mut self.user, &agent.runtime, &directory, skill);
+            Place::add(&mut self.user, &mut user, &agent.runtime, &directory, skill);
         }
     }
 }
@@ -270,7 +300,42 @@ impl PolicyLibrary {
         if let Some(error) = failure.filter(|_| briefs.is_empty()) {
             return Err(error);
         }
-        Ok(Self::gather(&briefs, agents))
+        if !super::bounded_groups(
+            briefs
+                .iter()
+                .flat_map(|brief| &brief.sources)
+                .map(|source| {
+                    (
+                        source.scope.split(", ").count(),
+                        source.name.len()
+                            + source.path.len()
+                            + source.scope.len()
+                            + source.text.as_ref().map_or(0, |text| text.len()),
+                    )
+                }),
+        ) {
+            return Err(super::UNREADABLE);
+        }
+        let library = Self::gather(&briefs, agents);
+        // Merging scopes across agents can enlarge each displayed copy too.
+        let layers = library
+            .base
+            .iter()
+            .chain(&library.global)
+            .chain(library.tags.iter().flat_map(|(_, sources)| sources))
+            .chain(&library.swarm);
+        if !super::bounded_groups(layers.map(|source| {
+            (
+                1,
+                source.name.len()
+                    + source.path.len()
+                    + source.scope.len()
+                    + source.text.as_ref().map_or(0, |text| text.len()),
+            )
+        })) {
+            return Err(super::UNREADABLE);
+        }
+        Ok(library)
     }
 
     fn gather(briefs: &[Instructions], agents: &[Member]) -> Self {
@@ -306,16 +371,21 @@ impl PolicyLibrary {
         }
         library.tags = tags.into_iter().collect();
         // A file can reach agents in several ways; every copy says all of them.
-        let mut scopes: BTreeMap<String, (Vec<String>, bool)> = BTreeMap::new();
+        let mut scopes: BTreeMap<std::sync::Arc<str>, (Vec<String>, BTreeSet<String>, bool)> =
+            BTreeMap::new();
         for source in briefs.iter().flat_map(|brief| &brief.sources) {
-            let (parts, applied) = scopes.entry(source.path.clone()).or_default();
+            let (parts, seen, applied) = scopes.entry(source.path.clone()).or_default();
             for part in source.scope.split(", ") {
-                if !parts.iter().any(|known| known == part) {
+                if seen.insert(part.to_owned()) {
                     parts.push(part.to_owned());
                 }
             }
             *applied |= source.applied;
         }
+        let scopes: BTreeMap<_, (std::sync::Arc<str>, bool)> = scopes
+            .into_iter()
+            .map(|(path, (parts, _, applied))| (path, (parts.join(", ").into(), applied)))
+            .collect();
         let layers = library
             .base
             .iter_mut()
@@ -324,7 +394,7 @@ impl PolicyLibrary {
             .chain(&mut library.swarm);
         for source in layers {
             if let Some((parts, applied)) = scopes.get(&source.path) {
-                source.scope = parts.join(", ");
+                source.scope = parts.clone();
                 source.applied = *applied;
             }
         }
@@ -427,11 +497,13 @@ impl TagLibrary {
     /// One card per tag: `all` first, then every other tag seen on an agent,
     /// a skill or a policy, alphabetically.
     pub fn cards(&self) -> Vec<TagCard> {
+        let by_tag = self.store.by_tag();
+        let carriers = tag_carriers(&self.agents);
         let skills = |tag: &str| -> Vec<String> {
-            self.store
-                .items
-                .iter()
-                .filter(|skill| skill.tags.iter().any(|t| t == tag))
+            by_tag
+                .get(tag)
+                .into_iter()
+                .flatten()
                 .map(|skill| skill.name.clone())
                 .collect()
         };
@@ -457,11 +529,7 @@ impl TagLibrary {
         for tag in names {
             cards.push(TagCard {
                 tag: tag.to_owned(),
-                carriers: self
-                    .agents
-                    .iter()
-                    .filter(|agent| agent.tags.iter().any(|t| t == tag))
-                    .count(),
+                carriers: carriers.get(tag).copied().unwrap_or(0),
                 skills: skills(tag),
                 policies: self.tag_policy.get(tag).cloned().unwrap_or_default(),
             });
@@ -487,6 +555,22 @@ impl TagLibrary {
     }
 }
 
+/// Count each agent once per tag for library grouping.
+pub fn tag_carriers(agents: &[Member]) -> BTreeMap<&str, usize> {
+    let mut counts = BTreeMap::new();
+    for agent in agents {
+        for tag in agent
+            .tags
+            .iter()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>()
+        {
+            *counts.entry(tag).or_default() += 1;
+        }
+    }
+    counts
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -494,10 +578,10 @@ mod tests {
     fn source(name: &str, scope: &str) -> Source {
         Source {
             name: name.into(),
-            path: format!("/t/{name}.md"),
+            path: format!("/t/{name}.md").into(),
             scope: scope.into(),
             applied: true,
-            text: Some(format!("# {name}")),
+            text: Some(format!("# {name}").into()),
         }
     }
 
@@ -562,7 +646,10 @@ mod tests {
         ];
         let library = PolicyLibrary::gather(&[member, coder, auditor], &agents);
         let names = |sources: &[Source]| -> Vec<String> {
-            sources.iter().map(|source| source.name.clone()).collect()
+            sources
+                .iter()
+                .map(|source| source.name.to_string())
+                .collect()
         };
         assert_eq!(names(&library.base), ["base"]);
         assert_eq!(names(&library.global), ["collaboration", "continuity"]);
@@ -572,10 +659,32 @@ mod tests {
         assert_eq!(names(&library.tags[0].1), ["minimal-change", "review"]);
         assert_eq!(names(&library.tags[1].1), ["review"]);
         // A file that arrives by two tags says both wherever it is listed.
-        assert_eq!(library.tags[0].1[1].scope, "tag:coder, tag:security");
-        assert_eq!(library.tags[1].1[0].scope, "tag:coder, tag:security");
+        assert_eq!(
+            library.tags[0].1[1].scope.as_ref(),
+            "tag:coder, tag:security"
+        );
+        assert_eq!(
+            library.tags[1].1[0].scope.as_ref(),
+            "tag:coder, tag:security"
+        );
         assert_eq!(library.carriers.get("coder"), Some(&1));
         assert_eq!(library.all().len(), 6);
+    }
+
+    #[test]
+    fn policy_content_and_merged_scopes_are_shared_across_tag_groups() {
+        let brief = Instructions {
+            sources: vec![source("policy", "tag:one, tag:two")],
+            ..Instructions::default()
+        };
+        let library = PolicyLibrary::gather(&[brief], &[]);
+        let first = &library.tags[0].1[0];
+        let second = &library.tags[1].1[0];
+        assert!(std::sync::Arc::ptr_eq(
+            first.text.as_ref().unwrap(),
+            second.text.as_ref().unwrap()
+        ));
+        assert!(std::sync::Arc::ptr_eq(&first.scope, &second.scope));
     }
 
     #[test]

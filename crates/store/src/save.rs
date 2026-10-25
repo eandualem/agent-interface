@@ -21,6 +21,13 @@ impl Store {
         let store = Self { connection, path };
         store
             .connection
+            .set_limit(
+                rusqlite::limits::Limit::SQLITE_LIMIT_LENGTH,
+                (crate::MAX_RECORD_BYTES + 1024) as i32,
+            )
+            .map_err(|error| store.failure(error))?;
+        store
+            .connection
             .busy_timeout(Duration::from_secs(5))
             .map_err(|error| store.failure(error))?;
         // Bundled SQLite enables this by default; Python's connection does not.
@@ -96,12 +103,30 @@ impl Store {
         let extra_objects: bool = self
             .connection
             .query_row(
-                "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE tbl_name='terminal_layout' AND type IN ('trigger', 'index'))",
+                "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE tbl_name='terminal_layout' COLLATE NOCASE AND type IN ('trigger', 'index'))",
                 [],
                 |row| row.get(0),
             )
             .map_err(|error| self.failure(error))?;
-        if columns != expected || extra_objects {
+        let definition: String = self
+            .connection
+            .query_row(
+                "SELECT sql FROM sqlite_schema WHERE type='table' AND name='terminal_layout'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|error| self.failure(error))?;
+        // Column metadata cannot reveal executable CHECK constraints. Only the
+        // supported table declaration may be written; preserve other libraries.
+        let canonical = definition
+            .chars()
+            .filter(|c| !c.is_ascii_whitespace())
+            .collect::<String>()
+            .to_ascii_lowercase();
+        if columns != expected
+            || extra_objects
+            || canonical != "createtableterminal_layout(idintegerprimarykey,valuetext)"
+        {
             return Err(self
                 .failure("transactional saving requires the initialized version-2 table schema"));
         }
