@@ -398,9 +398,21 @@ fn stage_drag_image(bytes: &[u8]) -> anyhow::Result<(ExternalPaths, tempfile::Te
     limits.max_image_width = Some(16384);
     limits.max_image_height = Some(16384);
     limits.max_alloc = Some(256 * 1024 * 1024);
-    reader.limits(limits);
+    reader.limits(limits.clone());
     let mut decoder = reader.into_decoder()?;
     let orientation = decoder.orientation()?;
+    limits.reserve(decoder.total_bytes())?;
+    if matches!(
+        orientation,
+        image::metadata::Orientation::Rotate90
+            | image::metadata::Orientation::Rotate270
+            | image::metadata::Orientation::Rotate90FlipH
+            | image::metadata::Orientation::Rotate270FlipH
+    ) {
+        // Quarter turns allocate a second pixel buffer instead of working in place.
+        limits.reserve(decoder.total_bytes())?;
+    }
+    decoder.set_limits(limits)?;
     let mut decoded = image::DynamicImage::from_decoder(decoder)?;
     decoded.apply_orientation(orientation);
     decoded.save_with_format(&path, image::ImageFormat::Png)?;
@@ -480,6 +492,12 @@ mod tests {
                 1, 0, 0x12, 1, 3, 0, 1, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0,
             ],
         );
+        let mut oversized = bytes.clone();
+        let frame = oversized.windows(2).position(|pair| pair == [0xff, 0xc0]).unwrap();
+        // 8192x8192 RGB fits once, but rotation needs a second buffer.
+        oversized[frame + 5..frame + 9].copy_from_slice(&[0x20, 0, 0x20, 0]);
+        let error = stage_drag_image(&oversized).unwrap_err();
+        assert!(matches!(error.downcast_ref::<image::ImageError>(), Some(image::ImageError::Limits(_))));
         std::fs::write(&path, bytes).unwrap();
         let pasteboard = Pasteboard::unique();
         unsafe { simulate_external_file_copy(&pasteboard, &[path.to_str().unwrap()]) };
