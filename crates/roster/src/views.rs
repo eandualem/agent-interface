@@ -16,8 +16,11 @@ use serde_json::value::RawValue;
 
 use crate::{configuration::configured, transport, valid_agent, within_depth};
 
+mod documents;
 mod library;
 mod reports;
+
+pub use documents::{DOCUMENT_HTML_LIMIT, DocumentMetadata, DocumentRevision};
 
 pub use reports::{ReportContent, ReportItem, ReportPage, ReportQuery, ReportSection};
 
@@ -48,6 +51,8 @@ pub enum Request {
     Reports(ReportQuery, Option<String>),
     /// Refresh an open answer independently of its former list page.
     Response(u64),
+    /// One explicitly requested durable HTML revision. Never polled.
+    Document(u64),
     /// Every skill an agent can load, team-wide.
     Skills,
     /// The layers a brief is built from, team-wide.
@@ -115,6 +120,8 @@ pub enum Data {
     Activity(Activity),
     /// See [`ReportPage`].
     Reports(ReportPage),
+    /// See [`DocumentRevision`].
+    Document(DocumentRevision),
     /// See [`SkillLibrary`].
     Skills(Box<SkillLibrary>),
     /// See [`PolicyLibrary`].
@@ -191,6 +198,7 @@ pub fn read(
         Request::Reports(query, agent) => {
             Ok(Data::Reports(reports::read(&api, query, agent.as_deref())?))
         }
+        Request::Document(id) => Ok(Data::Document(documents::read(&api, *id)?)),
         Request::Response(id) => Ok(Data::Reports(reports::read_response(&api, *id)?)),
         Request::Activity => {
             // History is an addition: when it cannot be read, the timeline

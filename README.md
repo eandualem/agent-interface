@@ -19,6 +19,8 @@ every process running; Agent Interface is the desktop around them.
 - Open Team, Activity, Usage, Skills, Policies and Tags views beside your
   terminals, or inspect a single agent, through the built-in
   [Agent Backbone](https://github.com/eandualem/agent-backbone) integration.
+- Revisit reports, answers and durable rich documents in **Reports & updates**
+  through Agent Backbone. Rich HTML rendering currently requires macOS.
 - Detach a session to reuse its pane, or close a tab while tmux manages its sessions.
 
 The app draws terminals natively and needs no Python runtime. It can open
@@ -33,7 +35,9 @@ for compatibility. The product, macOS app and repository are **Agent Interface**
 Agent Interface runs on macOS and Linux and needs tmux 3.3 or newer. On macOS,
 install tmux with `brew install tmux`.
 
-Install the latest release:
+Native packages have not been published yet. Use the
+[source build instructions](CONTRIBUTING.md#set-up) or a local archive. Once a
+release is available, install it with:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/eandualem/agent-interface/main/install.sh | sh

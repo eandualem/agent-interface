@@ -28,6 +28,7 @@ mod activity;
 mod agent;
 mod artifact_web;
 mod artifacts;
+mod documents;
 mod markdown;
 mod policies;
 mod reader;
@@ -140,6 +141,7 @@ pub(super) struct ViewPane {
     /// The tag whose agents the tags view lists in place of its cards.
     carriers_of: Option<String>,
     reports: reports::State,
+    documents: documents::State,
     artifacts: Option<Entity<artifacts::ArtifactPane>>,
     _updates: Option<Task<()>>,
     _search: Vec<Subscription>,
@@ -149,6 +151,9 @@ impl EventEmitter<ViewEvent> for ViewPane {}
 
 impl ViewPane {
     pub fn set_visible(&self, visible: bool, cx: &gpui::App) {
+        if !visible {
+            self.documents.surface.borrow_mut().clear();
+        }
         if let Some(source) = &self.source {
             source.set_active(visible);
         }
@@ -158,12 +163,14 @@ impl ViewPane {
     }
 
     pub fn occlude_web(&self, occluded: bool, cx: &gpui::App) {
+        self.documents.surface.borrow_mut().occlude(occluded);
         if let Some(artifacts) = &self.artifacts {
             artifacts.read(cx).occlude(occluded);
         }
     }
 
     pub fn focus_native(&self, cx: &gpui::App) {
+        self.documents.surface.borrow().focus_parent();
         if let Some(artifacts) = &self.artifacts {
             artifacts.read(cx).focus_parent();
         }
@@ -196,6 +203,7 @@ impl ViewPane {
             raw: false,
             carriers_of: None,
             reports: reports::State::default(),
+            documents: documents::State::default(),
             artifacts: None,
             _updates: None,
             _search: Vec::new(),
@@ -269,6 +277,9 @@ impl ViewPane {
                         }
                         match update {
                             Ok(mut data) => {
+                                if let Data::Document(document) = &data {
+                                    pane.documents.loaded = Some(document.clone());
+                                }
                                 if let Data::Reports(page) = &data {
                                     pane.reports.observe(page);
                                 }
@@ -300,6 +311,9 @@ impl ViewPane {
             ViewKind::Policies => Request::Policies,
             ViewKind::Tags => Request::Tags,
             ViewKind::Reports => match &self.reports.open {
+                Some(item) if matches!(item.content, views::ReportContent::Document(_)) => {
+                    Request::Document(item.id)
+                }
                 Some(item) if matches!(item.content, views::ReportContent::Response { .. }) => {
                     Request::Response(item.id)
                 }
@@ -422,6 +436,7 @@ impl ViewPane {
             return false;
         }
         if self.reports.open.is_some() && key.key == "escape" {
+            self.documents.clear();
             self.reports.open = None;
             self.refetch(true, cx);
             return true;
@@ -474,42 +489,47 @@ impl Render for ViewPane {
         let about = about(self.view.kind);
         // Lent to the body for this frame and put back below.
         let data = self.data.take();
-        let body = match &data {
-            None => {
-                let state = match self.error {
-                    Some(error) => ui::empty_state(
-                        ui::empty_tile("unplug", c.selected, c.muted),
-                        "No data",
-                        error,
-                    ),
-                    None => ui::empty_state(
-                        ui::empty_tile(about.icon, c.selected, c.muted),
-                        "Reading Agent Backbone…",
-                        "",
-                    ),
-                };
-                div()
-                    .size_full()
-                    .flex()
-                    .flex_col()
-                    .child(ui::view_header(about.icon, ViewPane::title(&self.view)))
-                    .when(self.view.kind == ViewKind::Usage, |el| {
-                        el.child(usage::toolbar(self, cx))
-                    })
-                    .when(self.view.kind == ViewKind::Reports, |el| {
-                        el.child(reports::refresh_toolbar(self, cx))
-                    })
-                    .child(state)
-                    .into_any_element()
+        let body = if documents::selected(self).is_some() {
+            documents::reader(self, cx)
+        } else {
+            match &data {
+                None => {
+                    let state = match self.error {
+                        Some(error) => ui::empty_state(
+                            ui::empty_tile("unplug", c.selected, c.muted),
+                            "No data",
+                            error,
+                        ),
+                        None => ui::empty_state(
+                            ui::empty_tile(about.icon, c.selected, c.muted),
+                            "Reading Agent Backbone…",
+                            "",
+                        ),
+                    };
+                    div()
+                        .size_full()
+                        .flex()
+                        .flex_col()
+                        .child(ui::view_header(about.icon, ViewPane::title(&self.view)))
+                        .when(self.view.kind == ViewKind::Usage, |el| {
+                            el.child(usage::toolbar(self, cx))
+                        })
+                        .when(self.view.kind == ViewKind::Reports, |el| {
+                            el.child(reports::refresh_toolbar(self, cx))
+                        })
+                        .child(state)
+                        .into_any_element()
+                }
+                Some(Data::Team(data)) => team::body(self, data, cx),
+                Some(Data::Usage(data)) => usage::body(self, data, cx),
+                Some(Data::Activity(data)) => activity::body(self, data, cx),
+                Some(Data::Skills(data)) => skills::body(self, data, cx),
+                Some(Data::Agent(data)) => agent::body(self, data, cx),
+                Some(Data::Policies(data)) => policies::body(self, data, cx),
+                Some(Data::Tags(data)) => tags::body(self, data, cx),
+                Some(Data::Reports(data)) => reports::body(self, data, cx),
+                Some(Data::Document(_)) => unreachable!("document data has a selected reader"),
             }
-            Some(Data::Team(data)) => team::body(self, data, cx),
-            Some(Data::Usage(data)) => usage::body(self, data, cx),
-            Some(Data::Activity(data)) => activity::body(self, data, cx),
-            Some(Data::Skills(data)) => skills::body(self, data, cx),
-            Some(Data::Agent(data)) => agent::body(self, data, cx),
-            Some(Data::Policies(data)) => policies::body(self, data, cx),
-            Some(Data::Tags(data)) => tags::body(self, data, cx),
-            Some(Data::Reports(data)) => reports::body(self, data, cx),
         };
         self.data = data;
         div()
