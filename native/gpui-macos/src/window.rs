@@ -13,15 +13,14 @@ use block2::RcBlock;
 use cocoa::{
     appkit::{
         NSApplication, NSBackingStoreBuffered, NSColor, NSEvent, NSEventModifierFlags, NSEventType,
-        NSFilenamesPboardType, NSPasteboard, NSRequestUserAttentionType, NSScreen, NSView,
-        NSViewHeightSizable, NSViewWidthSizable, NSVisualEffectBlendingMode,
-        NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView, NSWindow,
-        NSWindowCollectionBehavior, NSWindowOcclusionState, NSWindowOrderingMode,
-        NSWindowStyleMask, NSWindowTitleVisibility,
+        NSFilenamesPboardType, NSRequestUserAttentionType, NSScreen, NSView, NSViewHeightSizable,
+        NSViewWidthSizable, NSVisualEffectBlendingMode, NSVisualEffectMaterial,
+        NSVisualEffectState, NSVisualEffectView, NSWindow, NSWindowCollectionBehavior,
+        NSWindowOcclusionState, NSWindowOrderingMode, NSWindowStyleMask, NSWindowTitleVisibility,
     },
     base::{id, nil},
     foundation::{
-        NSArray, NSAutoreleasePool, NSData, NSDictionary, NSFastEnumeration, NSInteger, NSNotFound,
+        NSArray, NSAutoreleasePool, NSData, NSDictionary, NSInteger, NSNotFound,
         NSOperatingSystemVersion, NSPoint, NSProcessInfo, NSRect, NSSize, NSString, NSUInteger,
         NSUserDefaults,
     },
@@ -67,14 +66,12 @@ use objc2_app_kit::{
 use objc2_foundation::{NSPoint as Objc2NSPoint, NSRect as Objc2NSRect, NSURL};
 use parking_lot::Mutex;
 use raw_window_handle as rwh;
-use smallvec::SmallVec;
 use std::{
     cell::Cell,
     ffi::{CStr, CString, c_void},
     mem,
     ops::Range,
     os::unix::ffi::OsStrExt,
-    path::PathBuf,
     ptr::{self, NonNull},
     rc::Rc,
     sync::{
@@ -731,6 +728,7 @@ struct MacWindowState {
     keystroke_for_do_command: Option<Keystroke>,
     do_command_handled: Option<bool>,
     external_files_dragged: bool,
+    dropped_image: Option<tempfile::TempDir>,
     // Whether the next left-mouse click is also the focusing click.
     first_mouse: bool,
     // When true, the whole content view is reported as app-owned titlebar content via
@@ -1116,7 +1114,13 @@ impl MacWindow {
             let () = msg_send![
                 native_window,
                 registerForDraggedTypes:
-                    NSArray::arrayWithObject(nil, NSFilenamesPboardType)
+                    NSArray::arrayWithObjects(nil, &[
+                        NSFilenamesPboardType,
+                        ns_string("public.file-url"),
+                        ns_string("public.png"),
+                        ns_string("public.tiff"),
+                        ns_string("public.jpeg"),
+                    ])
             ];
             let () = msg_send![
                 native_window,
@@ -1173,6 +1177,7 @@ impl MacWindow {
                 keystroke_for_do_command: None,
                 do_command_handled: None,
                 external_files_dragged: false,
+                dropped_image: None,
                 first_mouse: false,
                 app_owns_titlebar_drag,
                 fullscreen_restore_bounds: Bounds::default(),
@@ -3652,7 +3657,11 @@ extern "C" fn dragging_entered(this: &Object, _: Sel, dragging_info: id) -> NSDr
     let is_source_window = is_drag_from_this_window(this, dragging_info);
     let window_state = unsafe { get_window_state(this) };
     let position = drag_event_position(&window_state, dragging_info);
-    let paths = external_paths_from_event(dragging_info);
+    let prepared = external_paths_from_event(dragging_info);
+    let paths = prepared.map(|(paths, image)| {
+        window_state.lock().dropped_image = image;
+        paths
+    });
     if let Some(event) = paths.map(|paths| FileDropEvent::Entered { position, paths })
         && send_file_drop_event(window_state, event)
     {
@@ -3681,30 +3690,38 @@ extern "C" fn dragging_updated(this: &Object, _: Sel, dragging_info: id) -> NSDr
 
 extern "C" fn dragging_exited(this: &Object, _: Sel, _: id) {
     let window_state = unsafe { get_window_state(this) };
+    window_state.lock().dropped_image = None;
     send_file_drop_event(window_state, FileDropEvent::Exited);
 }
 
 extern "C" fn perform_drag_operation(this: &Object, _: Sel, dragging_info: id) -> BOOL {
     let window_state = unsafe { get_window_state(this) };
     let position = drag_event_position(&window_state, dragging_info);
-    send_file_drop_event(window_state, FileDropEvent::Submit { position }).to_objc()
+    let accepted = send_file_drop_event(window_state.clone(), FileDropEvent::Submit { position });
+    if let Some(image) = window_state.lock().dropped_image.take()
+        && accepted
+    {
+        // The receiving terminal reads the file after this callback returns.
+        // Let the OS temporary-directory lifecycle retain successful drops.
+        let _ = image.keep();
+    }
+    accepted.to_objc()
 }
 
-fn external_paths_from_event(dragging_info: *mut Object) -> Option<ExternalPaths> {
-    let mut paths = SmallVec::new();
+fn external_paths_from_event(
+    dragging_info: *mut Object,
+) -> Option<(ExternalPaths, Option<tempfile::TempDir>)> {
     let pasteboard: id = unsafe { msg_send![dragging_info, draggingPasteboard] };
-    let filenames = unsafe { NSPasteboard::propertyListForType(pasteboard, NSFilenamesPboardType) };
-    if filenames == nil {
+    if pasteboard == nil {
         return None;
     }
-    for file in unsafe { filenames.iter() } {
-        let path = unsafe {
-            let f = NSString::UTF8String(file);
-            CStr::from_ptr(f).to_string_lossy().into_owned()
-        };
-        paths.push(PathBuf::from(path))
+    let pasteboard = unsafe { crate::pasteboard::Pasteboard::new(pasteboard) };
+    if let Some(paths) = pasteboard.read_paths() {
+        return Some((paths, None));
     }
-    Some(ExternalPaths(paths))
+    pasteboard
+        .drag_image()
+        .map(|(paths, image)| (paths, Some(image)))
 }
 
 extern "C" fn conclude_drag_operation(this: &Object, _: Sel, _: id) {
@@ -3798,6 +3815,7 @@ fn send_file_drop_event(
     window_state: Arc<Mutex<MacWindowState>>,
     file_drop_event: FileDropEvent,
 ) -> bool {
+    let submitted = matches!(&file_drop_event, FileDropEvent::Submit { .. });
     let external_files_dragged = match file_drop_event {
         FileDropEvent::Entered { .. } => Some(true),
         FileDropEvent::Exited | FileDropEvent::Ended => Some(false),
@@ -3807,13 +3825,13 @@ fn send_file_drop_event(
     let mut lock = window_state.lock();
     if let Some(mut callback) = lock.event_callback.take() {
         drop(lock);
-        callback(PlatformInput::FileDrop(file_drop_event));
+        let result = callback(PlatformInput::FileDrop(file_drop_event));
         let mut lock = window_state.lock();
         lock.event_callback = Some(callback);
         if let Some(external_files_dragged) = external_files_dragged {
             lock.external_files_dragged = external_files_dragged;
         }
-        true
+        !submitted || !result.propagate
     } else {
         false
     }

@@ -153,6 +153,7 @@ pub(super) struct LiveTerminal {
 pub(super) struct Detach;
 
 impl gpui::EventEmitter<Detach> for LiveTerminal {}
+impl gpui::EventEmitter<crate::view::Focus> for LiveTerminal {}
 
 impl LiveTerminal {
     pub fn hide(&mut self, cx: &mut Context<Self>) {
@@ -326,6 +327,10 @@ impl LiveTerminal {
                                 cx.notify();
                             },
                         ));
+                        cx.subscribe(&view, |_, _, _: &crate::view::Focus, cx| {
+                            cx.emit(crate::view::Focus);
+                        })
+                        .detach();
                         terminal.view = Some(view);
                     }
                     Err(error) => terminal.error = Some(error),

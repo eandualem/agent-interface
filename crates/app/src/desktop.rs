@@ -507,6 +507,8 @@ struct Browser {
     pending_creation: Option<(Create, String)>,
     creation_from: Option<Selection>,
     tabs_scroll: gpui::ScrollHandle,
+    workspaces_scroll: gpui::ScrollHandle,
+    shown_workspace: Option<(String, gpui::Pixels)>,
     shell_environment: Option<Result<tmux_workspaces_tmux::shells::Environment, String>>,
     shell_after_save: Option<Leaf>,
     shell_to_open: Option<Leaf>,
@@ -1809,6 +1811,27 @@ impl Render for Browser {
                     },
                 )
                 .detach();
+                cx.subscribe(
+                    &terminal,
+                    |browser, terminal, _: &crate::view::Focus, cx| {
+                        let target = &terminal.read(cx).target;
+                        if let Some(layout) = &mut browser.layout
+                            && layout.model().tab().is_some_and(|tab| {
+                                tab.tree
+                                    .leaves()
+                                    .iter()
+                                    .any(|leaf| target.matches_leaf(leaf))
+                            })
+                        {
+                            layout.model_mut().choose_pane(&target.leaf.id);
+                            for (view, _) in browser.views.values() {
+                                view.read(cx).focus_native(cx);
+                            }
+                            cx.notify();
+                        }
+                    },
+                )
+                .detach();
                 self.terminals.insert(leaf.id.clone(), terminal);
             }
         }
@@ -2079,6 +2102,27 @@ impl Render for Browser {
                         cx.notify();
                         return;
                     }
+                    // Escape restores the pane layout before the reader or terminal
+                    // handles it. Open dialogs and menus retain their own Escape above.
+                    if key.key == "escape"
+                        && !key.modifiers.modified()
+                        && (browser
+                            .navigation
+                            .as_ref()
+                            .is_some_and(|focus| focus.is_focused(window))
+                            || browser
+                                .terminals
+                                .values()
+                                .any(|terminal| terminal.read(cx).has_focus(window, cx)))
+                        && let Some(layout) = &mut browser.layout
+                        && layout.model().focus
+                    {
+                        layout.model_mut().focus = false;
+                        browser.pane_drag = None;
+                        cx.stop_propagation();
+                        cx.notify();
+                        return;
+                    }
                     let command = shortcuts::command_for(key);
                     let handled = match command {
                         Some(shortcuts::Command::ClosePane) => {
@@ -2131,7 +2175,7 @@ impl Render for Browser {
                         Some(shortcuts::Command::Jump) => {
                             // Open under the panel's jump field.
                             let t = design::tokens();
-                            let below = t.size.titlebar
+                            let below = browser.sidebar_top(window)
                                 + t.size.workspace_tile
                                 + t.size.workspace_block_padding * 2.0
                                 + t.space.s8

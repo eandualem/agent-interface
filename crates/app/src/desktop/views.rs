@@ -8,7 +8,7 @@
 //! is only read; nothing here changes an agent. Artifacts have their own local
 //! catalog and an isolated system-webview renderer rather than a Backbone worker.
 
-use std::{collections::HashSet, path::PathBuf, time::Duration};
+use std::{cell::RefCell, collections::HashSet, path::PathBuf, time::Duration};
 
 use futures::{StreamExt, channel::mpsc};
 use gpui::{
@@ -33,6 +33,7 @@ mod markdown;
 mod policies;
 mod reader;
 mod reports;
+mod selection;
 mod skills;
 mod tags;
 mod team;
@@ -140,6 +141,7 @@ pub(super) struct ViewPane {
     raw: bool,
     /// The tag whose agents the tags view lists in place of its cards.
     carriers_of: Option<String>,
+    selection: RefCell<selection::Selection>,
     reports: reports::State,
     documents: documents::State,
     artifacts: Option<Entity<artifacts::ArtifactPane>>,
@@ -207,6 +209,7 @@ impl ViewPane {
             open: None,
             raw: false,
             carriers_of: None,
+            selection: RefCell::default(),
             reports: reports::State::default(),
             documents: documents::State::default(),
             artifacts: None,
@@ -438,6 +441,9 @@ impl ViewPane {
     /// Keys a view understands while its pane is selected. Returns whether
     /// `key` was one of them.
     pub fn key(&mut self, key: &gpui::Keystroke, cx: &mut Context<Self>) -> bool {
+        if self.selection.borrow_mut().key(key, cx) {
+            return true;
+        }
         if key.modifiers.modified() {
             return false;
         }
@@ -494,6 +500,7 @@ impl Render for ViewPane {
         let (t, c) = (tokens(), colors());
         let about = about(self.view.kind);
         // Lent to the body for this frame and put back below.
+        self.selection.borrow_mut().begin();
         let data = self.data.take();
         let body = if documents::selected(self).is_some() {
             documents::reader(self, cx)
@@ -538,12 +545,15 @@ impl Render for ViewPane {
             }
         };
         self.data = data;
+        self.selection.borrow_mut().finish();
         div()
+            .relative()
             .size_full()
             .flex()
             .flex_col()
             .bg(c.surface)
             .child(div().flex_1().min_h_0().flex().flex_col().child(body))
+            .child(selection::events(cx))
             .children(
                 self.data
                     .is_some()

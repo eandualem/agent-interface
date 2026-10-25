@@ -10,7 +10,7 @@ use cocoa::{
     base::{id, nil},
     foundation::{NSArray, NSData, NSFastEnumeration, NSString},
 };
-use objc::{msg_send, rc::StrongPtr, runtime::Object, sel, sel_impl};
+use objc::{class, msg_send, rc::StrongPtr, runtime::Object, sel, sel_impl};
 use smallvec::SmallVec;
 use strum::IntoEnumIterator as _;
 
@@ -39,7 +39,8 @@ impl Pasteboard {
         unsafe { Self::new(NSPasteboard::pasteboardWithUniqueName(nil)) }
     }
 
-    unsafe fn new(inner: id) -> Self {
+    /// The caller supplies a live AppKit pasteboard object on the main thread.
+    pub(crate) unsafe fn new(inner: id) -> Self {
         // These constructors return autoreleased objects, but a Pasteboard can
         // outlive the autorelease pool in which it was created.
         Self {
@@ -51,26 +52,12 @@ impl Pasteboard {
 
     pub fn read(&self) -> Option<ClipboardItem> {
         unsafe {
-            // Check for file paths first
-            let filenames = NSPasteboard::propertyListForType(*self.inner, NSFilenamesPboardType);
-            if filenames != nil && NSArray::count(filenames) > 0 {
-                let mut paths = SmallVec::new();
-                for file in filenames.iter() {
-                    let f = NSString::UTF8String(file);
-                    let path = CStr::from_ptr(f).to_string_lossy().into_owned();
-                    paths.push(PathBuf::from(path));
+            if let Some(paths) = self.read_paths() {
+                let mut entries = vec![ClipboardEntry::ExternalPaths(paths)];
+                if let Some(string_item) = self.read_string_from_pasteboard() {
+                    entries.push(string_item);
                 }
-                if !paths.is_empty() {
-                    let mut entries = vec![ClipboardEntry::ExternalPaths(ExternalPaths(paths))];
-
-                    // Also include the string representation so text editors can
-                    // paste the path as text.
-                    if let Some(string_item) = self.read_string_from_pasteboard() {
-                        entries.push(string_item);
-                    }
-
-                    return Some(ClipboardItem { entries });
-                }
+                return Some(ClipboardItem { entries });
             }
 
             // Next, check for a plain string.
@@ -88,6 +75,51 @@ impl Pasteboard {
             }
         }
 
+        None
+    }
+
+    /// File URLs are the current AppKit representation; retain legacy paths too.
+    pub(crate) fn read_paths(&self) -> Option<ExternalPaths> {
+        unsafe {
+            let mut paths = SmallVec::new();
+            let classes = NSArray::arrayWithObject(nil, class!(NSURL) as *const _ as id);
+            let urls: id = msg_send![*self.inner, readObjectsForClasses: classes options: nil];
+            if urls != nil {
+                for url in urls.iter() {
+                    let file: objc::runtime::BOOL = msg_send![url, isFileURL];
+                    if file == objc::runtime::YES {
+                        let path: id = msg_send![url, path];
+                        if path != nil {
+                            let value = CStr::from_ptr(NSString::UTF8String(path));
+                            paths.push(PathBuf::from(value.to_string_lossy().into_owned()));
+                        }
+                    }
+                }
+            }
+            if paths.is_empty() {
+                let filenames =
+                    NSPasteboard::propertyListForType(*self.inner, NSFilenamesPboardType);
+                if filenames != nil {
+                    for file in filenames.iter() {
+                        let value = CStr::from_ptr(NSString::UTF8String(file));
+                        paths.push(PathBuf::from(value.to_string_lossy().into_owned()));
+                    }
+                }
+            }
+            (!paths.is_empty()).then_some(ExternalPaths(paths))
+        }
+    }
+
+    /// A floating screenshot offers image bytes instead of an existing path.
+    /// Stage them only during an explicit drag, in a private temporary directory.
+    pub(crate) fn drag_image(&self) -> Option<(ExternalPaths, tempfile::TempDir)> {
+        for format in [ImageFormat::Png, ImageFormat::Tiff, ImageFormat::Jpeg] {
+            if let Some(item) = self.read_image(format)
+                && let Some(ClipboardEntry::Image(image)) = item.entries.first()
+            {
+                return stage_drag_image(image).ok();
+            }
+        }
         None
     }
 
@@ -329,6 +361,30 @@ impl UTType {
     }
 }
 
+/// Keep a screenshot alive after a successful drop so the terminal program can
+/// read it asynchronously. A cancelled drag drops the directory normally.
+fn stage_drag_image(image: &Image) -> anyhow::Result<(ExternalPaths, tempfile::TempDir)> {
+    anyhow::ensure!(
+        image.bytes.len() <= 64 * 1024 * 1024,
+        "dragged image is too large"
+    );
+    let directory = tempfile::Builder::new()
+        .prefix("tmux-workspaces-drop-")
+        .tempdir()?;
+    let path = directory.path().join("Screenshot.png");
+    let mut reader =
+        image::ImageReader::new(std::io::Cursor::new(&image.bytes)).with_guessed_format()?;
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(16384);
+    limits.max_image_height = Some(16384);
+    limits.max_alloc = Some(256 * 1024 * 1024);
+    reader.limits(limits);
+    reader
+        .decode()?
+        .save_with_format(&path, image::ImageFormat::Png)?;
+    Ok((ExternalPaths([path].into_iter().collect()), directory))
+}
+
 #[cfg(test)]
 mod tests {
     use cocoa::{
@@ -342,6 +398,29 @@ mod tests {
     use objc::rc::autoreleasepool;
 
     use super::*;
+
+    #[test]
+    fn screenshot_drag_stages_png_and_cleans_up_when_cancelled() {
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgba8(2, 3)
+            .write_to(&mut bytes, image::ImageFormat::Tiff)
+            .unwrap();
+        let image = Image {
+            format: ImageFormat::Tiff,
+            bytes: bytes.into_inner(),
+            id: 0,
+        };
+        let (paths, directory) = stage_drag_image(&image).unwrap();
+        let path = paths.0[0].clone();
+        assert_eq!(image::open(&path).unwrap().width(), 2);
+        assert_eq!(path.extension().unwrap(), "png");
+        drop(directory);
+        assert!(!path.exists());
+        let (paths, directory) = stage_drag_image(&image).unwrap();
+        let kept = directory.keep();
+        assert!(paths.0[0].exists());
+        std::fs::remove_dir_all(kept).unwrap();
+    }
 
     unsafe fn simulate_external_file_copy(pasteboard: &Pasteboard, paths: &[&str]) {
         unsafe {

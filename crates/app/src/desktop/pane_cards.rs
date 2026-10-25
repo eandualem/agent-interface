@@ -223,7 +223,14 @@ impl Browser {
                                     event.position.y
                                         < bounds.origin.y + px(tokens().size.pane_header)
                                 });
-                        if in_header {
+                        if in_header && event.click_count == 2 {
+                            browser.pane_drag = None;
+                            if let Some(layout) = &mut browser.layout {
+                                layout.model_mut().focus = !layout.model().focus;
+                            }
+                            cx.stop_propagation();
+                            cx.notify();
+                        } else if in_header {
                             browser.begin_pane_drag(&leaf, event.position);
                         }
                         // A view takes no keys: stop a terminal beside it

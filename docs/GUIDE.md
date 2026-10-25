@@ -28,11 +28,15 @@ workspaces. Command-[ and Command-] cycle panes; add Shift to cycle tabs.
 Command-Option-Left/Right cycle workspaces, Command-Shift-Enter expands or
 restores the selected pane, and Command-B focuses the sidebar. Navigation focuses
 an already connected destination; if it is still connecting, click it when ready.
-Command-V pastes clipboard text (Control-Shift-V on Linux), using
-bracketed paste when the pane requests it. Keys follow the destination pane's
+Command-V pastes clipboard text or copied file paths (Control-Shift-V on Linux),
+using bracketed paste when the pane requests it. Drag files onto a terminal to
+insert their full paths; spaces and quotes in names are preserved. On macOS,
+you can also drag the floating screenshot thumbnail into a terminal. The image
+is saved as a temporary PNG so the program in that terminal can read it. Keys follow the destination pane's
 application cursor and extended-key modes. Paste is limited to 4 MiB per operation.
-**Focus one pane** in tab options toggles the selected pane's view. Scroll over a
-terminal to read its retained history. Shift-Page Up/Down moves a page;
+Double-click a pane header to expand it, then double-click again or press Escape
+to restore the layout. **Focus one pane** in tab options does the same. Open
+menus and dialogs handle Escape first. Scroll over a terminal to read its retained history. Shift-Page Up/Down moves a page;
 Shift-Home/End goes to the oldest output or the live screen. Typing or pasting
 returns to live output. Drag to select visible text; double-click selects a word
 and triple-click selects a row. Command-C copies it (Control-Shift-C on Linux).
@@ -50,9 +54,19 @@ with independent navigation and terminal connections. Closing one leaves the
 other windows open. Command-O (Ctrl+Shift+O on Linux), or **Open another** in
 Settings, chooses another folder containing `layouts.db`.
 
+Text in Skills, policies, agent briefs and report readers supports drag selection,
+double-click word selection, and Command-C to copy (Control-C on Linux).
+Command-A selects the document text (Control-A on Linux). Source text uses the
+same selection behavior.
+
 ## Find work and change appearance
 
 The window follows the Quiet Instrument design ([design language](DESIGN.md)).
+The workspace icons at the bottom scroll horizontally when they do not fit.
+The agents list shows at most nine rows at once, with working and starting agents
+first; scroll to reach the remaining agents. Each row shows the name and its
+status symbol.
+
 The navigation panel on the left shows the current workspace (click it for the
 workspace menu), a **Jump** field (Command-K) that finds tabs, panes, agents and
 commands across every workspace, the tabs with a thumbnail of each layout, and,
