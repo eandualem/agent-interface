@@ -291,7 +291,28 @@ impl PolicyLibrary {
         let mut failure = None;
         for agent in sampled(api, agents) {
             match instructions(api, &agent.name) {
-                Ok(brief) => briefs.push(brief),
+                Ok(brief) => {
+                    // Check the cumulative budget before retaining this brief
+                    // or starting another request in the sampling loop.
+                    if !super::bounded_groups(
+                        briefs
+                            .iter()
+                            .chain(std::iter::once(&brief))
+                            .flat_map(|brief| &brief.sources)
+                            .map(|source| {
+                                (
+                                    source.scope.split(", ").count(),
+                                    source.name.len()
+                                        + source.path.len()
+                                        + source.scope.len()
+                                        + source.text.as_ref().map_or(0, |text| text.len()),
+                                )
+                            }),
+                    ) {
+                        return Err(super::UNREADABLE);
+                    }
+                    briefs.push(brief);
+                }
                 Err(super::NOT_SERVED) => return Err(super::NOT_SERVED),
                 // One agent's brief failing leaves the rest of the library.
                 Err(error) => failure = Some(error),
@@ -299,22 +320,6 @@ impl PolicyLibrary {
         }
         if let Some(error) = failure.filter(|_| briefs.is_empty()) {
             return Err(error);
-        }
-        if !super::bounded_groups(
-            briefs
-                .iter()
-                .flat_map(|brief| &brief.sources)
-                .map(|source| {
-                    (
-                        source.scope.split(", ").count(),
-                        source.name.len()
-                            + source.path.len()
-                            + source.scope.len()
-                            + source.text.as_ref().map_or(0, |text| text.len()),
-                    )
-                }),
-        ) {
-            return Err(super::UNREADABLE);
         }
         let library = Self::gather(&briefs, agents);
         // Merging scopes across agents can enlarge each displayed copy too.
@@ -574,6 +579,67 @@ pub fn tag_carriers(agents: &[Member]) -> BTreeMap<&str, usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn policy_collection_stops_requests_when_the_total_row_budget_is_exceeded() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let stop = Arc::new(AtomicBool::new(false));
+        let finished = stop.clone();
+        let server = std::thread::spawn(move || {
+            let mut requests = 0;
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !finished.load(Ordering::Relaxed) && Instant::now() < deadline {
+                let (mut socket, _) = match listener.accept() {
+                    Ok(client) => client,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(1));
+                        continue;
+                    }
+                    Err(error) => panic!("{error}"),
+                };
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(1)))
+                    .unwrap();
+                let mut reader = BufReader::new(&socket);
+                let mut line = String::new();
+                while reader.read_line(&mut line).unwrap() != 0 {
+                    if line == "\r\n" {
+                        break;
+                    }
+                    line.clear();
+                }
+                requests += 1;
+                let rows = std::iter::repeat_n("{}", 2049)
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let body = format!("{{\"sources\":[{rows}]}}");
+                write!(
+                    socket,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .unwrap();
+            }
+            requests
+        });
+        let api = Api::new(url, String::new(), &|| true);
+        let result = PolicyLibrary::read(
+            &api,
+            &[agent("one", &[]), agent("two", &[]), agent("three", &[])],
+        );
+        stop.store(true, Ordering::Relaxed);
+        let requests = server.join().unwrap();
+        assert_eq!(result.unwrap_err(), super::super::UNREADABLE);
+        assert_eq!(requests, 2);
+    }
 
     fn source(name: &str, scope: &str) -> Source {
         Source {

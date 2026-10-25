@@ -118,7 +118,8 @@ UI thread.
 An absent library is initialized with one empty workspace. SQLite builds the
 initial database in memory; its serialized bytes are written through the securely
 created staging file handle, so SQLite never reopens a replaceable staging path.
-Reads validate ordinary stored columns and the record in one database snapshot.
+Reads validate ordinary stored columns and the record in one database snapshot,
+using dedicated PRAGMA statements that cannot resolve database-defined views.
 SQLite values are bounded to the 16 MiB record budget plus 1 KiB for row metadata.
 Writes require the canonical table declaration without added constraints, triggers
 or indexes; object association checks follow SQLite's case-insensitive identifiers.
@@ -211,7 +212,9 @@ reads, the store, each agent's skill preview and its brief, for at most 32
 agents per refresh, merged by file path so no row names an agent. Skill paths and
 tag membership use indexed lookup. Policy text and metadata share immutable
 allocations between groups. Expanded skill and policy groups are limited to 4,096
-rows and 16 MiB of display work; excessive responses leave the last view stale. They poll
+rows and 16 MiB of display work; policy sources are bounded while decoding for
+both team and agent views, and each collected brief must fit the team's remaining
+budget. Excessive responses leave the last view stale. They poll
 every 30 seconds. An agent view reads only the part its shown section needs.
 The Activity timeline draws the last hour from `/api/agents/states`, the
 states Backbone observed. It reads from six hours before the hour, so a state

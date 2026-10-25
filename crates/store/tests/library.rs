@@ -861,6 +861,30 @@ fn mixed_case_triggers_are_rejected_on_open_and_before_save() {
 }
 
 #[test]
+fn metadata_validation_does_not_resolve_database_defined_pragma_views() {
+    let directory = tempfile::tempdir().unwrap();
+    let db = database(directory.path(), RECORD);
+    // These harmless views fail if evaluated. Metadata inspection must not
+    // execute schema objects supplied by the library being inspected.
+    for name in ["pragma_table_list", "pragma_table_xinfo"] {
+        db.execute_batch(&format!(
+            "CREATE VIEW {name} AS SELECT missing_metadata_function();"
+        ))
+        .unwrap();
+        assert_eq!(
+            Store::open(directory.path())
+                .unwrap()
+                .load()
+                .unwrap()
+                .raw_json(),
+            RECORD
+        );
+        assert!(Store::open_existing_writable(directory.path()).is_ok());
+        db.execute_batch(&format!("DROP VIEW {name}")).unwrap();
+    }
+}
+
+#[test]
 fn generated_values_and_executable_write_constraints_are_not_evaluated() {
     let directory = tempfile::tempdir().unwrap();
     let db = Connection::open(directory.path().join("layouts.db")).unwrap();
