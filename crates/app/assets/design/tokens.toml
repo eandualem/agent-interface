@@ -43,15 +43,15 @@ shadow = "#00000073"        # popover shadow
 pane_dim = 0.72             # opacity of unfocused panes' content
 
 [color.light]
-ground = "#e9e8e5"
+ground = "#deddd9"          # recessed gaps separate the lighter reading surfaces
 panel = "#f3f2ef"
-surface = "#ffffff"
+surface = "#f8f7f4"         # shared off-white for panes, readers and Settings pages
 field = "#ffffff"
 hover = "#eae9e5"
 selected = "#e4e2dd"
 line = "#e2e0db"
 line_strong = "#d3d0ca"
-edge = "#dcd9d3"
+edge = "#c0bdb6"
 text = "#1b1c1e"
 text_2 = "#3d3f44"
 muted = "#676a71"
@@ -60,7 +60,7 @@ accent = "#a35a16"
 accent_text = "#8f4e12"
 on_accent = "#ffffff"
 accent_soft = "#a35a161f"
-focus = "#a35a168c"
+focus = "#a35a16"
 focus_halo = "#a35a161a"
 attention = "#c2410c"
 attention_text = "#b23c0b"

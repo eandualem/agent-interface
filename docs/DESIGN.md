@@ -113,7 +113,9 @@ Each theme defines the same names (`[color.dark]`, `[color.light]` in
 
 Terminal defaults per theme (`[terminal.dark]`, `[terminal.light]`): the
 default text, background and cursor colours and the 16 ANSI colours. The light
-terminal has a warm off-white background. Dark keeps Ghostty's
+terminal and native readers share a warm off-white background. Darker neutral
+gaps and borders separate the panes; an amber outline identifies the focused
+pane. Dark keeps Ghostty's
 defaults; light is Tomorrow, darkened to pass 4.5:1.
 
 ## Type
