@@ -228,6 +228,10 @@ impl Browser {
                             if let Some(layout) = &mut browser.layout {
                                 layout.model_mut().focus = !layout.model().focus;
                             }
+                            if let Some(terminal) = browser.terminals.get(&leaf) {
+                                terminal
+                                    .update(cx, |terminal, cx| terminal.focus_terminal(window, cx));
+                            }
                             cx.stop_propagation();
                             cx.notify();
                         } else if in_header {

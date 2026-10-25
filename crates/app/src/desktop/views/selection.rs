@@ -30,21 +30,25 @@ pub(super) struct Selection {
     anchor: Option<Position>,
     cursor: Option<Position>,
     dragging: bool,
+    invalidated: bool,
 }
 
 impl Selection {
     pub fn begin(&mut self) {
         self.next = 0;
+        self.invalidated = false;
     }
 
-    pub fn finish(&mut self) {
+    pub fn finish(&mut self) -> bool {
         if self.next != self.parts.len() {
             self.clear();
             self.parts.truncate(self.next);
         }
+        self.invalidated
     }
 
     fn clear(&mut self) {
+        self.invalidated |= self.anchor.is_some() || self.cursor.is_some();
         self.anchor = None;
         self.cursor = None;
         self.dragging = false;
@@ -343,5 +347,34 @@ mod tests {
             1,
         );
         assert_eq!(selection.selected_text(), "café here");
+    }
+
+    #[test]
+    fn later_changes_rebuild_earlier_highlights_before_caching() {
+        let mut selection = Selection::default();
+        for later in [Some("Changed later"), None] {
+            selection.begin();
+            selection.register("Selected first");
+            selection.register("Original later");
+            selection.finish();
+            selection.press(Position { part: 0, byte: 1 }, false, 2);
+
+            selection.begin();
+            selection.register("Selected first");
+            assert!(!selection.range(0).is_empty());
+            if let Some(later) = later {
+                selection.register(later);
+            }
+            assert!(selection.finish());
+
+            selection.begin();
+            selection.register("Selected first");
+            assert!(selection.range(0).is_empty());
+            if let Some(later) = later {
+                selection.register(later);
+            }
+            assert!(!selection.finish());
+            assert!(selection.selected_text().is_empty());
+        }
     }
 }

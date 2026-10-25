@@ -478,20 +478,22 @@ impl TerminalView {
         }
     }
 
-    fn send_input(&mut self, input: PaneId, operation: Input, cx: &mut Context<Self>) {
+    fn send_input(&mut self, input: PaneId, operation: Input, cx: &mut Context<Self>) -> bool {
         if operation.size() > crate::panes::INPUT_LIMIT {
             self.input_rejection = Some(
                 "Input was not sent: paste exceeds 4 MiB. Click the terminal to dismiss.".into(),
             );
             cx.notify();
-            return;
+            return false;
         }
         // Both keyboard pastes and drops use the same ordered, bounded queue.
         if self.input_queue.try_send((input, operation)).is_err() {
             self.input_rejection = Some("Input was not sent: terminal queue is busy or disconnected. Click the terminal to dismiss.".into());
             cx.notify();
+            false
         } else {
             self.clear_selection(cx);
+            true
         }
     }
 
@@ -523,7 +525,11 @@ impl TerminalView {
         self.input = Some(input);
         window.focus(&self.focus, cx);
         cx.emit(Focus);
-        self.send_input(input, Input::Paste(text), cx);
+        if self.send_input(input, Input::Paste(text), cx) {
+            // GPUI consumes every on_drop invocation, including a rejected one.
+            // Mark native acceptance only after this terminal queued the paste.
+            window.prevent_default();
+        }
         cx.stop_propagation();
         cx.notify();
     }

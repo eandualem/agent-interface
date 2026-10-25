@@ -3831,7 +3831,9 @@ fn send_file_drop_event(
         if let Some(external_files_dragged) = external_files_dragged {
             lock.external_files_dragged = external_files_dragged;
         }
-        !submitted || !result.propagate
+        // on_drop stops propagation even when its listener rejects the data.
+        // The terminal explicitly marks a successfully queued paste instead.
+        !submitted || result.default_prevented
     } else {
         false
     }

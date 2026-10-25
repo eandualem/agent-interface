@@ -500,52 +500,58 @@ impl Render for ViewPane {
         let (t, c) = (tokens(), colors());
         let about = about(self.view.kind);
         // Lent to the body for this frame and put back below.
-        self.selection.borrow_mut().begin();
         let data = self.data.take();
-        let body = if documents::selected(self).is_some() {
-            documents::reader(self, cx)
-        } else {
-            match &data {
-                None => {
-                    let state = match self.error {
-                        Some(error) => ui::empty_state(
-                            ui::empty_tile("unplug", c.selected, c.muted),
-                            "No data",
-                            error,
-                        ),
-                        None => ui::empty_state(
-                            ui::empty_tile(about.icon, c.selected, c.muted),
-                            "Reading Agent Backbone…",
-                            "",
-                        ),
-                    };
-                    div()
-                        .size_full()
-                        .flex()
-                        .flex_col()
-                        .child(ui::view_header(about.icon, ViewPane::title(&self.view)))
-                        .when(self.view.kind == ViewKind::Usage, |el| {
-                            el.child(usage::toolbar(self, cx))
-                        })
-                        .when(self.view.kind == ViewKind::Reports, |el| {
-                            el.child(reports::refresh_toolbar(self, cx))
-                        })
-                        .child(state)
-                        .into_any_element()
+        let body = loop {
+            self.selection.borrow_mut().begin();
+            let body = if documents::selected(self).is_some() {
+                documents::reader(self, cx)
+            } else {
+                match &data {
+                    None => {
+                        let state = match self.error {
+                            Some(error) => ui::empty_state(
+                                ui::empty_tile("unplug", c.selected, c.muted),
+                                "No data",
+                                error,
+                            ),
+                            None => ui::empty_state(
+                                ui::empty_tile(about.icon, c.selected, c.muted),
+                                "Reading Agent Backbone…",
+                                "",
+                            ),
+                        };
+                        div()
+                            .size_full()
+                            .flex()
+                            .flex_col()
+                            .child(ui::view_header(about.icon, ViewPane::title(&self.view)))
+                            .when(self.view.kind == ViewKind::Usage, |el| {
+                                el.child(usage::toolbar(self, cx))
+                            })
+                            .when(self.view.kind == ViewKind::Reports, |el| {
+                                el.child(reports::refresh_toolbar(self, cx))
+                            })
+                            .child(state)
+                            .into_any_element()
+                    }
+                    Some(Data::Team(data)) => team::body(self, data, cx),
+                    Some(Data::Usage(data)) => usage::body(self, data, cx),
+                    Some(Data::Activity(data)) => activity::body(self, data, cx),
+                    Some(Data::Skills(data)) => skills::body(self, data, cx),
+                    Some(Data::Agent(data)) => agent::body(self, data, cx),
+                    Some(Data::Policies(data)) => policies::body(self, data, cx),
+                    Some(Data::Tags(data)) => tags::body(self, data, cx),
+                    Some(Data::Reports(data)) => reports::body(self, data, cx),
+                    Some(Data::Document(_)) => unreachable!("document data has a selected reader"),
                 }
-                Some(Data::Team(data)) => team::body(self, data, cx),
-                Some(Data::Usage(data)) => usage::body(self, data, cx),
-                Some(Data::Activity(data)) => activity::body(self, data, cx),
-                Some(Data::Skills(data)) => skills::body(self, data, cx),
-                Some(Data::Agent(data)) => agent::body(self, data, cx),
-                Some(Data::Policies(data)) => policies::body(self, data, cx),
-                Some(Data::Tags(data)) => tags::body(self, data, cx),
-                Some(Data::Reports(data)) => reports::body(self, data, cx),
-                Some(Data::Document(_)) => unreachable!("document data has a selected reader"),
+            };
+            if !self.selection.borrow_mut().finish() {
+                break body;
             }
+            // A later block changed after earlier highlights were constructed.
+            // Rebuild with the cleared selection before this body can be cached.
         };
         self.data = data;
-        self.selection.borrow_mut().finish();
         div()
             .relative()
             .size_full()
