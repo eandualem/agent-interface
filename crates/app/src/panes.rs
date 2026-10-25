@@ -307,6 +307,12 @@ impl WindowState {
                 if terminal.needs_capture {
                     return true;
                 }
+                if matches!(&request.input, Input::Paste(text) if text.contains(['\r', '\n']))
+                    && terminal.terminal.modes().is_ok_and(|modes| modes.bracketed_paste.is_none())
+                {
+                    let _ = request.reply.send(Err("Multiline paste is unavailable until the terminal reports its paste mode; use a newer tmux server or wait for the shell to enable bracketed paste.".into()));
+                    return false;
+                }
                 let before = terminal.terminal.scrolled_row();
                 let result = terminal
                     .terminal

@@ -82,9 +82,9 @@ pub struct Segment {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Link {
     /// The link's parameters, such as `id=page`, or empty.
-    pub params: String,
+    pub params: std::sync::Arc<str>,
     /// The link's target.
-    pub uri: String,
+    pub uri: std::sync::Arc<str>,
 }
 
 /// Terminal modes. A mode that is not known is `None`, never a false value.
@@ -216,6 +216,8 @@ impl Terminal {
         }
         out.put(&restore.pending);
         out.flush();
+        terminal.bracketed_paste_known = modes.bracketed_paste.is_some()
+            || terminal.engine.mode(Mode::BRACKETED_PASTE).map_err(Error)?;
         Ok(terminal)
     }
 
@@ -234,7 +236,10 @@ impl Terminal {
             mouse_all: mode(Mode::ANY_MOUSE)?,
             mouse_utf8: mode(Mode::UTF8_MOUSE)?,
             mouse_sgr: mode(Mode::SGR_MOUSE)?,
-            bracketed_paste: Some(mode(Mode::BRACKETED_PASTE)?),
+            bracketed_paste: self
+                .bracketed_paste_known
+                .then(|| mode(Mode::BRACKETED_PASTE))
+                .transpose()?,
             extended_keys: None,
             focus_events: Some(mode(Mode::FOCUS_EVENT)?),
         })
@@ -479,6 +484,36 @@ mod tests {
     }
 
     #[test]
+    fn unknown_paste_mode_rejects_line_endings_until_bracketed_mode_is_observed() {
+        use crate::input::Input;
+        let restore = pane(20, 2, &[""]);
+        let mut terminal = Terminal::restored(&restore, 0).unwrap();
+        assert_eq!(terminal.modes().unwrap().bracketed_paste, None);
+        assert_eq!(
+            terminal.encode_input(&Input::Paste("text".into())).unwrap(),
+            b"text"
+        );
+        for text in ["one\ntwo", "one\rtwo"] {
+            assert!(terminal.encode_input(&Input::Paste(text.into())).is_err());
+        }
+        terminal.write(b"\x1b[?2004h");
+        assert_eq!(
+            terminal
+                .encode_input(&Input::Paste("one\ntwo".into()))
+                .unwrap(),
+            b"\x1b[200~one\ntwo\x1b[201~"
+        );
+        terminal.write(b"\x1b[?2004l");
+        assert_eq!(terminal.modes().unwrap().bracketed_paste, Some(false));
+        assert_eq!(
+            terminal
+                .encode_input(&Input::Paste("one\ntwo".into()))
+                .unwrap(),
+            b"one\rtwo"
+        );
+    }
+
+    #[test]
     fn off_grid_is_not_silently_restored_as_pending_wrap() {
         let mut restore = pane(36, 9, &[""]);
         restore.cursor = (40, 5);
@@ -518,8 +553,8 @@ mod tests {
     #[test]
     fn segments_keep_their_style_link_and_character_set() {
         let link = Link {
-            params: "id=x".to_owned(),
-            uri: "https://example.com".to_owned(),
+            params: "id=x".into(),
+            uri: "https://example.com".into(),
         };
         let mut bold = text("ab");
         bold.style.attributes.insert(Attributes::BOLD);
@@ -825,7 +860,7 @@ mod tests {
             assert_eq!(terminal.cursor().unwrap(), (3, 0), "{modes:?}");
             assert_eq!(lines(&mut terminal), ["──ab", ""], "{modes:?}");
             let expected = Modes {
-                bracketed_paste: Some(modes.bracketed_paste.unwrap_or(false)),
+                bracketed_paste: modes.bracketed_paste,
                 extended_keys: None,
                 focus_events: Some(modes.focus_events.unwrap_or(false)),
                 ..modes

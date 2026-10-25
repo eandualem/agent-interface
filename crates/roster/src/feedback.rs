@@ -153,12 +153,12 @@ mod tests {
     use super::*;
     use std::{
         io::{Read, Write},
-        net::{TcpListener, TcpStream},
+        os::unix::net::UnixStream,
         thread,
         time::Duration,
     };
 
-    fn request(socket: &mut TcpStream) -> (String, Vec<u8>) {
+    fn request(socket: &mut UnixStream) -> (String, Vec<u8>) {
         socket
             .set_read_timeout(Some(Duration::from_secs(5)))
             .unwrap();
@@ -182,7 +182,7 @@ mod tests {
         (headers, body)
     }
 
-    fn reply(socket: &mut TcpStream, body: &str) {
+    fn reply(socket: &mut UnixStream, body: &str) {
         write!(
             socket,
             "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
@@ -209,8 +209,7 @@ mod tests {
 
     #[test]
     fn feedback_uses_the_current_author_and_never_retries_a_lost_post_reply() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let url = format!("http://{}", listener.local_addr().unwrap());
+        let (_directory, listener, url) = crate::transport::tests::local_listener();
         let server = thread::spawn(move || {
             let (mut socket, _) = listener.accept().unwrap();
             let (headers, _) = request(&mut socket);
@@ -263,8 +262,7 @@ mod tests {
 
     #[test]
     fn a_replaced_author_receives_no_feedback() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let url = format!("http://{}", listener.local_addr().unwrap());
+        let (_directory, listener, url) = crate::transport::tests::local_listener();
         let server = thread::spawn(move || {
             let (mut socket, _) = listener.accept().unwrap();
             request(&mut socket);

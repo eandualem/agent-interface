@@ -13,7 +13,10 @@ pub use reconcile::Reconciliation;
 mod save;
 mod schema;
 
-use rusqlite::{Connection, OpenFlags, OptionalExtension, types::ValueRef};
+use rusqlite::{
+    Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, limits::Limit,
+    types::ValueRef,
+};
 use std::{
     path::{Path, PathBuf},
     time::{Duration, Instant},
@@ -103,6 +106,12 @@ impl Store {
                 detail: error.to_string(),
             })?;
         connection
+            .set_limit(Limit::SQLITE_LIMIT_LENGTH, (MAX_RECORD_BYTES + 1024) as i32)
+            .map_err(|error| Error {
+                path: path.clone(),
+                detail: error.to_string(),
+            })?;
+        connection
             .busy_timeout(Duration::from_millis(250))
             .map_err(|error| Error {
                 path: path.clone(),
@@ -139,6 +148,14 @@ impl Store {
     /// Read and validate the current arrangement. Legacy-only libraries require
     /// initialization by the Python tool; malformed records are never repaired.
     pub fn load(&self) -> Result<Document, Error> {
+        // Schema and row must come from the same snapshot. Saving already owns
+        // an immediate transaction; ordinary reads start their own transaction.
+        let transaction = self
+            .connection
+            .is_autocommit()
+            .then(|| Transaction::new_unchecked(&self.connection, TransactionBehavior::Deferred))
+            .transpose()
+            .map_err(|error| self.failure(error))?;
         let initialized = self.read(|| self.connection.query_row(
             "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='terminal_layout')",
             [], |row| row.get::<_, bool>(0),
@@ -147,6 +164,13 @@ impl Store {
             return Err(self.failure(
                 "terminal_layout table is missing; open this library once with the Python tool",
             ));
+        }
+        let stored: bool = self.read(|| self.connection.query_row(
+            "SELECT (SELECT type = 'table' FROM pragma_table_list WHERE schema = 'main' AND name = 'terminal_layout') AND count(*) = 2 AND min(hidden) = 0 AND max(hidden) = 0 FROM pragma_table_xinfo('terminal_layout') WHERE name IN ('id', 'value')",
+            [], |row| row.get(0),
+        ))?;
+        if !stored {
+            return Err(self.failure("layout id and value must be ordinary stored columns"));
         }
         // Check byte length in the same statement that reads the value, preventing
         // a concurrent writer from replacing a small record after a size precheck.
@@ -160,7 +184,11 @@ impl Store {
         ).optional())?
             .ok_or_else(|| self.failure("current layout row is missing"))?
             .ok_or_else(|| self.failure("layout record must be UTF-8 text no larger than 16 MiB"))?;
-        Document::parse(raw, &self.path)
+        let document = Document::parse(raw, &self.path)?;
+        if let Some(transaction) = transaction {
+            transaction.commit().map_err(|error| self.failure(error))?;
+        }
+        Ok(document)
     }
 
     /// A same-connection token that changes when another connection commits.

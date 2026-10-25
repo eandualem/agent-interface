@@ -1,8 +1,13 @@
 //! Publish a complete first-run library without replacing an existing file.
 
-use std::{fs, io, os::unix::fs::DirBuilderExt, path::Path};
+use std::{
+    fs,
+    io::{self, Write},
+    os::unix::fs::DirBuilderExt,
+    path::Path,
+};
 
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::Connection;
 use tmux_workspaces_core::Layout;
 
 use crate::{Document, Error, Store};
@@ -36,7 +41,8 @@ impl Store {
             .mode(0o700)
             .create(directory)
             .map_err(|error| fail(&error))?;
-        let temporary = tempfile::NamedTempFile::new_in(directory).map_err(|error| fail(&error))?;
+        let mut temporary =
+            tempfile::NamedTempFile::new_in(directory).map_err(|error| fail(&error))?;
         let mut model = Layout {
             workspaces: vec![],
             selected: String::new(),
@@ -51,9 +57,9 @@ impl Store {
             "focus": false
         }).to_string();
         let document = Document::parse(raw, &path)?;
-        let mut connection =
-            Connection::open_with_flags(temporary.path(), OpenFlags::SQLITE_OPEN_READ_WRITE)
-                .map_err(|error| fail(&error))?;
+        // Build in memory, then write through the securely created file handle.
+        // SQLite never reopens a pathname another directory owner could replace.
+        let mut connection = Connection::open_in_memory().map_err(|error| fail(&error))?;
         let transaction = connection.transaction().map_err(|error| fail(&error))?;
         transaction
             .execute_batch("CREATE TABLE terminal_layout (id INTEGER PRIMARY KEY, value TEXT)")
@@ -65,6 +71,9 @@ impl Store {
             )
             .map_err(|error| fail(&error))?;
         transaction.commit().map_err(|error| fail(&error))?;
+        let bytes = connection.serialize("main").map_err(|error| fail(&error))?;
+        temporary.write_all(&bytes).map_err(|error| fail(&error))?;
+        drop(bytes);
         connection.close().map_err(|(_, error)| fail(&error))?;
         temporary
             .as_file()

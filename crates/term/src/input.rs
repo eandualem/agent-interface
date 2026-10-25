@@ -407,6 +407,9 @@ impl Terminal {
             }
             Input::Paste(text) => {
                 let bracketed = self.engine.mode(Mode::BRACKETED_PASTE).map_err(Error)?;
+                if !self.bracketed_paste_known && text.contains(['\r', '\n']) {
+                    return Err(Error(libghostty_vt::Error::InvalidValue));
+                }
                 let mut bytes = text.as_bytes().to_vec();
                 let mut encoded = vec![0; bytes.len().saturating_add(12)];
                 let length = paste::encode(&mut bytes, bracketed, &mut encoded).map_err(Error)?;
