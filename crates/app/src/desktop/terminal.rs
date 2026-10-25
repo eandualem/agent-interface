@@ -740,8 +740,22 @@ mod tests {
         wide.panes.as_ref().unwrap().set_size(80, 25).unwrap();
         let wait_size = |expected: &str| {
             let deadline = Instant::now() + Duration::from_secs(10);
-            while sizes().trim() != expected {
-                assert!(Instant::now() < deadline, "size did not reach {expected}");
+            loop {
+                let actual = sizes();
+                if actual.trim() == expected {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "size did not reach {expected:?}; actual={actual:?}; narrow={:?}; wide={:?}; clients={:?}",
+                    panes.failure(),
+                    wide.panes.as_ref().unwrap().failure(),
+                    server.run(&[
+                        "list-clients",
+                        "-F",
+                        "#{client_name}:#{client_width}x#{client_height}:#{client_flags}",
+                    ])
+                );
                 std::thread::sleep(Duration::from_millis(5));
             }
         };
