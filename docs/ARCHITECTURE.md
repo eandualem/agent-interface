@@ -157,7 +157,10 @@ to repeat the edit; failed saves offer Retry or Discard.
 
 Workspace and tab selection, pane expansion, and attachment-window selection
 are local to each native window. Header double-click and the pane shortcut toggle
-expansion without changing the saved split tree; Escape restores it. Ordinary-shell identities belong to the saved
+expansion for the selected tab without changing the saved split tree; Escape
+restores that tab. Each tab retains its own expansion during navigation and shared
+library refreshes. The schema-v2 root `focus` flag still seeds only the initially
+selected tab; other tabs start unexpanded in a new window. Ordinary-shell identities belong to the saved
 library. Closing a native window detaches its clients without issuing
 session-termination commands; navigation keeps them attached.
 

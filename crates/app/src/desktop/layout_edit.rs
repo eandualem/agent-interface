@@ -118,7 +118,7 @@ impl Selection {
             workspace: model.selected.clone(),
             tab: model.tab().map(|tab| tab.id.clone()),
             pane: model.pane().map(|pane| pane.id.clone()),
-            focus: model.focus,
+            focus: model.focus_mode(),
         }
     }
 
@@ -134,10 +134,10 @@ pub(super) fn select_created(model: &mut Layout, created: &Layout) {
     }
     if let (Some(tab), Some(pane)) = (created.tab(), created.pane()) {
         if model.choose_tab(&tab.id) && model.choose_pane(&pane.id) {
-            model.focus = created.focus;
+            model.set_focus_mode(created.focus_mode());
         }
     } else {
-        model.focus = created.focus;
+        model.set_focus_mode(created.focus_mode());
     }
 }
 
@@ -288,7 +288,7 @@ mod tests {
         assert_eq!(window.model().workspace().unwrap().tabs.len(), 3);
 
         window.model_mut().choose_tab(&first);
-        window.model_mut().focus = true;
+        window.model_mut().set_focus_mode(true);
         let original = Selection::capture(window.model());
         let (mut base, mut local) = window.save_snapshot();
         let previous = local.tab().cloned();
@@ -304,7 +304,7 @@ mod tests {
         assert_eq!(window.model().tab().unwrap().tree.leaves().len(), 1);
         window.saved(base, &result);
         select_created(window.model_mut(), &local);
-        assert!(!window.model().focus);
+        assert!(!window.model().focus_mode());
         let leaves = window.model().tab().unwrap().tree.leaves();
         assert_eq!(leaves[0], previous.as_ref().unwrap().tree.leaves()[0]);
         assert!(leaves[1].empty);

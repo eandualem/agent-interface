@@ -285,7 +285,7 @@ mod tests {
         let mut window = WindowLayout::new(Document::parse(raw.into(), path).unwrap());
         let mut other = WindowLayout::new(Document::parse(raw.into(), path).unwrap());
         assert!(window.terminal_input().is_none());
-        assert!(window.model().focus); // Display zoom is not keyboard focus.
+        assert!(window.model().focus_mode()); // Display zoom is not keyboard focus.
         assert!(window.focus_terminal());
         assert!(other.focus_terminal());
         assert_eq!(window.terminal_input().unwrap().id, "000000000003");
@@ -364,7 +364,7 @@ mod tests {
         assert!(window.focus_terminal());
         window.focus_navigation();
         assert!(window.terminal_input().is_none());
-        assert!(window.model().focus);
+        assert!(!window.model().focus_mode()); // A replacement tab starts unexpanded.
         assert!(window.focus_terminal());
         window.model_mut().add_tab(None, "/tmp".into(), true);
         assert!(window.terminal_input().is_none());

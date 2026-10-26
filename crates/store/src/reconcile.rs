@@ -64,12 +64,15 @@ impl Document {
         let (raw, mut model) =
             candidate.unwrap_or_else(|| (latest.raw.clone(), latest.model.clone()));
         let active_tree_changed = model.retain_navigation(local);
-        let document = if conflict {
+        let mut document = if conflict {
             latest.with_model(&model, path)?
         } else {
             let raw = project::apply(&raw, &model).map_err(fail)?;
             Document::parse(raw, path)?
         };
+        // Parsing validates the stored snapshot, which contains expansion only
+        // for the selected tab. Keep every surviving tab's window-local state.
+        document.model = model;
         Ok(Reconciliation {
             document,
             conflict,

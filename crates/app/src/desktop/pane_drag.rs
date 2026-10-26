@@ -90,7 +90,7 @@ impl Drag {
     ) -> Option<Self> {
         let tab = model.tab()?;
         let leaves = tab.tree.leaves();
-        if model.focus || leaves.len() < 2 || !leaves.iter().any(|leaf| leaf.id == source) {
+        if model.focus_mode() || leaves.len() < 2 || !leaves.iter().any(|leaf| leaf.id == source) {
             return None;
         }
         Some(Self {
@@ -110,7 +110,7 @@ impl Drag {
 
     pub fn valid(&self, model: &Layout) -> bool {
         !self.cancelled
-            && !model.focus
+            && !model.focus_mode()
             && model.selected == self.workspace
             && model
                 .tab()

@@ -40,7 +40,7 @@ mod tests {
         assert!(added.selected.is_empty());
         assert_eq!(added.id.len(), 12);
         assert_ne!(added.id, window.model().selected);
-        assert!(proposed.focus);
+        assert!(!proposed.focus_mode());
         let (_, bounded) = create(&window, &"x".repeat(81)).unwrap();
         assert_eq!(bounded.workspace().unwrap().name.len(), 80);
         let mut displayed = window.model().clone();
@@ -51,7 +51,7 @@ mod tests {
         displayed.choose_workspace(&window.model().selected);
         super::super::layout_edit::select_created(&mut displayed, &proposed);
         assert_eq!(displayed.selected, proposed.selected);
-        assert!(displayed.focus);
+        assert!(!displayed.focus_mode());
     }
 
     #[test]
@@ -66,7 +66,7 @@ mod tests {
         assert_eq!(window.model().workspaces.len(), 2);
         assert_eq!(deleted.workspaces.len(), 1);
         assert_eq!(deleted.selected, first);
-        assert!(deleted.focus);
+        assert!(!deleted.focus_mode());
         window.model_mut().add_tab(None, "/tmp".into(), true);
         assert!(delete(&window, &other).is_none());
     }

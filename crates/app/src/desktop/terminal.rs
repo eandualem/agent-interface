@@ -535,9 +535,9 @@ mod tests {
             "/other".into(),
             true,
         );
-        model.focus = true;
+        model.set_focus_mode(true);
         assert!(target.exists_in(&model));
-        model.focus = false;
+        model.set_focus_mode(false);
         assert!(target.detach_from(&mut model));
         let pane = model.pane().unwrap();
         assert!(pane.empty && pane.attachment.is_none());
