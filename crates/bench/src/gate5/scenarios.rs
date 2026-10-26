@@ -3,10 +3,10 @@
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use tmux_workspaces_tmux::capture;
-use tmux_workspaces_tmux::command::send_bytes;
-use tmux_workspaces_tmux::control::PaneId;
-use tmux_workspaces_tmux::recovery::{self, Attach, Recovery, Snapshot, Step};
+use agent_interface_tmux::capture;
+use agent_interface_tmux::command::send_bytes;
+use agent_interface_tmux::control::PaneId;
+use agent_interface_tmux::recovery::{self, Attach, Recovery, Snapshot, Step};
 
 use super::candidate::{self, Candidate};
 use super::connection::{Connection, Event, TIMEOUT, lines};
@@ -866,8 +866,8 @@ fn strip_controls(bytes: &[u8]) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
-    use tmux_workspaces_tmux::capture::{Row, Segment, Style};
-    use tmux_workspaces_tmux::recovery::{Modes, PaneState};
+    use agent_interface_tmux::capture::{Row, Segment, Style};
+    use agent_interface_tmux::recovery::{Modes, PaneState};
 
     use super::*;
 

@@ -1,6 +1,6 @@
 //! `alacritty_terminal`, a comparison terminal engine.
 //!
-//! `tmux-workspaces-bench-rio` includes this file for its tests.
+//! `agent-interface-bench-rio` includes this file for its tests.
 
 use crate::display::{Attributes, Color, Cursor, Screen, Style, Underline, Width};
 use crate::engine::Engine;

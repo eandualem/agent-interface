@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::time::Instant;
 
-use tmux_workspaces_roster::Snapshot;
+use agent_interface_roster::Snapshot;
 
 use super::Observation;
 

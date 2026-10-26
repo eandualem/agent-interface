@@ -1,9 +1,9 @@
 //! A native divider gesture previews a detached tree and saves only on release.
 
 use crate::library::WindowLayout;
+use agent_interface_core::{Direction, Layout, Node};
+use agent_interface_store::Document;
 use gpui::{Bounds, Pixels, Point};
-use tmux_workspaces_core::{Direction, Layout, Node};
-use tmux_workspaces_store::Document;
 
 /// The gap between panes, which is also the resize handle.
 pub(super) fn divider() -> f32 {
@@ -188,7 +188,7 @@ mod tests {
             assert!(drag.valid(window.model()));
             window
                 .model_mut()
-                .attach(Some(tmux_workspaces_core::Attachment {
+                .attach(Some(agent_interface_core::Attachment {
                     session: "external".into(),
                     source_socket: None,
                 }));

@@ -231,7 +231,7 @@ impl Render for ArtifactPane {
                                 "{} · {} ago",
                                 entry.author,
                                 super::ago(
-                                    tmux_workspaces_roster::views::now() as f64
+                                    agent_interface_roster::views::now() as f64
                                         - entry.created_ms as f64 / 1000.
                                 )
                             )),

@@ -1,5 +1,5 @@
 [package]
-name = "tmux-workspaces-app"
+name = "agent-interface-app"
 description = "Agent Interface: native workspaces for agents and tmux terminals"
 version.workspace = true
 edition.workspace = true
@@ -10,7 +10,7 @@ publish.workspace = true
 build = "../bench/build.rs"
 
 [[bin]]
-name = "tmux-workspaces"
+name = "agent-interface"
 path = "src/main.rs"
 
 [lints]
@@ -33,11 +33,11 @@ tracing-subscriber.workspace = true
 tracing-appender.workspace = true
 unicode-segmentation.workspace = true
 unicode-properties.workspace = true
-tmux-workspaces-core = { path = "../core" }
-tmux-workspaces-store = { path = "../store" }
-tmux-workspaces-roster = { path = "../roster" }
-tmux-workspaces-term = { path = "../term" }
-tmux-workspaces-tmux = { path = "../tmux" }
+agent-interface-core = { path = "../core" }
+agent-interface-store = { path = "../store" }
+agent-interface-roster = { path = "../roster" }
+agent-interface-term = { path = "../term" }
+agent-interface-tmux = { path = "../tmux" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # System WebKit embedding for the artifact experiment (MIT OR Apache-2.0).
@@ -48,7 +48,7 @@ gpui_macos = { package = "gpui-pre-macos", version = "=0.3.9", default-features 
 [dev-dependencies]
 rusqlite.workspace = true
 tempfile.workspace = true
-tmux-workspaces-test-support = { path = "../test-support" }
+agent-interface-test-support = { path = "../test-support" }
 
 # Benchmark scaffolding, not product UI.
 [[example]]

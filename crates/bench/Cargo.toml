@@ -1,5 +1,5 @@
 [package]
-name = "tmux-workspaces-bench"
+name = "agent-interface-bench"
 description = "The milestone-0 benchmark harness for Agent Interface"
 version.workspace = true
 edition.workspace = true
@@ -8,7 +8,7 @@ repository.workspace = true
 publish.workspace = true
 
 [[bin]]
-name = "tmux-workspaces-bench"
+name = "agent-interface-bench"
 path = "src/main.rs"
 
 [lints]
@@ -18,9 +18,9 @@ workspace = true
 alacritty_terminal.workspace = true
 libc.workspace = true
 tempfile.workspace = true
-tmux-workspaces-term = { path = "../term" }
-tmux-workspaces-test-support = { path = "../test-support" }
-tmux-workspaces-tmux = { path = "../tmux" }
+agent-interface-term = { path = "../term" }
+agent-interface-test-support = { path = "../test-support" }
+agent-interface-tmux = { path = "../tmux" }
 
 # The display measurements of gates 2 to 4 run on macOS only.
 [target.'cfg(target_os = "macos")'.dependencies]

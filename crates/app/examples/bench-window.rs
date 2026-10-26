@@ -20,15 +20,15 @@
 use std::io::Write;
 use std::sync::Arc;
 
+use agent_interface_app::panes::Panes;
+use agent_interface_app::view::{self, Appearance, TerminalView};
+use agent_interface_test_support::ServerRef;
+use agent_interface_tmux::control::PaneId;
 use gpui::{
     ActivationPolicy, App, AppContext, Bounds, Rgba, SharedString, TitlebarOptions, WindowBounds,
     WindowOptions, point, px, size,
 };
 use gpui_platform::application;
-use tmux_workspaces_app::panes::Panes;
-use tmux_workspaces_app::view::{self, Appearance, TerminalView};
-use tmux_workspaces_test_support::ServerRef;
-use tmux_workspaces_tmux::control::PaneId;
 
 const USAGE: &str = "usage: bench-window --tmux-tmpdir DIR --tmux-socket NAME --session NAME \
 --config FILE [--input-pane %N] [--scrollback LINES] [--origin X,Y]";
@@ -83,7 +83,7 @@ fn run() -> Result<(), String> {
         )
         .map_err(|e| e.to_string())?;
     let layout =
-        tmux_workspaces_tmux::layout::parse(format!("%layout-change {described}").as_bytes())
+        agent_interface_tmux::layout::parse(format!("%layout-change {described}").as_bytes())
             .map_err(str::to_owned)?;
     let input = options
         .input
@@ -140,7 +140,7 @@ fn run() -> Result<(), String> {
             return;
         }
         // The harness waits for this line before it looks for the window.
-        let engine = tmux_workspaces_term::engine_build();
+        let engine = agent_interface_term::engine_build();
         println!(
             "ready {}x{} cell {}x{}\trevision {}\tprofile {}\tcpu {}\toptimize {}\tengine {}",
             cols,

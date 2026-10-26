@@ -2,6 +2,10 @@
 
 use std::{cell::RefCell, collections::HashMap, path::PathBuf, rc::Rc};
 
+use agent_interface_core::{
+    Attachment, AttachmentTarget, Direction, Layout, Leaf, NameEdit, RenameOutcome, Tab, View,
+};
+use agent_interface_store::Document;
 use futures::{StreamExt, channel::mpsc};
 use gpui::{
     AnyElement, App, Bounds, Context, KeyBinding, Menu, MenuItem, PathPromptOptions, Task,
@@ -9,10 +13,6 @@ use gpui::{
     size,
 };
 use gpui_platform::application;
-use tmux_workspaces_core::{
-    Attachment, AttachmentTarget, Direction, Layout, Leaf, NameEdit, RenameOutcome, Tab, View,
-};
-use tmux_workspaces_store::Document;
 
 use crate::library::{Library, Update, WindowLayout};
 mod chooser;
@@ -37,12 +37,13 @@ mod split_resize;
 mod status;
 mod terminal;
 mod views;
+mod window_controls;
 mod workspace;
+use agent_interface_tmux::connection::SessionWindow;
 use name::{NameEvent, NameField};
 use terminal::{LiveTerminal, Target};
-use tmux_workspaces_tmux::connection::SessionWindow;
 
-const APP_ID: &str = "io.github.eandualem.tmux-workspaces";
+const APP_ID: &str = "io.github.eandualem.agent-interface";
 
 actions!(
     library_browser,
@@ -279,6 +280,7 @@ fn open_browser(
 ) -> Result<(), String> {
     let options = WindowOptions {
         app_id: Some(APP_ID.into()),
+        window_decorations: cfg!(target_os = "linux").then_some(gpui::WindowDecorations::Client),
         window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
             None,
             size(
@@ -307,7 +309,7 @@ fn open_browser(
             let mut browser = Browser {
                 source: Some(source),
                 shell_environment: Some(
-                    tmux_workspaces_tmux::shells::Environment::capture()
+                    agent_interface_tmux::shells::Environment::capture()
                         .map_err(|error| error.to_string()),
                 ),
                 navigation: Some(cx.focus_handle()),
@@ -344,7 +346,7 @@ struct EditingName {
 struct Roster(Option<crate::roster::RosterSource>);
 
 impl Roster {
-    fn take_update(&self) -> Option<tmux_workspaces_roster::Snapshot> {
+    fn take_update(&self) -> Option<agent_interface_roster::Snapshot> {
         self.0
             .as_ref()
             .and_then(crate::roster::RosterSource::take_update)
@@ -394,7 +396,7 @@ impl TabMenu {
         Some((base, proposed))
     }
 
-    fn current(&self, layout: &tmux_workspaces_core::Layout) -> bool {
+    fn current(&self, layout: &agent_interface_core::Layout) -> bool {
         layout.selected == self.workspace && layout.tab() == Some(&self.tab)
     }
 }
@@ -534,7 +536,7 @@ struct Browser {
     icon_picker: bool,
     menu_at: Option<gpui::Point<gpui::Pixels>>,
     roster: Option<Roster>,
-    agents: Option<tmux_workspaces_roster::Snapshot>,
+    agents: Option<agent_interface_roster::Snapshot>,
     roster_updates: Option<Task<()>>,
     jump: Option<jump::Jump>,
     /// A navigation panel drag: where it started and the width then.
@@ -557,7 +559,7 @@ struct Browser {
     tabs_scroll: gpui::ScrollHandle,
     workspaces_scroll: gpui::ScrollHandle,
     shown_workspace: Option<(String, gpui::Pixels)>,
-    shell_environment: Option<Result<tmux_workspaces_tmux::shells::Environment, String>>,
+    shell_environment: Option<Result<agent_interface_tmux::shells::Environment, String>>,
     shell_after_save: Option<Leaf>,
     shell_to_open: Option<Leaf>,
     resize: Option<split_resize::Drag>,
@@ -2093,7 +2095,7 @@ impl Render for Browser {
         let status = self.status_bar(window, cx);
         let overlay = self.popover(window, cx);
         let t = design::tokens();
-        div()
+        let body = div()
             .relative()
             .size_full()
             .flex()
@@ -2410,14 +2412,15 @@ impl Render for Browser {
                 )
                 .absolute()
                 .size_full(),
-            )
+            );
+        window_controls::frame(body, "Agent Interface", window)
     }
 }
 
 /// The workspace, tab and pane showing an agent's session from this window's
 /// source: the current tab if it shows one, else the first in saved order.
 fn agent_destination(
-    model: &tmux_workspaces_core::Layout,
+    model: &agent_interface_core::Layout,
     name: &str,
     same_source: impl Fn(Option<&str>) -> bool,
 ) -> Option<(String, String, String)> {
@@ -2440,7 +2443,7 @@ fn agent_destination(
 
 // Navigation changes this window's selection only. An unavailable terminal keeps
 // focus on navigation; no keys are queued for a future connection.
-fn navigate_key(model: &mut tmux_workspaces_core::Layout, key: &gpui::Keystroke) -> bool {
+fn navigate_key(model: &mut agent_interface_core::Layout, key: &gpui::Keystroke) -> bool {
     // Numbered selection stays fixed; other navigation comes from settings.
     if let Some((number, workspace)) = shortcuts::numbered(key) {
         if workspace {
@@ -2482,7 +2485,7 @@ fn navigate_key(model: &mut tmux_workspaces_core::Layout, key: &gpui::Keystroke)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tmux_workspaces_store::{Document, Error, Store};
+    use agent_interface_store::{Document, Error, Store};
 
     #[test]
     fn saved_reader_survives_tab_navigation_but_not_detach() {
@@ -2492,7 +2495,7 @@ mod tests {
         model.add_tab(None, "/work".into(), true);
         let tab = model.tab().unwrap().id.clone();
         let id = model.pane().unwrap().id.clone();
-        let view = View::of(tmux_workspaces_core::ViewKind::Reports);
+        let view = View::of(agent_interface_core::ViewKind::Reports);
         assert!(model.show_view(&tab, &id, view.clone()));
         model.add_tab(None, "/work".into(), true);
         assert_ne!(model.tab().unwrap().id, tab);
@@ -2572,7 +2575,7 @@ mod tests {
         model.open_terminal();
         let pane = model.pane().unwrap().clone();
         let tab = model.tab().unwrap().id.clone();
-        for view in [None, Some(View::of(tmux_workspaces_core::ViewKind::Skills))] {
+        for view in [None, Some(View::of(agent_interface_core::ViewKind::Skills))] {
             if let Some(view) = view {
                 assert!(model.detach_pane());
                 assert!(model.show_view(&tab, &pane.id, view));
@@ -2602,7 +2605,7 @@ mod tests {
             assert!(layout.model_mut().show_view(
                 &tab,
                 &pane.id,
-                View::of(tmux_workspaces_core::ViewKind::Reports)
+                View::of(agent_interface_core::ViewKind::Reports)
             ));
             assert!(!target.detach_from(layout.model_mut()));
         }
@@ -2920,7 +2923,7 @@ mod tests {
 
     #[test]
     fn tab_options_reject_changed_targets_and_moves_keep_the_terminal_tree() {
-        let mut model = tmux_workspaces_core::Layout::initial("/tmp".into());
+        let mut model = agent_interface_core::Layout::initial("/tmp".into());
         model.split(Direction::Right, "/tmp".into(), true);
         let tab = model.tab().unwrap().clone();
         let source = model.selected.clone();
@@ -2949,7 +2952,7 @@ mod tests {
 
     #[test]
     fn an_agent_goes_to_the_current_tab_showing_it_else_the_first() {
-        let mut model = tmux_workspaces_core::Layout::initial("/tmp".into());
+        let mut model = agent_interface_core::Layout::initial("/tmp".into());
         let session = |name: &str, socket: Option<&str>| {
             Some(Attachment {
                 session: name.into(),
@@ -2995,7 +2998,7 @@ mod tests {
 
     #[test]
     fn native_navigation_cycles_saved_selections_without_editing_the_tree() {
-        let mut model = tmux_workspaces_core::Layout::initial("/tmp".into());
+        let mut model = agent_interface_core::Layout::initial("/tmp".into());
         let first = model.pane().unwrap().id.clone();
         model.split(Direction::Right, "/tmp".into(), true);
         let second = model.pane().unwrap().id.clone();
@@ -3055,7 +3058,7 @@ mod tests {
     #[test]
     fn agent_state_lookup_omits_offline_and_unavailable_states() {
         let mut browser = Browser::default();
-        let mut snapshot = tmux_workspaces_roster::Snapshot::default();
+        let mut snapshot = agent_interface_roster::Snapshot::default();
         snapshot.update(br#"{"items":[{"name":"worker","state":"busy"},{"name":"idle","state":""},{"name":"gone","state":"offline"}]}"#);
         browser.agents = Some(snapshot);
         let states = browser.agent_states().unwrap();

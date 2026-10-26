@@ -1,4 +1,4 @@
-//! Native preferences, saved as `tmux-workspaces/settings.toml` in the user's
+//! Native preferences, saved as `agent-interface/settings.toml` in the user's
 //! configuration directory. A missing or invalid file leaves the defaults.
 
 use std::{
@@ -193,7 +193,7 @@ pub fn font_size() -> f32 {
     }
 }
 
-/// `$XDG_CONFIG_HOME/tmux-workspaces/settings.toml`, else under `~/.config`.
+/// `$XDG_CONFIG_HOME/agent-interface/settings.toml`, else under `~/.config`.
 pub fn path() -> Option<PathBuf> {
     path_from(
         std::env::var_os("XDG_CONFIG_HOME"),
@@ -217,13 +217,16 @@ fn path_from(
             .or_else(account)?
             .join(".config"),
     };
-    Some(config.join("tmux-workspaces/settings.toml"))
+    Some(config.join("agent-interface/settings.toml"))
 }
 
 /// Read the saved settings, or the defaults.
 pub fn load() -> Settings {
     path()
-        .and_then(|path| load_from(&path).ok())
+        .and_then(|path| {
+            let config = path.parent()?.parent()?;
+            load_from(&crate::compat::config_file(config, "settings.toml")).ok()
+        })
         .unwrap_or_default()
 }
 
@@ -434,7 +437,7 @@ mod tests {
     #[test]
     fn the_settings_file_follows_xdg_then_home_then_the_account() {
         let account = || Some(PathBuf::from("/account"));
-        let file = "tmux-workspaces/settings.toml";
+        let file = "agent-interface/settings.toml";
         assert_eq!(
             path_from(Some("/xdg".into()), Some("/home".into()), account),
             Some(PathBuf::from("/xdg").join(file))

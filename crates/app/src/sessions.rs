@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use tmux_workspaces_tmux::discovery::read_sessions;
+use agent_interface_tmux::discovery::read_sessions;
 
 pub use crate::library::location::source_socket;
 
@@ -155,8 +155,8 @@ impl Drop for SessionSource {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agent_interface_test_support::TmuxServer;
     use std::os::unix::fs::symlink;
-    use tmux_workspaces_test_support::TmuxServer;
 
     #[test]
     fn failure_replaces_pending_online_names_and_polling_recovers() {

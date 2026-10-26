@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use tmux_workspaces_store::{Document, Error, Store};
+use agent_interface_store::{Document, Error, Store};
 
 pub(crate) mod location;
 mod shells;
@@ -178,7 +178,7 @@ mod tests {
         assert!(status.success());
         assert!(
             home.path()
-                .join(".local/share/tmux-workspaces/layouts.db")
+                .join(".local/share/agent-interface/layouts.db")
                 .is_file()
         );
         assert!(!home.path().join(".local/share/agent-backbone").exists());

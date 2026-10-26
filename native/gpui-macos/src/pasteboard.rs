@@ -390,7 +390,7 @@ impl UTType {
 fn stage_drag_image(bytes: &[u8]) -> anyhow::Result<(ExternalPaths, tempfile::TempDir)> {
     anyhow::ensure!(bytes.len() <= 64 * 1024 * 1024, "dragged image is too large");
     let directory = tempfile::Builder::new()
-        .prefix("tmux-workspaces-drop-")
+        .prefix("agent-interface-drop-")
         .tempdir()?;
     let path = directory.path().join("Screenshot.png");
     let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format()?;

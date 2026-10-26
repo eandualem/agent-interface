@@ -3,11 +3,11 @@
 //! loads and why each reaches it, what it receives at its next start, and its
 //! usage. Choosing a skill or policy reads it here; nothing opens elsewhere.
 
-use gpui::{AnyElement, Context, Div, SharedString, div, prelude::*, px};
-use tmux_workspaces_core::AgentSection;
-use tmux_workspaces_roster::views::{
+use agent_interface_core::AgentSection;
+use agent_interface_roster::views::{
     Agent, Data, Instructions, Loadout, LocalSkill, Reason, Received, Usage,
 };
+use gpui::{AnyElement, Context, Div, SharedString, div, prelude::*, px};
 
 use super::{
     Target, ViewEvent, ViewPane, ago, count, home, line, list, mono, policies, reader, since,
@@ -606,7 +606,7 @@ fn usage_section(agent: &Agent) -> AnyElement {
                     .text_ellipsis()
                     .child(format!(
                         "{kind} · started {} ago · {}",
-                        since(tmux_workspaces_roster::views::epoch_seconds(
+                        since(agent_interface_roster::views::epoch_seconds(
                             &session.first_seen
                         )),
                         session.models.join(", ")
@@ -901,7 +901,7 @@ fn connections(agent: &Agent) -> AnyElement {
 }
 
 /// Whether the CLI's own settings let it act without any prompt.
-fn skips_prompts(rules: &tmux_workspaces_roster::views::Permissions) -> bool {
+fn skips_prompts(rules: &agent_interface_roster::views::Permissions) -> bool {
     rules.modes.iter().any(|(name, value)| {
         matches!(
             (name.as_str(), value.as_str()),

@@ -1,7 +1,7 @@
 //! Popover menus: tab options, the workspace menu and the icon picker.
 
+use agent_interface_core::Direction;
 use gpui::{Context, Div, SharedString, div, prelude::*, px};
-use tmux_workspaces_core::Direction;
 
 use super::{
     Browser, TabAction, components as ui,

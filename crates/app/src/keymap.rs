@@ -1,11 +1,11 @@
 //! Read one keymap without creating a library, terminal, directory or config file.
 
+use agent_interface_core::keymap::{Keymap, MAX_BYTES};
 use std::ffi::OsString;
 use std::fs::OpenOptions;
 use std::io::{self, Read};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
-use tmux_workspaces_core::keymap::{Keymap, MAX_BYTES};
 use uzers::os::unix::UserExt;
 
 /// Read the effective map. `disabled` skips all file reads; it cannot be combined
@@ -59,7 +59,9 @@ fn source(
     explicit: Option<&Path>,
     env: &impl Fn(&str) -> Option<OsString>,
 ) -> io::Result<(PathBuf, bool)> {
-    let configured = env("TMUX_WORKSPACES_KEYMAP").filter(|p| !p.is_empty());
+    let configured = env("AGENT_INTERFACE_KEYMAP")
+        .filter(|p| !p.is_empty())
+        .or_else(|| env("TMUX_WORKSPACES_KEYMAP").filter(|p| !p.is_empty()));
     let required = explicit.is_some() || configured.is_some();
     let home = || {
         env("HOME")
@@ -91,7 +93,7 @@ fn source(
             Some(path) => PathBuf::from(path),
             None => home()?.join(".config"),
         };
-        selected = Some(config.join("tmux-workspaces/keymap.toml"));
+        selected = Some(crate::compat::config_file(&config, "keymap.toml"));
     }
     let mut path = selected.unwrap();
     if let Ok(suffix) = path.strip_prefix("~") {
@@ -113,7 +115,7 @@ mod tests {
     fn loading_obeys_precedence_limits_and_keeps_files_unchanged() {
         let fixture = tempfile::tempdir().unwrap();
         let root = fixture.path();
-        let config = root.join("config/tmux-workspaces");
+        let config = root.join("config/agent-interface");
         fs::create_dir_all(&config).unwrap();
         fs::write(config.join("keymap.toml"), "prefix = 'C-a'").unwrap();
         let chosen = root.join("chosen.toml");
@@ -128,7 +130,7 @@ mod tests {
                 .prefix(),
             "C-a"
         );
-        env.insert("TMUX_WORKSPACES_KEYMAP", chosen.as_os_str().to_owned());
+        env.insert("AGENT_INTERFACE_KEYMAP", chosen.as_os_str().to_owned());
         assert_eq!(
             load_with(None, false, &|k| env.get(k).cloned())
                 .unwrap()
@@ -162,7 +164,7 @@ mod tests {
         assert_eq!(fs::read_to_string(&chosen).unwrap(), "prefix = 'C-b'");
         fs::remove_file(&chosen).unwrap();
         assert!(load_with(None, false, &|k| env.get(k).cloned()).is_err());
-        env.remove("TMUX_WORKSPACES_KEYMAP");
+        env.remove("AGENT_INTERFACE_KEYMAP");
         fs::remove_file(config.join("keymap.toml")).unwrap();
         assert_eq!(
             load_with(None, false, &|k| env.get(k).cloned()).unwrap(),

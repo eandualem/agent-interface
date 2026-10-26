@@ -3,11 +3,11 @@
 
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
+use agent_interface_core::{Direction, Leaf, Node};
 use gpui::{
     AnyElement, Bounds, BoxShadow, Context, Entity, Pixels, SharedString, div, point, prelude::*,
     px,
 };
-use tmux_workspaces_core::{Direction, Leaf, Node};
 
 use super::{
     Attaching, Browser, components as ui,

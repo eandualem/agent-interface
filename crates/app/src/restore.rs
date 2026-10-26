@@ -1,10 +1,10 @@
 //! Converts tmux snapshots into engine-independent terminal restore data.
 //! Shared with the fidelity harness so it exercises the app's conversion.
 
-use tmux_workspaces_term::restore::{self, Alternate, Restore};
-use tmux_workspaces_term::{Attributes, Color, Style, Underline};
-use tmux_workspaces_tmux::capture;
-use tmux_workspaces_tmux::recovery::{self, Snapshot};
+use agent_interface_term::restore::{self, Alternate, Restore};
+use agent_interface_term::{Attributes, Color, Style, Underline};
+use agent_interface_tmux::capture;
+use agent_interface_tmux::recovery::{self, Snapshot};
 
 /// Converts a snapshot into the terminal state it describes.
 pub(crate) fn restore(snapshot: &Snapshot) -> Restore {

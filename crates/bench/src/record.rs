@@ -16,8 +16,8 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use tmux_workspaces_test_support::TmuxServer;
-use tmux_workspaces_tmux::control::{Decoder, Message, PaneId};
+use agent_interface_test_support::TmuxServer;
+use agent_interface_tmux::control::{Decoder, Message, PaneId};
 
 use crate::engine::Grid;
 

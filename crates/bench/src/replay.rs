@@ -1,11 +1,11 @@
 //! Replaying a recording through the path the app takes from control-mode
 //! output to display data: decoding, the terminal engine and the read-out.
 //!
-//! `tmux-workspaces-bench-rio` includes this file.
+//! `agent-interface-bench-rio` includes this file.
 
 use std::time::{Duration, Instant};
 
-use tmux_workspaces_tmux::control::{self, Decoder, Message, PaneId};
+use agent_interface_tmux::control::{self, Decoder, Message, PaneId};
 
 use crate::display::Screen;
 use crate::engine::{Engine, Grid};

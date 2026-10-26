@@ -4,8 +4,8 @@
 //!
 //! The policy reader here is shared with an agent's Policies section.
 
+use agent_interface_roster::views::{PREVIEW_LIMIT, PolicyLibrary, Source};
 use gpui::{AnyElement, Context, Div, SharedString, div, prelude::*, px};
-use tmux_workspaces_roster::views::{PREVIEW_LIMIT, PolicyLibrary, Source};
 
 use super::{Target, ViewPane, markdown, mono, reader};
 use crate::desktop::{

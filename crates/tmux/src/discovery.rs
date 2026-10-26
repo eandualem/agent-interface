@@ -14,7 +14,7 @@ const CAPTURE_LIMIT: usize = 1024 * 1024;
 
 /// List attachable session names without starting a server or attaching a client.
 /// `socket` must be an absolute path selected by the caller. Helper sessions
-/// marked `@tmux_workspaces_attachment=1` are excluded. Names retain their exact
+/// marked `@agent_interface_attachment=1` are excluded. Names retain their exact
 /// spelling, including spaces and a leading `=`; they are not command targets.
 ///
 /// An absent server is a successful empty list. Other failures return the fixed
@@ -27,7 +27,7 @@ pub fn read_sessions(socket: &Path) -> io::Result<Vec<String>> {
     command.args([
         "list-sessions",
         "-f",
-        "#{!=:#{@tmux_workspaces_attachment},1}",
+        "#{!=:#{@agent_interface_attachment},1}",
         "-F",
         "#{session_name}",
     ]);
@@ -335,7 +335,7 @@ fn drain(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tmux_workspaces_test_support::TmuxServer;
+    use agent_interface_test_support::TmuxServer;
 
     #[test]
     fn discovery_preserves_names_excludes_helpers_and_never_attaches_or_creates() {
@@ -350,7 +350,7 @@ mod tests {
                 "set-option",
                 "-t",
                 "=helper:",
-                "@tmux_workspaces_attachment",
+                "@agent_interface_attachment",
                 "1",
             ])
             .unwrap();

@@ -6,9 +6,9 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
-use tmux_workspaces_tmux::control::{Decoder, Message, PaneId};
-use tmux_workspaces_tmux::layout;
-use tmux_workspaces_tmux::recovery::{self, Attach, Reply, Snapshot, Step};
+use agent_interface_tmux::control::{Decoder, Message, PaneId};
+use agent_interface_tmux::layout;
+use agent_interface_tmux::recovery::{self, Attach, Reply, Snapshot, Step};
 
 pub(crate) const TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -145,7 +145,7 @@ fn capture<I: Write, O: Read>(
                                             return Err(io::Error::other("invalid tmux server version reply"));
                                         };
                                         let version = std::str::from_utf8(line).map_err(|_| io::Error::other("invalid tmux server version reply"))?;
-                                        tmux_workspaces_tmux::preflight::check_server_version(version)?;
+                                        agent_interface_tmux::preflight::check_server_version(version)?;
                                         Some(format!(
                                             "display-message -p -t '{target}' '#{{window_id}} #{{window_layout}} #{{window_visible_layout}} #{{window_raw_flags}}'\n"
                                         ))
@@ -252,13 +252,13 @@ mod tests {
 
     #[test]
     fn initial_capture_keeps_only_requested_history_without_moving_the_screen() {
-        let server = tmux_workspaces_test_support::TmuxServer::start().unwrap();
+        let server = agent_interface_test_support::TmuxServer::start().unwrap();
         server
             .run(&[
                 "respawn-pane",
                 "-k",
                 "-t",
-                tmux_workspaces_test_support::TmuxServer::SESSION,
+                agent_interface_test_support::TmuxServer::SESSION,
                 "sh",
                 "-c",
                 "i=0; while [ $i -lt 200 ]; do printf 'row%03d\\n' $i; i=$((i+1)); done; exec cat",
@@ -286,9 +286,9 @@ mod tests {
             .run(&["display-message", "-p", "#{socket_path}"])
             .unwrap();
         for scrollback in [0, 10] {
-            let mut connection = tmux_workspaces_tmux::connection::connect(
+            let mut connection = agent_interface_tmux::connection::connect(
                 std::path::Path::new(socket.trim()),
-                tmux_workspaces_test_support::TmuxServer::SESSION,
+                agent_interface_test_support::TmuxServer::SESSION,
             )
             .unwrap();
             let seed = attach(
@@ -321,7 +321,7 @@ mod tests {
 
     #[test]
     fn window_moved_after_layout_reply_cannot_be_captured() {
-        use tmux_workspaces_test_support::TmuxServer;
+        use agent_interface_test_support::TmuxServer;
         struct MoveOnCapture<'a> {
             stdin: ChildStdin,
             server: &'a TmuxServer,
@@ -349,7 +349,7 @@ mod tests {
         let socket = server
             .run(&["display-message", "-p", "#{socket_path}"])
             .unwrap();
-        let mut connection = tmux_workspaces_tmux::connection::connect(
+        let mut connection = agent_interface_tmux::connection::connect(
             std::path::Path::new(socket.trim()),
             "capture-source",
         )

@@ -14,7 +14,7 @@ and record the revision, OS, hardware, tmux version and display refresh rate.
 
 ```sh
 python3 scripts/prepare-native.py
-LIBGHOSTTY_VT_SYS_OPTIMIZE=ReleaseFast cargo build --release --locked -p tmux-workspaces-bench -p tmux-workspaces-bench-rio
+LIBGHOSTTY_VT_SYS_OPTIMIZE=ReleaseFast cargo build --release --locked -p agent-interface-bench -p agent-interface-bench-rio
 ```
 
 The native engine uses `ReleaseFast` for measurements. Keep the default
@@ -24,8 +24,8 @@ executables must come from the same revision.
 ## Headless measurements
 
 ```sh
-./target/release/tmux-workspaces-bench gate1 --out results/headless
-./target/release/tmux-workspaces-bench gate5 --out results/recovery
+./target/release/agent-interface-bench gate1 --out results/headless
+./target/release/agent-interface-bench gate5 --out results/recovery
 ```
 
 The command names identify these measurements:
@@ -50,7 +50,7 @@ Do not type or click while a run is active.
 Build the benchmark window with the same configuration as the harness:
 
 ```sh
-LIBGHOSTTY_VT_SYS_OPTIMIZE=ReleaseFast cargo build --release --locked -p tmux-workspaces-app --example bench-window
+LIBGHOSTTY_VT_SYS_OPTIMIZE=ReleaseFast cargo build --release --locked -p agent-interface-app --example bench-window
 ```
 
 The bulk-output measurement also uses a pinned vtebench checkout. Prepare it
@@ -72,9 +72,9 @@ size is supplied in `LINES` and `COLUMNS` so the workload uses the measured grid
 Then run:
 
 ```sh
-./target/release/tmux-workspaces-bench gate2 --vtebench /path/to/vtebench --out results/output
-./target/release/tmux-workspaces-bench gate3 --out results/typing
-./target/release/tmux-workspaces-bench gate4 --out results/frames
+./target/release/agent-interface-bench gate2 --vtebench /path/to/vtebench --out results/output
+./target/release/agent-interface-bench gate3 --out results/typing
+./target/release/agent-interface-bench gate4 --out results/frames
 ```
 
 `gate2` measures bulk output and vtebench write throughput. `gate3` measures the
@@ -105,6 +105,6 @@ Display capture timestamps also exclude the panel's scan-out and
 pixel response. Close latency comparisons need an independent display-level
 measurement, such as a camera.
 
-Run `tmux-workspaces-bench` without arguments for the available options. Keep
+Run `agent-interface-bench` without arguments for the available options. Keep
 raw run output outside tracked documentation; include the relevant measurements
 and their limitations with a performance-related pull request.

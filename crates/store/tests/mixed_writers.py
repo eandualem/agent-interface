@@ -213,7 +213,7 @@ def main():
     env["PYTHONPATH"] = str(reference)
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     artifacts = subprocess.check_output(
-        ["cargo", "build", "-p", "tmux-workspaces-store", "--message-format=json"], cwd=ROOT, text=True,
+        ["cargo", "build", "-p", "agent-interface-store", "--message-format=json"], cwd=ROOT, text=True,
     )
     libraries = {}
     for line in artifacts.splitlines():
@@ -225,8 +225,8 @@ def main():
     with tempfile.TemporaryDirectory(prefix="writer-binary-") as temporary:
         binary = Path(temporary) / "rust-writer"
         command = ["rustc", "--edition=2024", str(HERE / "support/writer.rs"), "-o", str(binary),
-                   "-L", "dependency=" + str(Path(libraries["tmux_workspaces_store"]).parent / "deps")]
-        for name in ("tmux_workspaces_store", "tmux_workspaces_core", "serde_json"):
+                   "-L", "dependency=" + str(Path(libraries["agent_interface_store"]).parent / "deps")]
+        for name in ("agent_interface_store", "agent_interface_core", "serde_json"):
             command += ["--extern", name + "=" + libraries[name]]
         subprocess.run(command, check=True)
         results = [run_case(binary, env, first, scenario)

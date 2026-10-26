@@ -2,7 +2,7 @@
 
 use std::fmt::Write as _;
 
-use tmux_workspaces_term::{Attributes, Color, Cursor, Screen, Style, Terminal, Underline, Width};
+use agent_interface_term::{Attributes, Color, Cursor, Screen, Style, Terminal, Underline, Width};
 
 /// Every cell of a terminal's screen, as the comparison sees it.
 pub struct Grid {

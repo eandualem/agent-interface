@@ -2,9 +2,9 @@
 
 use std::collections::HashMap;
 
+use agent_interface_core::{Direction, Layout, Node};
+use agent_interface_store::Document;
 use gpui::{Bounds, Context, Pixels, Point, Window, px};
-use tmux_workspaces_core::{Direction, Layout, Node};
-use tmux_workspaces_store::Document;
 
 use super::Browser;
 use crate::library::WindowLayout;
@@ -255,8 +255,8 @@ impl Browser {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agent_interface_store::Store;
     use gpui::{point, size};
-    use tmux_workspaces_store::Store;
 
     #[test]
     fn placement_uses_edges_and_leaves_the_center_as_a_cancel_target() {

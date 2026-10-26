@@ -2,7 +2,7 @@
 //! crate, the path the app uses, and `alacritty_terminal` for comparison.
 //! Both expose the same owned display data.
 //!
-//! `rio-vt` runs in `tmux-workspaces-bench-rio` instead: it and
+//! `rio-vt` runs in `agent-interface-bench-rio` instead: it and
 //! `libghostty-vt` both contain the simdutf C++ library, and a program that
 //! links both crashes.
 
@@ -10,7 +10,7 @@ pub mod alacritty;
 #[cfg(test)]
 pub mod common;
 
-use tmux_workspaces_term::{Screen, Terminal};
+use agent_interface_term::{Screen, Terminal};
 
 use crate::engine::Engine;
 

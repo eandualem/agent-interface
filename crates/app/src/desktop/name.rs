@@ -60,7 +60,7 @@ impl Text {
             })
             .take(
                 (if self.feedback {
-                    tmux_workspaces_roster::feedback::TEXT_LIMIT
+                    agent_interface_roster::feedback::TEXT_LIMIT
                 } else {
                     80usize
                 })
@@ -709,12 +709,12 @@ mod tests {
         assert_eq!(text.cursor, message.len());
         text.replace(
             None,
-            &"x".repeat(tmux_workspaces_roster::feedback::TEXT_LIMIT),
+            &"x".repeat(agent_interface_roster::feedback::TEXT_LIMIT),
             false,
         );
         assert_eq!(
             text.value.chars().count(),
-            tmux_workspaces_roster::feedback::TEXT_LIMIT
+            agent_interface_roster::feedback::TEXT_LIMIT
         );
     }
 

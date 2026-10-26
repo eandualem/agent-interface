@@ -3,7 +3,7 @@
 
 use std::time::{Duration, Instant};
 
-use tmux_workspaces_test_support::TmuxServer;
+use agent_interface_test_support::TmuxServer;
 
 use super::connection::{Connection, Event, TIMEOUT, lines};
 use super::pty::Reference;
@@ -105,7 +105,7 @@ fn source_lifetime(interrupt_detach: bool) {
             "set-option",
             "-t",
             "helper",
-            "@tmux_workspaces_attachment",
+            "@agent_interface_attachment",
             "1",
         ])
         .unwrap();

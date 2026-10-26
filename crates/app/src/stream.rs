@@ -1,6 +1,6 @@
 //! Output boundaries shared by the app and fidelity harness.
 
-use tmux_workspaces_term::{Error, Terminal};
+use agent_interface_term::{Error, Terminal};
 
 /// Feed output until pending wrap requires a new tmux snapshot. Return the
 /// number of bytes fed and whether a capture is needed; the remainder must not

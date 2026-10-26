@@ -2,11 +2,11 @@
 
 use std::{cell::RefCell, path::PathBuf, rc::Rc};
 
-use gpui::{Context, Entity, Subscription, Window, div, prelude::*, px, relative};
-use tmux_workspaces_roster::{
+use agent_interface_roster::{
     feedback::{self, Outcome},
     views::ReportItem,
 };
+use gpui::{Context, Entity, Subscription, Window, div, prelude::*, px, relative};
 
 use crate::desktop::{
     components as ui,

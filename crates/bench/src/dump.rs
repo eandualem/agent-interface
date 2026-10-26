@@ -1,7 +1,7 @@
 //! The comparison format for final screens: one line per cell, so screens
 //! from different engines and processes compare as text.
 //!
-//! `tmux-workspaces-bench-rio` includes this file.
+//! `agent-interface-bench-rio` includes this file.
 
 use std::fmt::Write as _;
 

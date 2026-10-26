@@ -3,9 +3,9 @@
 use std::collections::{BTreeMap, HashMap};
 use std::io::{self, Write};
 
+use agent_interface_core::{AgentSection, Direction, Layout, Node};
 use serde::{Serialize, Serializer};
 use serde_json::{Value, value::RawValue};
-use tmux_workspaces_core::{AgentSection, Direction, Layout, Node};
 
 type RawObject<'a> = BTreeMap<String, &'a RawValue>;
 type Object<'a> = BTreeMap<String, Field<'a>>;

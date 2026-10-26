@@ -38,7 +38,7 @@ use std::sync::{Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use tmux_workspaces_test_support::TmuxServer;
+use agent_interface_test_support::TmuxServer;
 
 use super::clock::HostTime;
 use super::displays::{self, DisplayState};
@@ -234,7 +234,7 @@ impl Build {
     /// Returns how this program was built, in the terms the benchmark window
     /// uses for itself.
     pub fn own() -> Self {
-        let engine = tmux_workspaces_term::engine_build();
+        let engine = agent_interface_term::engine_build();
         Self {
             revision: env!("BENCH_REVISION").to_owned(),
             profile: concat!(
@@ -838,7 +838,7 @@ fn bundle(app: &Path, executable: &str, kind: &str) -> io::Result<PathBuf> {
          \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
          <plist version=\"1.0\"><dict>\n\
          <key>CFBundleExecutable</key><string>{executable}</string>\n\
-         <key>CFBundleIdentifier</key><string>local.tmux-workspaces.{executable}</string>\n\
+         <key>CFBundleIdentifier</key><string>local.agent-interface.{executable}</string>\n\
          <key>CFBundlePackageType</key><string>APPL</string>\n\
          <key>{kind}</key><true/>\n\
          </dict></plist>\n"

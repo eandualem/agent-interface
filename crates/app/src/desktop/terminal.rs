@@ -7,11 +7,11 @@ use crate::{
     sessions,
     view::{Appearance, TerminalView},
 };
+use agent_interface_core::Leaf;
+use agent_interface_tmux::connection::SessionWindow;
 use futures::channel::mpsc::{self, UnboundedReceiver};
 use gpui::{Context, Entity, Render, Task, Window, div, prelude::*};
 use std::{path::PathBuf, sync::Arc};
-use tmux_workspaces_core::Leaf;
-use tmux_workspaces_tmux::connection::SessionWindow;
 
 static CONNECTION_ATTEMPTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
@@ -24,7 +24,7 @@ pub(super) struct Target {
 
 impl Target {
     /// Clear only the pane contents the user acted on, in the selected tab.
-    pub fn detach_from(&self, layout: &mut tmux_workspaces_core::Layout) -> bool {
+    pub fn detach_from(&self, layout: &mut agent_interface_core::Layout) -> bool {
         layout.tab().is_some_and(|tab| {
             tab.tree
                 .leaves()
@@ -35,7 +35,7 @@ impl Target {
     }
 
     /// A hidden tab still owns its connection until the saved target changes.
-    pub fn exists_in(&self, layout: &tmux_workspaces_core::Layout) -> bool {
+    pub fn exists_in(&self, layout: &agent_interface_core::Layout) -> bool {
         layout.workspaces.iter().any(|workspace| {
             workspace.tabs.iter().any(|tab| {
                 tab.tree
@@ -63,8 +63,8 @@ impl Target {
 struct Ready {
     socket: PathBuf,
     panes: Option<Arc<Panes>>,
-    layout: Option<tmux_workspaces_tmux::layout::Change>,
-    input: tmux_workspaces_tmux::control::PaneId,
+    layout: Option<agent_interface_tmux::layout::Change>,
+    input: agent_interface_tmux::control::PaneId,
     windows: Vec<SessionWindow>,
     window: u32,
     updates: Option<UnboundedReceiver<()>>,
@@ -115,12 +115,12 @@ fn connect_selected(
     };
     let connection = match selected {
         Some(window) if reopened => {
-            tmux_workspaces_tmux::connection::connect_reopened(&socket, &session, &window)
+            agent_interface_tmux::connection::connect_reopened(&socket, &session, &window)
         }
         Some(window) => {
-            tmux_workspaces_tmux::connection::connect_window(&socket, &session, &window)
+            agent_interface_tmux::connection::connect_window(&socket, &session, &window)
         }
-        None => tmux_workspaces_tmux::connection::connect(&socket, &session),
+        None => agent_interface_tmux::connection::connect(&socket, &session),
     }
     .map_err(|e| e.to_string())?;
     let (wake, updates) = mpsc::unbounded();
@@ -190,7 +190,7 @@ impl LiveTerminal {
     pub fn open_shell(
         &mut self,
         leaf: Leaf,
-        environment: tmux_workspaces_tmux::shells::Environment,
+        environment: agent_interface_tmux::shells::Environment,
         cx: &mut Context<Self>,
     ) {
         if !self.target.matches_leaf(&leaf) {
@@ -241,7 +241,7 @@ impl LiveTerminal {
                         Some(
                             cx.background_executor()
                                 .spawn(async move {
-                                    let windows = tmux_workspaces_tmux::connection::session_windows(
+                                    let windows = agent_interface_tmux::connection::session_windows(
                                         &socket, &window,
                                     );
                                     (socket, window, windows)
@@ -287,7 +287,7 @@ impl LiveTerminal {
     fn start_window(
         &mut self,
         selected: Option<SessionWindow>,
-        environment: Option<tmux_workspaces_tmux::shells::Environment>,
+        environment: Option<agent_interface_tmux::shells::Environment>,
         reconnect: bool,
         cx: &mut Context<Self>,
     ) {
@@ -317,9 +317,9 @@ impl LiveTerminal {
                         .map_err(|error| error.to_string())?;
                     let socket = library::shell_socket_for_creation(&directory)
                         .map_err(|error| error.to_string())?;
-                    tmux_workspaces_tmux::shells::ensure(
+                    agent_interface_tmux::shells::ensure(
                         &socket,
-                        &[tmux_workspaces_tmux::shells::Request {
+                        &[agent_interface_tmux::shells::Request {
                             id: target.leaf.id.clone(),
                             cwd: target.leaf.cwd.as_ref().map(PathBuf::from),
                         }],
@@ -510,17 +510,44 @@ pub(super) fn appearance() -> Appearance {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "requires an installed Linux font and graphical session; run in graphical CI"]
+    fn linux_terminal_font_has_uniform_ascii_cells() {
+        let app = gpui_platform::application();
+        let text = app.text_system();
+        let appearance = appearance();
+        assert!(
+            text.all_font_names()
+                .contains(&appearance.font_family.to_string())
+        );
+        let font = gpui::font(appearance.font_family.clone());
+        let id = text.resolve_font(&font);
+        let cell = crate::view::cell_size(&text, &appearance);
+        for ch in ' '..='~' {
+            let advance = text.advance(id, px(appearance.font_size), ch).unwrap();
+            assert!(
+                (f32::from(advance.width - cell.width)).abs() < 0.01,
+                "{ch:?}: {advance:?}, cell {cell:?}"
+            );
+        }
+        println!(
+            "Linux terminal font {}: ASCII cell {:?}",
+            appearance.font_family, cell
+        );
+    }
+    use agent_interface_core::Attachment;
+    use agent_interface_term::Screen;
+    use agent_interface_test_support::TmuxServer;
     use std::{
         collections::HashMap,
         time::{Duration, Instant},
     };
-    use tmux_workspaces_core::Attachment;
-    use tmux_workspaces_term::Screen;
-    use tmux_workspaces_test_support::TmuxServer;
 
     #[test]
     fn attachment_survives_navigation_and_detach_returns_the_same_pane_to_its_chooser() {
-        let mut model = tmux_workspaces_core::Layout::initial("/work".into());
+        let mut model = agent_interface_core::Layout::initial("/work".into());
         model.attach(Some(Attachment {
             session: "worker".into(),
             source_socket: Some("/fixture/source".into()),
@@ -540,7 +567,7 @@ mod tests {
         model.choose_workspace(&workspace);
         model.choose_tab(&tab);
         model.split(
-            tmux_workspaces_core::Direction::Right,
+            agent_interface_core::Direction::Right,
             "/other".into(),
             true,
         );
@@ -630,7 +657,7 @@ mod tests {
             .run(&["kill-window", "-t", &format!("@{}", selected.id)])
             .unwrap();
         assert!(connect_selected(target.clone(), Some(selected.clone()), true).is_err());
-        let remaining = tmux_workspaces_tmux::connection::session_windows(
+        let remaining = agent_interface_tmux::connection::session_windows(
             PathBuf::from(socket.trim()).as_path(),
             &selected,
         )
@@ -783,7 +810,7 @@ mod tests {
                 "off",
             ])
             .unwrap();
-        let moved = tmux_workspaces_tmux::connection::connect_window(
+        let moved = agent_interface_tmux::connection::connect_window(
             std::path::Path::new(socket.trim()),
             "window-source",
             &selected,
@@ -1092,13 +1119,13 @@ mod tests {
         queue
             .try_send((
                 retired,
-                tmux_workspaces_term::input::Input::Paste("discarded".into()),
+                agent_interface_term::input::Input::Paste("discarded".into()),
             ))
             .unwrap();
         queue
             .try_send((
                 ready.input,
-                tmux_workspaces_term::input::Input::Paste("surviving-input".into()),
+                agent_interface_term::input::Input::Paste("surviving-input".into()),
             ))
             .unwrap();
         wait(&mut screens, "surviving-input");

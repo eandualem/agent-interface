@@ -1,6 +1,6 @@
 //! Output the engines agree on, and the comparison the cross-engine tests
 //! use. `alacritty_terminal` is the reference for `rio-vt`, because `rio-vt`
-//! cannot share a program with `libghostty-vt`; `tmux-workspaces-bench-rio`
+//! cannot share a program with `libghostty-vt`; `agent-interface-bench-rio`
 //! includes this file for its tests.
 
 use crate::display::Screen;
