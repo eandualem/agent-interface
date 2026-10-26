@@ -243,7 +243,7 @@ impl SettingsWindow {
             .children(children)
     }
 
-    fn general(&self) -> gpui::Div {
+    fn general(&self, cx: &mut Context<Self>) -> gpui::Div {
         let t = tokens();
         let library = crate::library::library_directory(None)
             .map_or_else(|error| error.to_string(), |path| path.display().to_string());
@@ -251,6 +251,27 @@ impl SettingsWindow {
             || "unavailable".to_owned(),
             |path| path.display().to_string(),
         );
+        let current = Settings::current().logging;
+        let mut levels = div().flex().gap(px(t.space.s8));
+        for (level, name, label) in crate::diagnostics::Level::ALL {
+            levels = levels.child(
+                ui::button(
+                    SharedString::from(format!("logging-{name}")),
+                    label,
+                    if current == level {
+                        ui::Button::Primary
+                    } else {
+                        ui::Button::Secondary
+                    },
+                )
+                .on_click(cx.listener(move |view, _, _, cx| {
+                    view.change(|settings| settings.logging = level, cx);
+                })),
+            );
+        }
+        let logs = crate::diagnostics::directory()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "unavailable".into());
         div()
             .flex()
             .flex_col()
@@ -289,6 +310,16 @@ impl SettingsWindow {
                     .child(concat!("Agent Interface ", env!("CARGO_PKG_VERSION")))
                     .into_any_element(),
             ]))
+            .child(Self::section([
+                Self::label("DIAGNOSTIC LOGGING").into_any_element(),
+                levels.into_any_element(),
+                Self::note("Warnings is the quiet default. Debug records lifecycle events; Trace adds operation timings. Changes apply now and on future launches.").into_any_element(),
+                Self::value(logs).into_any_element(),
+                Self::note("Local logs use at most 16 MiB. Terminal contents, typed commands and credentials are excluded. Nothing is uploaded.").into_any_element(),
+            ]))
+            .when_some(crate::diagnostics::problem(), |el, error| {
+                el.child(Self::note(error).text_color(colors().attention_text))
+            })
     }
 
     fn appearance(&self, cx: &mut Context<Self>) -> gpui::Div {
@@ -844,7 +875,7 @@ impl Render for SettingsWindow {
             );
         }
         let content = match self.page {
-            Page::General => self.general(),
+            Page::General => self.general(cx),
             Page::Appearance => self.appearance(cx),
             Page::Shortcuts => self.shortcuts(cx),
             Page::Agents => self.agents(cx),

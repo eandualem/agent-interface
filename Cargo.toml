@@ -71,6 +71,10 @@ uzers = { version = "=0.12.2", default-features = false }
 sha2 = "=0.10.9"
 http = "=1.5.0"
 reqwest = { version = "=0.13.5", default-features = false, features = ["blocking"] }
+# Structured local diagnostics; filtering and file I/O belong to the app.
+tracing = "=0.1.44"
+tracing-subscriber = { version = "=0.3.23", default-features = false, features = ["std", "fmt", "json", "registry"] }
+tracing-appender = "=0.2.5"
 
 uuid = { version = "=1.28.0", features = ["v4"] }
 

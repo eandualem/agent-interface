@@ -56,6 +56,8 @@ pub fn pane_headers() -> PaneHeaders {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Settings {
+    /// Persistent, explicit local diagnostic verbosity.
+    pub logging: crate::diagnostics::Level,
     pub light: bool,
     pub font_size: f32,
     pub shortcuts: super::shortcuts::Bindings,
@@ -67,6 +69,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            logging: crate::diagnostics::Level::Warnings,
             light: false,
             font_size: super::design::tokens().font.terminal_size,
             shortcuts: super::shortcuts::Bindings::default(),
@@ -84,6 +87,13 @@ impl Settings {
         let Ok(table) = text.parse::<toml::Table>() else {
             return settings;
         };
+        if let Some(value) = table.get("logging").and_then(toml::Value::as_str)
+            && let Some((level, ..)) = crate::diagnostics::Level::ALL
+                .iter()
+                .find(|(_, name, _)| *name == value)
+        {
+            settings.logging = *level;
+        }
         if let Some(theme) = table.get("theme").and_then(toml::Value::as_str) {
             settings.light = theme == "light";
         }
@@ -119,6 +129,7 @@ impl Settings {
             if self.light { "light" } else { "dark" },
             self.font_size as u32
         );
+        text.push_str(&format!("logging = \"{}\"\n", self.logging.name()));
         if self.pane_headers != PaneHeaders::Always {
             text.push_str(&format!(
                 "pane_headers = \"{}\"\n",
@@ -140,6 +151,7 @@ impl Settings {
 
     /// Make these the settings every window draws with.
     pub fn apply(&self) {
+        crate::diagnostics::set_level(self.logging);
         super::design::set_light(self.light);
         PANE_HEADERS.store(self.pane_headers as u8, Ordering::Relaxed);
         FONT_SIZE.store(self.font_size.to_bits(), Ordering::Relaxed);
@@ -150,6 +162,7 @@ impl Settings {
     /// The settings windows are drawing with now.
     pub fn current() -> Self {
         Self {
+            logging: crate::diagnostics::level(),
             light: super::design::is_light(),
             font_size: font_size(),
             shortcuts: super::shortcuts::current(),
@@ -271,6 +284,9 @@ fn spawn_save(
             .and_then(|path| save(&settings, &path));
         if result.is_ok() {
             *written = generation;
+            tracing::debug!(event = "settings_saved", generation, "Settings saved");
+        } else if let Err(error) = &result {
+            tracing::warn!(event = "settings_save_failed", generation, error_kind = ?error.kind(), os_error = error.raw_os_error(), "Settings save failed");
         }
         done(result);
     }));
@@ -332,6 +348,28 @@ fn save_to_temporary(settings: &Settings, path: &Path, temporary: &Path) -> io::
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn diagnostic_levels_are_explicit_and_survive_normal_settings_load() {
+        assert_eq!(
+            Settings::parse("").logging,
+            crate::diagnostics::Level::Warnings
+        );
+        assert_eq!(
+            Settings::parse("logging = 'invalid'").logging,
+            crate::diagnostics::Level::Warnings
+        );
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.toml");
+        for (level, ..) in crate::diagnostics::Level::ALL {
+            let settings = Settings {
+                logging: level,
+                ..Settings::default()
+            };
+            save(&settings, &path).unwrap();
+            assert_eq!(load_from(&path).unwrap(), settings);
+        }
+    }
 
     #[test]
     fn save_cleanup_only_removes_its_own_temporary() {
@@ -422,6 +460,7 @@ mod tests {
             )
             .unwrap();
         let light = Settings {
+            logging: crate::diagnostics::Level::Warnings,
             light: true,
             font_size: 16.0,
             shortcuts,

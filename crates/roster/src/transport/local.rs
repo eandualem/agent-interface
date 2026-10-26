@@ -22,7 +22,10 @@ pub(super) fn request(
 ) -> Result<Vec<u8>, Option<u16>> {
     let socket = Path::new(socket);
     let uid = rustix::process::geteuid().as_raw();
-    let metadata = fs::symlink_metadata(socket).map_err(|_| None)?;
+    let metadata = fs::symlink_metadata(socket).map_err(|error| {
+        tracing::debug!(event = "provider_socket_metadata_failed", error_kind = ?error.kind(), os_error = error.raw_os_error(), "Provider socket metadata unavailable");
+        None
+    })?;
     let parent = fs::metadata(socket.parent().ok_or(None)?).map_err(|_| None)?;
     if !socket.is_absolute()
         || !metadata.file_type().is_socket()
@@ -32,6 +35,10 @@ pub(super) fn request(
         || parent.uid() != uid
         || parent.mode() & 0o777 != 0o700
     {
+        tracing::debug!(
+            event = "provider_socket_rejected",
+            "Provider socket ownership or permissions invalid"
+        );
         return Err(None);
     }
     // The runtime is scoped to this request. Dropping it also cancels the HTTP
@@ -42,8 +49,12 @@ pub(super) fn request(
         .map_err(|_| None)?;
     runtime.block_on(async {
         tokio::time::timeout(timeout, async {
-            let stream = UnixStream::connect(socket).await.map_err(|_| None)?;
+            let stream = UnixStream::connect(socket).await.map_err(|error| {
+                tracing::debug!(event = "provider_socket_connect_failed", error_kind = ?error.kind(), os_error = error.raw_os_error(), "Provider socket connection failed");
+                None
+            })?;
             if stream.peer_cred().map_err(|_| None)?.uid() != uid {
+                tracing::debug!(event = "provider_peer_rejected", "Provider peer identity rejected");
                 return Err(None);
             }
             // Check the connected peer before constructing/sending credentials.

@@ -74,7 +74,9 @@ actions!(
 /// An absent directory uses the shared library's normal path lookup.
 pub fn run(directory: Option<PathBuf>) -> Result<(), String> {
     let source = crate::sessions::source_socket(None).map_err(|e| e.to_string());
-    settings::load().apply();
+    let preferences = settings::load();
+    preferences.apply();
+    let _logging = crate::diagnostics::start(preferences.logging);
     let failure = Rc::new(RefCell::new(None));
     let opened = Rc::clone(&failure);
     application()

@@ -22,6 +22,7 @@ const CAPTURE_LIMIT: usize = 1024 * 1024;
 /// Call this on the app's worker, not its UI thread. Failed reads must replace
 /// previous availability; cached names are not evidence that sessions are online.
 pub fn read_sessions(socket: &Path) -> io::Result<Vec<String>> {
+    let _span = tracing::trace_span!("tmux_query", operation = "list_sessions").entered();
     let mut command = command(socket).ok_or_else(unavailable)?;
     command.args([
         "list-sessions",
@@ -53,6 +54,7 @@ pub fn read_sessions(socket: &Path) -> io::Result<Vec<String>> {
 /// UTF-8 paths retain spaces and newlines, including a trailing newline. Like
 /// discovery, this bounded query belongs on a worker, not the UI thread.
 pub fn read_session_directory(socket: &Path, session: &str) -> io::Result<String> {
+    let _span = tracing::trace_span!("tmux_query", operation = "read_directory").entered();
     let unavailable = || io::Error::other("Working directory unavailable");
     if names(session).as_slice() != [session] {
         return Err(unavailable());
@@ -103,6 +105,7 @@ pub struct AttachmentPolicy {
 /// snapshot: attachment code must revalidate the identity and policy before any
 /// lifecycle operation. A later session reusing the name is a different target.
 pub fn read_attachment_policy(socket: &Path, session: &str) -> io::Result<AttachmentPolicy> {
+    let _span = tracing::debug_span!("tmux_query", operation = "resolve_session").entered();
     let unavailable = || io::Error::other("Attachment policy unavailable");
     if names(session).as_slice() != [session] {
         return Err(unavailable());
@@ -115,10 +118,33 @@ pub fn read_attachment_policy(socket: &Path, session: &str) -> io::Result<Attach
     ]);
     let output = capture(command, TIMEOUT).map_err(|_| unavailable())?;
     if !output.status.success() {
+        tracing::debug!(
+            event = "session_query_failed",
+            exit_code = output.status.code(),
+            "Session discovery command failed"
+        );
         return Err(unavailable());
     }
     let output = std::str::from_utf8(&output.stdout).map_err(|_| unavailable())?;
-    named_policy(output, session).ok_or_else(unavailable)
+    let policy = named_policy(output, session);
+    if let Some(policy) = policy {
+        tracing::debug!(
+            event = "session_resolved",
+            server_pid = policy.server_pid,
+            session_id = policy.session_id,
+            "Saved session resolved"
+        );
+    } else {
+        let matching_name = output
+            .lines()
+            .any(|line| line.splitn(5, '|').nth(4) == Some(session));
+        tracing::debug!(
+            event = "session_unresolved",
+            matching_name,
+            "Saved session missing or discovery response invalid"
+        );
+    }
+    policy.ok_or_else(unavailable)
 }
 
 fn named_policy(output: &str, session: &str) -> Option<AttachmentPolicy> {
@@ -223,7 +249,8 @@ fn names(output: &str) -> Vec<String> {
 // Nonblocking socket pairs let the worker drain both streams while enforcing
 // one deadline, without reader threads that could outlive a failed query.
 pub(crate) fn capture(mut command: Command, timeout: Duration) -> io::Result<Output> {
-    let deadline = Instant::now() + timeout;
+    let started = Instant::now();
+    let deadline = started + timeout;
     let (mut stdout, output) = UnixStream::pair()?;
     let (mut stderr, error) = UnixStream::pair()?;
     stdout.set_nonblocking(true)?;
@@ -232,9 +259,11 @@ pub(crate) fn capture(mut command: Command, timeout: Duration) -> io::Result<Out
         .stdin(Stdio::null())
         .stdout(Stdio::from(OwnedFd::from(output)))
         .stderr(Stdio::from(OwnedFd::from(error)))
-        .spawn()?;
+        .spawn().inspect_err(|error| {
+            tracing::debug!(event = "tmux_command_spawn_failed", error_kind = ?error.kind(), os_error = error.raw_os_error(), "Could not start tmux command");
+        })?;
     drop(command);
-    let result = (|| {
+    let result: io::Result<Output> = (|| {
         let mut out = Vec::new();
         let mut err = Vec::new();
         let mut remaining = CAPTURE_LIMIT;
@@ -257,6 +286,19 @@ pub(crate) fn capture(mut command: Command, timeout: Duration) -> io::Result<Out
     if result.is_err() {
         let _ = child.kill();
         let _ = child.wait();
+    }
+    match &result {
+        Ok(output) => tracing::trace!(
+            event = "tmux_command_finished",
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            exit_code = output.status.code(),
+            stdout_bytes = output.stdout.len(),
+            stderr_bytes = output.stderr.len(),
+            "Tmux command finished"
+        ),
+        Err(error) => {
+            tracing::debug!(event = "tmux_command_failed", elapsed_ms = started.elapsed().as_millis() as u64, error_kind = ?error.kind(), os_error = error.raw_os_error(), "Tmux command failed")
+        }
     }
     result
 }

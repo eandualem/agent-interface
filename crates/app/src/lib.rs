@@ -8,6 +8,7 @@
 
 pub mod artifacts;
 pub mod desktop;
+pub mod diagnostics;
 pub mod keymap;
 pub mod library;
 pub mod panes;

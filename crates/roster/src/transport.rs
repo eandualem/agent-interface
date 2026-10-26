@@ -65,7 +65,22 @@ pub(super) fn fetch(
     key: &str,
     limit: usize,
 ) -> Result<Vec<u8>, Option<u16>> {
-    fetch_inner(url, path, key, limit).ok_or(None)?
+    let started = std::time::Instant::now();
+    let result = fetch_inner(url, path, key, limit).unwrap_or(Err(None));
+    if let Err(status) = &result {
+        tracing::debug!(
+            event = "provider_request_failed",
+            status = *status,
+            "Provider request failed"
+        );
+    }
+    tracing::trace!(
+        event = "provider_request_finished",
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        success = result.is_ok(),
+        "Provider request finished"
+    );
+    result
 }
 
 fn fetch_inner(
