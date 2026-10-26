@@ -45,7 +45,7 @@ python3 scripts/prepare-native.py
 export LIBGHOSTTY_VT_SYS_OPTIMIZE=ReleaseSafe
 cargo build --workspace
 cargo test --workspace
-cargo run -p tmux-workspaces-app
+cargo run -p agent-interface-app
 ```
 
 The first build takes a few minutes because it compiles Ghostty's core; later

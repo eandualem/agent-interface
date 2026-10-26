@@ -1,7 +1,7 @@
 use std::{collections::HashMap, io, path::Path};
 
-use tmux_workspaces_core::{Layout, Leaf};
-use tmux_workspaces_store::{Document, Error, Reconciliation};
+use agent_interface_core::{Layout, Leaf};
+use agent_interface_store::{Document, Error, Reconciliation};
 
 /// One window's local model and the shared document on which its edits are based.
 ///
@@ -141,7 +141,7 @@ impl WindowLayout {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tmux_workspaces_core::Attachment;
+    use agent_interface_core::Attachment;
 
     #[test]
     fn discarding_an_edit_preserves_navigation_and_the_shared_base() {
@@ -204,7 +204,7 @@ mod tests {
             )
             .unwrap();
         let mut store =
-            tmux_workspaces_store::Store::open_existing_writable(directory.path()).unwrap();
+            agent_interface_store::Store::open_existing_writable(directory.path()).unwrap();
         let mut window = WindowLayout::new(document);
         window.model_mut().rename_tab("Renamed");
         let (mut base, local) = window.save_snapshot();
@@ -340,7 +340,7 @@ mod tests {
         assert!(result.conflict && !result.active_tree_changed);
         assert!(window.terminal_input().is_none());
 
-        peer.split(tmux_workspaces_core::Direction::Right, "/tmp".into(), false);
+        peer.split(agent_interface_core::Direction::Right, "/tmp".into(), false);
         let second = peer.pane().unwrap().id.clone();
         let result = window
             .refresh(base.with_model(&peer, path).unwrap(), path)

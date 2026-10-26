@@ -1,8 +1,8 @@
-use serde_json::{Map, Value};
-use std::collections::HashSet;
-use tmux_workspaces_core::{
+use agent_interface_core::{
     AgentSection, Attachment, Direction, Layout, Leaf, Node, Tab, View, ViewKind, Workspace,
 };
+use serde_json::{Map, Value};
+use std::collections::HashSet;
 use unicode_properties::{GeneralCategoryGroup, UnicodeGeneralCategory};
 
 type Result<T> = std::result::Result<T, String>;

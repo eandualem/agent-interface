@@ -634,7 +634,7 @@ mod tests {
     /// Set for the process that
     /// `an_interrupt_stops_the_servers_the_process_started` interrupts, to
     /// the file that its interrupt handler's `first` creates.
-    const INTERRUPTED: &str = "TMUX_WORKSPACES_TEST_INTERRUPTED";
+    const INTERRUPTED: &str = "AGENT_INTERFACE_TEST_INTERRUPTED";
 
     #[test]
     fn an_interrupt_stops_the_servers_the_process_started() {

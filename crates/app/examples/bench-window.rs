@@ -20,13 +20,13 @@
 use std::io::Write;
 use std::sync::Arc;
 
+use agent_interface_app::panes::Panes;
+use agent_interface_app::view::{self, Appearance, TerminalView};
 use gpui::{
     ActivationPolicy, App, AppContext, Bounds, Rgba, SharedString, TitlebarOptions, WindowBounds,
     WindowOptions, point, px, size,
 };
 use gpui_platform::application;
-use tmux_workspaces_app::panes::Panes;
-use tmux_workspaces_app::view::{self, Appearance, TerminalView};
 use tmux_workspaces_test_support::ServerRef;
 use tmux_workspaces_tmux::control::PaneId;
 

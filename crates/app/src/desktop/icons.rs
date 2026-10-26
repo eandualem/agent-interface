@@ -19,6 +19,7 @@ icons!(
     "chevron-up",
     "hash",
     "plus",
+    "minus",
     "ellipsis",
     "settings",
     "x",

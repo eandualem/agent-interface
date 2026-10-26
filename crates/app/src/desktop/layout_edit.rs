@@ -7,10 +7,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use tmux_workspaces_core::{Direction, Layout, Node, Tab};
+use agent_interface_core::{Direction, Layout, Node, Tab};
 
 use crate::library;
-use tmux_workspaces_store::{Document, Error, Reconciliation, Store};
+use agent_interface_store::{Document, Error, Reconciliation, Store};
 
 static PENDING: AtomicU32 = AtomicU32::new(0);
 
@@ -187,7 +187,7 @@ pub(super) fn remember_directories(model: &mut Layout, previous: &Tab, socket: &
 mod tests {
     use super::*;
     use crate::library::WindowLayout;
-    use tmux_workspaces_core::Attachment;
+    use agent_interface_core::Attachment;
 
     #[test]
     fn shutdown_waits_for_an_accepted_layout_write_behind_a_database_lock() {

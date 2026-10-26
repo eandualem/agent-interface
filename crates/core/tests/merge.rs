@@ -1,7 +1,7 @@
 //! Differential cases generated from the pinned Python model in the fixture.
 
+use agent_interface_core::merge::merge_shared_layout;
 use serde_json::Value;
-use tmux_workspaces_core::merge::merge_shared_layout;
 
 #[test]
 fn shared_merges_match_the_pinned_python_model() {

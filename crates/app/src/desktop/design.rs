@@ -61,7 +61,7 @@ group!(
 
 group!(
     /// Font families and the default terminal size.
-    Fonts { ui: String = string, mono: String = string, terminal_size: f32 = number }
+    Fonts { ui: String = string, mono: String = string, mono_linux: String = string, terminal_size: f32 = number }
 );
 
 group!(
@@ -193,7 +193,11 @@ impl TextStyle {
 
 static DESIGN: LazyLock<Design> = LazyLock::new(|| {
     // The bundled file is checked by a test, so this cannot fail at runtime.
-    Design::parse(SOURCE).expect("bundled design tokens are valid")
+    let mut design = Design::parse(SOURCE).expect("bundled design tokens are valid");
+    if cfg!(target_os = "linux") {
+        design.font.mono.clone_from(&design.font.mono_linux);
+    }
+    design
 });
 static LIGHT: AtomicBool = AtomicBool::new(false);
 

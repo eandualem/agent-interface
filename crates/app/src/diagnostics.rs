@@ -53,7 +53,7 @@ impl Level {
         // Third-party HTTP/UI log records can contain user data. Only explicitly
         // instrumented product targets are enabled, including at Trace.
         Targets::new()
-            .with_target("tmux_workspaces_app", level)
+            .with_target("agent_interface_app", level)
             .with_target("tmux_workspaces_tmux", level)
             .with_target("tmux_workspaces_roster", level)
     }
@@ -85,7 +85,7 @@ impl Drop for Guard {
     fn drop(&mut self) {
         tracing::debug!(event = "application_stopped", "Application stopped");
         if let Some(problem) = problem() {
-            eprintln!("tmux-workspaces diagnostics: {problem}");
+            eprintln!("agent-interface diagnostics: {problem}");
         }
         // WorkerGuard drains the bounded queue after this method returns.
     }
@@ -98,7 +98,7 @@ pub fn start(level: Level) -> Option<Guard> {
         Ok(guard) => Some(guard),
         Err(error) => {
             let message = format!("Logging unavailable: {error}");
-            eprintln!("tmux-workspaces: {message}");
+            eprintln!("agent-interface: {message}");
             *START_ERROR.lock().unwrap_or_else(|e| e.into_inner()) = Some(message);
             None
         }
@@ -195,7 +195,7 @@ pub fn directory() -> Option<PathBuf> {
             .or_else(|| {
                 crate::library::location::user_home(None).map(|home| home.join(".local/state"))
             })
-            .map(|state| state.join("tmux-workspaces/logs"))
+            .map(|state| state.join("agent-interface/logs"))
     }
 }
 

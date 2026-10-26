@@ -1,8 +1,8 @@
 //! Detached workspace choices for the native chooser.
 
 use crate::library::WindowLayout;
-use tmux_workspaces_core::{Layout, RenameOutcome};
-use tmux_workspaces_store::Document;
+use agent_interface_core::{Layout, RenameOutcome};
+use agent_interface_store::Document;
 
 pub(super) fn create(window: &WindowLayout, name: &str) -> Option<(Document, Layout)> {
     let (base, mut proposed) = window.save_snapshot();

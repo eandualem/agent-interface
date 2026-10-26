@@ -4,7 +4,7 @@
 fn diagnostics_run_without_terminal_or_library() {
     let directory = tempfile::tempdir().unwrap();
     for flag in ["--help", "--version", "--unknown"] {
-        let output = std::process::Command::new(env!("CARGO_BIN_EXE_tmux-workspaces"))
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_agent-interface"))
             .arg(flag)
             .env_clear()
             .env("HOME", directory.path())
@@ -26,7 +26,7 @@ fn browser_without_a_display_exits_instead_of_polling_an_invisible_window() {
         time::{Duration, Instant},
     };
     let directory = tempfile::tempdir().unwrap();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_tmux-workspaces"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_agent-interface"))
         .env_clear()
         .env("HOME", directory.path())
         .env("PATH", "")

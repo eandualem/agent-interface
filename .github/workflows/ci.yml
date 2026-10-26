@@ -51,7 +51,8 @@ jobs:
         run: >-
           sudo apt-get update && sudo apt-get install -y tmux pkg-config
           libfontconfig-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev
-          libx11-xcb-dev
+          libx11-xcb-dev fonts-dejavu-core xvfb xfwm4 xdotool x11-utils imagemagick dbus-x11
+          libegl1 libgl1-mesa-dri mesa-vulkan-drivers
 
       - name: Install tmux (macOS)
         if: runner.os == 'macOS'
@@ -85,6 +86,21 @@ jobs:
 
       - name: Test
         run: cargo test --workspace --locked
+
+      - name: Linux graphical regression checks
+        if: runner.os == 'Linux'
+        run: |
+          xvfb-run -a cargo test -p agent-interface-app linux_terminal_font_has_uniform_ascii_cells --locked -- --ignored --nocapture
+          xvfb-run -a -s '-screen 0 1440x900x24' dbus-run-session -- python3 scripts/test-linux-desktop.py
+
+      - name: Keep Linux graphical evidence
+        if: always() && runner.os == 'Linux'
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0, MIT
+        with:
+          name: linux-desktop-smoke
+          path: target/linux-desktop-smoke/
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Docs
         run: cargo doc --workspace --no-deps --locked

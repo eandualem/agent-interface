@@ -24,21 +24,33 @@ pub fn existing_shell_socket(resolved_directory: &Path) -> io::Result<Option<Pat
         )
     })?;
     let uid = uzers::get_current_uid();
-    let directory = PathBuf::from(format!("/tmp/tmux-workspaces-{uid}"));
-    existing_socket_in(&directory, uid, &socket_name(text))
+    let directory = PathBuf::from(format!("/tmp/agent-interface-{uid}"));
+    existing_socket_in(&directory, uid, &socket_name(text))?.map_or_else(
+        || {
+            existing_socket_in(
+                &PathBuf::from(format!("/tmp/tmux-workspaces-{uid}")),
+                uid,
+                &socket_name(text),
+            )
+        },
+        |socket| Ok(Some(socket)),
+    )
 }
 
 /// Resolve the ordinary-shell socket for an explicit creation request. Unlike
 /// lookup, this may create the private parent, but never repairs unsafe metadata.
 /// The caller must have saved an eligible ordinary leaf before using this path.
 pub fn shell_socket_for_creation(resolved_directory: &Path) -> io::Result<PathBuf> {
+    if let Some(socket) = existing_shell_socket(resolved_directory)? {
+        return Ok(socket);
+    }
     let text = resolved_directory
         .to_str()
         .filter(|_| resolved_directory.is_absolute())
         .ok_or_else(|| io::Error::other("Shell creation requires a resolved UTF-8 library path"))?;
     let uid = uzers::get_current_uid();
     create_socket_in(
-        &PathBuf::from(format!("/tmp/tmux-workspaces-{uid}")),
+        &PathBuf::from(format!("/tmp/agent-interface-{uid}")),
         uid,
         &socket_name(text),
     )
@@ -101,7 +113,7 @@ pub fn ordinary_session(leaf_id: &str) -> Option<String> {
 /// Only this in-memory field changes, and only after a successful read. No shell
 /// is created, no client attaches, and nothing is persisted.
 pub fn remember_shell_directory(
-    leaf: &mut tmux_workspaces_core::Leaf,
+    leaf: &mut agent_interface_core::Leaf,
     socket: &Path,
 ) -> io::Result<()> {
     let session = ordinary_session(&leaf.id)
@@ -140,7 +152,7 @@ mod tests {
 
     #[test]
     fn directory_refresh_uses_the_exact_ordinary_shell_and_preserves_newline_paths() {
-        use tmux_workspaces_core::{Attachment, Leaf};
+        use agent_interface_core::{Attachment, Leaf};
         use tmux_workspaces_test_support::TmuxServer;
 
         let server = TmuxServer::start().unwrap();

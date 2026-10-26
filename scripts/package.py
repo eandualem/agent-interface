@@ -14,7 +14,7 @@ import tempfile
 import urllib.request
 
 ROOT = Path(__file__).resolve().parent.parent
-APP_ID = "io.github.eandualem.tmux-workspaces"
+APP_ID = "io.github.eandualem.agent-interface"
 
 
 def output(*args, **kwargs):
@@ -93,12 +93,12 @@ def main():
                CARGO_INCREMENTAL="0")
     env["CARGO_ENCODED_RUSTFLAGS"] = "\x1f".join([
         "--remap-path-prefix=" + str(Path.home()) + "=/build",
-        "--remap-path-prefix=" + str(ROOT) + "=/src/tmux-workspaces",
+        "--remap-path-prefix=" + str(ROOT) + "=/src/agent-interface",
         "-Ctarget-cpu=generic",
     ])
     # Never infer optimization from Cargo's debug-info setting.
-    build = subprocess.Popen(["cargo", "build", "--release", "--locked", "--target", target, "-p", "tmux-workspaces-app",
-                              "--bin", "tmux-workspaces", "--message-format=json-render-diagnostics"],
+    build = subprocess.Popen(["cargo", "build", "--release", "--locked", "--target", target, "-p", "agent-interface-app",
+                              "--bin", "agent-interface", "--message-format=json-render-diagnostics"],
                              cwd=ROOT, env=env, stdout=subprocess.PIPE, text=True)
     binary = None
     for line in build.stdout:
@@ -107,7 +107,7 @@ def main():
             binary = Path(message["executable"])
     if build.wait() != 0 or binary is None:
         raise SystemExit("Release build failed.")
-    version = output(str(binary), "--version").removeprefix("tmux-workspaces ")
+    version = output(str(binary), "--version").removeprefix("agent-interface ")
     source = output("git", "rev-parse", "HEAD")
     dirty = bool(output("git", "status", "--porcelain", "--untracked-files=normal"))
     dist = ROOT / "dist"
@@ -115,12 +115,12 @@ def main():
     with tempfile.TemporaryDirectory(prefix="package-", dir=dist) as temporary:
         stage = Path(temporary)
         mac = target.endswith("apple-darwin")
-        bundle = stage / ("Agent Interface.app" if mac else "tmux-workspaces")
+        bundle = stage / ("Agent Interface.app" if mac else "agent-interface")
         bin_dir = bundle / ("Contents/MacOS" if mac else "bin")
         resources = bundle / "Contents/Resources" if mac else bundle
         bin_dir.mkdir(parents=True)
         resources.mkdir(parents=True, exist_ok=True)
-        executable = bin_dir / "tmux-workspaces"
+        executable = bin_dir / "agent-interface"
         shutil.copyfile(binary, executable)
         executable.chmod(0o755)
         run("strip", "-x" if mac else "--strip-unneeded", str(executable))
@@ -138,7 +138,7 @@ def main():
         if mac:
             with (bundle / "Contents/Info.plist").open("wb") as stream:
                 plistlib.dump({"CFBundleIdentifier": APP_ID, "CFBundleName": "Agent Interface",
-                               "CFBundleExecutable": "tmux-workspaces", "CFBundleIconFile": "AppIcon", "CFBundlePackageType": "APPL",
+                               "CFBundleExecutable": "agent-interface", "CFBundleIconFile": "AppIcon", "CFBundlePackageType": "APPL",
                                "CFBundleShortVersionString": version, "CFBundleVersion": version,
                                "LSMinimumSystemVersion": "11.0", "NSHighResolutionCapable": True}, stream)
             run("codesign", "--force", "--sign", "-", str(bundle))
@@ -149,7 +149,7 @@ def main():
         else:
             # Keep the actual ABI and library requirements alongside the artifact.
             (resources / "ELF-REQUIREMENTS.txt").write_text(output("readelf", "-d", "--version-info", str(executable)) + "\n")
-        archive = dist / f"tmux-workspaces-{target}.tar.gz"
+        archive = dist / f"agent-interface-{target}.tar.gz"
         with tarfile.open(archive, "w:gz", format=tarfile.USTAR_FORMAT) as tar:
             for path in sorted(bundle.rglob("*")):
                 if path.is_symlink():

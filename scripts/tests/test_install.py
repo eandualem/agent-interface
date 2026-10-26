@@ -10,7 +10,7 @@ import tempfile
 import unittest
 
 INSTALL = Path(__file__).resolve().parents[2] / "install.sh"
-APP_ID = "io.github.eandualem.tmux-workspaces"
+APP_ID = "io.github.eandualem.agent-interface"
 
 
 class InstallTests(unittest.TestCase):
@@ -26,9 +26,9 @@ class InstallTests(unittest.TestCase):
         self.command("getconf", "echo glibc 2.39")
         self.env = dict(os.environ, HOME=str(self.home), PATH=str(self.tools) + os.pathsep + os.environ["PATH"])
         self.env.pop("XDG_DATA_HOME", None)
-        self.destination = self.home / ".local/lib/tmux-workspaces"
+        self.destination = self.home / ".local/lib/agent-interface"
         self.launcher = self.home / f".local/share/applications/{APP_ID}.desktop"
-        self.link = self.home / ".local/bin/tmux-workspaces"
+        self.link = self.home / ".local/bin/agent-interface"
 
     def command(self, name, body):
         path = self.tools / name
@@ -39,12 +39,12 @@ class InstallTests(unittest.TestCase):
         archive = self.root / "app.tar.gz"
         mac = target.endswith("apple-darwin")
         bundle = "tmux-workspaces.app" if legacy_mac else "Agent Interface.app"
-        root = bundle + "/Contents" if mac else "tmux-workspaces"
+        root = bundle + "/Contents" if mac else "agent-interface"
         resources = root + "/Resources" if mac else root
-        executable = root + ("/MacOS" if mac else "/bin") + "/tmux-workspaces"
+        executable = root + ("/MacOS" if mac else "/bin") + "/agent-interface"
         files = {resources + "/INSTALLER": APP_ID + "\n",
                  resources + "/TARGET": target + "\n",
-                 executable: f"#!/bin/sh\necho 'tmux-workspaces {version}'\n"}
+                 executable: f"#!/bin/sh\necho 'agent-interface {version}'\n"}
         if extra:
             files.update(extra)
         with tarfile.open(archive, "w:gz") as tar:
@@ -63,14 +63,14 @@ class InstallTests(unittest.TestCase):
         return result
 
     def test_install_update_and_preserve_data(self):
-        library = self.home / ".local/share/tmux-workspaces/layouts.db"
+        library = self.home / ".local/share/agent-interface/layouts.db"
         library.parent.mkdir(parents=True)
         library.write_bytes(b"preserve")
         self.install(self.package())
-        self.assertEqual(subprocess.check_output([self.link, "--version"], text=True).strip(), "tmux-workspaces 0.0.0")
+        self.assertEqual(subprocess.check_output([self.link, "--version"], text=True).strip(), "agent-interface 0.0.0")
         self.assertIn(f"Icon={self.destination}/agent-interface.png\n", self.launcher.read_text())
         self.install(self.package("0.0.1"))
-        self.assertEqual(subprocess.check_output([self.link, "--version"], text=True).strip(), "tmux-workspaces 0.0.1")
+        self.assertEqual(subprocess.check_output([self.link, "--version"], text=True).strip(), "agent-interface 0.0.1")
         self.assertEqual(library.read_bytes(), b"preserve")
         # Exec quoting must survive desktop string unescaping before argument parsing.
         entry = next(line[5:] for line in self.launcher.read_text().splitlines() if line.startswith("Exec="))
@@ -78,6 +78,45 @@ class InstallTests(unittest.TestCase):
         import shlex
         path = shlex.split(entry)[0].replace("\\$", "$").replace("%%", "%")
         self.assertEqual(Path(path).resolve(), self.link.resolve())
+
+    def legacy_linux_install(self):
+        old = self.home / ".local/lib/tmux-workspaces"
+        binary = old / "bin/tmux-workspaces"
+        binary.parent.mkdir(parents=True)
+        binary.write_text("#!/bin/sh\necho 'tmux-workspaces 0.1.0'\n")
+        binary.chmod(0o755)
+        (old / "INSTALLER").write_text("io.github.eandualem.tmux-workspaces\n")
+        link = self.home / ".local/bin/tmux-workspaces"
+        link.parent.mkdir(parents=True)
+        link.symlink_to(binary)
+        launcher = self.launcher.with_name("io.github.eandualem.tmux-workspaces.desktop")
+        launcher.parent.mkdir(parents=True)
+        launcher.write_text("[Desktop Entry]\nX-TmuxWorkspaces-Installer=1\n")
+        library = self.home / ".local/share/tmux-workspaces/layouts.db"
+        library.parent.mkdir(parents=True)
+        library.write_bytes(b"existing workspace")
+        return old, link, launcher, library
+
+    def test_linux_rename_retires_owned_launchers_and_preserves_library(self):
+        old, link, launcher, library = self.legacy_linux_install()
+        self.install(self.package())
+        for retired in (old, link, launcher):
+            self.assertFalse(retired.exists())
+            self.assertFalse(retired.is_symlink())
+        self.assertEqual(subprocess.check_output([self.link, "--version"], text=True).strip(), "agent-interface 0.0.0")
+        self.assertEqual(library.read_bytes(), b"existing workspace")
+
+    def test_linux_rename_failure_restores_old_install_and_launchers(self):
+        old, link, launcher, library = self.legacy_linux_install()
+        self.command("rm", 'for last do :; done\ncase "$last" in *tmux-workspaces.desktop) exit 1;; esac\nexec /bin/rm "$@"')
+        self.install(self.package(), success=False)
+        self.assertTrue(old.exists())
+        self.assertTrue(launcher.exists())
+        self.assertEqual(subprocess.check_output([link, "--version"], text=True).strip(), "tmux-workspaces 0.1.0")
+        self.assertEqual(library.read_bytes(), b"existing workspace")
+        self.assertFalse(self.destination.exists())
+        self.assertFalse(self.link.is_symlink())
+        self.assertFalse(self.launcher.exists())
 
     def test_reject_corrupt_wrong_target_and_unsafe_archive(self):
         archive = self.package()
@@ -87,7 +126,7 @@ class InstallTests(unittest.TestCase):
         self.assertFalse(self.destination.exists())
         self.install(self.package(target="aarch64-unknown-linux-gnu"), success=False)
         self.assertFalse(self.destination.exists())
-        self.install(self.package(extra={"tmux-workspaces/../../escape": "no"}), success=False)
+        self.install(self.package(extra={"agent-interface/../../escape": "no"}), success=False)
         self.assertFalse((self.root / "escape").exists())
         self.assertFalse(self.destination.exists())
 
@@ -112,10 +151,10 @@ class InstallTests(unittest.TestCase):
         (self.tools / "mv").unlink()
         self.install(self.package("0.0.1", target="aarch64-apple-darwin"))
         self.assertFalse(legacy.exists())
-        binary = destination / "Contents/MacOS/tmux-workspaces"
-        self.assertEqual(subprocess.check_output([binary, "--version"], text=True).strip(), "tmux-workspaces 0.0.1")
+        binary = destination / "Contents/MacOS/agent-interface"
+        self.assertEqual(subprocess.check_output([binary, "--version"], text=True).strip(), "agent-interface 0.0.1")
         self.install(self.package("0.0.2", target="aarch64-apple-darwin"))
-        self.assertEqual(subprocess.check_output([binary, "--version"], text=True).strip(), "tmux-workspaces 0.0.2")
+        self.assertEqual(subprocess.check_output([binary, "--version"], text=True).strip(), "agent-interface 0.0.2")
 
     def test_mac_preserves_unmanaged_legacy_app(self):
         self.command("uname", 'case "$1" in -s) echo Darwin;; -m) echo arm64;; esac')
@@ -134,7 +173,7 @@ class InstallTests(unittest.TestCase):
                      'case "$*" in *launcher.*) echo partial > "$last"; exit 1;; esac;; esac\n'
                      'exec /bin/mv "$@"')
         self.install(self.package("0.0.1"), success=False)
-        self.assertEqual(subprocess.check_output([self.link, "--version"], text=True).strip(), "tmux-workspaces 0.0.0")
+        self.assertEqual(subprocess.check_output([self.link, "--version"], text=True).strip(), "agent-interface 0.0.0")
         self.assertEqual(self.launcher.read_bytes(), before)
 
     def test_preserve_launcher_backup_when_restore_fails(self):
@@ -143,8 +182,8 @@ class InstallTests(unittest.TestCase):
         self.command("mv", 'for last do :; done\ncase "$last" in *.desktop) '
                      'echo partial > "$last"; exit 1;; esac\nexec /bin/mv "$@"')
         self.install(self.package("0.0.1"), success=False)
-        self.assertEqual(subprocess.check_output([self.link, "--version"], text=True).strip(), "tmux-workspaces 0.0.0")
-        backups = list(self.launcher.parent.glob(".tmux-workspaces-previous.*"))
+        self.assertEqual(subprocess.check_output([self.link, "--version"], text=True).strip(), "agent-interface 0.0.0")
+        backups = list(self.launcher.parent.glob(".agent-interface-previous.*"))
         self.assertEqual(len(backups), 1)
         self.assertEqual(backups[0].read_bytes(), before)
 

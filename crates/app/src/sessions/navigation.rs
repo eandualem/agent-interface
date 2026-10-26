@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::io;
 use std::path::Path;
 
-use tmux_workspaces_core::Layout;
+use agent_interface_core::Layout;
 
 use crate::library::location::resolve_path;
 
@@ -34,7 +34,7 @@ pub fn choose_attached_session(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tmux_workspaces_core::{Attachment, Direction};
+    use agent_interface_core::{Attachment, Direction};
 
     #[test]
     fn saved_aliases_and_legacy_references_use_the_captured_source_without_connecting() {
