@@ -40,8 +40,11 @@ with tempfile.TemporaryDirectory(prefix="agent-interface-desktop-") as directory
     library.mkdir()
 
     def command(*args, check=True):
-        return subprocess.run(args, env=env, text=True, stdout=subprocess.PIPE,
-                              stderr=subprocess.PIPE, check=check).stdout.strip()
+        try:
+            return subprocess.run(args, env=env, text=True, stdout=subprocess.PIPE,
+                                  stderr=subprocess.PIPE, check=check, timeout=10).stdout.strip()
+        except subprocess.TimeoutExpired as error:
+            raise AssertionError(f"Timed out running command: {' '.join(args)}") from error
 
     wm_log = (OUTPUT / "window-manager.log").open("w")
     app_log = (OUTPUT / "app.log").open("w")
