@@ -757,8 +757,16 @@ impl Browser {
             while woken.next().await.is_some() {
                 let updated = this.update(cx, |browser, cx| {
                     if let Some(snapshot) = browser.roster.as_ref().and_then(Roster::take_update) {
+                        let changed = browser.agents.as_ref().is_none_or(|previous| {
+                            previous.states != snapshot.states || previous.error != snapshot.error
+                        });
                         browser.agents = Some(snapshot);
                         browser.refresh_source_matches(cx);
+                        if changed {
+                            // Clear retained paint when status changes, including
+                            // badges beside cached terminal bodies.
+                            cx.refresh_windows();
+                        }
                         cx.notify();
                     }
                 });
