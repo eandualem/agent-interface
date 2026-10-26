@@ -46,6 +46,8 @@ class InstallTests(unittest.TestCase):
         files = {resources + "/INSTALLER": "io.github.eandualem." + name + "\n",
                  resources + "/TARGET": target + "\n",
                  executable: f"#!/bin/sh\necho '{name} {version}'\n"}
+        if not mac:
+            files[root + "/agent-interface.png"] = "fixture icon"
         if extra:
             files.update(extra)
         with tarfile.open(archive, "w:gz") as tar:
@@ -92,7 +94,8 @@ if [ "$write_status" = true ]; then printf 200; fi
         self.mock_download(archive)
         self.install(None)
         self.assertEqual(subprocess.check_output([self.link, "--version"], text=True).strip(), "tmux-workspaces 0.1.0")
-        self.assertIn(f"Icon={self.destination}/tmux-workspaces.png\n", self.launcher.read_text())
+        self.assertIn(f"Icon={self.destination}/agent-interface.png\n", self.launcher.read_text())
+        self.assertTrue((self.destination / "agent-interface.png").is_file())
         self.assertIn("StartupWMClass=io.github.eandualem.tmux-workspaces\n", self.launcher.read_text())
         self.assertEqual((self.root / "downloads").read_text().splitlines(), [
             "agent-interface-x86_64-unknown-linux-gnu.tar.gz",

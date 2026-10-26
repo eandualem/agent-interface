@@ -219,7 +219,6 @@ tar -tvzf "$staging/download.tar.gz" > "$staging/types"
 awk 'substr($0,1,1) != "-" && substr($0,1,1) != "d" {exit 1}' "$staging/types" || fail 'Archive links or special files are not supported.'
 tar -xzf "$staging/download.tar.gz" -C "$staging"
 prepared=$staging/$payload
-icon_name=agent-interface.png
 [ -f "$prepared/$marker" ] || fail 'Invalid installation marker.'
 case $(cat "$prepared/$marker") in
     io.github.eandualem.agent-interface) ;;
@@ -229,7 +228,6 @@ case $(cat "$prepared/$marker") in
             executable=Contents/MacOS/tmux-workspaces
         else
             executable=bin/tmux-workspaces
-            icon_name=tmux-workspaces.png
         fi ;;
     *) fail 'Invalid installation marker.' ;;
 esac
@@ -248,7 +246,7 @@ if [ "$platform" = unknown-linux-gnu ]; then
     fi
     # Exec has both desktop-string and command-argument escaping layers.
     escaped=$(printf '%s' "$destination/$executable" | sed 's/\\/\\\\\\\\/g; s/"/\\\\"/g; s/`/\\\\`/g; s/\$/\\\\$/g; s/%/%%/g')
-    icon=$(printf '%s' "$destination/$icon_name" | sed 's/\\/\\\\/g')
+    icon=$(printf '%s' "$destination/agent-interface.png" | sed 's/\\/\\\\/g')
     cat > "$launcher_stage" <<EOF
 [Desktop Entry]
 Type=Application
