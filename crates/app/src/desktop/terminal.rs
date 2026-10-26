@@ -197,7 +197,7 @@ impl LiveTerminal {
             return;
         }
         self.target.leaf = leaf;
-        self.start_window(self.selected_window.clone(), Some(environment), cx);
+        self.start_window(self.selected_window.clone(), Some(environment), false, cx);
     }
 
     pub fn selection(&self) -> Option<SessionWindow> {
@@ -266,13 +266,13 @@ impl LiveTerminal {
                 }
             }),
         };
-        terminal.start_window(selected, None, cx);
+        terminal.start_window(selected, None, false, cx);
         terminal
     }
 
     fn start(&mut self, cx: &mut Context<Self>) {
         if !self.connecting {
-            self.start_window(None, None, cx);
+            self.start_window(self.selected_window.clone(), None, true, cx);
         }
     }
 
@@ -280,6 +280,7 @@ impl LiveTerminal {
         &mut self,
         selected: Option<SessionWindow>,
         environment: Option<tmux_workspaces_tmux::shells::Environment>,
+        reconnect: bool,
         cx: &mut Context<Self>,
     ) {
         self.closed = None;
@@ -299,7 +300,7 @@ impl LiveTerminal {
             let started = std::time::Instant::now();
             tracing::debug!(event = "terminal_connect_started", "Connecting terminal");
             let result = (|| {
-                let reopened = environment.is_some();
+                let reopened = reconnect || environment.is_some();
                 if let Some(environment) = environment {
                     if !target.leaf.runs_terminal() || target.leaf.attachment.is_some() {
                         return Err("Only an ordinary terminal can be opened.".into());
@@ -399,7 +400,7 @@ impl LiveTerminal {
     /// Show another of the session's windows.
     pub fn select_window(&mut self, window: SessionWindow, cx: &mut Context<Self>) {
         if !self.connecting {
-            self.start_window(Some(window), None, cx);
+            self.start_window(Some(window), None, false, cx);
         }
     }
 }
@@ -605,7 +606,18 @@ mod tests {
         server
             .run(&["new-session", "-d", "-s", "returning", "cat"])
             .unwrap();
+        server
+            .run(&["new-window", "-d", "-t", "=returning:", "cat"])
+            .unwrap();
         let first = connect(target.clone()).unwrap();
+        let selected = first
+            .windows
+            .iter()
+            .find(|window| window.id != first.window)
+            .unwrap()
+            .clone();
+        let retained = connect_selected(target.clone(), Some(selected.clone()), true).unwrap();
+        assert_eq!(retained.window, selected.id);
         server.run(&["kill-session", "-t", "=returning"]).unwrap();
         let deadline = Instant::now() + Duration::from_secs(10);
         while !first.panes.as_ref().unwrap().is_finished() {
@@ -616,11 +628,12 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(5));
         }
-        assert!(connect(target.clone()).is_err());
+        assert!(connect_selected(target.clone(), Some(selected.clone()), true).is_err());
         server
             .run(&["new-session", "-d", "-s", "returning", "cat"])
             .unwrap();
-        let returned = connect(target).unwrap();
+        let returned = connect_selected(target, Some(selected.clone()), true).unwrap();
+        assert_ne!(returned.window, selected.id);
         assert!(!returned.panes.as_ref().unwrap().is_finished());
     }
 

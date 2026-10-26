@@ -189,9 +189,11 @@ The script needs network access for hash-pinned native notices and upstream
 Rust licence texts. `cargo-about` is a build-only MIT/Apache-2.0 tool.
 
 The manual **Native packages** workflow runs this script for Apple silicon,
-Intel macOS, and ARM64/x86-64 Ubuntu 24.04. It uploads workflow artifacts for
-inspection, without publishing release assets. A build is not a desktop
-compatibility test: check launch, keyboard input, terminal output, Settings and
+Intel macOS, and ARM64/x86-64 Ubuntu 24.04. It builds without uploading by default.
+Enable **Upload the built archives and checksums** only when the packages are
+cleared for distribution: workflow artifacts in a public repository can be
+downloaded by signed-in readers, even before a release is published. A build is
+not a desktop compatibility test: check launch, keyboard input, terminal output, Settings and
 the library chooser on the intended desktop before publishing that target.
 The packaged `BUILD.json` must identify clean, reviewed source. Audit the
 unpacked binary and notices, and retain the archive checksum with the release.

@@ -2,6 +2,11 @@
 name: Native packages
 on:
   workflow_dispatch:
+    inputs:
+      upload_artifacts:
+        description: Upload the built archives and checksums
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
@@ -43,6 +48,7 @@ jobs:
       - name: Package optimized native app
         run: python3 scripts/package.py
       - name: Upload archives and checksums for inspection
+        if: inputs.upload_artifacts
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0, MIT
         with:
           name: tmux-workspaces-${{ runner.os }}-${{ runner.arch }}
