@@ -53,9 +53,10 @@ pub fn connect_window(
     connect_selected(socket, session, Some(window), false)
 }
 
-/// Reconnect after an explicit ordinary-shell open. Preserve a listed window
-/// while its session is unchanged; use the replacement session's current window
-/// if the old server/session identity is gone. This never creates a session.
+/// Reconnect to the saved session, including after an explicit ordinary-shell
+/// open. Preserve a listed window while its session is unchanged; use the
+/// replacement session's current window if the old server/session identity is
+/// gone. This never creates a session.
 pub fn connect_reopened(
     socket: &Path,
     session: &str,

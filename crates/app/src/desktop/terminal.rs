@@ -197,7 +197,7 @@ impl LiveTerminal {
             return;
         }
         self.target.leaf = leaf;
-        self.start_window(self.selected_window.clone(), Some(environment), cx);
+        self.start_window(self.selected_window.clone(), Some(environment), false, cx);
     }
 
     pub fn selection(&self) -> Option<SessionWindow> {
@@ -226,15 +226,6 @@ impl LiveTerminal {
                         if let Some(view) = &terminal.view {
                             view.update(cx, |view, cx| view.refresh_connection(cx));
                         }
-                        if !terminal.connecting
-                            && terminal.error.is_some()
-                            && terminal.target.leaf.attachment.is_some()
-                        {
-                            // Retry only the saved attachment. This never starts
-                            // an agent, tmux server or replacement shell.
-                            terminal.start(cx);
-                            return None;
-                        }
                         (!terminal.connecting)
                             .then(|| {
                                 terminal
@@ -246,33 +237,50 @@ impl LiveTerminal {
                     }) else {
                         break;
                     };
-                    let Some((socket, window)) = query else {
-                        continue;
+                    let listed = if let Some((socket, window)) = query {
+                        Some(
+                            cx.background_executor()
+                                .spawn(async move {
+                                    let windows = tmux_workspaces_tmux::connection::session_windows(
+                                        &socket, &window,
+                                    );
+                                    (socket, window, windows)
+                                })
+                                .await,
+                        )
+                    } else {
+                        None
                     };
-                    let listed = cx
-                        .background_executor()
-                        .spawn(async move {
-                            tmux_workspaces_tmux::connection::session_windows(&socket, &window)
-                        })
-                        .await;
-                    if let Ok(windows) = listed {
-                        let _ = this.update(cx, |terminal, cx| {
-                            if !terminal.connecting && terminal.windows != windows {
+                    let _ = this.update(cx, |terminal, cx| {
+                        if !terminal.connecting {
+                            // Refresh even after a disconnect, so a removed
+                            // selected window cannot hide the remaining choices.
+                            if let Some((socket, window, Ok(windows))) = listed
+                                && terminal.socket.as_ref() == Some(&socket)
+                                && terminal.selected_window.as_ref() == Some(&window)
+                                && terminal.windows != windows
+                            {
                                 terminal.windows = windows;
                                 cx.notify();
                             }
-                        });
-                    }
+                            if terminal.error.is_some() && terminal.target.leaf.attachment.is_some()
+                            {
+                                // Retry only the saved attachment. This never
+                                // starts an agent, server or replacement shell.
+                                terminal.start(cx);
+                            }
+                        }
+                    });
                 }
             }),
         };
-        terminal.start_window(selected, None, cx);
+        terminal.start_window(selected, None, false, cx);
         terminal
     }
 
     fn start(&mut self, cx: &mut Context<Self>) {
         if !self.connecting {
-            self.start_window(None, None, cx);
+            self.start_window(self.selected_window.clone(), None, true, cx);
         }
     }
 
@@ -280,6 +288,7 @@ impl LiveTerminal {
         &mut self,
         selected: Option<SessionWindow>,
         environment: Option<tmux_workspaces_tmux::shells::Environment>,
+        reconnect: bool,
         cx: &mut Context<Self>,
     ) {
         self.closed = None;
@@ -299,7 +308,7 @@ impl LiveTerminal {
             let started = std::time::Instant::now();
             tracing::debug!(event = "terminal_connect_started", "Connecting terminal");
             let result = (|| {
-                let reopened = environment.is_some();
+                let reopened = reconnect || environment.is_some();
                 if let Some(environment) = environment {
                     if !target.leaf.runs_terminal() || target.leaf.attachment.is_some() {
                         return Err("Only an ordinary terminal can be opened.".into());
@@ -399,7 +408,7 @@ impl LiveTerminal {
     /// Show another of the session's windows.
     pub fn select_window(&mut self, window: SessionWindow, cx: &mut Context<Self>) {
         if !self.connecting {
-            self.start_window(Some(window), None, cx);
+            self.start_window(Some(window), None, false, cx);
         }
     }
 }
@@ -605,7 +614,31 @@ mod tests {
         server
             .run(&["new-session", "-d", "-s", "returning", "cat"])
             .unwrap();
+        server
+            .run(&["new-window", "-d", "-t", "=returning:", "cat"])
+            .unwrap();
         let first = connect(target.clone()).unwrap();
+        let selected = first
+            .windows
+            .iter()
+            .find(|window| window.id != first.window)
+            .unwrap()
+            .clone();
+        let retained = connect_selected(target.clone(), Some(selected.clone()), true).unwrap();
+        assert_eq!(retained.window, selected.id);
+        server
+            .run(&["kill-window", "-t", &format!("@{}", selected.id)])
+            .unwrap();
+        assert!(connect_selected(target.clone(), Some(selected.clone()), true).is_err());
+        let remaining = tmux_workspaces_tmux::connection::session_windows(
+            PathBuf::from(socket.trim()).as_path(),
+            &selected,
+        )
+        .unwrap();
+        assert_eq!(remaining.len(), 1);
+        let recovered =
+            connect_selected(target.clone(), Some(remaining[0].clone()), false).unwrap();
+        assert_eq!(recovered.window, remaining[0].id);
         server.run(&["kill-session", "-t", "=returning"]).unwrap();
         let deadline = Instant::now() + Duration::from_secs(10);
         while !first.panes.as_ref().unwrap().is_finished() {
@@ -616,11 +649,12 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(5));
         }
-        assert!(connect(target.clone()).is_err());
+        assert!(connect_selected(target.clone(), Some(selected.clone()), true).is_err());
         server
             .run(&["new-session", "-d", "-s", "returning", "cat"])
             .unwrap();
-        let returned = connect(target).unwrap();
+        let returned = connect_selected(target, Some(selected.clone()), true).unwrap();
+        assert_ne!(returned.window, selected.id);
         assert!(!returned.panes.as_ref().unwrap().is_finished());
     }
 
