@@ -66,7 +66,10 @@ output into each pane's terminal state. It publishes owned `Screen` data for the
 UI thread to draw, so drawing does not borrow a live engine or wait for I/O.
 If copying a screen fails, the worker reports a connection failure and stops
 publishing updates. Partially copied frames never replace the last complete
-display; embedded terminals offer the existing reconnect action.
+display. Embedded attachments retry the saved socket and session on the existing
+two-second window-refresh loop; retries never create a session. Ordinary shells
+offer explicit reconnect and open actions, with creation still gated by saving
+the pane first.
 
 On connection or recovery, the worker captures the pane's current state and
 only the history its local scrollback retains, then continues with subsequent

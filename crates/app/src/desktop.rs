@@ -1872,6 +1872,24 @@ impl Render for Browser {
                     },
                 )
                 .detach();
+                cx.subscribe_in(
+                    &terminal,
+                    window,
+                    |browser, terminal, _: &terminal::OpenTerminal, window, cx| {
+                        let target = terminal.read(cx).target.clone();
+                        if browser.layout.as_ref().is_some_and(|layout| {
+                            layout.model().tab().is_some_and(|tab| {
+                                tab.tree
+                                    .leaves()
+                                    .iter()
+                                    .any(|leaf| target.matches_leaf(leaf))
+                            })
+                        }) {
+                            browser.open_terminal(&target.leaf.id, window, cx);
+                        }
+                    },
+                )
+                .detach();
                 cx.subscribe(
                     &terminal,
                     |browser, terminal, _: &crate::view::Focus, cx| {
