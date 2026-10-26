@@ -3,9 +3,9 @@
 Native packages need no Rust, Zig, or Python installation. It uses **tmux 3.3 or
 newer** for terminal sessions.
 
-The executable, archive names, Linux installation paths and data directories
-retain `agent-interface` for compatibility with existing installations and
-libraries. The product, macOS app and repository are named Agent Interface.
+The executable, archives and new installation/data paths use `agent-interface`.
+The desktop app is named **Agent Interface**. Existing libraries and preferences
+from earlier installations are still read without moving their data.
 
 ## Runtime prerequisites
 
@@ -28,7 +28,7 @@ a portal backend for your desktop, normally installed by the distribution.
 On Ubuntu 24.04, the basic runtime packages are:
 
 ```sh
-sudo apt install curl tmux libfontconfig1 libfreetype6 libxcb1 libxkbcommon0 \
+sudo apt install curl tmux fonts-dejavu-core libfontconfig1 libfreetype6 libxcb1 libxkbcommon0 \
   libxkbcommon-x11-0 libwayland-client0 libvulkan1 libegl1 xdg-desktop-portal
 ```
 
@@ -82,7 +82,7 @@ compiler and native optimization settings.
 ## macOS
 
 The installer places `Agent Interface.app` in `~/Applications`, replacing an
-older `agent-interface.app` installed by this installer. Open `~/Applications`
+older `tmux-workspaces.app` installed by this installer. Open `~/Applications`
 in Finder and launch `Agent Interface.app`, or run:
 
 ```sh

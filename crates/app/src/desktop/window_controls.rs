@@ -29,7 +29,7 @@ pub(super) fn frame(content: impl IntoElement, title: &'static str, window: &Win
                 .text_size(t.text.status.size())
                 .on_mouse_down(MouseButton::Left, |event, window, _| {
                     if event.click_count == 2 {
-                        window.titlebar_double_click();
+                        window.zoom_window();
                     } else {
                         window.start_window_move();
                     }

@@ -27,8 +27,8 @@ The app draws terminals natively and needs no Python runtime. It can open
 existing schema-v2 libraries from
 [tmux-workspaces](https://github.com/eandualem/tmux-workspaces).
 
-The executable, data paths and Linux installation paths remain `agent-interface`
-for compatibility. The product, macOS app and repository are **Agent Interface**.
+The executable and packages are named `agent-interface`. The desktop app is
+**Agent Interface**. Updates preserve existing libraries and settings.
 
 ## Get started
 

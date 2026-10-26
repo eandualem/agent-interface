@@ -90,6 +90,18 @@ with tempfile.TemporaryDirectory(prefix="agent-interface-desktop-") as directory
         command("import", "-window", window, str(OUTPUT / "maximized.png"))
         click_button(1.5)
         wait_for(lambda: "MAXIMIZED" not in state() and geometry()["WIDTH"] == initial["WIDTH"], "restore button")
+        command("xdotool", "mousemove", "--window", window, "120", str(round(caption / 2)),
+                "click", "--repeat", "2", "--delay", "100", "1")
+        wait_for(lambda: "_NET_WM_STATE_MAXIMIZED_HORZ" in state(), "caption double-click maximize")
+        command("xdotool", "mousemove", "--window", window, "120", str(round(caption / 2)),
+                "click", "--repeat", "2", "--delay", "100", "1")
+        wait_for(lambda: "MAXIMIZED" not in state(), "caption double-click restore")
+        before_resize = geometry()
+        command("xdotool", "mousemove", "--window", window,
+                str(before_resize["WIDTH"] - 2), str(before_resize["HEIGHT"] - 2), "mousedown", "1")
+        command("xdotool", "mousemove", "--window", window,
+                str(before_resize["WIDTH"] + 50), str(before_resize["HEIGHT"] + 30), "mouseup", "1")
+        wait_for(lambda: geometry()["WIDTH"] > before_resize["WIDTH"], "resize corner")
         click_button(2.5)
         wait_for(lambda: "_NET_WM_STATE_HIDDEN" in state(), "minimize button")
         command("xdotool", "windowactivate", "--sync", window)
@@ -97,8 +109,8 @@ with tempfile.TemporaryDirectory(prefix="agent-interface-desktop-") as directory
         click_button(0.5)
         assert app.wait(timeout=15) == 0, "close button should exit normally"
         (OUTPUT / "result.json").write_text(json.dumps({"platform": "Ubuntu X11 / Xfwm / software Mesa",
-            "initial_geometry": initial, "checks": ["launch", "terminal fixture", "maximize", "restore", "minimize", "close"]}, indent=2) + "\n")
-        print("Linux desktop smoke passed: launch, maximize, restore, minimize, close")
+            "initial_geometry": initial, "checks": ["launch", "terminal fixture", "maximize", "restore", "caption double-click", "resize", "minimize", "close"]}, indent=2) + "\n")
+        print("Linux desktop smoke passed: launch, maximize, restore, double-click, resize, minimize, close")
     finally:
         if app is not None and app.poll() is None:
             app.terminate()

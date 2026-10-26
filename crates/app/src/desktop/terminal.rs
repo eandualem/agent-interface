@@ -526,7 +526,9 @@ mod tests {
         let id = text.resolve_font(&font);
         let cell = crate::view::cell_size(&text, &appearance);
         for ch in ' '..='~' {
-            let advance = text.advance(id, px(appearance.font_size), ch).unwrap();
+            let advance = text
+                .advance(id, gpui::px(appearance.font_size), ch)
+                .unwrap();
             assert!(
                 (f32::from(advance.width - cell.width)).abs() < 0.01,
                 "{ch:?}: {advance:?}, cell {cell:?}"
