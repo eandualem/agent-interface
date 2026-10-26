@@ -7,6 +7,7 @@
 # Build output
 /target/
 /dist/
+/.zig-cache/
 # Secrets come from the environment only
 .env
 .env.*

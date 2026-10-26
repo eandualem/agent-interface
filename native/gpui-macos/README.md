@@ -31,5 +31,6 @@ The local changes in `src/window.rs`, `src/pasteboard.rs` and `src/artifact.rs` 
 
 The workspace patches this existing dependency locally; it keeps the rest of
 the GPUI package family at 0.3.9. Remove this override when a pinned upstream
-version supplies equivalent native focus behavior. Keep these sources separate
-from application code so an upstream update can be compared directly.
+version supplies equivalent native focus, image staging and artifact configuration
+behavior, including `gpui_macos::artifact_configuration`. Keep these sources
+separate from application code so an upstream update can be compared directly.

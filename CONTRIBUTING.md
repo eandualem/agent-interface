@@ -175,7 +175,7 @@ sizing. Tests, benchmarks and scripts must never touch those sessions:
 Install the build prerequisites above and the notice generator:
 
 ```sh
-cargo install cargo-about --version 0.9.2 --locked
+cargo install cargo-about --version 0.9.2 --locked --features cli
 rustup component add rust-docs
 python3 scripts/package.py
 ```
