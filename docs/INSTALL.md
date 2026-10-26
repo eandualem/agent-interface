@@ -119,6 +119,18 @@ There is no native Windows executable. This app's WSL compatibility has not
 been verified; the steps below are for testing it once a Linux release is
 available. Agent Backbone is optional for terminals and saved workspaces.
 
+If WSL or a suitable Ubuntu distribution is missing, run this in an
+**administrator PowerShell**, restart Windows if prompted, and complete Ubuntu's
+username/password setup:
+
+```powershell
+wsl --install -d Ubuntu-24.04
+```
+
+This installs Ubuntu 24.04 as a separate distribution; it does not upgrade an
+older Ubuntu installation. See [Microsoft's WSL commands](https://learn.microsoft.com/en-us/windows/wsl/basic-commands)
+for available distributions and WSL 1 to WSL 2 conversion.
+
 In **PowerShell**, check your existing WSL installation:
 
 ```powershell
@@ -133,8 +145,8 @@ for GPU drivers and restarting WSL after an update. Save your work first:
 `wsl --shutdown` stops every running WSL distribution, including its tmux
 sessions and processes. An ordinary app install does not require that shutdown.
 
-Open **Ubuntu** from the Windows Start menu. Run the remaining commands in its
-Linux terminal. Check the Ubuntu version:
+Open your **Ubuntu 24.04 or newer** distribution from the Windows Start menu.
+Run the remaining commands in its Linux terminal. Check the Ubuntu version:
 
 ```sh
 cat /etc/os-release
