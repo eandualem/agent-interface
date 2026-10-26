@@ -30,7 +30,7 @@ the app.
 ### Changing the look
 
 1. Edit `tokens.toml`. Colours are `#rrggbb` or `#rrggbbaa`; sizes are pixels.
-2. Run `cargo test -p tmux-workspaces-app design` to check the file.
+2. Run `cargo test -p agent-interface-app design` to check the file.
 3. Run the app. Every window uses the new values.
 
 ### Adding a token
@@ -121,7 +121,7 @@ defaults; light is Tomorrow, darkened to pass 4.5:1.
 ## Type
 
 `[font]`: `ui` (the platform interface font), `mono` (keys, numbers,
-terminals) and the default terminal size. `[text.*]` styles, each a size and
+terminals on macOS), `mono_linux` (DejaVu Sans Mono for Linux), and the default terminal size. `[text.*]` styles, each a size and
 weight, applied with `components::text`:
 
 | Style | Use |
@@ -226,7 +226,7 @@ other indicators stay still.
 - Drag the panel's right edge or the gap between panes to resize; sizes are
   saved when the drag ends.
 - Settings (Command-comma or the switcher's sliders) apply at once to every
-  window and are saved in `~/.config/tmux-workspaces/settings.toml`.
+  window and are saved in `~/.config/agent-interface/settings.toml`.
 
 ## Icons
 

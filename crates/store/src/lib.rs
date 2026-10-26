@@ -13,6 +13,7 @@ pub use reconcile::Reconciliation;
 mod save;
 mod schema;
 
+use agent_interface_core::Layout;
 use rusqlite::{
     Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, limits::Limit,
     types::ValueRef,
@@ -21,7 +22,6 @@ use std::{
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
-use tmux_workspaces_core::Layout;
 
 /// Maximum UTF-8 size of the persisted JSON record.
 pub const MAX_RECORD_BYTES: usize = 16 * 1024 * 1024;

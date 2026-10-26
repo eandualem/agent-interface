@@ -5,9 +5,9 @@ use std::{
     io::{self, BufRead, Write},
     path::Path,
 };
-use tmux_workspaces_store::{Document, Store};
+use agent_interface_store::{Document, Store};
 
-fn emit(status: &str, base: &Document, local: &tmux_workspaces_core::Layout) {
+fn emit(status: &str, base: &Document, local: &agent_interface_core::Layout) {
     let state = base.with_model(local, Path::new("layouts.db")).unwrap();
     println!(
         "{}",

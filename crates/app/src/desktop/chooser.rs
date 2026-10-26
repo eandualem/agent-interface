@@ -13,7 +13,7 @@ use super::{
     name::{NameEvent, NameField},
 };
 use crate::sessions::SessionSource;
-use tmux_workspaces_core::SessionChoices;
+use agent_interface_core::SessionChoices;
 
 pub(super) enum Choice {
     Session(String),

@@ -1,7 +1,7 @@
 //! Print-only keymap diagnostics use isolated files and no tmux process.
 
+use agent_interface_core::keymap::Keymap;
 use std::{fs, process::Command};
-use tmux_workspaces_core::keymap::Keymap;
 
 #[test]
 fn printing_uses_effective_keys_without_a_terminal_tmux_or_library() {
@@ -10,7 +10,7 @@ fn printing_uses_effective_keys_without_a_terminal_tmux_or_library() {
     let config = root.join("keys.toml");
     fs::write(&config, "prefix = 'C-b'\n[bindings]\nnew-tab = ['F2']").unwrap();
     let command = || {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_tmux-workspaces"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_agent-interface"));
         command
             .env_clear()
             .env("PATH", "")
@@ -41,7 +41,7 @@ fn printing_uses_effective_keys_without_a_terminal_tmux_or_library() {
             .contains("F2                   New tab")
     );
     let output = command()
-        .env("TMUX_WORKSPACES_KEYMAP", "missing")
+        .env("AGENT_INTERFACE_KEYMAP", "missing")
         .args(["--no-keymap", "--print-keymap", "toml"])
         .output()
         .unwrap();
@@ -88,7 +88,7 @@ fn fifo_keymap_is_rejected_without_waiting_for_a_writer() {
             .unwrap()
             .success()
     );
-    let mut child = Command::new(env!("CARGO_BIN_EXE_tmux-workspaces"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_agent-interface"))
         .args(["--keymap"])
         .arg(&fifo)
         .args(["--print-keymap", "toml"])

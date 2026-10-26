@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 pub mod artifacts;
+mod compat;
 pub mod desktop;
 pub mod diagnostics;
 pub mod keymap;

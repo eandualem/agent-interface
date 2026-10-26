@@ -5,11 +5,11 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::{Component, Path, PathBuf};
 use uzers::os::unix::UserExt;
 
-use tmux_workspaces_store::Error;
+use agent_interface_store::Error;
 
-/// Find an existing library directory using the Python tool's precedence:
-/// explicit path, nonempty `TMUX_WORKSPACES_DATA_DIR`, nonempty `XDG_DATA_HOME`
-/// plus `tmux-workspaces`, then `~/.local/share/tmux-workspaces`.
+/// Find an existing library directory: explicit path, nonempty
+/// `AGENT_INTERFACE_DATA_DIR` (or its legacy alias), then the XDG data directory.
+/// Existing pre-rename libraries stay in place to preserve their socket identity.
 ///
 /// Expands `~`/`~user` and resolves relative paths and symlinks without creating
 /// anything. A missing directory is an error in this read-only phase. Paths are
@@ -92,17 +92,26 @@ fn resolve(
     let selected = explicit
         .map(Path::to_owned)
         .or_else(|| {
-            env("TMUX_WORKSPACES_DATA_DIR")
+            env("AGENT_INTERFACE_DATA_DIR")
                 .filter(|p| !p.is_empty())
+                .or_else(|| env("TMUX_WORKSPACES_DATA_DIR").filter(|p| !p.is_empty()))
                 .map(PathBuf::from)
         })
         .unwrap_or_else(|| {
-            PathBuf::from(
+            let root = PathBuf::from(
                 env("XDG_DATA_HOME")
                     .filter(|p| !p.is_empty())
                     .unwrap_or_else(|| "~/.local/share".into()),
-            )
-            .join("tmux-workspaces")
+            );
+            let root = expand_home(&root, env, user_home).unwrap_or(root);
+            let database = crate::compat::existing_or_legacy(
+                root.join("agent-interface/layouts.db"),
+                root.join("tmux-workspaces/layouts.db"),
+            );
+            database
+                .parent()
+                .expect("library database has a parent")
+                .to_owned()
         });
     let expanded = expand_home(&selected, env, user_home).ok_or_else(|| Error {
         path: selected.join("layouts.db"),
@@ -244,6 +253,29 @@ mod tests {
     use super::*;
 
     #[test]
+    fn rename_preserves_existing_library_and_environment_override() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let old = root.join("tmux-workspaces");
+        let new = root.join("agent-interface");
+        std::fs::create_dir(&old).unwrap();
+        std::fs::write(old.join("layouts.db"), b"existing").unwrap();
+        let mut env = HashMap::from([("XDG_DATA_HOME", root.as_os_str().to_owned())]);
+        let locate = |env: &HashMap<&str, OsString>| {
+            resolve(None, &|key| env.get(key).cloned(), &|_| None).unwrap()
+        };
+        assert_eq!(locate(&env), old);
+        std::fs::create_dir(&new).unwrap();
+        std::fs::write(new.join("layouts.db"), b"new").unwrap();
+        assert_eq!(locate(&env), new);
+        env.insert("TMUX_WORKSPACES_DATA_DIR", old.as_os_str().to_owned());
+        assert_eq!(locate(&env), old);
+        env.insert("AGENT_INTERFACE_DATA_DIR", new.as_os_str().to_owned());
+        assert_eq!(locate(&env), new);
+        assert_eq!(std::fs::read(old.join("layouts.db")).unwrap(), b"existing");
+    }
+
+    #[test]
     fn excessive_saved_paths_are_rejected_before_resolution() {
         assert_eq!(
             resolve_path(Path::new(&"a/".repeat(2049)))
@@ -323,7 +355,7 @@ mod tests {
         let temporary = tempfile::tempdir().unwrap();
         let root = temporary.path().canonicalize().unwrap();
         let home = root.join("home");
-        let default = home.join(".local/share/tmux-workspaces");
+        let default = home.join(".local/share/agent-interface");
         let xdg = root.join("data");
         let configured = root.join("configured library");
         let explicit = root.join("explicit library");
@@ -333,7 +365,7 @@ mod tests {
         let sibling = root.join("nested/explicit library");
         for path in [
             &default,
-            &xdg.join("tmux-workspaces"),
+            &xdg.join("agent-interface"),
             &configured,
             &explicit,
             &other,
@@ -355,22 +387,22 @@ mod tests {
         settings.insert("XDG_DATA_HOME", xdg.into_os_string());
         assert_eq!(
             locate(None, &settings).unwrap(),
-            root.join("data/tmux-workspaces")
+            root.join("data/agent-interface")
         );
         settings.insert(
-            "TMUX_WORKSPACES_DATA_DIR",
+            "AGENT_INTERFACE_DATA_DIR",
             configured.clone().into_os_string(),
         );
         assert_eq!(locate(None, &settings).unwrap(), configured);
         assert_eq!(locate(Some(&explicit), &settings).unwrap(), explicit);
         assert_eq!(library_directory(Some(&explicit)).unwrap(), explicit);
-        settings.insert("TMUX_WORKSPACES_DATA_DIR", "".into());
+        settings.insert("AGENT_INTERFACE_DATA_DIR", "".into());
         settings.insert("XDG_DATA_HOME", "".into());
         settings.insert("HOME", home.clone().into_os_string());
         assert_eq!(locate(None, &settings).unwrap(), default);
         assert_eq!(
             locate(
-                Some(Path::new("./~/.local/share/tmux-workspaces")),
+                Some(Path::new("./~/.local/share/agent-interface")),
                 &settings
             )
             .unwrap(),

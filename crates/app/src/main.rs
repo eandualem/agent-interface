@@ -9,13 +9,13 @@ use std::{
     process::ExitCode,
 };
 
-const USAGE: &str = "Usage: tmux-workspaces [--data-dir PATH]\n       tmux-workspaces [--keymap PATH | --no-keymap] --print-keymap <help|toml>\n       tmux-workspaces [--data-dir PATH] artifact publish FILE.html --title TITLE [--author NAME]\n\nOpen saved workspaces, print the effective keymap, or publish a self-contained\nHTML artifact to the library without opening a window.\n";
+const USAGE: &str = "Usage: agent-interface [--data-dir PATH]\n       agent-interface [--keymap PATH | --no-keymap] --print-keymap <help|toml>\n       agent-interface [--data-dir PATH] artifact publish FILE.html --title TITLE [--author NAME]\n\nOpen saved workspaces, print the effective keymap, or publish a self-contained\nHTML artifact to the library without opening a window.\n";
 
 fn main() -> ExitCode {
     match options(std::env::args_os().skip(1)) {
         Ok(Options::Open(directory)) => {
-            if let Err(error) = tmux_workspaces_app::desktop::run(directory) {
-                eprintln!("tmux-workspaces: {}", error.escape_debug());
+            if let Err(error) = agent_interface_app::desktop::run(directory) {
+                eprintln!("agent-interface: {}", error.escape_debug());
                 return ExitCode::FAILURE;
             }
         }
@@ -24,11 +24,11 @@ fn main() -> ExitCode {
             disabled,
             toml,
         }) => {
-            let text = match tmux_workspaces_app::keymap::load(path.as_deref(), disabled) {
+            let text = match agent_interface_app::keymap::load(path.as_deref(), disabled) {
                 Ok(map) if toml => map.to_toml(),
                 Ok(map) => map.help(),
                 Err(error) => {
-                    eprintln!("tmux-workspaces: {}", error.to_string().escape_debug());
+                    eprintln!("agent-interface: {}", error.to_string().escape_debug());
                     return ExitCode::FAILURE;
                 }
             };
@@ -36,7 +36,7 @@ fn main() -> ExitCode {
                 Ok(()) => {}
                 Err(error) if error.kind() == io::ErrorKind::BrokenPipe => {}
                 Err(error) => {
-                    eprintln!("tmux-workspaces: {error}");
+                    eprintln!("agent-interface: {error}");
                     return ExitCode::FAILURE;
                 }
             }
@@ -48,7 +48,7 @@ fn main() -> ExitCode {
             title,
             author,
         }) => {
-            match tmux_workspaces_app::artifacts::publish(
+            match agent_interface_app::artifacts::publish(
                 directory.as_deref(),
                 &file,
                 &title,
@@ -59,14 +59,14 @@ fn main() -> ExitCode {
                     serde_json::to_string(&entry).expect("artifact metadata")
                 ),
                 Err(error) => {
-                    eprintln!("tmux-workspaces: {}", error.to_string().escape_debug());
+                    eprintln!("agent-interface: {}", error.to_string().escape_debug());
                     return ExitCode::FAILURE;
                 }
             }
         }
-        Ok(Options::Version) => println!("tmux-workspaces {}", env!("CARGO_PKG_VERSION")),
+        Ok(Options::Version) => println!("agent-interface {}", env!("CARGO_PKG_VERSION")),
         Err(error) => {
-            eprintln!("tmux-workspaces: {}\n{USAGE}", error.escape_debug());
+            eprintln!("agent-interface: {}\n{USAGE}", error.escape_debug());
             return ExitCode::FAILURE;
         }
     }

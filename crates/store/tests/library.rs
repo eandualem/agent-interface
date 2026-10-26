@@ -1,9 +1,9 @@
 //! Schema-v2 and read-only SQLite compatibility.
 
+use agent_interface_core::{AgentSection, Direction, Node, View, ViewKind};
+use agent_interface_store::{Document, MAX_RECORD_BYTES, Store};
 use rusqlite::Connection;
 use std::path::Path;
-use tmux_workspaces_core::{AgentSection, Direction, Node, View, ViewKind};
-use tmux_workspaces_store::{Document, MAX_RECORD_BYTES, Store};
 
 const RECORD: &str = r#"{
   "version": 2, "selected": "000000000001", "focus": false,
@@ -19,7 +19,7 @@ const RECORD: &str = r#"{
   }, {"id": "000000000006", "name": "Empty", "tabs": [], "selected": ""}]
 }"#;
 
-fn parse(text: &str) -> Result<Document, tmux_workspaces_store::Error> {
+fn parse(text: &str) -> Result<Document, agent_interface_store::Error> {
     Document::parse(text.to_owned(), Path::new("layouts.db"))
 }
 
@@ -685,7 +685,7 @@ fn reconciliation_merges_refreshes_conflicts_and_retains_local_navigation() {
 fn reconciliation_refreshes_invalid_combinations_but_preserves_oversized_edits() {
     let base = parse(RECORD).unwrap();
     let path = Path::new("layouts.db");
-    let add = |model: &mut tmux_workspaces_core::Layout| {
+    let add = |model: &mut agent_interface_core::Layout| {
         model.add_tab(None, "/tmp".into(), true);
         let tab = model.workspaces[0].tabs.last_mut().unwrap();
         let Node::Leaf(leaf) = &mut tab.tree else {

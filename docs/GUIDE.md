@@ -88,8 +88,8 @@ their own layouts unchanged, and returning restores the tab's previous view.
 Settings (Command-comma) offers a dark or light theme, the terminal text size,
 whether panes show headers (always, on hover or never) and editable shortcuts;
 changes apply to every window at once and are saved in
-`$XDG_CONFIG_HOME/tmux-workspaces/settings.toml`, or
-`~/.config/tmux-workspaces/settings.toml` when that variable is unset.
+`$XDG_CONFIG_HOME/agent-interface/settings.toml`, or
+`~/.config/agent-interface/settings.toml` when that variable is unset.
 In **Settings → Shortcuts**, commands are grouped by Workspace, Tab and Pane,
 with separate Navigation, Terminal and Application groups. Click **Change**
 beside a shortcut and press the new keys. Changes apply and save immediately;
@@ -109,8 +109,8 @@ always an explicit choice. You can set `logging = "debug"` or `logging = "trace"
 in `settings.toml` before launching; `logging = "warn"` restores the default.
 
 Logs stay on this computer: `~/Library/Logs/Agent Interface` on macOS, or
-`$XDG_STATE_HOME/tmux-workspaces/logs` on Linux (default
-`~/.local/state/tmux-workspaces/logs`). Settings shows the actual location.
+`$XDG_STATE_HOME/agent-interface/logs` on Linux (default
+`~/.local/state/agent-interface/logs`). Settings shows the actual location.
 `events.jsonl` holds the newest newline-delimited JSON records; numbered files
 hold older records. Four files of at most 4 MiB each bound disk use. Copy these
 files when reporting a problem, along with what happened and when. Nothing is
@@ -294,7 +294,7 @@ macOS but is no longer offered in the new-pane chooser.
 To publish a document from the source build:
 
 ```sh
-cargo run -p tmux-workspaces-app -- artifact publish report.html \
+cargo run -p agent-interface-app -- artifact publish report.html \
   --title "Architecture report" --author "worker"
 ```
 
@@ -336,8 +336,8 @@ important colour overrides. Keep text selectable. For example:
 
 ## Choose and recover a library
 
-Omit `--data-dir` to use `TMUX_WORKSPACES_DATA_DIR`, then
-`$XDG_DATA_HOME/tmux-workspaces`, or `~/.local/share/tmux-workspaces` by default.
+Omit `--data-dir` to use `AGENT_INTERFACE_DATA_DIR`, then
+`$XDG_DATA_HOME/agent-interface`, or `~/.local/share/agent-interface` by default.
 On first launch, an absent library is created with one empty workspace. Add a
 tab and choose **Open terminal** or **Attach a session** to start working; no other
 setup is required. Existing libraries are opened without
@@ -381,14 +381,14 @@ After the [source build setup](../CONTRIBUTING.md#build-and-test), print the eff
 legacy keymap or a complete compatible TOML configuration:
 
 ```sh
-cargo run -p tmux-workspaces-app -- --print-keymap help
-cargo run -p tmux-workspaces-app -- --keymap ./keymap.toml --print-keymap toml
-cargo run -p tmux-workspaces-app -- --no-keymap --print-keymap toml
+cargo run -p agent-interface-app -- --print-keymap help
+cargo run -p agent-interface-app -- --keymap ./keymap.toml --print-keymap toml
+cargo run -p agent-interface-app -- --no-keymap --print-keymap toml
 ```
 
-Selection follows `--keymap`, then `TMUX_WORKSPACES_KEYMAP`, then
-`$XDG_CONFIG_HOME/tmux-workspaces/keymap.toml` (or
-`~/.config/tmux-workspaces/keymap.toml`). `--no-keymap` uses shipped defaults.
+Selection follows `--keymap`, then `AGENT_INTERFACE_KEYMAP`, then
+`$XDG_CONFIG_HOME/agent-interface/keymap.toml` (or
+`~/.config/agent-interface/keymap.toml`). `--no-keymap` uses shipped defaults.
 Only a missing implicit default is ignored; invalid or explicitly missing files
 report an error. These commands create no library, start no terminal and write
 no configuration. These options inspect the Python-compatible `keymap.toml`;

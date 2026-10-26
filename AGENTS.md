@@ -4,7 +4,8 @@ Applies to every agent and all work in this repository.
 
 Agent Interface reimplements
 [tmux-workspaces](https://github.com/eandualem/tmux-workspaces) in Rust as a
-native desktop app. The binary is `tmux-workspaces` from day one.
+native desktop app. The binary and packages are named `agent-interface`.
+Legacy names remain only for upgrade compatibility and upstream attribution.
 
 ## Architecture and documentation
 
@@ -73,8 +74,7 @@ server.
 - No API keys, spending or publishing (crates.io, Homebrew, release
   binaries) without the maintainer's go-ahead. Swarms run on the existing
   subscriptions.
-- Repository visibility, and a later rename that takes over the
-  `tmux-workspaces` name, are the maintainer's decisions.
+- Repository visibility and publication are the maintainer's decisions.
 - The repository is private for now but written for publication: code,
   docs, issues, PRs, commits and comments read as if public. Never quote
   local notes or absolute local paths in tracked content.

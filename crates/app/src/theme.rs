@@ -1,11 +1,11 @@
 //! Read theme configuration without changing files or installing a palette.
 
+use agent_interface_core::theme::{MAX_BYTES, Theme};
 use std::ffi::OsString;
 use std::fs::OpenOptions;
 use std::io::{self, Read};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
-use tmux_workspaces_core::theme::{MAX_BYTES, Theme};
 use uzers::os::unix::UserExt;
 
 /// A read result, including the selected path even when no file exists.
@@ -77,7 +77,9 @@ fn load_with(
 }
 
 fn source(explicit: Option<&Path>, env: &impl Fn(&str) -> Option<OsString>) -> io::Result<PathBuf> {
-    let configured = env("TMUX_WORKSPACES_THEME").filter(|p| !p.is_empty());
+    let configured = env("AGENT_INTERFACE_THEME")
+        .filter(|p| !p.is_empty())
+        .or_else(|| env("TMUX_WORKSPACES_THEME").filter(|p| !p.is_empty()));
     let home = || {
         env("HOME")
             // Python's POSIX expanduser("~") returns / for an empty HOME.
@@ -108,7 +110,7 @@ fn source(explicit: Option<&Path>, env: &impl Fn(&str) -> Option<OsString>) -> i
             Some(path) => PathBuf::from(path),
             None => home()?.join(".config"),
         };
-        selected = Some(config.join("tmux-workspaces/theme.toml"));
+        selected = Some(crate::compat::config_file(&config, "theme.toml"));
     }
     let mut path = selected.unwrap();
     if let Ok(suffix) = path.strip_prefix("~") {
@@ -129,7 +131,7 @@ mod tests {
     fn loading_obeys_paths_and_preserves_working_colors_on_failure() {
         let fixture = tempfile::tempdir().unwrap();
         let root = fixture.path();
-        let config = root.join("config/tmux-workspaces");
+        let config = root.join("config/agent-interface");
         fs::create_dir_all(&config).unwrap();
         fs::write(config.join("theme.toml"), "preset = 'paper'").unwrap();
         let chosen = root.join("chosen.toml");
@@ -145,7 +147,7 @@ mod tests {
                 .base_preset(),
             "paper"
         );
-        env.insert("TMUX_WORKSPACES_THEME", chosen.as_os_str().to_owned());
+        env.insert("AGENT_INTERFACE_THEME", chosen.as_os_str().to_owned());
         assert_eq!(
             load_with(None, None, &|k| env.get(k).cloned())
                 .unwrap()

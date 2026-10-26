@@ -1,8 +1,8 @@
 //! The content area beside the panel, its empty states, and the layer that
 //! places popovers over the window.
 
+use agent_interface_core::Node;
 use gpui::{AnyElement, Context, IntoElement, Window, div, prelude::*, px};
-use tmux_workspaces_core::Node;
 
 use super::{
     Browser, components as ui,

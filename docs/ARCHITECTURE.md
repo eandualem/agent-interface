@@ -167,7 +167,7 @@ session-termination commands; navigation keeps them attached.
 ## Appearance and integrations
 
 Native appearance and shortcuts are saved separately in `settings.toml` under
-`$XDG_CONFIG_HOME/tmux-workspaces`, or `~/.config/tmux-workspaces`. Shared colors,
+`$XDG_CONFIG_HOME/agent-interface`, or `~/.config/agent-interface`. Shared colors,
 spacing and components are described in [Design](DESIGN.md). The settings reader
 accepts regular files up to 64 KiB, including symlinks to them; unreadable,
 oversized or invalid settings keep the defaults without waiting on a pipe.
@@ -419,10 +419,26 @@ Python runtime, build toolchain, tmux server or application daemon.
 
 The shell installer verifies the archive checksum and target, stages a
 per-user replacement, and preserves the data directories. Linux desktop and
-window identifiers use `io.github.eandualem.tmux-workspaces`; macOS uses the same
-bundle identifier. The installer replaces its owned legacy `tmux-workspaces.app`
-bundle with `Agent Interface.app`, restoring the old name if installation fails.
+window identifiers use `io.github.eandualem.agent-interface`; macOS uses the same
+bundle identifier. The executable, Rust crates, package archives and new install,
+configuration and data directories use `agent-interface`. The installer accepts
+its previous ownership marker when updating, removes owned legacy Linux launchers,
+and rolls back the app and launchers on failure. Existing library directories stay
+in place: their absolute path determines the ordinary-shell socket hash. Existing
+private legacy shell sockets remain usable. Settings, themes and keymaps fall back
+to the old configuration directory when the new file is absent; settings writes
+use the new directory. Legacy environment overrides remain supported, with the new
+`AGENT_INTERFACE_*` names taking precedence. No database or running server is moved.
 The Linux launcher uses the packaged Agent Interface icon.
+
+Linux windows request client decorations and draw a matching right-side caption
+with minimize, maximize/restore and close controls, plus resize edges. If the X11
+window manager requires server decorations, the native frame supplies its controls
+and the app omits its caption. macOS retains the native traffic lights. Linux uses
+DejaVu Sans Mono (the documented runtime font) for terminal cells, avoiding a
+proportional fallback for the macOS-only Menlo family. Graphical Ubuntu CI checks
+ASCII font metrics and exercises the actual window controls on a private X11
+desktop, retaining screenshots; this does not establish WSLg hardware compatibility.
 
 Build-only `cargo-about` 0.9.2 (MIT OR Apache-2.0) generates Rust dependency
 notices. Hash-pinned native notices supplement Cargo's graph for Ghostty,
