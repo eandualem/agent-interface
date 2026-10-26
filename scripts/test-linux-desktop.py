@@ -83,26 +83,36 @@ with tempfile.TemporaryDirectory(prefix="agent-interface-desktop-") as directory
             command("xdotool", "mousemove", "--window", window,
                     str(round(width - caption * position_from_right)), str(round(caption / 2)), "click", "1")
 
+        def double_click_caption():
+            # A caption press starts a window-manager move. Hold the button long
+            # enough for that request to arrive before releasing it; an instant
+            # synthetic click can leave the move grab consuming the next press.
+            command("xdotool", "mousemove", "--window", window, "120", str(round(caption / 2)),
+                    "mousedown", "1", "sleep", "0.1", "mouseup", "1", "sleep", "0.1",
+                    "mousedown", "1", "sleep", "0.1", "mouseup", "1")
+
         initial = geometry()
         command("import", "-window", window, str(OUTPUT / "window.png"))
         click_button(1.5)
         wait_for(lambda: "_NET_WM_STATE_MAXIMIZED_HORZ" in state() and "_NET_WM_STATE_MAXIMIZED_VERT" in state(), "maximize button")
+        time.sleep(0.6)  # The WM state changes before the software-rendered frame.
         command("import", "-window", window, str(OUTPUT / "maximized.png"))
         click_button(1.5)
         wait_for(lambda: "MAXIMIZED" not in state() and geometry()["WIDTH"] == initial["WIDTH"], "restore button")
-        command("xdotool", "mousemove", "--window", window, "120", str(round(caption / 2)),
-                "click", "--repeat", "2", "--delay", "100", "1")
+        time.sleep(0.6)
+        double_click_caption()
         wait_for(lambda: "_NET_WM_STATE_MAXIMIZED_HORZ" in state(), "caption double-click maximize")
         # GPUI groups successive clicks for 400 ms, even across maximization.
         time.sleep(0.6)
-        command("xdotool", "mousemove", "--window", window, "120", str(round(caption / 2)),
-                "click", "--repeat", "2", "--delay", "100", "1")
+        double_click_caption()
         wait_for(lambda: "MAXIMIZED" not in state(), "caption double-click restore")
         before_resize = geometry()
         command("xdotool", "mousemove", "--window", window,
-                str(before_resize["WIDTH"] - 2), str(before_resize["HEIGHT"] - 2), "mousedown", "1")
+                str(before_resize["WIDTH"] - 2), str(before_resize["HEIGHT"] - 2),
+                "mousedown", "1", "sleep", "0.1")
         command("xdotool", "mousemove", "--window", window,
-                str(before_resize["WIDTH"] + 50), str(before_resize["HEIGHT"] + 30), "mouseup", "1")
+                str(before_resize["WIDTH"] + 50), str(before_resize["HEIGHT"] + 30),
+                "sleep", "0.1", "mouseup", "1")
         wait_for(lambda: geometry()["WIDTH"] > before_resize["WIDTH"], "resize corner")
         click_button(2.5)
         wait_for(lambda: "_NET_WM_STATE_HIDDEN" in state(), "minimize button")
