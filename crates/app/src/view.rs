@@ -322,10 +322,25 @@ impl TerminalView {
         }
     }
 
-    pub(crate) fn suspend_input(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn suspend_input(&mut self) {
         self.input = None;
         self.release_mouse();
-        self.clear_selection(cx);
+        // Retained output can still receive mouse events while reconnecting.
+        // Only the replacement view may accept new terminal input.
+        // Keep the drain acknowledgment for the view's shutdown handler.
+        self.input_queue.sender.take();
+    }
+
+    /// Drain the final update and signal disconnection even in a hidden tab.
+    pub(crate) fn refresh_connection(&mut self, cx: &mut Context<Self>) {
+        self.take_update();
+        if self.panes().is_finished() {
+            self.report_failure();
+            if self.embedded && !self.closed_reported {
+                self.closed_reported = true;
+                cx.emit(Disconnected(self.panes().failure()));
+            }
+        }
     }
 
     /// Whether this terminal has keyboard focus.
@@ -781,18 +796,11 @@ impl TerminalView {
 
 impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.take_update();
-        if self.panes().is_finished() {
-            self.report_failure();
-            if self.embedded && !self.closed_reported {
-                self.closed_reported = true;
-                cx.emit(Disconnected(self.panes().failure()));
-            }
+        self.refresh_connection(cx);
+        if self.panes().is_finished() && !self.embedded {
             // The client has gone: close once this frame, which shows its last
             // output, has been drawn.
-            if !self.embedded {
-                window.on_next_frame(|_, cx| cx.quit());
-            }
+            window.on_next_frame(|_, cx| cx.quit());
         }
         if self.pointer_subscriptions.is_empty() {
             self.pointer_subscriptions
@@ -1588,6 +1596,21 @@ mod tests {
             queue
                 .try_send((layout.panes[0].id, Input::Mouse(pointer, action)))
                 .unwrap();
+        }
+        queue.sender.take();
+        queue.sender.take(); // Repeated retries must keep the pending drain.
+        assert!(queue.drained.is_some());
+        for input in [
+            Input::Key(KeyPress {
+                key: "x".into(),
+                ..Default::default()
+            }),
+            Input::Paste("text or dropped path".into()),
+            Input::Wheel(pointer, 1),
+            Input::Mouse(pointer, MouseAction::Press(Button::Left)),
+            Input::Mouse(pointer, MouseAction::Move(None)),
+        ] {
+            assert!(queue.try_send((layout.panes[0].id, input)).is_err());
         }
         queue
             .close()

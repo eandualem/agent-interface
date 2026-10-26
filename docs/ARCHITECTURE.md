@@ -66,7 +66,10 @@ output into each pane's terminal state. It publishes owned `Screen` data for the
 UI thread to draw, so drawing does not borrow a live engine or wait for I/O.
 If copying a screen fails, the worker reports a connection failure and stops
 publishing updates. Partially copied frames never replace the last complete
-display; embedded terminals offer the existing reconnect action.
+display. Embedded attachments retry the saved socket and session on the existing
+two-second window-refresh loop; retries never create a session. Ordinary shells
+offer explicit reconnect and open actions, with creation still gated by saving
+the pane first.
 
 On connection or recovery, the worker captures the pane's current state and
 only the history its local scrollback retains, then continues with subsequent
@@ -113,6 +116,26 @@ crates expose synchronous operations; `app` owns scheduling, cancellation and
 shutdown. Workers pass owned data rather than engine or database handles to the
 UI thread.
 
+`app::diagnostics` owns the desktop process's `tracing` subscriber. Product
+libraries emit structured events without choosing a destination or initializing
+global logging. The saved `logging` preference selects Warnings (the default),
+Debug or Trace and reloads the filter immediately. Neither development builds
+nor `RUST_LOG` enables verbose output. Only the explicitly instrumented app,
+tmux and roster targets are admitted, so dependency HTTP logs cannot expose
+request bodies or credentials. Events cover lifecycle boundaries and operation
+timings; terminal byte parsing, painting and input carry no per-character logs.
+
+The JSON formatter feeds a lossy 1,024-record background queue. Queue saturation
+does not block the UI or terminal workers; the drop count and write failures are
+visible in Settings. The writer rotates four 4 MiB files, rejects records larger
+than 16 KiB and uses a private owned directory and regular files. A separate
+advisory lock serializes rotation across desktop processes; lock contention is
+reported as a failed write, rather than blocking producers. The worker guard
+drains queued records during normal shutdown. Forced termination may lose queued
+records. Logs contain stable pane IDs, process/session IDs, classifications and
+timings, never terminal bytes, input, feedback prose, HTTP payloads or credentials.
+Failure logging leaves existing lifecycle decisions and errors unchanged.
+
 ## Saving and shared libraries
 
 An absent library is initialized with one empty workspace. SQLite builds the
@@ -134,7 +157,10 @@ to repeat the edit; failed saves offer Retry or Discard.
 
 Workspace and tab selection, pane expansion, and attachment-window selection
 are local to each native window. Header double-click and the pane shortcut toggle
-expansion without changing the saved split tree; Escape restores it. Ordinary-shell identities belong to the saved
+expansion for the selected tab without changing the saved split tree; Escape
+restores that tab. Each tab retains its own expansion during navigation and shared
+library refreshes. The schema-v2 root `focus` flag still seeds only the initially
+selected tab; other tabs start unexpanded in a new window. Ordinary-shell identities belong to the saved
 library. Closing a native window detaches its clients without issuing
 session-termination commands; navigation keeps them attached.
 
@@ -159,7 +185,9 @@ not replace native Settings shortcuts.
 
 The Agent Backbone adapter resolves configuration lazily and uses
 bounded, read-only requests to a local endpoint. Credential-bearing requests
-require `BACKBONE_SOCKET_PATH`, an absolute Unix socket path. The socket must
+require an absolute Unix socket path from `BACKBONE_SOCKET_PATH` or the provider's
+saved `backbone.socket_path` setting. An explicit endpoint overrides the saved
+setting, which is re-read on each request. The socket must
 be owned by the app's effective user with mode 0600, inside a directory owned
 by that user with mode 0700. The connected peer's UID must match before HTTP
 or credentials are sent. This authenticates the OS account, not an individual
@@ -357,6 +385,12 @@ those dependencies.
   screenshot-drop staging. Each is MIT OR Apache-2.0.
 - **`alacritty_terminal` and `rio-vt`:** development-only comparison engines.
   Apache-2.0 and MIT respectively.
+- **`tracing` 0.1.44:** MIT-licensed structured diagnostic events in app, tmux
+  and roster; pinned exactly. **`tracing-subscriber` 0.3.23** and
+  **`tracing-appender` 0.2.5** (MIT, exact pins) provide the app-owned JSON
+  formatter, reloadable filter and nonblocking background writer. The small
+  app-owned file writer adds size-based rotation and explicit write-health
+  reporting; it does not implement another logging facade.
 
 The native terminal source is prepared from a pinned Ghostty commit plus
 [`native/ghostty.patch`](../native/ghostty.patch). The preparation script checks

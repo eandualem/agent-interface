@@ -74,7 +74,9 @@ actions!(
 /// An absent directory uses the shared library's normal path lookup.
 pub fn run(directory: Option<PathBuf>) -> Result<(), String> {
     let source = crate::sessions::source_socket(None).map_err(|e| e.to_string());
-    settings::load().apply();
+    let preferences = settings::load();
+    preferences.apply();
+    let mut logging = crate::diagnostics::start(preferences.logging);
     let failure = Rc::new(RefCell::new(None));
     let opened = Rc::clone(&failure);
     application()
@@ -90,11 +92,14 @@ pub fn run(directory: Option<PathBuf>) -> Result<(), String> {
                 return;
             }
             configure_menu(cx);
-            cx.on_app_quit(|_| {
+            cx.on_app_quit(move |_| {
                 // The synchronous observer runs before GPUI's short async quit
                 // deadline. These workers finish without a foreground update.
                 layout_edit::finish_saves(std::time::Duration::from_secs(10));
                 settings::finish_saves(std::time::Duration::from_secs(2));
+                // AppKit termination does not unwind the run() stack. Drain
+                // diagnostics here, after the workers have logged their saves.
+                drop(logging.take());
                 std::future::ready(())
             })
             .detach();
@@ -415,7 +420,7 @@ impl AttachmentEdit {
         if self.empty {
             let displayed = model
                 .tab()
-                .is_some_and(|tab| !model.focus || tab.focus == self.pane);
+                .is_some_and(|tab| !model.focus_mode() || tab.focus == self.pane);
             displayed && model.fill_pane(&self.tab, &self.pane, Some(attachment))
         } else {
             self.target.apply(model, Some(attachment))
@@ -425,7 +430,7 @@ impl AttachmentEdit {
     fn displayed(&self, model: &Layout) -> bool {
         model.tab().is_some_and(|tab| {
             tab.id == self.tab
-                && (!model.focus || tab.focus == self.pane)
+                && (!model.focus_mode() || tab.focus == self.pane)
                 && tab.tree.leaves().iter().any(|leaf| leaf.id == self.pane)
         })
     }
@@ -757,8 +762,16 @@ impl Browser {
             while woken.next().await.is_some() {
                 let updated = this.update(cx, |browser, cx| {
                     if let Some(snapshot) = browser.roster.as_ref().and_then(Roster::take_update) {
+                        let changed = browser.agents.as_ref().is_none_or(|previous| {
+                            previous.states != snapshot.states || previous.error != snapshot.error
+                        });
                         browser.agents = Some(snapshot);
                         browser.refresh_source_matches(cx);
+                        if changed {
+                            // Clear retained paint when status changes, including
+                            // badges beside cached terminal bodies.
+                            cx.refresh_windows();
+                        }
                         cx.notify();
                     }
                 });
@@ -1196,13 +1209,13 @@ impl Browser {
             }
             TabAction::OpenTerminal => {
                 if let Some(pane) = layout.model().pane().map(|pane| pane.id.clone()) {
-                    self.open_terminal(&pane, window, cx);
+                    self.open_terminal(&pane, None, window, cx);
                 }
             }
             TabAction::Split(direction) => self.create(Create::Split(direction), window, cx),
             TabAction::Focus => {
                 let model = layout.model_mut();
-                model.focus = !model.focus;
+                model.set_focus_mode(!model.focus_mode());
             }
             TabAction::Move(offset) => {
                 layout.model_mut().move_tab(offset);
@@ -1275,14 +1288,20 @@ impl Browser {
                     .any(|leaf| leaf.id == pane && leaf.empty)
             });
         if empty {
-            self.open_terminal(pane, window, cx);
+            self.open_terminal(pane, None, window, cx);
         } else {
             self.save_notice = Some("The pane changed. Choose again.".into());
             cx.notify();
         }
     }
 
-    fn open_terminal(&mut self, pane: &str, window: &mut Window, cx: &mut Context<Self>) {
+    fn open_terminal(
+        &mut self,
+        pane: &str,
+        expected: Option<&Target>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.saving || self.save_failed {
             return;
         }
@@ -1297,10 +1316,20 @@ impl Browser {
         let Some(layout) = &mut self.layout else {
             return;
         };
+        if expected.is_some_and(|target| {
+            !layout.model().tab().is_some_and(|tab| {
+                tab.tree
+                    .leaves()
+                    .iter()
+                    .any(|leaf| target.matches_leaf(leaf))
+            })
+        }) {
+            return;
+        }
         if !layout
             .model()
             .tab()
-            .is_some_and(|tab| !layout.model().focus || tab.focus == pane)
+            .is_some_and(|tab| !layout.model().focus_mode() || tab.focus == pane)
             || !layout.model_mut().choose_pane(pane)
         {
             return;
@@ -1339,7 +1368,7 @@ impl Browser {
         if !layout
             .model()
             .tab()
-            .is_some_and(|tab| !layout.model().focus || tab.focus == pane)
+            .is_some_and(|tab| !layout.model().focus_mode() || tab.focus == pane)
             || !layout.model_mut().choose_pane(pane)
         {
             return;
@@ -1432,7 +1461,7 @@ impl Browser {
         if !layout
             .model()
             .tab()
-            .is_some_and(|tab| !layout.model().focus || tab.focus == pane)
+            .is_some_and(|tab| !layout.model().focus_mode() || tab.focus == pane)
             || !layout.model_mut().choose_pane(pane)
         {
             return;
@@ -1475,7 +1504,7 @@ impl Browser {
         if !layout
             .model()
             .tab()
-            .is_some_and(|tab| !layout.model().focus || tab.focus == pane)
+            .is_some_and(|tab| !layout.model().focus_mode() || tab.focus == pane)
             || !layout.model_mut().choose_pane(pane)
         {
             return;
@@ -1872,6 +1901,15 @@ impl Render for Browser {
                     },
                 )
                 .detach();
+                cx.subscribe_in(
+                    &terminal,
+                    window,
+                    |browser, terminal, _: &terminal::OpenTerminal, window, cx| {
+                        let target = terminal.read(cx).target.clone();
+                        browser.open_terminal(&target.leaf.id, Some(&target), window, cx);
+                    },
+                )
+                .detach();
                 cx.subscribe(
                     &terminal,
                     |browser, terminal, _: &crate::view::Focus, cx| {
@@ -1958,7 +1996,7 @@ impl Render for Browser {
         let expanded = self.layout.as_ref().and_then(|layout| {
             let model = layout.model();
             model
-                .focus
+                .focus_mode()
                 .then(|| model.tab().map(|tab| tab.focus.as_str()))
                 .flatten()
         });
@@ -2037,7 +2075,7 @@ impl Render for Browser {
         if let Some(request) = self.shell_to_open.take()
             && let Some(layout) = &self.layout
             && let Some(tab) = layout.model().tab()
-            && (!layout.model().focus || tab.focus == request.id)
+            && (!layout.model().focus_mode() || tab.focus == request.id)
             && let Some(leaf) = tab.tree.leaves().into_iter().find(|leaf| {
                 leaf.id == request.id && leaf.runs_terminal() && leaf.attachment.is_none()
             })
@@ -2191,9 +2229,9 @@ impl Render for Browser {
                                 .values()
                                 .any(|terminal| terminal.read(cx).has_focus(window, cx)))
                         && let Some(layout) = &mut browser.layout
-                        && layout.model().focus
+                        && layout.model().focus_mode()
                     {
-                        layout.model_mut().focus = false;
+                        layout.model_mut().set_focus_mode(false);
                         browser.pane_drag = None;
                         cx.stop_propagation();
                         cx.notify();
@@ -2433,7 +2471,7 @@ fn navigate_key(model: &mut tmux_workspaces_core::Layout, key: &gpui::Keystroke)
         }
         Some(shortcuts::Command::FocusPane) => {
             if model.pane().is_some() {
-                model.focus = !model.focus;
+                model.set_focus_mode(!model.focus_mode());
             }
         }
         _ => return false,
@@ -2705,9 +2743,9 @@ mod tests {
         model.split(Direction::Right, "/tmp".into(), true);
         let hidden = AttachmentEdit::capture(&model).unwrap();
         model.next_pane(1);
-        model.focus = true;
+        model.set_focus_mode(true);
         assert!(!hidden.apply(&mut model, attachment.clone()));
-        model.focus = false;
+        model.set_focus_mode(false);
         assert!(hidden.apply(&mut model, attachment.clone()));
 
         let menu = AttachmentEdit::capture(&model).unwrap();
@@ -2974,7 +3012,7 @@ mod tests {
         ));
         assert_eq!(model.pane().unwrap().id, second);
         navigate_key(&mut model, &key(shortcuts::platform_key("cmd-shift-enter")));
-        assert!(model.focus);
+        assert!(model.focus_mode());
         assert_eq!(model.tab().unwrap().tree, tree);
         let tab = model.tab().unwrap().id.clone();
         model.add_tab(None, "/tmp".into(), true);

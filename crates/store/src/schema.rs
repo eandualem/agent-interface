@@ -315,6 +315,7 @@ fn read_layout(value: &Value, navigation: bool) -> Result<Layout> {
                 name,
                 tree,
                 focus,
+                expanded: false,
             });
         }
         let selected = if navigation {
@@ -351,12 +352,14 @@ fn read_layout(value: &Value, navigation: bool) -> Result<Layout> {
     } else {
         false
     };
-    Ok(Layout {
+    let mut model = Layout {
         workspaces,
         selected,
-        focus,
         show_agents,
-    })
+    };
+    // The legacy flag seeds only the selected tab, never every tab in the window.
+    model.set_focus_mode(focus);
+    Ok(model)
 }
 
 /// A native icon name: 1 to 40 lowercase ASCII letters, digits and hyphens.

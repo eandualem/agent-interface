@@ -226,7 +226,8 @@ impl Browser {
                         if in_header && event.click_count == 2 {
                             browser.pane_drag = None;
                             if let Some(layout) = &mut browser.layout {
-                                layout.model_mut().focus = !layout.model().focus;
+                                let model = layout.model_mut();
+                                model.set_focus_mode(!model.focus_mode());
                             }
                             if let Some(terminal) = browser.terminals.get(&leaf) {
                                 terminal
@@ -375,8 +376,8 @@ impl Browser {
         let windows = terminal
             .map(|terminal| terminal.read(cx).windows_for_header())
             .unwrap_or_default();
-        let several = windows.len() > 1;
-        if several {
+        let show_choices = windows.len() > 1 || windows.iter().any(|(_, current)| !current);
+        if show_choices {
             // The session's windows scroll sideways when they outgrow the pane.
             let mut choices = div()
                 .id(SharedString::from(format!("tmux-windows-{}", leaf.id)))
@@ -417,7 +418,7 @@ impl Browser {
         match &leaf.attachment {
             Some(attachment) => {
                 // An attached session: its tmux windows, its name on the right.
-                if !several {
+                if !show_choices {
                     row = row
                         .child(ui::icon(
                             if state.is_some() { "bot" } else { "link-2" },
@@ -444,10 +445,10 @@ impl Browser {
                     )),
                     _ => row,
                 };
-                if !several {
+                if !show_choices {
                     row = row.child(div().flex_1());
                 }
-                if several {
+                if show_choices {
                     row = row
                         .child(ui::icon(
                             "link-2",
@@ -504,12 +505,12 @@ impl Browser {
                             .min_w_0()
                             // Share remaining space with the window choices;
                             // a long directory must not collapse their width.
-                            .when(several, |el| el.flex_1())
+                            .when(show_choices, |el| el.flex_1())
                             .overflow_hidden()
                             .text_ellipsis()
                             .child(cwd),
                     );
-                if !several {
+                if !show_choices {
                     row = row.child(div().flex_1());
                 }
             }

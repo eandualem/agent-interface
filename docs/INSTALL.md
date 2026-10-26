@@ -40,11 +40,13 @@ Run `tmux -V` and confirm it reports 3.3 or newer.
 
 ## Install a package
 
-Native packages have not been published yet. To run the app now, follow the
-[source build instructions](../CONTRIBUTING.md#set-up).
+Check the [releases page](https://github.com/eandualem/agent-interface/releases)
+for available packages. The command below needs a published release with an
+archive for your platform; an empty release list or a missing archive means it
+is not available yet. The installer downloads the compiled app and does not
+build it on your computer.
 
-Once native packages are available on the [releases page](https://github.com/eandualem/agent-interface/releases),
-install the latest build with:
+With the runtime prerequisites installed, install the latest release with:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/eandualem/agent-interface/main/install.sh | sh
@@ -103,6 +105,81 @@ The installer places the app in `~/.local/lib/tmux-workspaces`, adds a command i
 `~/.local/bin`, and creates a desktop launcher under
 `${XDG_DATA_HOME:-~/.local/share}/applications`. Add `~/.local/bin` to your shell's
 `PATH` if needed, or launch **Agent Interface** from the applications menu.
+
+You can launch directly without changing `PATH`:
+
+```sh
+"$HOME/.local/bin/tmux-workspaces"
+```
+
+## Windows 11 with WSL (experimental)
+
+Use the Linux package inside Ubuntu 24.04 or newer on **WSL 2 with WSLg**.
+There is no native Windows executable. This app's WSL compatibility has not
+been verified; the steps below are for testing it once a Linux release is
+available. Agent Backbone is optional for terminals and saved workspaces.
+
+If WSL or a suitable Ubuntu distribution is missing, run this in an
+**administrator PowerShell**, restart Windows if prompted, and complete Ubuntu's
+username/password setup:
+
+```powershell
+wsl --install -d Ubuntu-24.04
+```
+
+This installs Ubuntu 24.04 as a separate distribution; it does not upgrade an
+older Ubuntu installation. See [Microsoft's WSL commands](https://learn.microsoft.com/en-us/windows/wsl/basic-commands)
+for available distributions and WSL 1 to WSL 2 conversion.
+
+In **PowerShell**, check your existing WSL installation:
+
+```powershell
+wsl --version
+wsl --list --verbose
+```
+
+The Ubuntu distribution must show version `2`, and `wsl --version` should list
+WSLg. If WSL needs updating, run `wsl --update` from an administrator PowerShell.
+Follow [Microsoft's WSL GUI setup](https://learn.microsoft.com/en-us/windows/wsl/tutorials/gui-apps)
+for GPU drivers and restarting WSL after an update. Save your work first:
+`wsl --shutdown` stops every running WSL distribution, including its tmux
+sessions and processes. An ordinary app install does not require that shutdown.
+
+Open your **Ubuntu 24.04 or newer** distribution from the Windows Start menu.
+Run the remaining commands in its Linux terminal. Check the Ubuntu version:
+
+```sh
+cat /etc/os-release
+```
+
+On Ubuntu 24.04 or newer, install the runtime prerequisites once:
+
+```sh
+sudo apt update
+sudo apt install -y curl tmux fonts-dejavu-core libfontconfig1 libfreetype6 \
+  libxcb1 libxkbcommon0 libxkbcommon-x11-0 libwayland-client0 libvulkan1 \
+  libegl1 libgl1-mesa-dri mesa-vulkan-drivers xdg-desktop-portal \
+  xdg-desktop-portal-gtk
+```
+
+Then install and launch the app:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/eandualem/agent-interface/main/install.sh | sh
+"$HOME/.local/bin/tmux-workspaces"
+```
+
+This downloads a prebuilt Linux app; no compiler or source checkout is needed.
+The prerequisite downloads and installation take additional time on a fresh
+Ubuntu installation. Installation speed and GPU rendering under WSL have not
+been measured.
+
+For a first test, add a tab with Ctrl+Shift+T, choose **Open terminal**, and run
+`pwd`. Quit and reopen the app to check that the saved workspace and terminal
+reconnect. The terminals run inside that Ubuntu distribution. If no window
+appears, check
+[Microsoft's WSLg display troubleshooting](https://github.com/microsoft/wslg/wiki/Diagnosing-%22cannot-open-display%22-type-issues-with-WSLg)
+and the app's [diagnostic logging](GUIDE.md#find-work-and-change-appearance).
 
 ## Update or remove
 

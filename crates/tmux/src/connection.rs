@@ -53,9 +53,10 @@ pub fn connect_window(
     connect_selected(socket, session, Some(window), false)
 }
 
-/// Reconnect after an explicit ordinary-shell open. Preserve a listed window
-/// while its session is unchanged; use the replacement session's current window
-/// if the old server/session identity is gone. This never creates a session.
+/// Reconnect to the saved session, including after an explicit ordinary-shell
+/// open. Preserve a listed window while its session is unchanged; use the
+/// replacement session's current window if the old server/session identity is
+/// gone. This never creates a session.
 pub fn connect_reopened(
     socket: &Path,
     session: &str,
@@ -209,10 +210,19 @@ fn connect_selected(
         .stderr(Stdio::null())
         .spawn()?;
     if let Err(error) = verify_client(socket, &mut client, source) {
+        tracing::debug!(event = "control_client_verification_failed", client_pid = client.id(), error_kind = ?error.kind(), "Control client attachment could not be verified");
         let _ = client.kill();
         let _ = client.wait();
         return Err(error);
     }
+    tracing::debug!(
+        event = "control_client_attached",
+        client_pid = client.id(),
+        server_pid = resolved.server_pid,
+        session_id = resolved.session_id,
+        window_id = layout.window,
+        "Control client attached"
+    );
     Ok(Connection {
         client,
         layout,

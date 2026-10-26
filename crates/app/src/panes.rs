@@ -778,6 +778,7 @@ fn read(
             Ok(read) => read,
             Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
             Err(error) => {
+                tracing::warn!(event = "control_transport_read_failed", window_id = window, error_kind = ?error.kind(), os_error = error.raw_os_error(), "Control transport read failed");
                 shared
                     .lock()
                     .transport_failure
@@ -839,6 +840,20 @@ fn read(
                 }
             }
             Message::Notification(line) if line == b"%exit" || line.starts_with(b"%exit ") => {
+                let reason = match line.strip_prefix(b"%exit ").unwrap_or_default() {
+                    b"" => "unspecified",
+                    b"detached" => "detached",
+                    b"session ended" => "session_ended",
+                    b"server exited" => "server_exited",
+                    b"lost tty" => "lost_tty",
+                    _ => "other",
+                };
+                tracing::debug!(
+                    event = "control_client_exit",
+                    window_id = window,
+                    reason,
+                    "Tmux control client exited"
+                );
                 if let Some(reason) = line.strip_prefix(b"%exit ").filter(|s| !s.is_empty()) {
                     shared.lock().transport_failure.get_or_insert_with(|| {
                         format!("tmux disconnected: {}", String::from_utf8_lossy(reason))
@@ -853,6 +868,11 @@ fn read(
             _ => {}
         });
         if let Err(error) = decoded {
+            tracing::warn!(
+                event = "control_decode_failed",
+                window_id = window,
+                "Control output decoding failed"
+            );
             shared
                 .lock()
                 .transport_failure

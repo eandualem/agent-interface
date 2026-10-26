@@ -13,6 +13,8 @@ use std::{path::PathBuf, sync::Arc};
 use tmux_workspaces_core::Leaf;
 use tmux_workspaces_tmux::connection::SessionWindow;
 
+static CONNECTION_ATTEMPTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 #[derive(Clone, PartialEq, Eq)]
 pub(super) struct Target {
     pub leaf: Leaf,
@@ -99,8 +101,14 @@ fn connect_selected(
         let directory =
             library::library_directory(target.directory.as_deref()).map_err(|e| e.to_string())?;
         let socket = library::existing_shell_socket(&directory)
-            .map_err(|e| e.to_string())?
-            .ok_or("This saved shell is not running.")?;
+            .map_err(|e| {
+                tracing::debug!(event = "shell_socket_lookup_failed", error_kind = ?e.kind(), os_error = e.raw_os_error(), "Ordinary shell socket lookup failed");
+                e.to_string()
+            })?
+            .ok_or_else(|| {
+                tracing::debug!(event = "shell_socket_absent", "Ordinary shell socket is absent");
+                "This saved shell is not running."
+            })?;
         let session =
             library::ordinary_session(&target.leaf.id).ok_or("Invalid saved shell identity")?;
         (socket, session)
@@ -151,8 +159,10 @@ pub(super) struct LiveTerminal {
 }
 
 pub(super) struct Detach;
+pub(super) struct OpenTerminal;
 
 impl gpui::EventEmitter<Detach> for LiveTerminal {}
+impl gpui::EventEmitter<OpenTerminal> for LiveTerminal {}
 impl gpui::EventEmitter<crate::view::Focus> for LiveTerminal {}
 
 impl LiveTerminal {
@@ -187,7 +197,7 @@ impl LiveTerminal {
             return;
         }
         self.target.leaf = leaf;
-        self.start_window(self.selected_window.clone(), Some(environment), cx);
+        self.start_window(self.selected_window.clone(), Some(environment), false, cx);
     }
 
     pub fn selection(&self) -> Option<SessionWindow> {
@@ -212,7 +222,10 @@ impl LiveTerminal {
                     cx.background_executor()
                         .timer(std::time::Duration::from_secs(2))
                         .await;
-                    let Ok(query) = this.update(cx, |terminal, _| {
+                    let Ok(query) = this.update(cx, |terminal, cx| {
+                        if let Some(view) = &terminal.view {
+                            view.update(cx, |view, cx| view.refresh_connection(cx));
+                        }
                         (!terminal.connecting)
                             .then(|| {
                                 terminal
@@ -224,73 +237,107 @@ impl LiveTerminal {
                     }) else {
                         break;
                     };
-                    let Some((socket, window)) = query else {
-                        continue;
+                    let listed = if let Some((socket, window)) = query {
+                        Some(
+                            cx.background_executor()
+                                .spawn(async move {
+                                    let windows = tmux_workspaces_tmux::connection::session_windows(
+                                        &socket, &window,
+                                    );
+                                    (socket, window, windows)
+                                })
+                                .await,
+                        )
+                    } else {
+                        None
                     };
-                    let listed = cx
-                        .background_executor()
-                        .spawn(async move {
-                            tmux_workspaces_tmux::connection::session_windows(&socket, &window)
-                        })
-                        .await;
-                    if let Ok(windows) = listed {
-                        let _ = this.update(cx, |terminal, cx| {
-                            if !terminal.connecting && terminal.windows != windows {
+                    let _ = this.update(cx, |terminal, cx| {
+                        if !terminal.connecting {
+                            // Refresh even after a disconnect, so a removed
+                            // selected window cannot hide the remaining choices.
+                            if let Some((socket, window, Ok(windows))) = listed
+                                && terminal.socket.as_ref() == Some(&socket)
+                                && terminal.selected_window.as_ref() == Some(&window)
+                                && terminal.windows != windows
+                            {
                                 terminal.windows = windows;
                                 cx.notify();
                             }
-                        });
-                    }
+                            if terminal.error.is_some() && terminal.target.leaf.attachment.is_some()
+                            {
+                                // Retry only the saved attachment. This never
+                                // starts an agent, server or replacement shell.
+                                terminal.start(cx);
+                            }
+                        }
+                    });
                 }
             }),
         };
-        terminal.start_window(selected, None, cx);
+        terminal.start_window(selected, None, false, cx);
         terminal
     }
 
     fn start(&mut self, cx: &mut Context<Self>) {
-        self.start_window(None, None, cx);
+        if !self.connecting {
+            self.start_window(self.selected_window.clone(), None, true, cx);
+        }
     }
 
     fn start_window(
         &mut self,
         selected: Option<SessionWindow>,
         environment: Option<tmux_workspaces_tmux::shells::Environment>,
+        reconnect: bool,
         cx: &mut Context<Self>,
     ) {
         self.closed = None;
         // Keep the old client attached until its replacement is ready. A source
         // with destroy-unattached enabled must not disappear during navigation.
         if let Some(view) = &self.view {
-            view.update(cx, |view, cx| view.suspend_input(cx));
+            view.update(cx, |view, _| view.suspend_input());
         }
-        self.error = None;
+        // Retain the last output and error while retrying, instead of flashing
+        // an empty Connecting panel on every automatic attempt.
         self.connecting = true;
         let target = self.target.clone();
         let connection = cx.background_executor().spawn(async move {
-            let reopened = environment.is_some();
-            if let Some(environment) = environment {
-                if !target.leaf.runs_terminal() || target.leaf.attachment.is_some() {
-                    return Err("Only an ordinary terminal can be opened.".into());
+            let attempt = CONNECTION_ATTEMPTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let span = tracing::debug_span!("terminal_connect", attempt, pane_id = %target.leaf.id, attached = target.leaf.attachment.is_some(), explicit_open = environment.is_some());
+            let _entered = span.enter();
+            let started = std::time::Instant::now();
+            tracing::debug!(event = "terminal_connect_started", "Connecting terminal");
+            let result = (|| {
+                let reopened = reconnect || environment.is_some();
+                if let Some(environment) = environment {
+                    if !target.leaf.runs_terminal() || target.leaf.attachment.is_some() {
+                        return Err("Only an ordinary terminal can be opened.".into());
+                    }
+                    let directory = library::library_directory(target.directory.as_deref())
+                        .map_err(|error| error.to_string())?;
+                    let socket = library::shell_socket_for_creation(&directory)
+                        .map_err(|error| error.to_string())?;
+                    tmux_workspaces_tmux::shells::ensure(
+                        &socket,
+                        &[tmux_workspaces_tmux::shells::Request {
+                            id: target.leaf.id.clone(),
+                            cwd: target.leaf.cwd.as_ref().map(PathBuf::from),
+                        }],
+                        &environment,
+                    )
+                    .map_err(|error| error.to_string())?;
                 }
-                let directory = library::library_directory(target.directory.as_deref())
-                    .map_err(|error| error.to_string())?;
-                let socket = library::shell_socket_for_creation(&directory)
-                    .map_err(|error| error.to_string())?;
-                tmux_workspaces_tmux::shells::ensure(
-                    &socket,
-                    &[tmux_workspaces_tmux::shells::Request {
-                        id: target.leaf.id.clone(),
-                        cwd: target.leaf.cwd.as_ref().map(PathBuf::from),
-                    }],
-                    &environment,
-                )
-                .map_err(|error| error.to_string())?;
+                match selected {
+                    Some(window) => connect_selected(target, Some(window), reopened),
+                    None => connect(target),
+                }
+            })();
+            match &result {
+                Ok(ready) => tracing::debug!(event = "terminal_connected", attempt, window_id = ready.window, "Terminal connected"),
+                Err(_) => tracing::debug!(event = "terminal_connect_failed", attempt, "Terminal connection failed"),
             }
-            match selected {
-                Some(window) => connect_selected(target, Some(window), reopened),
-                None => connect(target),
-            }
+            tracing::trace!(event = "terminal_connect_finished", attempt, elapsed_ms = started.elapsed().as_millis() as u64, success = result.is_ok(), "Terminal connection finished");
+            result
         });
         self.task = Some(cx.spawn(async move |this, cx| {
             let result = connection.await;
@@ -298,6 +345,7 @@ impl LiveTerminal {
                 terminal.connecting = false;
                 match result {
                     Ok(mut ready) => {
+                        terminal.error = None;
                         terminal.socket = Some(ready.socket.clone());
                         terminal.windows = std::mem::take(&mut ready.windows);
                         terminal.selected_window = terminal
@@ -318,6 +366,7 @@ impl LiveTerminal {
                         terminal.closed = Some(cx.subscribe(
                             &view,
                             |terminal, _, event: &crate::view::Disconnected, cx| {
+                                tracing::warn!(event = "terminal_disconnected", pane_id = %terminal.target.leaf.id, attached = terminal.target.leaf.attachment.is_some(), has_failure = event.0.is_some(), "Terminal connection ended");
                                 terminal.error = Some(
                                     event
                                         .0
@@ -359,7 +408,7 @@ impl LiveTerminal {
     /// Show another of the session's windows.
     pub fn select_window(&mut self, window: SessionWindow, cx: &mut Context<Self>) {
         if !self.connecting {
-            self.start_window(Some(window), None, cx);
+            self.start_window(Some(window), None, false, cx);
         }
     }
 }
@@ -395,16 +444,30 @@ impl Render for LiveTerminal {
                 div()
                     .flex_1()
                     .min_h_0()
-                    .children((!self.connecting).then(|| self.view.clone()).flatten()),
+                    .children(
+                        (!self.connecting || self.error.is_some())
+                            .then(|| self.view.clone())
+                            .flatten(),
+                    ),
             )
-            .when(self.connecting, |el| {
+            .when(self.connecting && self.error.is_none(), |el| {
                 el.child(line("Connecting…".into(), c.muted))
             })
             .when_some(self.error.clone(), |el, error| {
                 el.child(line(error, c.attention_text))
             })
-            .when(!self.connecting && self.error.is_some(), |el| {
-                el.child(
+            .when(self.error.is_some(), |el| {
+                let attached = self.target.leaf.attachment.is_some();
+                el.child(line(
+                    if attached {
+                        "Waiting for this session. Reconnecting automatically."
+                    } else {
+                        "Cannot reach this terminal’s saved shell. Open terminal can start it if it is no longer running."
+                    }
+                    .into(),
+                    c.muted,
+                ))
+                .child(
                     div()
                         .flex()
                         .gap(gpui::px(t.space.s8))
@@ -414,7 +477,13 @@ impl Render for LiveTerminal {
                             ui::button("reconnect", "Reconnect", ui::Button::Secondary)
                                 .on_click(cx.listener(|terminal, _, _, cx| terminal.start(cx))),
                         )
-                        .when(self.target.leaf.attachment.is_some(), |el| {
+                        .when(!attached, |el| {
+                            el.child(
+                                ui::button("open-terminal", "Open terminal", ui::Button::Secondary)
+                                    .on_click(cx.listener(|_, _, _, cx| cx.emit(OpenTerminal))),
+                            )
+                        })
+                        .when(attached, |el| {
                             el.child(
                                 ui::button("detach", "Detach", ui::Button::Secondary)
                                     .on_click(cx.listener(|_, _, _, cx| cx.emit(Detach))),
@@ -475,9 +544,9 @@ mod tests {
             "/other".into(),
             true,
         );
-        model.focus = true;
+        model.set_focus_mode(true);
         assert!(target.exists_in(&model));
-        model.focus = false;
+        model.set_focus_mode(false);
         assert!(target.detach_from(&mut model));
         let pane = model.pane().unwrap();
         assert!(pane.empty && pane.attachment.is_none());
@@ -504,6 +573,89 @@ mod tests {
             .flat_map(|row| (0..screen.cols()).map(move |col| (row, col)))
             .filter_map(|(row, col)| screen.cell(row, col).map(|(text, _)| text))
             .collect()
+    }
+
+    #[test]
+    fn retry_waits_for_the_exact_saved_session_without_creating_it() {
+        let server = TmuxServer::start().unwrap();
+        let socket = server
+            .run(&["display-message", "-p", "#{socket_path}"])
+            .unwrap();
+        let target = Target {
+            leaf: Leaf {
+                id: "123456abcdef".into(),
+                cwd: None,
+                empty: false,
+                view: None,
+                attachment: Some(Attachment {
+                    session: "returning".into(),
+                    source_socket: Some(socket.trim().into()),
+                }),
+            },
+            directory: None,
+            source: Err("use the saved source".into()),
+        };
+        server
+            .run(&["new-session", "-d", "-s", "returning-extra", "cat"])
+            .unwrap();
+        let original = server
+            .run(&["list-sessions", "-F", "#{session_name}"])
+            .unwrap();
+        for _ in 0..2 {
+            assert!(connect(target.clone()).is_err());
+            assert_eq!(
+                server
+                    .run(&["list-sessions", "-F", "#{session_name}"])
+                    .unwrap(),
+                original
+            );
+            assert!(server.run(&["list-clients"]).unwrap().is_empty());
+        }
+        server
+            .run(&["new-session", "-d", "-s", "returning", "cat"])
+            .unwrap();
+        server
+            .run(&["new-window", "-d", "-t", "=returning:", "cat"])
+            .unwrap();
+        let first = connect(target.clone()).unwrap();
+        let selected = first
+            .windows
+            .iter()
+            .find(|window| window.id != first.window)
+            .unwrap()
+            .clone();
+        let retained = connect_selected(target.clone(), Some(selected.clone()), true).unwrap();
+        assert_eq!(retained.window, selected.id);
+        server
+            .run(&["kill-window", "-t", &format!("@{}", selected.id)])
+            .unwrap();
+        assert!(connect_selected(target.clone(), Some(selected.clone()), true).is_err());
+        let remaining = tmux_workspaces_tmux::connection::session_windows(
+            PathBuf::from(socket.trim()).as_path(),
+            &selected,
+        )
+        .unwrap();
+        assert_eq!(remaining.len(), 1);
+        let recovered =
+            connect_selected(target.clone(), Some(remaining[0].clone()), false).unwrap();
+        assert_eq!(recovered.window, remaining[0].id);
+        server.run(&["kill-session", "-t", "=returning"]).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !first.panes.as_ref().unwrap().is_finished() {
+            first.panes.as_ref().unwrap().take_update();
+            assert!(
+                Instant::now() < deadline,
+                "closed session did not disconnect"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(connect_selected(target.clone(), Some(selected.clone()), true).is_err());
+        server
+            .run(&["new-session", "-d", "-s", "returning", "cat"])
+            .unwrap();
+        let returned = connect_selected(target, Some(selected.clone()), true).unwrap();
+        assert_ne!(returned.window, selected.id);
+        assert!(!returned.panes.as_ref().unwrap().is_finished());
     }
 
     #[test]

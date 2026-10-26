@@ -47,8 +47,26 @@ impl RosterSource {
             .name("roster polling".into())
             .spawn(move || {
                 let mut snapshot = Snapshot::default();
+                let mut unavailable = None;
                 loop {
+                    let started = std::time::Instant::now();
                     snapshot.fetch_configured(&data_dir, url.as_deref());
+                    let failed = snapshot.error.is_some();
+                    if unavailable != Some(failed) {
+                        tracing::debug!(
+                            event = "roster_availability_changed",
+                            available = !failed,
+                            count = snapshot.states.len(),
+                            "Agent roster availability changed"
+                        );
+                        unavailable = Some(failed);
+                    }
+                    tracing::trace!(
+                        event = "roster_refresh_finished",
+                        elapsed_ms = started.elapsed().as_millis() as u64,
+                        success = !failed,
+                        "Agent roster refreshed"
+                    );
                     *pending.lock().unwrap_or_else(|error| error.into_inner()) =
                         Some(snapshot.clone());
                     wake();
@@ -146,11 +164,25 @@ impl ViewSource {
                         let request = shared.lock().unwrap_or_else(|e| e.into_inner());
                         (request.clone(), current_generation.load(Ordering::Relaxed))
                     };
+                    let started = std::time::Instant::now();
                     let update = views::read(&data_dir, None, &request, &|| {
                         wanted.load(Ordering::Relaxed)
                             && visible.load(Ordering::Relaxed)
                             && current_generation.load(Ordering::Relaxed) == generation
                     });
+                    tracing::trace!(
+                        event = "view_refresh_finished",
+                        elapsed_ms = started.elapsed().as_millis() as u64,
+                        success = update.is_ok(),
+                        "Information view refreshed"
+                    );
+                    if let Err(reason) = &update {
+                        tracing::debug!(
+                            event = "view_refresh_failed",
+                            reason,
+                            "Information view refresh failed"
+                        );
+                    }
                     let explicit = matches!(
                         request,
                         views::Request::Document(_)
@@ -286,6 +318,7 @@ mod tests {
                 }
                 Err(e) => panic!("{e}"),
             };
+            socket.set_nonblocking(false).unwrap();
             socket
                 .set_read_timeout(Some(Duration::from_secs(3)))
                 .unwrap();

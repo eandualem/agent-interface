@@ -33,6 +33,31 @@ fn database(directory: &Path, record: &str) -> Connection {
 }
 
 #[test]
+fn legacy_expansion_seeds_only_the_selected_tab_and_refresh_preserves_other_tabs() {
+    let base = parse(RECORD).unwrap();
+    let path = Path::new("layouts.db");
+    let mut local = base.model().clone();
+    let first = local.tab().unwrap().id.clone();
+    local.set_focus_mode(true);
+    local.add_tab(Some("Second".into()), "/tmp".into(), true);
+    local.split(Direction::Right, "/tmp".into(), true);
+    let second = local.tab().unwrap().id.clone();
+    local.set_focus_mode(true);
+    let saved = base.with_model(&local, path).unwrap();
+    let mut opened = parse(saved.raw_json()).unwrap().model().clone();
+    assert!(opened.focus_mode());
+    opened.choose_tab(&first);
+    assert!(!opened.focus_mode());
+
+    let refreshed = saved.reconcile(&local, &saved, path).unwrap();
+    let mut retained = refreshed.document.model().clone();
+    retained.choose_tab(&first);
+    assert!(retained.focus_mode());
+    retained.choose_tab(&second);
+    assert!(retained.focus_mode());
+}
+
+#[test]
 fn transactional_edits_merge_and_conflicts_reset_before_an_explicit_retry() {
     let directory = tempfile::tempdir().unwrap();
     let db = database(directory.path(), RECORD);
@@ -605,7 +630,7 @@ fn reconciliation_merges_refreshes_conflicts_and_retains_local_navigation() {
     let mut local = base.model().clone();
     local.rename_tab("Local tab");
     local.choose_pane("000000000005");
-    local.focus = true;
+    local.set_focus_mode(true);
     let mut peer = base.model().clone();
     peer.rename_workspace("Peer workspace");
     peer.choose_workspace("000000000006");
@@ -617,7 +642,7 @@ fn reconciliation_merges_refreshes_conflicts_and_retains_local_navigation() {
     assert_eq!(model.workspace().unwrap().name, "Peer workspace");
     assert_eq!(model.tab().unwrap().name, "Local tab");
     assert_eq!(model.pane().unwrap().id, "000000000005");
-    assert!(model.focus && model.show_agents);
+    assert!(model.focus_mode() && model.show_agents);
     assert_eq!(model.selected, local.selected);
     // Advance the base to the last incoming document, keeping unsaved local edits.
     peer.choose_workspace("000000000001");

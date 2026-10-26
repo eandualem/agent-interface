@@ -111,6 +111,7 @@ impl Layout {
                 .map(|tab| tab.id.clone())
                 .unwrap_or_default();
             for tab in &mut space.tabs {
+                tab.expanded = tabs.get(&tab.id).is_some_and(|old| old.expanded);
                 let leaves = tab.tree.leaves();
                 let focus = tabs.get(&tab.id).map(|old| &old.focus);
                 tab.focus = leaves
@@ -128,7 +129,6 @@ impl Layout {
             .or_else(|| self.workspaces.first())
             .map(|space| space.id.clone())
             .unwrap_or_default();
-        self.focus = previous.focus;
         match (self.tab(), previous.tab()) {
             (Some(current), Some(old)) => {
                 current.id != old.id || !same_input_tree(&current.tree, &old.tree)
@@ -250,11 +250,50 @@ mod tests {
     }
 
     #[test]
+    fn pane_expansion_stays_with_its_tab_across_navigation() {
+        let mut model = Layout::initial("/tmp".into());
+        model.split(Direction::Right, "/tmp".into(), true);
+        let first_space = model.selected.clone();
+        let first = model.tab().unwrap().id.clone();
+        model.set_focus_mode(true);
+
+        model.add_tab(None, "/tmp".into(), true);
+        model.split(Direction::Below, "/tmp".into(), true);
+        let second = model.tab().unwrap().id.clone();
+        assert_eq!(
+            model
+                .tab()
+                .unwrap()
+                .pane_rectangles(200, 100, model.focus_mode())
+                .len(),
+            2
+        );
+        model.set_focus_mode(true);
+        model.choose_tab(&first);
+        assert!(model.focus_mode());
+        model.set_focus_mode(false);
+        model.choose_tab(&second);
+        assert!(model.focus_mode());
+
+        model.add_workspace("Other".into());
+        model.set_focus_mode(true); // No tab to expand.
+        model.add_tab(None, "/tmp".into(), true);
+        assert!(!model.focus_mode());
+        model.choose_workspace(&first_space);
+        assert!(model.focus_mode());
+        model.split(Direction::Right, "/tmp".into(), true);
+        assert!(!model.focus_mode());
+        model.choose_tab(&first);
+        assert!(!model.focus_mode());
+    }
+
+    #[test]
     fn reload_retains_local_selection_across_moves_and_handles_deletions() {
         let tab = Tab {
             id: "000000000002".into(),
             name: "Editor".into(),
             focus: "000000000005".into(),
+            expanded: true,
             tree: Node::Split {
                 id: "000000000003".into(),
                 direction: Direction::Right,
@@ -283,7 +322,6 @@ mod tests {
                 },
             ],
             selected: "000000000001".into(),
-            focus: true,
             show_agents: false,
         };
         let mut incoming = previous.clone();
@@ -293,14 +331,15 @@ mod tests {
         incoming.workspaces[1].tabs.push(moved);
         incoming.selected = "000000000006".into();
         incoming.show_agents = true;
-        incoming.focus = false;
+        incoming.set_focus_mode(false);
         assert!(incoming.retain_navigation(&previous));
         assert_eq!(incoming.selected, "000000000001");
         assert!(incoming.workspaces[0].selected.is_empty());
         assert_eq!(incoming.workspaces[1].selected, "000000000002");
         assert_eq!(incoming.workspaces[1].tabs[0].focus, "000000000005");
         assert_eq!(incoming.workspaces[1].tabs[0].name, "Renamed remotely");
-        assert!(incoming.focus && incoming.show_agents);
+        assert!(!incoming.focus_mode());
+        assert!(incoming.workspaces[1].tabs[0].expanded && incoming.show_agents);
         assert_eq!(previous.workspaces[0].tabs[0].name, "Editor");
 
         let previous = incoming.clone();

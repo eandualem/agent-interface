@@ -233,7 +233,7 @@ pub(crate) fn apply(raw: &str, model: &Layout) -> Result<String, String> {
     }
     root.insert("workspaces".into(), Field::Array(spaces));
     root.insert("selected".into(), value(model.selected.clone()));
-    root.insert("focus".into(), value(model.focus));
+    root.insert("focus".into(), value(model.focus_mode()));
     if !model.show_agents || root.contains_key("show_agents") {
         root.insert("show_agents".into(), value(model.show_agents));
     }

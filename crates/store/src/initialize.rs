@@ -46,7 +46,6 @@ impl Store {
         let mut model = Layout {
             workspaces: vec![],
             selected: String::new(),
-            focus: false,
             show_agents: true,
         };
         model.add_workspace("Workspace 1".into());

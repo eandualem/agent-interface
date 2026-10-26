@@ -54,7 +54,7 @@ impl Browser {
                     key(Command::Detach),
                 )));
             }
-            let focus = if model.focus {
+            let focus = if model.focus_mode() {
                 "Restore layout"
             } else {
                 "Focus one pane"

@@ -32,27 +32,26 @@ for compatibility. The product, macOS app and repository are **Agent Interface**
 
 ## Get started
 
-Agent Interface runs on macOS and Linux and needs tmux 3.3 or newer. On macOS,
-install tmux with `brew install tmux`.
-
-To build and launch the app, install the
-[build prerequisites](CONTRIBUTING.md#set-up), then run:
+Agent Interface runs on macOS and Linux and needs tmux 3.3 or newer. Native
+packages contain the compiled app; installing one needs no Rust, Zig or Python.
+Install the [runtime prerequisites](docs/INSTALL.md#runtime-prerequisites), then
+use the installer for a package available on the
+[releases page](https://github.com/eandualem/agent-interface/releases):
 
 ```sh
-git clone https://github.com/eandualem/agent-interface.git
-cd agent-interface
-python3 scripts/prepare-native.py
-export LIBGHOSTTY_VT_SYS_OPTIMIZE=ReleaseSafe
-cargo run -p tmux-workspaces-app
+curl -fsSL https://raw.githubusercontent.com/eandualem/agent-interface/main/install.sh | sh
 ```
 
-To install an archive you already have, follow the
-[installation guide](docs/INSTALL.md). It covers platform requirements,
-installation, updates and removal.
+The installer requires a published package for your platform. The
+[installation guide](docs/INSTALL.md) covers package availability, launch commands,
+updates and removal, including the experimental
+[Windows 11 / WSL setup](docs/INSTALL.md#windows-11-with-wsl-experimental).
+Developers can [build from source](CONTRIBUTING.md#set-up).
 
 Agent views connect to a running Agent Backbone. Authenticated access requires
-Backbone's private Unix listener. Set `BACKBONE_SOCKET_PATH` to the same absolute
-socket path in the provider and the app's launch environment. The socket must be
+Backbone's private Unix listener. The app reads the provider's saved
+`backbone.socket_path` setting; `BACKBONE_SOCKET_PATH` in the app's launch
+environment can override it. The socket path must be absolute. The socket must be
 owned by your user with permissions 0600, in a directory owned by your user with
 permissions 0700. TCP-only configurations do not receive credentials.
 
@@ -79,7 +78,9 @@ sessions on another host or synchronize live sessions between computers.
 
 The app runs natively on macOS and Linux, with Wayland and X11 backends on Linux.
 See the [installation guide](docs/INSTALL.md) for package architectures and
-runtime requirements. Native Windows is not supported. WSL has not been verified.
+runtime requirements. Native Windows is not supported. The Linux package can be
+tried through WSL 2 / WSLg on Windows 11; this app's WSL compatibility has not
+been verified.
 
 Terminal input methods, accessible terminal text, key-release events and
 selection across history pages are not yet implemented. See the

@@ -81,6 +81,10 @@ pane has an accent ring and the others are slightly dimmed. The status row
 names the workspace, tab and pane, shows the keys for the current mode and the
 saved state, and **agents shown** hides the agents section.
 
+Double-click a pane header to expand it, then double-click again or press Escape
+to restore the split layout. Expansion belongs to that tab: switching tabs leaves
+their own layouts unchanged, and returning restores the tab's previous view.
+
 Settings (Command-comma) offers a dark or light theme, the terminal text size,
 whether panes show headers (always, on hover or never) and editable shortcuts;
 changes apply to every window at once and are saved in
@@ -94,6 +98,27 @@ Rows marked **Fixed** cannot be changed in this editor.
 If a new Close or Detach default conflicts with a saved shortcut after an
 upgrade, your saved shortcut wins; the new command shows **Not assigned** until
 you choose keys for it.
+
+To investigate a problem, open **Settings → General → Diagnostic logging**.
+**Warnings** is the quiet default. **Debug** records startup, terminal lifecycle,
+layout and settings saves, and provider availability. **Trace** adds timings and
+outcomes for individual connection and refresh operations. The selection applies
+immediately and is saved for later launches, including opening the app normally
+from the desktop. Development builds also default to Warnings; verbosity is
+always an explicit choice. You can set `logging = "debug"` or `logging = "trace"`
+in `settings.toml` before launching; `logging = "warn"` restores the default.
+
+Logs stay on this computer: `~/Library/Logs/Agent Interface` on macOS, or
+`$XDG_STATE_HOME/tmux-workspaces/logs` on Linux (default
+`~/.local/state/tmux-workspaces/logs`). Settings shows the actual location.
+`events.jsonl` holds the newest newline-delimited JSON records; numbered files
+hold older records. Four files of at most 4 MiB each bound disk use. Copy these
+files when reporting a problem, along with what happened and when. Nothing is
+uploaded automatically. Logs contain diagnostic identities, event names, status
+codes and timings, not terminal contents, typed commands, feedback text or
+credentials. Settings reports unavailable logging, failed writes and dropped
+records. A forced process termination can lose queued records.
+
 
 **Close Pane** (Command-W on macOS, Ctrl+Shift+W on Linux) removes only the focused
 pane after saving. Closing the last pane closes its tab. **Close Tab**
@@ -167,8 +192,13 @@ session directories. Failed reads retain saved paths. Return to shell in tab opt
 after saving; choose Open terminal if that shell is absent. The chooser lists tmux sessions
 without optional agent metadata.
 
-Missing sessions show **Reconnect** to retry the same session and **Detach**
-to return the pane to its chooser. **Detach** in tab options, or Command-Shift-X
+Attached sessions reconnect automatically when the saved session returns on its
+source server. Attempts run at the two-second window-refresh interval and never
+start an agent or create a session. **Reconnect** retries immediately; **Detach**
+returns the pane to its chooser. An ordinary terminal whose saved shell cannot be
+reached also offers **Open terminal** to reuse the shell or start it if absent.
+Starting a new shell does not restore a lost shell's process state.
+**Detach** in tab options, or Command-Shift-X
 (Ctrl+Shift+X on Linux), works with attached sessions, ordinary terminals and
 native views such as skills and reports. Detaching keeps the pane and its saved
 directory, so you can choose new content or reopen the existing terminal. The
