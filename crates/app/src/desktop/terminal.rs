@@ -215,6 +215,9 @@ impl LiveTerminal {
                         .timer(std::time::Duration::from_secs(2))
                         .await;
                     let Ok(query) = this.update(cx, |terminal, cx| {
+                        if let Some(view) = &terminal.view {
+                            view.update(cx, |view, cx| view.refresh_connection(cx));
+                        }
                         if !terminal.connecting
                             && terminal.error.is_some()
                             && terminal.target.leaf.attachment.is_some()
@@ -275,7 +278,7 @@ impl LiveTerminal {
         // Keep the old client attached until its replacement is ready. A source
         // with destroy-unattached enabled must not disappear during navigation.
         if let Some(view) = &self.view {
-            view.update(cx, |view, cx| view.suspend_input(cx));
+            view.update(cx, |view, _| view.suspend_input());
         }
         // Retain the last output and error while retrying, instead of flashing
         // an empty Connecting panel on every automatic attempt.

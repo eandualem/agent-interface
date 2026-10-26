@@ -1196,7 +1196,7 @@ impl Browser {
             }
             TabAction::OpenTerminal => {
                 if let Some(pane) = layout.model().pane().map(|pane| pane.id.clone()) {
-                    self.open_terminal(&pane, window, cx);
+                    self.open_terminal(&pane, None, window, cx);
                 }
             }
             TabAction::Split(direction) => self.create(Create::Split(direction), window, cx),
@@ -1275,14 +1275,20 @@ impl Browser {
                     .any(|leaf| leaf.id == pane && leaf.empty)
             });
         if empty {
-            self.open_terminal(pane, window, cx);
+            self.open_terminal(pane, None, window, cx);
         } else {
             self.save_notice = Some("The pane changed. Choose again.".into());
             cx.notify();
         }
     }
 
-    fn open_terminal(&mut self, pane: &str, window: &mut Window, cx: &mut Context<Self>) {
+    fn open_terminal(
+        &mut self,
+        pane: &str,
+        expected: Option<&Target>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.saving || self.save_failed {
             return;
         }
@@ -1297,6 +1303,16 @@ impl Browser {
         let Some(layout) = &mut self.layout else {
             return;
         };
+        if expected.is_some_and(|target| {
+            !layout.model().tab().is_some_and(|tab| {
+                tab.tree
+                    .leaves()
+                    .iter()
+                    .any(|leaf| target.matches_leaf(leaf))
+            })
+        }) {
+            return;
+        }
         if !layout
             .model()
             .tab()
@@ -1877,16 +1893,7 @@ impl Render for Browser {
                     window,
                     |browser, terminal, _: &terminal::OpenTerminal, window, cx| {
                         let target = terminal.read(cx).target.clone();
-                        if browser.layout.as_ref().is_some_and(|layout| {
-                            layout.model().tab().is_some_and(|tab| {
-                                tab.tree
-                                    .leaves()
-                                    .iter()
-                                    .any(|leaf| target.matches_leaf(leaf))
-                            })
-                        }) {
-                            browser.open_terminal(&target.leaf.id, window, cx);
-                        }
+                        browser.open_terminal(&target.leaf.id, Some(&target), window, cx);
                     },
                 )
                 .detach();
