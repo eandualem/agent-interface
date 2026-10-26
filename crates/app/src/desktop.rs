@@ -76,7 +76,7 @@ pub fn run(directory: Option<PathBuf>) -> Result<(), String> {
     let source = crate::sessions::source_socket(None).map_err(|e| e.to_string());
     let preferences = settings::load();
     preferences.apply();
-    let _logging = crate::diagnostics::start(preferences.logging);
+    let mut logging = crate::diagnostics::start(preferences.logging);
     let failure = Rc::new(RefCell::new(None));
     let opened = Rc::clone(&failure);
     application()
@@ -92,11 +92,14 @@ pub fn run(directory: Option<PathBuf>) -> Result<(), String> {
                 return;
             }
             configure_menu(cx);
-            cx.on_app_quit(|_| {
+            cx.on_app_quit(move |_| {
                 // The synchronous observer runs before GPUI's short async quit
                 // deadline. These workers finish without a foreground update.
                 layout_edit::finish_saves(std::time::Duration::from_secs(10));
                 settings::finish_saves(std::time::Duration::from_secs(2));
+                // AppKit termination does not unwind the run() stack. Drain
+                // diagnostics here, after the workers have logged their saves.
+                drop(logging.take());
                 std::future::ready(())
             })
             .detach();
