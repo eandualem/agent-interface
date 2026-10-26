@@ -51,7 +51,8 @@ jobs:
         run: >-
           sudo apt-get update && sudo apt-get install -y tmux pkg-config
           libfontconfig-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev
-          libx11-xcb-dev fonts-dejavu-core xvfb xfwm4 xdotool x11-utils imagemagick dbus-x11 libgl1-mesa-dri
+          libx11-xcb-dev fonts-dejavu-core xvfb xfwm4 xdotool x11-utils imagemagick dbus-x11
+          libegl1 libgl1-mesa-dri mesa-vulkan-drivers
 
       - name: Install tmux (macOS)
         if: runner.os == 'macOS'
