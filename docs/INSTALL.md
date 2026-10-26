@@ -66,12 +66,23 @@ Choose the filename for your computer:
 - ARM64 Linux: `agent-interface-aarch64-unknown-linux-gnu.tar.gz`
 - x86-64 Linux: `agent-interface-x86_64-unknown-linux-gnu.tar.gz`
 
+Release 0.1.0 uses `tmux-workspaces-` instead of `agent-interface-` for
+these same targets. The installer accepts both naming generations. Keep each
+archive and its matching `.tar.gz.sha256` file under their original names.
+
 Download the installer, inspect it, then point it at your archive. This example
-uses Apple silicon; substitute the matching filename for your computer.
+uses Apple silicon; substitute the filename you downloaded for your computer
+and release.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/eandualem/agent-interface/main/install.sh -o install.sh
 sh install.sh --archive "$HOME/Downloads/agent-interface-aarch64-apple-darwin.tar.gz"
+```
+
+For the 0.1.0 Apple silicon archive, use this installation command instead:
+
+```sh
+sh install.sh --archive "$HOME/Downloads/tmux-workspaces-aarch64-apple-darwin.tar.gz"
 ```
 
 Building packages is described in
