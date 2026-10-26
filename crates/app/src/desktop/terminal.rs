@@ -13,6 +13,8 @@ use std::{path::PathBuf, sync::Arc};
 use tmux_workspaces_core::Leaf;
 use tmux_workspaces_tmux::connection::SessionWindow;
 
+static CONNECTION_ATTEMPTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 #[derive(Clone, PartialEq, Eq)]
 pub(super) struct Target {
     pub leaf: Leaf,
@@ -99,8 +101,14 @@ fn connect_selected(
         let directory =
             library::library_directory(target.directory.as_deref()).map_err(|e| e.to_string())?;
         let socket = library::existing_shell_socket(&directory)
-            .map_err(|e| e.to_string())?
-            .ok_or("This saved shell is not running.")?;
+            .map_err(|e| {
+                tracing::debug!(event = "shell_socket_lookup_failed", error_kind = ?e.kind(), os_error = e.raw_os_error(), "Ordinary shell socket lookup failed");
+                e.to_string()
+            })?
+            .ok_or_else(|| {
+                tracing::debug!(event = "shell_socket_absent", "Ordinary shell socket is absent");
+                "This saved shell is not running."
+            })?;
         let session =
             library::ordinary_session(&target.leaf.id).ok_or("Invalid saved shell identity")?;
         (socket, session)
@@ -285,29 +293,42 @@ impl LiveTerminal {
         self.connecting = true;
         let target = self.target.clone();
         let connection = cx.background_executor().spawn(async move {
-            let reopened = environment.is_some();
-            if let Some(environment) = environment {
-                if !target.leaf.runs_terminal() || target.leaf.attachment.is_some() {
-                    return Err("Only an ordinary terminal can be opened.".into());
+            let attempt = CONNECTION_ATTEMPTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let span = tracing::debug_span!("terminal_connect", attempt, pane_id = %target.leaf.id, attached = target.leaf.attachment.is_some(), explicit_open = environment.is_some());
+            let _entered = span.enter();
+            let started = std::time::Instant::now();
+            tracing::debug!(event = "terminal_connect_started", "Connecting terminal");
+            let result = (|| {
+                let reopened = environment.is_some();
+                if let Some(environment) = environment {
+                    if !target.leaf.runs_terminal() || target.leaf.attachment.is_some() {
+                        return Err("Only an ordinary terminal can be opened.".into());
+                    }
+                    let directory = library::library_directory(target.directory.as_deref())
+                        .map_err(|error| error.to_string())?;
+                    let socket = library::shell_socket_for_creation(&directory)
+                        .map_err(|error| error.to_string())?;
+                    tmux_workspaces_tmux::shells::ensure(
+                        &socket,
+                        &[tmux_workspaces_tmux::shells::Request {
+                            id: target.leaf.id.clone(),
+                            cwd: target.leaf.cwd.as_ref().map(PathBuf::from),
+                        }],
+                        &environment,
+                    )
+                    .map_err(|error| error.to_string())?;
                 }
-                let directory = library::library_directory(target.directory.as_deref())
-                    .map_err(|error| error.to_string())?;
-                let socket = library::shell_socket_for_creation(&directory)
-                    .map_err(|error| error.to_string())?;
-                tmux_workspaces_tmux::shells::ensure(
-                    &socket,
-                    &[tmux_workspaces_tmux::shells::Request {
-                        id: target.leaf.id.clone(),
-                        cwd: target.leaf.cwd.as_ref().map(PathBuf::from),
-                    }],
-                    &environment,
-                )
-                .map_err(|error| error.to_string())?;
+                match selected {
+                    Some(window) => connect_selected(target, Some(window), reopened),
+                    None => connect(target),
+                }
+            })();
+            match &result {
+                Ok(ready) => tracing::debug!(event = "terminal_connected", attempt, window_id = ready.window, "Terminal connected"),
+                Err(_) => tracing::debug!(event = "terminal_connect_failed", attempt, "Terminal connection failed"),
             }
-            match selected {
-                Some(window) => connect_selected(target, Some(window), reopened),
-                None => connect(target),
-            }
+            tracing::trace!(event = "terminal_connect_finished", attempt, elapsed_ms = started.elapsed().as_millis() as u64, success = result.is_ok(), "Terminal connection finished");
+            result
         });
         self.task = Some(cx.spawn(async move |this, cx| {
             let result = connection.await;
@@ -336,6 +357,7 @@ impl LiveTerminal {
                         terminal.closed = Some(cx.subscribe(
                             &view,
                             |terminal, _, event: &crate::view::Disconnected, cx| {
+                                tracing::warn!(event = "terminal_disconnected", pane_id = %terminal.target.leaf.id, attached = terminal.target.leaf.attachment.is_some(), has_failure = event.0.is_some(), "Terminal connection ended");
                                 terminal.error = Some(
                                     event
                                         .0

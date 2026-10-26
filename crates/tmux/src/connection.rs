@@ -209,10 +209,19 @@ fn connect_selected(
         .stderr(Stdio::null())
         .spawn()?;
     if let Err(error) = verify_client(socket, &mut client, source) {
+        tracing::debug!(event = "control_client_verification_failed", client_pid = client.id(), error_kind = ?error.kind(), "Control client attachment could not be verified");
         let _ = client.kill();
         let _ = client.wait();
         return Err(error);
     }
+    tracing::debug!(
+        event = "control_client_attached",
+        client_pid = client.id(),
+        server_pid = resolved.server_pid,
+        session_id = resolved.session_id,
+        window_id = layout.window,
+        "Control client attached"
+    );
     Ok(Connection {
         client,
         layout,

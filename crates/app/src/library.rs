@@ -59,10 +59,15 @@ impl Library {
                 {
                     Ok(store) => store,
                     Err(error) => {
+                        tracing::warn!(
+                            event = "library_open_failed",
+                            "Library could not be opened"
+                        );
                         publish(&pending, Err(error), &wake);
                         return;
                     }
                 };
+                tracing::debug!(event = "library_opened", "Library opened");
                 let mut version = None;
                 let mut last_error = None;
                 loop {
@@ -78,6 +83,11 @@ impl Library {
                     });
                     match result {
                         Ok(Some(document)) => {
+                            tracing::debug!(
+                                event = "library_loaded",
+                                recovered = last_error.is_some(),
+                                "Library document loaded"
+                            );
                             last_error = None;
                             publish(&pending, Ok(document), &wake);
                         }
@@ -85,6 +95,10 @@ impl Library {
                         Err(error) => {
                             let description = error.to_string();
                             if last_error.as_ref() != Some(&description) {
+                                tracing::warn!(
+                                    event = "library_read_failed",
+                                    "Library read failed; last valid document retained"
+                                );
                                 last_error = Some(description);
                                 publish(&pending, Err(error), &wake);
                             }

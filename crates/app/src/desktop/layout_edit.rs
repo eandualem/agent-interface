@@ -70,6 +70,7 @@ pub(super) fn save(
     previous: Option<&Tab>,
     creation: Option<(Create, String)>,
 ) -> Result<Reconciliation, Error> {
+    let started = Instant::now();
     let directory = library::library_directory(directory);
     if let Ok(directory) = &directory
         && let Some(previous) = previous
@@ -80,9 +81,26 @@ pub(super) fn save(
     if let Some((action, cwd)) = creation {
         action.apply(local, &cwd);
     }
-    directory
+    let result = directory
         .and_then(|directory| Store::open_existing_writable(&directory))
-        .and_then(|mut store| store.save(base, local))
+        .and_then(|mut store| store.save(base, local));
+    match &result {
+        Ok(saved) if saved.conflict => tracing::warn!(
+            event = "layout_save_conflict",
+            "Layout save conflicted with another writer"
+        ),
+        Ok(_) => tracing::debug!(event = "layout_saved", "Layout saved"),
+        Err(_) => tracing::warn!(
+            event = "layout_save_failed",
+            "Layout save failed; the existing layout is retained"
+        ),
+    }
+    tracing::trace!(
+        event = "layout_save_finished",
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        "Layout save finished"
+    );
+    result
 }
 
 /// The visible selection before creation, used to respect navigation during save.
@@ -140,6 +158,8 @@ pub(super) fn remember_directories(model: &mut Layout, previous: &Tab, socket: &
         let mut observed = leaf.clone();
         if library::remember_shell_directory(&mut observed, socket).is_ok() {
             directories.insert(observed.id, observed.cwd);
+        } else {
+            tracing::debug!(event = "shell_directory_unavailable", pane_id = %leaf.id, "Could not refresh saved shell directory");
         }
     }
     fn apply(node: &mut Node, directories: &HashMap<String, Option<String>>) {

@@ -95,6 +95,27 @@ If a new Close or Detach default conflicts with a saved shortcut after an
 upgrade, your saved shortcut wins; the new command shows **Not assigned** until
 you choose keys for it.
 
+To investigate a problem, open **Settings → General → Diagnostic logging**.
+**Warnings** is the quiet default. **Debug** records startup, terminal lifecycle,
+layout and settings saves, and provider availability. **Trace** adds timings and
+outcomes for individual connection and refresh operations. The selection applies
+immediately and is saved for later launches, including opening the app normally
+from the desktop. Development builds also default to Warnings; verbosity is
+always an explicit choice. You can set `logging = "debug"` or `logging = "trace"`
+in `settings.toml` before launching; `logging = "warn"` restores the default.
+
+Logs stay on this computer: `~/Library/Logs/Agent Interface` on macOS, or
+`$XDG_STATE_HOME/tmux-workspaces/logs` on Linux (default
+`~/.local/state/tmux-workspaces/logs`). Settings shows the actual location.
+`events.jsonl` holds the newest newline-delimited JSON records; numbered files
+hold older records. Four files of at most 4 MiB each bound disk use. Copy these
+files when reporting a problem, along with what happened and when. Nothing is
+uploaded automatically. Logs contain diagnostic identities, event names, status
+codes and timings, not terminal contents, typed commands, feedback text or
+credentials. Settings reports unavailable logging, failed writes and dropped
+records. A forced process termination can lose queued records.
+
+
 **Close Pane** (Command-W on macOS, Ctrl+Shift+W on Linux) removes only the focused
 pane after saving. Closing the last pane closes its tab. **Close Tab**
 (Command-Shift-W on macOS, Ctrl+Alt+Shift+W on Linux) removes the whole selected

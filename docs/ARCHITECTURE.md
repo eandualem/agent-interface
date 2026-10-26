@@ -116,6 +116,26 @@ crates expose synchronous operations; `app` owns scheduling, cancellation and
 shutdown. Workers pass owned data rather than engine or database handles to the
 UI thread.
 
+`app::diagnostics` owns the desktop process's `tracing` subscriber. Product
+libraries emit structured events without choosing a destination or initializing
+global logging. The saved `logging` preference selects Warnings (the default),
+Debug or Trace and reloads the filter immediately. Neither development builds
+nor `RUST_LOG` enables verbose output. Only the explicitly instrumented app,
+tmux and roster targets are admitted, so dependency HTTP logs cannot expose
+request bodies or credentials. Events cover lifecycle boundaries and operation
+timings; terminal byte parsing, painting and input carry no per-character logs.
+
+The JSON formatter feeds a lossy 1,024-record background queue. Queue saturation
+does not block the UI or terminal workers; the drop count and write failures are
+visible in Settings. The writer rotates four 4 MiB files, rejects records larger
+than 16 KiB and uses a private owned directory and regular files. A separate
+advisory lock serializes rotation across desktop processes; lock contention is
+reported as a failed write, rather than blocking producers. The worker guard
+drains queued records during normal shutdown. Forced termination may lose queued
+records. Logs contain stable pane IDs, process/session IDs, classifications and
+timings, never terminal bytes, input, feedback prose, HTTP payloads or credentials.
+Failure logging leaves existing lifecycle decisions and errors unchanged.
+
 ## Saving and shared libraries
 
 An absent library is initialized with one empty workspace. SQLite builds the
@@ -362,6 +382,12 @@ those dependencies.
   screenshot-drop staging. Each is MIT OR Apache-2.0.
 - **`alacritty_terminal` and `rio-vt`:** development-only comparison engines.
   Apache-2.0 and MIT respectively.
+- **`tracing` 0.1.44:** MIT-licensed structured diagnostic events in app, tmux
+  and roster; pinned exactly. **`tracing-subscriber` 0.3.23** and
+  **`tracing-appender` 0.2.5** (MIT, exact pins) provide the app-owned JSON
+  formatter, reloadable filter and nonblocking background writer. The small
+  app-owned file writer adds size-based rotation and explicit write-health
+  reporting; it does not implement another logging facade.
 
 The native terminal source is prepared from a pinned Ghostty commit plus
 [`native/ghostty.patch`](../native/ghostty.patch). The preparation script checks

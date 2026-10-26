@@ -73,9 +73,22 @@ impl Feedback {
         let directory = self.directory.clone();
         let item = self.item.clone();
         let submitted = text.clone();
-        let worker = cx
-            .background_executor()
-            .spawn(async move { feedback::send(&directory, &item, &submitted) });
+        let worker = cx.background_executor().spawn(async move {
+            let started = std::time::Instant::now();
+            let outcome = feedback::send(&directory, &item, &submitted);
+            let result = match &outcome {
+                Outcome::Accepted(_) => "accepted",
+                Outcome::Refused(_) => "refused",
+                Outcome::Unknown(_) => "unknown",
+            };
+            tracing::debug!(
+                event = "feedback_finished",
+                result,
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                "Feedback submission finished"
+            );
+            outcome
+        });
         cx.spawn(async move |this, cx| {
             let outcome = worker.await;
             let _ = this.update(cx, |composer, cx| {

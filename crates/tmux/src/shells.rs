@@ -250,6 +250,7 @@ pub fn ensure(socket: &Path, requests: &[Request], environment: &Environment) ->
     for request in requests {
         let name = format!("terminal-{}", request.id);
         if existing.contains(&name) {
+            tracing::debug!(event = "ordinary_shell_reused", pane_id = %request.id, "Existing ordinary shell reused");
             continue;
         }
         let requested_cwd = request
@@ -286,6 +287,7 @@ pub fn ensure(socket: &Path, requests: &[Request], environment: &Environment) ->
             ],
         )?;
         require_success(created)?;
+        tracing::debug!(event = "ordinary_shell_created", pane_id = %request.id, directory_fallback = !requested_cwd.is_dir(), "Ordinary shell created");
         let target = format!("={name}:");
         for (command, option, value) in [
             ("set-option", "status", "off"),
