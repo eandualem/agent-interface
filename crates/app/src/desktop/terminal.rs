@@ -226,15 +226,6 @@ impl LiveTerminal {
                         if let Some(view) = &terminal.view {
                             view.update(cx, |view, cx| view.refresh_connection(cx));
                         }
-                        if !terminal.connecting
-                            && terminal.error.is_some()
-                            && terminal.target.leaf.attachment.is_some()
-                        {
-                            // Retry only the saved attachment. This never starts
-                            // an agent, tmux server or replacement shell.
-                            terminal.start(cx);
-                            return None;
-                        }
                         (!terminal.connecting)
                             .then(|| {
                                 terminal
@@ -246,23 +237,40 @@ impl LiveTerminal {
                     }) else {
                         break;
                     };
-                    let Some((socket, window)) = query else {
-                        continue;
+                    let listed = if let Some((socket, window)) = query {
+                        Some(
+                            cx.background_executor()
+                                .spawn(async move {
+                                    let windows = tmux_workspaces_tmux::connection::session_windows(
+                                        &socket, &window,
+                                    );
+                                    (socket, window, windows)
+                                })
+                                .await,
+                        )
+                    } else {
+                        None
                     };
-                    let listed = cx
-                        .background_executor()
-                        .spawn(async move {
-                            tmux_workspaces_tmux::connection::session_windows(&socket, &window)
-                        })
-                        .await;
-                    if let Ok(windows) = listed {
-                        let _ = this.update(cx, |terminal, cx| {
-                            if !terminal.connecting && terminal.windows != windows {
+                    let _ = this.update(cx, |terminal, cx| {
+                        if !terminal.connecting {
+                            // Refresh even after a disconnect, so a removed
+                            // selected window cannot hide the remaining choices.
+                            if let Some((socket, window, Ok(windows))) = listed
+                                && terminal.socket.as_ref() == Some(&socket)
+                                && terminal.selected_window.as_ref() == Some(&window)
+                                && terminal.windows != windows
+                            {
                                 terminal.windows = windows;
                                 cx.notify();
                             }
-                        });
-                    }
+                            if terminal.error.is_some() && terminal.target.leaf.attachment.is_some()
+                            {
+                                // Retry only the saved attachment. This never
+                                // starts an agent, server or replacement shell.
+                                terminal.start(cx);
+                            }
+                        }
+                    });
                 }
             }),
         };
@@ -618,6 +626,19 @@ mod tests {
             .clone();
         let retained = connect_selected(target.clone(), Some(selected.clone()), true).unwrap();
         assert_eq!(retained.window, selected.id);
+        server
+            .run(&["kill-window", "-t", &format!("@{}", selected.id)])
+            .unwrap();
+        assert!(connect_selected(target.clone(), Some(selected.clone()), true).is_err());
+        let remaining = tmux_workspaces_tmux::connection::session_windows(
+            PathBuf::from(socket.trim()).as_path(),
+            &selected,
+        )
+        .unwrap();
+        assert_eq!(remaining.len(), 1);
+        let recovered =
+            connect_selected(target.clone(), Some(remaining[0].clone()), false).unwrap();
+        assert_eq!(recovered.window, remaining[0].id);
         server.run(&["kill-session", "-t", "=returning"]).unwrap();
         let deadline = Instant::now() + Duration::from_secs(10);
         while !first.panes.as_ref().unwrap().is_finished() {
