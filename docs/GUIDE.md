@@ -167,8 +167,13 @@ session directories. Failed reads retain saved paths. Return to shell in tab opt
 after saving; choose Open terminal if that shell is absent. The chooser lists tmux sessions
 without optional agent metadata.
 
-Missing sessions show **Reconnect** to retry the same session and **Detach**
-to return the pane to its chooser. **Detach** in tab options, or Command-Shift-X
+Attached sessions reconnect automatically when the saved session returns on its
+source server. Attempts run at the two-second window-refresh interval and never
+start an agent or create a session. **Reconnect** retries immediately; **Detach**
+returns the pane to its chooser. An ordinary terminal whose saved shell cannot be
+reached also offers **Open terminal** to reuse the shell or start it if absent.
+Starting a new shell does not restore a lost shell's process state.
+**Detach** in tab options, or Command-Shift-X
 (Ctrl+Shift+X on Linux), works with attached sessions, ordinary terminals and
 native views such as skills and reports. Detaching keeps the pane and its saved
 directory, so you can choose new content or reopen the existing terminal. The

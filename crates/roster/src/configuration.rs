@@ -84,12 +84,17 @@ fn read(data_dir: &Path, url: Option<&str>, key: &str, port: &str) -> Option<(St
     let url = if let Some(url) = url.filter(|url| !url.is_empty()) {
         url.to_owned()
     } else {
-        let (mut host, saved_port) = settings(&data_dir.join("backbone.db"), !port.is_empty())?;
-        if host == "0.0.0.0" {
-            host = "127.0.0.1".into();
+        let (mut host, saved_port, socket) =
+            settings(&data_dir.join("backbone.db"), !port.is_empty())?;
+        if !socket.is_empty() {
+            format!("unix:{socket}")
+        } else {
+            if host == "0.0.0.0" {
+                host = "127.0.0.1".into();
+            }
+            let port = if port.is_empty() { &saved_port } else { port };
+            format!("http://{host}:{port}")
         }
-        let port = if port.is_empty() { &saved_port } else { port };
-        format!("http://{host}:{port}")
     };
     if let Some(socket) = url.strip_prefix("unix:") {
         if !Path::new(socket).is_absolute() {
@@ -101,16 +106,17 @@ fn read(data_dir: &Path, url: Option<&str>, key: &str, port: &str) -> Option<(St
     Some((url.trim_end_matches('/').to_owned(), key))
 }
 
-fn settings(path: &Path, port_overridden: bool) -> Option<(String, String)> {
+fn settings(path: &Path, port_overridden: bool) -> Option<(String, String, String)> {
     let mut host = "127.0.0.1".to_owned();
     let mut port = "7120".to_owned();
+    let mut socket = String::new();
     if path.try_exists().ok()? {
         let connection =
             Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY).ok()?;
         connection.busy_timeout(Duration::from_millis(250)).ok()?;
         let mut statement = connection
             .prepare(
-                "SELECT key, value FROM settings WHERE key IN ('backbone.host', 'backbone.port')",
+                "SELECT key, value FROM settings WHERE key IN ('backbone.host', 'backbone.port', 'backbone.socket_path')",
             )
             .ok()?;
         let mut rows = statement.query([]).ok()?;
@@ -119,6 +125,8 @@ fn settings(path: &Path, port_overridden: bool) -> Option<(String, String)> {
             let value: String = row.get(1).ok()?;
             if name == "backbone.host" {
                 host = serde_json::from_str(&value).ok()?;
+            } else if name == "backbone.socket_path" {
+                socket = serde_json::from_str(&value).ok()?;
             } else {
                 // Check the literal JSON type before parsing so serde_json's
                 // internal numeric marker cannot turn an object into a port.
@@ -136,7 +144,7 @@ fn settings(path: &Path, port_overridden: bool) -> Option<(String, String)> {
             }
         }
     }
-    Some((host, port))
+    Some((host, port, socket))
 }
 
 fn whitespace(ch: char) -> bool {
@@ -354,14 +362,30 @@ mod tests {
         );
         assert!(read(root, None, "", "99999").is_none());
         assert!(read(root, Some("http://remote.example"), "", "").is_none());
+
+        put(
+            &connection,
+            "backbone.socket_path",
+            r#""/private/api.sock""#,
+        );
+        assert_eq!(
+            read(root, None, "", ""),
+            Some(("unix:/private/api.sock".into(), "repaired".into()))
+        );
+        put(&connection, "backbone.socket_path", r#""relative.sock""#);
+        assert!(read(root, None, "", "").is_none());
+        assert_eq!(
+            read(root, Some("unix:/private/override.sock"), "", ""),
+            Some(("unix:/private/override.sock".into(), "repaired".into()))
+        );
     }
 
     #[test]
     fn configured_fetch_uses_only_the_fixture_environment_and_keeps_failures_stale() {
         use crate::transport::tests::{ok, server};
-        for (environment_key, expected) in [
-            ("env-fixture-token", "env-fixture-token"),
-            ("", "file-fixture-token"),
+        for (environment_key, expected, saved_socket) in [
+            ("env-fixture-token", "env-fixture-token", false),
+            ("", "file-fixture-token", true),
         ] {
             let directory = tempfile::tempdir().unwrap();
             fs::write(
@@ -372,12 +396,17 @@ mod tests {
             let connection = database(directory.path());
             put(&connection, "backbone.host", "\"0.0.0.0\"");
             put(&connection, "backbone.port", "1");
-            drop(connection);
             let (url, server) = server(
                 ok(r#"{"items":[{"name":"worker","state":"busy"}]}"#),
                 Duration::ZERO,
             );
             let socket = url.strip_prefix("unix:").unwrap();
+            put(
+                &connection,
+                "backbone.socket_path",
+                &serde_json::to_string(if saved_socket { socket } else { "invalid" }).unwrap(),
+            );
+            drop(connection);
             let status = Command::new(env::current_exe().unwrap())
                 .args([
                     "--exact",
@@ -386,7 +415,10 @@ mod tests {
                 ])
                 .env("ROSTER_CONFIG_FIXTURE_DIR", directory.path())
                 .env("BACKBONE_API_KEY", environment_key)
-                .env("BACKBONE_SOCKET_PATH", socket)
+                .env(
+                    "BACKBONE_SOCKET_PATH",
+                    if saved_socket { "" } else { socket },
+                )
                 .status()
                 .unwrap();
             assert!(status.success());

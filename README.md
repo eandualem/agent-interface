@@ -51,8 +51,9 @@ To install an archive you already have, follow the
 installation, updates and removal.
 
 Agent views connect to a running Agent Backbone. Authenticated access requires
-Backbone's private Unix listener. Set `BACKBONE_SOCKET_PATH` to the same absolute
-socket path in the provider and the app's launch environment. The socket must be
+Backbone's private Unix listener. The app reads the provider's saved
+`backbone.socket_path` setting; `BACKBONE_SOCKET_PATH` in the app's launch
+environment can override it. The socket path must be absolute. The socket must be
 owned by your user with permissions 0600, in a directory owned by your user with
 permissions 0700. TCP-only configurations do not receive credentials.
 

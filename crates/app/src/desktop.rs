@@ -757,8 +757,16 @@ impl Browser {
             while woken.next().await.is_some() {
                 let updated = this.update(cx, |browser, cx| {
                     if let Some(snapshot) = browser.roster.as_ref().and_then(Roster::take_update) {
+                        let changed = browser.agents.as_ref().is_none_or(|previous| {
+                            previous.states != snapshot.states || previous.error != snapshot.error
+                        });
                         browser.agents = Some(snapshot);
                         browser.refresh_source_matches(cx);
+                        if changed {
+                            // Clear retained paint when status changes, including
+                            // badges beside cached terminal bodies.
+                            cx.refresh_windows();
+                        }
                         cx.notify();
                     }
                 });
@@ -1196,7 +1204,7 @@ impl Browser {
             }
             TabAction::OpenTerminal => {
                 if let Some(pane) = layout.model().pane().map(|pane| pane.id.clone()) {
-                    self.open_terminal(&pane, window, cx);
+                    self.open_terminal(&pane, None, window, cx);
                 }
             }
             TabAction::Split(direction) => self.create(Create::Split(direction), window, cx),
@@ -1275,14 +1283,20 @@ impl Browser {
                     .any(|leaf| leaf.id == pane && leaf.empty)
             });
         if empty {
-            self.open_terminal(pane, window, cx);
+            self.open_terminal(pane, None, window, cx);
         } else {
             self.save_notice = Some("The pane changed. Choose again.".into());
             cx.notify();
         }
     }
 
-    fn open_terminal(&mut self, pane: &str, window: &mut Window, cx: &mut Context<Self>) {
+    fn open_terminal(
+        &mut self,
+        pane: &str,
+        expected: Option<&Target>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.saving || self.save_failed {
             return;
         }
@@ -1297,6 +1311,16 @@ impl Browser {
         let Some(layout) = &mut self.layout else {
             return;
         };
+        if expected.is_some_and(|target| {
+            !layout.model().tab().is_some_and(|tab| {
+                tab.tree
+                    .leaves()
+                    .iter()
+                    .any(|leaf| target.matches_leaf(leaf))
+            })
+        }) {
+            return;
+        }
         if !layout
             .model()
             .tab()
@@ -1869,6 +1893,15 @@ impl Render for Browser {
                     |browser, terminal, _: &terminal::Detach, window, cx| {
                         let target = terminal.read(cx).target.clone();
                         browser.detach_pane(&target, window, cx);
+                    },
+                )
+                .detach();
+                cx.subscribe_in(
+                    &terminal,
+                    window,
+                    |browser, terminal, _: &terminal::OpenTerminal, window, cx| {
+                        let target = terminal.read(cx).target.clone();
+                        browser.open_terminal(&target.leaf.id, Some(&target), window, cx);
                     },
                 )
                 .detach();

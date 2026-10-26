@@ -151,8 +151,10 @@ pub(super) struct LiveTerminal {
 }
 
 pub(super) struct Detach;
+pub(super) struct OpenTerminal;
 
 impl gpui::EventEmitter<Detach> for LiveTerminal {}
+impl gpui::EventEmitter<OpenTerminal> for LiveTerminal {}
 impl gpui::EventEmitter<crate::view::Focus> for LiveTerminal {}
 
 impl LiveTerminal {
@@ -212,7 +214,19 @@ impl LiveTerminal {
                     cx.background_executor()
                         .timer(std::time::Duration::from_secs(2))
                         .await;
-                    let Ok(query) = this.update(cx, |terminal, _| {
+                    let Ok(query) = this.update(cx, |terminal, cx| {
+                        if let Some(view) = &terminal.view {
+                            view.update(cx, |view, cx| view.refresh_connection(cx));
+                        }
+                        if !terminal.connecting
+                            && terminal.error.is_some()
+                            && terminal.target.leaf.attachment.is_some()
+                        {
+                            // Retry only the saved attachment. This never starts
+                            // an agent, tmux server or replacement shell.
+                            terminal.start(cx);
+                            return None;
+                        }
                         (!terminal.connecting)
                             .then(|| {
                                 terminal
@@ -249,7 +263,9 @@ impl LiveTerminal {
     }
 
     fn start(&mut self, cx: &mut Context<Self>) {
-        self.start_window(None, None, cx);
+        if !self.connecting {
+            self.start_window(None, None, cx);
+        }
     }
 
     fn start_window(
@@ -262,9 +278,10 @@ impl LiveTerminal {
         // Keep the old client attached until its replacement is ready. A source
         // with destroy-unattached enabled must not disappear during navigation.
         if let Some(view) = &self.view {
-            view.update(cx, |view, cx| view.suspend_input(cx));
+            view.update(cx, |view, _| view.suspend_input());
         }
-        self.error = None;
+        // Retain the last output and error while retrying, instead of flashing
+        // an empty Connecting panel on every automatic attempt.
         self.connecting = true;
         let target = self.target.clone();
         let connection = cx.background_executor().spawn(async move {
@@ -298,6 +315,7 @@ impl LiveTerminal {
                 terminal.connecting = false;
                 match result {
                     Ok(mut ready) => {
+                        terminal.error = None;
                         terminal.socket = Some(ready.socket.clone());
                         terminal.windows = std::mem::take(&mut ready.windows);
                         terminal.selected_window = terminal
@@ -395,16 +413,30 @@ impl Render for LiveTerminal {
                 div()
                     .flex_1()
                     .min_h_0()
-                    .children((!self.connecting).then(|| self.view.clone()).flatten()),
+                    .children(
+                        (!self.connecting || self.error.is_some())
+                            .then(|| self.view.clone())
+                            .flatten(),
+                    ),
             )
-            .when(self.connecting, |el| {
+            .when(self.connecting && self.error.is_none(), |el| {
                 el.child(line("Connecting…".into(), c.muted))
             })
             .when_some(self.error.clone(), |el, error| {
                 el.child(line(error, c.attention_text))
             })
-            .when(!self.connecting && self.error.is_some(), |el| {
-                el.child(
+            .when(self.error.is_some(), |el| {
+                let attached = self.target.leaf.attachment.is_some();
+                el.child(line(
+                    if attached {
+                        "Waiting for this session. Reconnecting automatically."
+                    } else {
+                        "Cannot reach this terminal’s saved shell. Open terminal can start it if it is no longer running."
+                    }
+                    .into(),
+                    c.muted,
+                ))
+                .child(
                     div()
                         .flex()
                         .gap(gpui::px(t.space.s8))
@@ -414,7 +446,13 @@ impl Render for LiveTerminal {
                             ui::button("reconnect", "Reconnect", ui::Button::Secondary)
                                 .on_click(cx.listener(|terminal, _, _, cx| terminal.start(cx))),
                         )
-                        .when(self.target.leaf.attachment.is_some(), |el| {
+                        .when(!attached, |el| {
+                            el.child(
+                                ui::button("open-terminal", "Open terminal", ui::Button::Secondary)
+                                    .on_click(cx.listener(|_, _, _, cx| cx.emit(OpenTerminal))),
+                            )
+                        })
+                        .when(attached, |el| {
                             el.child(
                                 ui::button("detach", "Detach", ui::Button::Secondary)
                                     .on_click(cx.listener(|_, _, _, cx| cx.emit(Detach))),
@@ -504,6 +542,64 @@ mod tests {
             .flat_map(|row| (0..screen.cols()).map(move |col| (row, col)))
             .filter_map(|(row, col)| screen.cell(row, col).map(|(text, _)| text))
             .collect()
+    }
+
+    #[test]
+    fn retry_waits_for_the_exact_saved_session_without_creating_it() {
+        let server = TmuxServer::start().unwrap();
+        let socket = server
+            .run(&["display-message", "-p", "#{socket_path}"])
+            .unwrap();
+        let target = Target {
+            leaf: Leaf {
+                id: "123456abcdef".into(),
+                cwd: None,
+                empty: false,
+                view: None,
+                attachment: Some(Attachment {
+                    session: "returning".into(),
+                    source_socket: Some(socket.trim().into()),
+                }),
+            },
+            directory: None,
+            source: Err("use the saved source".into()),
+        };
+        server
+            .run(&["new-session", "-d", "-s", "returning-extra", "cat"])
+            .unwrap();
+        let original = server
+            .run(&["list-sessions", "-F", "#{session_name}"])
+            .unwrap();
+        for _ in 0..2 {
+            assert!(connect(target.clone()).is_err());
+            assert_eq!(
+                server
+                    .run(&["list-sessions", "-F", "#{session_name}"])
+                    .unwrap(),
+                original
+            );
+            assert!(server.run(&["list-clients"]).unwrap().is_empty());
+        }
+        server
+            .run(&["new-session", "-d", "-s", "returning", "cat"])
+            .unwrap();
+        let first = connect(target.clone()).unwrap();
+        server.run(&["kill-session", "-t", "=returning"]).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !first.panes.as_ref().unwrap().is_finished() {
+            first.panes.as_ref().unwrap().take_update();
+            assert!(
+                Instant::now() < deadline,
+                "closed session did not disconnect"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(connect(target.clone()).is_err());
+        server
+            .run(&["new-session", "-d", "-s", "returning", "cat"])
+            .unwrap();
+        let returned = connect(target).unwrap();
+        assert!(!returned.panes.as_ref().unwrap().is_finished());
     }
 
     #[test]
