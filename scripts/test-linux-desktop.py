@@ -93,6 +93,8 @@ with tempfile.TemporaryDirectory(prefix="agent-interface-desktop-") as directory
         command("xdotool", "mousemove", "--window", window, "120", str(round(caption / 2)),
                 "click", "--repeat", "2", "--delay", "100", "1")
         wait_for(lambda: "_NET_WM_STATE_MAXIMIZED_HORZ" in state(), "caption double-click maximize")
+        # GPUI groups successive clicks for 400 ms, even across maximization.
+        time.sleep(0.6)
         command("xdotool", "mousemove", "--window", window, "120", str(round(caption / 2)),
                 "click", "--repeat", "2", "--delay", "100", "1")
         wait_for(lambda: "MAXIMIZED" not in state(), "caption double-click restore")
