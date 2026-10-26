@@ -52,9 +52,9 @@ pub struct Segment {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Link {
     /// The link's parameters, such as `id=page`, or empty.
-    pub params: String,
+    pub params: std::sync::Arc<str>,
     /// The link's target.
-    pub uri: String,
+    pub uri: std::sync::Arc<str>,
 }
 
 /// A cell's colours and attributes.
@@ -332,8 +332,8 @@ impl Reader {
                     .ok_or(Error::Malformed("a hyperlink without a target"))?;
                 let uri = &link[separator + 1..];
                 self.link = (!uri.is_empty()).then(|| Link {
-                    params: String::from_utf8_lossy(&link[..separator]).into_owned(),
-                    uri: String::from_utf8_lossy(uri).into_owned(),
+                    params: String::from_utf8_lossy(&link[..separator]).into(),
+                    uri: String::from_utf8_lossy(uri).into(),
                 });
                 Ok(&line[end + 2..])
             }

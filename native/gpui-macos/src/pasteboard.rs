@@ -394,6 +394,10 @@ fn stage_drag_image(bytes: &[u8]) -> anyhow::Result<(ExternalPaths, tempfile::Te
         .tempdir()?;
     let path = directory.path().join("Screenshot.png");
     let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format()?;
+    anyhow::ensure!(
+        matches!(reader.format(), Some(image::ImageFormat::Png | image::ImageFormat::Tiff | image::ImageFormat::Jpeg)),
+        "dragged image must be PNG, TIFF or JPEG"
+    );
     let mut limits = image::Limits::default();
     limits.max_image_width = Some(16384);
     limits.max_image_height = Some(16384);
@@ -454,6 +458,15 @@ mod tests {
     use objc::rc::autoreleasepool;
 
     use super::*;
+
+    #[test]
+    fn drag_staging_rejects_formats_outside_the_advertised_types() {
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(1, 1)
+            .write_to(&mut bytes, image::ImageFormat::Bmp)
+            .unwrap();
+        assert!(stage_drag_image(bytes.get_ref()).unwrap_err().to_string().contains("PNG, TIFF or JPEG"));
+    }
 
     #[test]
     fn screenshot_drag_stages_png_and_cleans_up_when_cancelled() {

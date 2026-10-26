@@ -26,7 +26,7 @@ pub(super) fn title(source: &Source) -> String {
                     _ => None,
                 })
         })
-        .unwrap_or_else(|| source.name.clone())
+        .unwrap_or_else(|| source.name.to_string())
 }
 
 /// Who a source reaches, as the pill on its row: `every agent`, `tag X`,
@@ -50,7 +50,7 @@ pub(super) fn targets(library: &PolicyLibrary) -> Vec<Target> {
     library
         .all()
         .into_iter()
-        .map(|source| Target::Policy(source.path.clone()))
+        .map(|source| Target::Policy(source.path.to_string()))
         .collect()
 }
 
@@ -64,7 +64,7 @@ pub(super) fn body(
         && let Target::Policy(path) = &open.target
     {
         let all = library.all();
-        if let Some(at) = all.iter().position(|source| &source.path == path) {
+        if let Some(at) = all.iter().position(|source| source.path.as_ref() == path) {
             return reader::render(pane, header, page(&all, at, "Policies".into(), false), cx);
         }
     }
@@ -77,13 +77,13 @@ fn index(library: &PolicyLibrary, header: Div, cx: &mut Context<ViewPane>) -> An
         let mut card = ui::group_card();
         for (at, source) in sources.iter().enumerate() {
             number += 1;
-            let path = source.path.clone();
+            let path = source.path.to_string();
             card = card.child(
                 ui::group_row(
                     SharedString::from(format!("policy-{number}")),
                     at == 0,
                     numbered.then(|| ui::number_tile((at + 1).to_string()).into_any_element()),
-                    source.name.clone(),
+                    source.name.to_string(),
                     title(source),
                 )
                 .on_click(
@@ -164,7 +164,7 @@ pub(super) fn page<'a>(
             .gap_x(px(t.space.s14))
             .gap_y(px(t.space.s6))
             .text_color(c.muted)
-            .child(mono(source.path.clone()).text_color(c.text_2))
+            .child(mono(source.path.to_string()).text_color(c.text_2))
             .child(scope(source))
             .when(one_agent, |facts| {
                 facts.child(if source.applied {
@@ -176,7 +176,7 @@ pub(super) fn page<'a>(
     );
     reader::Page {
         back,
-        name: Some(source.name.clone()),
+        name: Some(source.name.to_string()),
         at: Some(at),
         count: sources.len(),
         card,

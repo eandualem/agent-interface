@@ -171,9 +171,11 @@ fn reads_line_drawing_across_rows() {
 #[test]
 fn reads_hyperlinks_and_loses_a_link_that_continues_onto_the_next_row() {
     let a = Link {
-        params: String::new(),
+        params: "".into(),
         uri: "http://a.example/".into(),
     };
+    let shared = a.clone();
+    assert!(std::sync::Arc::ptr_eq(&a.uri, &shared.uri));
     let b = Link {
         params: "id=k".into(),
         uri: "http://b.example/".into(),

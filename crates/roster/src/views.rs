@@ -26,17 +26,35 @@ pub use reports::{ReportContent, ReportItem, ReportPage, ReportQuery, ReportSect
 
 pub use library::{
     Loadout, LocalSkill, PREVIEW_LIMIT, Place, PolicyLibrary, Reason, SkillLibrary, TagCard,
-    TagLibrary,
+    TagLibrary, tag_carriers,
 };
 
 const VIEW_LIMIT: usize = 4 * 1024 * 1024;
 
+// Responses can fan out into multiple visible groups. Bound expanded rendering
+// work as well as wire bytes, before retaining or constructing those groups.
+fn bounded_groups(entries: impl Iterator<Item = (usize, usize)>) -> bool {
+    let mut rows = 0usize;
+    let mut bytes = 0usize;
+    for (count, size) in entries {
+        rows = rows.saturating_add(count);
+        bytes = bytes.saturating_add(count.saturating_mul(size));
+        if rows > 4096 || bytes > 16 * 1024 * 1024 {
+            return false;
+        }
+    }
+    true
+}
+
 /// Why a view has no data. The text is fixed and contains no response content.
-pub const UNAVAILABLE: &str = "Backbone is not answering.";
+pub const UNAVAILABLE: &str =
+    "Backbone is unavailable. Check BACKBONE_SOCKET_PATH and its private socket.";
 /// Backbone answered that it does not serve this read.
 pub const NOT_SERVED: &str = "This Backbone does not serve policies yet; it needs updating.";
 /// A response this version cannot read.
 pub const UNREADABLE: &str = "Backbone answered with data this version cannot read.";
+
+const POLICY_LIMIT: &str = "Backbone's policies exceed this view's limits.";
 
 /// What a view asks Backbone for.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -779,15 +797,77 @@ pub struct Skills {
 }
 
 impl Skills {
+    /// Group skills by tag in one pass, retaining source order and one entry per skill.
+    pub fn by_tag(&self) -> std::collections::BTreeMap<&str, Vec<&Skill>> {
+        let mut groups = std::collections::BTreeMap::<&str, Vec<&Skill>>::new();
+        for skill in &self.items {
+            for tag in skill
+                .tags
+                .iter()
+                .map(String::as_str)
+                .collect::<std::collections::BTreeSet<_>>()
+            {
+                groups.entry(tag).or_default().push(skill);
+            }
+        }
+        groups
+    }
+
     fn decode(body: &[u8]) -> Result<Self, &'static str> {
         let document = document(body)?;
+        let items =
+            skill_items(document.get("items").ok_or(UNREADABLE)?).map_err(|_| UNREADABLE)?;
+        if !bounded_groups(items.iter().map(|skill| {
+            (
+                skill.tags.len().max(1),
+                skill.name.len()
+                    + skill.path.len()
+                    + skill.description.len()
+                    + skill.error.as_ref().map_or(0, String::len)
+                    + skill.tags.iter().map(String::len).sum::<usize>(),
+            )
+        })) {
+            return Err(UNREADABLE);
+        }
         Ok(Self {
             store: document
                 .get("store")
                 .and_then(|raw| serde_json::from_str(raw.get()).ok()),
-            items: items(&document)?,
+            items,
         })
     }
+}
+
+// Limit input rows while decoding, before allocating the complete skill list.
+fn skill_items(raw: &RawValue) -> Result<Vec<Skill>, serde_json::Error> {
+    struct Rows;
+    impl<'de> serde::de::Visitor<'de> for Rows {
+        type Value = Vec<Skill>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("at most 4096 skill rows")
+        }
+
+        fn visit_seq<A: serde::de::SeqAccess<'de>>(
+            self,
+            mut sequence: A,
+        ) -> Result<Self::Value, A::Error> {
+            let mut items = Vec::new();
+            let mut rows = 0;
+            while let Some(raw) = sequence.next_element::<&RawValue>()? {
+                if rows == 4096 {
+                    return Err(serde::de::Error::custom("too many skill rows"));
+                }
+                rows += 1;
+                // Preserve the existing behavior of skipping malformed entries.
+                if let Ok(item) = serde_json::from_str(raw.get()) {
+                    items.push(item);
+                }
+            }
+            Ok(items)
+        }
+    }
+    serde::Deserializer::deserialize_seq(&mut serde_json::Deserializer::from_str(raw.get()), Rows)
 }
 
 /// A recent delivery to one agent.
@@ -1028,15 +1108,15 @@ fn rules(runtime: &str, dir: &str, home: Option<std::path::PathBuf>) -> Permissi
 #[serde(default)]
 pub struct Source {
     /// The policy's name, or `base` or `swarm`.
-    pub name: String,
+    pub name: std::sync::Arc<str>,
     /// Its file.
-    pub path: String,
+    pub path: std::sync::Arc<str>,
     /// Why the agent gets it: `base`, `global`, `tag:…` or `swarm`.
-    pub scope: String,
+    pub scope: std::sync::Arc<str>,
     /// Whether it is applied at the next start.
     pub applied: bool,
     /// The file's text, when Backbone could read it.
-    pub text: Option<String>,
+    pub text: Option<std::sync::Arc<str>>,
 }
 
 /// The instructions one agent receives at its next start, in order.
@@ -1052,6 +1132,7 @@ pub struct Instructions {
     /// Whether a brief is injected.
     pub enabled: bool,
     /// The sources, in the order the agent receives them.
+    #[serde(deserialize_with = "policy_sources")]
     pub sources: Vec<Source>,
     /// Backbone's notes about this preview.
     pub notices: Vec<String>,
@@ -1060,8 +1141,61 @@ pub struct Instructions {
 impl Instructions {
     fn decode(body: &[u8]) -> Result<Self, &'static str> {
         document(body)?;
-        serde_json::from_slice(body).map_err(|_| UNREADABLE)
+        serde_json::from_slice(body).map_err(|error| {
+            // serde_json appends a location to our literal custom data error.
+            // Keep budget exhaustion distinct from malformed per-agent data.
+            if error.to_string().starts_with(POLICY_LIMIT) {
+                POLICY_LIMIT
+            } else {
+                UNREADABLE
+            }
+        })
     }
+}
+
+// Both the team library and an individual agent use this decoder. Reject excess
+// rows before constructing the full list, including defaultable empty objects.
+fn policy_sources<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<Source>, D::Error> {
+    struct Sources;
+    impl<'de> serde::de::Visitor<'de> for Sources {
+        type Value = Vec<Source>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("a bounded list of policy sources")
+        }
+
+        fn visit_seq<A: serde::de::SeqAccess<'de>>(
+            self,
+            mut sequence: A,
+        ) -> Result<Self::Value, A::Error> {
+            let mut sources = Vec::new();
+            let mut rows = 0usize;
+            let mut bytes = 0usize;
+            while sources.len() < 4096 {
+                let Some(source) = sequence.next_element::<Source>()? else {
+                    return Ok(sources);
+                };
+                let count = source.scope.split(", ").count();
+                let size = source.name.len()
+                    + source.path.len()
+                    + source.scope.len()
+                    + source.text.as_ref().map_or(0, |text| text.len());
+                rows = rows.saturating_add(count);
+                bytes = bytes.saturating_add(count.saturating_mul(size));
+                if rows > 4096 || bytes > 16 * 1024 * 1024 {
+                    return Err(serde::de::Error::custom(POLICY_LIMIT));
+                }
+                sources.push(source);
+            }
+            if sequence.next_element::<serde::de::IgnoredAny>()?.is_some() {
+                return Err(serde::de::Error::custom(POLICY_LIMIT));
+            }
+            Ok(sources)
+        }
+    }
+    deserializer.deserialize_seq(Sources)
 }
 
 /// An outside source an agent receives messages from.
@@ -1234,6 +1368,79 @@ fn civil_from_days(days: i64) -> (i64, i64, i64) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn policy_decoding_bounds_rows_and_expanded_content_for_every_view() {
+        let rows = std::iter::repeat_n("{}", 4096)
+            .collect::<Vec<_>>()
+            .join(",");
+        assert_eq!(
+            super::Instructions::decode(format!("{{\"sources\":[{rows}]}}").as_bytes())
+                .unwrap()
+                .sources
+                .len(),
+            4096
+        );
+        assert_eq!(
+            super::Instructions::decode(format!("{{\"sources\":[{rows},{{}}]}}").as_bytes())
+                .unwrap_err(),
+            super::POLICY_LIMIT
+        );
+        let body = serde_json::to_vec(&serde_json::json!({"sources":[{
+            "text": "x".repeat(17 * 1024),
+            "scope": (0..1024).map(|n| format!("tag:{n}")).collect::<Vec<_>>().join(", ")
+        }]}))
+        .unwrap();
+        assert_eq!(
+            super::Instructions::decode(&body).unwrap_err(),
+            super::POLICY_LIMIT
+        );
+        assert_eq!(
+            super::Instructions::decode(br#"{"sources":[null]}"#).unwrap_err(),
+            super::UNREADABLE
+        );
+    }
+
+    #[test]
+    fn expanded_groups_are_bounded_before_rendering() {
+        assert!(super::bounded_groups([(2, 1024)].into_iter()));
+        assert!(!super::bounded_groups([(4097, 1)].into_iter()));
+        assert!(!super::bounded_groups([(32, 1024 * 1024)].into_iter()));
+        let skills = super::Skills::decode(
+            br#"{"items":[{"name":"first","tags":["x","x"]},{"name":"second","tags":["x"]}]}"#,
+        )
+        .unwrap();
+        let grouped = skills.by_tag();
+        assert_eq!(
+            grouped["x"]
+                .iter()
+                .map(|skill| skill.name.as_str())
+                .collect::<Vec<_>>(),
+            ["first", "second"]
+        );
+        // A small response must not fan out its error into large UI strings.
+        let body = serde_json::to_vec(&serde_json::json!({"items":[{
+            "name":"unreadable", "error":"x".repeat(17 * 1024),
+            "tags": (0..1024).map(|n| n.to_string()).collect::<Vec<_>>()
+        }]}))
+        .unwrap();
+        assert_eq!(super::Skills::decode(&body).unwrap_err(), super::UNREADABLE);
+        let rows = std::iter::repeat_n("{}", 4096)
+            .collect::<Vec<_>>()
+            .join(",");
+        assert_eq!(
+            super::Skills::decode(format!("{{\"items\":[{rows}]}}").as_bytes())
+                .unwrap()
+                .items
+                .len(),
+            4096
+        );
+        // Invalid rows still consume input work; do not decode an unlimited tail.
+        assert_eq!(
+            super::Skills::decode(format!("{{\"items\":[{rows},null]}}").as_bytes()).unwrap_err(),
+            super::UNREADABLE
+        );
+    }
+
     use super::*;
 
     #[test]
@@ -1368,7 +1575,7 @@ mod tests {
             "content":"...","notices":["note"]}"##,
         )
         .unwrap();
-        assert_eq!(brief.sources[1].scope, "tag:review");
+        assert_eq!(brief.sources[1].scope.as_ref(), "tag:review");
         assert_eq!(brief.sources[1].text, None);
     }
 

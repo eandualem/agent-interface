@@ -9,7 +9,7 @@ publish.workspace = true
 
 [dependencies]
 tmux-workspaces-core = { path = "../core" }
-rusqlite.workspace = true
+rusqlite = { workspace = true, features = ["limits", "serialize"] }
 serde.workspace = true
 serde_json.workspace = true
 unicode-properties.workspace = true

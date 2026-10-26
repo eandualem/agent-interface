@@ -4,6 +4,7 @@
 //! macOS screens have a y axis that goes up from the bottom of the screen and
 //! an origin at the bottom left of the main display.
 
+mod artifact;
 mod display;
 mod display_link;
 mod events;
@@ -45,6 +46,7 @@ pub(crate) use keyboard::*;
 pub(crate) use platform::*;
 pub(crate) use window::*;
 
+pub use artifact::artifact_configuration;
 pub use platform::MacPlatform;
 
 trait BoolExt {

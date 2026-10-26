@@ -2438,6 +2438,7 @@ dependencies = [
  "objc2-core-video",
  "objc2-foundation 0.3.2",
  "objc2-user-notifications",
+ "objc2-web-kit",
  "parking_lot",
  "raw-window-handle",
  "semver",
@@ -6215,6 +6216,7 @@ version = "0.1.0"
 dependencies = [
  "futures",
  "gpui-pre",
+ "gpui-pre-macos",
  "gpui-pre-platform",
  "libc",
  "rusqlite",
@@ -6284,14 +6286,19 @@ name = "tmux-workspaces-roster"
 version = "0.1.0"
 dependencies = [
  "http",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "libc",
  "log",
  "reqwest",
  "rusqlite",
+ "rustix",
  "serde",
  "serde_json",
  "sha2",
  "tempfile",
+ "tokio",
  "toml 0.8.23",
 ]
 

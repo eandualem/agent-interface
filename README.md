@@ -35,31 +35,26 @@ for compatibility. The product, macOS app and repository are **Agent Interface**
 Agent Interface runs on macOS and Linux and needs tmux 3.3 or newer. On macOS,
 install tmux with `brew install tmux`.
 
-Native packages have not been published yet. Use the
-[source build instructions](CONTRIBUTING.md#set-up) or a local archive. Once a
-release is available, install it with:
+To build and launch the app, install the
+[build prerequisites](CONTRIBUTING.md#set-up), then run:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/eandualem/agent-interface/main/install.sh | sh
+git clone https://github.com/eandualem/agent-interface.git
+cd agent-interface
+python3 scripts/prepare-native.py
+export LIBGHOSTTY_VT_SYS_OPTIMIZE=ReleaseSafe
+cargo run -p tmux-workspaces-app
 ```
 
-The installer picks the build for your computer and checks its checksum. On
-macOS it installs `Agent Interface.app` in `~/Applications`; on Linux, launch
-**Agent Interface** from the applications menu. The first time macOS opens the
-app, it may ask you to confirm it in **System Settings → Privacy & Security**.
+To install an archive you already have, follow the
+[installation guide](docs/INSTALL.md). It covers platform requirements,
+installation, updates and removal.
 
-To install a build you already have, for example on a second computer, put the
-archive and its `.sha256` file in one folder and run the installer with it:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/eandualem/agent-interface/main/install.sh -o install.sh
-sh install.sh --archive tmux-workspaces-aarch64-apple-darwin.tar.gz
-```
-
-The [installation guide](docs/INSTALL.md) covers supported platforms, Linux
-libraries, updates and removal. To build from source, follow
-[Contributing](CONTRIBUTING.md#set-up). Agent views connect to a running
-Agent Backbone.
+Agent views connect to a running Agent Backbone. Authenticated access requires
+Backbone's private Unix listener. Set `BACKBONE_SOCKET_PATH` to the same absolute
+socket path in the provider and the app's launch environment. The socket must be
+owned by your user with permissions 0600, in a directory owned by your user with
+permissions 0700. TCP-only configurations do not receive credentials.
 
 The first launch creates an empty workspace. Add a tab with **+** or
 Command-T, then choose **Open terminal** or **Attach a session**. On Linux,

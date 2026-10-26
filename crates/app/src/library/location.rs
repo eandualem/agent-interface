@@ -121,6 +121,20 @@ fn resolve(
 }
 
 pub(crate) fn resolve_path(path: &Path) -> io::Result<PathBuf> {
+    // Saved socket paths are untrusted. Bound both initial copying and work
+    // after symlink expansion; a missing prefix must not permit unlimited probes.
+    const MAX_PATH_BYTES: usize = 4096;
+    const MAX_COMPONENTS: usize = 4096;
+    let excessive = || {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "path resolution exceeds its limit",
+        )
+    };
+    if path.as_os_str().len() > MAX_PATH_BYTES {
+        return Err(excessive());
+    }
+    let mut components = 0;
     if path.as_os_str().as_bytes().contains(&0) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -150,6 +164,10 @@ pub(crate) fn resolve_path(path: &Path) -> io::Result<PathBuf> {
         };
         let mut parts = path.components();
         while let Some(part) = parts.next() {
+            components += 1;
+            if components > MAX_COMPONENTS {
+                return Err(excessive());
+            }
             match part {
                 Component::RootDir => result = PathBuf::from("/"),
                 Component::ParentDir => {
@@ -157,11 +175,24 @@ pub(crate) fn resolve_path(path: &Path) -> io::Result<PathBuf> {
                 }
                 Component::Normal(name) => {
                     result.push(name);
+                    if result.as_os_str().len() > MAX_PATH_BYTES {
+                        return Err(excessive());
+                    }
                     if let Some(cached) = links.get(&result) {
                         if let Some(target) = cached {
                             result = target.clone();
                         }
-                    } else if let Ok(target) = std::fs::read_link(&result) {
+                    } else {
+                        let target = match std::fs::read_link(&result) {
+                            Ok(target) => target,
+                            Err(error) if error.raw_os_error() == Some(libc::ENAMETOOLONG) => {
+                                return Err(error);
+                            }
+                            Err(_) => continue,
+                        };
+                        if target.as_os_str().len() > MAX_PATH_BYTES {
+                            return Err(excessive());
+                        }
                         let link = result.clone();
                         links.insert(link.clone(), None);
                         result.pop();
@@ -211,6 +242,31 @@ pub(crate) fn expand_home(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn excessive_saved_paths_are_rejected_before_resolution() {
+        assert_eq!(
+            resolve_path(Path::new(&"a/".repeat(2049)))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidInput
+        );
+    }
+
+    #[test]
+    fn symlink_expansion_has_a_separate_component_budget() {
+        let directory = tempfile::tempdir().unwrap();
+        for n in 0..22 {
+            let target = format!("{}link{}", "x/../".repeat(100), n + 1);
+            std::os::unix::fs::symlink(target, directory.path().join(format!("link{n}"))).unwrap();
+        }
+        assert_eq!(
+            resolve_path(&directory.path().join("link0"))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidInput
+        );
+    }
 
     #[test]
     fn source_selection_uses_launcher_precedence_without_creating_a_socket() {

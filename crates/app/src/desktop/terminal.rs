@@ -740,11 +740,37 @@ mod tests {
         wide.panes.as_ref().unwrap().set_size(80, 25).unwrap();
         let wait_size = |expected: &str| {
             let deadline = Instant::now() + Duration::from_secs(10);
-            while sizes().trim() != expected {
-                assert!(Instant::now() < deadline, "size did not reach {expected}");
+            loop {
+                let actual = sizes();
+                if actual.trim() == expected {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "size did not reach {expected:?}; actual={actual:?}; narrow={:?}; wide={:?}; clients={:?}",
+                    panes.failure(),
+                    wide.panes.as_ref().unwrap().failure(),
+                    server.run(&[
+                        "list-clients",
+                        "-F",
+                        "#{client_name}:#{client_width}x#{client_height}:#{client_flags}",
+                    ])
+                );
                 std::thread::sleep(Duration::from_millis(5));
             }
         };
+        // Finish the wide client's resize before hiding the narrow client,
+        // so that resize cannot incidentally apply the later flag change.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !server
+            .run(&["list-clients", "-F", "#{client_width}"])
+            .unwrap()
+            .lines()
+            .any(|width| width == "80")
+        {
+            assert!(Instant::now() < deadline, "wide client did not resize");
+            std::thread::sleep(Duration::from_millis(5));
+        }
         panes.ignore_size().unwrap();
         wait_size("80x25\n80x25");
         assert_eq!(server.run(&["list-clients"]).unwrap().lines().count(), 2);
@@ -753,6 +779,23 @@ mod tests {
         wait_size("60x20\n60x20");
         assert_eq!(server.run(&["list-clients"]).unwrap().lines().count(), 2);
         drop(wide);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while server.run(&["list-clients"]).unwrap().lines().count() != 1 {
+            assert!(Instant::now() < deadline, "wide client did not detach");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        // With no other client, ignoring size retains the last declaration.
+        panes.ignore_size().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !server
+            .run(&["list-clients", "-F", "#{client_flags}"])
+            .unwrap()
+            .contains("ignore-size")
+        {
+            assert!(Instant::now() < deadline, "last client still sizes windows");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(sizes().trim(), "60x20\n60x20");
         drop(ready);
         assert!(server.run(&["has-session", "-t", "=sized:"]).is_ok());
     }
@@ -893,16 +936,17 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         let queue = crate::view::input_queue(Arc::clone(panes), |_| {});
+        // Single-line input also works when older tmux omits paste-mode state.
         queue
             .try_send((
                 retired,
-                tmux_workspaces_term::input::Input::Paste("discarded\n".into()),
+                tmux_workspaces_term::input::Input::Paste("discarded".into()),
             ))
             .unwrap();
         queue
             .try_send((
                 ready.input,
-                tmux_workspaces_term::input::Input::Paste("surviving-input\n".into()),
+                tmux_workspaces_term::input::Input::Paste("surviving-input".into()),
             ))
             .unwrap();
         wait(&mut screens, "surviving-input");

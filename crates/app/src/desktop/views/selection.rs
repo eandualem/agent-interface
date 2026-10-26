@@ -223,15 +223,21 @@ pub(super) fn text(
     }
     boundaries.sort_unstable();
     boundaries.dedup();
+    // Inline ranges arrive in display order and never overlap. Advance once
+    // across them instead of rescanning the document for every boundary.
+    let mut code = code.iter().peekable();
     let highlights = boundaries.windows(2).map(|span| {
         let range = span[0]..span[1];
+        while code.peek().is_some_and(|code| code.end <= range.start) {
+            code.next();
+        }
         let style = if selected.contains(&range.start) {
             HighlightStyle {
                 color: Some(c.on_accent.into()),
                 background_color: Some(c.accent.into()),
                 ..Default::default()
             }
-        } else if code.iter().any(|code| code.contains(&range.start)) {
+        } else if code.peek().is_some_and(|code| code.contains(&range.start)) {
             HighlightStyle {
                 color: Some(c.code.into()),
                 background_color: Some(c.selected.into()),

@@ -32,6 +32,9 @@ impl Snapshot {
 /// The validated address and key for an enabled provider, re-read on each call.
 pub(crate) fn configured(data_dir: &Path, url: Option<&str>) -> Option<(String, String)> {
     let key = environment("BACKBONE_API_KEY")?;
+    let socket = environment("BACKBONE_SOCKET_PATH")?;
+    let target = (!socket.is_empty()).then(|| format!("unix:{socket}"));
+    let url = target.as_deref().or(url);
     let port = if url.is_some_and(|url| !url.is_empty()) {
         String::new()
     } else {
@@ -88,7 +91,13 @@ fn read(data_dir: &Path, url: Option<&str>, key: &str, port: &str) -> Option<(St
         let port = if port.is_empty() { &saved_port } else { port };
         format!("http://{host}:{port}")
     };
-    crate::transport::endpoint(&url, "/api/agents")?;
+    if let Some(socket) = url.strip_prefix("unix:") {
+        if !Path::new(socket).is_absolute() {
+            return None;
+        }
+    } else {
+        crate::transport::endpoint(&url, "/api/agents")?;
+    }
     Some((url.trim_end_matches('/').to_owned(), key))
 }
 
@@ -368,7 +377,7 @@ mod tests {
                 ok(r#"{"items":[{"name":"worker","state":"busy"}]}"#),
                 Duration::ZERO,
             );
-            let port = url.rsplit(':').next().unwrap();
+            let socket = url.strip_prefix("unix:").unwrap();
             let status = Command::new(env::current_exe().unwrap())
                 .args([
                     "--exact",
@@ -377,7 +386,7 @@ mod tests {
                 ])
                 .env("ROSTER_CONFIG_FIXTURE_DIR", directory.path())
                 .env("BACKBONE_API_KEY", environment_key)
-                .env("BACKBONE_PORT", port)
+                .env("BACKBONE_SOCKET_PATH", socket)
                 .status()
                 .unwrap();
             assert!(status.success());
@@ -398,7 +407,11 @@ mod tests {
         assert!(snapshot.error.is_none());
         assert_eq!(snapshot.states["worker"], "busy");
         let observed = snapshot.observed_at;
-        fs::write(directory.join("backbone.db"), "invalid fixture database").unwrap();
+        fs::write(
+            directory.join(".env"),
+            "BACKBONE_API_KEY=\"invalid fixture key",
+        )
+        .unwrap();
         snapshot.fetch_configured(directory, None);
         assert_eq!(snapshot.error, Some(crate::UNAVAILABLE));
         assert_eq!(snapshot.states["worker"], "busy");

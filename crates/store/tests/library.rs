@@ -831,3 +831,77 @@ fn saved_agent_policies_open_on_the_agent_section_and_libraries_stay() {
         assert_eq!(view(&parse_pane(&text)), Some(View::of(kind)));
     }
 }
+
+#[test]
+fn mixed_case_triggers_are_rejected_on_open_and_before_save() {
+    let directory = tempfile::tempdir().unwrap();
+    let db = database(directory.path(), RECORD);
+    db.execute_batch(
+        "CREATE TABLE unrelated(value TEXT); INSERT INTO unrelated VALUES('retained')",
+    )
+    .unwrap();
+    let mut writer = Store::open_existing_writable(directory.path()).unwrap();
+    let mut base = writer.load().unwrap();
+    let mut local = base.model().clone();
+    local.workspaces[0].name = "Edit".into();
+    db.execute_batch(
+        "CREATE TRIGGER mixed AFTER INSERT ON TERMINAL_LAYOUT BEGIN DELETE FROM unrelated; END",
+    )
+    .unwrap();
+    assert!(Store::open_existing_writable(directory.path()).is_err());
+    assert!(writer.save(&mut base, &local).is_err());
+    assert_eq!(base.raw_json(), RECORD);
+    assert_eq!(writer.load().unwrap().raw_json(), RECORD);
+    assert_eq!(
+        db.query_row("SELECT value FROM unrelated", [], |row| row
+            .get::<_, String>(0))
+            .unwrap(),
+        "retained"
+    );
+}
+
+#[test]
+fn metadata_validation_does_not_resolve_database_defined_pragma_views() {
+    let directory = tempfile::tempdir().unwrap();
+    let db = database(directory.path(), RECORD);
+    // These harmless views fail if evaluated. Metadata inspection must not
+    // execute schema objects supplied by the library being inspected.
+    for name in ["pragma_table_list", "pragma_table_xinfo"] {
+        db.execute_batch(&format!(
+            "CREATE VIEW {name} AS SELECT missing_metadata_function();"
+        ))
+        .unwrap();
+        assert_eq!(
+            Store::open(directory.path())
+                .unwrap()
+                .load()
+                .unwrap()
+                .raw_json(),
+            RECORD
+        );
+        assert!(Store::open_existing_writable(directory.path()).is_ok());
+        db.execute_batch(&format!("DROP VIEW {name}")).unwrap();
+    }
+}
+
+#[test]
+fn generated_values_and_executable_write_constraints_are_not_evaluated() {
+    let directory = tempfile::tempdir().unwrap();
+    let db = Connection::open(directory.path().join("layouts.db")).unwrap();
+    // Small benign expressions suffice to exercise schema rejection.
+    db.execute_batch("CREATE TABLE terminal_layout(id INTEGER PRIMARY KEY, value TEXT GENERATED ALWAYS AS ('{}') VIRTUAL); INSERT INTO terminal_layout(id) VALUES(1)").unwrap();
+    let error = Store::open(directory.path()).unwrap().load().unwrap_err();
+    assert!(error.detail.contains("ordinary stored columns"));
+    db.execute_batch("DROP TABLE terminal_layout; CREATE TABLE terminal_layout(id INTEGER PRIMARY KEY, value TEXT CHECK(length(value)>0))").unwrap();
+    db.execute("INSERT INTO terminal_layout VALUES(1, ?1)", [RECORD])
+        .unwrap();
+    assert_eq!(
+        Store::open(directory.path())
+            .unwrap()
+            .load()
+            .unwrap()
+            .raw_json(),
+        RECORD
+    );
+    assert!(Store::open_existing_writable(directory.path()).is_err());
+}

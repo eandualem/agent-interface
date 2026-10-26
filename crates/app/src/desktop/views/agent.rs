@@ -180,7 +180,7 @@ pub(super) fn targets(pane: &ViewPane, agent: &Agent) -> Vec<Target> {
                 brief
                     .sources
                     .iter()
-                    .map(|source| Target::Policy(source.path.clone()))
+                    .map(|source| Target::Policy(source.path.to_string()))
                     .collect()
             })
             .unwrap_or_default(),
@@ -224,7 +224,9 @@ fn page<'a>(pane: &'a ViewPane, agent: &'a Agent) -> Option<reader::Page<'a>> {
         Target::Policy(path) => {
             let brief = loaded(&agent.brief)?;
             let sources: Vec<_> = brief.sources.iter().collect();
-            let at = sources.iter().position(|source| &source.path == path)?;
+            let at = sources
+                .iter()
+                .position(|source| source.path.as_ref() == path)?;
             Some(policies::page(
                 &sources,
                 at,
@@ -489,7 +491,7 @@ fn policies_section(agent: &Agent, cx: &mut Context<ViewPane>) -> AnyElement {
             card = Some((ui::group_card(), true));
             previous = heading;
         }
-        let path = source.path.clone();
+        let path = source.path.to_string();
         let Some((mut current, first)) = card.take() else {
             continue;
         };
@@ -498,7 +500,7 @@ fn policies_section(agent: &Agent, cx: &mut Context<ViewPane>) -> AnyElement {
                 SharedString::from(format!("agent-policy-{at}")),
                 first,
                 Some(ui::number_tile((at + 1).to_string()).into_any_element()),
-                source.name.clone(),
+                source.name.to_string(),
                 div()
                     .flex()
                     .items_center()
