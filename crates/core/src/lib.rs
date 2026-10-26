@@ -22,8 +22,6 @@ pub struct Layout {
     pub workspaces: Vec<Workspace>,
     /// Initially selected workspace identity.
     pub selected: String,
-    /// Show only the selected pane; this is separate from keyboard input focus.
-    pub focus: bool,
     /// Whether the optional roster is shown.
     pub show_agents: bool,
 }
@@ -56,6 +54,8 @@ pub struct Tab {
     pub tree: Node,
     /// Initially focused leaf identity.
     pub focus: String,
+    /// Show only this tab's selected pane in the current window.
+    pub expanded: bool,
 }
 
 /// One terminal area or a split between two areas.

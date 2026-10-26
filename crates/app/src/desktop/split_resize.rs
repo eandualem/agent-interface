@@ -58,7 +58,7 @@ impl Drag {
         bounds: Bounds<Pixels>,
         position: Point<Pixels>,
     ) -> Option<Self> {
-        if model.focus {
+        if model.focus_mode() {
             return None;
         }
         let tab = model.tab()?;
@@ -106,7 +106,7 @@ impl Drag {
     }
 
     pub fn valid(&self, model: &Layout) -> bool {
-        !model.focus
+        !model.focus_mode()
             && model.selected == self.workspace
             && model
                 .tab()
@@ -181,9 +181,9 @@ mod tests {
             assert_eq!(split(drag.tree(), "000000000003").unwrap().1, 0.85);
             drag.motion(point(px(-1000.0), px(-1000.0)));
             assert_eq!(split(drag.tree(), "000000000003").unwrap().1, 0.15);
-            window.model_mut().focus = true;
+            window.model_mut().set_focus_mode(true);
             assert!(drag.proposal(&window).is_none());
-            window.model_mut().focus = false;
+            window.model_mut().set_focus_mode(false);
             window.model_mut().rename_tab("Renamed");
             assert!(drag.valid(window.model()));
             window

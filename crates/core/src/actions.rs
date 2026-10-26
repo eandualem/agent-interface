@@ -148,6 +148,7 @@ fn tab(name: Option<String>, cwd: String, empty: bool) -> Tab {
             .filter(|name| !name.is_empty())
             .unwrap_or_else(|| format!("Tab {}", &identity()[..4])),
         focus: pane.id.clone(),
+        expanded: false,
         tree: Node::Leaf(pane),
     }
 }
@@ -169,7 +170,6 @@ impl Layout {
         Self {
             selected: space.id.clone(),
             workspaces: vec![space],
-            focus: false,
             show_agents: false,
         }
     }
@@ -209,6 +209,18 @@ impl Layout {
             .position(|tab| tab.id == space.selected)
             .unwrap_or(0);
         space.tabs.get_mut(index)
+    }
+
+    /// Whether the selected tab shows only its focused pane.
+    pub fn focus_mode(&self) -> bool {
+        self.tab().is_some_and(|tab| tab.expanded)
+    }
+
+    /// Change expansion only in the selected tab; an empty workspace is unchanged.
+    pub fn set_focus_mode(&mut self, expanded: bool) {
+        if let Some(tab) = self.tab_mut() {
+            tab.expanded = expanded;
+        }
     }
 
     /// The focused terminal area in the selected tab.
@@ -563,7 +575,7 @@ impl Layout {
             second: Box::new(Node::Leaf(added)),
         };
         tab.focus = focus;
-        self.focus = false;
+        tab.expanded = false;
         true
     }
 
@@ -1081,9 +1093,9 @@ mod tests {
         };
         assert!(model.attach(Some(attached.clone())));
         assert_eq!(model.tab().unwrap().name, tab_name);
-        model.focus = true;
+        model.set_focus_mode(true);
         assert!(model.split(Direction::Right, "/var/tmp".into(), true));
-        assert!(!model.focus);
+        assert!(!model.focus_mode());
         assert!(model.pane().unwrap().empty);
         let added = model.pane().unwrap().id.clone();
         assert!(model.next_pane(-1));

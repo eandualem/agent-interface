@@ -78,7 +78,7 @@ impl Browser {
             .position(|leaf| leaf.id == tab.focus)
             .unwrap_or(0);
         let tree = model
-            .focus
+            .focus_mode()
             .then(|| leaves.get(selected).map(|leaf| Node::Leaf((*leaf).clone())))
             .flatten();
         let numbers = leaves

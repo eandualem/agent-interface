@@ -226,7 +226,8 @@ impl Browser {
                         if in_header && event.click_count == 2 {
                             browser.pane_drag = None;
                             if let Some(layout) = &mut browser.layout {
-                                layout.model_mut().focus = !layout.model().focus;
+                                let model = layout.model_mut();
+                                model.set_focus_mode(!model.focus_mode());
                             }
                             if let Some(terminal) = browser.terminals.get(&leaf) {
                                 terminal

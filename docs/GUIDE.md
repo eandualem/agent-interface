@@ -81,6 +81,10 @@ pane has an accent ring and the others are slightly dimmed. The status row
 names the workspace, tab and pane, shows the keys for the current mode and the
 saved state, and **agents shown** hides the agents section.
 
+Double-click a pane header to expand it, then double-click again or press Escape
+to restore the split layout. Expansion belongs to that tab: switching tabs leaves
+their own layouts unchanged, and returning restores the tab's previous view.
+
 Settings (Command-comma) offers a dark or light theme, the terminal text size,
 whether panes show headers (always, on hover or never) and editable shortcuts;
 changes apply to every window at once and are saved in
