@@ -67,7 +67,11 @@ else
         [ -f "$launcher" ] && grep -qx 'X-AgentInterface-Installer=1' "$launcher" || fail "Refusing to replace $launcher."
     fi
     if [ -e "$link" ] || [ -L "$link" ]; then
-        [ -L "$link" ] && [ "$(readlink "$link")" = "$destination/$executable" ] || fail "Refusing to replace $link."
+        [ -L "$link" ] || fail "Refusing to replace $link."
+        case $(readlink "$link") in
+            "$destination/bin/agent-interface"|"$destination/bin/tmux-workspaces") ;;
+            *) fail "Refusing to replace $link." ;;
+        esac
     fi
     # Retire only the old installer's launchers, never an unrelated command.
     if [ -e "$legacy_link" ] || [ -L "$legacy_link" ]; then
@@ -96,6 +100,7 @@ backup=
 legacy_backup=
 legacy_link_backup=
 legacy_launcher_backup=
+link_backup=
 launcher_stage=
 launcher_backup=
 installed=false
@@ -109,6 +114,12 @@ cleanup() {
     if [ "$status" -ne 0 ]; then
         if [ "$installed" = true ]; then rm -rf "$destination"; fi
         if [ "$new_link" = true ]; then rm -f "$link"; fi
+        if [ -n "$link_backup" ] && [ -L "$link_backup" ]; then
+            if ! mv "$link_backup" "$link"; then
+                printf 'Previous command retained at %s\n' "$link_backup" >&2
+                rollback_ok=false
+            fi
+        fi
         if [ -n "$backup" ] && [ -e "$backup" ]; then
             if ! mv "$backup" "$destination"; then
                 printf 'Previous app retained at %s\n' "$backup" >&2
@@ -165,8 +176,19 @@ else
     base=https://github.com/eandualem/agent-interface/releases/latest/download
     name=agent-interface-$target.tar.gz
     printf 'Downloading %s\n' "$name"
-    curl --fail --location --silent --show-error --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 600 \
-        "$base/$name" -o "$staging/download.tar.gz" || fail 'Download failed. Check that a release exists for this platform.'
+    if status=$(curl --fail --location --silent --show-error --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 600 \
+        --write-out '%{http_code}' "$base/$name" -o "$staging/download.tar.gz"); then
+        :
+    elif [ "$status" = 404 ]; then
+        # The latest release can still predate the archive rename while main
+        # contains the next installer. Only a missing asset permits fallback.
+        name=tmux-workspaces-$target.tar.gz
+        printf 'Checking earlier release archive %s\n' "$name"
+        curl --fail --location --silent --show-error --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 600 \
+            "$base/$name" -o "$staging/download.tar.gz" || fail 'Download failed. Check that a release exists for this platform.'
+    else
+        fail 'Download failed. Check that a release exists for this platform.'
+    fi
     curl --fail --location --silent --show-error --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 60 \
         "$base/$name.sha256" -o "$staging/checksum"
 fi
@@ -185,6 +207,9 @@ tar -tzf "$staging/download.tar.gz" > "$staging/members"
 if [ "$platform" = apple-darwin ] &&
     [ "$(awk -F/ 'NR == 1 {print $1; exit}' "$staging/members")" = tmux-workspaces.app ]; then
     payload=tmux-workspaces.app
+elif [ "$platform" = unknown-linux-gnu ] &&
+    [ "$(awk -F/ 'NR == 1 {print $1; exit}' "$staging/members")" = tmux-workspaces ]; then
+    payload=tmux-workspaces
 fi
 awk -v root="$payload" '
     $0 != root && index($0, root "/") != 1 {exit 1}
@@ -194,13 +219,18 @@ tar -tvzf "$staging/download.tar.gz" > "$staging/types"
 awk 'substr($0,1,1) != "-" && substr($0,1,1) != "d" {exit 1}' "$staging/types" || fail 'Archive links or special files are not supported.'
 tar -xzf "$staging/download.tar.gz" -C "$staging"
 prepared=$staging/$payload
+icon_name=agent-interface.png
 [ -f "$prepared/$marker" ] || fail 'Invalid installation marker.'
 case $(cat "$prepared/$marker") in
     io.github.eandualem.agent-interface) ;;
     io.github.eandualem.tmux-workspaces)
-        # Explicit older Mac archives keep their signed executable unchanged.
-        [ "$platform" = apple-darwin ] || fail 'Invalid installation marker.'
-        executable=Contents/MacOS/tmux-workspaces ;;
+        # Earlier archives keep their original executable and resources.
+        if [ "$platform" = apple-darwin ]; then
+            executable=Contents/MacOS/tmux-workspaces
+        else
+            executable=bin/tmux-workspaces
+            icon_name=tmux-workspaces.png
+        fi ;;
     *) fail 'Invalid installation marker.' ;;
 esac
 [ "$(cat "$prepared/$(dirname "$marker")/TARGET")" = "$target" ] || fail 'The archive is for a different platform.'
@@ -218,7 +248,7 @@ if [ "$platform" = unknown-linux-gnu ]; then
     fi
     # Exec has both desktop-string and command-argument escaping layers.
     escaped=$(printf '%s' "$destination/$executable" | sed 's/\\/\\\\\\\\/g; s/"/\\\\"/g; s/`/\\\\`/g; s/\$/\\\\$/g; s/%/%%/g')
-    icon=$(printf '%s' "$destination/agent-interface.png" | sed 's/\\/\\\\/g')
+    icon=$(printf '%s' "$destination/$icon_name" | sed 's/\\/\\\\/g')
     cat > "$launcher_stage" <<EOF
 [Desktop Entry]
 Type=Application
@@ -229,7 +259,7 @@ Icon=$icon
 Terminal=false
 Categories=Development;System;TerminalEmulator;
 Keywords=tmux;terminal;workspace;
-StartupWMClass=io.github.eandualem.agent-interface
+StartupWMClass=$(cat "$prepared/$marker")
 X-AgentInterface-Installer=1
 EOF
 fi
@@ -244,7 +274,11 @@ fi
 mv "$prepared" "$destination"
 installed=true
 if [ "$platform" = unknown-linux-gnu ]; then
-    # An existing owned symlink already points at the updated installation.
+    # A transitional install can still point at the earlier executable name.
+    if [ -L "$link" ] && [ "$(readlink "$link")" != "$destination/$executable" ]; then
+        link_backup=$staging/previous-link
+        mv "$link" "$link_backup"
+    fi
     if [ ! -L "$link" ]; then
         new_link=true
         ln -s "$destination/$executable" "$link"
