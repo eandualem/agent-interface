@@ -259,6 +259,7 @@ conversation_header = 40.0  # the agent and subject atop it
 composer_field = 56.0       # the message field in a conversation
 send_button = 26.0
 anchor = 18.0               # what a message refers to: a revision or cells
+chooser_height = 84.0       # the most the recipient chooser takes before it scrolls
 
 [motion]
 spinner_ms = 1100           # one turn of the working-agent arc

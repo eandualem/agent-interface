@@ -1118,12 +1118,17 @@ impl Conversation {
     }
 
     /// With nobody responsible, the agents the person can ask, one chosen.
-    fn chooser(&self, cx: &mut Context<Self>) -> Option<gpui::Div> {
+    fn chooser(&self, cx: &mut Context<Self>) -> Option<gpui::Stateful<gpui::Div>> {
         if !self.needs_recipient() {
             return None;
         }
         let t = tokens();
+        // Bounded so a large team never pushes the composer out of the pane.
         let mut row = div()
+            .id("conversation-chooser")
+            .flex_shrink_0()
+            .max_h(px(t.size.chooser_height))
+            .overflow_y_scroll()
             .flex()
             .flex_wrap()
             .gap(px(t.space.s6))
