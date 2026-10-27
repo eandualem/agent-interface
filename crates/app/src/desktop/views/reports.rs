@@ -45,11 +45,10 @@ impl State {
             self.agents = page.agents.clone();
         }
         // The open record's registration and the runtimes come from the same
-        // read, so a name re-registered meanwhile cannot lend its runtime.
+        // read, so a name re-registered meanwhile cannot lend its runtime; a
+        // read without the roster clears them rather than keep older ones.
         if self.open.is_none() {
-            if !page.runtimes.is_empty() {
-                self.runtimes = page.runtimes.clone();
-            }
+            self.runtimes = page.runtimes.clone();
             self.feed = Some(page.clone());
         }
         let Some(open) = &mut self.open else { return };
@@ -941,6 +940,13 @@ mod tests {
         // The name was re-registered to another agent while the record was open.
         state.observe(&page("claude"));
         assert_eq!(state.runtimes["worker"], "codex");
+        // Closed again, a read whose roster failed leaves no runtime to show.
+        state.open = None;
+        state.observe(&ReportPage {
+            runtimes: Default::default(),
+            ..page("claude")
+        });
+        assert!(state.runtimes.is_empty());
     }
 
     #[test]
