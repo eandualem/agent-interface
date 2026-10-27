@@ -25,6 +25,7 @@ struct Text {
     search: bool,
     feedback: bool,
     limit: Option<usize>,
+    byte_limit: Option<usize>,
     rejected: bool,
 }
 
@@ -75,7 +76,10 @@ impl Text {
             })
             .take(available.saturating_add(usize::from(self.limit.is_some())))
             .collect();
-        self.rejected = self.limit.is_some() && inserted.chars().count() > available;
+        self.rejected = (self.limit.is_some() && inserted.chars().count() > available)
+            || self.byte_limit.is_some_and(|limit| {
+                self.value.len() - (range.end - range.start) + inserted.len() > limit
+            });
         if self.rejected {
             return None;
         }
@@ -238,6 +242,11 @@ impl NameField {
         self.text.rejected = false;
         self.scroll = px(0.);
         cx.notify();
+    }
+
+    /// Apply the provider's UTF-8 byte budget in addition to the field's character limit.
+    pub fn set_byte_limit(&mut self, limit: usize) {
+        self.text.byte_limit = Some(limit);
     }
 
     /// Freeze input while its exact contents are being committed.
@@ -594,7 +603,7 @@ impl EntityInputHandler for NameField {
         self.text.marked = None;
         self.text.anchor = self.text.snap(self.text.anchor);
         self.text.cursor = self.text.snap(self.text.cursor);
-        if self.text.feedback {
+        if self.text.feedback && self.text.limit.is_none() {
             cx.emit(NameEvent::Changed(self.text.value.clone()));
         }
         cx.notify();
@@ -609,8 +618,11 @@ impl EntityInputHandler for NameField {
         if self.read_only {
             return;
         }
+        let before = self.text.value.clone();
         self.text.replace(range, text, false);
-        cx.emit(NameEvent::Changed(self.text.value.clone()));
+        if self.text.value != before {
+            cx.emit(NameEvent::Changed(self.text.value.clone()));
+        }
         cx.notify();
     }
     fn replace_and_mark_text_in_range(
@@ -624,8 +636,11 @@ impl EntityInputHandler for NameField {
         if self.read_only {
             return;
         }
+        let before = self.text.value.clone();
         self.text.compose(range, text, selection);
-        cx.emit(NameEvent::Changed(self.text.value.clone()));
+        if self.text.value != before {
+            cx.emit(NameEvent::Changed(self.text.value.clone()));
+        }
         cx.notify();
     }
     fn bounds_for_range(
@@ -799,6 +814,32 @@ mod tests {
         text.replace(None, "accepted", false);
         assert_eq!(text.value, "accepted");
         assert!(!text.rejected);
+    }
+
+    #[test]
+    fn utf8_cell_budget_rejects_whole_pastes_and_composition() {
+        let mut text = Text {
+            value: "keep this draft".into(),
+            anchor: 0,
+            cursor: 15,
+            limit: Some(16384),
+            byte_limit: Some(16384),
+            ..Text::default()
+        };
+        assert!(text.replace(None, &"é".repeat(8193), false).is_none());
+        assert_eq!(text.value, "keep this draft");
+        assert_eq!(text.selection(), 0..15);
+        text.compose(None, &"🙂".repeat(4097), Some(0..1));
+        assert_eq!(text.value, "keep this draft");
+        assert!(text.marked.is_none());
+        assert!(text.replace(None, &"é".repeat(8192), false).is_some());
+        assert_eq!(text.value.len(), 16384);
+        text.byte_limit = Some(4096);
+        text.anchor = 0;
+        text.cursor = text.value.len();
+        assert!(text.replace(None, &"x".repeat(4097), false).is_none());
+        assert_eq!(text.value.len(), 16384);
+        assert!(text.replace(None, "=1+2", false).is_some());
     }
 
     #[test]

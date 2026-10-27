@@ -771,7 +771,11 @@ fn draft_matches_revision(draft: &Draft, revision: Option<&Id>) -> bool {
         .is_none_or(|base| Some(base) == revision)
 }
 fn unresolved_mutation(previously_uncertain: bool, error: &api::Error) -> bool {
-    previously_uncertain || *error == api::Error::Unknown
+    // A typed stale response is authoritative: the provider checks the original
+    // request ID before CAS, so this operation did not commit. Keep its draft,
+    // but release the request so the user can review and reapply the conflict.
+    !matches!(error, api::Error::Stale { .. })
+        && (previously_uncertain || *error == api::Error::Unknown)
 }
 fn commit_cursor(trail: &mut Vec<Option<String>>, current: &Option<String>, next: &Option<String>) {
     if next.is_none() {
@@ -801,6 +805,13 @@ impl Render for Sheets {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let frozen = self.busy || self.pending.is_some();
         let cell_frozen = !self.cell_editable();
+        self.input.update(cx, |field, _| {
+            field.set_byte_limit(if self.kind == Kind::Formula {
+                4096
+            } else {
+                16384
+            });
+        });
         for field in [&self.input, &self.number_format] {
             field.update(cx, |field, _| field.set_read_only(cell_frozen));
         }
@@ -906,6 +917,10 @@ mod tests {
             );
         }
         assert!(!unresolved_mutation(false, &api::Error::Refused(422)));
+        assert!(!unresolved_mutation(
+            uncertain,
+            &api::Error::Stale { current: new_id() }
+        ));
     }
 
     #[test]
