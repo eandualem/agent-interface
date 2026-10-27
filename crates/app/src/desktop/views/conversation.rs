@@ -400,9 +400,14 @@ impl Conversation {
         self.candidates = candidates;
     }
 
-    /// The connection changed under this skill's or policy's conversation.
+    /// The connection changed under this skill's or policy's conversation,
+    /// or Backbone had none for it; reopening it asks again.
     pub fn stale(&self) -> bool {
         self.stale
+            || self
+                .stored
+                .as_ref()
+                .is_some_and(|stored| stored.source.is_some() && stored.supported == Some(false))
     }
 
     /// Nobody answers unless the person names someone: Backbone names no

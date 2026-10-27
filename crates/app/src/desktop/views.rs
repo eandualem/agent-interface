@@ -707,11 +707,11 @@ impl Render for ViewPane {
             let key = format!("{}\n{path}", kind.name());
             let (path, directory, visible) =
                 (path.clone(), directory.clone(), self.visible.clone());
-            // One found on another connection is replaced, never retargeted.
-            if self
-                .conversations
-                .get(&key)
-                .is_some_and(|conversation| conversation.read(cx).stale())
+            // Reopened after the connection changed, or where Backbone had no
+            // conversation: a new one asks again; messages are never retargeted.
+            if let Some(cached) = self.conversations.get(&key)
+                && previous.as_ref() != Some(cached)
+                && cached.read(cx).stale()
             {
                 self.conversations.remove(&key);
             }

@@ -189,6 +189,9 @@ pub struct Step {
 /// The most a response may hold; the provider caps a page at 1 MiB.
 const LIMIT: usize = 1024 * 1024 + 64 * 1024;
 
+/// The most a skills or policies listing may hold, as the library views read it.
+const LISTING_LIMIT: usize = 4 * 1024 * 1024;
+
 impl Kind {
     /// The path segment the API uses.
     pub fn name(self) -> &'static str {
@@ -407,10 +410,11 @@ pub fn resolve(directory: &Path, provider: &str, kind: Kind, path: &str) -> Resu
         Kind::Policy => "/api/policies",
         _ => return Err(Error::Unsupported),
     };
-    let response = exchange(directory, provider, route, None)?;
+    let response = exchange_within(directory, provider, route, None, LISTING_LIMIT)?;
     match response.status {
         200 => {
-            let listing: Listing = parse(&response.body)?;
+            let listing: Listing =
+                serde_json::from_slice(&response.body).map_err(|_| Error::Unreadable)?;
             listing
                 .items
                 .into_iter()
@@ -535,6 +539,16 @@ fn exchange(
     path: &str,
     body: Option<Vec<u8>>,
 ) -> Result<crate::transport::local::Response, Error> {
+    exchange_within(directory, expected, path, body, LIMIT)
+}
+
+fn exchange_within(
+    directory: &Path,
+    expected: &str,
+    path: &str,
+    body: Option<Vec<u8>>,
+    limit: usize,
+) -> Result<crate::transport::local::Response, Error> {
     let (provider, key) =
         crate::configuration::configured(directory, None).ok_or(Error::Unavailable)?;
     if provider != expected {
@@ -548,7 +562,7 @@ fn exchange(
     }
     let route = path.split('?').next().unwrap_or_default();
     let response =
-        crate::transport::local::response(socket, path, &key, body, LIMIT, Duration::from_secs(15))
+        crate::transport::local::response(socket, path, &key, body, limit, Duration::from_secs(15))
             .map_err(|_| {
                 tracing::debug!(
                     event = "conversation_unreachable",
