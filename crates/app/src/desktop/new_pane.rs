@@ -574,9 +574,11 @@ impl Render for NewPane {
                         )
                         .on_click(cx.listener(|chooser, _, window, cx| {
                             cx.stop_propagation();
-                            if !matches!(chooser.mode, Mode::Views | Mode::Agents) {
-                                chooser.show(Mode::Views, window, cx);
-                            }
+                            let mode = match chooser.mode {
+                                Mode::Agents => Mode::Agents,
+                                _ => Mode::Views,
+                            };
+                            chooser.show(mode, window, cx);
                         })),
                     )
             });
