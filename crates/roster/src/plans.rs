@@ -132,6 +132,24 @@ impl Error {
     }
 }
 
+/// The most pages read for one list, bounding a misbehaving cursor.
+const PAGES: usize = 20;
+
+/// Read every active agent's current plan, following the page cursor. Runs on
+/// an I/O worker.
+pub fn list_all(directory: &Path) -> Result<PlansPage, Error> {
+    let mut all = list(directory, None)?;
+    for _ in 1..PAGES {
+        let Some(after) = all.next_after_author_id.take() else {
+            return Ok(all);
+        };
+        let mut page = list(directory, Some(&after))?;
+        all.items.append(&mut page.items);
+        all.next_after_author_id = page.next_after_author_id;
+    }
+    Err(Error::Unreadable)
+}
+
 /// Read one page of current plans. Runs on an I/O worker.
 pub fn list(directory: &Path, after: Option<&str>) -> Result<PlansPage, Error> {
     let (provider, key) =

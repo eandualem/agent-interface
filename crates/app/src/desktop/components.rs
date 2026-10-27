@@ -1758,12 +1758,12 @@ pub fn link(element: Stateful<Div>) -> Stateful<Div> {
     )
 }
 
-/// An authored link in a report: an icon, its title and what it points to.
-/// It shows the link as text; nothing opens it automatically.
+/// An authored link in a report: an icon, its title and the complete target,
+/// which wraps and can be selected. Nothing opens it automatically.
 pub fn reference(
     id: impl Into<SharedString>,
     title: impl Into<SharedString>,
-    target: impl Into<SharedString>,
+    target: impl IntoElement,
 ) -> Stateful<Div> {
     let (t, c) = (tokens(), colors());
     text(
@@ -1771,10 +1771,11 @@ pub fn reference(
             .id(id.into())
             .flex()
             .flex_shrink_0()
-            .items_center()
+            .items_start()
             .gap(px(t.space.s10))
-            .h(px(t.size.reference_row))
+            .min_h(px(t.size.reference_row))
             .px(px(t.space.s12))
+            .py(px(t.space.s8))
             .rounded(px(t.radius.row))
             .bg(c.panel)
             .border(px(t.size.hairline))
@@ -1782,28 +1783,20 @@ pub fn reference(
             .text_color(c.text),
         &t.text.body,
     )
-    .child(icon("link-2", t.size.icon, c.muted))
     .child(
         div()
-            .flex_shrink_0()
-            .max_w(relative(0.5))
-            .overflow_hidden()
-            .whitespace_nowrap()
-            .text_ellipsis()
-            .child(title.into()),
+            .pt(px(t.space.s2))
+            .child(icon("link-2", t.size.icon, c.muted)),
     )
     .child(
-        text(
-            div()
-                .flex_1()
-                .min_w_0()
-                .overflow_hidden()
-                .whitespace_nowrap()
-                .text_ellipsis()
-                .text_color(c.muted),
-            &t.text.meta,
-        )
-        .child(target.into()),
+        div()
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .gap(px(t.space.s2))
+            .child(title.into())
+            .child(text(div().text_color(c.muted), &t.text.meta).child(target)),
     )
 }
 

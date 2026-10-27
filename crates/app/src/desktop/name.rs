@@ -199,6 +199,16 @@ impl NameField {
         field
     }
 
+    /// Replace the text with `text`, the caret at its end, and announce it.
+    pub fn set_value(&mut self, text: &str, cx: &mut Context<Self>) {
+        self.text.value = text.to_owned();
+        self.text.anchor = text.len();
+        self.text.cursor = text.len();
+        self.text.marked = None;
+        cx.emit(NameEvent::Changed(self.text.value.clone()));
+        cx.notify();
+    }
+
     /// Empty the field without announcing a change.
     pub fn set_read_only(&mut self, read_only: bool) {
         self.read_only = read_only;

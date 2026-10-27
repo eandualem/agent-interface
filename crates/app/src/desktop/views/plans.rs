@@ -30,16 +30,10 @@ impl Plans {
                 };
                 let page = cx
                     .background_executor()
-                    .spawn(async move { plans::list(&directory, None) })
+                    .spawn(async move { plans::list_all(&directory) })
                     .await;
                 if this
-                    .update(cx, |plans, cx| {
-                        // Keep the last plans when a later read fails.
-                        if page.is_ok() || !matches!(plans.page, Some(Ok(_))) {
-                            plans.page = Some(page);
-                        }
-                        cx.notify();
-                    })
+                    .update(cx, |plans, cx| plans.receive(page, cx))
                     .is_err()
                 {
                     return;
@@ -52,6 +46,29 @@ impl Plans {
             page: None,
             _poll: poll,
         }
+    }
+}
+
+impl Plans {
+    /// Keep the last plans when a later read fails.
+    fn receive(&mut self, page: Result<PlansPage, Error>, cx: &mut Context<Self>) {
+        if page.is_ok() || !matches!(self.page, Some(Ok(_))) {
+            self.page = Some(page);
+        }
+        cx.notify();
+    }
+
+    /// Read the plans now, as well as on the regular refresh.
+    pub fn refresh(&mut self, cx: &mut Context<Self>) {
+        let directory = self.directory.clone();
+        let read = cx
+            .background_executor()
+            .spawn(async move { plans::list_all(&directory) });
+        cx.spawn(async move |this, cx| {
+            let page = read.await;
+            let _ = this.update(cx, |plans, cx| plans.receive(page, cx));
+        })
+        .detach();
     }
 }
 

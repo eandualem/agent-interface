@@ -89,9 +89,13 @@ pub(super) struct Sheets {
     history_cursors: Vec<Option<String>>,
     history_cursor: Option<String>,
     selection: Option<Selection>,
+    /// The open workbook's conversation.
     conversation: Entity<Conversation>,
-    /// The message whose request is pending.
-    message: Option<usize>,
+    /// Each workbook's conversation, by workbook identity, so a thread never
+    /// moves to another workbook or recipient.
+    conversations: std::collections::HashMap<String, Entity<Conversation>>,
+    /// The message whose request is pending, and its conversation.
+    message: Option<(Entity<Conversation>, usize)>,
     export_open: bool,
     pending: Option<Prepared>,
     pending_uncertain: bool,
@@ -100,19 +104,13 @@ pub(super) struct Sheets {
     error: Option<String>,
     notice: Option<String>,
     _input: Subscription,
+    _inputs: Vec<Subscription>,
 }
 impl Sheets {
     pub fn new(directory: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let conversation =
             cx.new(|cx| Conversation::delivered_by_owner("about this sheet", window, cx));
-        let input = cx.subscribe(&conversation, |s, _, event, cx| match *event {
-            ConversationEvent::Send(index) => s.send_feedback(index, cx),
-            ConversationEvent::Retry(index) => {
-                if let Some(request) = s.pending.clone().filter(|_| s.message == Some(index)) {
-                    s.submit(request, index, cx);
-                }
-            }
-        });
+        let input = Self::watch(&conversation, cx);
         let mut state = Self {
             focus: cx.focus_handle(),
             rows_scroll: UniformListScrollHandle::new(),
@@ -129,6 +127,7 @@ impl Sheets {
             history_cursor: None,
             selection: None,
             conversation,
+            conversations: std::collections::HashMap::new(),
             message: None,
             export_open: false,
             pending: None,
@@ -138,6 +137,7 @@ impl Sheets {
             error: None,
             notice: None,
             _input: input,
+            _inputs: Vec::new(),
         };
         state.catalog(None, cx);
         state
@@ -390,16 +390,37 @@ impl Sheets {
         });
         cx.notify();
     }
-    fn submit(&mut self, request: Prepared, index: usize, cx: &mut Context<Self>) {
+    /// Route a conversation's sends and retries to this view's delivery.
+    fn watch(conversation: &Entity<Conversation>, cx: &mut Context<Self>) -> Subscription {
+        cx.subscribe(conversation, |s, conversation, event, cx| match *event {
+            ConversationEvent::Send(index) => s.send_feedback(conversation, index, cx),
+            ConversationEvent::Retry(index) => {
+                let same = s
+                    .message
+                    .as_ref()
+                    .is_some_and(|(pending, at)| *pending == conversation && *at == index);
+                if let Some(request) = s.pending.clone().filter(|_| same) {
+                    s.submit(request, conversation, index, cx);
+                }
+            }
+        })
+    }
+    fn submit(
+        &mut self,
+        request: Prepared,
+        conversation: Entity<Conversation>,
+        index: usize,
+        cx: &mut Context<Self>,
+    ) {
         if self.busy {
             return;
         }
         let Some(client) = self.client.clone() else {
             return;
         };
-        self.conversation.update(cx, |c, cx| c.resending(index, cx));
+        conversation.update(cx, |c, cx| c.resending(index, cx));
         self.pending = Some(request.clone());
-        self.message = Some(index);
+        self.message = Some((conversation.clone(), index));
         self.begin(cx);
         let work = cx
             .background_executor()
@@ -411,19 +432,19 @@ impl Sheets {
                 match result {
                     Ok(Accepted::Feedback(receipt)) => {
                         s.pending = None; s.pending_uncertain = false;
-                        s.conversation.update(cx, |c,cx| c.complete(index, Outcome::Accepted(receipt.delivery.message().into()), cx));
+                        conversation.update(cx, |c,cx| c.complete(index, Outcome::Accepted(receipt.delivery.message().into()), cx));
                         s.notice = Some(receipt.delivery.message().into());
                         s.feedback_receipt = Some(receipt);
                     }
                     Ok(_) => {
                         s.pending_uncertain = true;
-                        s.conversation.update(cx, |c,cx| c.complete(index, Outcome::Unknown("Could not confirm feedback. Retry the same request to check its outcome.".into()), cx));
+                        conversation.update(cx, |c,cx| c.complete(index, Outcome::Unknown("Could not confirm feedback. Retry the same request to check its outcome.".into()), cx));
                     }
                     Err(error) => {
                         s.pending_uncertain = unresolved_mutation(s.pending_uncertain, &error);
                         if !s.pending_uncertain { s.pending = None; }
                         let outcome = if s.pending_uncertain { Outcome::Unknown(error.message().into()) } else { Outcome::Refused(error.message().into()) };
-                        s.conversation.update(cx, |c,cx| c.complete(index, outcome, cx));
+                        conversation.update(cx, |c,cx| c.complete(index, outcome, cx));
                     }
                 }
                 cx.notify();
@@ -499,7 +520,17 @@ fn column_name(mut n: usize) -> String {
 }
 
 impl Render for Sheets {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if let Some(open) = &self.open {
+            let sheet = open.record.sheet_id.to_string();
+            if !self.conversations.contains_key(&sheet) {
+                let conversation =
+                    cx.new(|cx| Conversation::delivered_by_owner("about this sheet", window, cx));
+                self._inputs.push(Self::watch(&conversation, cx));
+                self.conversations.insert(sheet.clone(), conversation);
+            }
+            self.conversation = self.conversations[&sheet].clone();
+        }
         let frozen = self.busy || self.pending.is_some();
         let (agent, anchor) = self
             .open

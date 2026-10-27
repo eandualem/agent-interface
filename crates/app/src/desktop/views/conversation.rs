@@ -34,10 +34,14 @@ enum Delivery {
     NotSent(String),
     /// It may have arrived; sending again could repeat it.
     Unconfirmed(String),
+    /// Not sent, and moved back into the composer to edit.
+    Moved,
 }
 
 struct Message {
     text: String,
+    /// What it referred to when it was written.
+    anchor: Option<String>,
     at: f64,
     delivery: Delivery,
 }
@@ -220,6 +224,7 @@ impl Conversation {
             .map_or(0.0, |now| now.as_secs_f64());
         self.messages.push(Message {
             text,
+            anchor: self.anchor.clone(),
             at,
             delivery: Delivery::Sending,
         });
@@ -232,17 +237,32 @@ impl Conversation {
         }
     }
 
-    /// Send message `index` again: a record's conversation only when nothing
-    /// was accepted; an owning view retries the same request, which it can
-    /// also do when the outcome was unknown.
+    /// Send message `index` again: a record's message when nothing was
+    /// accepted; an owning view's same saved request when the outcome was
+    /// unknown. An owning view's refused message is edited and sent anew, since
+    /// its context may have changed.
     fn retry(&mut self, index: usize, cx: &mut Context<Self>) {
         match (&self.record, &self.messages[index].delivery) {
             (Some(_), Delivery::NotSent(_)) => self.deliver(index, cx),
-            (None, Delivery::NotSent(_) | Delivery::Unconfirmed(_)) => {
-                cx.emit(ConversationEvent::Retry(index))
-            }
+            (None, Delivery::Unconfirmed(_)) => cx.emit(ConversationEvent::Retry(index)),
             _ => {}
         }
+    }
+
+    /// Move a message that was not sent back into an empty composer.
+    fn edit(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.draft(cx).is_empty()
+            || !matches!(self.messages[index].delivery, Delivery::NotSent(_))
+        {
+            return;
+        }
+        let text = self.messages[index].text.clone();
+        self.messages[index].delivery = Delivery::Moved;
+        self.field
+            .update(cx, |field, cx| field.set_value(&text, cx));
+        let focus = self.field.read(cx).focus.clone();
+        window.focus(&focus, cx);
+        cx.notify();
     }
 
     /// Send message `index` once, on an I/O worker.
@@ -336,6 +356,9 @@ impl Conversation {
             .p(px(t.space.s14));
         let mut day: Option<Local> = None;
         for (index, message) in self.messages.iter().enumerate() {
+            if message.delivery == Delivery::Moved {
+                continue;
+            }
             let local = Local::at(message.at);
             if let (Some(local), Some(now)) = (local, now)
                 && day.is_none_or(|day| !day.same_day(&local))
@@ -344,23 +367,32 @@ impl Conversation {
                 day = Some(local);
             }
             let time = local.map(|local| local.time()).unwrap_or_default();
-            let meta = ui::message_meta();
+            let meta = ui::message_meta().children(message.anchor.clone().map(ui::anchor));
+            let action = |id: &str, label: &'static str| {
+                ui::link(
+                    div()
+                        .id(SharedString::from(format!("conversation-{id}-{index}")))
+                        .text_color(c.attention_text)
+                        .underline()
+                        .child(label),
+                )
+            };
             let meta = match &message.delivery {
+                Delivery::Moved => continue,
                 Delivery::Sending => meta.child(ui::sending_spinner()).child("Sending…"),
                 Delivery::Sent => meta.child(format!("You · {time}")),
-                Delivery::NotSent(reason) => meta
-                    .text_color(c.attention_text)
-                    .child(SharedString::from(format!("Not sent: {reason}")))
-                    .child(ui::link(
-                        div()
-                            .id(SharedString::from(format!("conversation-retry-{index}")))
-                            .text_color(c.attention_text)
-                            .underline()
-                            .child("Retry")
-                            .on_click(cx.listener(move |conversation, _, _, cx| {
-                                conversation.retry(index, cx)
-                            })),
-                    )),
+                Delivery::NotSent(reason) => {
+                    meta.text_color(c.attention_text)
+                        .child(SharedString::from(format!("Not sent: {reason}")))
+                        .when(self.record.is_some(), |meta| {
+                            meta.child(action("retry", "Retry").on_click(cx.listener(
+                                move |conversation, _, _, cx| conversation.retry(index, cx),
+                            )))
+                        })
+                        .child(action("edit", "Edit").on_click(cx.listener(
+                            move |conversation, _, window, cx| conversation.edit(index, window, cx),
+                        )))
+                }
                 Delivery::Unconfirmed(reason) if self.record.is_none() => meta
                     .child(SharedString::from(format!("Not confirmed: {reason}")))
                     .child(ui::link(

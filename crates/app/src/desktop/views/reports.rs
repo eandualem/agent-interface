@@ -5,7 +5,7 @@ use agent_interface_roster::views::{
 };
 use gpui::{AnyElement, Context, SharedString, div, prelude::*, px};
 
-use super::{Shown, ViewPane, clock::Local, line, markdown, seen, since};
+use super::{Shown, ViewPane, clock::Local, line, markdown, seen, selection, since};
 use crate::desktop::{
     components as ui,
     design::{colors, tokens},
@@ -20,6 +20,9 @@ pub(super) struct State {
     pub(super) previous: Vec<ReportQuery>,
     /// Records are immutable: keep the opened answer through list refreshes.
     pub open: Option<ReportItem>,
+    /// The list the open record was chosen from, for moving to its
+    /// neighbours; an open answer's own refresh reads only that answer.
+    feed: Option<ReportPage>,
 }
 
 impl State {
@@ -38,6 +41,9 @@ impl State {
     pub fn observe(&mut self, page: &ReportPage) {
         if !page.agents.is_empty() {
             self.agents = page.agents.clone();
+        }
+        if self.open.is_none() {
+            self.feed = Some(page.clone());
         }
         let Some(open) = &mut self.open else { return };
         let Some(fresh) = page.items.iter().find(|item| item.id == open.id) else {
@@ -239,7 +245,8 @@ pub(super) fn step(pane: &mut ViewPane, page: &ReportPage, by: isize, cx: &mut C
     let Some(open) = &pane.reports.open else {
         return;
     };
-    let listed = listed(pane, page);
+    let page = pane.reports.feed.clone().unwrap_or_else(|| page.clone());
+    let listed = listed(pane, &page);
     let Some(at) = listed.iter().position(|item| item.id == open.id) else {
         return;
     };
@@ -281,6 +288,7 @@ fn reader_toolbar(
     item: &ReportItem,
     cx: &mut Context<ViewPane>,
 ) -> gpui::Div {
+    let page = pane.reports.feed.as_ref().unwrap_or(page);
     let listed = listed(pane, page);
     let at = listed.iter().position(|listed| listed.id == item.id);
     let author = item.author.clone();
@@ -385,7 +393,7 @@ fn reader(
                     list = list.child(ui::reference(
                         SharedString::from(format!("report-link-{index}")),
                         link.title.clone(),
-                        link.url.clone(),
+                        selection::text(pane, &link.url, &[], cx),
                     ));
                 }
                 column = column.child(ui::reader_section("LINKS", list));
@@ -732,35 +740,46 @@ fn controls(pane: &ViewPane, agents: &[String], cx: &mut Context<ViewPane>) -> g
             "All agents"
         },
     );
-    let toolbar = ui::view_toolbar()
-        .h_auto()
-        .min_h(px(t.size.view_toolbar))
-        .py(px(t.space.s6))
-        .flex_wrap()
-        .child(sections)
-        .child(div().flex_1())
-        .child(
-            ui::chip("reports-agent", "", pane.reports.agent.is_some())
-                .gap(px(t.space.s6))
-                .child(ui::icon("user", t.size.icon - 2.0, c.muted))
-                .child(agent.to_owned())
-                .child(ui::icon("chevron-down", t.size.icon - 2.0, c.muted))
-                .on_click(cx.listener(|pane, _, _, cx| {
-                    pane.reports.choosing_agent = !pane.reports.choosing_agent;
-                    cx.notify();
-                })),
-        )
-        .child(
-            ui::icon_button("reports-refresh", "refresh-cw").on_click(cx.listener(
-                |pane, _, _, cx| {
-                    pane.reports.query = first(&pane.reports.query);
-                    pane.reports.previous.clear();
-                    pane.refetch(true, cx);
-                },
-            )),
-        );
+    let records = pane.shown == Shown::Records;
+    let toolbar =
+        ui::view_toolbar()
+            .h_auto()
+            .min_h(px(t.size.view_toolbar))
+            .py(px(t.space.s6))
+            .flex_wrap()
+            .child(sections)
+            .child(div().flex_1())
+            .when(records, |toolbar| {
+                toolbar.child(
+                    ui::chip("reports-agent", "", pane.reports.agent.is_some())
+                        .gap(px(t.space.s6))
+                        .child(ui::icon("user", t.size.icon - 2.0, c.muted))
+                        .child(agent.to_owned())
+                        .child(ui::icon("chevron-down", t.size.icon - 2.0, c.muted))
+                        .on_click(cx.listener(|pane, _, _, cx| {
+                            pane.reports.choosing_agent = !pane.reports.choosing_agent;
+                            cx.notify();
+                        })),
+                )
+            })
+            // Sheets has its own refresh beside the workbook.
+            .when(pane.shown != Shown::Sheets, |toolbar| {
+                toolbar.child(ui::icon_button("reports-refresh", "refresh-cw").on_click(
+                    cx.listener(|pane, _, _, cx| {
+                        if pane.shown == Shown::Plans {
+                            if let Some(plans) = &pane.plans {
+                                plans.update(cx, |plans, cx| plans.refresh(cx));
+                            }
+                            return;
+                        }
+                        pane.reports.query = first(&pane.reports.query);
+                        pane.reports.previous.clear();
+                        pane.refetch(true, cx);
+                    }),
+                ))
+            });
     let mut agent_choices = div().flex().flex_col().flex_shrink_0();
-    if pane.reports.choosing_agent {
+    if pane.reports.choosing_agent && records {
         if let Some(search) = &pane.search {
             agent_choices = agent_choices.child(
                 ui::view_toolbar()
@@ -845,6 +864,33 @@ mod tests {
         assert!(
             matches!(open.content, ReportContent::Response { answer, .. } if answer == "Original answer")
         );
+    }
+
+    #[test]
+    fn an_open_answer_keeps_the_list_it_was_chosen_from() {
+        let item = |id| ReportItem {
+            id,
+            author: "worker".into(),
+            author_id: None,
+            provider_url: String::new(),
+            created_at: "2026-10-24T10:00:00Z".into(),
+            content: ReportContent::Response {
+                question: "What happened?".into(),
+                answer: "It worked.".into(),
+                action: "Nothing.".into(),
+                superseded_by: None,
+            },
+        };
+        let page = |ids: &[u64]| ReportPage {
+            items: ids.iter().map(|id| item(*id)).collect(),
+            next: None,
+            agents: Vec::new(),
+        };
+        let mut state = State::default();
+        state.observe(&page(&[3, 2, 1]));
+        state.open = Some(item(2));
+        state.observe(&page(&[2]));
+        assert_eq!(state.feed.unwrap().items.len(), 3);
     }
 
     #[test]

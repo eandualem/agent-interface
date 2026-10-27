@@ -229,9 +229,14 @@ impl Sheets {
                 ),
             )
     }
-    pub(super) fn send_feedback(&mut self, index: usize, cx: &mut Context<Self>) {
+    pub(super) fn send_feedback(
+        &mut self,
+        conversation: Entity<Conversation>,
+        index: usize,
+        cx: &mut Context<Self>,
+    ) {
         if self.busy || self.pending.is_some() {
-            self.conversation.update(cx, |c, cx| {
+            conversation.update(cx, |c, cx| {
                 c.complete(
                     index,
                     Outcome::Refused("Wait for the earlier message to finish.".into()),
@@ -241,7 +246,7 @@ impl Sheets {
             return;
         }
         let Some((client, open)) = self.client.as_ref().zip(self.open.as_ref()) else {
-            self.conversation.update(cx, |c, cx| {
+            conversation.update(cx, |c, cx| {
                 c.complete(index, Outcome::Refused("No workbook is open.".into()), cx)
             });
             return;
@@ -260,12 +265,12 @@ impl Sheets {
             new_id(),
             open.record.revision_id.clone(),
             FeedbackKind::Feedback,
-            self.conversation.read(cx).text(index).into(),
+            conversation.read(cx).text(index).into(),
             anchor,
         );
         match client.prepare_feedback(&open.record.sheet_id, &feedback) {
-            Ok(request) => self.submit(request, index, cx),
-            Err(e) => self.conversation.update(cx, |c, cx| {
+            Ok(request) => self.submit(request, conversation.clone(), index, cx),
+            Err(e) => conversation.update(cx, |c, cx| {
                 c.complete(index, Outcome::Refused(e.message().into()), cx)
             }),
         }

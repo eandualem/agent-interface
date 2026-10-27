@@ -264,7 +264,8 @@ Esc in the message field to close it again, keeping the draft. Enter adds a
 paragraph and **⌘↵** sends up to 4,000 characters. Each message includes a
 reference to the exact record being read, and the app checks that the author
 is still registered before sending. A message shows **Sending…** until Agent
-Backbone answers, then the time it was sent; **Not sent** offers **Retry**.
+Backbone answers, then the time it was sent; **Not sent** offers **Retry**,
+and **Edit** to move the text back into an empty message field.
 If delivery is uncertain, the message says so: check with the author before
 sending it again. Delivered or queued does not mean the author has read it.
 The thread shows the messages sent from this pane; replies are not shown yet.
@@ -433,7 +434,9 @@ displayed revision and selected cells (up to 100); without a selection it
 refers to the tab and whole workbook revision. Closing the conversation keeps
 the draft. Send or clear the draft before changing the workbook, revision, tab
 or page. After an uncertain submission, **Retry the same request** checks the
-original operation without creating another feedback message. Delivery status
+original operation without creating another feedback message. A message that
+was not sent offers **Edit**, so you can resend it with the current selection.
+Each workbook keeps its own conversation. Delivery status
 does not mean the agent has
 answered. **Copy feedback receipt** preserves the identifiers for checking delivery.
 
