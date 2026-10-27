@@ -148,6 +148,9 @@ weight = 600
 [text.doc_body]             # a document's text
 size = 13.5
 weight = 400
+[text.quote]                # the question a person asked, atop an answer
+size = 15.0
+weight = 500
 
 # ---------------------------------------------------------------- spacing
 
@@ -175,6 +178,7 @@ slot = 8.0                  # workspace slots, tiles
 pane = 9.0
 popover = 10.0              # popovers, cards
 pill = 11.0                 # filter chips
+bubble = 10.0               # a conversation message; its tail corner uses `key`
 
 # ---------------------------------------------------------------- sizes
 
@@ -241,6 +245,20 @@ hint_bar = 34.0             # the chooser's centred row of keys
 tag_card_label = 132.0      # the tag column of a tag card
 grouped_width = 880.0       # the widest a grouped list's column grows
 group_row = 36.0            # a row on a grouped list's card
+record_who = 92.0           # the author column of an update row
+record_age = 28.0           # the age column of an update or question row
+question_row = 54.0         # a two-line row in the Responses list
+shelf_card = 132.0          # the least height of a document card on a shelf
+reader_width = 680.0        # the widest a record reader's column grows
+reader_label = 96.0         # the label column of a report's sections
+reference_row = 34.0        # an authored link in a report
+conversation_rail = 44.0    # a closed conversation, on a reader's right edge
+rail_button = 32.0          # the button atop that rail
+conversation_width = 320.0  # an open conversation beside a reader
+conversation_header = 40.0  # the agent and subject atop it
+composer_field = 56.0       # the message field in a conversation
+send_button = 26.0
+anchor = 18.0               # what a message refers to: a revision or cells
 
 [motion]
 spinner_ms = 1100           # one turn of the working-agent arc

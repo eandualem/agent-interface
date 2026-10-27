@@ -258,15 +258,19 @@ document and choose **More from this author** to follow its stable author even
 after an agent is renamed or removed. **Back** restores the selected page and
 filter. **Refresh** returns to the newest documents.
 
-Choose the small **Send feedback** button below an open report, Response or
-Document to open its reply editor. **Close** returns to reading and keeps the
-draft. Enter supports paragraphs; choose **Send feedback** in the editor to submit up to
-4,000 characters. The message includes a reference to the exact record being
-read. The app checks that the author is still registered before sending, and
-shows Backbone's delivery detail. Queued or held messages do not mean the author
-has read them. If delivery is uncertain, check with the author before starting a
-new reply. Drafts remain with their record when switching tabs or workspaces; detaching or
-closing the pane or app discards them. Feedback never changes the authored record.
+An open report, Response or Document has a conversation with its author on
+the right edge. Choose its button, or press **C**, to open it; press **C** or
+Esc in the message field to close it again, keeping the draft. Enter adds a
+paragraph and **⌘↵** sends up to 4,000 characters. Each message includes a
+reference to the exact record being read, and the app checks that the author
+is still registered before sending. A message shows **Sending…** until Agent
+Backbone answers, then the time it was sent; **Not sent** offers **Retry**.
+If delivery is uncertain, the message says so: check with the author before
+sending it again. Delivered or queued does not mean the author has read it.
+The thread shows the messages sent from this pane; replies are not shown yet.
+Threads and drafts remain with their record when switching tabs or workspaces;
+detaching or closing the pane or app discards them. A message never changes
+the authored record.
 
 Opening a document loads that exact revision. **Check for update** refreshes its
 correction information; **Open newer revision** opens the linked correction.

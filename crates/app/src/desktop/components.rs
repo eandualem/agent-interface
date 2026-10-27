@@ -535,6 +535,10 @@ pub enum Tone {
     Tag,
     /// Given by name, or otherwise secondary: an outline only.
     Quiet,
+    /// Waiting on the person: the attention tint.
+    Attention,
+    /// Finished: an outline with the text in `ok`.
+    Done,
 }
 
 /// A pill naming how something is delivered: `all`, a tag, `direct`.
@@ -559,6 +563,11 @@ pub fn tag(label: impl Into<SharedString>, tone: Tone) -> Div {
             .border_color(gpui::transparent_black())
             .text_color(c.accent_text),
         Tone::Quiet => pill.border_color(c.line_strong).text_color(c.muted),
+        Tone::Attention => pill
+            .bg(c.attention_soft)
+            .border_color(gpui::transparent_black())
+            .text_color(c.attention_text),
+        Tone::Done => pill.border_color(c.line_strong).text_color(c.ok),
     }
     .child(label.into())
 }
@@ -1275,6 +1284,758 @@ pub fn fact(label: impl Into<SharedString>, value: impl IntoElement) -> Div {
             .child(label.into()),
     )
     .child(div().flex_1().min_w_0().text_color(c.text_2).child(value))
+}
+
+// ---------------------------------------------------------------- records
+//
+// Authored records from Agent Backbone: the rows that list them and the
+// pieces their readers are made of.
+
+/// A finished record's mark: an `ok` ring with a check. Other report states
+/// use [`agent_symbol`].
+pub fn done_symbol() -> Div {
+    let (t, c) = (tokens(), colors());
+    div()
+        .flex_shrink_0()
+        .size(px(t.size.agent_symbol))
+        .rounded_full()
+        .border(px(t.size.minimap_stroke * 1.5))
+        .border_color(c.ok)
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(icon("check", t.size.agent_symbol - t.space.s6, c.ok))
+}
+
+/// A "● live from Agent Backbone" note for the right of a view's header.
+pub fn live_note() -> Div {
+    let (t, c) = (tokens(), colors());
+    div()
+        .flex()
+        .items_center()
+        .gap(px(t.space.s8))
+        .child(div().flex_1())
+        .child(dot(c.ok))
+        .child("live from Agent Backbone")
+}
+
+/// A selected row inside a card: the selected fill with an inset focus ring.
+fn card_selected<E: Styled>(element: E) -> E {
+    let (t, c) = (tokens(), colors());
+    element.bg(c.selected).shadow(vec![BoxShadow {
+        color: c.focus.into(),
+        offset: point(px(0.0), px(0.0)),
+        blur_radius: px(0.0),
+        spread_radius: px(t.size.focus_ring),
+        inset: true,
+    }])
+}
+
+/// A record's age in the mono key style, right-aligned in its column.
+fn age(label: impl Into<SharedString>) -> Div {
+    let t = tokens();
+    key_hint(label)
+        .w(px(t.size.record_age))
+        .flex()
+        .justify_end()
+}
+
+/// One update on a [`group_card`]: its state mark, author, summary, a tag
+/// for its state, its age and a chevron.
+#[allow(clippy::too_many_arguments)]
+pub fn record_row(
+    id: impl Into<SharedString>,
+    first: bool,
+    selected: bool,
+    mark: Div,
+    who: impl Into<SharedString>,
+    summary: impl Into<SharedString>,
+    state: Div,
+    ago: impl Into<SharedString>,
+) -> Stateful<Div> {
+    let (t, c) = (tokens(), colors());
+    text(
+        div()
+            .id(id.into())
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .gap(px(t.space.s10))
+            .h(px(t.size.group_row))
+            .px(px(t.space.s14))
+            .when(!first, |el| {
+                el.border_t(px(t.size.hairline)).border_color(c.line)
+            })
+            .cursor_pointer()
+            .text_color(c.text_2),
+        &t.text.row,
+    )
+    .when(selected, card_selected)
+    .when(!selected, |el| el.hover(|el| el.bg(colors().hover)))
+    .child(mark)
+    .child(
+        div()
+            .flex_shrink_0()
+            .w(px(t.size.record_who))
+            .overflow_hidden()
+            .whitespace_nowrap()
+            .text_ellipsis()
+            .font_family(t.font.mono.clone())
+            .text_color(c.text)
+            .child(who.into()),
+    )
+    .child(
+        div()
+            .flex_1()
+            .min_w_0()
+            .overflow_hidden()
+            .whitespace_nowrap()
+            .text_ellipsis()
+            .child(summary.into()),
+    )
+    .child(state)
+    .child(age(ago))
+    .child(icon("chevron-right", t.size.icon - 2.0, c.faint))
+}
+
+/// One answer on a [`group_card`]: a question tile, the question, who
+/// answered and how it begins, an optional tag, its age and a chevron.
+#[allow(clippy::too_many_arguments)]
+pub fn question_row(
+    id: impl Into<SharedString>,
+    first: bool,
+    selected: bool,
+    question: impl Into<SharedString>,
+    who: impl Into<SharedString>,
+    answer: impl Into<SharedString>,
+    note: Option<Div>,
+    ago: impl Into<SharedString>,
+) -> Stateful<Div> {
+    let (t, c) = (tokens(), colors());
+    let line = || {
+        div()
+            .min_w_0()
+            .overflow_hidden()
+            .whitespace_nowrap()
+            .text_ellipsis()
+    };
+    div()
+        .id(id.into())
+        .flex()
+        .flex_shrink_0()
+        .items_center()
+        .gap(px(t.space.s12))
+        .h(px(t.size.question_row))
+        .px(px(t.space.s14))
+        .when(!first, |el| {
+            el.border_t(px(t.size.hairline)).border_color(c.line)
+        })
+        .cursor_pointer()
+        .when(selected, card_selected)
+        .when(!selected, |el| el.hover(|el| el.bg(colors().hover)))
+        .child(
+            text(
+                div()
+                    .flex_shrink_0()
+                    .size(px(t.size.icon_button))
+                    .rounded(px(t.radius.row))
+                    .bg(c.selected)
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .font_family(t.font.mono.clone())
+                    .text_color(c.text_2),
+                &t.text.status,
+            )
+            .child("?"),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap(px(t.space.s2))
+                .child(text(line().text_color(c.text), &t.text.row_selected).child(question.into()))
+                .child(
+                    text(line().text_color(c.muted), &t.text.status).child(
+                        div()
+                            .flex()
+                            .gap(px(t.space.s4))
+                            .child(
+                                div()
+                                    .flex_shrink_0()
+                                    .font_family(t.font.mono.clone())
+                                    .text_color(c.text_2)
+                                    .child(who.into()),
+                            )
+                            .child(line().child(answer.into())),
+                    ),
+                ),
+        )
+        .children(note)
+        .child(age(ago))
+        .child(icon("chevron-right", t.size.icon - 2.0, c.faint))
+}
+
+/// A row of [`shelf_card`]s, three to a line.
+pub fn shelf() -> Div {
+    let t = tokens();
+    div()
+        .grid()
+        .grid_cols(3)
+        .gap(px(t.space.s10))
+        .flex_shrink_0()
+}
+
+/// A document on a shelf: a file tile and its tags, the title on up to two
+/// lines, and the author, age and size at the bottom.
+pub fn shelf_card(
+    id: impl Into<SharedString>,
+    selected: bool,
+    tags: Vec<Div>,
+    title: impl Into<SharedString>,
+    who: impl Into<SharedString>,
+    ago: impl Into<SharedString>,
+    size: impl Into<SharedString>,
+) -> Stateful<Div> {
+    let (t, c) = (tokens(), colors());
+    div()
+        .id(id.into())
+        .flex()
+        .flex_col()
+        .gap(px(t.space.s10))
+        .min_h(px(t.size.shelf_card))
+        .p(px(t.space.s14))
+        .rounded(px(t.radius.popover))
+        .bg(c.panel)
+        .border(px(t.size.hairline))
+        .border_color(c.line)
+        .cursor_pointer()
+        .hover(|el| el.bg(colors().hover))
+        .when(selected, |el| {
+            el.shadow(vec![BoxShadow {
+                color: c.focus.into(),
+                offset: point(px(0.0), px(0.0)),
+                blur_radius: px(0.0),
+                spread_radius: px(t.size.focus_ring),
+                inset: false,
+            }])
+        })
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(t.space.s8))
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .size(px(t.size.view_tile))
+                        .rounded(px(t.radius.row))
+                        .bg(if selected { c.accent_soft } else { c.selected })
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(icon(
+                            "file-text",
+                            t.size.icon,
+                            if selected { c.accent_text } else { c.text_2 },
+                        )),
+                )
+                .child(div().flex_1())
+                .children(tags),
+        )
+        .child(text(div().text_color(c.text).line_clamp(2), &t.text.workspace).child(title.into()))
+        .child(
+            text(
+                div()
+                    .mt_auto()
+                    .flex()
+                    .items_center()
+                    .gap(px(t.space.s6))
+                    .text_color(c.muted),
+                &t.text.meta,
+            )
+            .child(
+                div()
+                    .font_family(t.font.mono.clone())
+                    .text_color(c.text_2)
+                    .child(who.into()),
+            )
+            .child("·")
+            .child(ago.into())
+            .child(div().flex_1())
+            .child(key_hint(size)),
+        )
+}
+
+/// The centred column of a record reader, no wider than reads well.
+pub fn reader_column() -> Div {
+    let t = tokens();
+    div()
+        .w_full()
+        .max_w(px(t.size.reader_width))
+        .flex()
+        .flex_col()
+}
+
+/// An uppercase label in a reader, such as GOAL or YOU ASKED.
+pub fn reader_label(label: impl Into<SharedString>) -> Div {
+    let (t, c) = (tokens(), colors());
+    text(div().flex_shrink_0().text_color(c.muted), &t.text.label).child(label.into())
+}
+
+/// A labelled section of a report: the label in its own column and the
+/// body beside it, under a hairline.
+pub fn reader_section(label: impl Into<SharedString>, body: impl IntoElement) -> Div {
+    let (t, c) = (tokens(), colors());
+    div()
+        .flex()
+        .flex_shrink_0()
+        .gap(px(t.space.s16))
+        .py(px(t.space.s14))
+        .border_t(px(t.size.hairline))
+        .border_color(c.line)
+        .child(
+            reader_label(label)
+                .w(px(t.size.reader_label))
+                .pt(px(t.space.s2 + 1.0)),
+        )
+        .child(
+            text(
+                div().flex_1().min_w_0().text_color(c.text),
+                &t.text.doc_body,
+            )
+            .flex()
+            .flex_col()
+            .gap(px(t.space.s8))
+            .child(body),
+        )
+}
+
+/// What a callout says about its record.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Callout {
+    /// The person is needed: the attention tint, with a title.
+    Attention,
+    /// What follows from an answer: the accent tint, with an icon.
+    Follows,
+}
+
+/// A tinted block inside a reader.
+pub fn callout(kind: Callout, title: Option<&'static str>, content: impl IntoElement) -> Div {
+    let (t, c) = (tokens(), colors());
+    let frame = div()
+        .flex()
+        .flex_shrink_0()
+        .gap(px(t.space.s10))
+        .px(px(t.space.s12))
+        .py(px(t.space.s10))
+        .rounded(px(t.radius.slot));
+    let column = text(
+        div().flex_1().min_w_0().text_color(c.text),
+        &t.text.doc_body,
+    )
+    .flex()
+    .flex_col()
+    .gap(px(t.space.s6));
+    match kind {
+        Callout::Attention => frame.bg(c.attention_soft).child(
+            column
+                .children(title.map(|title| {
+                    text(div().text_color(c.attention_text), &t.text.meta)
+                        .font_weight(t.text.label.weight())
+                        .child(title)
+                }))
+                .child(content),
+        ),
+        Callout::Follows => frame
+            .bg(c.accent_soft)
+            .child(div().pt(px(t.space.s2)).child(icon(
+                "corner-down-right",
+                t.size.icon,
+                c.accent_text,
+            )))
+            .child(column.child(content)),
+    }
+}
+
+/// A notice above a record, such as a correction: an icon, what happened and
+/// an action on the right.
+pub fn notice(name: &str, message: impl Into<SharedString>, action: Option<Stateful<Div>>) -> Div {
+    let (t, c) = (tokens(), colors());
+    text(
+        div()
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .gap(px(t.space.s10))
+            .px(px(t.space.s12))
+            .py(px(t.space.s8 + 1.0))
+            .rounded(px(t.radius.slot))
+            .bg(c.panel)
+            .border(px(t.size.hairline))
+            .border_color(c.line)
+            .text_color(c.text_2),
+        &t.text.body,
+    )
+    .child(icon(name, t.size.icon, c.accent))
+    .child(div().flex_1().min_w_0().child(message.into()))
+    .children(action.map(link))
+}
+
+/// Accent text that acts, such as "Retry" or "Read correction →".
+pub fn link(element: Stateful<Div>) -> Stateful<Div> {
+    let (t, c) = (tokens(), colors());
+    text(
+        element
+            .flex_shrink_0()
+            .cursor_pointer()
+            .text_color(c.accent_text),
+        &t.text.status,
+    )
+}
+
+/// An authored link in a report: an icon, its title and what it points to.
+/// It shows the link as text; nothing opens it automatically.
+pub fn reference(
+    id: impl Into<SharedString>,
+    title: impl Into<SharedString>,
+    target: impl Into<SharedString>,
+) -> Stateful<Div> {
+    let (t, c) = (tokens(), colors());
+    text(
+        div()
+            .id(id.into())
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .gap(px(t.space.s10))
+            .h(px(t.size.reference_row))
+            .px(px(t.space.s12))
+            .rounded(px(t.radius.row))
+            .bg(c.panel)
+            .border(px(t.size.hairline))
+            .border_color(c.line)
+            .text_color(c.text),
+        &t.text.body,
+    )
+    .child(icon("link-2", t.size.icon, c.muted))
+    .child(
+        div()
+            .flex_shrink_0()
+            .max_w(relative(0.5))
+            .overflow_hidden()
+            .whitespace_nowrap()
+            .text_ellipsis()
+            .child(title.into()),
+    )
+    .child(
+        text(
+            div()
+                .flex_1()
+                .min_w_0()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .text_color(c.muted),
+            &t.text.meta,
+        )
+        .child(target.into()),
+    )
+}
+
+// ---------------------------------------------------------------- conversation
+//
+// One conversation beside every authored thing a person can talk about. The
+// pieces stay the same whatever the conversation is about; only the anchor
+// and the subject line change.
+
+/// A closed conversation: a rail on the reader's right edge with the button
+/// that opens it, the agent's mark and a vertical label. `unread` puts a dot
+/// on the button.
+pub fn conversation_rail(
+    button: Stateful<Div>,
+    mark: Option<Div>,
+    label: impl Into<SharedString>,
+    unread: bool,
+) -> Div {
+    let (t, c) = (tokens(), colors());
+    div()
+        .flex_shrink_0()
+        .w(px(t.size.conversation_rail))
+        .h_full()
+        .flex()
+        .flex_col()
+        .items_center()
+        .gap(px(t.space.s12))
+        .py(px(t.space.s8))
+        .border_l(px(t.size.hairline))
+        .border_color(c.line)
+        .bg(c.panel)
+        .child(
+            button
+                .relative()
+                .size(px(t.size.rail_button))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(t.radius.row))
+                .cursor_pointer()
+                .when(unread, |el| el.bg(c.accent_soft))
+                .when(!unread, |el| el.hover(|el| el.bg(colors().selected)))
+                .child(icon(
+                    "message-square",
+                    t.size.icon_large,
+                    if unread { c.accent_text } else { c.text_2 },
+                ))
+                .when(unread, |el| {
+                    el.child(
+                        div()
+                            .absolute()
+                            .top(px(t.space.s4 + 1.0))
+                            .right(px(t.space.s4 + 1.0))
+                            .size(px(t.size.dot + 1.0))
+                            .rounded_full()
+                            .bg(c.accent)
+                            .border(px(t.space.s2))
+                            .border_color(c.panel),
+                    )
+                }),
+        )
+        .children(mark)
+        .child(
+            // GPUI has no vertical writing mode; the label turns a quarter.
+            text(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .w(px(t.size.conversation_rail))
+                    .overflow_hidden()
+                    .text_color(c.muted),
+                &t.text.meta,
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .children(label.into().chars().map(|ch| div().child(ch.to_string()))),
+            ),
+        )
+}
+
+/// The frame of an open conversation, `conversation_width` wide.
+pub fn conversation_panel() -> Div {
+    let (t, c) = (tokens(), colors());
+    div()
+        .flex_shrink_0()
+        .w(px(t.size.conversation_width))
+        .h_full()
+        .min_h_0()
+        .flex()
+        .flex_col()
+        .border_l(px(t.size.hairline))
+        .border_color(c.line)
+        .bg(c.panel)
+}
+
+/// The top of an open conversation: the agent's mark and name, what the
+/// conversation is about and the button that closes it.
+pub fn conversation_header(
+    mark: Option<Div>,
+    agent: impl Into<SharedString>,
+    about: impl Into<SharedString>,
+    close: Stateful<Div>,
+) -> Div {
+    let (t, c) = (tokens(), colors());
+    div()
+        .flex()
+        .flex_shrink_0()
+        .items_center()
+        .gap(px(t.space.s8))
+        .h(px(t.size.conversation_header))
+        .pl(px(t.space.s14))
+        .pr(px(t.space.s8))
+        .border_b(px(t.size.hairline))
+        .border_color(c.line)
+        .children(mark)
+        .child(
+            text(
+                div().font_family(t.font.mono.clone()).text_color(c.text),
+                &t.text.row,
+            )
+            .child(agent.into()),
+        )
+        .child(text(div().text_color(c.muted), &t.text.meta).child(about.into()))
+        .child(div().flex_1())
+        .child(close)
+}
+
+/// A rule across a thread with a label in it: a day, or how many messages
+/// are new (`new` draws it in the accent).
+pub fn thread_divider(label: impl Into<SharedString>, new: bool) -> Div {
+    let (t, c) = (tokens(), colors());
+    let rule = || {
+        div()
+            .flex_1()
+            .h(px(t.size.hairline))
+            .bg(if new { c.focus } else { c.line })
+    };
+    text(
+        div()
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .gap(px(t.space.s8))
+            .text_color(if new { c.accent_text } else { c.muted }),
+        &t.text.label,
+    )
+    .font_weight(t.text.meta.weight())
+    .child(rule())
+    .child(label.into())
+    .child(rule())
+}
+
+/// Who sent a message and when, above or below its bubble.
+pub fn message_meta() -> Div {
+    let (t, c) = (tokens(), colors());
+    text(
+        div()
+            .flex()
+            .items_center()
+            .gap(px(t.space.s6))
+            .text_color(c.muted),
+        &t.text.label,
+    )
+    .font_weight(t.text.meta.weight())
+}
+
+/// One message: the person's on the right on `selected`, an agent's on the
+/// left on `surface` with a hairline; a message that was not sent has a
+/// dashed `attention` outline. `meta` goes above an agent's message and
+/// below the person's.
+pub fn message(from_you: bool, failed: bool, meta: Div, body: impl IntoElement) -> Div {
+    let (t, c) = (tokens(), colors());
+    let tail = px(t.radius.key);
+    let bubble = text(
+        div()
+            .px(px(t.space.s10 + 1.0))
+            .py(px(t.space.s8))
+            .rounded(px(t.radius.bubble))
+            .text_color(c.text),
+        &t.text.row,
+    )
+    .child(body);
+    let bubble = match (from_you, failed) {
+        (_, true) => bubble
+            .border(px(t.size.hairline))
+            .border_dashed()
+            .border_color(c.attention),
+        (true, false) => bubble.bg(c.selected).rounded_br(tail),
+        (false, false) => bubble
+            .bg(c.surface)
+            .border(px(t.size.hairline))
+            .border_color(c.line)
+            .rounded_bl(tail),
+    };
+    let frame = div()
+        .flex()
+        .flex_shrink_0()
+        .flex_col()
+        .gap(px(t.space.s4))
+        .max_w(relative(0.9));
+    if from_you {
+        frame.self_end().items_end().child(bubble).child(meta)
+    } else {
+        frame.items_start().child(meta).child(bubble)
+    }
+}
+
+/// What a message refers to, such as a revision or a cell range.
+pub fn anchor(label: impl Into<SharedString>) -> Div {
+    let (t, c) = (tokens(), colors());
+    text(
+        div()
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .h(px(t.size.anchor))
+            .px(px(t.space.s6))
+            .rounded(px(t.radius.key))
+            .bg(c.accent_soft)
+            .font_family(t.font.mono.clone())
+            .text_color(c.accent_text),
+        &t.text.key,
+    )
+    .font_weight(t.text.meta.weight())
+    .child(label.into())
+}
+
+/// The message box at the bottom of a conversation: the field, then the
+/// anchor, the send key and the send button.
+pub fn composer(field: impl IntoElement, anchor: Option<Div>, send: Stateful<Div>) -> Div {
+    let (t, c) = (tokens(), colors());
+    div()
+        .flex_shrink_0()
+        .border_t(px(t.size.hairline))
+        .border_color(c.line)
+        .px(px(t.space.s12))
+        .pt(px(t.space.s10))
+        .pb(px(t.space.s12))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(t.space.s6))
+                .p(px(t.space.s8))
+                .pl(px(t.space.s10))
+                .rounded(px(t.radius.pane))
+                .bg(c.field)
+                .border(px(t.size.hairline))
+                .border_color(c.line_strong)
+                .child(field)
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(t.space.s8))
+                        .children(anchor)
+                        .child(div().flex_1())
+                        .child(key_hint("⌘↵"))
+                        .child(send),
+                ),
+        )
+}
+
+/// The composer's send button; dimmed while there is nothing to send.
+pub fn send_button(id: impl Into<SharedString>, enabled: bool) -> Stateful<Div> {
+    let (t, c) = (tokens(), colors());
+    div()
+        .id(id.into())
+        .flex_shrink_0()
+        .size(px(t.size.send_button))
+        .rounded(px(t.radius.row))
+        .bg(c.accent)
+        .flex()
+        .items_center()
+        .justify_center()
+        .when(enabled, |el| el.cursor_pointer())
+        .when(!enabled, |el| el.opacity(0.45))
+        .child(icon("send", t.size.icon - 1.0, c.on_accent))
+}
+
+/// A small spinner beside a message that is still sending.
+pub fn sending_spinner() -> impl IntoElement {
+    let (t, c) = (tokens(), colors());
+    let size = t.size.dot + t.space.s4;
+    div()
+        .size(px(size))
+        .child(icon("agent-arc", size, c.accent).with_animation(
+            "sending-arc",
+            Animation::new(std::time::Duration::from_millis(t.motion.spinner_ms as u64)).repeat(),
+            |arc, delta| arc.with_transformation(Transformation::rotate(percentage(delta))),
+        ))
 }
 
 #[cfg(test)]

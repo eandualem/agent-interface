@@ -270,6 +270,7 @@ impl NameField {
         let range = self.text.selection();
         match key.key.as_str() {
             "escape" => cx.emit(NameEvent::Cancel),
+            "enter" if self.text.feedback && command && !mods.alt => cx.emit(NameEvent::Save),
             "enter" if self.text.feedback && !mods.platform && !mods.control && !mods.alt => {
                 self.text.replace(None, "\n", false);
             }
@@ -631,22 +632,27 @@ impl Render for NameField {
         // A name is edited in place, one cell high in the selection's colors,
         // as the source's inline editor is; the chooser's filter keeps a frame.
         let search = self.text.search;
+        let feedback = self.text.feedback;
         div()
             .w_full()
             .min_w_0()
-            .h(px(if self.text.feedback {
-                100.
+            .h(px(if feedback {
+                super::design::tokens().size.composer_field
             } else if search {
                 super::design::tokens().size.jump_field
             } else {
                 super::design::tokens().size.row - super::design::tokens().space.s8
             }))
-            .px(px(super::design::tokens().space.s6))
-            .rounded(px(super::design::tokens().radius.key))
-            .bg(super::design::colors().field)
             .text_color(super::design::colors().text)
-            .border(px(super::design::tokens().size.hairline))
-            .border_color(super::design::colors().accent)
+            // A message field sits bare inside the conversation's composer frame.
+            .when(!feedback, |field| {
+                field
+                    .px(px(super::design::tokens().space.s6))
+                    .rounded(px(super::design::tokens().radius.key))
+                    .bg(super::design::colors().field)
+                    .border(px(super::design::tokens().size.hairline))
+                    .border_color(super::design::colors().accent)
+            })
             .id("name-field")
             .on_click(cx.listener(|_, _, _, cx| cx.stop_propagation()))
             .track_focus(&self.focus)

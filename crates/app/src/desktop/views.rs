@@ -33,8 +33,10 @@ mod activity;
 mod agent;
 mod artifact_web;
 mod artifacts;
-mod documents;
+mod clock;
 mod feedback;
+mod conversation;
+mod documents;
 mod markdown;
 mod policies;
 mod reader;
@@ -151,7 +153,10 @@ pub(super) struct ViewPane {
     selection: RefCell<selection::Selection>,
     reports: reports::State,
     backbone: Option<PathBuf>,
-    feedback: HashMap<String, Entity<feedback::Feedback>>,
+    /// Conversations by provider, author and record, kept while the pane exists.
+    conversations: HashMap<String, Entity<conversation::Conversation>>,
+    /// The open record's conversation, for its reader to place.
+    conversation: Option<Entity<conversation::Conversation>>,
     documents: documents::State,
     artifacts: Option<Entity<artifacts::ArtifactPane>>,
     sheets: Option<Entity<sheets::Sheets>>,
@@ -163,9 +168,9 @@ pub(super) struct ViewPane {
 impl EventEmitter<ViewEvent> for ViewPane {}
 
 impl ViewPane {
-    /// Keep drafts and in-flight delivery state while this saved pane is hidden.
-    pub fn has_feedback(&self) -> bool {
-        !self.feedback.is_empty() || self.sheets.is_some()
+    /// Keep drafts, threads and in-flight delivery while this saved pane is hidden.
+    pub fn has_conversations(&self) -> bool {
+        !self.conversations.is_empty() || self.sheets.is_some()
     }
 
     /// Native child views must repaint when an overlay stops occluding them.
@@ -228,7 +233,8 @@ impl ViewPane {
             selection: RefCell::default(),
             reports: reports::State::default(),
             backbone: backbone.clone(),
-            feedback: HashMap::new(),
+            conversations: HashMap::new(),
+            conversation: None,
             documents: documents::State::default(),
             artifacts: None,
             sheets: None,
@@ -476,6 +482,13 @@ impl ViewPane {
         }
     }
 
+    /// Open the newer (`by < 0`) or older record beside the open report or answer.
+    fn step_record(&mut self, by: isize, cx: &mut Context<Self>) {
+        if let Some(Data::Reports(page)) = self.data.clone() {
+            reports::step(self, &page, by, cx);
+        }
+    }
+
     /// Keys a view understands while its pane is selected. Returns whether
     /// `key` was one of them.
     pub fn key(&mut self, key: &gpui::Keystroke, cx: &mut Context<Self>) -> bool {
@@ -484,6 +497,27 @@ impl ViewPane {
         }
         if key.modifiers.modified() {
             return false;
+        }
+        if let Some(conversation) = self.conversation.clone().filter(|_| key.key == "c") {
+            conversation.update(cx, |conversation, cx| conversation.request_toggle(cx));
+            return true;
+        }
+        if self.reports.open.is_some() && documents::selected(self).is_none() {
+            match key.key.as_str() {
+                "[" => {
+                    return {
+                        self.step_record(-1, cx);
+                        true
+                    };
+                }
+                "]" => {
+                    return {
+                        self.step_record(1, cx);
+                        true
+                    };
+                }
+                _ => {}
+            }
         }
         if self.reports.open.is_some() && key.key == "escape" {
             self.documents.clear();
@@ -541,7 +575,7 @@ impl Render for ViewPane {
             return div().size_full().child(sheets.clone());
         }
         let (t, c) = (tokens(), colors());
-        let feedback =
+        self.conversation =
             self.reports
                 .open
                 .as_ref()
@@ -553,11 +587,11 @@ impl Render for ViewPane {
                         item.author_id.as_deref().unwrap_or_default(),
                         agent_interface_roster::feedback::reference(item)
                     );
-                    self.feedback
+                    self.conversations
                         .entry(key)
                         .or_insert_with(|| {
                             cx.new(|cx| {
-                                feedback::Feedback::new(
+                                conversation::Conversation::new(
                                     item.clone(),
                                     directory.clone(),
                                     self.documents.surface.clone(),
@@ -629,7 +663,6 @@ impl Render for ViewPane {
             .flex_col()
             .bg(c.surface)
             .child(div().flex_1().min_h_0().flex().flex_col().child(body))
-            .children(feedback)
             .child(selection::events(cx))
             .children(
                 self.data

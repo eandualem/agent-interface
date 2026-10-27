@@ -1953,7 +1953,7 @@ impl Render for Browser {
             shown
                 .iter()
                 .any(|(leaf, view)| leaf == id && &pane.view == view)
-                || (pane.has_feedback()
+                || (pane.has_conversations()
                     && self
                         .layout
                         .as_ref()

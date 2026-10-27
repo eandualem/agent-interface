@@ -119,6 +119,7 @@ dependencies = [
  "agent-interface-term",
  "agent-interface-test-support",
  "agent-interface-tmux",
+ "chrono",
  "futures",
  "gpui-pre",
  "gpui-pre-macos",
