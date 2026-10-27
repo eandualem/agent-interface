@@ -9,9 +9,10 @@
 //! Artifacts have their own local catalog and an isolated system-webview renderer rather than a Backbone worker.
 
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::{HashMap, HashSet},
     path::PathBuf,
+    rc::Rc,
     time::Duration,
 };
 
@@ -178,6 +179,8 @@ pub(super) struct ViewPane {
     conversations: HashMap<String, Entity<conversation::Conversation>>,
     /// The open record's conversation, for its reader to place.
     conversation: Option<Entity<conversation::Conversation>>,
+    /// Whether this pane is visible; its conversations read Backbone only then.
+    visible: Rc<Cell<bool>>,
     documents: documents::State,
     artifacts: Option<Entity<artifacts::ArtifactPane>>,
     sheets: Option<Entity<sheets::Sheets>>,
@@ -202,6 +205,7 @@ impl ViewPane {
     }
 
     pub fn set_visible(&self, visible: bool, cx: &gpui::App) {
+        self.visible.set(visible);
         if !visible {
             self.documents.surface.borrow_mut().clear();
         }
@@ -258,6 +262,7 @@ impl ViewPane {
             backbone: backbone.clone(),
             conversations: HashMap::new(),
             conversation: None,
+            visible: Rc::new(Cell::new(true)),
             documents: documents::State::default(),
             artifacts: None,
             sheets: None,
@@ -639,6 +644,9 @@ impl Render for ViewPane {
             Shown::Records => None,
         };
         if let Some(section) = section {
+            if let Some(conversation) = self.conversation.take() {
+                conversation.update(cx, |conversation, cx| conversation.set_active(false, cx));
+            }
             return div()
                 .size_full()
                 .bg(colors().surface)
@@ -666,6 +674,7 @@ impl Render for ViewPane {
                                     item.clone(),
                                     directory.clone(),
                                     self.documents.surface.clone(),
+                                    self.visible.clone(),
                                     window,
                                     cx,
                                 )

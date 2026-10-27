@@ -324,6 +324,8 @@ pub enum Outcome {
 pub enum Error {
     /// No authenticated private local provider is configured.
     Unavailable,
+    /// The configured provider is not the one the record came from.
+    Moved,
     /// The provider does not offer conversations yet.
     Unsupported,
     /// Backbone knows no such artifact.
@@ -337,6 +339,7 @@ impl Error {
     pub fn message(self) -> &'static str {
         match self {
             Self::Unavailable => "Conversations need an authenticated private Backbone connection.",
+            Self::Moved => "The Backbone connection changed. Reopen this item to continue.",
             Self::Unsupported => "This Agent Backbone does not keep conversations yet.",
             Self::UnknownArtifact => "Backbone has no record of this item.",
             Self::Unreadable => "Backbone returned an unreadable conversation.",
@@ -345,9 +348,15 @@ impl Error {
 }
 
 /// Read one page of a conversation. Runs on an I/O worker.
-pub fn show(directory: &Path, kind: Kind, id: &str, page: &Page) -> Result<Conversation, Error> {
+pub fn show(
+    directory: &Path,
+    provider: &str,
+    kind: Kind,
+    id: &str,
+    page: &Page,
+) -> Result<Conversation, Error> {
     let path = show_path(kind, id, page).ok_or(Error::Unreadable)?;
-    let response = exchange(directory, &path, None)?;
+    let response = exchange(directory, provider, &path, None)?;
     match response.status {
         200 => parse(&response.body),
         404 => Err(missing(&response.body)),
@@ -356,7 +365,11 @@ pub fn show(directory: &Path, kind: Kind, id: &str, page: &Page) -> Result<Conve
 }
 
 /// Badges for up to 50 conversations. Runs on an I/O worker.
-pub fn summaries(directory: &Path, keys: &[(Kind, &str)]) -> Result<Vec<Summary>, Error> {
+pub fn summaries(
+    directory: &Path,
+    provider: &str,
+    keys: &[(Kind, &str)],
+) -> Result<Vec<Summary>, Error> {
     if keys.is_empty() || keys.len() > 50 || keys.iter().any(|(_, id)| !token(id)) {
         return Err(Error::Unreadable);
     }
@@ -365,7 +378,7 @@ pub fn summaries(directory: &Path, keys: &[(Kind, &str)]) -> Result<Vec<Summary>
         .map(|(kind, id)| format!("{}:{id}", kind.name()))
         .collect();
     let path = format!("/api/conversations?limit=50&ids={}", ids.join(","));
-    let response = exchange(directory, &path, None)?;
+    let response = exchange(directory, provider, &path, None)?;
     match response.status {
         200 => parse::<Summaries>(&response.body).map(|page| page.items),
         404 => Err(Error::Unsupported),
@@ -374,34 +387,47 @@ pub fn summaries(directory: &Path, keys: &[(Kind, &str)]) -> Result<Vec<Summary>
 }
 
 /// Append an owner message. Runs on an I/O worker.
-pub fn send(directory: &Path, kind: Kind, id: &str, message: &Message) -> Outcome {
+pub fn send(directory: &Path, provider: &str, kind: Kind, id: &str, message: &Message) -> Outcome {
     let Some(path) = base(kind, id).map(|base| base + "/messages") else {
         return Outcome::Unknown;
     };
     let Ok(body) = serde_json::to_vec(message) else {
         return Outcome::Unknown;
     };
-    outcome(exchange(directory, &path, Some(body)))
+    outcome(exchange(directory, provider, &path, Some(body)))
 }
 
 /// Queue a new delivery for a failed owner message. Runs on an I/O worker.
-pub fn redeliver(directory: &Path, kind: Kind, id: &str, entry: u64, request_id: &str) -> Outcome {
+pub fn redeliver(
+    directory: &Path,
+    provider: &str,
+    kind: Kind,
+    id: &str,
+    entry: u64,
+    request_id: &str,
+) -> Outcome {
     let Some(path) = base(kind, id).map(|base| format!("{base}/messages/{entry}/redeliver")) else {
         return Outcome::Unknown;
     };
     let body = serde_json::json!({ "request_id": request_id })
         .to_string()
         .into_bytes();
-    outcome(exchange(directory, &path, Some(body)))
+    outcome(exchange(directory, provider, &path, Some(body)))
 }
 
 /// Move the owner's read marker forward. Runs on an I/O worker.
-pub fn read(directory: &Path, kind: Kind, id: &str, through: u64) -> Result<Counts, Error> {
+pub fn read(
+    directory: &Path,
+    provider: &str,
+    kind: Kind,
+    id: &str,
+    through: u64,
+) -> Result<Counts, Error> {
     let path = base(kind, id).ok_or(Error::Unreadable)? + "/read";
     let body = serde_json::json!({ "read_through": through })
         .to_string()
         .into_bytes();
-    let response = exchange(directory, &path, Some(body))?;
+    let response = exchange(directory, provider, &path, Some(body))?;
     match response.status {
         200 => parse(&response.body),
         404 => Err(missing(&response.body)),
@@ -433,13 +459,19 @@ fn token(text: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b':' | b'.'))
 }
 
+/// `provider` is the address the record was read from; a changed connection
+/// could hold an unrelated artifact under the same ID.
 fn exchange(
     directory: &Path,
+    expected: &str,
     path: &str,
     body: Option<Vec<u8>>,
 ) -> Result<crate::transport::local::Response, Error> {
     let (provider, key) =
         crate::configuration::configured(directory, None).ok_or(Error::Unavailable)?;
+    if provider != expected {
+        return Err(Error::Moved);
+    }
     let socket = provider.strip_prefix("unix:").ok_or(Error::Unavailable)?;
     if key.is_empty() {
         return Err(Error::Unavailable);
@@ -478,8 +510,16 @@ fn outcome(response: Result<crate::transport::local::Response, Error>) -> Outcom
         #[serde(default)]
         message: Option<String>,
     }
-    let Ok(response) = response else {
-        return Outcome::Unknown;
+    let response = match response {
+        Ok(response) => response,
+        // Nothing was sent to a provider the record did not come from.
+        Err(error @ Error::Moved) => {
+            return Outcome::Refused {
+                error: "moved".into(),
+                message: error.message().into(),
+            };
+        }
+        Err(_) => return Outcome::Unknown,
     };
     let Ok(reply) = parse::<Reply>(&response.body) else {
         return Outcome::Unknown;
