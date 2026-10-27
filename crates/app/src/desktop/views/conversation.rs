@@ -69,6 +69,8 @@ struct Message {
     request_id: String,
     /// `None` while waiting to learn whether Backbone keeps the conversation.
     via: Option<Via>,
+    /// The agent chosen when it first went to Backbone; a retry keeps it.
+    recipient: Option<String>,
     text: String,
     /// What it referred to when it was written.
     anchor: Option<String>,
@@ -111,6 +113,8 @@ pub(super) struct Conversation {
     /// they may choose from besides the conversation's participants.
     recipient: Option<String>,
     candidates: Vec<String>,
+    /// The team's names have been read, for a skill's or policy's chooser.
+    team_read: bool,
     /// Whether the pane holding it is visible.
     visible: Rc<Cell<bool>>,
     _poll: Option<Task<()>>,
@@ -458,6 +462,7 @@ impl Conversation {
             active: false,
             recipient: None,
             candidates: Vec::new(),
+            team_read: false,
             visible: Rc::new(Cell::new(true)),
             _poll: None,
             _input: input,
@@ -571,6 +576,7 @@ impl Conversation {
         stored.read_at = Some(started);
         let unsettled = stored.unsettled();
         let source = stored.source.clone();
+        let need_team = source.is_some() && !self.team_read;
         let (directory, provider, kind, id) = self.target().expect("stored conversation");
         let worker = cx.background_executor().spawn(async move {
             // A skill or policy learns its provider and identity on its first read.
@@ -579,25 +585,28 @@ impl Conversation {
             } else {
                 provider
             };
-            let mut team = Vec::new();
             let id = match (&source, id.is_empty()) {
                 (Some(path), true) => match stored::resolve(&directory, &provider, kind, path) {
-                    Ok(id) => {
-                        // With nobody responsible, the person chooses from the team.
-                        if let Ok(views::Data::Team(found)) =
-                            views::read(&directory, None, &views::Request::Team, &|| true)
-                        {
-                            team = found
-                                .members
-                                .into_iter()
-                                .map(|member| member.name)
-                                .collect();
-                        }
-                        id
-                    }
-                    Err(error) => return (provider, String::new(), team, Err(error), None),
+                    Ok(id) => id,
+                    Err(error) => return (provider, String::new(), None, Err(error), None),
                 },
                 _ => id,
+            };
+            // With nobody responsible, the person chooses from the team; asked
+            // again until it has answered.
+            let team = if need_team {
+                match views::read(&directory, None, &views::Request::Team, &|| true) {
+                    Ok(views::Data::Team(found)) => Some(
+                        found
+                            .members
+                            .into_iter()
+                            .map(|member| member.name)
+                            .collect::<Vec<_>>(),
+                    ),
+                    _ => None,
+                }
+            } else {
+                None
             };
             let newest = stored::show(&directory, &provider, kind, &id, &stored::Page::Newest);
             let older = (!unsettled.is_empty() && newest.is_ok()).then(|| {
@@ -619,9 +628,12 @@ impl Conversation {
                     return;
                 };
                 stored.reading = false;
-                for name in team {
-                    if !conversation.candidates.contains(&name) {
-                        conversation.candidates.push(name);
+                if let Some(team) = team {
+                    conversation.team_read = true;
+                    for name in team {
+                        if !conversation.candidates.contains(&name) {
+                            conversation.candidates.push(name);
+                        }
                     }
                 }
                 let Some(stored) = conversation.stored.as_mut() else {
@@ -784,8 +796,13 @@ impl Conversation {
         let Some((directory, provider, kind, id)) = self.target() else {
             return;
         };
-        let recipient = self.recipient.clone().filter(|_| self.needs_recipient());
+        let chosen = self.recipient.clone().filter(|_| self.needs_recipient());
         let message = &mut self.messages[index];
+        // A retry reuses the request, so it keeps the first recipient too.
+        if message.via != Some(Via::Stored) {
+            message.recipient = chosen;
+        }
+        let recipient = message.recipient.clone();
         message.via = Some(Via::Stored);
         // A refused retry says nothing about an earlier attempt that may have
         // been stored.
@@ -943,6 +960,7 @@ impl Conversation {
         self.messages.push(Message {
             request_id: uuid::Uuid::new_v4().simple().to_string(),
             via: None,
+            recipient: None,
             text,
             anchor: self.anchor.clone(),
             at,
