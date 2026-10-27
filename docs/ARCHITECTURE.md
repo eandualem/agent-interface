@@ -420,13 +420,19 @@ Python runtime, build toolchain, tmux server or application daemon.
 The shell installer verifies the archive checksum and target, stages a
 per-user replacement, and preserves the data directories. Linux desktop and
 window identifiers use `io.github.eandualem.agent-interface`; macOS uses the same
-bundle identifier. The executable, Rust crates, package archives and new install,
-configuration and data directories use `agent-interface`. The installer accepts
-its previous ownership marker when updating, removes owned legacy Linux launchers,
+bundle identifier. The executable, product crates (`agent-interface-app`,
+`agent-interface-core` and `agent-interface-store`), package archives and new
+install, configuration and data directories use `agent-interface`. The installer
+accepts its previous ownership marker when updating, removes owned legacy Linux launchers,
 and rolls back the app and launchers on failure. Existing library directories stay
 in place: their absolute path determines the ordinary-shell socket hash. Existing
-private legacy shell sockets remain usable. Settings, themes and keymaps fall back
-to the old configuration directory when the new file is absent; settings writes
+private legacy shell sockets remain usable. Reconnection, explicit shell opening
+and saved working-directory refresh select the server containing the exact
+ordinary session across the current and legacy sockets. A verified current owner
+is used without inspecting unused legacy metadata. When no owner is verified,
+a metadata or discovery failure does not authorize creating a replacement shell
+on another server. Settings,
+themes and keymaps fall back to the old configuration directory when the new file is absent; settings writes
 use the new directory. Legacy environment overrides remain supported, with the new
 `AGENT_INTERFACE_*` names taking precedence. No database or running server is moved.
 The Linux launcher uses the packaged Agent Interface icon.
