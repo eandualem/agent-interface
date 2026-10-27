@@ -72,6 +72,7 @@ impl Sheets {
         }
         let table = div()
             .id("sheet-grid-horizontal")
+            .track_scroll(&self.columns_scroll)
             .flex_1()
             .min_h_0()
             .overflow_x_scroll()
@@ -90,6 +91,7 @@ impl Sheets {
                                 range.map(|row| s.row(row, cx)).collect::<Vec<_>>()
                             }),
                         )
+                        .track_scroll(&self.rows_scroll)
                         .flex_1()
                         .min_h_0(),
                     ),

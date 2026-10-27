@@ -11,7 +11,8 @@ use agent_interface_roster::{
     sheets::{self as api, *},
 };
 use gpui::{
-    Context, Entity, EventEmitter, SharedString, Subscription, Window, div, prelude::*, px,
+    Context, Entity, EventEmitter, ScrollHandle, ScrollStrategy, SharedString, Subscription,
+    UniformListScrollHandle, Window, div, prelude::*, px,
 };
 use std::path::PathBuf;
 mod controls;
@@ -75,6 +76,8 @@ impl Selection {
 
 pub(super) struct Sheets {
     focus: gpui::FocusHandle,
+    rows_scroll: UniformListScrollHandle,
+    columns_scroll: ScrollHandle,
     directory: PathBuf,
     client: Option<Client>,
     catalog: Vec<Record>,
@@ -109,6 +112,8 @@ impl Sheets {
         });
         let mut state = Self {
             focus: cx.focus_handle(),
+            rows_scroll: UniformListScrollHandle::new(),
+            columns_scroll: ScrollHandle::new(),
             directory,
             client: None,
             catalog: Vec::new(),
@@ -140,7 +145,7 @@ impl Sheets {
         } else {
             key.modifiers.control
         };
-        if !self.focus.is_focused(window) {
+        if !self.focus.is_focused(window) || self.history.is_some() {
             return;
         } else if command && key.key == "c" {
             self.copy(cx);
@@ -158,6 +163,17 @@ impl Sheets {
                 _ => return,
             }
             self.select(row, col, key.modifiers.shift && key.key != "tab", cx);
+            if self
+                .selection
+                .is_some_and(|selected| selected.end == (row, col))
+            {
+                self.rows_scroll
+                    .scroll_to_item(row, ScrollStrategy::Nearest);
+                let mut offset = self.columns_scroll.offset();
+                let width = self.columns_scroll.bounds().size.width;
+                offset.x = reveal_column(offset.x, width, col);
+                self.columns_scroll.set_offset(offset);
+            }
         } else {
             return;
         }
@@ -305,6 +321,8 @@ impl Sheets {
                         }
                         s.open = Some(open);
                         s.selection = None;
+                        s.rows_scroll = UniformListScrollHandle::new();
+                        s.columns_scroll = ScrollHandle::new();
                         s.history = None;
                         s.history_cursors.clear();
                         s.history_cursor = None;
@@ -467,6 +485,13 @@ impl Render for Sheets {
         div()
             .size_full()
             .track_focus(&self.focus)
+            .on_action(cx.listener(|s, _: &crate::desktop::Copy, window, cx| {
+                if s.focus.is_focused(window) && s.history.is_none() && s.open.is_some() {
+                    s.copy(cx);
+                } else {
+                    cx.propagate();
+                }
+            }))
             .on_key_down(
                 cx.listener(|s, event: &gpui::KeyDownEvent, window, cx| s.key(event, window, cx)),
             )
@@ -504,6 +529,23 @@ impl Render for Sheets {
             } else {
                 self.catalog_body(cx)
             })
+    }
+}
+
+// Grid columns are fixed-width; reveal the keyboard endpoint without moving
+// an already visible cell. A narrow viewport aligns its leading edge.
+fn reveal_column(offset: gpui::Pixels, viewport: gpui::Pixels, column: usize) -> gpui::Pixels {
+    if viewport <= px(0.) {
+        return offset;
+    }
+    let left = px(54. + column as f32 * 160.);
+    let right = left + px(160.);
+    if left + offset < px(0.) || viewport < px(160.) {
+        -left
+    } else if right + offset > viewport {
+        viewport - right
+    } else {
+        offset
     }
 }
 
@@ -561,6 +603,16 @@ mod tests {
         };
         assert!(selection.contains(3, 2));
         assert!(!selection.contains(1, 2));
+    }
+    #[test]
+    fn keyboard_columns_remain_visible_in_both_directions() {
+        assert_eq!(reveal_column(px(0.), px(400.), 0), px(0.));
+        let right = reveal_column(px(0.), px(400.), 3);
+        assert_eq!(right, px(-294.));
+        assert_eq!(reveal_column(right, px(400.), 3), right);
+        assert_eq!(reveal_column(right, px(400.), 0), px(-54.));
+        assert_eq!(reveal_column(px(0.), px(80.), 2), px(-374.));
+        assert_eq!(reveal_column(px(0.), px(0.), 2), px(0.));
     }
     #[test]
     fn uncertain_feedback_retains_its_original_request() {
