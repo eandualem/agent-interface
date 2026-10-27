@@ -135,8 +135,8 @@ struct Stored {
     read_at: Option<std::time::Instant>,
     /// The marker being asked for, so a poll does not ask again meanwhile.
     marking: Option<u64>,
-    /// Redeliveries by entry: `None` while asked, else what Backbone said.
-    redelivery: HashMap<u64, Option<String>>,
+    /// Redeliveries by entry, followed until a fresh read shows them settled.
+    redelivery: HashMap<u64, Redelivery>,
     /// Where the next batch of older entries to re-read starts.
     turn: usize,
 }
@@ -228,12 +228,17 @@ impl Stored {
         all.iter().cycle().skip(start).take(50).copied().collect()
     }
 
-    /// Forget redelivery notes for entries Backbone no longer reports failed.
-    fn settle(&mut self) {
+    /// After a read that began at `started` and returned `returned`: forget
+    /// redeliveries queued before it whose entries it returned, since it shows
+    /// their state, and notes for entries Backbone no longer reports failed.
+    fn settle(&mut self, started: std::time::Instant, returned: &[u64]) {
+        self.redelivery.retain(|id, state| {
+            !matches!(state, Redelivery::Queued(at) if *at < started && returned.contains(id))
+        });
         let noted: Vec<u64> = self
             .redelivery
             .iter()
-            .filter(|(_, note)| note.is_some())
+            .filter(|(_, state)| matches!(state, Redelivery::Note(_)))
             .map(|(id, _)| *id)
             .collect();
         for id in noted {
@@ -263,6 +268,18 @@ impl Stored {
             )
             .find(|entry| entry.id == id)
     }
+}
+
+/// A redelivery the panel follows.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Redelivery {
+    /// Asked; no answer yet.
+    Asking,
+    /// Backbone queued it at this time; a read from before then may still
+    /// say failed, so only a later one settles it.
+    Queued(std::time::Instant),
+    /// What Backbone said when it did not queue it.
+    Note(String),
 }
 
 /// How often the shown conversation is read: often while open, for its
@@ -460,7 +477,8 @@ impl Conversation {
             return;
         }
         stored.reading = true;
-        stored.read_at = Some(std::time::Instant::now());
+        let started = std::time::Instant::now();
+        stored.read_at = Some(started);
         let unsettled = stored.unsettled();
         let (directory, provider, kind, id) = self.target().expect("stored conversation");
         let worker = cx.background_executor().spawn(async move {
@@ -490,17 +508,20 @@ impl Conversation {
                         if seen && stored.divider.is_none() {
                             stored.divider = Some(page.read_through.unwrap_or_default());
                         }
+                        let mut returned: Vec<u64> =
+                            page.entries.iter().map(|entry| entry.id).collect();
                         stored.receive(page);
                         for entry in older
                             .and_then(Result::ok)
                             .into_iter()
                             .flat_map(|page| page.entries)
                         {
+                            returned.push(entry.id);
                             if let Some(shown) = stored.entry_mut(entry.id) {
                                 *shown = entry;
                             }
                         }
-                        stored.settle();
+                        stored.settle(started, &returned);
                         if seen {
                             conversation.mark_read(cx);
                         }
@@ -679,10 +700,10 @@ impl Conversation {
         let Some(stored) = self.stored.as_mut() else {
             return;
         };
-        if stored.redelivery.get(&entry).is_some_and(Option::is_none) {
+        if stored.redelivery.get(&entry) == Some(&Redelivery::Asking) {
             return;
         }
-        stored.redelivery.insert(entry, None);
+        stored.redelivery.insert(entry, Redelivery::Asking);
         let request = uuid::Uuid::new_v4().simple().to_string();
         let worker = cx.background_executor().spawn(async move {
             stored::redeliver(&directory, &provider, kind, &id, entry, &request)
@@ -690,24 +711,21 @@ impl Conversation {
         cx.spawn(async move |this, cx| {
             let outcome = worker.await;
             let _ = this.update(cx, |conversation, cx| {
-                let note = match outcome {
+                let state = match outcome {
                     stored::Outcome::Accepted(stored) => {
                         conversation.add_entry(*stored);
-                        None
+                        Redelivery::Queued(std::time::Instant::now())
                     }
-                    stored::Outcome::AlreadyPending => Some("Already being delivered.".into()),
-                    stored::Outcome::Refused { message, .. } => Some(message),
-                    stored::Outcome::Unknown => Some("Backbone did not confirm the retry.".into()),
+                    stored::Outcome::AlreadyPending => {
+                        Redelivery::Queued(std::time::Instant::now())
+                    }
+                    stored::Outcome::Refused { message, .. } => Redelivery::Note(message),
+                    stored::Outcome::Unknown => {
+                        Redelivery::Note("Backbone did not confirm the retry.".into())
+                    }
                 };
                 if let Some(stored) = conversation.stored.as_mut() {
-                    match note {
-                        Some(note) => {
-                            stored.redelivery.insert(entry, Some(note));
-                        }
-                        None => {
-                            stored.redelivery.remove(&entry);
-                        }
-                    }
+                    stored.redelivery.insert(entry, state);
                 }
                 cx.notify();
             });
@@ -987,10 +1005,15 @@ impl Conversation {
                     let meta = ui::message_meta().children(label.map(ui::anchor));
                     let id = entry.id;
                     let redelivery = stored.redelivery.get(&id);
-                    let meta = if failed && redelivery.is_some_and(Option::is_none) {
+                    let meta = if failed
+                        && matches!(redelivery, Some(Redelivery::Asking | Redelivery::Queued(_)))
+                    {
                         meta.child(ui::sending_spinner()).child("Sending…")
                     } else if failed {
-                        let why = redelivery.cloned().flatten();
+                        let why = match redelivery {
+                            Some(Redelivery::Note(why)) => Some(why.clone()),
+                            _ => None,
+                        };
                         meta.text_color(c.attention_text)
                             .child(match why {
                                 Some(why) => format!("Not sent: {why} ·"),
