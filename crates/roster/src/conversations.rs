@@ -472,9 +472,11 @@ fn exchange(
     if provider != expected {
         return Err(Error::Moved);
     }
-    let socket = provider.strip_prefix("unix:").ok_or(Error::Unavailable)?;
+    // Conversations need the authenticated private socket; another connection
+    // keeps the one-way feedback it already offers.
+    let socket = provider.strip_prefix("unix:").ok_or(Error::Unsupported)?;
     if key.is_empty() {
-        return Err(Error::Unavailable);
+        return Err(Error::Unsupported);
     }
     crate::transport::local::response(socket, path, &key, body, LIMIT, Duration::from_secs(15))
         .map_err(|_| Error::Unavailable)

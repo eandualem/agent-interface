@@ -121,8 +121,10 @@ struct Stored {
     id: String,
     /// `None` until Backbone first answers; `Some(false)` when it keeps none.
     supported: Option<bool>,
-    /// The newest page, read again on each poll.
+    /// The newest page, read again on each poll, plus entries a send returned.
     page: Option<stored::Conversation>,
+    /// The entries Backbone itself last returned for the newest page.
+    fetched: Vec<u64>,
     /// Older entries loaded on request, oldest first, and where to continue.
     earlier: Vec<stored::Entry>,
     earlier_cursor: Option<String>,
@@ -156,10 +158,12 @@ impl Stored {
     fn receive(&mut self, page: stored::Conversation) {
         match self.page.take() {
             Some(old) if !page.entries.is_empty() => {
+                // Only what Backbone returned shows continuity, not entries a
+                // send added since.
                 let overlap = page
                     .entries
                     .iter()
-                    .any(|entry| old.entries.iter().any(|seen| seen.id == entry.id));
+                    .any(|entry| self.fetched.contains(&entry.id));
                 if overlap || page.older.is_none() {
                     let first = page.entries.iter().map(|entry| entry.id).min();
                     self.earlier.extend(
@@ -177,6 +181,7 @@ impl Stored {
             Some(_) => {}
             None => self.earlier_cursor = page.older.clone(),
         }
+        self.fetched = page.entries.iter().map(|entry| entry.id).collect();
         self.page = Some(page);
     }
 
@@ -220,6 +225,7 @@ impl Conversation {
                 id,
                 supported: None,
                 page: None,
+                fetched: Vec::new(),
                 earlier: Vec::new(),
                 earlier_cursor: None,
                 divider: None,
@@ -1119,6 +1125,7 @@ mod tests {
             id: "1".into(),
             supported: Some(true),
             page: None,
+            fetched: Vec::new(),
             earlier: Vec::new(),
             earlier_cursor: None,
             divider: None,
@@ -1138,5 +1145,14 @@ mod tests {
         assert!(stored.earlier.is_empty());
         assert_eq!(stored.earlier_cursor.as_deref(), Some("before-9"));
         assert_eq!(stored.entry_mut(10).map(|e| e.id), Some(10));
+        // An entry a send added does not stand in for continuity.
+        stored
+            .page
+            .as_mut()
+            .unwrap()
+            .entries
+            .push(page(&[30], None).entries.remove(0));
+        stored.receive(page(&[29, 30], Some("before-29")));
+        assert_eq!(stored.earlier_cursor.as_deref(), Some("before-29"));
     }
 }
