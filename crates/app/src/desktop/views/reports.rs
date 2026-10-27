@@ -327,9 +327,14 @@ fn reader_toolbar(
         )
 }
 
-/// The CLI the record's author runs in, while the roster names it.
+/// The CLI the record's author runs in, while the provider resolves the
+/// author to a current agent: a retained name may since belong to another.
 fn runtime(pane: &ViewPane, item: &ReportItem) -> Option<gpui::Div> {
-    let runtime = pane.reports.runtimes.get(&item.author)?;
+    let runtime = pane
+        .reports
+        .runtimes
+        .get(&item.author)
+        .filter(|_| item.registered)?;
     (!runtime.is_empty()).then(|| ui::badge(runtime.clone()))
 }
 
@@ -848,6 +853,7 @@ mod tests {
             id: 7,
             author: "worker".into(),
             author_id: None,
+            registered: false,
             provider_url: String::new(),
             created_at: "2026-10-24T10:00:00Z".into(),
             conversation_id: None,
@@ -881,6 +887,7 @@ mod tests {
             id,
             author: "worker".into(),
             author_id: None,
+            registered: false,
             provider_url: String::new(),
             created_at: "2026-10-24T10:00:00Z".into(),
             conversation_id: None,

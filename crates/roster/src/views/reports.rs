@@ -125,6 +125,9 @@ pub struct ReportItem {
     pub author: String,
     /// Stable author identity used to validate feedback routing.
     pub author_id: Option<String>,
+    /// Whether the provider resolved the author to a current agent, so
+    /// `author` names that agent rather than a retained, reusable name.
+    pub registered: bool,
     /// Provider address from which this record was read.
     pub provider_url: String,
     /// Server publication timestamp.
@@ -267,6 +270,7 @@ fn response_item(record: Record<Response>) -> ReportItem {
     let text = record.content.response;
     ReportItem {
         id: record.id,
+        registered: record.agent_name.is_some(),
         author: record.agent_name.unwrap_or(record.author_name),
         author_id: record.author_id,
         provider_url: String::new(),
@@ -320,6 +324,7 @@ fn decode(body: &[u8], query: &ReportQuery) -> Result<ReportPage, &'static str> 
                 }
                 items.push(ReportItem {
                     id: record.id,
+                    registered: record.agent_name.is_some(),
                     author: record.agent_name.unwrap_or(record.author_name),
                     author_id: record.author_id,
                     provider_url: String::new(),
@@ -394,6 +399,7 @@ mod tests {
         .unwrap();
         assert_eq!(page.items.len(), 1);
         assert_eq!(page.items[0].author, "renamed");
+        assert!(page.items[0].registered);
         assert!(page.items[0].needs_owner());
         assert_eq!(
             page.next.unwrap().path(None),
@@ -408,6 +414,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(page.items[0].author, "worker");
+        assert!(!page.items[0].registered);
         assert!(!page.items[0].needs_owner());
         let detail = decode_response(&serde_json::to_vec(&answers["items"][0]).unwrap()).unwrap();
         assert_eq!(detail.items, page.items);

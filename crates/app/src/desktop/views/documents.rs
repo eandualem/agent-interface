@@ -49,6 +49,7 @@ fn open(pane: &mut ViewPane, metadata: DocumentMetadata, cx: &mut Context<ViewPa
         id: metadata.id,
         author: metadata.author().to_owned(),
         author_id: Some(metadata.author_id.clone()),
+        registered: false,
         provider_url,
         created_at: metadata.created_at.clone(),
         conversation_id: None,
