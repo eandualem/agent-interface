@@ -50,7 +50,7 @@ Do not type or click while a run is active.
 Build the benchmark window with the same configuration as the harness:
 
 ```sh
-LIBGHOSTTY_VT_SYS_OPTIMIZE=ReleaseFast cargo build --release --locked -p tmux-workspaces-app --example bench-window
+LIBGHOSTTY_VT_SYS_OPTIMIZE=ReleaseFast cargo build --release --locked -p agent-interface-app --example bench-window
 ```
 
 The bulk-output measurement also uses a pinned vtebench checkout. Prepare it

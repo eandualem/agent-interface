@@ -7,8 +7,8 @@ use std::{
     path::Path,
 };
 
+use agent_interface_core::Layout;
 use rusqlite::Connection;
-use tmux_workspaces_core::Layout;
 
 use crate::{Document, Error, Store};
 

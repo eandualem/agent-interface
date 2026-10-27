@@ -1,5 +1,5 @@
 [package]
-name = "tmux-workspaces-app"
+name = "agent-interface-app"
 description = "Agent Interface: native workspaces for agents and tmux terminals"
 version.workspace = true
 edition.workspace = true
@@ -10,7 +10,7 @@ publish.workspace = true
 build = "../bench/build.rs"
 
 [[bin]]
-name = "tmux-workspaces"
+name = "agent-interface"
 path = "src/main.rs"
 
 [lints]
@@ -33,8 +33,8 @@ tracing-subscriber.workspace = true
 tracing-appender.workspace = true
 unicode-segmentation.workspace = true
 unicode-properties.workspace = true
-tmux-workspaces-core = { path = "../core" }
-tmux-workspaces-store = { path = "../store" }
+agent-interface-core = { path = "../core" }
+agent-interface-store = { path = "../store" }
 tmux-workspaces-roster = { path = "../roster" }
 tmux-workspaces-term = { path = "../term" }
 tmux-workspaces-tmux = { path = "../tmux" }

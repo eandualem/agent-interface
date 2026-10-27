@@ -3,9 +3,9 @@
 Native packages need no Rust, Zig, or Python installation. It uses **tmux 3.3 or
 newer** for terminal sessions.
 
-The executable, archive names, Linux installation paths and data directories
-retain `tmux-workspaces` for compatibility with existing installations and
-libraries. The product, macOS app and repository are named Agent Interface.
+The executable, archives and new installation/data paths use `agent-interface`.
+The desktop app is named **Agent Interface**. Existing libraries and preferences
+from earlier installations are still read without moving their data.
 
 ## Runtime prerequisites
 
@@ -28,7 +28,7 @@ a portal backend for your desktop, normally installed by the distribution.
 On Ubuntu 24.04, the basic runtime packages are:
 
 ```sh
-sudo apt install curl tmux libfontconfig1 libfreetype6 libxcb1 libxkbcommon0 \
+sudo apt install curl tmux fonts-dejavu-core libfontconfig1 libfreetype6 libxcb1 libxkbcommon0 \
   libxkbcommon-x11-0 libwayland-client0 libvulkan1 libegl1 xdg-desktop-portal
 ```
 
@@ -61,16 +61,27 @@ For a local build or a manually downloaded archive, download the archive and its
 matching `.tar.gz.sha256` file into the same folder. Keep the archive compressed.
 Choose the filename for your computer:
 
-- Apple silicon Mac: `tmux-workspaces-aarch64-apple-darwin.tar.gz`
-- Intel Mac: `tmux-workspaces-x86_64-apple-darwin.tar.gz`
-- ARM64 Linux: `tmux-workspaces-aarch64-unknown-linux-gnu.tar.gz`
-- x86-64 Linux: `tmux-workspaces-x86_64-unknown-linux-gnu.tar.gz`
+- Apple silicon Mac: `agent-interface-aarch64-apple-darwin.tar.gz`
+- Intel Mac: `agent-interface-x86_64-apple-darwin.tar.gz`
+- ARM64 Linux: `agent-interface-aarch64-unknown-linux-gnu.tar.gz`
+- x86-64 Linux: `agent-interface-x86_64-unknown-linux-gnu.tar.gz`
+
+Release 0.1.0 uses `tmux-workspaces-` instead of `agent-interface-` for
+these same targets. The installer accepts both naming generations. Keep each
+archive and its matching `.tar.gz.sha256` file under their original names.
 
 Download the installer, inspect it, then point it at your archive. This example
-uses Apple silicon; substitute the matching filename for your computer.
+uses Apple silicon; substitute the filename you downloaded for your computer
+and release.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/eandualem/agent-interface/main/install.sh -o install.sh
+sh install.sh --archive "$HOME/Downloads/agent-interface-aarch64-apple-darwin.tar.gz"
+```
+
+For the 0.1.0 Apple silicon archive, use this installation command instead:
+
+```sh
 sh install.sh --archive "$HOME/Downloads/tmux-workspaces-aarch64-apple-darwin.tar.gz"
 ```
 
@@ -101,7 +112,7 @@ does not remove quarantine attributes or disable Gatekeeper.
 
 ## Linux
 
-The installer places the app in `~/.local/lib/tmux-workspaces`, adds a command in
+The installer places the app in `~/.local/lib/agent-interface`, adds a command in
 `~/.local/bin`, and creates a desktop launcher under
 `${XDG_DATA_HOME:-~/.local/share}/applications`. Add `~/.local/bin` to your shell's
 `PATH` if needed, or launch **Agent Interface** from the applications menu.
@@ -109,8 +120,12 @@ The installer places the app in `~/.local/lib/tmux-workspaces`, adds a command i
 You can launch directly without changing `PATH`:
 
 ```sh
-"$HOME/.local/bin/tmux-workspaces"
+"$HOME/.local/bin/agent-interface"
 ```
+
+Updates from the earlier `tmux-workspaces` installation preserve saved libraries
+and settings. The installer replaces its owned legacy app and launchers; the new
+command is `agent-interface`. Existing data directories remain readable in place.
 
 ## Windows 11 with WSL (experimental)
 
@@ -166,7 +181,7 @@ Then install and launch the app:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/eandualem/agent-interface/main/install.sh | sh
-"$HOME/.local/bin/tmux-workspaces"
+"$HOME/.local/bin/agent-interface"
 ```
 
 This downloads a prebuilt Linux app; no compiler or source checkout is needed.
@@ -192,9 +207,9 @@ To remove the macOS app, quit it and move `~/Applications/Agent Interface.app` t
 the Trash. On Linux, quit it and remove these installation files:
 
 ```sh
-rm -rf "$HOME/.local/lib/tmux-workspaces"
-rm -f "$HOME/.local/bin/tmux-workspaces"
-rm -f "${XDG_DATA_HOME:-$HOME/.local/share}/applications/io.github.eandualem.tmux-workspaces.desktop"
+rm -rf "$HOME/.local/lib/agent-interface"
+rm -f "$HOME/.local/bin/agent-interface"
+rm -f "${XDG_DATA_HOME:-$HOME/.local/share}/applications/io.github.eandualem.agent-interface.desktop"
 ```
 
 These commands leave your data and terminal sessions intact. See the

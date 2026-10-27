@@ -1,7 +1,7 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
-use tmux_workspaces_core::Attachment;
+use agent_interface_core::Attachment;
 
 use super::Observation;
 use crate::library::location::resolve_path;

@@ -2,8 +2,8 @@
 
 use std::{path::Path, time::Duration};
 
+use agent_interface_core::Layout;
 use rusqlite::{Connection, OpenFlags, Transaction, TransactionBehavior};
-use tmux_workspaces_core::Layout;
 
 use crate::{Document, Error, Reconciliation, Store};
 

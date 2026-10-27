@@ -40,44 +40,67 @@ if printf '%s' "$HOME${XDG_DATA_HOME:-}" | LC_ALL=C grep -q '[[:cntrl:]]'; then
     fail 'Installation paths must not contain control characters.'
 fi
 legacy=
+legacy_link=
+legacy_launcher=
 if [ "$platform" = apple-darwin ]; then
     parent=$HOME/Applications
     destination="$parent/Agent Interface.app"
     legacy=$parent/tmux-workspaces.app
     payload='Agent Interface.app'
-    executable=Contents/MacOS/tmux-workspaces
+    executable=Contents/MacOS/agent-interface
     marker=Contents/Resources/INSTALLER
 else
     getconf GNU_LIBC_VERSION >/dev/null 2>&1 || fail 'This build requires glibc Linux (not musl).'
     parent=$HOME/.local/lib
-    destination=$parent/tmux-workspaces
-    payload=tmux-workspaces
-    executable=bin/tmux-workspaces
+    destination=$parent/agent-interface
+    legacy=$parent/tmux-workspaces
+    payload=agent-interface
+    executable=bin/agent-interface
     marker=INSTALLER
     data=${XDG_DATA_HOME:-$HOME/.local/share}
     case $data in /*) ;; *) fail 'XDG_DATA_HOME must be an absolute path.';; esac
-    launcher=$data/applications/io.github.eandualem.tmux-workspaces.desktop
-    link=$HOME/.local/bin/tmux-workspaces
+    launcher=$data/applications/io.github.eandualem.agent-interface.desktop
+    link=$HOME/.local/bin/agent-interface
+    legacy_link=$HOME/.local/bin/tmux-workspaces
+    legacy_launcher=$data/applications/io.github.eandualem.tmux-workspaces.desktop
     if [ -e "$launcher" ] || [ -L "$launcher" ]; then
-        [ -f "$launcher" ] && grep -qx 'X-TmuxWorkspaces-Installer=1' "$launcher" || fail "Refusing to replace $launcher."
+        [ -f "$launcher" ] && grep -qx 'X-AgentInterface-Installer=1' "$launcher" || fail "Refusing to replace $launcher."
     fi
     if [ -e "$link" ] || [ -L "$link" ]; then
-        [ -L "$link" ] && [ "$(readlink "$link")" = "$destination/$executable" ] || fail "Refusing to replace $link."
+        [ -L "$link" ] || fail "Refusing to replace $link."
+        case $(readlink "$link") in
+            "$destination/bin/agent-interface"|"$destination/bin/tmux-workspaces") ;;
+            *) fail "Refusing to replace $link." ;;
+        esac
+    fi
+    # Retire only the old installer's launchers, never an unrelated command.
+    if [ -e "$legacy_link" ] || [ -L "$legacy_link" ]; then
+        [ -L "$legacy_link" ] && [ "$(readlink "$legacy_link")" = "$legacy/bin/tmux-workspaces" ] || fail "Refusing to replace $legacy_link."
+    fi
+    if [ -e "$legacy_launcher" ] || [ -L "$legacy_launcher" ]; then
+        [ ! -L "$legacy_launcher" ] && [ -f "$legacy_launcher" ] &&
+            grep -qx 'X-TmuxWorkspaces-Installer=1' "$legacy_launcher" || fail "Refusing to replace $legacy_launcher."
     fi
 fi
 for existing in "$destination" "$legacy"; do
     if [ -e "$existing" ] || [ -L "$existing" ]; then
-        [ ! -L "$existing" ] && [ -f "$existing/$marker" ] &&
-            [ "$(cat "$existing/$marker")" = io.github.eandualem.tmux-workspaces ] ||
+        [ ! -L "$existing" ] && [ -f "$existing/$marker" ] ||
             fail "Refusing to replace an installation not owned by this installer: $existing"
+        case $(cat "$existing/$marker") in
+            io.github.eandualem.agent-interface|io.github.eandualem.tmux-workspaces) ;;
+            *) fail "Refusing to replace an installation not owned by this installer: $existing" ;;
+        esac
     fi
 done
 mkdir -p "$parent"
-lock=$parent/.tmux-workspaces-install.lock
+lock=$parent/.agent-interface-install.lock
 mkdir "$lock" 2>/dev/null || fail "Another install is active. If it was interrupted, remove $lock and retry."
 staging=
 backup=
 legacy_backup=
+legacy_link_backup=
+legacy_launcher_backup=
+link_backup=
 launcher_stage=
 launcher_backup=
 installed=false
@@ -91,6 +114,12 @@ cleanup() {
     if [ "$status" -ne 0 ]; then
         if [ "$installed" = true ]; then rm -rf "$destination"; fi
         if [ "$new_link" = true ]; then rm -f "$link"; fi
+        if [ -n "$link_backup" ] && [ -L "$link_backup" ]; then
+            if ! mv "$link_backup" "$link"; then
+                printf 'Previous command retained at %s\n' "$link_backup" >&2
+                rollback_ok=false
+            fi
+        fi
         if [ -n "$backup" ] && [ -e "$backup" ]; then
             if ! mv "$backup" "$destination"; then
                 printf 'Previous app retained at %s\n' "$backup" >&2
@@ -100,6 +129,18 @@ cleanup() {
         if [ -n "$legacy_backup" ] && [ -e "$legacy_backup" ]; then
             if ! mv "$legacy_backup" "$legacy"; then
                 printf 'Previous app retained at %s\n' "$legacy_backup" >&2
+                rollback_ok=false
+            fi
+        fi
+        if [ -n "$legacy_link_backup" ] && [ -L "$legacy_link_backup" ]; then
+            if ! mv "$legacy_link_backup" "$legacy_link"; then
+                printf 'Previous command retained at %s\n' "$legacy_link_backup" >&2
+                rollback_ok=false
+            fi
+        fi
+        if [ -n "$legacy_launcher_backup" ] && [ -f "$legacy_launcher_backup" ]; then
+            if ! mv -f "$legacy_launcher_backup" "$legacy_launcher"; then
+                printf 'Previous launcher retained at %s\n' "$legacy_launcher_backup" >&2
                 rollback_ok=false
             fi
         fi
@@ -117,6 +158,7 @@ cleanup() {
     if [ "$rollback_ok" = true ]; then
         [ -z "$staging" ] || rm -rf "$staging"
         [ -z "$launcher_backup" ] || rm -f "$launcher_backup"
+        [ -z "$legacy_launcher_backup" ] || rm -f "$legacy_launcher_backup"
     fi
     [ -z "$launcher_stage" ] || rm -f "$launcher_stage"
     rmdir "$lock"
@@ -124,7 +166,7 @@ cleanup() {
 }
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
-staging=$(mktemp -d "$parent/.tmux-workspaces-stage.XXXXXX")
+staging=$(mktemp -d "$parent/.agent-interface-stage.XXXXXX")
 if [ -n "$archive" ]; then
     [ -f "$archive" ] && [ -f "$archive.sha256" ] || fail 'The archive and its adjacent .sha256 file are required.'
     cp "$archive" "$staging/download.tar.gz"
@@ -132,10 +174,21 @@ if [ -n "$archive" ]; then
 else
     command -v curl >/dev/null 2>&1 || fail 'Install curl and retry.'
     base=https://github.com/eandualem/agent-interface/releases/latest/download
-    name=tmux-workspaces-$target.tar.gz
+    name=agent-interface-$target.tar.gz
     printf 'Downloading %s\n' "$name"
-    curl --fail --location --silent --show-error --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 600 \
-        "$base/$name" -o "$staging/download.tar.gz" || fail 'Download failed. Check that a release exists for this platform.'
+    if status=$(curl --fail --location --silent --show-error --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 600 \
+        --write-out '%{http_code}' "$base/$name" -o "$staging/download.tar.gz"); then
+        :
+    elif [ "$status" = 404 ]; then
+        # The latest release can still predate the archive rename while main
+        # contains the next installer. Only a missing asset permits fallback.
+        name=tmux-workspaces-$target.tar.gz
+        printf 'Checking earlier release archive %s\n' "$name"
+        curl --fail --location --silent --show-error --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 600 \
+            "$base/$name" -o "$staging/download.tar.gz" || fail 'Download failed. Check that a release exists for this platform.'
+    else
+        fail 'Download failed. Check that a release exists for this platform.'
+    fi
     curl --fail --location --silent --show-error --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 60 \
         "$base/$name.sha256" -o "$staging/checksum"
 fi
@@ -154,6 +207,9 @@ tar -tzf "$staging/download.tar.gz" > "$staging/members"
 if [ "$platform" = apple-darwin ] &&
     [ "$(awk -F/ 'NR == 1 {print $1; exit}' "$staging/members")" = tmux-workspaces.app ]; then
     payload=tmux-workspaces.app
+elif [ "$platform" = unknown-linux-gnu ] &&
+    [ "$(awk -F/ 'NR == 1 {print $1; exit}' "$staging/members")" = tmux-workspaces ]; then
+    payload=tmux-workspaces
 fi
 awk -v root="$payload" '
     $0 != root && index($0, root "/") != 1 {exit 1}
@@ -163,7 +219,18 @@ tar -tvzf "$staging/download.tar.gz" > "$staging/types"
 awk 'substr($0,1,1) != "-" && substr($0,1,1) != "d" {exit 1}' "$staging/types" || fail 'Archive links or special files are not supported.'
 tar -xzf "$staging/download.tar.gz" -C "$staging"
 prepared=$staging/$payload
-[ -f "$prepared/$marker" ] && [ "$(cat "$prepared/$marker")" = io.github.eandualem.tmux-workspaces ] || fail 'Invalid installation marker.'
+[ -f "$prepared/$marker" ] || fail 'Invalid installation marker.'
+case $(cat "$prepared/$marker") in
+    io.github.eandualem.agent-interface) ;;
+    io.github.eandualem.tmux-workspaces)
+        # Earlier archives keep their original executable and resources.
+        if [ "$platform" = apple-darwin ]; then
+            executable=Contents/MacOS/tmux-workspaces
+        else
+            executable=bin/tmux-workspaces
+        fi ;;
+    *) fail 'Invalid installation marker.' ;;
+esac
 [ "$(cat "$prepared/$(dirname "$marker")/TARGET")" = "$target" ] || fail 'The archive is for a different platform.'
 if [ "$platform" = apple-darwin ]; then
     codesign --verify --strict "$prepared" || fail 'App signature verification failed.'
@@ -172,9 +239,9 @@ fi
 if [ "$platform" = unknown-linux-gnu ]; then
     mkdir -p "$data/applications" "$HOME/.local/bin"
     # Stage beside the launcher so replacement stays atomic with a separate XDG volume.
-    launcher_stage=$(mktemp "$data/applications/.tmux-workspaces-launcher.XXXXXX")
+    launcher_stage=$(mktemp "$data/applications/.agent-interface-launcher.XXXXXX")
     if [ -f "$launcher" ]; then
-        launcher_backup=$(mktemp "$data/applications/.tmux-workspaces-previous.XXXXXX")
+        launcher_backup=$(mktemp "$data/applications/.agent-interface-previous.XXXXXX")
         cp "$launcher" "$launcher_backup"
     fi
     # Exec has both desktop-string and command-argument escaping layers.
@@ -190,8 +257,8 @@ Icon=$icon
 Terminal=false
 Categories=Development;System;TerminalEmulator;
 Keywords=tmux;terminal;workspace;
-StartupWMClass=io.github.eandualem.tmux-workspaces
-X-TmuxWorkspaces-Installer=1
+StartupWMClass=$(cat "$prepared/$marker")
+X-AgentInterface-Installer=1
 EOF
 fi
 if [ -e "$destination" ]; then
@@ -205,13 +272,28 @@ fi
 mv "$prepared" "$destination"
 installed=true
 if [ "$platform" = unknown-linux-gnu ]; then
-    # An existing owned symlink already points at the updated installation.
+    # A transitional install can still point at the earlier executable name.
+    if [ -L "$link" ] && [ "$(readlink "$link")" != "$destination/$executable" ]; then
+        link_backup=$staging/previous-link
+        mv "$link" "$link_backup"
+    fi
     if [ ! -L "$link" ]; then
         new_link=true
         ln -s "$destination/$executable" "$link"
     fi
     new_launcher=true
     mv -f "$launcher_stage" "$launcher"
+    if [ -L "$legacy_link" ]; then
+        legacy_link_backup=$staging/legacy-link
+        mv "$legacy_link" "$legacy_link_backup"
+    fi
+    if [ -f "$legacy_launcher" ]; then
+        retired=$(mktemp "$data/applications/.agent-interface-retired.XXXXXX")
+        # Copy before marking the backup valid, including across XDG volumes.
+        cp "$legacy_launcher" "$retired"
+        legacy_launcher_backup=$retired
+        rm "$legacy_launcher"
+    fi
     if command -v update-desktop-database >/dev/null 2>&1; then
         update-desktop-database "$data/applications" >/dev/null 2>&1 || true
     fi

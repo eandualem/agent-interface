@@ -7,10 +7,10 @@ use crate::{
     sessions,
     view::{Appearance, TerminalView},
 };
+use agent_interface_core::Leaf;
 use futures::channel::mpsc::{self, UnboundedReceiver};
 use gpui::{Context, Entity, Render, Task, Window, div, prelude::*};
 use std::{path::PathBuf, sync::Arc};
-use tmux_workspaces_core::Leaf;
 use tmux_workspaces_tmux::connection::SessionWindow;
 
 static CONNECTION_ATTEMPTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -24,7 +24,7 @@ pub(super) struct Target {
 
 impl Target {
     /// Clear only the pane contents the user acted on, in the selected tab.
-    pub fn detach_from(&self, layout: &mut tmux_workspaces_core::Layout) -> bool {
+    pub fn detach_from(&self, layout: &mut agent_interface_core::Layout) -> bool {
         layout.tab().is_some_and(|tab| {
             tab.tree
                 .leaves()
@@ -35,7 +35,7 @@ impl Target {
     }
 
     /// A hidden tab still owns its connection until the saved target changes.
-    pub fn exists_in(&self, layout: &tmux_workspaces_core::Layout) -> bool {
+    pub fn exists_in(&self, layout: &agent_interface_core::Layout) -> bool {
         layout.workspaces.iter().any(|workspace| {
             workspace.tabs.iter().any(|tab| {
                 tab.tree
@@ -100,7 +100,7 @@ fn connect_selected(
     } else {
         let directory =
             library::library_directory(target.directory.as_deref()).map_err(|e| e.to_string())?;
-        let socket = library::existing_shell_socket(&directory)
+        let socket = library::existing_shell_socket(&directory, &target.leaf.id)
             .map_err(|e| {
                 tracing::debug!(event = "shell_socket_lookup_failed", error_kind = ?e.kind(), os_error = e.raw_os_error(), "Ordinary shell socket lookup failed");
                 e.to_string()
@@ -315,7 +315,7 @@ impl LiveTerminal {
                     }
                     let directory = library::library_directory(target.directory.as_deref())
                         .map_err(|error| error.to_string())?;
-                    let socket = library::shell_socket_for_creation(&directory)
+                    let socket = library::shell_socket_for_creation(&directory, &target.leaf.id)
                         .map_err(|error| error.to_string())?;
                     tmux_workspaces_tmux::shells::ensure(
                         &socket,
@@ -510,17 +510,46 @@ pub(super) fn appearance() -> Appearance {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "requires an installed Linux font and graphical session; run in graphical CI"]
+    fn linux_terminal_font_has_uniform_ascii_cells() {
+        let app = gpui_platform::application();
+        let text = app.text_system();
+        let appearance = appearance();
+        assert!(
+            text.all_font_names()
+                .contains(&appearance.font_family.to_string())
+        );
+        let font = gpui::font(appearance.font_family.clone());
+        let id = text.resolve_font(&font);
+        let cell = crate::view::cell_size(&text, &appearance);
+        for ch in ' '..='~' {
+            let advance = text
+                .advance(id, gpui::px(appearance.font_size), ch)
+                .unwrap();
+            assert!(
+                (f32::from(advance.width - cell.width)).abs() < 0.01,
+                "{ch:?}: {advance:?}, cell {cell:?}"
+            );
+        }
+        println!(
+            "Linux terminal font {}: ASCII cell {:?}",
+            appearance.font_family, cell
+        );
+    }
+    use agent_interface_core::Attachment;
     use std::{
         collections::HashMap,
         time::{Duration, Instant},
     };
-    use tmux_workspaces_core::Attachment;
     use tmux_workspaces_term::Screen;
     use tmux_workspaces_test_support::TmuxServer;
 
     #[test]
     fn attachment_survives_navigation_and_detach_returns_the_same_pane_to_its_chooser() {
-        let mut model = tmux_workspaces_core::Layout::initial("/work".into());
+        let mut model = agent_interface_core::Layout::initial("/work".into());
         model.attach(Some(Attachment {
             session: "worker".into(),
             source_socket: Some("/fixture/source".into()),
@@ -540,7 +569,7 @@ mod tests {
         model.choose_workspace(&workspace);
         model.choose_tab(&tab);
         model.split(
-            tmux_workspaces_core::Direction::Right,
+            agent_interface_core::Direction::Right,
             "/other".into(),
             true,
         );

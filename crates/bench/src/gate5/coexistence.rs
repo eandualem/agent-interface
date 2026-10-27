@@ -105,7 +105,7 @@ fn source_lifetime(interrupt_detach: bool) {
             "set-option",
             "-t",
             "helper",
-            "@tmux_workspaces_attachment",
+            "@agent_interface_attachment",
             "1",
         ])
         .unwrap();

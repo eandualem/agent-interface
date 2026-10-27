@@ -3,8 +3,8 @@
 //! loads and why each reaches it, what it receives at its next start, and its
 //! usage. Choosing a skill or policy reads it here; nothing opens elsewhere.
 
+use agent_interface_core::AgentSection;
 use gpui::{AnyElement, Context, Div, SharedString, div, prelude::*, px};
-use tmux_workspaces_core::AgentSection;
 use tmux_workspaces_roster::views::{
     Agent, Data, Instructions, Loadout, LocalSkill, Reason, Received, Usage,
 };

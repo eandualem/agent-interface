@@ -838,7 +838,7 @@ fn bundle(app: &Path, executable: &str, kind: &str) -> io::Result<PathBuf> {
          \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
          <plist version=\"1.0\"><dict>\n\
          <key>CFBundleExecutable</key><string>{executable}</string>\n\
-         <key>CFBundleIdentifier</key><string>local.tmux-workspaces.{executable}</string>\n\
+         <key>CFBundleIdentifier</key><string>local.agent-interface.{executable}</string>\n\
          <key>CFBundlePackageType</key><string>APPL</string>\n\
          <key>{kind}</key><true/>\n\
          </dict></plist>\n"

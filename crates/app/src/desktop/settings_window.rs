@@ -75,6 +75,7 @@ pub fn show(cx: &mut App) {
     let t = tokens();
     let options = WindowOptions {
         app_id: Some(super::APP_ID.into()),
+        window_decorations: cfg!(target_os = "linux").then_some(gpui::WindowDecorations::Client),
         window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
             None,
             size(px(t.size.settings_width), px(t.size.settings_height)),
@@ -826,7 +827,7 @@ impl SettingsWindow {
 }
 
 impl Render for SettingsWindow {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (t, c) = (tokens(), colors());
         let pages = [
             (Page::General, "General", "settings"),
@@ -880,7 +881,7 @@ impl Render for SettingsWindow {
             Page::Shortcuts => self.shortcuts(cx),
             Page::Agents => self.agents(cx),
         };
-        ui::text(
+        let body = ui::text(
             div()
                 .size_full()
                 .flex()
@@ -910,6 +911,7 @@ impl Render for SettingsWindow {
                         .child(error),
                     )
                 }),
-        )
+        );
+        super::window_controls::frame(body, "Settings", window)
     }
 }

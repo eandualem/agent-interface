@@ -15,11 +15,11 @@ use std::{
     time::Duration,
 };
 
+use agent_interface_core::{AgentSection, View, ViewKind};
 use futures::{StreamExt, channel::mpsc};
 use gpui::{
     Context, Entity, EventEmitter, SharedString, Subscription, Task, Window, div, prelude::*, px,
 };
-use tmux_workspaces_core::{AgentSection, View, ViewKind};
 use tmux_workspaces_roster::views::{self, Data, Part, Range, Request};
 
 use super::{

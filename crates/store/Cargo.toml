@@ -1,5 +1,5 @@
 [package]
-name = "tmux-workspaces-store"
+name = "agent-interface-store"
 description = "Reading and writing the Agent Interface layout library"
 version.workspace = true
 edition.workspace = true
@@ -8,7 +8,7 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
-tmux-workspaces-core = { path = "../core" }
+agent-interface-core = { path = "../core" }
 rusqlite = { workspace = true, features = ["limits", "serialize"] }
 serde.workspace = true
 serde_json.workspace = true

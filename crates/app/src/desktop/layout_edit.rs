@@ -7,10 +7,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use tmux_workspaces_core::{Direction, Layout, Node, Tab};
+use agent_interface_core::{Direction, Layout, Node, Tab};
 
 use crate::library;
-use tmux_workspaces_store::{Document, Error, Reconciliation, Store};
+use agent_interface_store::{Document, Error, Reconciliation, Store};
 
 static PENDING: AtomicU32 = AtomicU32::new(0);
 
@@ -74,9 +74,12 @@ pub(super) fn save(
     let directory = library::library_directory(directory);
     if let Ok(directory) = &directory
         && let Some(previous) = previous
-        && let Ok(Some(socket)) = library::existing_shell_socket(directory)
     {
-        remember_directories(local, previous, &socket);
+        remember_directories(local, previous, |leaf| {
+            let socket = library::existing_shell_socket(directory, &leaf.id)?
+                .ok_or_else(|| std::io::Error::other("Ordinary shell is not running"))?;
+            library::remember_shell_directory(leaf, &socket)
+        });
     }
     if let Some((action, cwd)) = creation {
         action.apply(local, &cwd);
@@ -143,7 +146,11 @@ pub(super) fn select_created(model: &mut Layout, created: &Layout) {
 
 /// Refresh only previously nonempty leaves from their own ordinary shells.
 /// Reads run before creation on the save worker. Failures retain saved paths.
-pub(super) fn remember_directories(model: &mut Layout, previous: &Tab, socket: &Path) {
+pub(super) fn remember_directories(
+    model: &mut Layout,
+    previous: &Tab,
+    mut refresh: impl FnMut(&mut agent_interface_core::Leaf) -> std::io::Result<()>,
+) {
     let deadline = Instant::now() + Duration::from_secs(3);
     let mut directories = HashMap::new();
     for leaf in previous
@@ -156,7 +163,7 @@ pub(super) fn remember_directories(model: &mut Layout, previous: &Tab, socket: &
             break;
         }
         let mut observed = leaf.clone();
-        if library::remember_shell_directory(&mut observed, socket).is_ok() {
+        if refresh(&mut observed).is_ok() {
             directories.insert(observed.id, observed.cwd);
         } else {
             tracing::debug!(event = "shell_directory_unavailable", pane_id = %leaf.id, "Could not refresh saved shell directory");
@@ -187,7 +194,7 @@ pub(super) fn remember_directories(model: &mut Layout, previous: &Tab, socket: &
 mod tests {
     use super::*;
     use crate::library::WindowLayout;
-    use tmux_workspaces_core::Attachment;
+    use agent_interface_core::Attachment;
 
     #[test]
     fn shutdown_waits_for_an_accepted_layout_write_behind_a_database_lock() {
@@ -344,7 +351,9 @@ mod tests {
                 ])
                 .unwrap();
         }
-        remember_directories(&mut model, &previous, Path::new(socket.trim_end()));
+        remember_directories(&mut model, &previous, |leaf| {
+            library::remember_shell_directory(leaf, Path::new(socket.trim_end()))
+        });
         let leaves = model.tab().unwrap().tree.leaves();
         assert_eq!(leaves[0].cwd.as_deref(), directory.to_str());
         assert_eq!(leaves[1].cwd.as_deref(), directory.to_str());

@@ -1,7 +1,7 @@
 //! Pure reconciliation of one window's edits with a newer shared document.
 
+use agent_interface_core::{Layout, merge::merge_shared_layout};
 use std::path::Path;
-use tmux_workspaces_core::{Layout, merge::merge_shared_layout};
 
 use crate::{Document, Error, json, project, schema};
 

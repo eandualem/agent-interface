@@ -99,6 +99,7 @@ palette = [
 [font]
 ui = ".SystemUIFont"        # the platform interface font
 mono = "Menlo"              # keys, numbers and terminals
+mono_linux = "DejaVu Sans Mono" # supplied by fonts-dejavu-core on Ubuntu/WSL
 terminal_size = 13.0        # default terminal size; Settings allows 9 to 24
 
 # Each style: size in pixels, weight 100 to 900.

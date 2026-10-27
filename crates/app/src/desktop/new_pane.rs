@@ -8,12 +8,12 @@
 
 use std::{path::PathBuf, time::Duration};
 
+use agent_interface_core::{View, ViewKind};
 use futures::{StreamExt, channel::mpsc};
 use gpui::{
     Context, Entity, EventEmitter, ScrollHandle, SharedString, Subscription, Task, Window, div,
     prelude::*, px,
 };
-use tmux_workspaces_core::{View, ViewKind};
 use tmux_workspaces_roster::views::{Data, Member, Request, Team};
 
 use super::{

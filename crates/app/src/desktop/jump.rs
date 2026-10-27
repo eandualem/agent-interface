@@ -12,7 +12,7 @@ use super::{
     layout_edit::Create,
     name::{NameEvent, NameField},
 };
-use tmux_workspaces_core::Direction;
+use agent_interface_core::Direction;
 use ui::AgentState;
 
 /// The open jump popover.

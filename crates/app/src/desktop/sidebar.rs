@@ -39,8 +39,8 @@ fn reorder_tab_proposal(
     source: &str,
     destination: &str,
 ) -> Option<(
-    tmux_workspaces_store::Document,
-    tmux_workspaces_core::Layout,
+    agent_interface_store::Document,
+    agent_interface_core::Layout,
 )> {
     let (base, mut proposed) = layout.save_snapshot();
     if proposed.selected != workspace || source == destination {
@@ -166,7 +166,7 @@ impl Browser {
     /// the same name is not that agent.
     pub(super) fn attachment_state(
         &self,
-        attachment: &tmux_workspaces_core::Attachment,
+        attachment: &agent_interface_core::Attachment,
         states: Option<&HashMap<String, AgentState>>,
     ) -> Option<AgentState> {
         let state = states?.get(&attachment.session).copied()?;
@@ -177,7 +177,7 @@ impl Browser {
     /// Whether any pane of this tab shows an agent that needs you.
     pub(super) fn tab_needs_you(
         &self,
-        tab: &tmux_workspaces_core::Tab,
+        tab: &agent_interface_core::Tab,
         states: Option<&HashMap<String, AgentState>>,
     ) -> bool {
         tab.tree.leaves().into_iter().any(|leaf| {
@@ -837,9 +837,9 @@ mod tests {
     #[test]
     fn dragging_tabs_reorders_in_both_directions_without_changing_selection() {
         let directory = tempfile::tempdir().unwrap();
-        drop(tmux_workspaces_store::Store::open_or_create(directory.path()).unwrap());
+        drop(agent_interface_store::Store::open_or_create(directory.path()).unwrap());
         let mut store =
-            tmux_workspaces_store::Store::open_existing_writable(directory.path()).unwrap();
+            agent_interface_store::Store::open_existing_writable(directory.path()).unwrap();
         let mut base = store.load().unwrap();
         let mut model = base.model().clone();
         for name in ["First", "Second", "Third"] {
