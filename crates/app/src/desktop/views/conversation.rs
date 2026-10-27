@@ -137,6 +137,8 @@ struct Stored {
     marking: Option<u64>,
     /// Redeliveries by entry: `None` while asked, else what Backbone said.
     redelivery: HashMap<u64, Option<String>>,
+    /// Where the next batch of older entries to re-read starts.
+    turn: usize,
 }
 
 impl Stored {
@@ -144,13 +146,10 @@ impl Stored {
         self.supported == Some(true)
     }
 
+    /// The newest entry Backbone returned; one a send added may be newer
+    /// than replies not yet read.
     fn last(&self) -> Option<u64> {
-        self.page
-            .as_ref()?
-            .entries
-            .iter()
-            .map(|entry| entry.id)
-            .max()
+        self.fetched.iter().copied().max()
     }
 
     /// Take a newly read newest page, keeping the thread continuous: entries
@@ -203,22 +202,54 @@ impl Stored {
 
     /// Older owner messages whose delivery may still change, at most 50:
     /// the newest page does not hold them, so they are read by ID.
-    fn unsettled(&self) -> Vec<u64> {
-        self.earlier
+    /// Those with an unanswered redelivery count too. With more than 50, each
+    /// poll takes the next 50 in turn.
+    fn unsettled(&mut self) -> Vec<u64> {
+        let all: Vec<u64> = self
+            .earlier
             .iter()
             .filter(|entry| {
+                self.redelivery.contains_key(&entry.id)
+                    || matches!(
+                        entry.body,
+                        Body::Message {
+                            delivery: Some(stored::Delivery::Pending | stored::Delivery::Held),
+                            ..
+                        }
+                    )
+            })
+            .map(|entry| entry.id)
+            .collect();
+        if all.len() <= 50 {
+            return all;
+        }
+        let start = self.turn % all.len();
+        self.turn = start + 50;
+        all.iter().cycle().skip(start).take(50).copied().collect()
+    }
+
+    /// Forget redelivery notes for entries Backbone no longer reports failed.
+    fn settle(&mut self) {
+        let noted: Vec<u64> = self
+            .redelivery
+            .iter()
+            .filter(|(_, note)| note.is_some())
+            .map(|(id, _)| *id)
+            .collect();
+        for id in noted {
+            let failed = self.entry_mut(id).is_none_or(|entry| {
                 matches!(
                     entry.body,
                     Body::Message {
-                        delivery: Some(stored::Delivery::Pending | stored::Delivery::Held),
+                        delivery: Some(stored::Delivery::Failed),
                         ..
                     }
                 )
-            })
-            .map(|entry| entry.id)
-            .rev()
-            .take(50)
-            .collect()
+            });
+            if !failed {
+                self.redelivery.remove(&id);
+            }
+        }
     }
 
     /// The shown copy of entry `id`, wherever it was loaded.
@@ -269,6 +300,7 @@ impl Conversation {
                 read_at: None,
                 marking: None,
                 redelivery: HashMap::new(),
+                turn: 0,
             });
             conversation._poll = Some(cx.spawn(async move |this, cx| {
                 loop {
@@ -468,6 +500,7 @@ impl Conversation {
                                 *shown = entry;
                             }
                         }
+                        stored.settle();
                         if seen {
                             conversation.mark_read(cx);
                         }
@@ -662,7 +695,7 @@ impl Conversation {
                         conversation.add_entry(*stored);
                         None
                     }
-                    stored::Outcome::AlreadyPending => None,
+                    stored::Outcome::AlreadyPending => Some("Already being delivered.".into()),
                     stored::Outcome::Refused { message, .. } => Some(message),
                     stored::Outcome::Unknown => Some("Backbone did not confirm the retry.".into()),
                 };
@@ -1202,6 +1235,7 @@ mod tests {
             read_at: None,
             marking: None,
             redelivery: HashMap::new(),
+            turn: 0,
         };
         let ids = |entries: &[stored::Entry]| entries.iter().map(|e| e.id).collect::<Vec<_>>();
         stored.receive(page(&[2, 3, 4], Some("before-2")));
@@ -1225,6 +1259,21 @@ mod tests {
             .push(page(&[11], None).entries.remove(0));
         stored.receive(page(&[9, 10], Some("before-9")));
         assert_eq!(ids(&stored.page.as_ref().unwrap().entries), [9, 10, 11]);
+        // The read marker stops at what Backbone returned, not the sent entry.
+        assert_eq!(stored.last(), Some(10));
+        // More than 50 older messages awaiting delivery are checked in turns.
+        stored.earlier = (1..=60)
+            .map(|id| {
+                serde_json::from_value(serde_json::json!({"id": id, "kind": "message",
+                    "created_at": "2026-10-27T14:00:00Z", "author": {"type": "owner"},
+                    "text": "hi", "delivery": "pending"}))
+                .unwrap()
+            })
+            .collect();
+        let first = stored.unsettled();
+        let second = stored.unsettled();
+        assert_eq!((first.len(), first[0], second[0]), (50, 1, 51));
+        assert!(second.contains(&60));
         stored
             .page
             .as_mut()
