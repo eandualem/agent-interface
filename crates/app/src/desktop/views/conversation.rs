@@ -155,7 +155,20 @@ impl Stored {
     /// it no longer holds move to the earlier ones. When it shares nothing
     /// with the last page, entries may have been skipped, so earlier entries
     /// are dropped and paging continues from the new page.
-    fn receive(&mut self, page: stored::Conversation) {
+    fn receive(&mut self, mut page: stored::Conversation) {
+        // A send accepted after this page was read added an entry it lacks.
+        let newest = page.entries.iter().map(|entry| entry.id).max().unwrap_or(0);
+        let mut sent: Vec<stored::Entry> = self
+            .page
+            .as_ref()
+            .map(|old| {
+                old.entries
+                    .iter()
+                    .filter(|entry| entry.id > newest && !self.fetched.contains(&entry.id))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
         match self.page.take() {
             Some(old) if !page.entries.is_empty() => {
                 // Only what Backbone returned shows continuity, not entries a
@@ -182,7 +195,26 @@ impl Stored {
             None => self.earlier_cursor = page.older.clone(),
         }
         self.fetched = page.entries.iter().map(|entry| entry.id).collect();
+        page.entries.append(&mut sent);
         self.page = Some(page);
+    }
+
+    /// Drop older entries whose delivery may since have changed, so the
+    /// next load of earlier messages reads their current state.
+    fn renew_earlier(&mut self) {
+        let pending = self.earlier.iter().any(|entry| {
+            matches!(
+                entry.body,
+                Body::Message {
+                    delivery: Some(stored::Delivery::Pending),
+                    ..
+                }
+            )
+        });
+        if pending && let Some(page) = &self.page {
+            self.earlier.clear();
+            self.earlier_cursor = page.older.clone();
+        }
     }
 
     /// The shown copy of entry `id`, wherever it was loaded.
@@ -644,6 +676,7 @@ impl Conversation {
                     .page
                     .as_ref()
                     .map(|page| page.read_through.unwrap_or_default());
+                stored.renew_earlier();
             }
             self.mark_read(cx);
             self.refresh(cx);
@@ -1145,7 +1178,16 @@ mod tests {
         assert!(stored.earlier.is_empty());
         assert_eq!(stored.earlier_cursor.as_deref(), Some("before-9"));
         assert_eq!(stored.entry_mut(10).map(|e| e.id), Some(10));
-        // An entry a send added does not stand in for continuity.
+        // An entry a send added survives a poll read before it, and does not
+        // stand in for continuity.
+        stored
+            .page
+            .as_mut()
+            .unwrap()
+            .entries
+            .push(page(&[11], None).entries.remove(0));
+        stored.receive(page(&[9, 10], Some("before-9")));
+        assert_eq!(ids(&stored.page.as_ref().unwrap().entries), [9, 10, 11]);
         stored
             .page
             .as_mut()
