@@ -2,8 +2,8 @@
 //! reached it and its state now, then recent deliveries and events, newest
 //! first, filtered by kind.
 
+use agent_interface_roster::views::{Activity, Change, Entry, History, Member, now};
 use gpui::{AnyElement, Context, Rgba, SharedString, div, prelude::*, px, relative};
-use tmux_workspaces_roster::views::{Activity, Change, Entry, History, Member, now};
 
 use super::{Records, ViewPane, line, list, mono, since};
 use crate::desktop::{

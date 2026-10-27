@@ -1,6 +1,6 @@
 //! Command-line options: `--name value` pairs.
 //!
-//! `tmux-workspaces-bench-rio` includes this file.
+//! `agent-interface-bench-rio` includes this file.
 
 use std::collections::HashMap;
 use std::str::FromStr;

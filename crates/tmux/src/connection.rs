@@ -384,7 +384,7 @@ mod tests {
 
     #[test]
     fn an_id_shaped_session_name_connects_to_that_session_only() {
-        let server = tmux_workspaces_test_support::TmuxServer::start().unwrap();
+        let server = agent_interface_test_support::TmuxServer::start().unwrap();
         server
             .run(&["new-session", "-d", "-s", "first", "cat"])
             .unwrap();
@@ -414,7 +414,7 @@ mod tests {
 
     #[test]
     fn session_windows_follow_changes_but_reject_a_replaced_session() {
-        let server = tmux_workspaces_test_support::TmuxServer::start().unwrap();
+        let server = agent_interface_test_support::TmuxServer::start().unwrap();
         server
             .run(&["new-session", "-d", "-s", "listed", "cat"])
             .unwrap();
@@ -441,7 +441,7 @@ mod tests {
 
     #[test]
     fn explicit_reopen_keeps_live_selection_but_discards_replaced_session_identity() {
-        let server = tmux_workspaces_test_support::TmuxServer::start().unwrap();
+        let server = agent_interface_test_support::TmuxServer::start().unwrap();
         server
             .run(&["new-session", "-d", "-s", "reopened", "cat"])
             .unwrap();

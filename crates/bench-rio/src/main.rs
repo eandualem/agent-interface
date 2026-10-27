@@ -5,7 +5,7 @@
 //! the simdutf C++ library, and a program that links both crashes. So that
 //! `rio-vt` runs exactly the replay the other engines run, this program
 //! includes the harness's own source files, and the `term` crate's display
-//! data, rather than copying them. `tmux-workspaces-bench gate1` starts it;
+//! data, rather than copying them. `agent-interface-bench gate1` starts it;
 //! the protocol is described in `crates/bench/src/child.rs`.
 
 #![deny(unsafe_code)]

@@ -6,9 +6,9 @@
 
 use std::time::Instant;
 
-use tmux_workspaces_term::Terminal;
-use tmux_workspaces_tmux::control::PaneId;
-use tmux_workspaces_tmux::recovery::{Attach, Rebuilt, Recovery, Snapshot, Step};
+use agent_interface_term::Terminal;
+use agent_interface_tmux::control::PaneId;
+use agent_interface_tmux::recovery::{Attach, Rebuilt, Recovery, Snapshot, Step};
 
 #[path = "../../../app/src/restore.rs"]
 mod restore;

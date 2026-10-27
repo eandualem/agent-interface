@@ -8,11 +8,11 @@
 //! output. It writes the last replay's
 //! final screen, in the comparison format, to the `--screen` file.
 //!
-//! `tmux-workspaces-bench-rio` includes this file.
+//! `agent-interface-bench-rio` includes this file.
 
 use std::fs;
 
-use tmux_workspaces_tmux::control::PaneId;
+use agent_interface_tmux::control::PaneId;
 
 use crate::display::Screen;
 use crate::dump::dump;

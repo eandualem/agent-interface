@@ -12,7 +12,7 @@ use std::{
     time::Duration,
 };
 
-use tmux_workspaces_roster::{Snapshot, views};
+use agent_interface_roster::{Snapshot, views};
 
 mod location;
 pub use location::provider_directory;

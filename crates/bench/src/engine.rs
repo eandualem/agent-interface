@@ -1,7 +1,7 @@
 //! The interface every terminal engine under measurement implements, and the
 //! grid every run uses.
 //!
-//! `tmux-workspaces-bench-rio` includes this file.
+//! `agent-interface-bench-rio` includes this file.
 
 use crate::display::Screen;
 

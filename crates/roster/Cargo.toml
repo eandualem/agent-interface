@@ -1,5 +1,5 @@
 [package]
-name = "tmux-workspaces-roster"
+name = "agent-interface-roster"
 description = "Optional agents roster and user feedback for Agent Interface"
 version.workspace = true
 edition.workspace = true

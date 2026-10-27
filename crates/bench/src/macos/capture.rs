@@ -270,7 +270,7 @@ impl WindowCapture {
             )
         };
         let output = Output::new(Box::new(on_frame));
-        let queue = DispatchQueue::new("tmux-workspaces-bench.capture", None);
+        let queue = DispatchQueue::new("agent-interface-bench.capture", None);
         // SAFETY: the queue is a serial queue this capture owns, which
         // `Output` needs because its callback is not reentrant.
         unsafe {

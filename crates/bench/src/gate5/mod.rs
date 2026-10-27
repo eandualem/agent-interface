@@ -5,7 +5,7 @@
 //! cell, with an ordinary tmux client attached to the same pane.
 //!
 //! The gate runs on the tmux found first on `PATH`, and reports for that
-//! version. Every server is private, through `tmux-workspaces-test-support`.
+//! version. Every server is private, through `agent-interface-test-support`.
 
 #[cfg(test)]
 mod attachment_pty;
@@ -24,7 +24,7 @@ use std::fmt::Write as _;
 use std::fs;
 use std::path::Path;
 
-use tmux_workspaces_test_support::TmuxServer;
+use agent_interface_test_support::TmuxServer;
 
 use crate::environment;
 use crate::options::Options;

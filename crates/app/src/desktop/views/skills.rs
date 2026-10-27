@@ -3,10 +3,10 @@
 //! Rows never name an agent; they say how a skill is delivered. Choosing a
 //! skill reads its SKILL.md in this pane.
 
-use gpui::{AnyElement, Context, Div, SharedString, div, prelude::*, px};
-use tmux_workspaces_roster::views::{
+use agent_interface_roster::views::{
     LocalSkill, PREVIEW_LIMIT, Place, Reason, Skill, SkillLibrary,
 };
+use gpui::{AnyElement, Context, Div, SharedString, div, prelude::*, px};
 
 use super::{Open, Target, ViewPane, home, line, mono, reader};
 use crate::desktop::{
@@ -73,7 +73,7 @@ fn sections<'a>(pane: &ViewPane, library: &'a SkillLibrary) -> Vec<Section<'a>> 
         .filter(|skill| matches(&query, &skill.name, &skill.description))
         .collect();
     let by_tag = library.store.by_tag();
-    let carriers = tmux_workspaces_roster::views::tag_carriers(&library.agents);
+    let carriers = agent_interface_roster::views::tag_carriers(&library.agents);
     let tagged = |tag: &str| -> Vec<Row<'a>> {
         by_tag
             .get(tag)

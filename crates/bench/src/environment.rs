@@ -6,7 +6,7 @@ use std::process::Command;
 /// version a private tmux server reported. A value the system does not
 /// provide is reported as `unknown`.
 pub fn describe(tmux_version: &str) -> Vec<(&'static str, String)> {
-    let engine = tmux_workspaces_term::engine_build();
+    let engine = agent_interface_term::engine_build();
     let mut values = vec![
         ("revision", env!("BENCH_REVISION").to_owned()),
         ("os", os()),

@@ -335,7 +335,7 @@ fn drain(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tmux_workspaces_test_support::TmuxServer;
+    use agent_interface_test_support::TmuxServer;
 
     #[test]
     fn discovery_preserves_names_excludes_helpers_and_never_attaches_or_creates() {

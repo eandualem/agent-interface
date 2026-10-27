@@ -1,7 +1,7 @@
 //! Comparing final screens, written by [`crate::dump::dump`]: between
 //! engines, and with tmux's own capture of the pane.
 
-use tmux_workspaces_term::{Cursor, Screen, Terminal};
+use agent_interface_term::{Cursor, Screen, Terminal};
 
 use crate::engine::Grid;
 use crate::record::Capture;
@@ -161,7 +161,7 @@ pub fn screen_from_capture(capture: &Capture, grid: Grid) -> Screen {
 
 #[cfg(test)]
 mod tests {
-    use tmux_workspaces_term::{Attributes, Style, Width};
+    use agent_interface_term::{Attributes, Style, Width};
 
     use super::*;
     use crate::dump::dump;

@@ -2,10 +2,10 @@
 
 use std::{cell::RefCell, rc::Rc};
 
-use gpui::{AnyElement, Context, SharedString, div, prelude::*, px};
-use tmux_workspaces_roster::views::{
+use agent_interface_roster::views::{
     DocumentMetadata, DocumentRevision, ReportContent, ReportItem, ReportQuery,
 };
+use gpui::{AnyElement, Context, SharedString, div, prelude::*, px};
 
 use super::{
     ViewEvent, ViewPane,

@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-use tmux_workspaces_tmux::capture::{self, Attributes, Color, Link, Row, Style, Underline};
+use agent_interface_tmux::capture::{self, Attributes, Color, Link, Row, Style, Underline};
 
 /// Every recorded version's directory and its version string.
 fn versions() -> Vec<(String, PathBuf)> {

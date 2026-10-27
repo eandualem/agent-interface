@@ -2,8 +2,8 @@
 //! `all` first; choosing a card lists the agents carrying that tag in this
 //! pane, with a way back, since agent names live there and not on the cards.
 
+use agent_interface_roster::views::TagLibrary;
 use gpui::{AnyElement, Context, SharedString, div, prelude::*, px};
-use tmux_workspaces_roster::views::TagLibrary;
 
 use super::{ViewPane, mono, team};
 use crate::desktop::{

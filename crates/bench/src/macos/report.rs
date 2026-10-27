@@ -7,7 +7,7 @@ use std::fs;
 use std::path::Path;
 use std::time::Duration;
 
-use tmux_workspaces_test_support::TmuxServer;
+use agent_interface_test_support::TmuxServer;
 
 use super::capture::CaptureStats;
 use super::displays::{self, DisplayState};

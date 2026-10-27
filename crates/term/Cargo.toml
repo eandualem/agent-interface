@@ -1,5 +1,5 @@
 [package]
-name = "tmux-workspaces-term"
+name = "agent-interface-term"
 description = "Terminal state for each tmux pane, around the terminal engine"
 version.workspace = true
 edition.workspace = true

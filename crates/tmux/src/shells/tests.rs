@@ -1,6 +1,6 @@
 use super::*;
+use agent_interface_test_support::TmuxServer;
 use std::os::unix::fs::PermissionsExt;
-use tmux_workspaces_test_support::TmuxServer;
 
 fn wait_file(path: &Path) -> serde_json::Value {
     let deadline = Instant::now() + Duration::from_secs(5);

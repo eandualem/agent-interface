@@ -12,8 +12,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
-use tmux_workspaces_test_support::TmuxServer;
-use tmux_workspaces_tmux::control::PaneId;
+use agent_interface_test_support::TmuxServer;
+use agent_interface_tmux::control::PaneId;
 
 use crate::compare;
 use crate::dump::dump;
@@ -256,14 +256,14 @@ fn replay(
     let mut command;
     if engine == "rio-vt" {
         let program = this.with_file_name(format!(
-            "tmux-workspaces-bench-rio{}",
+            "agent-interface-bench-rio{}",
             std::env::consts::EXE_SUFFIX
         ));
         command = Command::new(&program);
         if !program.exists() {
             return Err(format!(
                 "{} is missing: build it with the same profile, \
-                 cargo build -p tmux-workspaces-bench-rio",
+                 cargo build -p agent-interface-bench-rio",
                 program.display()
             ));
         }

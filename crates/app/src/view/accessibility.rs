@@ -1,9 +1,9 @@
 //! Expose the active terminal and its input caret through the native text APIs.
 //! Terminal output is inspectable, but cannot be replaced as an editable document.
 
+use agent_interface_term::{Screen, Width};
+use agent_interface_tmux::control::PaneId;
 use gpui::accesskit::{Node, Rect, Role, TextDirection, TextPosition, TextSelection};
-use tmux_workspaces_term::{Screen, Width};
-use tmux_workspaces_tmux::control::PaneId;
 
 use super::Grid;
 
@@ -159,7 +159,7 @@ fn text_run(screen: &Screen, row: u16, width: f64) -> (Node, usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tmux_workspaces_term::{Cursor, Style};
+    use agent_interface_term::{Cursor, Style};
 
     #[test]
     fn terminal_text_preserves_unicode_and_maps_the_input_caret() {
