@@ -2,7 +2,7 @@
 //! its steps, what is being done now and what waits. Plans are the agents'
 //! declared intent; this view only reads them.
 
-use std::{path::PathBuf, time::Duration};
+use std::{cell::Cell, path::PathBuf, rc::Rc, time::Duration};
 
 use agent_interface_roster::plans::{self, Entry, Error, Item, PlansPage};
 use gpui::{Context, SharedString, Task, Window, div, prelude::*, px};
@@ -17,25 +17,24 @@ const REFRESH: Duration = Duration::from_secs(20);
 
 pub(super) struct Plans {
     directory: PathBuf,
-    page: Option<Result<PlansPage, Error>>,
+    /// The plans last read, kept when a later read fails.
+    page: Option<PlansPage>,
+    /// Why the latest read failed, shown beside the plans last read.
+    error: Option<Error>,
+    /// Reads are numbered; a result older than one applied is dropped.
+    asked: u64,
+    applied: u64,
+    /// Whether this section is selected and its pane visible; it reads only then.
+    shown: bool,
+    visible: Rc<Cell<bool>>,
     _poll: Task<()>,
 }
 
 impl Plans {
-    pub fn new(directory: PathBuf, cx: &mut Context<Self>) -> Self {
+    pub fn new(directory: PathBuf, visible: Rc<Cell<bool>>, cx: &mut Context<Self>) -> Self {
         let poll = cx.spawn(async move |this, cx| {
             loop {
-                let Ok(directory) = this.read_with(cx, |plans, _| plans.directory.clone()) else {
-                    return;
-                };
-                let page = cx
-                    .background_executor()
-                    .spawn(async move { plans::list_all(&directory) })
-                    .await;
-                if this
-                    .update(cx, |plans, cx| plans.receive(page, cx))
-                    .is_err()
-                {
+                if this.update(cx, |plans, cx| plans.poll(cx)).is_err() {
                     return;
                 }
                 cx.background_executor().timer(REFRESH).await;
@@ -44,29 +43,56 @@ impl Plans {
         Self {
             directory,
             page: None,
+            error: None,
+            asked: 0,
+            applied: 0,
+            shown: true,
+            visible,
             _poll: poll,
         }
     }
-}
 
-impl Plans {
-    /// Keep the last plans when a later read fails.
-    fn receive(&mut self, page: Result<PlansPage, Error>, cx: &mut Context<Self>) {
-        if page.is_ok() || !matches!(self.page, Some(Ok(_))) {
-            self.page = Some(page);
+    /// Whether the section is selected; leaving it pauses the reads.
+    pub fn set_shown(&mut self, shown: bool, cx: &mut Context<Self>) {
+        let returning = shown && !self.shown;
+        self.shown = shown;
+        if returning {
+            self.refresh(cx);
+        }
+    }
+
+    fn poll(&mut self, cx: &mut Context<Self>) {
+        if self.shown && self.visible.get() {
+            self.refresh(cx);
+        }
+    }
+
+    fn receive(&mut self, number: u64, page: Result<PlansPage, Error>, cx: &mut Context<Self>) {
+        if number <= self.applied {
+            return;
+        }
+        self.applied = number;
+        match page {
+            Ok(page) => {
+                self.page = Some(page);
+                self.error = None;
+            }
+            Err(error) => self.error = Some(error),
         }
         cx.notify();
     }
 
     /// Read the plans now, as well as on the regular refresh.
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
+        self.asked += 1;
+        let number = self.asked;
         let directory = self.directory.clone();
         let read = cx
             .background_executor()
             .spawn(async move { plans::list_all(&directory) });
         cx.spawn(async move |this, cx| {
             let page = read.await;
-            let _ = this.update(cx, |plans, cx| plans.receive(page, cx));
+            let _ = this.update(cx, |plans, cx| plans.receive(number, page, cx));
         })
         .detach();
     }
@@ -173,20 +199,20 @@ fn card(entry: &Entry) -> gpui::Div {
 impl Render for Plans {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         let (t, c) = (tokens(), colors());
-        let body = match &self.page {
-            None => ui::empty_state(
+        let body = match (&self.page, self.error) {
+            (None, None) => ui::empty_state(
                 ui::empty_tile("activity", c.selected, c.muted),
                 "Reading current plans…",
                 "",
             )
             .into_any_element(),
-            Some(Err(error)) => ui::empty_state(
+            (None, Some(error)) => ui::empty_state(
                 ui::empty_tile("unplug", c.selected, c.muted),
                 "No current plans",
                 error.message(),
             )
             .into_any_element(),
-            Some(Ok(page)) => {
+            (Some(page), _) => {
                 let mut entries: Vec<&Entry> = page.items.iter().collect();
                 // Waiting on someone first, then the most recently updated.
                 entries.sort_by_key(|entry| match &entry.record {
@@ -213,11 +239,25 @@ impl Render for Plans {
                 ui::grouped_page("plans", column).into_any_element()
             }
         };
+        // A failed refresh says so above the plans last read.
+        let stale = self
+            .page
+            .is_some()
+            .then_some(self.error)
+            .flatten()
+            .map(|error| {
+                ui::notice(
+                    "unplug",
+                    format!("{} These are the plans last read.", error.message()),
+                    None,
+                )
+            });
         div()
             .flex_1()
             .min_h_0()
             .flex()
             .flex_col()
+            .children(stale)
             .child(body)
             .child(ui::view_footer(
                 &[],

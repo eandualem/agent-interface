@@ -420,6 +420,7 @@ impl ViewPane {
 
     /// Show a record feed from its first page.
     fn show_records(&mut self, query: views::ReportQuery, cx: &mut Context<Self>) {
+        self.plans_shown(false, cx);
         self.shown = Shown::Records;
         self.reports.open = None;
         self.reports.query = query;
@@ -427,13 +428,24 @@ impl ViewPane {
         self.refetch(true, cx);
     }
 
+    /// Current plans read Backbone only while their section is selected.
+    fn plans_shown(&self, shown: bool, cx: &mut Context<Self>) {
+        if let Some(plans) = &self.plans {
+            plans.update(cx, |plans, cx| plans.set_shown(shown, cx));
+        }
+    }
+
     fn show_plans(&mut self, cx: &mut Context<Self>) {
         let Some(directory) = self.backbone.clone() else {
             return;
         };
         self.documents.surface.borrow_mut().clear();
-        if self.plans.is_none() {
-            self.plans = Some(cx.new(|cx| plans::Plans::new(directory, cx)));
+        match &self.plans {
+            Some(_) => self.plans_shown(true, cx),
+            None => {
+                let visible = self.visible.clone();
+                self.plans = Some(cx.new(|cx| plans::Plans::new(directory, visible, cx)));
+            }
         }
         self.shown = Shown::Plans;
         cx.notify();
@@ -444,6 +456,7 @@ impl ViewPane {
             return;
         };
         self.documents.surface.borrow_mut().clear();
+        self.plans_shown(false, cx);
         if self.sheets.is_none() {
             let sheets = cx.new(|cx| sheets::Sheets::new(directory, window, cx));
             self._search
@@ -712,6 +725,7 @@ impl Render for ViewPane {
             if let Some(cached) = self.conversations.get(&key)
                 && previous.as_ref() != Some(cached)
                 && cached.read(cx).stale()
+                && cached.read(cx).disposable(cx)
             {
                 self.conversations.remove(&key);
             }

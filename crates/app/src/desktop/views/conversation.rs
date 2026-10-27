@@ -120,6 +120,8 @@ pub(super) struct Conversation {
     /// A skill's or policy's conversation found the connection changed; the
     /// view replaces it with a new one rather than retarget its messages.
     stale: bool,
+    /// Why the latest read failed, shown while nothing has been read.
+    read_error: Option<stored::Error>,
     /// Whether the pane holding it is visible.
     visible: Rc<Cell<bool>>,
     _poll: Option<Task<()>>,
@@ -410,6 +412,18 @@ impl Conversation {
                 .is_some_and(|stored| stored.source.is_some() && stored.supported == Some(false))
     }
 
+    /// Nothing would be lost by replacing it: no draft, and no message still
+    /// sending or awaiting a retry.
+    pub fn disposable(&self, cx: &App) -> bool {
+        self.draft(cx).is_empty()
+            && self.messages.iter().all(|message| {
+                !matches!(
+                    message.delivery,
+                    Delivery::Sending | Delivery::NotSent(_) | Delivery::Unconfirmed(_)
+                )
+            })
+    }
+
     /// Nobody answers unless the person names someone: Backbone names no
     /// maintainer, or the one it names has retired.
     fn needs_recipient(&self) -> bool {
@@ -485,6 +499,7 @@ impl Conversation {
             team: Vec::new(),
             team_read: false,
             stale: false,
+            read_error: None,
             visible: Rc::new(Cell::new(true)),
             _poll: None,
             _input: input,
@@ -664,6 +679,10 @@ impl Conversation {
                     stored.id = id;
                 }
                 let mut failure = None;
+                conversation.read_error = result.as_ref().err().copied();
+                let Some(stored) = conversation.stored.as_mut() else {
+                    return;
+                };
                 match result {
                     Ok(page) => {
                         stored.supported = Some(true);
@@ -1315,7 +1334,9 @@ impl Conversation {
             .any(|message| !matches!(message.delivery, Delivery::Moved | Delivery::Stored));
         if entries.is_empty() && !local {
             let agent = self.agent();
-            let note = if self.stored_live() {
+            let note = if let (Some(error), false) = (self.read_error, self.stored_live()) {
+                error.message().to_owned()
+            } else if self.stored_live() {
                 format!(
                     "Your messages, {agent}'s replies and the changes it publishes stay together beside this {kind}."
                 )
