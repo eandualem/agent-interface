@@ -573,8 +573,10 @@ struct Browser {
     views: HashMap<String, (gpui::Entity<views::ViewPane>, gpui::Subscription)>,
     /// The chooser in each shown empty pane, with its event subscription.
     new_panes: HashMap<String, (gpui::Entity<new_pane::NewPane>, gpui::Subscription)>,
-    /// The section a pane opening Reports & updates shows once its view appears.
-    opening_section: Option<(String, views::Section)>,
+    /// The section each pane opening Reports & updates shows once its view
+    /// appears, and the pane whose save is still deciding its choice.
+    opening_sections: HashMap<String, views::Section>,
+    section_saving: Option<String>,
 }
 
 impl Browser {
@@ -1101,9 +1103,12 @@ impl Browser {
                         browser.shell_to_open = if result.conflict { browser.shell_after_save = None; None } else { browser.shell_after_save.take() };
                         browser.start_reader(cx);
                         if result.conflict {
-                            browser.opening_section = None;
+                            if let Some(pane) = browser.section_saving.take() {
+                                browser.opening_sections.remove(&pane);
+                            }
                             browser.save_notice = Some("The library changed. Your edit was not saved; repeat it on the latest layout to retry.".into());
                         }
+                        browser.section_saving = None;
                     }
                     Err(error) => {
                         browser.save_failed = true;
@@ -1122,7 +1127,9 @@ impl Browser {
             return;
         }
         self.pending_save = None;
-        self.opening_section = None;
+        if let Some(pane) = self.section_saving.take() {
+            self.opening_sections.remove(&pane);
+        }
         self.pending_creation = None;
         self.creation_from = None;
         self.shell_after_save = None;
@@ -1977,7 +1984,7 @@ impl Render for Browser {
                 let directory = self.directory.clone();
                 let reports = view.kind == agent_interface_core::ViewKind::Reports;
                 let pane = cx.new(|cx| views::ViewPane::new(view, backbone, directory, window, cx));
-                if let Some((_, section)) = self.opening_section.take_if(|(pane, _)| *pane == id)
+                if let Some(section) = self.opening_sections.remove(&id)
                     && reports
                 {
                     pane.update(cx, |pane, cx| pane.open_section(section, window, cx));
@@ -2089,7 +2096,8 @@ impl Render for Browser {
                                     window,
                                     cx,
                                 ) {
-                                    browser.opening_section = Some((pane.clone(), *section));
+                                    browser.opening_sections.insert(pane.clone(), *section);
+                                    browser.section_saving = Some(pane.clone());
                                 }
                             }
                         }
