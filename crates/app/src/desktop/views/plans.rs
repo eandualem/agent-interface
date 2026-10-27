@@ -24,6 +24,8 @@ pub(super) struct Plans {
     /// Reads are numbered; a result older than one applied is dropped.
     asked: u64,
     applied: u64,
+    /// A read is in flight; another waits for it rather than pile up.
+    reading: bool,
     /// Whether this section is selected and its pane visible; it reads only then.
     shown: bool,
     visible: Rc<Cell<bool>>,
@@ -46,6 +48,7 @@ impl Plans {
             error: None,
             asked: 0,
             applied: 0,
+            reading: false,
             shown: true,
             visible,
             _poll: poll,
@@ -68,6 +71,9 @@ impl Plans {
     }
 
     fn receive(&mut self, number: u64, page: Result<PlansPage, Error>, cx: &mut Context<Self>) {
+        if number == self.asked {
+            self.reading = false;
+        }
         if number <= self.applied {
             return;
         }
@@ -84,6 +90,10 @@ impl Plans {
 
     /// Read the plans now, as well as on the regular refresh.
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
+        if self.reading {
+            return;
+        }
+        self.reading = true;
         self.asked += 1;
         let number = self.asked;
         let directory = self.directory.clone();

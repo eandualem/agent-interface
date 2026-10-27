@@ -412,16 +412,15 @@ impl Conversation {
                 .is_some_and(|stored| stored.source.is_some() && stored.supported == Some(false))
     }
 
-    /// Nothing would be lost by replacing it: no draft, and no message still
-    /// sending or awaiting a retry.
-    pub fn disposable(&self, cx: &App) -> bool {
-        self.draft(cx).is_empty()
-            && self.messages.iter().all(|message| {
-                !matches!(
-                    message.delivery,
-                    Delivery::Sending | Delivery::NotSent(_) | Delivery::Unconfirmed(_)
-                )
-            })
+    /// Nothing would be lost by replacing it: no message still sending or
+    /// awaiting a retry. A draft moves to the replacement.
+    pub fn disposable(&self) -> bool {
+        self.messages.iter().all(|message| {
+            !matches!(
+                message.delivery,
+                Delivery::Sending | Delivery::NotSent(_) | Delivery::Unconfirmed(_)
+            )
+        })
     }
 
     /// Nobody answers unless the person names someone: Backbone names no
@@ -527,6 +526,13 @@ impl Conversation {
         self.field
             .update(cx, |field, _| field.set_read_only(blocked));
         cx.notify();
+    }
+
+    /// Carry over a draft from the conversation this one replaces.
+    pub fn restore_draft(&mut self, text: &str, cx: &mut Context<Self>) {
+        if !text.is_empty() {
+            self.field.update(cx, |field, cx| field.set_value(text, cx));
+        }
     }
 
     /// The unsent draft.
@@ -1443,6 +1449,7 @@ impl Render for Conversation {
                 .stored
                 .as_ref()
                 .is_some_and(|stored| stored.source.is_some() && stored.supported == Some(false))
+            && self.disposable()
         {
             return div().into_any_element();
         }

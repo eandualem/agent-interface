@@ -720,13 +720,15 @@ impl Render for ViewPane {
             let key = format!("{}\n{path}", kind.name());
             let (path, directory, visible) =
                 (path.clone(), directory.clone(), self.visible.clone());
+            let mut draft = String::new();
             // Reopened after the connection changed, or where Backbone had no
             // conversation: a new one asks again; messages are never retargeted.
             if let Some(cached) = self.conversations.get(&key)
                 && previous.as_ref() != Some(cached)
                 && cached.read(cx).stale()
-                && cached.read(cx).disposable(cx)
+                && cached.read(cx).disposable()
             {
+                draft = cached.read(cx).draft(cx).to_owned();
                 self.conversations.remove(&key);
             }
             let conversation = match self.conversations.get(&key) {
@@ -739,9 +741,11 @@ impl Render for ViewPane {
                 }
                 None => {
                     let conversation = cx.new(|cx| {
-                        conversation::Conversation::about_source(
+                        let mut conversation = conversation::Conversation::about_source(
                             kind, path, about, candidates, directory, visible, window, cx,
-                        )
+                        );
+                        conversation.restore_draft(&draft, cx);
+                        conversation
                     });
                     self.conversations.insert(key, conversation.clone());
                     conversation
