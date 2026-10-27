@@ -25,6 +25,7 @@ struct Text {
     search: bool,
     feedback: bool,
     limit: Option<usize>,
+    rejected: bool,
 }
 
 impl Text {
@@ -41,13 +42,26 @@ impl Text {
         from_utf16(&self.value, range.start)..from_utf16(&self.value, range.end)
     }
 
-    fn replace(&mut self, range: Option<Range<usize>>, text: &str, marked: bool) -> Range<usize> {
+    fn replace(
+        &mut self,
+        range: Option<Range<usize>>,
+        text: &str,
+        marked: bool,
+    ) -> Option<Range<usize>> {
         let range = range
             .map(|range| self.bytes(range))
             .or_else(|| self.marked.clone())
             .unwrap_or_else(|| self.selection());
         let remaining =
             self.value[..range.start].chars().count() + self.value[range.end..].chars().count();
+        let available = self
+            .limit
+            .unwrap_or(if self.feedback {
+                agent_interface_roster::feedback::TEXT_LIMIT
+            } else {
+                80
+            })
+            .saturating_sub(remaining);
         let inserted: String = text
             .chars()
             .filter(|ch| {
@@ -59,22 +73,18 @@ impl Text {
                             GeneralCategoryGroup::Other | GeneralCategoryGroup::Separator
                         ))
             })
-            .take(
-                self.limit
-                    .unwrap_or(if self.feedback {
-                        agent_interface_roster::feedback::TEXT_LIMIT
-                    } else {
-                        80usize
-                    })
-                    .saturating_sub(remaining),
-            )
+            .take(available.saturating_add(usize::from(self.limit.is_some())))
             .collect();
+        self.rejected = self.limit.is_some() && inserted.chars().count() > available;
+        if self.rejected {
+            return None;
+        }
         let end = range.start + inserted.len();
         self.value.replace_range(range.clone(), &inserted);
         self.cursor = if marked { end } else { self.snap(end) };
         self.anchor = self.cursor;
         self.marked = (marked && end > range.start).then_some(range.start..end);
-        range.start..end
+        Some(range.start..end)
     }
 
     fn compose(
@@ -83,7 +93,9 @@ impl Text {
         text: &str,
         selection: Option<Range<usize>>,
     ) {
-        let inserted = self.replace(range, text, true);
+        let Some(inserted) = self.replace(range, text, true) else {
+            return;
+        };
         if let Some(selection) = selection {
             let value = &self.value[inserted.clone()];
             self.anchor = inserted.start + from_utf16(value, selection.start);
@@ -223,6 +235,7 @@ impl NameField {
         self.text.anchor = 0;
         self.text.cursor = value.len();
         self.text.marked = None;
+        self.text.rejected = false;
         self.scroll = px(0.);
         cx.notify();
     }
@@ -238,6 +251,7 @@ impl NameField {
         self.text.anchor = 0;
         self.text.cursor = 0;
         self.text.marked = None;
+        self.text.rejected = false;
         cx.notify();
     }
 
@@ -657,15 +671,18 @@ impl EntityInputHandler for NameField {
 }
 
 impl Render for NameField {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let entity = cx.entity();
         // A name is edited in place, one cell high in the selection's colors,
         // as the source's inline editor is; the chooser's filter keeps a frame.
         let search = self.text.search;
-        div()
+        let field = div()
             .w_full()
             .min_w_0()
-            .h(px(if self.text.feedback {
+            .flex_shrink_0()
+            .h(px(if self.text.feedback && self.text.limit.is_some() {
+                48.
+            } else if self.text.feedback {
                 100.
             } else if search {
                 super::design::tokens().size.jump_field
@@ -677,7 +694,13 @@ impl Render for NameField {
             .bg(super::design::colors().field)
             .text_color(super::design::colors().text)
             .border(px(super::design::tokens().size.hairline))
-            .border_color(super::design::colors().accent)
+            .border_color(
+                if self.text.limit.is_none() || self.focus.is_focused(window) {
+                    super::design::colors().accent
+                } else {
+                    super::design::colors().line
+                },
+            )
             .id("name-field")
             .on_click(cx.listener(|_, _, _, cx| cx.stop_propagation()))
             .track_focus(&self.focus)
@@ -735,13 +758,48 @@ impl Render for NameField {
                     },
                 )
                 .size_full(),
-            )
+            );
+        div()
+            .w_full()
+            .min_w_0()
+            .flex_shrink_0()
+            .flex()
+            .flex_col()
+            .child(field)
+            .when(self.text.rejected, |e| {
+                e.child(
+                    div()
+                        .text_color(super::design::colors().attention_text)
+                        .child("Input too long; nothing was changed."),
+                )
+            })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn bounded_values_reject_oversized_paste_and_composition_without_losing_selection() {
+        let mut text = Text {
+            value: "original".into(),
+            anchor: 0,
+            cursor: 8,
+            limit: Some(16384),
+            ..Text::default()
+        };
+        assert!(text.replace(None, &"x".repeat(16385), false).is_none());
+        assert_eq!(text.value, "original");
+        assert_eq!(text.selection(), 0..8);
+        assert!(text.rejected);
+        text.compose(None, &"x".repeat(16385), Some(1..2));
+        assert_eq!(text.value, "original");
+        assert_eq!(text.selection(), 0..8);
+        assert!(text.marked.is_none());
+        text.replace(None, "accepted", false);
+        assert_eq!(text.value, "accepted");
+        assert!(!text.rejected);
+    }
 
     #[test]
     fn feedback_preserves_paragraphs_and_unicode_beyond_the_name_limit() {

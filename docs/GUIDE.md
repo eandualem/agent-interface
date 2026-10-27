@@ -412,8 +412,9 @@ and Responses. Agent Backbone must support Sheets and be configured through its
 normal private local connection. Choose a workbook, then a tab. The grid uses
 canonical A1 coordinates even when a saved view sorts or hides rows.
 
-Select a cell to see its original input and number format. Choose Text, Number,
-Boolean, Date, Formula or Blank, then edit the value. Dates use `YYYY-MM-DD` from
+Select a cell to see its original input. Open **Type / format** to choose Text,
+Number, Boolean, Date, Formula or Blank, or to change its number format, then edit
+the value. Dates use `YYYY-MM-DD` from
 1900 onward, booleans use `true`/`false`, and formulas begin with `=` followed by an
 expression. Text explicitly remains literal,
 including text that starts with `=`. **Keep in draft** stages the input; **Save
@@ -427,6 +428,10 @@ formulas** followed by **Paste copied cells** works within the same workbook
 revision and asks Backbone to adjust relative formula references. Paste is atomic,
 limited to 1,000 changed cells, and must fit within the loaded page. Row and column
 paging keep large workbooks bounded.
+
+Open **Sort / filter** for view controls, **Rows / columns / tabs** for structural
+edits and copied cells, or **Export** for file downloads. These sections can be
+closed again to leave more room for the grid.
 
 **Sort view** changes presentation while preserving formula coordinates. Select a
 column, choose the filter operator and literal type, enter a value, and apply the

@@ -131,6 +131,14 @@ impl Selection {
     }
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum Tools {
+    Format,
+    View,
+    Structure,
+    Export,
+}
+
 pub(super) struct Sheets {
     focus: gpui::FocusHandle,
     directory: PathBuf,
@@ -159,6 +167,7 @@ pub(super) struct Sheets {
     creating: bool,
     feedback_kind: FeedbackKind,
     feedback_open: bool,
+    tools: Option<Tools>,
     pending: Option<Prepared>,
     pending_uncertain: bool,
     feedback_receipt: Option<FeedbackReceipt>,
@@ -219,6 +228,7 @@ impl Sheets {
             creating: false,
             feedback_kind: FeedbackKind::Question,
             feedback_open: false,
+            tools: None,
             pending: None,
             pending_uncertain: false,
             feedback_receipt: None,
@@ -746,6 +756,7 @@ impl Sheets {
             return;
         }
         self.draft = Draft::default();
+        self.confirm = None;
         self.selection = None;
         self.input_dirty = false;
         self.format_dirty = false;

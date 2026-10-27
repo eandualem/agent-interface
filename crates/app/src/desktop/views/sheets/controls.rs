@@ -263,19 +263,13 @@ impl Sheets {
             })
             .unwrap_or_else(|| "Select a cell".into());
         let edit = div()
+            .flex_shrink_0()
             .flex()
+            .flex_wrap()
             .items_center()
             .gap(px(t.space.s8))
-            .child(selected)
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .max_h(px(76.))
-                    .child(self.input.clone()),
-            )
-            .child("Number format")
-            .child(div().w(px(140.)).child(self.number_format.clone()))
+            .child(div().w(px(72.)).flex_shrink_0().child(selected))
+            .child(div().flex_1().min_w(px(180.)).child(self.input.clone()))
             .child(
                 ui::chip("sheet-stage", "Keep in draft", false).on_click(cx.listener(
                     |s, _, _, cx| {
@@ -372,20 +366,63 @@ impl Sheets {
                 .on_click(cx.listener(move |s, _, _, cx| s.export(format, cx))),
             );
         }
-        div()
+        let mut tools = div().flex().flex_wrap().gap(px(t.space.s4));
+        for (panel, id, label) in [
+            (Tools::Format, "sheet-tools-format", "Type / format"),
+            (Tools::View, "sheet-tools-view", "Sort / filter"),
+            (
+                Tools::Structure,
+                "sheet-tools-structure",
+                "Rows / columns / tabs",
+            ),
+            (Tools::Export, "sheet-tools-export", "Export"),
+        ] {
+            tools = tools.child(ui::chip(id, label, self.tools == Some(panel)).on_click(
+                cx.listener(move |s, _, _, cx| {
+                    s.tools = if s.tools == Some(panel) {
+                        None
+                    } else {
+                        Some(panel)
+                    };
+                    cx.notify();
+                }),
+            ));
+        }
+        tools = tools.child(
+            ui::text(div().text_color(c.muted), &t.text.meta)
+                .child(format!("Cell type: {}", self.kind.label())),
+        );
+        let mut controls = div()
             .px(px(t.space.s12))
             .py(px(t.space.s6))
             .flex_shrink_0()
             .flex()
             .flex_col()
             .gap(px(t.space.s6))
-            .child(kinds)
             .child(edit)
-            .child(self.filter_controls(cx))
-            .child(view)
-            .child(structure)
-            .child(self.structure_controls(cx))
-            .child(exports)
+            .child(tools);
+        match self.tools {
+            Some(Tools::Format) => {
+                controls = controls.child(kinds).child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .items_center()
+                        .gap(px(t.space.s8))
+                        .child("Number format")
+                        .child(div().w(px(180.)).child(self.number_format.clone())),
+                );
+            }
+            Some(Tools::View) => {
+                controls = controls.child(self.filter_controls(cx)).child(view);
+            }
+            Some(Tools::Structure) => {
+                controls = controls.child(structure).child(self.structure_controls(cx));
+            }
+            Some(Tools::Export) => controls = controls.child(exports),
+            None => {}
+        }
+        controls
     }
     fn sort(&mut self, direction: Direction, cx: &mut Context<Self>) {
         if let Some((open, selection)) = self.open.as_ref().zip(self.selection) {
