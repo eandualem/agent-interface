@@ -44,10 +44,12 @@ impl State {
         if !page.agents.is_empty() {
             self.agents = page.agents.clone();
         }
-        if !page.runtimes.is_empty() {
-            self.runtimes = page.runtimes.clone();
-        }
+        // The open record's registration and the runtimes come from the same
+        // read, so a name re-registered meanwhile cannot lend its runtime.
         if self.open.is_none() {
+            if !page.runtimes.is_empty() {
+                self.runtimes = page.runtimes.clone();
+            }
             self.feed = Some(page.clone());
         }
         let Some(open) = &mut self.open else { return };
@@ -912,20 +914,32 @@ mod tests {
     }
 
     #[test]
-    fn an_answer_refresh_keeps_the_runtimes_its_feed_read() {
-        let mut state = State::default();
-        state.observe(&ReportPage {
+    fn an_open_record_keeps_the_runtimes_its_feed_read() {
+        let page = |runtime: &str| ReportPage {
             items: Vec::new(),
             next: None,
             agents: vec!["worker".into()],
-            runtimes: [("worker".into(), "codex".into())].into(),
+            runtimes: [("worker".into(), runtime.into())].into(),
+        };
+        let mut state = State::default();
+        state.observe(&page("codex"));
+        state.open = Some(ReportItem {
+            id: 1,
+            author: "worker".into(),
+            author_id: None,
+            registered: true,
+            provider_url: String::new(),
+            created_at: String::new(),
+            conversation_id: None,
+            content: ReportContent::Response {
+                question: String::new(),
+                answer: String::new(),
+                action: String::new(),
+                superseded_by: None,
+            },
         });
-        state.observe(&ReportPage {
-            items: Vec::new(),
-            next: None,
-            agents: Vec::new(),
-            runtimes: Default::default(),
-        });
+        // The name was re-registered to another agent while the record was open.
+        state.observe(&page("claude"));
         assert_eq!(state.runtimes["worker"], "codex");
     }
 
