@@ -1,4 +1,4 @@
-mod local;
+pub(crate) mod local;
 
 use std::{
     io::Read,

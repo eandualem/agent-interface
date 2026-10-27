@@ -24,6 +24,7 @@ struct Text {
     marked: Option<Range<usize>>,
     search: bool,
     feedback: bool,
+    limit: Option<usize>,
 }
 
 impl Text {
@@ -59,12 +60,13 @@ impl Text {
                         ))
             })
             .take(
-                (if self.feedback {
-                    agent_interface_roster::feedback::TEXT_LIMIT
-                } else {
-                    80usize
-                })
-                .saturating_sub(remaining),
+                self.limit
+                    .unwrap_or(if self.feedback {
+                        agent_interface_roster::feedback::TEXT_LIMIT
+                    } else {
+                        80usize
+                    })
+                    .saturating_sub(remaining),
             )
             .collect();
         let end = range.start + inserted.len();
@@ -137,6 +139,7 @@ pub(super) struct NameField {
     scroll: Pixels,
     dragging: bool,
     cancel_on_blur: bool,
+    read_only: bool,
     _blur: Subscription,
 }
 
@@ -166,6 +169,7 @@ impl NameField {
             scroll: px(0.),
             dragging: false,
             cancel_on_blur: true,
+            read_only: false,
             _blur: blur,
         }
     }
@@ -195,6 +199,37 @@ impl NameField {
         field.text.search = false;
         field.text.feedback = true;
         field
+    }
+
+    /// A bounded value editor, retaining native IME and clipboard behavior.
+    pub fn value_field(
+        value: &str,
+        limit: usize,
+        multiline: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut field = Self::filter(window, cx);
+        field.text.search = false;
+        field.text.feedback = multiline;
+        field.text.limit = Some(limit);
+        field.set_value(value, cx);
+        field
+    }
+
+    /// Replace a selected record's input without reporting a user edit.
+    pub fn set_value(&mut self, value: &str, cx: &mut Context<Self>) {
+        self.text.value = value.into();
+        self.text.anchor = 0;
+        self.text.cursor = value.len();
+        self.text.marked = None;
+        self.scroll = px(0.);
+        cx.notify();
+    }
+
+    /// Freeze input while its exact contents are being committed.
+    pub fn set_read_only(&mut self, read_only: bool) {
+        self.read_only = read_only;
     }
 
     /// Empty the field without announcing a change.
@@ -246,6 +281,11 @@ impl NameField {
     }
 
     fn key(&mut self, event: &gpui::KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.read_only {
+            cx.stop_propagation();
+            window.prevent_default();
+            return;
+        }
         // The platform input method owns navigation and confirmation while composing.
         if self.text.marked.is_some() {
             return;
@@ -552,6 +592,9 @@ impl EntityInputHandler for NameField {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.read_only {
+            return;
+        }
         self.text.replace(range, text, false);
         cx.emit(NameEvent::Changed(self.text.value.clone()));
         cx.notify();
@@ -564,6 +607,9 @@ impl EntityInputHandler for NameField {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.read_only {
+            return;
+        }
         self.text.compose(range, text, selection);
         cx.emit(NameEvent::Changed(self.text.value.clone()));
         cx.notify();

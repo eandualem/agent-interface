@@ -40,6 +40,7 @@ mod policies;
 mod reader;
 mod reports;
 mod selection;
+mod sheets;
 mod skills;
 mod tags;
 mod team;
@@ -153,6 +154,8 @@ pub(super) struct ViewPane {
     feedback: HashMap<String, Entity<feedback::Feedback>>,
     documents: documents::State,
     artifacts: Option<Entity<artifacts::ArtifactPane>>,
+    sheets: Option<Entity<sheets::Sheets>>,
+    showing_sheets: bool,
     _updates: Option<Task<()>>,
     _search: Vec<Subscription>,
 }
@@ -162,7 +165,7 @@ impl EventEmitter<ViewEvent> for ViewPane {}
 impl ViewPane {
     /// Keep drafts and in-flight delivery state while this saved pane is hidden.
     pub fn has_feedback(&self) -> bool {
-        !self.feedback.is_empty()
+        !self.feedback.is_empty() || self.sheets.is_some()
     }
 
     /// Native child views must repaint when an overlay stops occluding them.
@@ -228,6 +231,8 @@ impl ViewPane {
             feedback: HashMap::new(),
             documents: documents::State::default(),
             artifacts: None,
+            sheets: None,
+            showing_sheets: false,
             _updates: None,
             _search: Vec::new(),
             view,
@@ -354,6 +359,24 @@ impl ViewPane {
                 },
             ),
         }
+    }
+
+    fn show_sheets(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(directory) = self.backbone.clone() else {
+            return;
+        };
+        self.documents.surface.borrow_mut().clear();
+        if self.sheets.is_none() {
+            let sheets = cx.new(|cx| sheets::Sheets::new(directory, window, cx));
+            self._search
+                .push(cx.subscribe(&sheets, |pane, _, _: &sheets::Close, cx| {
+                    pane.showing_sheets = false;
+                    cx.notify();
+                }));
+            self.sheets = Some(sheets);
+        }
+        self.showing_sheets = true;
+        cx.notify();
     }
 
     /// Ask the worker for the current request now. `clear` drops data that
@@ -511,6 +534,11 @@ impl Render for ViewPane {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if let Some(artifacts) = &self.artifacts {
             return div().size_full().child(artifacts.clone());
+        }
+        if self.showing_sheets
+            && let Some(sheets) = &self.sheets
+        {
+            return div().size_full().child(sheets.clone());
         }
         let (t, c) = (tokens(), colors());
         let feedback =

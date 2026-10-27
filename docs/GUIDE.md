@@ -395,3 +395,70 @@ no configuration. These options inspect the Python-compatible `keymap.toml`;
 they do not configure the native desktop. Use **Settings → Shortcuts** for native
 bindings, which are saved separately in `settings.toml`. The legacy prefix is not
 dispatched by the desktop.
+
+
+## Sheets
+
+Use Sheets for information people need to inspect, calculate and update together:
+research comparisons, budgets, opportunity trackers and test results. Keep source
+links and assumptions beside the values they support. Documents hold the longer
+explanation, Reports record progress, and Responses answer a specific question;
+link to the workbook from those artifacts so readers can inspect the underlying
+data. An edit creates a retained revision, and feedback refers to the revision and
+cells the reader actually saw.
+
+Open **Reports & updates → Sheets** to find retained workbooks alongside Documents
+and Responses. Agent Backbone must support Sheets and be configured through its
+normal private local connection. Choose a workbook, then a tab. The grid uses
+canonical A1 coordinates even when a saved view sorts or hides rows.
+
+Select a cell to see its original input and number format. Choose Text, Number,
+Boolean, Date, Formula or Blank, then edit the value. Dates use `YYYY-MM-DD` from
+1900 onward, booleans use `true`/`false`, and formulas begin with `=` followed by an
+expression. Text explicitly remains literal,
+including text that starts with `=`. **Keep in draft** stages the input; **Save
+changes** commits all staged cells together. Save before closing the app; unsaved
+drafts stay in the open pane but are not part of retained workbook history.
+
+Use Shift-click or Shift-arrow to select a rectangle, arrow keys and Tab to move,
+Enter to focus the input, and Command-S (macOS) or Control-S (Linux) to save.
+**Copy values** and **Paste text** use tab-separated literal text. **Copy cells /
+formulas** followed by **Paste copied cells** works within the same workbook
+revision and asks Backbone to adjust relative formula references. Paste is atomic,
+limited to 1,000 changed cells, and must fit within the loaded page. Row and column
+paging keep large workbooks bounded.
+
+**Sort view** changes presentation while preserving formula coordinates. Select a
+column, choose the filter operator and literal type, enter a value, and apply the
+filter. Filters on different columns combine with AND. A selected row can be pinned
+as a header. **Clear sort / filter** restores canonical order. Physical moves are
+separate: copy a contiguous canonical range, select a destination outside it, then
+choose **Move copied rows here** or **Move copied columns here**. Inserts, deletes
+and moves update formula references through Backbone; deletion requires an explicit
+confirmation and leaves historical revisions available.
+
+**History** opens immutable earlier revisions. If someone changes the workbook
+while you edit, your draft stays intact. Choose **Review latest**, inspect the new
+values, then explicitly **Reapply draft to this revision** and save. Reapplication
+requires all drafted cells to still exist on the displayed page. **Copy draft
+JSON** preserves the original base and stable cell identifiers for resolving a
+larger conflict. After a lost reply, **Retry the same request** checks the original
+operation without creating a duplicate edit or message.
+
+**Ask / feedback** sends a question or suggestion about the displayed revision and
+selected cells (up to 100). Without a selection it refers to the workbook revision.
+Save or discard edits first so the feedback refers to committed values. The receipt
+distinguishes queued, delivered, uncertain, expired and unknown delivery. It does
+not mean the agent has answered. Check an uncertain delivery before sending another
+copy.
+
+**New workbook** requires a title and registered owning agent. Import JSON, CSV,
+TSV or XLSX through that form to create a separate workbook. Creation and import
+follow Backbone's existing author-signing rules; an enrolled owner may need to
+create or import through its signed CLI. Human edits to an existing workbook use
+operator authority. Imports never replace an existing workbook.
+JSON/XLSX export the supported workbook features; CSV/TSV
+export one tab as values only. Read any import/export warnings. Unsupported formulas
+or workbook features may be refused; this is not a claim of full Excel or Google
+Sheets compatibility. Google accounts, macros, external workbook/network execution,
+charts, pivots and live keystroke coediting are not included.
