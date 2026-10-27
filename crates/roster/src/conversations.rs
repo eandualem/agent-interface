@@ -659,4 +659,30 @@ mod tests {
         );
         assert_eq!(missing(b"Not Found"), Error::Unsupported);
     }
+
+    /// Bodies captured from the provider's routes.
+    #[test]
+    fn provider_bodies_parse() {
+        let page: Conversation = parse(br#"{"kind": "document", "artifact_id": "59dc30d330934c35ba501c6622e1bcfd", "title": "Benchmark runs", "latest_revision_id": "2", "responsible": {"agent_id": "b0c85a4ec22d4754a1183fd1abf8ef1f", "name": "builder", "status": "active"}, "participants": [{"agent_id": "b0c85a4ec22d4754a1183fd1abf8ef1f", "name": "builder", "status": "active", "responsible": true}], "total": 2, "unread": 2, "read_through": 0, "entries": [{"id": 1, "kind": "message", "created_at": "2026-10-27T18:16:51.345939Z", "author": {"type": "owner", "agent_id": null, "name": "owner"}, "text": "Could History come before column paging?", "anchor": {"revision_id": "1", "label": "Runs!B3:D5"}, "recipient": {"agent_id": "b0c85a4ec22d4754a1183fd1abf8ef1f", "name": "builder"}, "delivery": "pending"}, {"id": 2, "kind": "revision", "created_at": "2026-10-27T18:16:51.352948Z", "author": {"type": "agent", "agent_id": "b0c85a4ec22d4754a1183fd1abf8ef1f", "name": "builder"}, "revision": {"revision_id": "2", "label": "rev 2"}}, {"id": 3, "kind": "message", "created_at": "2026-10-27T18:16:51.356040Z", "author": {"type": "agent", "agent_id": "b0c85a4ec22d4754a1183fd1abf8ef1f", "name": "builder"}, "text": "Done, see rev 2.", "anchor": null, "in_reply_to": 1, "resulting_revision_id": "2"}], "older": null, "newer": null}"#).unwrap();
+        assert!(matches!(page.entries[0].author, Author::Owner));
+        assert!(
+            matches!(&page.entries[1].body, Body::Revision { revision } if revision.changed.is_empty())
+        );
+        assert!(matches!(&page.entries[2].body,
+            Body::Message { resulting_revision_id: Some(id), in_reply_to: Some(1), .. } if id == "2"));
+        let reply = |status, body: &str| {
+            outcome(Ok(crate::transport::local::Response {
+                status,
+                body: body.as_bytes().to_vec(),
+                sheet_warnings: None,
+            }))
+        };
+        assert_eq!(
+            reply(
+                200,
+                r#"{"result": "already_pending", "entry": {"id": 1, "kind": "message", "created_at": "2026-10-27T18:16:51.345939Z", "author": {"type": "owner", "agent_id": null, "name": "owner"}, "text": "Could History come before column paging?", "anchor": {"revision_id": "1", "label": "Runs!B3:D5"}, "recipient": {"agent_id": "b0c85a4ec22d4754a1183fd1abf8ef1f", "name": "builder"}, "delivery": "pending"}, "error": null}"#
+            ),
+            Outcome::AlreadyPending
+        );
+    }
 }
