@@ -401,6 +401,17 @@ bindings, which are saved separately in `settings.toml`. The legacy prefix is no
 dispatched by the desktop.
 
 
+## Current plans
+
+**Reports & updates → Current plans** shows one card per agent: what its
+current plan undertakes, each step as done, now, waiting or still ahead, and
+what the waiting steps wait on. Agents with something waiting come first; an
+agent that has not published a plan says so. Plans are what each agent
+declares it is doing, kept current by the agent; the view only reads them and
+rereads them every 20 seconds while open. A plan not updated for a day is
+marked stale, which does not mean it is complete. The section needs an Agent
+Backbone that offers current plans; an older one says it does not.
+
 ## Sheets
 
 Use Sheets for research comparisons, budgets, opportunity trackers and test results.

@@ -478,6 +478,12 @@ selection, history, copying values, export and contextual feedback. Virtualized 
 and bounded column pages limit rendering work. Labels retain canonical A1 coordinates
 under saved sort/filter views. No spreadsheet widget or formula engine is added.
 
+`roster::plans` reads Backbone's `/api/current-plans` list over the same
+authenticated local transport as Sheets, on a worker, every 20 seconds while
+the Current plans section is open. It is read-only: it publishes, approves and
+changes nothing. A missing endpoint is reported as unsupported, and a failed
+reread keeps the plans last read.
+
 Sheets shows the same `desktop::views::conversation::Conversation` entity as the
 record readers, beside the grid, with its native text field, draft preservation,
 focus restoration, delivery states and thread. A record's conversation sends
