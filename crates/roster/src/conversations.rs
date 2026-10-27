@@ -93,6 +93,10 @@ pub enum Author {
         /// Current registered name.
         name: String,
     },
+    /// Backbone itself, such as for a change it observed, or an author type
+    /// this client does not know.
+    #[serde(other)]
+    System,
 }
 
 /// An agent registration: stable identity plus its current name.
@@ -203,9 +207,11 @@ impl Kind {
 /// An agent as a conversation lists it.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 pub struct Participant {
-    /// Stable registration identity.
+    /// Stable registration identity; empty while unassigned.
+    #[serde(default, deserialize_with = "text")]
     pub agent_id: String,
-    /// Current registered name.
+    /// Current registered name; empty while unassigned.
+    #[serde(default, deserialize_with = "text")]
     pub name: String,
     /// `active`, `retired` or `unassigned`.
     #[serde(default)]
@@ -213,6 +219,11 @@ pub struct Participant {
     /// Whether it receives messages that name no recipient.
     #[serde(default)]
     pub responsible: bool,
+}
+
+/// A string the provider may send as null.
+fn text<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
+    Ok(Option::<String>::deserialize(deserializer)?.unwrap_or_default())
 }
 
 /// One page of a conversation and its header.
@@ -665,6 +676,13 @@ mod tests {
     fn provider_bodies_parse() {
         let page: Conversation = parse(br#"{"kind": "document", "artifact_id": "59dc30d330934c35ba501c6622e1bcfd", "title": "Benchmark runs", "latest_revision_id": "2", "responsible": {"agent_id": "b0c85a4ec22d4754a1183fd1abf8ef1f", "name": "builder", "status": "active"}, "participants": [{"agent_id": "b0c85a4ec22d4754a1183fd1abf8ef1f", "name": "builder", "status": "active", "responsible": true}], "total": 2, "unread": 2, "read_through": 0, "entries": [{"id": 1, "kind": "message", "created_at": "2026-10-27T18:16:51.345939Z", "author": {"type": "owner", "agent_id": null, "name": "owner"}, "text": "Could History come before column paging?", "anchor": {"revision_id": "1", "label": "Runs!B3:D5"}, "recipient": {"agent_id": "b0c85a4ec22d4754a1183fd1abf8ef1f", "name": "builder"}, "delivery": "pending"}, {"id": 2, "kind": "revision", "created_at": "2026-10-27T18:16:51.352948Z", "author": {"type": "agent", "agent_id": "b0c85a4ec22d4754a1183fd1abf8ef1f", "name": "builder"}, "revision": {"revision_id": "2", "label": "rev 2"}}, {"id": 3, "kind": "message", "created_at": "2026-10-27T18:16:51.356040Z", "author": {"type": "agent", "agent_id": "b0c85a4ec22d4754a1183fd1abf8ef1f", "name": "builder"}, "text": "Done, see rev 2.", "anchor": null, "in_reply_to": 1, "resulting_revision_id": "2"}], "older": null, "newer": null}"#).unwrap();
         assert!(matches!(page.entries[0].author, Author::Owner));
+        let unassigned: Participant =
+            serde_json::from_str(r#"{"agent_id":null,"name":null,"status":"unassigned"}"#).unwrap();
+        assert!(unassigned.name.is_empty());
+        let observed: Author =
+            serde_json::from_str(r#"{"type":"backbone","agent_id":null,"name":"backbone"}"#)
+                .unwrap();
+        assert_eq!(observed, Author::System);
         assert!(
             matches!(&page.entries[1].body, Body::Revision { revision } if revision.changed.is_empty())
         );

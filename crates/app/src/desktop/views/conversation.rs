@@ -937,7 +937,9 @@ impl Conversation {
         self.stored
             .as_ref()
             .and_then(|stored| stored.page.as_ref())
-            .map_or_else(|| self.agent.clone(), |page| page.responsible.name.clone())
+            .map(|page| page.responsible.name.clone())
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| self.agent.clone())
     }
 
     /// Backbone's entries in order, with the "new" divider and day dividers.
@@ -993,6 +995,7 @@ impl Conversation {
             let who = match &entry.author {
                 Author::Owner => "You".to_owned(),
                 Author::Agent { name, .. } => name.clone(),
+                Author::System => "Backbone".to_owned(),
             };
             let label = entry
                 .anchor
