@@ -157,8 +157,10 @@ impl Sheets {
             .child(
                 ui::chip("sheet-history-back", "Back to cells", false).on_click(cx.listener(
                     |s, _, _, cx| {
-                        s.history = None;
-                        cx.notify();
+                        if !s.busy {
+                            s.history = None;
+                            cx.notify();
+                        }
                     },
                 )),
             )

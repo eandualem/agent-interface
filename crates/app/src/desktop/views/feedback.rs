@@ -119,6 +119,12 @@ impl Feedback {
         }
     }
 
+    pub fn block_input(&mut self, cx: &mut Context<Self>) {
+        self.blocked = true;
+        self.field.update(cx, |field, _| field.set_read_only(true));
+        cx.notify();
+    }
+
     pub fn retrying(&mut self, cx: &mut Context<Self>) {
         self.sending = true;
         cx.notify();

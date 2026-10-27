@@ -179,6 +179,8 @@ impl Sheets {
         cx.notify();
     }
     fn begin(&mut self, cx: &mut Context<Self>) {
+        // Block native input before yielding; waiting for render leaves an input gap.
+        self.feedback.update(cx, |f, cx| f.block_input(cx));
         self.busy = true;
         self.error = None;
         self.notice = None;
@@ -293,6 +295,14 @@ impl Sheets {
                 s.busy = false;
                 match result {
                     Ok(open) => {
+                        // A draft must never acquire a different revision or page context.
+                        if !s.feedback.read(cx).value(cx).is_empty() {
+                            s.fail(
+                                "The displayed revision was kept to preserve your feedback draft.",
+                                cx,
+                            );
+                            return;
+                        }
                         s.open = Some(open);
                         s.selection = None;
                         s.history = None;
