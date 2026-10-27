@@ -113,8 +113,13 @@ pub(super) struct Conversation {
     /// they may choose from besides the conversation's participants.
     recipient: Option<String>,
     candidates: Vec<String>,
-    /// The team's names have been read, for a skill's or policy's chooser.
+    /// The team's names as last read, for a skill's or policy's chooser,
+    /// and whether to read them again.
+    team: Vec<String>,
     team_read: bool,
+    /// A skill's or policy's conversation found the connection changed; the
+    /// view replaces it with a new one rather than retarget its messages.
+    stale: bool,
     /// Whether the pane holding it is visible.
     visible: Rc<Cell<bool>>,
     _poll: Option<Task<()>>,
@@ -390,6 +395,16 @@ impl Conversation {
         }));
     }
 
+    /// The agents the view offers now, such as those a skill reaches.
+    pub fn set_candidates(&mut self, candidates: Vec<String>) {
+        self.candidates = candidates;
+    }
+
+    /// The connection changed under this skill's or policy's conversation.
+    pub fn stale(&self) -> bool {
+        self.stale
+    }
+
     /// Nobody answers unless the person names someone: Backbone names no
     /// maintainer, or the one it names has retired.
     fn needs_recipient(&self) -> bool {
@@ -418,7 +433,7 @@ impl Conversation {
                     .collect()
             })
             .unwrap_or_default();
-        for name in &self.candidates {
+        for name in self.candidates.iter().chain(&self.team) {
             if !names.contains(name) {
                 names.push(name.clone());
             }
@@ -462,7 +477,9 @@ impl Conversation {
             active: false,
             recipient: None,
             candidates: Vec::new(),
+            team: Vec::new(),
             team_read: false,
+            stale: false,
             visible: Rc::new(Cell::new(true)),
             _poll: None,
             _input: input,
@@ -630,11 +647,7 @@ impl Conversation {
                 stored.reading = false;
                 if let Some(team) = team {
                     conversation.team_read = true;
-                    for name in team {
-                        if !conversation.candidates.contains(&name) {
-                            conversation.candidates.push(name);
-                        }
-                    }
+                    conversation.team = team;
                 }
                 let Some(stored) = conversation.stored.as_mut() else {
                     return;
@@ -674,6 +687,10 @@ impl Conversation {
                     // know this record, keeps the one-way messages.
                     Err(stored::Error::Unsupported | stored::Error::UnknownArtifact) => {
                         stored.supported = Some(false);
+                    }
+                    Err(stored::Error::Moved) if stored.source.is_some() => {
+                        conversation.stale = true;
+                        failure = Some(stored::Error::Moved);
                     }
                     // Keep the last page while Backbone is briefly unavailable.
                     Err(error) => failure = Some(error),
@@ -911,6 +928,8 @@ impl Conversation {
         } else {
             self.return_focus = window.focused(cx);
             self.open = true;
+            // The team may have changed since it was last read.
+            self.team_read = false;
             if let Some(stored) = &mut self.stored {
                 stored.divider = stored
                     .page
@@ -942,7 +961,13 @@ impl Conversation {
 
     fn can_send(&self, cx: &gpui::App) -> bool {
         let field = self.field.read(cx);
-        !self.blocked
+        // A skill or policy sends only once Backbone has its conversation.
+        let ready = self
+            .stored
+            .as_ref()
+            .is_none_or(|stored| stored.source.is_none() || stored.live());
+        ready
+            && !self.blocked
             && !field.composing()
             && !field.value().trim().is_empty()
             && (self.recipient.is_some() || !self.needs_recipient())

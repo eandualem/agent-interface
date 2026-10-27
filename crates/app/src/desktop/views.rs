@@ -707,18 +707,33 @@ impl Render for ViewPane {
             let key = format!("{}\n{path}", kind.name());
             let (path, directory, visible) =
                 (path.clone(), directory.clone(), self.visible.clone());
-            self.conversation = Some(
-                self.conversations
-                    .entry(key)
-                    .or_insert_with(|| {
-                        cx.new(|cx| {
-                            conversation::Conversation::about_source(
-                                kind, path, about, candidates, directory, visible, window, cx,
-                            )
-                        })
-                    })
-                    .clone(),
-            );
+            // One found on another connection is replaced, never retargeted.
+            if self
+                .conversations
+                .get(&key)
+                .is_some_and(|conversation| conversation.read(cx).stale())
+            {
+                self.conversations.remove(&key);
+            }
+            let conversation = match self.conversations.get(&key) {
+                Some(conversation) => {
+                    let conversation = conversation.clone();
+                    conversation.update(cx, |conversation, _| {
+                        conversation.set_candidates(candidates)
+                    });
+                    conversation
+                }
+                None => {
+                    let conversation = cx.new(|cx| {
+                        conversation::Conversation::about_source(
+                            kind, path, about, candidates, directory, visible, window, cx,
+                        )
+                    });
+                    self.conversations.insert(key, conversation.clone());
+                    conversation
+                }
+            };
+            self.conversation = Some(conversation);
         }
         // Only the shown conversation reads Backbone.
         if previous != self.conversation {
