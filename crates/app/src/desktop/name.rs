@@ -24,9 +24,6 @@ struct Text {
     marked: Option<Range<usize>>,
     search: bool,
     feedback: bool,
-    limit: Option<usize>,
-    byte_limit: Option<usize>,
-    rejected: bool,
 }
 
 impl Text {
@@ -43,26 +40,13 @@ impl Text {
         from_utf16(&self.value, range.start)..from_utf16(&self.value, range.end)
     }
 
-    fn replace(
-        &mut self,
-        range: Option<Range<usize>>,
-        text: &str,
-        marked: bool,
-    ) -> Option<Range<usize>> {
+    fn replace(&mut self, range: Option<Range<usize>>, text: &str, marked: bool) -> Range<usize> {
         let range = range
             .map(|range| self.bytes(range))
             .or_else(|| self.marked.clone())
             .unwrap_or_else(|| self.selection());
         let remaining =
             self.value[..range.start].chars().count() + self.value[range.end..].chars().count();
-        let available = self
-            .limit
-            .unwrap_or(if self.feedback {
-                agent_interface_roster::feedback::TEXT_LIMIT
-            } else {
-                80
-            })
-            .saturating_sub(remaining);
         let inserted: String = text
             .chars()
             .filter(|ch| {
@@ -74,21 +58,21 @@ impl Text {
                             GeneralCategoryGroup::Other | GeneralCategoryGroup::Separator
                         ))
             })
-            .take(available.saturating_add(usize::from(self.limit.is_some())))
+            .take(
+                (if self.feedback {
+                    agent_interface_roster::feedback::TEXT_LIMIT
+                } else {
+                    80usize
+                })
+                .saturating_sub(remaining),
+            )
             .collect();
-        self.rejected = (self.limit.is_some() && inserted.chars().count() > available)
-            || self.byte_limit.is_some_and(|limit| {
-                self.value.len() - (range.end - range.start) + inserted.len() > limit
-            });
-        if self.rejected {
-            return None;
-        }
         let end = range.start + inserted.len();
         self.value.replace_range(range.clone(), &inserted);
         self.cursor = if marked { end } else { self.snap(end) };
         self.anchor = self.cursor;
         self.marked = (marked && end > range.start).then_some(range.start..end);
-        Some(range.start..end)
+        range.start..end
     }
 
     fn compose(
@@ -97,9 +81,7 @@ impl Text {
         text: &str,
         selection: Option<Range<usize>>,
     ) {
-        let Some(inserted) = self.replace(range, text, true) else {
-            return;
-        };
+        let inserted = self.replace(range, text, true);
         if let Some(selection) = selection {
             let value = &self.value[inserted.clone()];
             self.anchor = inserted.start + from_utf16(value, selection.start);
@@ -217,50 +199,16 @@ impl NameField {
         field
     }
 
-    /// A bounded value editor, retaining native IME and clipboard behavior.
-    pub fn value_field(
-        value: &str,
-        limit: usize,
-        multiline: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
-        let mut field = Self::filter(window, cx);
-        field.text.search = false;
-        field.text.feedback = multiline;
-        field.text.limit = Some(limit);
-        field.set_value(value, cx);
-        field
-    }
-
-    /// Replace a selected record's input without reporting a user edit.
-    pub fn set_value(&mut self, value: &str, cx: &mut Context<Self>) {
-        self.text.value = value.into();
-        self.text.anchor = 0;
-        self.text.cursor = value.len();
-        self.text.marked = None;
-        self.text.rejected = false;
-        self.scroll = px(0.);
-        cx.notify();
-    }
-
-    /// Apply the provider's UTF-8 byte budget in addition to the field's character limit.
-    pub fn set_byte_limit(&mut self, limit: usize) {
-        self.text.byte_limit = Some(limit);
-    }
-
-    /// Freeze input while its exact contents are being committed.
+    /// Empty the field without announcing a change.
     pub fn set_read_only(&mut self, read_only: bool) {
         self.read_only = read_only;
     }
 
-    /// Empty the field without announcing a change.
     pub fn clear(&mut self, cx: &mut Context<Self>) {
         self.text.value.clear();
         self.text.anchor = 0;
         self.text.cursor = 0;
         self.text.marked = None;
-        self.text.rejected = false;
         cx.notify();
     }
 
@@ -305,8 +253,6 @@ impl NameField {
 
     fn key(&mut self, event: &gpui::KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         if self.read_only {
-            cx.stop_propagation();
-            window.prevent_default();
             return;
         }
         // The platform input method owns navigation and confirmation while composing.
@@ -603,7 +549,7 @@ impl EntityInputHandler for NameField {
         self.text.marked = None;
         self.text.anchor = self.text.snap(self.text.anchor);
         self.text.cursor = self.text.snap(self.text.cursor);
-        if self.text.feedback && self.text.limit.is_none() {
+        if self.text.feedback {
             cx.emit(NameEvent::Changed(self.text.value.clone()));
         }
         cx.notify();
@@ -618,11 +564,8 @@ impl EntityInputHandler for NameField {
         if self.read_only {
             return;
         }
-        let before = self.text.value.clone();
         self.text.replace(range, text, false);
-        if self.text.value != before {
-            cx.emit(NameEvent::Changed(self.text.value.clone()));
-        }
+        cx.emit(NameEvent::Changed(self.text.value.clone()));
         cx.notify();
     }
     fn replace_and_mark_text_in_range(
@@ -636,11 +579,8 @@ impl EntityInputHandler for NameField {
         if self.read_only {
             return;
         }
-        let before = self.text.value.clone();
         self.text.compose(range, text, selection);
-        if self.text.value != before {
-            cx.emit(NameEvent::Changed(self.text.value.clone()));
-        }
+        cx.emit(NameEvent::Changed(self.text.value.clone()));
         cx.notify();
     }
     fn bounds_for_range(
@@ -686,18 +626,15 @@ impl EntityInputHandler for NameField {
 }
 
 impl Render for NameField {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let entity = cx.entity();
         // A name is edited in place, one cell high in the selection's colors,
         // as the source's inline editor is; the chooser's filter keeps a frame.
         let search = self.text.search;
-        let field = div()
+        div()
             .w_full()
             .min_w_0()
-            .flex_shrink_0()
-            .h(px(if self.text.feedback && self.text.limit.is_some() {
-                48.
-            } else if self.text.feedback {
+            .h(px(if self.text.feedback {
                 100.
             } else if search {
                 super::design::tokens().size.jump_field
@@ -709,13 +646,7 @@ impl Render for NameField {
             .bg(super::design::colors().field)
             .text_color(super::design::colors().text)
             .border(px(super::design::tokens().size.hairline))
-            .border_color(
-                if self.text.limit.is_none() || self.focus.is_focused(window) {
-                    super::design::colors().accent
-                } else {
-                    super::design::colors().line
-                },
-            )
+            .border_color(super::design::colors().accent)
             .id("name-field")
             .on_click(cx.listener(|_, _, _, cx| cx.stop_propagation()))
             .track_focus(&self.focus)
@@ -773,74 +704,13 @@ impl Render for NameField {
                     },
                 )
                 .size_full(),
-            );
-        div()
-            .w_full()
-            .min_w_0()
-            .flex_shrink_0()
-            .flex()
-            .flex_col()
-            .child(field)
-            .when(self.text.rejected, |e| {
-                e.child(
-                    div()
-                        .text_color(super::design::colors().attention_text)
-                        .child("Input too long; nothing was changed."),
-                )
-            })
+            )
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn bounded_values_reject_oversized_paste_and_composition_without_losing_selection() {
-        let mut text = Text {
-            value: "original".into(),
-            anchor: 0,
-            cursor: 8,
-            limit: Some(16384),
-            ..Text::default()
-        };
-        assert!(text.replace(None, &"x".repeat(16385), false).is_none());
-        assert_eq!(text.value, "original");
-        assert_eq!(text.selection(), 0..8);
-        assert!(text.rejected);
-        text.compose(None, &"x".repeat(16385), Some(1..2));
-        assert_eq!(text.value, "original");
-        assert_eq!(text.selection(), 0..8);
-        assert!(text.marked.is_none());
-        text.replace(None, "accepted", false);
-        assert_eq!(text.value, "accepted");
-        assert!(!text.rejected);
-    }
-
-    #[test]
-    fn utf8_cell_budget_rejects_whole_pastes_and_composition() {
-        let mut text = Text {
-            value: "keep this draft".into(),
-            anchor: 0,
-            cursor: 15,
-            limit: Some(16384),
-            byte_limit: Some(16384),
-            ..Text::default()
-        };
-        assert!(text.replace(None, &"é".repeat(8193), false).is_none());
-        assert_eq!(text.value, "keep this draft");
-        assert_eq!(text.selection(), 0..15);
-        text.compose(None, &"🙂".repeat(4097), Some(0..1));
-        assert_eq!(text.value, "keep this draft");
-        assert!(text.marked.is_none());
-        assert!(text.replace(None, &"é".repeat(8192), false).is_some());
-        assert_eq!(text.value.len(), 16384);
-        text.byte_limit = Some(4096);
-        text.anchor = 0;
-        text.cursor = text.value.len();
-        assert!(text.replace(None, &"x".repeat(4097), false).is_none());
-        assert_eq!(text.value.len(), 16384);
-        assert!(text.replace(None, "=1+2", false).is_some());
-    }
 
     #[test]
     fn feedback_preserves_paragraphs_and_unicode_beyond_the_name_limit() {

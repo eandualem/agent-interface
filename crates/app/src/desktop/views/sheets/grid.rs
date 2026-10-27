@@ -108,7 +108,7 @@ impl Sheets {
                     &t.text.meta,
                 )
                 .child(format!(
-                    "{} · {} · {} · canonical A1 coordinates",
+                    "{} · {} · {}",
                     open.record.title,
                     open.record.author_name,
                     if open.record.current_revision_id == open.record.revision_id {
@@ -119,10 +119,9 @@ impl Sheets {
                 )),
             )
             .child(tabs)
-            .child(self.edit_controls(cx))
             .child(table)
             .child(self.page_controls(cx))
-            .when(self.feedback_open, |e| e.child(self.feedback_controls(cx)))
+            .child(self.feedback.clone())
             .into_any_element()
     }
     fn row(&self, row: usize, cx: &mut Context<Self>) -> gpui::Div {
@@ -146,21 +145,7 @@ impl Sheets {
         );
         for (column, col) in open.grid.columns.iter().enumerate() {
             let cell = open.grid.cell(&r.row_id, &col.column_id);
-            let staged = self
-                .draft
-                .base
-                .as_ref()
-                .filter(|b| *b == &open.record.revision_id)
-                .and_then(|_| {
-                    self.draft
-                        .cells
-                        .get(&(r.row_id.clone(), col.column_id.clone()))
-                });
-            let display = match staged.map(|s| &s.input) {
-                Some(Patch::Set(input)) => input.text(),
-                Some(Patch::Clear) => String::new(),
-                _ => cell.map(|c| c.display.clone()).unwrap_or_default(),
-            };
+            let display = cell.map(|c| c.display.clone()).unwrap_or_default();
             let display: String = display
                 .chars()
                 .take(200)
@@ -185,7 +170,6 @@ impl Sheets {
                     .border_color(c.line)
                     .cursor_pointer()
                     .when(selected, |e| e.bg(c.selected))
-                    .when(staged.is_some(), |e| e.text_color(c.accent))
                     .when(
                         cell.is_some_and(|c| matches!(c.value, Value::Error(_))),
                         |e| e.text_color(c.attention_text),
@@ -268,9 +252,6 @@ impl Sheets {
         }
     }
     pub(super) fn copy(&mut self, cx: &mut Context<Self>) {
-        if !self.clean(cx) {
-            return;
-        }
         let Some((open, selection)) = self.open.as_ref().zip(self.selection) else {
             return;
         };
@@ -294,79 +275,7 @@ impl Sheets {
             .collect::<Vec<_>>()
             .join("\n");
         cx.write_to_clipboard(ClipboardItem::new_string(text));
-        self.notice = Some(
-            "Copied displayed values as tab-separated text. Paste treats them as literal text."
-                .into(),
-        );
-        cx.notify();
-    }
-    pub(super) fn paste(&mut self, cx: &mut Context<Self>) {
-        if self.busy || self.pending.is_some() || !self.stage(cx) {
-            return;
-        }
-        let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
-            return;
-        };
-        let values = match parse_tsv(&text) {
-            Ok(v) => v,
-            Err(e) => {
-                self.fail(e, cx);
-                return;
-            }
-        };
-        let Some((open, selection)) = self.open.as_ref().zip(self.selection) else {
-            return;
-        };
-        if self
-            .draft
-            .base
-            .as_ref()
-            .is_some_and(|base| base != &open.record.revision_id)
-        {
-            self.fail(
-                "Resolve the retained draft before pasting into this revision.",
-                cx,
-            );
-            return;
-        }
-        let (rows, columns) = selection.bounds();
-        let (row, col) = (*rows.start(), *columns.start());
-        if row + values.len() > open.grid.rows.len()
-            || values
-                .iter()
-                .any(|r| col + r.len() > open.grid.columns.len())
-        {
-            self.fail("The paste extends beyond this loaded page. Choose a smaller range; nothing was pasted.",cx);
-            return;
-        }
-        let mut changes = self.draft.cells.clone();
-        for (ri, values) in values.into_iter().enumerate() {
-            for (ci, value) in values.into_iter().enumerate() {
-                let r = open.grid.rows[row + ri].row_id.clone();
-                let c = open.grid.columns[col + ci].column_id.clone();
-                changes
-                    .entry((r.clone(), c.clone()))
-                    .and_modify(|change| change.input = Patch::Set(Input::Text(value.clone())))
-                    .or_insert(Change {
-                        row_id: r,
-                        column_id: c,
-                        input: Patch::Set(Input::Text(value)),
-                        number_format: Patch::Unchanged,
-                    });
-            }
-        }
-        if changes.len() > 1000 {
-            self.fail(
-                "Paste would exceed 1,000 changed cells. Nothing was pasted.",
-                cx,
-            );
-            return;
-        }
-        self.draft.cells = changes;
-        self.draft.base = Some(open.record.revision_id.clone());
-        self.draft.tab = Some(open.grid.tab_id.clone());
-        self.selection = None;
-        self.notice = Some("Pasted literal text into the draft. Save changes to commit it.".into());
+        self.notice = Some("Copied displayed values as tab-separated text.".into());
         cx.notify();
     }
 }
@@ -375,101 +284,5 @@ fn quote(s: &str) -> String {
         format!("\"{}\"", s.replace('"', "\"\""))
     } else {
         s.into()
-    }
-}
-fn parse_tsv(s: &str) -> Result<Vec<Vec<String>>, &'static str> {
-    if s.len() > 1024 * 1024 {
-        return Err("Clipboard text exceeds 1 MiB.");
-    }
-    let mut rows = vec![Vec::new()];
-    let mut value = String::new();
-    let mut chars = s.chars().peekable();
-    let mut quoted = false;
-    let mut closed = false;
-    let mut count = 0;
-    while let Some(ch) = chars.next() {
-        if quoted {
-            if ch == '"' {
-                if chars.peek() == Some(&'"') {
-                    chars.next();
-                    value.push('"');
-                } else {
-                    quoted = false;
-                    closed = true;
-                }
-            } else {
-                value.push(ch);
-            }
-        } else if ch == '"' && value.is_empty() && !closed {
-            quoted = true;
-        } else if ch == '\t' || ch == '\n' || ch == '\r' {
-            if value.len() > 16384 {
-                return Err("A pasted cell exceeds 16 KiB.");
-            }
-            rows.last_mut().unwrap().push(std::mem::take(&mut value));
-            count += 1;
-            closed = false;
-            if ch != '\t' {
-                if ch == '\r' && chars.peek() == Some(&'\n') {
-                    chars.next();
-                }
-                rows.push(Vec::new());
-            }
-        } else if closed {
-            return Err("Clipboard text has invalid quoted cells.");
-        } else {
-            value.push(ch);
-        }
-        if count > 1000 || value.len() > 16384 {
-            return Err("Paste is limited to 1,000 cells and 16 KiB per cell.");
-        }
-    }
-    if quoted {
-        return Err("Clipboard text has an unfinished quoted cell.");
-    }
-    if !value.is_empty() || closed || rows.last().is_some_and(|r| !r.is_empty()) || rows.len() == 1
-    {
-        rows.last_mut().unwrap().push(value);
-    } else {
-        rows.pop();
-    }
-    let width = rows.first().map(Vec::len).unwrap_or(0);
-    if rows.iter().any(|r| r.len() != width) || rows.iter().map(Vec::len).sum::<usize>() > 1000 {
-        return Err("Paste a rectangular range of at most 1,000 cells.");
-    }
-    Ok(rows)
-}
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn clipboard_preserves_single_column_trailing_empty_rows() {
-        for rows in [vec!["value", ""], vec!["", ""], vec![""]] {
-            let wire = rows
-                .iter()
-                .map(|cell| quote(cell))
-                .collect::<Vec<_>>()
-                .join("\n");
-            let expected = rows
-                .iter()
-                .map(|cell| vec![cell.to_string()])
-                .collect::<Vec<_>>();
-            assert_eq!(parse_tsv(&wire).unwrap(), expected);
-        }
-    }
-    #[test]
-    fn clipboard_roundtrips_quotes_newlines_and_formula_like_literal_text() {
-        let values = ["=literal", "two\tcolumns", "two\nlines", "a\"b", ""];
-        let wire = values
-            .iter()
-            .map(|s| quote(s))
-            .collect::<Vec<_>>()
-            .join("\t");
-        assert_eq!(
-            parse_tsv(&wire).unwrap(),
-            vec![values.map(str::to_owned).to_vec()]
-        );
-        assert!(parse_tsv("one\ttwo\nthree").is_err());
-        assert!(parse_tsv("\"unfinished").is_err());
     }
 }

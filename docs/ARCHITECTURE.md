@@ -455,51 +455,40 @@ to a full commit, to retain build artifacts; it does not publish releases.
 
 ### Retained Sheets
 
-`agent-interface-roster::sheets` owns the typed workbook protocol and bounded
-local transport. It reads only through the existing authenticated private Unix
-socket. Stable workbook, revision, tab, row and column identifiers are validated
-before constructing URLs. Reads pin one immutable revision; the native editor
-never combines pages from different revisions or calculates formulas itself.
-Range and metadata response-size refusals reduce the requested page size without
-changing its revision or discovery/history cursor and filters. Other failures do
-not trigger automatic retries.
+`agent-interface-roster::sheets` owns the typed workbook protocol and bounded local
+transport through the existing authenticated private Unix socket. Stable workbook,
+revision, tab, row and column identifiers are validated before constructing URLs.
+Reads pin one immutable revision and never combine pages from different revisions.
+Range and metadata response-size refusals reduce page size without changing the
+revision or discovery/history cursor. Other failures do not trigger automatic retries.
 Agent Backbone owns canonical data, calculated results, engine versions, storage
-admission and atomic revision updates. Keeping calculation there gives agents and
-people the same results and preserves the values referenced by historical feedback.
+admission and atomic updates. The app does not calculate formulas.
 
-`desktop::views::sheets` supplies a native GPUI grid beside Documents and Responses
-in Reports & updates, on macOS and Linux. Virtualized rows and bounded column pages
-limit rendering work. Row gutters and column labels retain canonical A1 coordinates
-under saved sort/filter views. Physical row/column moves are separate operations;
-the provider updates formula references and stable identities atomically.
+`desktop::views::sheets` supplies a read-only native GPUI grid beside Documents and
+Responses in Reports & updates. Agents manage workbook creation, cell and structural
+edits, saved views and imports through Backbone. The native UI exposes inspection,
+selection, history, copying values, export and contextual feedback. Virtualized rows
+and bounded column pages limit rendering work. Labels retain canonical A1 coordinates
+under saved sort/filter views. No spreadsheet widget or formula engine is added.
 
-Edits use an explicit base revision and an immutable prepared request. A lost
-response retains the exact request bytes and retry key. A stale base keeps the
-local draft; reviewing a newer revision does not automatically rebase it. Explicit
-reapplication checks that every drafted coordinate is present in the displayed
-page. Inputs freeze during submission, and delayed responses cannot silently
-replace a newly typed value. Drafts remain with their pane when it is hidden.
-Only committed revisions are retained by Backbone across application restarts.
+Sheets embeds the same `desktop::views::feedback::Feedback` entity used by authored
+artifacts, including its collapsed button, native text field, draft preservation,
+focus restoration, send state and outcome display. The document transport retains
+its existing behavior and restores focus to its web surface on close. Sheets supplies
+workbook context and handles the provider's feedback transaction; it does not render
+a separate composer. Feedback carries the immutable observed revision and stable
+selected cell identities. Navigation cannot move a draft to another revision.
 
-Feedback carries the observed revision and stable selected cell identities to the
-owning registration. It uses the provider's atomic feedback/queue transaction and
-distinguishes queued, delivered, uncertain, expired and unknown outcomes without
-claiming that an answer has arrived. No new agent workflow or service is started
-by the Sheets UI. Operator edits retain the owning registration; creation/import
-remain subject to the provider's existing author-signing rules.
+A prepared feedback request retains exact bytes and its retry key after an uncertain
+response. The composer freezes while that request is unresolved and offers a retry of
+the same operation. Accepted feedback retains its receipt and distinguishes delivery
+states without claiming an agent answer. No agent workflow or service is started by
+the view. The typed adapter also represents provider mutation APIs, but the native
+Sheets view calls only reads, export and feedback submission.
 
-Imports create new workbooks. JSON/XLSX preserve the provider's supported workbook
-features; CSV/TSV are single-tab values. Import receipts and export warning headers
-are bounded and displayed; malformed diagnostics fail visibly. `base64` is pinned
-to `=0.22.1` (MIT OR Apache-2.0), solely to encode selected XLSX bytes for the existing
-JSON import endpoint. It adds no network or calculation capability. GPUI and the
-existing native input control provide the editor; no spreadsheet component or
-second formula engine is added to the app. The provider isolates calculation in a
-bounded worker; macOS resident-memory monitoring can overshoot between samples and
-is not a hard allocation sandbox.
-
-The first integration does not claim full Excel formula compatibility, Google
-account integration, macros, network formulas, charts, pivots or live keystroke
-coediting. Immutable revisions with explicit stale-edit resolution define its
-collaboration model. Clipboard text is literal by default, including leading `=`;
-formula-relative internal copy is a distinct provider operation.
+JSON/XLSX exports preserve supported workbook features; CSV/TSV export one tab as
+values. Export warnings are bounded and displayed; malformed diagnostics fail
+visibly. The first integration does not claim full Excel formula compatibility,
+Google account integration, macros, network formulas, charts, pivots or live keystroke
+coediting. The provider isolates calculation in a bounded worker; macOS resident
+memory monitoring can overshoot between samples and is not a hard allocation sandbox.

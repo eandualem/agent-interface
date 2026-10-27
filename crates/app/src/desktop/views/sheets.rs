@@ -1,19 +1,21 @@
-//! Native retained spreadsheet editor. Calculation and revision authority stay
-//! in Backbone; UI drafts and unknown-outcome retries remain local to this pane.
+//! Native read-only spreadsheets with contextual feedback. Agents own edits;
+//! immutable displayed revisions and feedback retries remain pinned in this pane.
 
+use super::feedback::{Feedback, FeedbackEvent};
 use crate::desktop::{
     components as ui,
     design::{colors, tokens},
-    name::{NameEvent, NameField},
 };
-use agent_interface_roster::sheets::{self as api, *};
+use agent_interface_roster::{
+    feedback::Outcome,
+    sheets::{self as api, *},
+};
 use gpui::{
     Context, Entity, EventEmitter, SharedString, Subscription, Window, div, prelude::*, px,
 };
-use std::{collections::BTreeMap, path::PathBuf};
+use std::path::PathBuf;
 mod controls;
 mod grid;
-mod structure;
 
 pub(super) struct Close;
 impl EventEmitter<Close> for Sheets {}
@@ -48,66 +50,6 @@ impl PageTrail {
         self
     }
 }
-#[derive(Default)]
-struct Draft {
-    base: Option<Id>,
-    tab: Option<Id>,
-    cells: BTreeMap<(Id, Id), Change>,
-}
-#[derive(Clone, Copy, PartialEq)]
-enum Kind {
-    Text,
-    Number,
-    Boolean,
-    Date,
-    Formula,
-    Blank,
-}
-impl Kind {
-    fn label(self) -> &'static str {
-        match self {
-            Self::Text => "Text",
-            Self::Number => "Number",
-            Self::Boolean => "Boolean",
-            Self::Date => "Date",
-            Self::Formula => "Formula",
-            Self::Blank => "Blank",
-        }
-    }
-    fn from(input: Option<&Input>) -> Self {
-        match input {
-            None => Self::Text,
-            Some(Input::Text(_)) => Self::Text,
-            Some(Input::Number(_)) => Self::Number,
-            Some(Input::Boolean(_)) => Self::Boolean,
-            Some(Input::Date(_)) => Self::Date,
-            Some(Input::Formula(_)) => Self::Formula,
-        }
-    }
-    fn parse(self, text: &str) -> Result<Patch<Input>, &'static str> {
-        Ok(match self {
-            Self::Text if text.len() <= 16 * 1024 => Patch::Set(Input::Text(text.into())),
-            Self::Number => Patch::Set(Input::Number(
-                text.parse::<f64>()
-                    .ok()
-                    .filter(|n| n.is_finite())
-                    .ok_or("Enter a finite number.")?,
-            )),
-            Self::Boolean => Patch::Set(Input::Boolean(match text.trim() {
-                "true" | "TRUE" => true,
-                "false" | "FALSE" => false,
-                _ => return Err("Enter true or false."),
-            })),
-            Self::Date => Patch::Set(Input::Date(text.into())),
-            Self::Formula if text.starts_with('=') && text.len() <= 4096 => {
-                Patch::Set(Input::Formula(text.into()))
-            }
-            Self::Blank if text.is_empty() => Patch::Clear,
-            Self::Blank => return Err("Clear the input or choose Text to keep what you typed."),
-            _ => return Err("Use text up to 16 KiB or a formula beginning with = up to 4 KiB."),
-        })
-    }
-}
 #[derive(Clone, Copy)]
 struct Selection {
     anchor: (usize, usize),
@@ -131,14 +73,6 @@ impl Selection {
     }
 }
 
-#[derive(Clone, Copy, PartialEq)]
-enum Tools {
-    Format,
-    View,
-    Structure,
-    Export,
-}
-
 pub(super) struct Sheets {
     focus: gpui::FocusHandle,
     directory: PathBuf,
@@ -151,55 +85,28 @@ pub(super) struct Sheets {
     history: Option<Page>,
     history_cursors: Vec<Option<String>>,
     history_cursor: Option<String>,
-    draft: Draft,
     selection: Option<Selection>,
-    input: Entity<NameField>,
-    number_format: Entity<NameField>,
-    feedback: Entity<NameField>,
-    filter: Entity<NameField>,
-    filter_operator: Operator,
-    filter_kind: Kind,
-    title: Entity<NameField>,
-    author: Entity<NameField>,
-    kind: Kind,
-    input_dirty: bool,
-    format_dirty: bool,
-    creating: bool,
-    feedback_kind: FeedbackKind,
-    feedback_open: bool,
-    tools: Option<Tools>,
+    feedback: Entity<Feedback>,
+    export_open: bool,
     pending: Option<Prepared>,
     pending_uncertain: bool,
     feedback_receipt: Option<FeedbackReceipt>,
-    confirm: Option<(String, Prepared)>,
-    copied: Option<structure::Copied>,
     busy: bool,
     error: Option<String>,
     notice: Option<String>,
-    _inputs: Vec<Subscription>,
+    _input: Subscription,
 }
 impl Sheets {
     pub fn new(directory: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let input = cx.new(|cx| NameField::value_field("", 16384, true, window, cx));
-        let number_format = cx.new(|cx| NameField::value_field("", 128, false, window, cx));
-        let feedback = cx.new(|cx| NameField::feedback(window, cx));
-        let filter = cx.new(|cx| NameField::value_field("", 16384, false, window, cx));
-        let title = cx.new(|cx| NameField::value_field("", 240, false, window, cx));
-        let author = cx.new(|cx| NameField::value_field("", 128, false, window, cx));
-        let inputs = vec![
-            cx.subscribe(&input, |s, _, event, cx| {
-                if matches!(event, NameEvent::Changed(_)) {
-                    s.input_dirty = true;
-                    cx.notify();
+        let feedback = cx.new(|cx| Feedback::for_sheet(window, cx));
+        let input = cx.subscribe(&feedback, |s, _, event, cx| match event {
+            FeedbackEvent::Send => s.send_feedback(cx),
+            FeedbackEvent::Retry => {
+                if let Some(request) = s.pending.clone() {
+                    s.submit(request, cx);
                 }
-            }),
-            cx.subscribe(&number_format, |s, _, event, cx| {
-                if matches!(event, NameEvent::Changed(_)) {
-                    s.format_dirty = true;
-                    cx.notify();
-                }
-            }),
-        ];
+            }
+        });
         let mut state = Self {
             focus: cx.focus_handle(),
             directory,
@@ -212,32 +119,16 @@ impl Sheets {
             history: None,
             history_cursors: Vec::new(),
             history_cursor: None,
-            draft: Draft::default(),
             selection: None,
-            input,
-            number_format,
             feedback,
-            filter,
-            filter_operator: Operator::Contains,
-            filter_kind: Kind::Text,
-            title,
-            author,
-            kind: Kind::Text,
-            input_dirty: false,
-            format_dirty: false,
-            creating: false,
-            feedback_kind: FeedbackKind::Question,
-            feedback_open: false,
-            tools: None,
+            export_open: false,
             pending: None,
             pending_uncertain: false,
             feedback_receipt: None,
-            confirm: None,
-            copied: None,
             busy: false,
             error: None,
             notice: None,
-            _inputs: inputs,
+            _input: input,
         };
         state.catalog(None, cx);
         state
@@ -249,17 +140,10 @@ impl Sheets {
         } else {
             key.modifiers.control
         };
-        if command && key.key == "s" {
-            self.save(cx);
-        } else if !self.focus.is_focused(window) {
+        if !self.focus.is_focused(window) {
             return;
         } else if command && key.key == "c" {
             self.copy(cx);
-        } else if command && key.key == "v" {
-            self.paste(cx);
-        } else if key.key == "enter" {
-            let focus = self.input.read(cx).focus.clone();
-            window.focus(&focus, cx);
         } else if let Some((open, selection)) = self.open.as_ref().zip(self.selection) {
             let (mut row, mut col) = selection.end;
             match key.key.as_str() {
@@ -280,45 +164,21 @@ impl Sheets {
         window.prevent_default();
         cx.stop_propagation();
     }
-
-    fn dirty(&self) -> bool {
-        self.input_dirty || self.format_dirty || !self.draft.cells.is_empty()
-    }
-    fn cell_editable(&self) -> bool {
-        !self.busy
-            && self.pending.is_none()
-            && self.selection.is_some()
-            && draft_matches_revision(
-                &self.draft,
-                self.open.as_ref().map(|o| &o.record.revision_id),
-            )
-    }
     fn clean(&mut self, cx: &mut Context<Self>) -> bool {
-        if !self.feedback.read(cx).value().is_empty() {
+        if !self.feedback.read(cx).value(cx).is_empty() {
             self.fail(
                 "Send or clear the feedback draft before changing the workbook or revision.",
                 cx,
             );
             return false;
         }
-        if self.busy || self.pending.is_some() {
-            return false;
-        }
-        if self.dirty() {
-            self.fail(
-                "Save or explicitly discard the draft before navigating.",
-                cx,
-            );
-            return false;
-        }
-        true
+        !self.busy && self.pending.is_none()
     }
     fn fail(&mut self, message: impl Into<String>, cx: &mut Context<Self>) {
         self.error = Some(message.into());
         cx.notify();
     }
     fn begin(&mut self, cx: &mut Context<Self>) {
-        self.confirm = None;
         self.busy = true;
         self.error = None;
         self.notice = None;
@@ -354,7 +214,6 @@ impl Sheets {
                         s.history = None;
                         s.history_cursors.clear();
                         s.history_cursor = None;
-                        s.creating = false;
                     }
                     Err(e) => s.error = Some(e.message().into()),
                 }
@@ -436,8 +295,6 @@ impl Sheets {
                     Ok(open) => {
                         s.open = Some(open);
                         s.selection = None;
-                        s.input_dirty = false;
-                        s.format_dirty = false;
                         s.history = None;
                         s.history_cursors.clear();
                         s.history_cursor = None;
@@ -450,14 +307,14 @@ impl Sheets {
         .detach();
     }
     fn latest(&mut self, cx: &mut Context<Self>) {
-        if !self.feedback.read(cx).value().is_empty() {
+        if !self.feedback.read(cx).value(cx).is_empty() {
             self.fail(
                 "Send or clear the feedback draft before changing the revision.",
                 cx,
             );
             return;
         }
-        if self.busy || self.pending.is_some() || !self.stage(cx) {
+        if self.busy || self.pending.is_some() {
             return;
         }
         let Some((client, open)) = self.client.clone().zip(self.open.as_ref()) else {
@@ -484,40 +341,15 @@ impl Sheets {
         .detach();
     }
     fn select(&mut self, row: usize, column: usize, extend: bool, cx: &mut Context<Self>) {
-        if self.busy || self.pending.is_some() || !self.stage(cx) {
+        if self.busy || self.pending.is_some() {
             return;
         }
         let Some(open) = &self.open else {
             return;
         };
-        let Some((r, c)) = open.grid.rows.get(row).zip(open.grid.columns.get(column)) else {
+        if row >= open.grid.rows.len() || column >= open.grid.columns.len() {
             return;
-        };
-        let change = self
-            .draft
-            .base
-            .as_ref()
-            .filter(|base| *base == &open.record.revision_id)
-            .and_then(|_| {
-                self.draft
-                    .cells
-                    .get(&(r.row_id.clone(), c.column_id.clone()))
-            });
-        let cell = open.grid.cell(&r.row_id, &c.column_id);
-        let input = match change.map(|c| &c.input) {
-            Some(Patch::Set(i)) => Some(i),
-            Some(Patch::Clear) => None,
-            _ => cell.and_then(|c| c.input.as_ref()),
-        };
-        let format = match change.map(|c| &c.number_format) {
-            Some(Patch::Set(s)) => Some(s.as_str()),
-            Some(Patch::Clear) => None,
-            _ => cell.and_then(|c| c.number_format.as_deref()),
-        };
-        self.kind = Kind::from(input);
-        let text = input.map(Input::text).unwrap_or_default();
-        let format = format.unwrap_or_default().to_owned();
-        self.confirm = None;
+        }
         self.selection = Some(Selection {
             anchor: if extend {
                 self.selection.map(|s| s.anchor).unwrap_or((row, column))
@@ -526,137 +358,7 @@ impl Sheets {
             },
             end: (row, column),
         });
-        self.input
-            .update(cx, |field, cx| field.set_value(&text, cx));
-        self.number_format
-            .update(cx, |field, cx| field.set_value(&format, cx));
-        self.input_dirty = false;
-        self.format_dirty = false;
         cx.notify();
-    }
-    fn stage(&mut self, cx: &mut Context<Self>) -> bool {
-        if !self.input_dirty && !self.format_dirty {
-            return true;
-        }
-        if self.busy
-            || self.pending.is_some()
-            || self.input.read(cx).composing()
-            || self.number_format.read(cx).composing()
-        {
-            return false;
-        }
-        let Some((open, selection)) = self.open.as_ref().zip(self.selection) else {
-            return false;
-        };
-        if self
-            .draft
-            .base
-            .as_ref()
-            .is_some_and(|base| base != &open.record.revision_id)
-        {
-            self.fail("Review the newer values and explicitly reapply or discard the retained draft first.",cx);
-            return false;
-        }
-        let (row, col) = selection.end;
-        let key = (
-            open.grid.rows[row].row_id.clone(),
-            open.grid.columns[col].column_id.clone(),
-        );
-        let input = if self.input_dirty {
-            match self.kind.parse(self.input.read(cx).value()) {
-                Ok(v) => v,
-                Err(e) => {
-                    self.fail(e, cx);
-                    return false;
-                }
-            }
-        } else {
-            Patch::Unchanged
-        };
-        let format = self.number_format.read(cx).value().to_owned();
-        if format.chars().any(char::is_control) || format.chars().count() > 128 {
-            self.fail(
-                "Number format must contain at most 128 characters without controls.",
-                cx,
-            );
-            return false;
-        }
-        self.draft
-            .base
-            .get_or_insert_with(|| open.record.revision_id.clone());
-        self.draft
-            .tab
-            .get_or_insert_with(|| open.grid.tab_id.clone());
-        let change = self.draft.cells.entry(key.clone()).or_insert(Change {
-            row_id: key.0,
-            column_id: key.1,
-            input: Patch::Unchanged,
-            number_format: Patch::Unchanged,
-        });
-        if self.input_dirty {
-            change.input = input;
-        }
-        if self.format_dirty {
-            change.number_format = if format.is_empty() {
-                Patch::Clear
-            } else {
-                Patch::Set(format)
-            };
-        }
-        self.input_dirty = false;
-        self.format_dirty = false;
-        cx.notify();
-        true
-    }
-    fn save(&mut self, cx: &mut Context<Self>) {
-        if !self.feedback.read(cx).value().is_empty() {
-            self.fail(
-                "Send or clear the feedback draft before changing the revision.",
-                cx,
-            );
-            return;
-        }
-        if self.busy || self.pending.is_some() || !self.stage(cx) || self.draft.cells.is_empty() {
-            return;
-        }
-        let Some((client, open)) = self.client.as_ref().zip(self.open.as_ref()) else {
-            return;
-        };
-        let Some(base) = self.draft.base.clone() else {
-            return;
-        };
-        if base != open.record.revision_id {
-            self.fail(
-                "Explicitly reapply the retained draft before saving against this revision.",
-                cx,
-            );
-            return;
-        }
-        let edit = Edit::operator(
-            new_id(),
-            base,
-            vec![Operation::SetCells {
-                tab_id: open.grid.tab_id.clone(),
-                cells: self.draft.cells.values().cloned().collect(),
-            }],
-        );
-        match client.prepare_edit(&open.record.sheet_id, &edit) {
-            Ok(request) => self.submit(request, cx),
-            Err(e) => self.fail(e.message(), cx),
-        }
-    }
-    fn operation(&mut self, operation: Operation, cx: &mut Context<Self>) {
-        if !self.clean(cx) {
-            return;
-        }
-        let Some((client, open)) = self.client.as_ref().zip(self.open.as_ref()) else {
-            return;
-        };
-        let edit = Edit::operator(new_id(), open.record.revision_id.clone(), vec![operation]);
-        match client.prepare_edit(&open.record.sheet_id, &edit) {
-            Ok(request) => self.submit(request, cx),
-            Err(e) => self.fail(e.message(), cx),
-        }
     }
     fn submit(&mut self, request: Prepared, cx: &mut Context<Self>) {
         if self.busy {
@@ -665,117 +367,41 @@ impl Sheets {
         let Some(client) = self.client.clone() else {
             return;
         };
+        self.feedback.update(cx, |f, cx| f.retrying(cx));
         self.pending = Some(request.clone());
         self.begin(cx);
         let work = cx
             .background_executor()
             .spawn(async move { client.submit(&request) });
-        cx.spawn(async move |this, cx| {
+        cx.spawn(async move |this,cx| {
             let result = work.await;
-            let _ = this.update(cx, |s, cx| {
+            let _ = this.update(cx, |s,cx| {
                 s.busy = false;
                 match result {
-                    Ok(Accepted::Revision(record)) => {
-                        s.pending = None;
-                        s.pending_uncertain = false;
-                        s.draft = Draft::default();
-                        s.input_dirty = false;
-                        s.format_dirty = false;
-                        s.creating = false;
-                        let (tab, row, column) = s
-                            .open
-                            .as_ref()
-                            .map(|o| {
-                                (
-                                    Some(o.grid.tab_id.clone()),
-                                    o.query.row_offset,
-                                    o.query.column_offset,
-                                )
-                            })
-                            .unwrap_or((None, 0, 0));
-                        s.read_grid(record, tab, row, column, cx);
-                    }
-                    Ok(Accepted::Imported { record, warnings }) => {
-                        s.pending = None;
-                        s.pending_uncertain = false;
-                        s.creating = false;
-                        s.read_grid(record, None, 0, 0, cx);
-                        s.notice = Some(if warnings.is_empty() {
-                            "Imported a new workbook.".into()
-                        } else {
-                            format!("Imported with warnings: {}", warnings.join("; "))
-                        });
-                    }
                     Ok(Accepted::Feedback(receipt)) => {
-                        s.pending = None;
-                        s.pending_uncertain = false;
-                        s.feedback.update(cx, |f, cx| f.clear(cx));
+                        s.pending = None; s.pending_uncertain = false;
+                        s.feedback.update(cx, |f,cx| f.complete(Outcome::Accepted(receipt.delivery.message().into()), cx));
                         s.notice = Some(receipt.delivery.message().into());
                         s.feedback_receipt = Some(receipt);
                     }
+                    Ok(_) => {
+                        s.pending_uncertain = true;
+                        s.feedback.update(cx, |f,cx| f.complete(Outcome::Unknown("Could not confirm feedback. Retry the same request to check its outcome.".into()), cx));
+                    }
                     Err(error) => {
                         s.pending_uncertain = unresolved_mutation(s.pending_uncertain, &error);
-                        if !s.pending_uncertain {
-                            s.pending = None;
-                        }
-                        s.error = Some(error.message().into());
+                        if !s.pending_uncertain { s.pending = None; }
+                        let outcome = if s.pending_uncertain { Outcome::Unknown(error.message().into()) } else { Outcome::Refused(error.message().into()) };
+                        s.feedback.update(cx, |f,cx| f.complete(outcome, cx));
                     }
                 }
                 cx.notify();
             });
-        })
-        .detach();
+        }).detach();
     }
-    fn reapply(&mut self, cx: &mut Context<Self>) {
-        if self.busy || self.pending.is_some() {
-            return;
-        }
-        let Some(open) = &self.open else {
-            return;
-        };
-        if self.draft.tab.as_ref() != Some(&open.grid.tab_id)
-            || !self.draft.cells.keys().all(|(r, c)| {
-                open.grid.rows.iter().any(|row| &row.row_id == r)
-                    && open.grid.columns.iter().any(|col| &col.column_id == c)
-            })
-        {
-            self.fail("Some draft cells are absent from this page or were deleted. Copy the draft before resolving those changes; it cannot be reapplied here.",cx);
-            return;
-        }
-        self.draft.base = Some(open.record.revision_id.clone());
-        self.selection = None;
-        self.input_dirty = false;
-        self.format_dirty = false;
-        self.error = None;
-        self.notice =
-            Some("Draft reapplied to the displayed revision. Review it, then Save changes.".into());
-        cx.notify();
-    }
-    fn discard(&mut self, cx: &mut Context<Self>) {
-        if self.busy || self.pending.is_some() {
-            return;
-        }
-        self.draft = Draft::default();
-        self.confirm = None;
-        self.selection = None;
-        self.input_dirty = false;
-        self.format_dirty = false;
-        self.error = None;
-        cx.notify();
-    }
-}
-fn draft_matches_revision(draft: &Draft, revision: Option<&Id>) -> bool {
-    draft
-        .base
-        .as_ref()
-        .is_none_or(|base| Some(base) == revision)
 }
 fn unresolved_mutation(previously_uncertain: bool, error: &api::Error) -> bool {
-    // A typed stale response is authoritative: the provider checks the original
-    // request ID before CAS, so this operation did not commit. Keep its draft,
-    // but release the request so the user can review and reapply the conflict.
-    !matches!(error, api::Error::Stale { .. })
-        && (previously_uncertain || *error == api::Error::Unknown)
+    previously_uncertain || *error == api::Error::Unknown
 }
 fn commit_cursor(trail: &mut Vec<Option<String>>, current: &Option<String>, next: &Option<String>) {
     if next.is_none() {
@@ -804,20 +430,29 @@ fn column_name(mut n: usize) -> String {
 impl Render for Sheets {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let frozen = self.busy || self.pending.is_some();
-        let cell_frozen = !self.cell_editable();
-        self.input.update(cx, |field, _| {
-            field.set_byte_limit(if self.kind == Kind::Formula {
-                4096
-            } else {
-                16384
-            });
+        let target = self
+            .open
+            .as_ref()
+            .map(|open| format!("{}:{}", open.record.sheet_id, open.record.revision_id));
+        let label = self
+            .open
+            .as_ref()
+            .map(|open| {
+                format!(
+                    "Feedback to {} · {}{}",
+                    open.record.author_name,
+                    open.record.title,
+                    if self.selection.is_some() {
+                        " · selected cells"
+                    } else {
+                        ""
+                    }
+                )
+            })
+            .unwrap_or_default();
+        self.feedback.update(cx, |composer, cx| {
+            composer.sheet_context(target, label, frozen, cx)
         });
-        for field in [&self.input, &self.number_format] {
-            field.update(cx, |field, _| field.set_read_only(cell_frozen));
-        }
-        for field in [&self.feedback, &self.filter, &self.title, &self.author] {
-            field.update(cx, |field, _| field.set_read_only(frozen));
-        }
         let (t, c) = (tokens(), colors());
         div()
             .size_full()
@@ -832,9 +467,6 @@ impl Render for Sheets {
             .child(self.toolbar(cx))
             .when_some(self.feedback_receipt.clone(), |e, receipt| {
                 e.child(self.feedback_receipt_controls(&receipt, cx))
-            })
-            .when(self.confirm.is_some(), |e| {
-                e.child(self.confirm_controls(cx))
             })
             .when(self.busy, |e| {
                 e.child(
@@ -893,51 +525,6 @@ mod tests {
         );
     }
     #[test]
-    fn blank_cell_typing_is_literal_and_explicit_blank_never_discards_text() {
-        assert!(
-            matches!(Kind::from(None).parse("new value"), Ok(Patch::Set(Input::Text(value))) if value == "new value")
-        );
-        assert!(Kind::Blank.parse("keep me").is_err());
-        assert!(matches!(Kind::Blank.parse(""), Ok(Patch::Clear)));
-    }
-
-    #[test]
-    fn lost_reply_stays_unresolved_across_preflight_and_provider_refusals() {
-        let mut uncertain = unresolved_mutation(false, &api::Error::Unknown);
-        for error in [
-            api::Error::ProviderChanged,
-            api::Error::Unavailable,
-            api::Error::Refused(401),
-            api::Error::Refused(503),
-        ] {
-            uncertain = unresolved_mutation(uncertain, &error);
-            assert!(
-                uncertain,
-                "A retry failure cannot resolve the earlier lost reply"
-            );
-        }
-        assert!(!unresolved_mutation(false, &api::Error::Refused(422)));
-        assert!(!unresolved_mutation(
-            uncertain,
-            &api::Error::Stale { current: new_id() }
-        ));
-    }
-
-    #[test]
-    fn retained_stale_draft_freezes_both_value_and_type_editing() {
-        let old = Id::parse("1".repeat(32)).unwrap();
-        let new = Id::parse("2".repeat(32)).unwrap();
-        let mut draft = Draft {
-            base: Some(old.clone()),
-            ..Default::default()
-        };
-        assert!(draft_matches_revision(&draft, Some(&old)));
-        assert!(!draft_matches_revision(&draft, Some(&new)));
-        draft.base = Some(new.clone());
-        assert!(draft_matches_revision(&draft, Some(&new)));
-    }
-
-    #[test]
     fn shrinking_pages_return_to_the_actual_previous_boundary() {
         let trail = PageTrail::default()
             .moved((0, 0), (20, 0))
@@ -952,7 +539,6 @@ mod tests {
         assert!(trail.rows.is_empty());
         assert_eq!(trail.columns.last(), Some(&0));
     }
-
     #[test]
     fn selection_and_a1_labels_use_canonical_indices() {
         assert_eq!(column_name(1), "A");
@@ -967,17 +553,10 @@ mod tests {
         assert!(!selection.contains(1, 2));
     }
     #[test]
-    fn literal_equals_text_does_not_become_a_formula() {
-        assert!(matches!(
-            Kind::Text.parse("=SUM(A1:A2)"),
-            Ok(Patch::Set(Input::Text(_)))
-        ));
-        assert!(matches!(
-            Kind::Formula.parse("=SUM(A1:A2)"),
-            Ok(Patch::Set(Input::Formula(_)))
-        ));
-        assert!(Kind::Formula.parse("SUM(A1:A2)").is_err());
-        assert!(Kind::Number.parse("NaN").is_err());
-        assert!(Kind::Boolean.parse("yes").is_err());
+    fn uncertain_feedback_retains_its_original_request() {
+        assert!(unresolved_mutation(false, &api::Error::Unknown));
+        assert!(unresolved_mutation(true, &api::Error::Refused(401)));
+        assert!(unresolved_mutation(true, &api::Error::Unavailable));
+        assert!(!unresolved_mutation(false, &api::Error::Refused(422)));
     }
 }
