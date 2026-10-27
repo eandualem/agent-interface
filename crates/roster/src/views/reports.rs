@@ -127,6 +127,9 @@ pub struct ReportItem {
     pub provider_url: String,
     /// Server publication timestamp.
     pub created_at: String,
+    /// Reports and answers: the root of the correction chain, which keys the
+    /// record's conversation. `None` from a provider without conversations.
+    pub conversation_id: Option<String>,
     /// The record itself.
     pub content: ReportContent,
 }
@@ -138,6 +141,18 @@ impl ReportItem {
             ReportContent::Document(metadata) => &metadata.title,
             ReportContent::Progress { sections, .. } => &sections[0].1.text,
             ReportContent::Response { question, .. } => question,
+        }
+    }
+
+    /// The conversation about this record, when the provider names one.
+    pub fn conversation(&self) -> Option<(crate::conversations::Kind, String)> {
+        use crate::conversations::Kind;
+        match &self.content {
+            ReportContent::Document(metadata) => {
+                Some((Kind::Document, metadata.document_id.clone()))
+            }
+            ReportContent::Progress { .. } => Some((Kind::Report, self.conversation_id.clone()?)),
+            ReportContent::Response { .. } => Some((Kind::Response, self.conversation_id.clone()?)),
         }
     }
 
@@ -167,8 +182,27 @@ struct Record<T> {
     author_id: Option<String>,
     agent_name: Option<String>,
     created_at: String,
+    #[serde(default, deserialize_with = "conversation_id")]
+    conversation_id: Option<String>,
     #[serde(flatten)]
     content: T,
+}
+
+/// A chain root as the provider writes it, a number or a string.
+fn conversation_id<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Id {
+        Number(u64),
+        Text(String),
+    }
+    Ok(match Option::<Id>::deserialize(deserializer)? {
+        Some(Id::Number(id)) => Some(id.to_string()),
+        Some(Id::Text(id)) => Some(id),
+        None => None,
+    })
 }
 
 #[derive(Deserialize)]
@@ -231,6 +265,7 @@ fn response_item(record: Record<Response>) -> ReportItem {
         author_id: record.author_id,
         provider_url: String::new(),
         created_at: record.created_at,
+        conversation_id: record.conversation_id,
         content: ReportContent::Response {
             question: text.question,
             answer: text.answer,
@@ -282,6 +317,7 @@ fn decode(body: &[u8], query: &ReportQuery) -> Result<ReportPage, &'static str> 
                     author_id: record.author_id,
                     provider_url: String::new(),
                     created_at: record.created_at,
+                    conversation_id: record.conversation_id,
                     content: ReportContent::Progress {
                         status: text.status,
                         sections,

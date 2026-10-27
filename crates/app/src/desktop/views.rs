@@ -645,6 +645,7 @@ impl Render for ViewPane {
                 .child(reports::section_frame(self, section, cx));
         }
         let (t, c) = (tokens(), colors());
+        let previous = self.conversation.take();
         self.conversation =
             self.reports
                 .open
@@ -672,6 +673,14 @@ impl Render for ViewPane {
                         })
                         .clone()
                 });
+        // Only the shown conversation reads Backbone.
+        if previous != self.conversation {
+            for (conversation, active) in [(previous, false), (self.conversation.clone(), true)] {
+                if let Some(conversation) = conversation {
+                    conversation.update(cx, |conversation, cx| conversation.set_active(active, cx));
+                }
+            }
+        }
         let about = about(self.view.kind);
         // Lent to the body for this frame and put back below.
         let data = self.data.take();

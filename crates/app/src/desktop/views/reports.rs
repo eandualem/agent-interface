@@ -837,6 +837,7 @@ mod tests {
             author_id: None,
             provider_url: String::new(),
             created_at: "2026-10-24T10:00:00Z".into(),
+            conversation_id: None,
             content: ReportContent::Response {
                 question: "What happened?".into(),
                 answer: answer.into(),
@@ -868,6 +869,7 @@ mod tests {
             author_id: None,
             provider_url: String::new(),
             created_at: "2026-10-24T10:00:00Z".into(),
+            conversation_id: None,
             content: ReportContent::Response {
                 question: "What happened?".into(),
                 answer: "It worked.".into(),

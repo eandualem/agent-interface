@@ -162,6 +162,7 @@ fn decode_list(body: &[u8], author_id: Option<&str>) -> Result<ReportPage, &'sta
             author_id: Some(metadata.author_id.clone()),
             provider_url: String::new(),
             created_at: metadata.created_at.clone(),
+            conversation_id: None,
             content: ReportContent::Document(metadata),
         })
         .collect();

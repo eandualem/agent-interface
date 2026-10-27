@@ -1,20 +1,26 @@
 //! The conversation beside an authored record. Every reader shows this one
 //! component: a rail while closed, a thread and a composer while open.
 //!
-//! Agent Backbone does not yet keep conversation history, so the thread holds
-//! the messages sent from this pane. A record's conversation sends each once
-//! through `roster::feedback` with a reference to the record; a view with its
-//! own delivery, such as Sheets, receives [`ConversationEvent`]s and reports
-//! each outcome back with [`Conversation::complete`].
+//! When Agent Backbone keeps the record's conversation, the thread is the
+//! stored one: the owner's and agents' messages and the record's own events,
+//! read every few seconds while the panel is shown. Messages go through
+//! `roster::conversations` with a key that makes a retry safe.
+//!
+//! A provider without conversations gets the earlier behaviour: the thread
+//! holds the messages sent from this pane, and a record's conversation sends
+//! each once through `roster::feedback` with a reference to the record. A view
+//! with its own delivery, such as Sheets, receives [`ConversationEvent`]s and
+//! reports each outcome back with [`Conversation::complete`].
 
-use std::{cell::RefCell, path::PathBuf, rc::Rc};
+use std::{cell::RefCell, path::PathBuf, rc::Rc, time::Duration};
 
 use agent_interface_roster::{
+    conversations::{self as stored, Author, Body, Kind},
     feedback::{self, Outcome},
     views::{ReportContent, ReportItem},
 };
 use gpui::{
-    AnyElement, App, Context, Entity, EventEmitter, FocusHandle, SharedString, Subscription,
+    AnyElement, App, Context, Entity, EventEmitter, FocusHandle, SharedString, Subscription, Task,
     Window, div, prelude::*, px,
 };
 
@@ -36,9 +42,13 @@ enum Delivery {
     Unconfirmed(String),
     /// Not sent, and moved back into the composer to edit.
     Moved,
+    /// Backbone stored it; the thread shows the stored entry instead.
+    Stored,
 }
 
 struct Message {
+    /// Makes sending it again safe where Backbone keeps the conversation.
+    request_id: String,
     text: String,
     /// What it referred to when it was written.
     anchor: Option<String>,
@@ -73,8 +83,52 @@ pub(super) struct Conversation {
     toggle_requested: bool,
     messages: Vec<Message>,
     return_focus: Option<FocusHandle>,
+    /// The conversation Backbone keeps, for a record that has one.
+    stored: Option<Stored>,
+    /// The view shows this conversation, so it reads Backbone.
+    active: bool,
+    _poll: Option<Task<()>>,
     _input: Subscription,
 }
+
+/// A conversation as Backbone keeps it.
+struct Stored {
+    directory: PathBuf,
+    kind: Kind,
+    id: String,
+    /// `None` until Backbone first answers; `Some(false)` when it keeps none.
+    supported: Option<bool>,
+    /// The newest page, read again on each poll.
+    page: Option<stored::Conversation>,
+    /// Older entries loaded on request, oldest first, and where to continue.
+    earlier: Vec<stored::Entry>,
+    earlier_cursor: Option<String>,
+    /// The read marker when the panel opened; the "new" divider follows it.
+    divider: Option<u64>,
+    reading: bool,
+    /// The marker last asked for, so a poll does not ask again.
+    marked: Option<u64>,
+}
+
+impl Stored {
+    fn live(&self) -> bool {
+        self.supported == Some(true)
+    }
+
+    fn last(&self) -> Option<u64> {
+        self.page
+            .as_ref()?
+            .entries
+            .iter()
+            .map(|entry| entry.id)
+            .max()
+    }
+}
+
+/// How often the shown conversation is read: often while open, for its
+/// replies, and slowly while closed, for the rail's mark.
+const OPEN_POLL: Duration = Duration::from_secs(5);
+const CLOSED_POLL: Duration = Duration::from_secs(25);
 
 impl Conversation {
     /// The conversation about an authored record, sent to its author.
@@ -88,6 +142,29 @@ impl Conversation {
         let mut conversation = Self::create(subject(&item), window, cx);
         conversation.agent = item.author.clone();
         conversation.anchor = Some(format!("#{}", item.id));
+        if let Some((kind, id)) = item.conversation() {
+            conversation.stored = Some(Stored {
+                directory: directory.clone(),
+                kind,
+                id,
+                supported: None,
+                page: None,
+                earlier: Vec::new(),
+                earlier_cursor: None,
+                divider: None,
+                reading: false,
+                marked: None,
+            });
+            conversation._poll = Some(cx.spawn(async move |this, cx| {
+                loop {
+                    let Ok(Some(wait)) = this.update(cx, |conversation, cx| conversation.poll(cx))
+                    else {
+                        break;
+                    };
+                    cx.background_executor().timer(wait).await;
+                }
+            }));
+        }
         conversation.record = Some((item, directory));
         conversation.surface = Some(surface);
         conversation
@@ -125,6 +202,9 @@ impl Conversation {
             toggle_requested: false,
             messages: Vec::new(),
             return_focus: None,
+            stored: None,
+            active: false,
+            _poll: None,
             _input: input,
         }
     }
@@ -178,6 +258,225 @@ impl Conversation {
         cx.notify();
     }
 
+    /// Whether the view shows this conversation; only a shown one reads Backbone.
+    pub fn set_active(&mut self, active: bool, cx: &mut Context<Self>) {
+        if active && !self.active {
+            self.active = true;
+            self.refresh(cx);
+        }
+        self.active = active;
+    }
+
+    /// Read again if shown, and say when to look next; `None` stops polling
+    /// once Backbone turns out to keep no conversations.
+    fn poll(&mut self, cx: &mut Context<Self>) -> Option<Duration> {
+        if self.stored.as_ref()?.supported == Some(false) {
+            return None;
+        }
+        if self.active {
+            self.refresh(cx);
+        }
+        Some(if self.open { OPEN_POLL } else { CLOSED_POLL })
+    }
+
+    fn stored_live(&self) -> bool {
+        self.stored.as_ref().is_some_and(Stored::live)
+    }
+
+    /// Read the newest page on an I/O worker.
+    fn refresh(&mut self, cx: &mut Context<Self>) {
+        let Some(stored) = self.stored.as_mut().filter(|stored| !stored.reading) else {
+            return;
+        };
+        if stored.supported == Some(false) {
+            return;
+        }
+        stored.reading = true;
+        let (directory, kind, id) = (stored.directory.clone(), stored.kind, stored.id.clone());
+        let worker = cx
+            .background_executor()
+            .spawn(async move { stored::show(&directory, kind, &id, &stored::Page::Newest) });
+        cx.spawn(async move |this, cx| {
+            let result = worker.await;
+            let _ = this.update(cx, |conversation, cx| {
+                let open = conversation.open;
+                let Some(stored) = conversation.stored.as_mut() else {
+                    return;
+                };
+                stored.reading = false;
+                match result {
+                    Ok(page) => {
+                        stored.supported = Some(true);
+                        if open && stored.divider.is_none() {
+                            stored.divider = Some(page.read_through.unwrap_or_default());
+                        }
+                        stored.page = Some(page);
+                        if stored.earlier_cursor.is_none() && stored.earlier.is_empty() {
+                            stored.earlier_cursor =
+                                stored.page.as_ref().and_then(|page| page.older.clone());
+                        }
+                        if open {
+                            conversation.mark_read(cx);
+                        }
+                    }
+                    // A provider without conversations, or one that does not
+                    // know this record, keeps the one-way messages.
+                    Err(stored::Error::Unsupported | stored::Error::UnknownArtifact) => {
+                        stored.supported = Some(false);
+                    }
+                    // Keep the last page while Backbone is briefly unavailable.
+                    Err(_) => {}
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Load the page before the oldest entry shown.
+    fn load_earlier(&mut self, cx: &mut Context<Self>) {
+        let Some(stored) = self.stored.as_mut().filter(|stored| !stored.reading) else {
+            return;
+        };
+        let Some(cursor) = stored.earlier_cursor.clone() else {
+            return;
+        };
+        stored.reading = true;
+        let (directory, kind, id) = (stored.directory.clone(), stored.kind, stored.id.clone());
+        let worker = cx.background_executor().spawn(async move {
+            stored::show(&directory, kind, &id, &stored::Page::Before(cursor))
+        });
+        cx.spawn(async move |this, cx| {
+            let result = worker.await;
+            let _ = this.update(cx, |conversation, cx| {
+                let Some(stored) = conversation.stored.as_mut() else {
+                    return;
+                };
+                stored.reading = false;
+                if let Ok(page) = result {
+                    let mut entries = page.entries;
+                    entries.append(&mut stored.earlier);
+                    stored.earlier = entries;
+                    stored.earlier_cursor = page.older;
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Move the owner's read marker to the newest entry shown.
+    fn mark_read(&mut self, cx: &mut Context<Self>) {
+        let Some(stored) = self.stored.as_mut() else {
+            return;
+        };
+        let (Some(last), Some(page)) = (stored.last(), stored.page.as_ref()) else {
+            return;
+        };
+        if page.read_through.is_some_and(|read| read >= last) || stored.marked >= Some(last) {
+            return;
+        }
+        stored.marked = Some(last);
+        let (directory, kind, id) = (stored.directory.clone(), stored.kind, stored.id.clone());
+        let worker = cx
+            .background_executor()
+            .spawn(async move { stored::read(&directory, kind, &id, last) });
+        cx.spawn(async move |this, cx| {
+            let counts = worker.await;
+            let _ = this.update(cx, |conversation, cx| {
+                if let (Ok(counts), Some(page)) = (
+                    counts,
+                    conversation
+                        .stored
+                        .as_mut()
+                        .and_then(|stored| stored.page.as_mut()),
+                ) {
+                    page.read_through = Some(counts.read_through);
+                    page.unread = counts.unread;
+                    page.total = counts.total;
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Store message `index` in Backbone's conversation, on an I/O worker.
+    fn post(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(stored) = &self.stored else {
+            return;
+        };
+        let (directory, kind, id) = (stored.directory.clone(), stored.kind, stored.id.clone());
+        let message = &mut self.messages[index];
+        message.delivery = Delivery::Sending;
+        let request = stored::Message {
+            request_id: message.request_id.clone(),
+            text: message.text.clone(),
+            recipient: None,
+            anchor: self.record.as_ref().map(|(item, _)| stored::Anchor {
+                revision_id: Some(item.id.to_string()),
+                label: message.anchor.clone(),
+                ..stored::Anchor::default()
+            }),
+        };
+        let worker = cx
+            .background_executor()
+            .spawn(async move { stored::send(&directory, kind, &id, &request) });
+        cx.spawn(async move |this, cx| {
+            let outcome = worker.await;
+            let _ = this.update(cx, |conversation, cx| {
+                conversation.messages[index].delivery = match outcome {
+                    stored::Outcome::Accepted(entry) => {
+                        conversation.add_entry(*entry);
+                        Delivery::Stored
+                    }
+                    stored::Outcome::Refused { message, .. } => Delivery::NotSent(message),
+                    stored::Outcome::AlreadyPending | stored::Outcome::Unknown => {
+                        Delivery::Unconfirmed("Backbone did not confirm it.".into())
+                    }
+                };
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// Queue a stored message whose delivery failed again; the entry stays one.
+    fn redeliver(&mut self, entry: u64, cx: &mut Context<Self>) {
+        let Some(stored) = &self.stored else {
+            return;
+        };
+        let (directory, kind, id) = (stored.directory.clone(), stored.kind, stored.id.clone());
+        let request = uuid::Uuid::new_v4().simple().to_string();
+        let worker = cx
+            .background_executor()
+            .spawn(async move { stored::redeliver(&directory, kind, &id, entry, &request) });
+        cx.spawn(async move |this, cx| {
+            if let stored::Outcome::Accepted(entry) = worker.await {
+                let _ = this.update(cx, |conversation, cx| {
+                    conversation.add_entry(*entry);
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+    }
+
+    /// Put an entry Backbone returned into the page, replacing an older copy.
+    fn add_entry(&mut self, entry: stored::Entry) {
+        let Some(page) = self.stored.as_mut().and_then(|stored| stored.page.as_mut()) else {
+            return;
+        };
+        match page.entries.iter_mut().find(|shown| shown.id == entry.id) {
+            Some(shown) => *shown = entry,
+            None => {
+                page.entries.push(entry);
+                page.entries.sort_by_key(|entry| entry.id);
+            }
+        }
+    }
+
     /// Open or close the panel from a key, which has no window to focus with.
     pub fn request_toggle(&mut self, cx: &mut Context<Self>) {
         self.toggle_requested = true;
@@ -190,6 +489,14 @@ impl Conversation {
         } else {
             self.return_focus = window.focused(cx);
             self.open = true;
+            if let Some(stored) = &mut self.stored {
+                stored.divider = stored
+                    .page
+                    .as_ref()
+                    .map(|page| page.read_through.unwrap_or_default());
+            }
+            self.mark_read(cx);
+            self.refresh(cx);
             let focus = self.field.read(cx).focus.clone();
             window.focus(&focus, cx);
             cx.notify();
@@ -198,6 +505,9 @@ impl Conversation {
 
     fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.open = false;
+        if let Some(stored) = &mut self.stored {
+            stored.divider = None;
+        }
         match self.return_focus.take() {
             Some(focus) => window.focus(&focus, cx),
             None => window.blur(cx),
@@ -223,13 +533,16 @@ impl Conversation {
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0.0, |now| now.as_secs_f64());
         self.messages.push(Message {
+            request_id: uuid::Uuid::new_v4().simple().to_string(),
             text,
             anchor: self.anchor.clone(),
             at,
             delivery: Delivery::Sending,
         });
         let index = self.messages.len() - 1;
-        if self.record.is_some() {
+        if self.stored_live() {
+            self.post(index, cx);
+        } else if self.record.is_some() {
             self.deliver(index, cx);
         } else {
             cx.emit(ConversationEvent::Send(index));
@@ -241,7 +554,18 @@ impl Conversation {
     /// accepted; an owning view's same saved request when the outcome was
     /// unknown. An owning view's refused message is edited and sent anew, since
     /// its context may have changed.
+    /// Where Backbone keeps the conversation, either is sent again with the
+    /// same key, which it stores at most once.
     fn retry(&mut self, index: usize, cx: &mut Context<Self>) {
+        if self.stored_live() {
+            if matches!(
+                self.messages[index].delivery,
+                Delivery::NotSent(_) | Delivery::Unconfirmed(_)
+            ) {
+                self.post(index, cx);
+            }
+            return;
+        }
         match (&self.record, &self.messages[index].delivery) {
             (Some(_), Delivery::NotSent(_)) => self.deliver(index, cx),
             (None, Delivery::Unconfirmed(_)) => cx.emit(ConversationEvent::Retry(index)),
@@ -317,9 +641,135 @@ impl Conversation {
                 cx.listener(|conversation, _, window, cx| conversation.toggle(window, cx)),
             ),
             self.mark(),
-            false,
+            self.stored
+                .as_ref()
+                .and_then(|stored| stored.page.as_ref())
+                .is_some_and(|page| page.unread > 0),
         )
         .into_any_element()
+    }
+
+    /// The agent the header names: the conversation's responsible agent once
+    /// Backbone answers, else the record's author.
+    fn agent(&self) -> String {
+        self.stored
+            .as_ref()
+            .and_then(|stored| stored.page.as_ref())
+            .map_or_else(|| self.agent.clone(), |page| page.responsible.name.clone())
+    }
+
+    /// Backbone's entries in order, with the "new" divider and day dividers.
+    fn entries(
+        &self,
+        now: Option<Local>,
+        day: &mut Option<Local>,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        let c = colors();
+        let Some(stored) = self.stored.as_ref().filter(|stored| stored.live()) else {
+            return Vec::new();
+        };
+        let entries: Vec<&stored::Entry> = stored
+            .earlier
+            .iter()
+            .chain(stored.page.iter().flat_map(|page| &page.entries))
+            .collect();
+        let unseen = |entry: &stored::Entry| {
+            stored.divider.is_some_and(|divider| entry.id > divider)
+                && !matches!(entry.author, Author::Owner)
+        };
+        let new = entries.iter().filter(|entry| unseen(entry)).count();
+        let mut first_new = entries.iter().position(|entry| unseen(entry));
+        let mut out = Vec::new();
+        if stored.earlier_cursor.is_some() {
+            out.push(
+                ui::link(
+                    div()
+                        .id("conversation-earlier")
+                        .text_color(c.accent_text)
+                        .child("Earlier messages")
+                        .on_click(
+                            cx.listener(|conversation, _, _, cx| conversation.load_earlier(cx)),
+                        ),
+                )
+                .into_any_element(),
+            );
+        }
+        for (at, entry) in entries.iter().enumerate() {
+            let local = epoch(&entry.created_at).and_then(Local::at);
+            if let (Some(local), Some(now)) = (local, now)
+                && day.is_none_or(|day| !day.same_day(&local))
+            {
+                out.push(ui::thread_divider(local.day_name(&now), false).into_any_element());
+                *day = Some(local);
+            }
+            if first_new == Some(at) {
+                first_new = None;
+                out.push(ui::thread_divider(format!("{new} new"), true).into_any_element());
+            }
+            let time = local.map(|local| local.time()).unwrap_or_default();
+            let who = match &entry.author {
+                Author::Owner => "You".to_owned(),
+                Author::Agent { name, .. } => name.clone(),
+            };
+            let label = entry
+                .anchor
+                .as_ref()
+                .and_then(|anchor| anchor.label.clone());
+            out.push(match &entry.body {
+                Body::Message { text, delivery, .. } => {
+                    let from_you = matches!(entry.author, Author::Owner);
+                    let failed = *delivery == Some(stored::Delivery::Failed);
+                    let meta = ui::message_meta().children(label.map(ui::anchor));
+                    let id = entry.id;
+                    let meta = if failed {
+                        meta.text_color(c.attention_text)
+                            .child("Not sent ·")
+                            .child(ui::link(
+                                div()
+                                    .id(SharedString::from(format!("conversation-redeliver-{id}")))
+                                    .underline()
+                                    .child("Retry")
+                                    .on_click(cx.listener(move |conversation, _, _, cx| {
+                                        conversation.redeliver(id, cx)
+                                    })),
+                            ))
+                    } else {
+                        meta.child(format!("{who} · {time}"))
+                    };
+                    ui::message(from_you, failed, meta, text.clone()).into_any_element()
+                }
+                Body::Revision { revision } => {
+                    let changed: Vec<&str> = revision
+                        .changed
+                        .iter()
+                        .map(|cell| cell.label.as_str())
+                        .collect();
+                    let mut happened = format!("published {}", revision.label);
+                    if !changed.is_empty() {
+                        happened.push_str(&format!(" · changed {}", changed.join(", ")));
+                    }
+                    ui::thread_event("history", who, format!("{happened} · {time}"), None)
+                        .into_any_element()
+                }
+                Body::Step { step } => {
+                    let happened = match step.status.as_str() {
+                        "in_progress" => format!("started {}", step.title),
+                        "done" => format!("finished {}", step.title),
+                        "blocked" => format!("is blocked on {}", step.title),
+                        _ => format!("queued {}", step.title),
+                    };
+                    ui::thread_event(
+                        "corner-down-right",
+                        who,
+                        format!("{happened} · {time}"),
+                        None,
+                    )
+                    .into_any_element()
+                }
+            });
+        }
+        out
     }
 
     fn mark(&self) -> Option<gpui::Div> {
@@ -331,21 +781,32 @@ impl Conversation {
     fn thread(&self, cx: &mut Context<Self>) -> AnyElement {
         let (t, c) = (tokens(), colors());
         let kind = self.about.trim_start_matches("about this ");
-        if self.messages.is_empty() {
+        let now = Local::now();
+        let mut day: Option<Local> = None;
+        let entries = self.entries(now, &mut day, cx);
+        let local = self
+            .messages
+            .iter()
+            .any(|message| !matches!(message.delivery, Delivery::Moved | Delivery::Stored));
+        if entries.is_empty() && !local {
+            let agent = self.agent();
+            let note = if self.stored_live() {
+                format!(
+                    "Your messages, {agent}'s replies and the changes it publishes stay together beside this {kind}."
+                )
+            } else {
+                format!("Messages you send here go to {agent} with a reference to this {kind}.")
+            };
             return div()
                 .flex_1()
                 .min_h_0()
                 .child(ui::empty_state(
                     ui::empty_tile("message-square", c.selected, c.text_2),
-                    format!("Talk to {} here", self.agent),
-                    format!(
-                        "Messages you send here go to {} with a reference to this {kind}.",
-                        self.agent
-                    ),
+                    format!("Talk to {agent} here"),
+                    note,
                 ))
                 .into_any_element();
         }
-        let now = Local::now();
         let mut thread = div()
             .id("conversation-thread")
             .flex_1()
@@ -354,10 +815,11 @@ impl Conversation {
             .flex()
             .flex_col()
             .gap(px(t.space.s12))
-            .p(px(t.space.s14));
-        let mut day: Option<Local> = None;
+            .p(px(t.space.s14))
+            .children(entries);
+        let live = self.stored_live();
         for (index, message) in self.messages.iter().enumerate() {
-            if message.delivery == Delivery::Moved {
+            if matches!(message.delivery, Delivery::Moved | Delivery::Stored) {
                 continue;
             }
             let local = Local::at(message.at);
@@ -379,13 +841,13 @@ impl Conversation {
                 )
             };
             let meta = match &message.delivery {
-                Delivery::Moved => continue,
+                Delivery::Moved | Delivery::Stored => continue,
                 Delivery::Sending => meta.child(ui::sending_spinner()).child("Sending…"),
                 Delivery::Sent => meta.child(format!("You · {time}")),
                 Delivery::NotSent(reason) => {
                     meta.text_color(c.attention_text)
                         .child(SharedString::from(format!("Not sent: {reason}")))
-                        .when(self.record.is_some(), |meta| {
+                        .when(self.record.is_some() || live, |meta| {
                             meta.child(action("retry", "Retry").on_click(cx.listener(
                                 move |conversation, _, _, cx| conversation.retry(index, cx),
                             )))
@@ -394,7 +856,7 @@ impl Conversation {
                             move |conversation, _, window, cx| conversation.edit(index, window, cx),
                         )))
                 }
-                Delivery::Unconfirmed(reason) if self.record.is_none() => meta
+                Delivery::Unconfirmed(reason) if self.record.is_none() || live => meta
                     .child(SharedString::from(format!("Not confirmed: {reason}")))
                     .child(ui::link(
                         div()
@@ -421,6 +883,13 @@ impl Conversation {
     }
 }
 
+/// Seconds since the epoch for an RFC 3339 time.
+fn epoch(text: &str) -> Option<f64> {
+    chrono::DateTime::parse_from_rfc3339(text)
+        .ok()
+        .map(|time| time.timestamp_millis() as f64 / 1000.0)
+}
+
 impl Render for Conversation {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if std::mem::take(&mut self.toggle_requested) {
@@ -434,7 +903,7 @@ impl Render for Conversation {
         ui::conversation_panel()
             .child(ui::conversation_header(
                 self.mark(),
-                self.agent.clone(),
+                self.agent(),
                 self.about,
                 ui::icon_button("conversation-close", "panel-right-close").on_click(
                     cx.listener(|conversation, _, window, cx| conversation.close(window, cx)),
@@ -448,5 +917,17 @@ impl Render for Conversation {
                     .on_click(cx.listener(|conversation, _, _, cx| conversation.send(cx))),
             ))
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stored_times_read_as_seconds_since_the_epoch() {
+        assert_eq!(epoch("1970-01-01T00:01:00.5Z"), Some(60.5));
+        assert_eq!(epoch("2026-10-27T14:41:03+02:00"), Some(1_793_104_863.0));
+        assert_eq!(epoch("yesterday"), None);
     }
 }

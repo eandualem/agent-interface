@@ -346,16 +346,7 @@ impl Error {
 
 /// Read one page of a conversation. Runs on an I/O worker.
 pub fn show(directory: &Path, kind: Kind, id: &str, page: &Page) -> Result<Conversation, Error> {
-    let mut path = base(kind, id).ok_or(Error::Unreadable)?;
-    path.push_str("?limit=50");
-    match page {
-        Page::Newest => {}
-        Page::Before(cursor) | Page::After(cursor) if !token(cursor) => {
-            return Err(Error::Unreadable);
-        }
-        Page::Before(cursor) => path.push_str(&format!("&before={cursor}")),
-        Page::After(cursor) => path.push_str(&format!("&after={cursor}")),
-    }
+    let path = show_path(kind, id, page).ok_or(Error::Unreadable)?;
     let response = exchange(directory, &path, None)?;
     match response.status {
         200 => parse(&response.body),
@@ -416,6 +407,17 @@ pub fn read(directory: &Path, kind: Kind, id: &str, through: u64) -> Result<Coun
         404 => Err(missing(&response.body)),
         _ => Err(Error::Unavailable),
     }
+}
+
+fn show_path(kind: Kind, id: &str, page: &Page) -> Option<String> {
+    let mut path = base(kind, id)? + "?limit=50";
+    match page {
+        Page::Newest => {}
+        Page::Before(cursor) | Page::After(cursor) if !token(cursor) => return None,
+        Page::Before(cursor) => path.push_str(&format!("&before={cursor}")),
+        Page::After(cursor) => path.push_str(&format!("&after={cursor}")),
+    }
+    Some(path)
 }
 
 fn base(kind: Kind, id: &str) -> Option<String> {
@@ -565,6 +567,12 @@ mod tests {
         assert_eq!(page.older.as_deref(), Some("e4178"));
         assert!(page.participants[0].responsible);
         assert!(token("c2:report:3144") && !token("a/b") && !token("x&y"));
+        assert_eq!(
+            show_path(Kind::Report, "3144", &Page::Before("e4178".into())).as_deref(),
+            Some("/api/conversations/report/3144?limit=50&before=e4178")
+        );
+        assert!(show_path(Kind::Sheet, "../x", &Page::Newest).is_none());
+        assert!(show_path(Kind::Plan, "a", &Page::After("x y".into())).is_none());
     }
 
     #[test]
