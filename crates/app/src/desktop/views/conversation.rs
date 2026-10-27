@@ -251,7 +251,8 @@ impl Conversation {
 
     /// Move a message that was not sent back into an empty composer.
     fn edit(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.draft(cx).is_empty()
+        if self.blocked
+            || !self.draft(cx).is_empty()
             || !matches!(self.messages[index].delivery, Delivery::NotSent(_))
         {
             return;

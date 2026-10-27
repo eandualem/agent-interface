@@ -147,7 +147,10 @@ pub fn list_all(directory: &Path) -> Result<PlansPage, Error> {
         all.items.append(&mut page.items);
         all.next_after_author_id = page.next_after_author_id;
     }
-    Err(Error::Unreadable)
+    match all.next_after_author_id {
+        None => Ok(all),
+        Some(_) => Err(Error::Unreadable),
+    }
 }
 
 /// Read one page of current plans. Runs on an I/O worker.
