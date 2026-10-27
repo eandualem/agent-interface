@@ -10,8 +10,18 @@ use super::{ViewPane, selection};
 
 use crate::desktop::{
     components as ui,
-    design::{colors, tokens},
+    design::{TextStyle, colors, tokens},
 };
+
+/// How a run of blocks reads: its text style, colour, line height and the
+/// space between blocks. A document uses [`render`]; a reader's short
+/// authored field, such as a report's goal, passes its own.
+pub(super) struct Look<'a> {
+    pub style: &'a TextStyle,
+    pub color: gpui::Rgba,
+    pub line_height: f32,
+    pub gap: f32,
+}
 
 #[derive(Debug, PartialEq)]
 pub(super) enum Block {
@@ -133,14 +143,31 @@ fn styled(text: &str, pane: &ViewPane, cx: &mut Context<ViewPane>) -> impl IntoE
 /// Draw the blocks as a document.
 pub(super) fn render(blocks: &[Block], pane: &ViewPane, cx: &mut Context<ViewPane>) -> gpui::Div {
     let (t, c) = (tokens(), colors());
+    let look = Look {
+        style: &t.text.doc_body,
+        color: c.text_2,
+        line_height: 1.6,
+        gap: t.space.s12,
+    };
+    render_in(blocks, &look, pane, cx)
+}
+
+/// Draw the blocks with `look`.
+pub(super) fn render_in(
+    blocks: &[Block],
+    look: &Look,
+    pane: &ViewPane,
+    cx: &mut Context<ViewPane>,
+) -> gpui::Div {
+    let (t, c) = (tokens(), colors());
     let mut document = ui::text(
         div()
             .flex()
             .flex_col()
-            .gap(px(t.space.s12))
-            .text_color(c.text_2)
-            .line_height(gpui::relative(1.6)),
-        &t.text.doc_body,
+            .gap(px(look.gap))
+            .text_color(look.color)
+            .line_height(gpui::relative(look.line_height)),
+        look.style,
     );
     for block in blocks {
         document = document.child(match block {

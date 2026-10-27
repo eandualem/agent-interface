@@ -330,8 +330,17 @@ fn reader(
     cx: &mut Context<ViewPane>,
 ) -> AnyElement {
     let (t, c) = (tokens(), colors());
-    let authored = |text: &str, cx: &mut Context<ViewPane>| {
-        markdown::render(&markdown::parse_authored(text), pane, cx)
+    // The board's reading styles: body text, the goal as a title, and the
+    // person's question; each paragraph 8 px apart.
+    let look = |style, line_height| markdown::Look {
+        style,
+        color: c.text,
+        line_height,
+        gap: t.space.s8,
+    };
+    let body = look(&t.text.doc_body, 1.55);
+    let authored = |text: &str, look: &markdown::Look, cx: &mut Context<ViewPane>| {
+        markdown::render_in(&markdown::parse_authored(text), look, pane, cx)
     };
     let mut column = ui::reader_column().gap(px(t.space.s16));
     match &item.content {
@@ -366,10 +375,7 @@ fn reader(
                             .gap(px(t.space.s4))
                             .pb(px(t.space.s16))
                             .child(ui::reader_label("GOAL"))
-                            .child(
-                                ui::text(div().text_color(c.text), &t.text.doc_title)
-                                    .child(authored(&value.text, cx)),
-                            ),
+                            .child(authored(&value.text, &look(&t.text.doc_title, 1.3), cx)),
                     );
                     continue;
                 }
@@ -377,13 +383,13 @@ fn reader(
                     ui::callout(
                         ui::Callout::Attention,
                         Some("Waiting on you"),
-                        authored(&value.text, cx),
+                        authored(&value.text, &body, cx),
                     )
                     .into_any_element()
                 } else if value.text.trim().is_empty() {
                     div().text_color(c.muted).child("None.").into_any_element()
                 } else {
-                    authored(&value.text, cx).into_any_element()
+                    authored(&value.text, &body, cx).into_any_element()
                 };
                 column = column.child(ui::reader_section(name.to_uppercase(), body));
             }
@@ -438,29 +444,23 @@ fn reader(
                     )
                     .child(labelled(
                         "YOU ASKED",
-                        ui::text(
-                            div()
-                                .px(px(t.space.s14))
-                                .py(px(t.space.s12))
-                                .rounded(px(t.radius.popover))
-                                .bg(c.field)
-                                .border(px(t.size.hairline))
-                                .border_color(c.line)
-                                .text_color(c.text),
-                            &t.text.quote,
-                        )
-                        .child(authored(question, cx))
-                        .into_any_element(),
-                    ))
-                    .child(labelled(
-                        "ANSWER",
-                        ui::text(div().text_color(c.text), &t.text.doc_body)
-                            .child(authored(answer, cx))
+                        div()
+                            .px(px(t.space.s14))
+                            .py(px(t.space.s12))
+                            .rounded(px(t.radius.popover))
+                            .bg(c.field)
+                            .border(px(t.size.hairline))
+                            .border_color(c.line)
+                            .child(authored(question, &look(&t.text.quote, 1.45), cx))
                             .into_any_element(),
                     ))
                     .child(labelled(
+                        "ANSWER",
+                        authored(answer, &body, cx).into_any_element(),
+                    ))
+                    .child(labelled(
                         "WHAT FOLLOWS",
-                        ui::callout(ui::Callout::Follows, None, authored(action, cx))
+                        ui::callout(ui::Callout::Follows, None, authored(action, &body, cx))
                             .into_any_element(),
                     ));
         }
