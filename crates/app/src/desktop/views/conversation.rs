@@ -502,6 +502,7 @@ impl Conversation {
                     return;
                 };
                 stored.reading = false;
+                let mut failure = None;
                 match result {
                     Ok(page) => {
                         stored.supported = Some(true);
@@ -532,9 +533,9 @@ impl Conversation {
                         stored.supported = Some(false);
                     }
                     // Keep the last page while Backbone is briefly unavailable.
-                    Err(_) => {}
+                    Err(error) => failure = Some(error),
                 }
-                conversation.route_waiting(cx);
+                conversation.route_waiting(failure, cx);
                 cx.notify();
             });
         })
@@ -543,7 +544,7 @@ impl Conversation {
 
     /// Send the messages written before Backbone first answered, now that it
     /// has; with no answer they are not sent, and Retry asks again.
-    fn route_waiting(&mut self, cx: &mut Context<Self>) {
+    fn route_waiting(&mut self, failure: Option<stored::Error>, cx: &mut Context<Self>) {
         let supported = self.stored.as_ref().and_then(|stored| stored.supported);
         let waiting: Vec<usize> = (0..self.messages.len())
             .filter(|&index| {
@@ -556,8 +557,10 @@ impl Conversation {
                 Some(true) => self.post(index, cx),
                 Some(false) => self.deliver(index, cx),
                 None => {
-                    self.messages[index].delivery =
-                        Delivery::NotSent("Backbone did not answer. Nothing was sent.".into())
+                    self.messages[index].delivery = Delivery::NotSent(match failure {
+                        Some(error) => format!("{} Nothing was sent.", error.message()),
+                        None => "Backbone did not answer. Nothing was sent.".into(),
+                    })
                 }
             }
         }

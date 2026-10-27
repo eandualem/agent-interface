@@ -339,6 +339,8 @@ pub enum Error {
     Unavailable,
     /// The configured provider is not the one the record came from.
     Moved,
+    /// Backbone answered but did not let this app read or write it.
+    Forbidden,
     /// The provider does not offer conversations yet.
     Unsupported,
     /// Backbone knows no such artifact.
@@ -353,6 +355,7 @@ impl Error {
         match self {
             Self::Unavailable => "Conversations need an authenticated private Backbone connection.",
             Self::Moved => "The Backbone connection changed. Reopen this item to continue.",
+            Self::Forbidden => "Backbone did not let this app open this conversation.",
             Self::Unsupported => "This Agent Backbone does not keep conversations yet.",
             Self::UnknownArtifact => "Backbone has no record of this item.",
             Self::Unreadable => "Backbone returned an unreadable conversation.",
@@ -373,6 +376,7 @@ pub fn show(
     match response.status {
         200 => parse(&response.body),
         404 => Err(missing(&response.body)),
+        401 | 403 => Err(Error::Forbidden),
         _ => Err(Error::Unavailable),
     }
 }
@@ -395,6 +399,7 @@ pub fn summaries(
     match response.status {
         200 => parse::<Summaries>(&response.body).map(|page| page.items),
         404 => Err(Error::Unsupported),
+        401 | 403 => Err(Error::Forbidden),
         _ => Err(Error::Unavailable),
     }
 }
@@ -444,6 +449,7 @@ pub fn read(
     match response.status {
         200 => parse(&response.body),
         404 => Err(missing(&response.body)),
+        401 | 403 => Err(Error::Forbidden),
         _ => Err(Error::Unavailable),
     }
 }
@@ -496,8 +502,25 @@ fn exchange(
     if key.is_empty() {
         return Err(Error::Unsupported);
     }
-    crate::transport::local::response(socket, path, &key, body, LIMIT, Duration::from_secs(15))
-        .map_err(|_| Error::Unavailable)
+    let route = path.split('?').next().unwrap_or_default();
+    let response =
+        crate::transport::local::response(socket, path, &key, body, LIMIT, Duration::from_secs(15))
+            .map_err(|_| {
+                tracing::debug!(
+                    event = "conversation_unreachable",
+                    route,
+                    "Conversation request failed"
+                );
+                Error::Unavailable
+            })?;
+    // The status only: bodies hold the person's messages.
+    tracing::debug!(
+        event = "conversation_response",
+        route,
+        status = response.status,
+        "Conversation request answered"
+    );
+    Ok(response)
 }
 
 fn parse<T: serde::de::DeserializeOwned>(body: &[u8]) -> Result<T, Error> {
