@@ -1341,12 +1341,14 @@ fn age(label: impl Into<SharedString>) -> Div {
 }
 
 /// One update on a [`group_card`]: its state mark, author, summary, a tag
-/// for its state, its age and a chevron.
+/// for its state, its age and a chevron. An update the person has not opened
+/// shows its summary in `text` at the selected weight.
 #[allow(clippy::too_many_arguments)]
 pub fn record_row(
     id: impl Into<SharedString>,
     first: bool,
     selected: bool,
+    unseen: bool,
     mark: Div,
     who: impl Into<SharedString>,
     summary: impl Into<SharedString>,
@@ -1391,6 +1393,10 @@ pub fn record_row(
             .overflow_hidden()
             .whitespace_nowrap()
             .text_ellipsis()
+            .when(unseen, |el| {
+                el.text_color(c.text)
+                    .font_weight(t.text.row_selected.weight())
+            })
             .child(summary.into()),
     )
     .child(state)
@@ -1398,15 +1404,17 @@ pub fn record_row(
     .child(icon("chevron-right", t.size.icon - 2.0, c.faint))
 }
 
-/// One answer on a [`group_card`]: a question tile, the question, who
-/// answered and how it begins, an optional tag, its age and a chevron.
+/// One answer on a [`group_card`]: who answered, the question over how the
+/// answer begins, an optional tag, its age and a chevron. An answer the person
+/// has not opened shows its question in `text` at the selected weight.
 #[allow(clippy::too_many_arguments)]
 pub fn question_row(
     id: impl Into<SharedString>,
     first: bool,
     selected: bool,
-    question: impl Into<SharedString>,
+    unseen: bool,
     who: impl Into<SharedString>,
+    question: impl Into<SharedString>,
     answer: impl Into<SharedString>,
     note: Option<Div>,
     ago: impl Into<SharedString>,
@@ -1424,7 +1432,7 @@ pub fn question_row(
         .flex()
         .flex_shrink_0()
         .items_center()
-        .gap(px(t.space.s12))
+        .gap(px(t.space.s10))
         .h(px(t.size.question_row))
         .px(px(t.space.s14))
         .when(!first, |el| {
@@ -1433,21 +1441,17 @@ pub fn question_row(
         .cursor_pointer()
         .when(selected, card_selected)
         .when(!selected, |el| el.hover(|el| el.bg(colors().hover)))
+        .child(unseen_mark(unseen))
         .child(
             text(
-                div()
+                line()
                     .flex_shrink_0()
-                    .size(px(t.size.icon_button))
-                    .rounded(px(t.radius.row))
-                    .bg(c.selected)
-                    .flex()
-                    .items_center()
-                    .justify_center()
+                    .w(px(t.size.record_who))
                     .font_family(t.font.mono.clone())
-                    .text_color(c.text_2),
-                &t.text.status,
+                    .text_color(c.text),
+                &t.text.row,
             )
-            .child("?"),
+            .child(who.into()),
         )
         .child(
             div()
@@ -1456,26 +1460,33 @@ pub fn question_row(
                 .flex()
                 .flex_col()
                 .gap(px(t.space.s2))
-                .child(text(line().text_color(c.text), &t.text.row_selected).child(question.into()))
                 .child(
-                    text(line().text_color(c.muted), &t.text.status).child(
-                        div()
-                            .flex()
-                            .gap(px(t.space.s4))
-                            .child(
-                                div()
-                                    .flex_shrink_0()
-                                    .font_family(t.font.mono.clone())
-                                    .text_color(c.text_2)
-                                    .child(who.into()),
-                            )
-                            .child(line().child(answer.into())),
-                    ),
-                ),
+                    text(
+                        line().text_color(if unseen { c.text } else { c.text_2 }),
+                        if unseen {
+                            &t.text.row_selected
+                        } else {
+                            &t.text.row
+                        },
+                    )
+                    .child(question.into()),
+                )
+                .child(text(line().text_color(c.muted), &t.text.status).child(answer.into())),
         )
         .children(note)
         .child(age(ago))
         .child(icon("chevron-right", t.size.icon - 2.0, c.faint))
+}
+
+/// A record the person has not opened: an accent dot; otherwise the same
+/// space left empty, so rows stay aligned.
+pub fn unseen_mark(unseen: bool) -> Div {
+    let (t, c) = (tokens(), colors());
+    div()
+        .flex_shrink_0()
+        .size(px(t.size.dot))
+        .rounded_full()
+        .when(unseen, |el| el.bg(c.accent))
 }
 
 /// A row of [`shelf_card`]s, three to a line.
@@ -1752,14 +1763,8 @@ pub fn reference(
 // and the subject line change.
 
 /// A closed conversation: a rail on the reader's right edge with the button
-/// that opens it, the agent's mark and a vertical label. `unread` puts a dot
-/// on the button.
-pub fn conversation_rail(
-    button: Stateful<Div>,
-    mark: Option<Div>,
-    label: impl Into<SharedString>,
-    unread: bool,
-) -> Div {
+/// that opens it and the agent's mark. `unread` puts a dot on the button.
+pub fn conversation_rail(button: Stateful<Div>, mark: Option<Div>, unread: bool) -> Div {
     let (t, c) = (tokens(), colors());
     div()
         .flex_shrink_0()
@@ -1804,25 +1809,6 @@ pub fn conversation_rail(
                 }),
         )
         .children(mark)
-        .child(
-            // GPUI has no vertical writing mode; the label turns a quarter.
-            text(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .w(px(t.size.conversation_rail))
-                    .overflow_hidden()
-                    .text_color(c.muted),
-                &t.text.meta,
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .children(label.into().chars().map(|ch| div().child(ch.to_string()))),
-            ),
-        )
 }
 
 /// The frame of an open conversation, `conversation_width` wide.

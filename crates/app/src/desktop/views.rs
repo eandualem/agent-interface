@@ -41,6 +41,7 @@ mod markdown;
 mod policies;
 mod reader;
 mod reports;
+mod seen;
 mod selection;
 mod sheets;
 mod skills;

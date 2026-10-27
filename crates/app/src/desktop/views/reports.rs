@@ -5,7 +5,7 @@ use agent_interface_roster::views::{
 };
 use gpui::{AnyElement, Context, SharedString, div, prelude::*, px};
 
-use super::{ViewPane, clock::Local, line, markdown, since};
+use super::{ViewPane, clock::Local, line, markdown, seen, since};
 use crate::desktop::{
     components as ui,
     design::{colors, tokens},
@@ -202,6 +202,7 @@ fn plural(count: usize, one: &'static str, many: &'static str) -> &'static str {
 }
 
 fn open_record(pane: &mut ViewPane, item: ReportItem, cx: &mut Context<ViewPane>) {
+    seen::mark(&item);
     pane.documents.clear();
     pane.reports.open = Some(item);
     pane.refetch(false, cx);
@@ -496,6 +497,7 @@ pub(super) fn body(pane: &ViewPane, page: &ReportPage, cx: &mut Context<ViewPane
                         id,
                         index == 0,
                         false,
+                        !seen::is_seen(item),
                         mark(item).unwrap_or_else(|| div()),
                         item.author.clone(),
                         line(summary),
@@ -512,8 +514,9 @@ pub(super) fn body(pane: &ViewPane, page: &ReportPage, cx: &mut Context<ViewPane
                     id,
                     index == 0,
                     false,
-                    line(question),
+                    !seen::is_seen(item),
                     item.author.clone(),
+                    line(question),
                     line(answer),
                     superseded_by.map(|id| ui::tag(format!("corrected · #{id}"), ui::Tone::Tag)),
                     ago,
@@ -575,8 +578,13 @@ pub(super) fn body(pane: &ViewPane, page: &ReportPage, cx: &mut Context<ViewPane
                     };
                     let open = (*item).clone();
                     let mut tags = Vec::new();
-                    if metadata.supersedes_id.is_some() {
-                        tags.push(ui::tag("updated", ui::Tone::Tag));
+                    if !seen::is_seen(item) {
+                        let label = if metadata.supersedes_id.is_some() {
+                            "updated"
+                        } else {
+                            "new"
+                        };
+                        tags.push(ui::tag(label, ui::Tone::Tag));
                     }
                     shelf = shelf.child(
                         ui::shelf_card(
@@ -643,9 +651,9 @@ pub(super) fn body(pane: &ViewPane, page: &ReportPage, cx: &mut Context<ViewPane
     }
     let note = match pane.reports.query {
         ReportQuery::Latest(_) => "latest authored owner blockers · age is not resolution",
-        ReportQuery::Recent(_) => "authored progress reports · newest first",
-        ReportQuery::Responses(_) => "your questions, newest answer first",
-        ReportQuery::Documents(..) => "authored documents · opened one revision at a time",
+        ReportQuery::Recent(_) => "authored progress reports · newest first · unread in bold",
+        ReportQuery::Responses(_) => "your questions, newest answer first · unread in bold",
+        ReportQuery::Documents(..) => "new and updated revisions are marked until you open them",
     };
     div()
         .size_full()

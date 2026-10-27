@@ -45,15 +45,17 @@ fn open(pane: &mut ViewPane, metadata: DocumentMetadata, cx: &mut Context<ViewPa
         .as_ref()
         .map(|item| item.provider_url.clone())
         .unwrap_or_default();
-    pane.documents.clear();
-    pane.reports.open = Some(ReportItem {
+    let item = ReportItem {
         id: metadata.id,
         author: metadata.author().to_owned(),
         author_id: Some(metadata.author_id.clone()),
         provider_url,
         created_at: metadata.created_at.clone(),
         content: ReportContent::Document(metadata),
-    });
+    };
+    super::seen::mark(&item);
+    pane.documents.clear();
+    pane.reports.open = Some(item);
     pane.refetch(false, cx);
 }
 

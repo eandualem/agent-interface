@@ -187,18 +187,11 @@ fn subject(item: &ReportItem) -> (&'static str, &'static str) {
 
 impl Conversation {
     fn rail(&self, cx: &mut Context<Self>) -> AnyElement {
-        let sent = self.messages.len();
-        let label = match sent {
-            0 => self.item.author.clone(),
-            1 => format!("{} · 1 message", self.item.author),
-            n => format!("{} · {n} messages", self.item.author),
-        };
         ui::conversation_rail(
             div().id("conversation-open").on_click(
                 cx.listener(|conversation, _, window, cx| conversation.toggle(window, cx)),
             ),
             reports::mark(&self.item),
-            label,
             false,
         )
         .into_any_element()
