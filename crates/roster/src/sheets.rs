@@ -546,7 +546,7 @@ pub enum Accepted {
     Feedback(FeedbackReceipt),
 }
 /// Bounded existing ordinary-message receipt; it does not prove an answer.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Delivery {
     /// Whether the immediate route succeeded.
     pub ok: bool,
@@ -574,7 +574,7 @@ impl Delivery {
     }
 }
 /// Durable contextual feedback result.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct FeedbackReceipt {
     /// Stable feedback identity.
     pub feedback_id: Id,

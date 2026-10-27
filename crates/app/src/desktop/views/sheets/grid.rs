@@ -207,6 +207,8 @@ impl Sheets {
         let col = open.query.column_offset;
         let next_row = open.grid.next_row_offset;
         let next_col = col + open.grid.columns.len();
+        let previous_row = open.pages.rows.last().copied().unwrap_or(0);
+        let previous_col = open.pages.columns.last().copied().unwrap_or(0);
         ui::view_toolbar()
             .h_auto()
             .flex_wrap()
@@ -214,7 +216,7 @@ impl Sheets {
                 ui::chip("sheet-rows-prev", "Previous rows", false).on_click(cx.listener(
                     move |s, _, _, cx| {
                         if row > 0 {
-                            s.navigate(row.saturating_sub(40), col, cx);
+                            s.navigate(previous_row, col, cx);
                         }
                     },
                 )),
@@ -232,7 +234,7 @@ impl Sheets {
                 ui::chip("sheet-cols-prev", "Previous columns", false).on_click(cx.listener(
                     move |s, _, _, cx| {
                         if col > 0 {
-                            s.navigate(row, col.saturating_sub(12), cx);
+                            s.navigate(row, previous_col, cx);
                         }
                     },
                 )),

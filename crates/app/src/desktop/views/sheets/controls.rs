@@ -242,8 +242,11 @@ impl Sheets {
                     self.kind == kind,
                 )
                 .on_click(cx.listener(move |s, _, _, cx| {
-                    if !s.busy && s.pending.is_none() && s.selection.is_some() {
+                    if s.cell_editable() {
                         s.kind = kind;
+                        if kind == Kind::Blank {
+                            s.input.update(cx, |f, cx| f.clear(cx));
+                        }
                         s.input_dirty = true;
                         cx.notify();
                     }
@@ -589,6 +592,9 @@ impl Sheets {
                 s.busy = false;
                 match result {
                     Ok(page) => {
+                        if cursor.is_none() {
+                            s.history_cursors.clear();
+                        }
                         s.history = Some(page);
                         s.history_cursor = cursor;
                     }
@@ -632,6 +638,26 @@ impl Sheets {
                         }
                     },
                 )),
+            )
+    }
+    pub(super) fn feedback_receipt_controls(
+        &self,
+        receipt: &FeedbackReceipt,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        let receipt = receipt.clone();
+        ui::view_toolbar()
+            .h_auto()
+            .flex_wrap()
+            .child(format!("Last feedback: {}", receipt.delivery.message()))
+            .child(
+                ui::chip("sheet-feedback-receipt", "Copy feedback receipt", false).on_click(
+                    cx.listener(move |_, _, _, cx| {
+                        if let Ok(text) = serde_json::to_string_pretty(&receipt) {
+                            cx.write_to_clipboard(ClipboardItem::new_string(text));
+                        }
+                    }),
+                ),
             )
     }
     pub(super) fn feedback_controls(&self, cx: &mut Context<Self>) -> gpui::Div {

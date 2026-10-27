@@ -22,6 +22,31 @@ struct Open {
     record: Record,
     grid: Grid,
     query: RangeQuery,
+    pages: PageTrail,
+}
+#[derive(Clone, Default)]
+struct PageTrail {
+    rows: Vec<usize>,
+    columns: Vec<usize>,
+}
+impl PageTrail {
+    fn move_axis(trail: &mut Vec<usize>, from: usize, to: usize) {
+        if from == to {
+            return;
+        }
+        if let Some(index) = trail.iter().position(|offset| *offset == to) {
+            trail.truncate(index);
+        } else if to > from {
+            trail.push(from);
+        } else {
+            trail.clear();
+        }
+    }
+    fn moved(mut self, from: (usize, usize), to: (usize, usize)) -> Self {
+        Self::move_axis(&mut self.rows, from.0, to.0);
+        Self::move_axis(&mut self.columns, from.1, to.1);
+        self
+    }
 }
 #[derive(Default)]
 struct Draft {
@@ -51,7 +76,7 @@ impl Kind {
     }
     fn from(input: Option<&Input>) -> Self {
         match input {
-            None => Self::Blank,
+            None => Self::Text,
             Some(Input::Text(_)) => Self::Text,
             Some(Input::Number(_)) => Self::Number,
             Some(Input::Boolean(_)) => Self::Boolean,
@@ -77,7 +102,8 @@ impl Kind {
             Self::Formula if text.starts_with('=') && text.len() <= 4096 => {
                 Patch::Set(Input::Formula(text.into()))
             }
-            Self::Blank => Patch::Clear,
+            Self::Blank if text.is_empty() => Patch::Clear,
+            Self::Blank => return Err("Clear the input or choose Text to keep what you typed."),
             _ => return Err("Use text up to 16 KiB or a formula beginning with = up to 4 KiB."),
         })
     }
@@ -134,6 +160,8 @@ pub(super) struct Sheets {
     feedback_kind: FeedbackKind,
     feedback_open: bool,
     pending: Option<Prepared>,
+    pending_uncertain: bool,
+    feedback_receipt: Option<FeedbackReceipt>,
     confirm: Option<(String, Prepared)>,
     copied: Option<structure::Copied>,
     busy: bool,
@@ -192,6 +220,8 @@ impl Sheets {
             feedback_kind: FeedbackKind::Question,
             feedback_open: false,
             pending: None,
+            pending_uncertain: false,
+            feedback_receipt: None,
             confirm: None,
             copied: None,
             busy: false,
@@ -243,6 +273,15 @@ impl Sheets {
 
     fn dirty(&self) -> bool {
         self.input_dirty || self.format_dirty || !self.draft.cells.is_empty()
+    }
+    fn cell_editable(&self) -> bool {
+        !self.busy
+            && self.pending.is_none()
+            && self.selection.is_some()
+            && draft_matches_revision(
+                &self.draft,
+                self.open.as_ref().map(|o| &o.record.revision_id),
+            )
     }
     fn clean(&mut self, cx: &mut Context<Self>) -> bool {
         if !self.feedback.read(cx).value().is_empty() {
@@ -302,6 +341,8 @@ impl Sheets {
                         s.cursor = cursor;
                         s.open = None;
                         s.history = None;
+                        s.history_cursors.clear();
+                        s.history_cursor = None;
                         s.creating = false;
                     }
                     Err(e) => s.error = Some(e.message().into()),
@@ -351,6 +392,21 @@ impl Sheets {
             column_limit: 12,
             order: Order::View,
         };
+        let pages = self
+            .open
+            .as_ref()
+            .filter(|old| {
+                old.record.sheet_id == record.sheet_id
+                    && old.record.revision_id == record.revision_id
+                    && old.grid.tab_id == query.tab_id
+            })
+            .map(|old| {
+                old.pages.clone().moved(
+                    (old.query.row_offset, old.query.column_offset),
+                    (row, column),
+                )
+            })
+            .unwrap_or_default();
         self.begin(cx);
         let work = cx.background_executor().spawn(async move {
             let grid = client.range(&query)?;
@@ -358,6 +414,7 @@ impl Sheets {
                 record,
                 grid,
                 query,
+                pages,
             })
         });
         cx.spawn(async move |this, cx| {
@@ -371,6 +428,8 @@ impl Sheets {
                         s.input_dirty = false;
                         s.format_dirty = false;
                         s.history = None;
+                        s.history_cursors.clear();
+                        s.history_cursor = None;
                     }
                     Err(e) => s.error = Some(e.message().into()),
                 }
@@ -606,6 +665,7 @@ impl Sheets {
                 match result {
                     Ok(Accepted::Revision(record)) => {
                         s.pending = None;
+                        s.pending_uncertain = false;
                         s.draft = Draft::default();
                         s.input_dirty = false;
                         s.format_dirty = false;
@@ -625,6 +685,7 @@ impl Sheets {
                     }
                     Ok(Accepted::Imported { record, warnings }) => {
                         s.pending = None;
+                        s.pending_uncertain = false;
                         s.creating = false;
                         s.read_grid(record, None, 0, 0, cx);
                         s.notice = Some(if warnings.is_empty() {
@@ -635,11 +696,14 @@ impl Sheets {
                     }
                     Ok(Accepted::Feedback(receipt)) => {
                         s.pending = None;
+                        s.pending_uncertain = false;
                         s.feedback.update(cx, |f, cx| f.clear(cx));
                         s.notice = Some(receipt.delivery.message().into());
+                        s.feedback_receipt = Some(receipt);
                     }
                     Err(error) => {
-                        if error != api::Error::Unknown {
+                        s.pending_uncertain = unresolved_mutation(s.pending_uncertain, &error);
+                        if !s.pending_uncertain {
                             s.pending = None;
                         }
                         s.error = Some(error.message().into());
@@ -668,6 +732,8 @@ impl Sheets {
         }
         self.draft.base = Some(open.record.revision_id.clone());
         self.selection = None;
+        self.input_dirty = false;
+        self.format_dirty = false;
         self.error = None;
         self.notice =
             Some("Draft reapplied to the displayed revision. Review it, then Save changes.".into());
@@ -685,6 +751,15 @@ impl Sheets {
         cx.notify();
     }
 }
+fn draft_matches_revision(draft: &Draft, revision: Option<&Id>) -> bool {
+    draft
+        .base
+        .as_ref()
+        .is_none_or(|base| Some(base) == revision)
+}
+fn unresolved_mutation(previously_uncertain: bool, error: &api::Error) -> bool {
+    previously_uncertain || *error == api::Error::Unknown
+}
 fn new_id() -> Id {
     Id::parse(uuid::Uuid::new_v4().simple().to_string()).expect("UUID format")
 }
@@ -701,14 +776,7 @@ fn column_name(mut n: usize) -> String {
 impl Render for Sheets {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let frozen = self.busy || self.pending.is_some();
-        let cell_frozen = frozen
-            || self.selection.is_none()
-            || self
-                .draft
-                .base
-                .as_ref()
-                .zip(self.open.as_ref())
-                .is_some_and(|(base, open)| base != &open.record.revision_id);
+        let cell_frozen = !self.cell_editable();
         for field in [&self.input, &self.number_format] {
             field.update(cx, |field, _| field.set_read_only(cell_frozen));
         }
@@ -727,6 +795,9 @@ impl Render for Sheets {
             .bg(c.surface)
             .child(ui::view_header("layout-grid", "Sheets"))
             .child(self.toolbar(cx))
+            .when_some(self.feedback_receipt.clone(), |e, receipt| {
+                e.child(self.feedback_receipt_controls(&receipt, cx))
+            })
             .when(self.confirm.is_some(), |e| {
                 e.child(self.confirm_controls(cx))
             })
@@ -762,6 +833,63 @@ impl Render for Sheets {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn blank_cell_typing_is_literal_and_explicit_blank_never_discards_text() {
+        assert!(
+            matches!(Kind::from(None).parse("new value"), Ok(Patch::Set(Input::Text(value))) if value == "new value")
+        );
+        assert!(Kind::Blank.parse("keep me").is_err());
+        assert!(matches!(Kind::Blank.parse(""), Ok(Patch::Clear)));
+    }
+
+    #[test]
+    fn lost_reply_stays_unresolved_across_preflight_and_provider_refusals() {
+        let mut uncertain = unresolved_mutation(false, &api::Error::Unknown);
+        for error in [
+            api::Error::ProviderChanged,
+            api::Error::Unavailable,
+            api::Error::Refused(401),
+            api::Error::Refused(503),
+        ] {
+            uncertain = unresolved_mutation(uncertain, &error);
+            assert!(
+                uncertain,
+                "A retry failure cannot resolve the earlier lost reply"
+            );
+        }
+        assert!(!unresolved_mutation(false, &api::Error::Refused(422)));
+    }
+
+    #[test]
+    fn retained_stale_draft_freezes_both_value_and_type_editing() {
+        let old = Id::parse("1".repeat(32)).unwrap();
+        let new = Id::parse("2".repeat(32)).unwrap();
+        let mut draft = Draft {
+            base: Some(old.clone()),
+            ..Default::default()
+        };
+        assert!(draft_matches_revision(&draft, Some(&old)));
+        assert!(!draft_matches_revision(&draft, Some(&new)));
+        draft.base = Some(new.clone());
+        assert!(draft_matches_revision(&draft, Some(&new)));
+    }
+
+    #[test]
+    fn shrinking_pages_return_to_the_actual_previous_boundary() {
+        let trail = PageTrail::default()
+            .moved((0, 0), (20, 0))
+            .moved((20, 0), (40, 0));
+        assert_eq!(trail.rows.last(), Some(&20));
+        let trail = trail.moved((40, 0), (20, 0));
+        assert_eq!(trail.rows.last(), Some(&0));
+        let trail = trail.moved((20, 0), (20, 6)).moved((20, 6), (20, 9));
+        assert_eq!(trail.columns.last(), Some(&6));
+        assert_eq!(trail.rows.last(), Some(&0));
+        let trail = trail.moved((20, 9), (20, 6)).moved((20, 6), (0, 6));
+        assert!(trail.rows.is_empty());
+        assert_eq!(trail.columns.last(), Some(&0));
+    }
+
     #[test]
     fn selection_and_a1_labels_use_canonical_indices() {
         assert_eq!(column_name(1), "A");

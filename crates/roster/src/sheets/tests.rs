@@ -240,6 +240,20 @@ fn feedback_does_not_conflate_uncertain_delivery_with_queued_delivery() {
 }
 
 #[test]
+fn copied_uncertain_feedback_receipt_keeps_context_and_operation_identity() {
+    let receipt: FeedbackReceipt = serde_json::from_value(json!({
+        "feedback_id":id(1),"sheet_id":id(2),"observed_revision_id":id(3),
+        "operation_id":"original-operation", "delivery":{"ok":false,"queued":true,"outcome":"uncertain"}
+    })).unwrap();
+    let copied = serde_json::to_value(receipt).unwrap();
+    assert_eq!(copied["operation_id"], "original-operation");
+    assert_eq!(copied["feedback_id"], json!(id(1)));
+    assert_eq!(copied["sheet_id"], json!(id(2)));
+    assert_eq!(copied["observed_revision_id"], json!(id(3)));
+    assert_eq!(copied["delivery"]["outcome"], "uncertain");
+}
+
+#[test]
 fn sparse_sorted_cells_keep_canonical_identity_and_reject_duplicates() {
     let wire = json!({"sheet_id":id(1),"revision_id":id(3),"tab_id":id(4),"order":"view","total_rows":2,"total_columns":1,
         "rows":[{"row_id":id(6),"index":2},{"row_id":id(5),"index":1}],

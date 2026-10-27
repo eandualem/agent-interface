@@ -449,8 +449,10 @@ operation without creating a duplicate edit or message.
 selected cells (up to 100). Without a selection it refers to the workbook revision.
 Save or discard edits first so the feedback refers to committed values. The receipt
 distinguishes queued, delivered, uncertain, expired and unknown delivery. It does
-not mean the agent has answered. Check an uncertain delivery before sending another
-copy.
+not mean the agent has answered. **Copy feedback receipt** retains the sheet,
+observed revision, feedback and operation identifiers for checking a delivery,
+even after navigating to another workbook. Check an uncertain delivery before
+sending another copy.
 
 **New workbook** requires a title and registered owning agent. Import JSON, CSV,
 TSV or XLSX through that form to create a separate workbook. Creation and import
