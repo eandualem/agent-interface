@@ -1,10 +1,12 @@
 //! One conversation per artifact, read and written through Backbone's
-//! authenticated local API (provider contract r2).
+//! authenticated local API (provider contract r3).
 //!
 //! A conversation lasts across all of an artifact's versions. Its entries are
 //! owner and agent messages, and the events the artifact produces when a new
 //! version or plan step appears. Transport and parsing run on I/O workers,
 //! never the UI thread.
+
+use std::{path::Path, time::Duration};
 
 use serde::{Deserialize, Serialize};
 
@@ -180,6 +182,323 @@ pub struct Step {
     pub section: String,
 }
 
+/// The most a response may hold; the provider caps a page at 1 MiB.
+const LIMIT: usize = 1024 * 1024 + 64 * 1024;
+
+impl Kind {
+    /// The path segment the API uses.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Document => "document",
+            Self::Sheet => "sheet",
+            Self::Response => "response",
+            Self::Report => "report",
+            Self::Plan => "plan",
+            Self::Skill => "skill",
+            Self::Policy => "policy",
+        }
+    }
+}
+
+/// An agent as a conversation lists it.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+pub struct Participant {
+    /// Stable registration identity.
+    pub agent_id: String,
+    /// Current registered name.
+    pub name: String,
+    /// `active`, `retired` or `unassigned`.
+    #[serde(default)]
+    pub status: String,
+    /// Whether it receives messages that name no recipient.
+    #[serde(default)]
+    pub responsible: bool,
+}
+
+/// One page of a conversation and its header.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+pub struct Conversation {
+    /// What it is about.
+    pub kind: Kind,
+    /// The artifact's stable identity.
+    pub artifact_id: String,
+    /// The default recipient.
+    pub responsible: Participant,
+    /// The responsible agent and every agent addressed or writing here.
+    #[serde(default)]
+    pub participants: Vec<Participant>,
+    /// Messages, events excluded.
+    pub total: u64,
+    /// Agent messages and events after `read_through`.
+    pub unread: u64,
+    /// The owner's read marker; the "new" divider sits after it.
+    #[serde(default)]
+    pub read_through: Option<u64>,
+    /// Oldest to newest within the page.
+    pub entries: Vec<Entry>,
+    /// Pass as [`Page::Before`]; `None` at the start.
+    pub older: Option<String>,
+    /// Pass as [`Page::After`]; `None` on the newest page.
+    pub newer: Option<String>,
+}
+
+/// One conversation's badge.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+pub struct Summary {
+    /// What it is about.
+    pub kind: Kind,
+    /// The artifact's stable identity.
+    pub artifact_id: String,
+    /// The default recipient.
+    pub responsible: Participant,
+    /// Agent messages and events not yet read.
+    pub unread: u64,
+    /// Messages, events excluded.
+    pub total: u64,
+    /// When the latest entry was stored.
+    #[serde(default)]
+    pub last_entry_at: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct Summaries {
+    items: Vec<Summary>,
+}
+
+/// Header counts after the read marker moved.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+pub struct Counts {
+    /// The marker now.
+    pub read_through: u64,
+    /// Agent messages and events after it.
+    pub unread: u64,
+    /// Messages, events excluded.
+    pub total: u64,
+}
+
+/// Which page of a conversation to read.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Page {
+    /// The newest entries.
+    Newest,
+    /// Entries older than a page's `older` cursor.
+    Before(String),
+    /// Entries newer than a page's `newer` cursor, for polling.
+    After(String),
+}
+
+/// An owner message to append.
+#[derive(Clone, Debug, Serialize, PartialEq)]
+pub struct Message {
+    /// Client idempotency key; a retry reuses it.
+    pub request_id: String,
+    /// At most 4,000 characters.
+    pub text: String,
+    /// Registration ID or name; `None` for the responsible agent.
+    pub recipient: Option<String>,
+    /// What the owner was looking at.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub anchor: Option<Anchor>,
+}
+
+/// What became of a send or a redelivery.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Outcome {
+    /// Stored; the entry carries its delivery state.
+    Accepted(Box<Entry>),
+    /// A redelivery for this entry is already queued.
+    AlreadyPending,
+    /// Refused with a typed code and readable text.
+    Refused {
+        /// Such as `too_long` or `rate_limited`.
+        error: String,
+        /// Safe to show the person.
+        message: String,
+    },
+    /// No answer that says either way; retry with the same request ID.
+    Unknown,
+}
+
+/// Why a conversation could not be read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Error {
+    /// No authenticated private local provider is configured.
+    Unavailable,
+    /// The provider does not offer conversations yet.
+    Unsupported,
+    /// Backbone knows no such artifact.
+    UnknownArtifact,
+    /// The response violated the bounded contract.
+    Unreadable,
+}
+
+impl Error {
+    /// Safe, fixed text for the person.
+    pub fn message(self) -> &'static str {
+        match self {
+            Self::Unavailable => "Conversations need an authenticated private Backbone connection.",
+            Self::Unsupported => "This Agent Backbone does not keep conversations yet.",
+            Self::UnknownArtifact => "Backbone has no record of this item.",
+            Self::Unreadable => "Backbone returned an unreadable conversation.",
+        }
+    }
+}
+
+/// Read one page of a conversation. Runs on an I/O worker.
+pub fn show(directory: &Path, kind: Kind, id: &str, page: &Page) -> Result<Conversation, Error> {
+    let mut path = base(kind, id).ok_or(Error::Unreadable)?;
+    path.push_str("?limit=50");
+    match page {
+        Page::Newest => {}
+        Page::Before(cursor) | Page::After(cursor) if !token(cursor) => {
+            return Err(Error::Unreadable);
+        }
+        Page::Before(cursor) => path.push_str(&format!("&before={cursor}")),
+        Page::After(cursor) => path.push_str(&format!("&after={cursor}")),
+    }
+    let response = exchange(directory, &path, None)?;
+    match response.status {
+        200 => parse(&response.body),
+        404 => Err(missing(&response.body)),
+        _ => Err(Error::Unavailable),
+    }
+}
+
+/// Badges for up to 50 conversations. Runs on an I/O worker.
+pub fn summaries(directory: &Path, keys: &[(Kind, &str)]) -> Result<Vec<Summary>, Error> {
+    if keys.is_empty() || keys.len() > 50 || keys.iter().any(|(_, id)| !token(id)) {
+        return Err(Error::Unreadable);
+    }
+    let ids: Vec<String> = keys
+        .iter()
+        .map(|(kind, id)| format!("{}:{id}", kind.name()))
+        .collect();
+    let path = format!("/api/conversations?limit=50&ids={}", ids.join(","));
+    let response = exchange(directory, &path, None)?;
+    match response.status {
+        200 => parse::<Summaries>(&response.body).map(|page| page.items),
+        404 => Err(Error::Unsupported),
+        _ => Err(Error::Unavailable),
+    }
+}
+
+/// Append an owner message. Runs on an I/O worker.
+pub fn send(directory: &Path, kind: Kind, id: &str, message: &Message) -> Outcome {
+    let Some(path) = base(kind, id).map(|base| base + "/messages") else {
+        return Outcome::Unknown;
+    };
+    let Ok(body) = serde_json::to_vec(message) else {
+        return Outcome::Unknown;
+    };
+    outcome(exchange(directory, &path, Some(body)))
+}
+
+/// Queue a new delivery for a failed owner message. Runs on an I/O worker.
+pub fn redeliver(directory: &Path, kind: Kind, id: &str, entry: u64, request_id: &str) -> Outcome {
+    let Some(path) = base(kind, id).map(|base| format!("{base}/messages/{entry}/redeliver")) else {
+        return Outcome::Unknown;
+    };
+    let body = serde_json::json!({ "request_id": request_id })
+        .to_string()
+        .into_bytes();
+    outcome(exchange(directory, &path, Some(body)))
+}
+
+/// Move the owner's read marker forward. Runs on an I/O worker.
+pub fn read(directory: &Path, kind: Kind, id: &str, through: u64) -> Result<Counts, Error> {
+    let path = base(kind, id).ok_or(Error::Unreadable)? + "/read";
+    let body = serde_json::json!({ "read_through": through })
+        .to_string()
+        .into_bytes();
+    let response = exchange(directory, &path, Some(body))?;
+    match response.status {
+        200 => parse(&response.body),
+        404 => Err(missing(&response.body)),
+        _ => Err(Error::Unavailable),
+    }
+}
+
+fn base(kind: Kind, id: &str) -> Option<String> {
+    token(id).then(|| format!("/api/conversations/{}/{id}", kind.name()))
+}
+
+/// Identifiers and cursors are opaque but never need escaping.
+fn token(text: &str) -> bool {
+    !text.is_empty()
+        && text.len() <= 128
+        && text
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b':' | b'.'))
+}
+
+fn exchange(
+    directory: &Path,
+    path: &str,
+    body: Option<Vec<u8>>,
+) -> Result<crate::transport::local::Response, Error> {
+    let (provider, key) =
+        crate::configuration::configured(directory, None).ok_or(Error::Unavailable)?;
+    let socket = provider.strip_prefix("unix:").ok_or(Error::Unavailable)?;
+    if key.is_empty() {
+        return Err(Error::Unavailable);
+    }
+    crate::transport::local::response(socket, path, &key, body, LIMIT, Duration::from_secs(15))
+        .map_err(|_| Error::Unavailable)
+}
+
+fn parse<T: serde::de::DeserializeOwned>(body: &[u8]) -> Result<T, Error> {
+    if body.len() > LIMIT {
+        return Err(Error::Unreadable);
+    }
+    serde_json::from_slice(body).map_err(|_| Error::Unreadable)
+}
+
+/// A plain 404 is a provider without conversations; a typed one is a missing artifact.
+fn missing(body: &[u8]) -> Error {
+    #[derive(Deserialize)]
+    struct Missing {
+        error: String,
+    }
+    match serde_json::from_slice::<Missing>(body) {
+        Ok(missing) if missing.error == "unknown_artifact" => Error::UnknownArtifact,
+        _ => Error::Unsupported,
+    }
+}
+
+fn outcome(response: Result<crate::transport::local::Response, Error>) -> Outcome {
+    #[derive(Deserialize)]
+    struct Reply {
+        result: String,
+        #[serde(default)]
+        entry: Option<Entry>,
+        #[serde(default)]
+        error: Option<String>,
+        #[serde(default)]
+        message: Option<String>,
+    }
+    let Ok(response) = response else {
+        return Outcome::Unknown;
+    };
+    let Ok(reply) = parse::<Reply>(&response.body) else {
+        return Outcome::Unknown;
+    };
+    match (reply.result.as_str(), reply.entry) {
+        ("accepted" | "queued", Some(entry)) if (200..300).contains(&response.status) => {
+            Outcome::Accepted(Box::new(entry))
+        }
+        ("already_pending", _) => Outcome::AlreadyPending,
+        ("refused", _) if (400..500).contains(&response.status) || response.status == 200 => {
+            Outcome::Refused {
+                error: reply.error.unwrap_or_default(),
+                message: reply
+                    .message
+                    .unwrap_or_else(|| "Backbone refused the message.".to_owned()),
+            }
+        }
+        _ => Outcome::Unknown,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -230,5 +549,52 @@ mod tests {
             matches!(&entries[2].body, Body::Revision { revision } if revision.changed[0].label == "Runs!D4")
         );
         assert!(matches!(&entries[3].body, Body::Step { step } if step.status == "in_progress"));
+    }
+
+    #[test]
+    fn a_page_reads_its_header_and_cursors() {
+        let page: Conversation = parse(
+            br#"{"kind":"report","artifact_id":"3144",
+              "responsible":{"agent_id":"6bff","name":"builder","status":"active"},
+              "participants":[{"agent_id":"6bff","name":"builder","status":"active","responsible":true}],
+              "total":4,"unread":2,"read_through":4180,"entries":[],
+              "older":"e4178","newer":null}"#,
+        )
+        .unwrap();
+        assert_eq!((page.unread, page.read_through), (2, Some(4180)));
+        assert_eq!(page.older.as_deref(), Some("e4178"));
+        assert!(page.participants[0].responsible);
+        assert!(token("c2:report:3144") && !token("a/b") && !token("x&y"));
+    }
+
+    #[test]
+    fn replies_and_missing_artifacts_are_told_apart() {
+        let reply = |status, body: &str| {
+            outcome(Ok(crate::transport::local::Response {
+                status,
+                body: body.as_bytes().to_vec(),
+                sheet_warnings: None,
+            }))
+        };
+        assert_eq!(
+            reply(
+                422,
+                r#"{"result":"refused","error":"too_long","message":"Too long."}"#
+            ),
+            Outcome::Refused {
+                error: "too_long".into(),
+                message: "Too long.".into()
+            }
+        );
+        assert_eq!(
+            reply(200, r#"{"result":"already_pending","error":null}"#),
+            Outcome::AlreadyPending
+        );
+        assert_eq!(reply(502, "gateway"), Outcome::Unknown);
+        assert_eq!(
+            missing(br#"{"error":"unknown_artifact","message":"No report 9999."}"#),
+            Error::UnknownArtifact
+        );
+        assert_eq!(missing(b"Not Found"), Error::Unsupported);
     }
 }
