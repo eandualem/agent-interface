@@ -5,7 +5,7 @@ use agent_interface_roster::views::{
 };
 use gpui::{AnyElement, Context, SharedString, div, prelude::*, px};
 
-use super::{ViewPane, clock::Local, line, markdown, seen, since};
+use super::{Shown, ViewPane, clock::Local, line, markdown, seen, since};
 use crate::desktop::{
     components as ui,
     design::{colors, tokens},
@@ -90,11 +90,11 @@ fn header(live: bool) -> gpui::Div {
         .when(live, |el| el.child(ui::live_note()))
 }
 
-/// Sheets inside Reports & updates: the same header and section bar above
-/// the workbook view.
-pub(super) fn sheets_frame(
+/// A section with its own view, such as Sheets or Current plans: the same
+/// header and section bar above it.
+pub(super) fn section_frame(
     pane: &ViewPane,
-    sheets: gpui::Entity<super::sheets::Sheets>,
+    section: gpui::AnyView,
     cx: &mut Context<ViewPane>,
 ) -> AnyElement {
     div()
@@ -103,7 +103,7 @@ pub(super) fn sheets_frame(
         .flex_col()
         .child(header(true))
         .child(controls(pane, &pane.reports.agents, cx))
-        .child(div().flex_1().min_h_0().flex().flex_col().child(sheets))
+        .child(div().flex_1().min_h_0().flex().flex_col().child(section))
         .into_any_element()
 }
 
@@ -688,18 +688,28 @@ pub(super) fn body(pane: &ViewPane, page: &ReportPage, cx: &mut Context<ViewPane
 fn controls(pane: &ViewPane, agents: &[String], cx: &mut Context<ViewPane>) -> gpui::Div {
     let (t, c) = (tokens(), colors());
     let mut sections = ui::segments();
-    for (name, make) in SECTIONS {
+    for (index, (name, make)) in SECTIONS.into_iter().enumerate() {
+        if index == 1 && pane.backbone.is_some() {
+            sections = sections.child(
+                ui::segment(
+                    "reports-Current plans",
+                    "Current plans",
+                    pane.shown == Shown::Plans,
+                )
+                .on_click(cx.listener(|pane, _, _, cx| pane.show_plans(cx))),
+            );
+        }
         let query = make();
         sections = sections.child(
             ui::segment(
                 SharedString::from(format!("reports-{name}")),
                 name,
-                !pane.showing_sheets
+                pane.shown == Shown::Records
                     && std::mem::discriminant(&pane.reports.query)
                         == std::mem::discriminant(&query),
             )
             .on_click(cx.listener(move |pane, _, _, cx| {
-                pane.showing_sheets = false;
+                pane.shown = Shown::Records;
                 pane.reports.open = None;
                 pane.reports.query = make();
                 pane.reports.previous.clear();
@@ -709,7 +719,7 @@ fn controls(pane: &ViewPane, agents: &[String], cx: &mut Context<ViewPane>) -> g
     }
     if pane.backbone.is_some() {
         sections = sections.child(
-            ui::segment("reports-Sheets", "Sheets", pane.showing_sheets)
+            ui::segment("reports-Sheets", "Sheets", pane.shown == Shown::Sheets)
                 .on_click(cx.listener(|pane, _, window, cx| pane.show_sheets(window, cx))),
         );
     }

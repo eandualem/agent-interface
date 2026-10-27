@@ -37,6 +37,7 @@ mod clock;
 mod conversation;
 mod documents;
 mod markdown;
+mod plans;
 mod policies;
 mod reader;
 mod reports;
@@ -108,6 +109,15 @@ pub(super) enum Records {
     Held,
 }
 
+/// Which kind of Reports & updates section a pane shows.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Shown {
+    /// A record feed: waiting on you, updates, answers or documents.
+    Records,
+    Plans,
+    Sheets,
+}
+
 /// Something a list can open in the reader, by its file or folder.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum Target {
@@ -160,7 +170,9 @@ pub(super) struct ViewPane {
     documents: documents::State,
     artifacts: Option<Entity<artifacts::ArtifactPane>>,
     sheets: Option<Entity<sheets::Sheets>>,
-    showing_sheets: bool,
+    plans: Option<Entity<plans::Plans>>,
+    /// The Reports & updates section shown when it is not a record feed.
+    pub(super) shown: Shown,
     _updates: Option<Task<()>>,
     _search: Vec<Subscription>,
 }
@@ -238,7 +250,8 @@ impl ViewPane {
             documents: documents::State::default(),
             artifacts: None,
             sheets: None,
-            showing_sheets: false,
+            plans: None,
+            shown: Shown::Records,
             _updates: None,
             _search: Vec::new(),
             view,
@@ -367,6 +380,18 @@ impl ViewPane {
         }
     }
 
+    fn show_plans(&mut self, cx: &mut Context<Self>) {
+        let Some(directory) = self.backbone.clone() else {
+            return;
+        };
+        self.documents.surface.borrow_mut().clear();
+        if self.plans.is_none() {
+            self.plans = Some(cx.new(|cx| plans::Plans::new(directory, cx)));
+        }
+        self.shown = Shown::Plans;
+        cx.notify();
+    }
+
     fn show_sheets(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(directory) = self.backbone.clone() else {
             return;
@@ -376,12 +401,12 @@ impl ViewPane {
             let sheets = cx.new(|cx| sheets::Sheets::new(directory, window, cx));
             self._search
                 .push(cx.subscribe(&sheets, |pane, _, _: &sheets::Close, cx| {
-                    pane.showing_sheets = false;
+                    pane.shown = Shown::Records;
                     cx.notify();
                 }));
             self.sheets = Some(sheets);
         }
-        self.showing_sheets = true;
+        self.shown = Shown::Sheets;
         cx.notify();
     }
 
@@ -569,13 +594,16 @@ impl Render for ViewPane {
         if let Some(artifacts) = &self.artifacts {
             return div().size_full().child(artifacts.clone());
         }
-        if self.showing_sheets
-            && let Some(sheets) = self.sheets.clone()
-        {
+        let section = match self.shown {
+            Shown::Sheets => self.sheets.clone().map(gpui::AnyView::from),
+            Shown::Plans => self.plans.clone().map(gpui::AnyView::from),
+            Shown::Records => None,
+        };
+        if let Some(section) = section {
             return div()
                 .size_full()
                 .bg(colors().surface)
-                .child(reports::sheets_frame(self, sheets, cx));
+                .child(reports::section_frame(self, section, cx));
         }
         let (t, c) = (tokens(), colors());
         self.conversation =

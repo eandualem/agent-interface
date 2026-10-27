@@ -1582,6 +1582,55 @@ pub fn shelf_card(
         )
 }
 
+/// Where a step stands in its plan.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Step {
+    Done,
+    /// Being worked on now.
+    Now,
+    /// Waiting on someone or something.
+    Waits,
+    /// Still to come.
+    Ahead,
+}
+
+/// One step of a plan, as a small pill: done in `ok` with a check, now in
+/// the accent, waiting in the attention tint with "!", ahead outlined.
+pub fn plan_step(label: impl Into<SharedString>, step: Step) -> Div {
+    let (t, c) = (tokens(), colors());
+    let pill = text(
+        div()
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .gap(px(t.space.s4))
+            .h(px(t.size.chip))
+            .px(px(t.space.s8))
+            .rounded(px(t.radius.pill))
+            .border(px(t.size.hairline))
+            .whitespace_nowrap(),
+        &t.text.meta,
+    );
+    let pill = match step {
+        Step::Done => pill.border_color(c.line).text_color(c.muted).child(icon(
+            "check",
+            t.size.icon - 3.0,
+            c.ok,
+        )),
+        Step::Now => pill
+            .bg(c.accent_soft)
+            .border_color(gpui::transparent_black())
+            .text_color(c.accent_text),
+        Step::Waits => pill
+            .bg(c.attention_soft)
+            .border_color(gpui::transparent_black())
+            .text_color(c.attention_text)
+            .child(div().font_weight(gpui::FontWeight::BOLD).child("!")),
+        Step::Ahead => pill.border_color(c.line_strong).text_color(c.text_2),
+    };
+    pill.child(label.into())
+}
+
 /// The centred column of a record reader, no wider than reads well.
 pub fn reader_column() -> Div {
     let t = tokens();
