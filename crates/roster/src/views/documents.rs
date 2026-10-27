@@ -170,6 +170,7 @@ fn decode_list(body: &[u8], author_id: Option<&str>) -> Result<ReportPage, &'sta
         items,
         next,
         agents,
+        runtimes: Default::default(),
     })
 }
 

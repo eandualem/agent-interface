@@ -17,6 +17,8 @@ pub(super) struct State {
     pub agent: Option<String>,
     choosing_agent: bool,
     agents: Vec<String>,
+    /// The CLI each configured agent runs in, for the reader's badge.
+    runtimes: std::collections::BTreeMap<String, String>,
     pub(super) previous: Vec<ReportQuery>,
     /// Records are immutable: keep the opened answer through list refreshes.
     pub open: Option<ReportItem>,
@@ -41,6 +43,9 @@ impl State {
     pub fn observe(&mut self, page: &ReportPage) {
         if !page.agents.is_empty() {
             self.agents = page.agents.clone();
+        }
+        if !page.runtimes.is_empty() {
+            self.runtimes = page.runtimes.clone();
         }
         if self.open.is_none() {
             self.feed = Some(page.clone());
@@ -322,6 +327,12 @@ fn reader_toolbar(
         )
 }
 
+/// The CLI the record's author runs in, while the roster names it.
+fn runtime(pane: &ViewPane, item: &ReportItem) -> Option<gpui::Div> {
+    let runtime = pane.reports.runtimes.get(&item.author)?;
+    (!runtime.is_empty()).then(|| ui::badge(runtime.clone()))
+}
+
 /// An open report or answer, read-only, with its conversation beside it.
 fn reader(
     pane: &ViewPane,
@@ -354,6 +365,7 @@ fn reader(
                     .pb(px(t.space.s10))
                     .children(mark(item))
                     .child(super::mono(item.author.clone()).text_color(c.text))
+                    .children(runtime(pane, item))
                     .child(state_tag(item))
                     .child(div().flex_1())
                     .child(
@@ -437,6 +449,7 @@ fn reader(
                             .items_center()
                             .gap(px(t.space.s8))
                             .child(super::mono(item.author.clone()).text_color(c.text))
+                            .children(runtime(pane, item))
                             .child(div().flex_1())
                             .child(ui::text(div().text_color(c.muted), &t.text.meta).child(
                                 format!("answered {} · #{}", when(&item.created_at), item.id),
@@ -853,6 +866,7 @@ mod tests {
             items: vec![item("A different body", Some(9))],
             next: None,
             agents: Vec::new(),
+            runtimes: Default::default(),
         });
         let open = state.open.unwrap();
         assert_eq!(label(&open), "corrected by #9");
@@ -881,12 +895,31 @@ mod tests {
             items: ids.iter().map(|id| item(*id)).collect(),
             next: None,
             agents: Vec::new(),
+            runtimes: Default::default(),
         };
         let mut state = State::default();
         state.observe(&page(&[3, 2, 1]));
         state.open = Some(item(2));
         state.observe(&page(&[2]));
         assert_eq!(state.feed.unwrap().items.len(), 3);
+    }
+
+    #[test]
+    fn an_answer_refresh_keeps_the_runtimes_its_feed_read() {
+        let mut state = State::default();
+        state.observe(&ReportPage {
+            items: Vec::new(),
+            next: None,
+            agents: vec!["worker".into()],
+            runtimes: [("worker".into(), "codex".into())].into(),
+        });
+        state.observe(&ReportPage {
+            items: Vec::new(),
+            next: None,
+            agents: Vec::new(),
+            runtimes: Default::default(),
+        });
+        assert_eq!(state.runtimes["worker"], "codex");
     }
 
     #[test]
