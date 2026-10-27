@@ -184,8 +184,10 @@ All in `components.rs`; each takes its look from the tokens.
 
 A pane can show a view instead of a terminal.
 An empty pane shows the new-pane chooser (`desktop/new_pane.rs`): Open
-terminal and **Skills, usage, team…**, a filter, Backbone agents then other
-tmux sessions, and the views list. Each view lives in `desktop/views/` and
+terminal, **Reports & updates** and **Skills, usage, team…**, a filter, Backbone
+agents then other tmux sessions, the six Reports & updates sections and the
+views list. Tab and Shift-Tab move between the lists; a chosen section opens
+once and is not saved with the pane. Each view lives in `desktop/views/` and
 follows its design board with its own header (`view_header`), controls, list
 and footer; a view pane has no generic pane header.
 A view keeps its last data when Backbone stops answering and says so in a

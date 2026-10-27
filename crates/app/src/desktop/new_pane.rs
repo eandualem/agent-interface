@@ -1,9 +1,9 @@
 //! The new-pane chooser: what an empty pane offers before anything runs.
 //!
-//! Buttons open a terminal, reports or the other Backbone views. Under a filter,
-//! the sessions list shows Backbone agents first, needing you first, then the
-//! other tmux sessions; the views list shows what a pane can display instead of
-//! a terminal. Nothing is created until a choice is made, and the owner makes
+//! Buttons open a terminal, the Reports & updates sections or the other
+//! Backbone views. Under a filter, the sessions list shows Backbone agents
+//! first, needing you first, then the other tmux sessions; the other lists show
+//! what a pane can display instead of a terminal. Nothing is created until a choice is made, and the owner makes
 //! it from the [`NewPaneEvent`] this emits.
 
 use std::{path::PathBuf, time::Duration};
@@ -20,6 +20,7 @@ use super::{
     components::{self as ui, AgentState},
     design::{colors, tokens},
     name::{NameEvent, NameField},
+    views::Section,
 };
 use crate::{roster::ViewSource, sessions::SessionSource};
 
@@ -28,11 +29,15 @@ pub(super) enum NewPaneEvent {
     OpenTerminal,
     Attach(String),
     OpenView(View),
+    /// Reports & updates, opening on one section.
+    OpenSection(Section),
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Mode {
     Sessions,
+    /// The sections of Reports & updates.
+    Reports,
     Views,
     /// Choosing the agent for an agent view.
     Agents,
@@ -99,11 +104,66 @@ const VIEWS: [ViewChoice; 7] = [
     },
 ];
 
+/// One Reports & updates section, in the hub bar's order.
+struct SectionChoice {
+    glyph: &'static str,
+    label: &'static str,
+    description: &'static str,
+    scope: &'static str,
+    section: Section,
+}
+
+const SECTIONS: [SectionChoice; 6] = [
+    SectionChoice {
+        glyph: "!",
+        label: "Waiting on you",
+        description: "Owner blockers from each agent's latest report",
+        scope: "needs you first",
+        section: Section::Waiting,
+    },
+    SectionChoice {
+        glyph: "⇢",
+        label: "Current plans",
+        description: "What each agent is doing now: done, now, next, and what it waits on",
+        scope: "one per agent",
+        section: Section::Plans,
+    },
+    SectionChoice {
+        glyph: "◷",
+        label: "Recent updates",
+        description: "Progress reports: goal, progress, blocker and next",
+        scope: "newest first",
+        section: Section::Updates,
+    },
+    SectionChoice {
+        glyph: "↳",
+        label: "Responses",
+        description: "Answers to questions you asked an agent",
+        scope: "newest first",
+        section: Section::Responses,
+    },
+    SectionChoice {
+        glyph: "¶",
+        label: "Documents",
+        description: "Authored documents with their revisions and a conversation beside each",
+        scope: "by author",
+        section: Section::Documents,
+    },
+    SectionChoice {
+        glyph: "▦",
+        label: "Sheets",
+        description: "Workbooks agents keep: read-only, with a conversation about the cells",
+        scope: "by author",
+        section: Section::Sheets,
+    },
+];
+
 enum Row {
     Heading(&'static str, &'static str),
     Agent(Member),
     Session(String),
     View(usize),
+    Section(usize),
     Pick(String),
 }
 
@@ -324,6 +384,15 @@ impl NewPane {
                     rows.extend(others.into_iter().map(Row::Session));
                 }
             }
+            Mode::Reports => {
+                rows.extend(
+                    SECTIONS
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, section)| self.matches(section.label))
+                        .map(|(index, _)| Row::Section(index)),
+                );
+            }
             Mode::Views => {
                 rows.extend(
                     VIEWS
@@ -387,14 +456,22 @@ impl NewPane {
         cx.notify();
     }
 
-    /// Switch between sessions and views; from the agent list, back to views.
-    pub fn toggle(&mut self, cx: &mut Context<Self>) {
-        let mode = match self.mode {
-            Mode::Sessions if self.backbone => Mode::Views,
-            Mode::Sessions => return,
-            Mode::Views | Mode::Agents => Mode::Sessions,
-        };
-        self.set_mode(mode, cx);
+    /// Move through sessions, Reports & updates and the views, forward or back;
+    /// the agent list counts as the views.
+    pub fn toggle(&mut self, back: bool, cx: &mut Context<Self>) {
+        if !self.backbone {
+            return;
+        }
+        self.set_mode(cycle(self.mode, back), cx);
+    }
+
+    /// Show `mode`'s list, with keys going to it rather than a terminal beside it.
+    fn show(&mut self, mode: Mode, window: &mut Window, cx: &mut Context<Self>) {
+        let focus = self.field.read(cx).focus.clone();
+        window.focus(&focus, cx);
+        if self.mode != mode {
+            self.set_mode(mode, cx);
+        }
     }
 
     /// Choose the selected row.
@@ -424,6 +501,7 @@ impl NewPane {
                 ViewKind::Agent => self.set_mode(Mode::Agents, cx),
                 kind => cx.emit(NewPaneEvent::OpenView(View::of(kind))),
             },
+            Row::Section(index) => cx.emit(NewPaneEvent::OpenSection(SECTIONS[index].section)),
             Row::Pick(name) => cx.emit(NewPaneEvent::OpenView(View::agent(name, None))),
         }
     }
@@ -449,10 +527,10 @@ impl Render for NewPane {
         let refreshing = match self.mode {
             Mode::Sessions => self.loading || self.team_loading,
             Mode::Agents => self.team_loading,
-            Mode::Views => false,
+            Mode::Reports | Mode::Views => false,
         };
         reconcile_selection(&rows, &mut self.selected, &mut self.disarmed, refreshing);
-        let views = self.mode != Mode::Sessions;
+        let views = matches!(self.mode, Mode::Views | Mode::Agents);
         let buttons = div()
             .flex()
             .flex_wrap()
@@ -478,12 +556,12 @@ impl Render for NewPane {
                             "new-pane-reports",
                             "message-square",
                             "Reports & updates",
-                            "",
-                            false,
+                            "⇥",
+                            self.mode == Mode::Reports,
                         )
-                        .on_click(cx.listener(|_, _, _, cx| {
+                        .on_click(cx.listener(|chooser, _, window, cx| {
                             cx.stop_propagation();
-                            cx.emit(NewPaneEvent::OpenView(View::of(ViewKind::Reports)));
+                            chooser.show(Mode::Reports, window, cx);
                         })),
                     )
                     .child(
@@ -491,15 +569,14 @@ impl Render for NewPane {
                             "new-pane-views",
                             "layout-grid",
                             "Skills, usage, team…",
-                            "⇥",
+                            "⇧⇥",
                             views,
                         )
                         .on_click(cx.listener(|chooser, _, window, cx| {
                             cx.stop_propagation();
-                            // Keys now belong to this list, not a terminal beside it.
-                            let focus = chooser.field.read(cx).focus.clone();
-                            window.focus(&focus, cx);
-                            chooser.toggle(cx);
+                            if !matches!(chooser.mode, Mode::Views | Mode::Agents) {
+                                chooser.show(Mode::Views, window, cx);
+                            }
                         })),
                     )
             });
@@ -512,7 +589,16 @@ impl Render for NewPane {
             .gap(px(t.space.s2))
             .overflow_y_scroll()
             .track_scroll(&self.scroll);
-        if self.mode == Mode::Views {
+        if self.mode == Mode::Reports {
+            list = list.child(
+                ui::view_heading("REPORTS & UPDATES · FROM AGENT BACKBONE", "").child(back(
+                    &self.pane,
+                    "← back to sessions",
+                    Mode::Sessions,
+                    cx,
+                )),
+            );
+        } else if self.mode == Mode::Views {
             list = list.child(
                 ui::view_heading("AGENT BACKBONE · LIVE, READ-ONLY", "").child(back(
                     &self.pane,
@@ -569,6 +655,19 @@ impl Render for NewPane {
                     )
                     .into_any_element()
                 }
+                Row::Section(section) => {
+                    let section = &SECTIONS[*section];
+                    ui::view_choice(
+                        id,
+                        section.glyph,
+                        section.label,
+                        section.description,
+                        section.scope,
+                        key,
+                        selected,
+                    )
+                    .into_any_element()
+                }
                 Row::Pick(name) => ui::choice_frame(id, selected)
                     .child(ui::icon("user", t.size.icon, c.muted))
                     .child(mono(name.clone()).flex_1().text_color(c.text))
@@ -620,7 +719,8 @@ impl Render for NewPane {
             );
         }
         let (enter, tab): (SharedString, SharedString) = match self.mode {
-            Mode::Sessions => ("attach here".into(), "skills, usage, team…".into()),
+            Mode::Sessions => ("attach here".into(), "reports & updates".into()),
+            Mode::Reports => ("open here".into(), "skills, usage, team…".into()),
             Mode::Views => ("open view here".into(), "back to sessions".into()),
             Mode::Agents => ("open its card here".into(), "back to sessions".into()),
         };
@@ -671,13 +771,17 @@ impl NewPane {
             cx.emit(NewPaneEvent::OpenTerminal);
             return true;
         }
+        if key.key == "tab" && m.shift && !m.control && !m.alt && !m.platform && !m.function {
+            self.toggle(true, cx);
+            return true;
+        }
         if m.modified() {
             return false;
         }
         match key.key.as_str() {
             "up" => self.move_by(-1, cx),
             "down" => self.move_by(1, cx),
-            "tab" => self.toggle(cx),
+            "tab" => self.toggle(false, cx),
             "enter" => self.activate(cx),
             digit if navigating && digit.len() == 1 => match digit.parse::<usize>() {
                 Ok(number) if number > 0 => self.choose_number(number, cx),
@@ -706,12 +810,22 @@ fn back(
         }))
 }
 
+/// The list Tab moves to from `mode`, or Shift-Tab when `back`.
+fn cycle(mode: Mode, back: bool) -> Mode {
+    match (mode, back) {
+        (Mode::Sessions, false) | (Mode::Views | Mode::Agents, true) => Mode::Reports,
+        (Mode::Reports, false) | (Mode::Sessions, true) => Mode::Views,
+        (Mode::Views | Mode::Agents, false) | (Mode::Reports, true) => Mode::Sessions,
+    }
+}
+
 fn row_key(row: &Row) -> String {
     match row {
         Row::Heading(label, _) => (*label).to_owned(),
         Row::Agent(member) => member.name.clone(),
         Row::Session(name) | Row::Pick(name) => name.clone(),
         Row::View(index) => VIEWS[*index].label.to_owned(),
+        Row::Section(index) => SECTIONS[*index].label.to_owned(),
     }
 }
 
@@ -778,6 +892,16 @@ fn mono(text: impl Into<SharedString>) -> gpui::Div {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tab_moves_through_sessions_sections_and_views_both_ways() {
+        let order = [Mode::Sessions, Mode::Reports, Mode::Views];
+        for (at, mode) in order.into_iter().enumerate() {
+            assert_eq!(cycle(mode, false), order[(at + 1) % 3]);
+            assert_eq!(cycle(mode, true), order[(at + 2) % 3]);
+        }
+        assert_eq!(cycle(Mode::Agents, false), Mode::Sessions);
+    }
 
     #[test]
     fn row_reconciliation_keeps_pending_selection_without_delaying_the_first_choice() {

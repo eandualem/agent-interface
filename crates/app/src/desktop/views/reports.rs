@@ -716,13 +716,7 @@ fn controls(pane: &ViewPane, agents: &[String], cx: &mut Context<ViewPane>) -> g
                     && std::mem::discriminant(&pane.reports.query)
                         == std::mem::discriminant(&query),
             )
-            .on_click(cx.listener(move |pane, _, _, cx| {
-                pane.shown = Shown::Records;
-                pane.reports.open = None;
-                pane.reports.query = make();
-                pane.reports.previous.clear();
-                pane.refetch(true, cx);
-            })),
+            .on_click(cx.listener(move |pane, _, _, cx| pane.show_records(make(), cx))),
         );
     }
     if pane.backbone.is_some() {

@@ -573,6 +573,8 @@ struct Browser {
     views: HashMap<String, (gpui::Entity<views::ViewPane>, gpui::Subscription)>,
     /// The chooser in each shown empty pane, with its event subscription.
     new_panes: HashMap<String, (gpui::Entity<new_pane::NewPane>, gpui::Subscription)>,
+    /// The section a pane opening Reports & updates shows once its view appears.
+    opening_section: Option<(String, views::Section)>,
 }
 
 impl Browser {
@@ -1964,6 +1966,9 @@ impl Render for Browser {
                 let backbone = self.backbone.clone();
                 let directory = self.directory.clone();
                 let pane = cx.new(|cx| views::ViewPane::new(view, backbone, directory, window, cx));
+                if let Some((_, section)) = self.opening_section.take_if(|(pane, _)| *pane == id) {
+                    pane.update(cx, |pane, cx| pane.open_section(section, window, cx));
+                }
                 let leaf = id.clone();
                 let events = cx.subscribe_in(
                     &pane,
@@ -2063,6 +2068,15 @@ impl Render for Browser {
                             }
                             new_pane::NewPaneEvent::OpenView(view) => {
                                 browser.open_view(&pane, view.clone(), window, cx)
+                            }
+                            new_pane::NewPaneEvent::OpenSection(section) => {
+                                browser.opening_section = Some((pane.clone(), *section));
+                                browser.open_view(
+                                    &pane,
+                                    View::of(agent_interface_core::ViewKind::Reports),
+                                    window,
+                                    cx,
+                                )
                             }
                         }
                     });

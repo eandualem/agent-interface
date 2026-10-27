@@ -118,6 +118,17 @@ pub(super) enum Shown {
     Sheets,
 }
 
+/// A Reports & updates section a new pane opens on, in the bar's order.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Section {
+    Waiting,
+    Plans,
+    Updates,
+    Responses,
+    Documents,
+    Sheets,
+}
+
 /// Something a list can open in the reader, by its file or folder.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum Target {
@@ -378,6 +389,34 @@ impl ViewPane {
                 },
             ),
         }
+    }
+
+    /// Open on `section`, as the new-pane chooser asks; the pane does not
+    /// remember it.
+    pub(super) fn open_section(
+        &mut self,
+        section: Section,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let query = match section {
+            Section::Plans => return self.show_plans(cx),
+            Section::Sheets => return self.show_sheets(window, cx),
+            Section::Waiting => views::ReportQuery::Latest(None),
+            Section::Updates => views::ReportQuery::Recent(None),
+            Section::Responses => views::ReportQuery::Responses(None),
+            Section::Documents => views::ReportQuery::Documents(None, None),
+        };
+        self.show_records(query, cx);
+    }
+
+    /// Show a record feed from its first page.
+    fn show_records(&mut self, query: views::ReportQuery, cx: &mut Context<Self>) {
+        self.shown = Shown::Records;
+        self.reports.open = None;
+        self.reports.query = query;
+        self.reports.previous.clear();
+        self.refetch(true, cx);
     }
 
     fn show_plans(&mut self, cx: &mut Context<Self>) {
