@@ -201,22 +201,24 @@ impl Stored {
         self.page = Some(page);
     }
 
-    /// Drop older entries whose delivery may since have changed, so the
-    /// next load of earlier messages reads their current state.
-    fn renew_earlier(&mut self) {
-        let pending = self.earlier.iter().any(|entry| {
-            matches!(
-                entry.body,
-                Body::Message {
-                    delivery: Some(stored::Delivery::Pending),
-                    ..
-                }
-            )
-        });
-        if pending && let Some(page) = &self.page {
-            self.earlier.clear();
-            self.earlier_cursor = page.older.clone();
-        }
+    /// Older owner messages whose delivery may still change, at most 50:
+    /// the newest page does not hold them, so they are read by ID.
+    fn unsettled(&self) -> Vec<u64> {
+        self.earlier
+            .iter()
+            .filter(|entry| {
+                matches!(
+                    entry.body,
+                    Body::Message {
+                        delivery: Some(stored::Delivery::Pending | stored::Delivery::Held),
+                        ..
+                    }
+                )
+            })
+            .map(|entry| entry.id)
+            .rev()
+            .take(50)
+            .collect()
     }
 
     /// The shown copy of entry `id`, wherever it was loaded.
@@ -427,12 +429,23 @@ impl Conversation {
         }
         stored.reading = true;
         stored.read_at = Some(std::time::Instant::now());
+        let unsettled = stored.unsettled();
         let (directory, provider, kind, id) = self.target().expect("stored conversation");
         let worker = cx.background_executor().spawn(async move {
-            stored::show(&directory, &provider, kind, &id, &stored::Page::Newest)
+            let newest = stored::show(&directory, &provider, kind, &id, &stored::Page::Newest);
+            let older = (!unsettled.is_empty() && newest.is_ok()).then(|| {
+                stored::show(
+                    &directory,
+                    &provider,
+                    kind,
+                    &id,
+                    &stored::Page::Entries(unsettled),
+                )
+            });
+            (newest, older)
         });
         cx.spawn(async move |this, cx| {
-            let result = worker.await;
+            let (result, older) = worker.await;
             let _ = this.update(cx, |conversation, cx| {
                 let seen = conversation.open && conversation.shown();
                 let Some(stored) = conversation.stored.as_mut() else {
@@ -446,6 +459,15 @@ impl Conversation {
                             stored.divider = Some(page.read_through.unwrap_or_default());
                         }
                         stored.receive(page);
+                        for entry in older
+                            .and_then(Result::ok)
+                            .into_iter()
+                            .flat_map(|page| page.entries)
+                        {
+                            if let Some(shown) = stored.entry_mut(entry.id) {
+                                *shown = entry;
+                            }
+                        }
                         if seen {
                             conversation.mark_read(cx);
                         }
@@ -685,7 +707,6 @@ impl Conversation {
                     .page
                     .as_ref()
                     .map(|page| page.read_through.unwrap_or_default());
-                stored.renew_earlier();
             }
             self.mark_read(cx);
             self.refresh(cx);

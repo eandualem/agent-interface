@@ -292,7 +292,8 @@ root of its correction chain. Requests go only to the provider the record was
 read from; after a connection change they are refused until it is reopened.
 Only the conversation shown in a visible pane polls, every 5 seconds while
 open and every 25 while closed, and re-reads the newest page; entries that page
-no longer holds stay with the older ones, which load on request. Until
+no longer holds stay with the older ones, which load on request, and older
+owner messages still pending or held are re-read by ID with each poll. Until
 Backbone first answers, a message waits rather than choosing a path, and a
 retry always takes the path the message first took. Each message carries a
 client request ID, so a send whose outcome is unknown is retried with the same

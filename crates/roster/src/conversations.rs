@@ -285,6 +285,8 @@ pub enum Page {
     Before(String),
     /// Entries newer than a page's `newer` cursor, for polling.
     After(String),
+    /// Exactly these entries, up to 50, to follow their delivery.
+    Entries(Vec<u64>),
 }
 
 /// An owner message to append.
@@ -442,6 +444,11 @@ fn show_path(kind: Kind, id: &str, page: &Page) -> Option<String> {
         Page::Before(cursor) | Page::After(cursor) if !token(cursor) => return None,
         Page::Before(cursor) => path.push_str(&format!("&before={cursor}")),
         Page::After(cursor) => path.push_str(&format!("&after={cursor}")),
+        Page::Entries(ids) if ids.is_empty() || ids.len() > 50 => return None,
+        Page::Entries(ids) => {
+            let ids: Vec<String> = ids.iter().map(u64::to_string).collect();
+            path.push_str(&format!("&entries={}", ids.join(",")));
+        }
     }
     Some(path)
 }
@@ -614,6 +621,11 @@ mod tests {
             Some("/api/conversations/report/3144?limit=50&before=e4178")
         );
         assert!(show_path(Kind::Sheet, "../x", &Page::Newest).is_none());
+        assert_eq!(
+            show_path(Kind::Document, "d", &Page::Entries(vec![4182, 4190])).as_deref(),
+            Some("/api/conversations/document/d?limit=50&entries=4182,4190")
+        );
+        assert!(show_path(Kind::Document, "d", &Page::Entries(Vec::new())).is_none());
         assert!(show_path(Kind::Plan, "a", &Page::After("x y".into())).is_none());
     }
 
