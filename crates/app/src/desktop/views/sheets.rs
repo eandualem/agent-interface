@@ -208,12 +208,9 @@ impl Sheets {
         }
         self.begin(cx);
         let directory = self.directory.clone();
-        let client = self.client.clone();
         let requested = cursor.clone();
         let work = cx.background_executor().spawn(async move {
-            let client = client
-                .map(Ok)
-                .unwrap_or_else(|| Client::connect(&directory))?;
+            let client = Client::connect(&directory)?;
             let page = client.list(None, requested.as_deref())?;
             Ok::<_, api::Error>((client, page))
         });

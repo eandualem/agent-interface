@@ -421,8 +421,9 @@ creating another feedback message. Delivery status does not mean the agent has
 answered. **Copy feedback receipt** preserves the identifiers for checking delivery.
 
 **History** opens earlier retained revisions. **Refresh** loads the latest revision.
-**Copy values** copies selected cells as tab-separated text; **Export** saves the
-displayed revision. JSON/XLSX preserve supported workbook features, while CSV/TSV
+**Copy values** copies selected cells as tab-separated text. Text values that could
+be interpreted as formulas receive a leading apostrophe for pasting into a spreadsheet;
+numeric values are preserved. **Export** saves the displayed revision. JSON/XLSX preserve supported workbook features, while CSV/TSV
 export one tab as values only. Read any export warnings. This is not a claim of full
 Excel or Google Sheets compatibility. Cell editing, workbook creation and import
 are managed by agents, with no editing controls in this view.

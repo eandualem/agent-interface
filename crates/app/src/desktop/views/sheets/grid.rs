@@ -264,11 +264,10 @@ impl Sheets {
                     .map(|c| {
                         let row = &open.grid.rows[r].row_id;
                         let col = &open.grid.columns[c].column_id;
-                        quote(
-                            open.grid
-                                .cell(row, col)
-                                .map(|c| c.display.as_str())
-                                .unwrap_or_default(),
+                        let cell = open.grid.cell(row, col);
+                        clipboard_value(
+                            cell.map(|c| c.display.as_str()).unwrap_or_default(),
+                            cell.is_some_and(|c| matches!(c.value, Value::Text(_))),
                         )
                     })
                     .collect::<Vec<_>>()
@@ -286,5 +285,31 @@ fn quote(s: &str) -> String {
         format!("\"{}\"", s.replace('"', "\"\""))
     } else {
         s.into()
+    }
+}
+
+// Keep text results literal when pasted into a spreadsheet, including formula
+// results whose calculated type is text. Numeric results retain their type.
+fn clipboard_value(display: &str, text: bool) -> String {
+    if text && display.trim_start().starts_with(['=', '+', '-', '@']) {
+        quote(&format!("'{display}"))
+    } else {
+        quote(display)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn copied_text_stays_literal_without_changing_numeric_results() {
+        for text in ["=1+1", "+cmd", "-5", "@SUM(A1)", "  =1+1"] {
+            assert_eq!(clipboard_value(text, true), format!("'{text}"));
+        }
+        assert_eq!(clipboard_value("-5", false), "-5");
+        assert_eq!(clipboard_value("ordinary text", true), "ordinary text");
+        assert_eq!(clipboard_value("\t=1+1", true), "\"'\t=1+1\"");
+        assert_eq!(clipboard_value("a\tb", true), "\"a\tb\"");
     }
 }
