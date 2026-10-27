@@ -598,6 +598,9 @@ impl Conversation {
         };
         let message = &mut self.messages[index];
         message.via = Some(Via::Stored);
+        // A refused retry says nothing about an earlier attempt that may have
+        // been stored.
+        let uncertain = matches!(message.delivery, Delivery::Unconfirmed(_));
         message.delivery = Delivery::Sending;
         let request = stored::Message {
             request_id: message.request_id.clone(),
@@ -619,6 +622,9 @@ impl Conversation {
                     stored::Outcome::Accepted(entry) => {
                         conversation.add_entry(*entry);
                         Delivery::Stored
+                    }
+                    stored::Outcome::Refused { message, .. } if uncertain => {
+                        Delivery::Unconfirmed(message)
                     }
                     stored::Outcome::Refused { message, .. } => Delivery::NotSent(message),
                     stored::Outcome::AlreadyPending | stored::Outcome::Unknown => {
