@@ -338,6 +338,7 @@ impl Sheets {
                         s.client = Some(client);
                         s.catalog = page.items;
                         s.next = page.next_cursor;
+                        commit_cursor(&mut s.cursors, &s.cursor, &cursor);
                         s.cursor = cursor;
                         s.open = None;
                         s.history = None;
@@ -506,6 +507,7 @@ impl Sheets {
         self.kind = Kind::from(input);
         let text = input.map(Input::text).unwrap_or_default();
         let format = format.unwrap_or_default().to_owned();
+        self.confirm = None;
         self.selection = Some(Selection {
             anchor: if extend {
                 self.selection.map(|s| s.anchor).unwrap_or((row, column))
@@ -760,6 +762,17 @@ fn draft_matches_revision(draft: &Draft, revision: Option<&Id>) -> bool {
 fn unresolved_mutation(previously_uncertain: bool, error: &api::Error) -> bool {
     previously_uncertain || *error == api::Error::Unknown
 }
+fn commit_cursor(trail: &mut Vec<Option<String>>, current: &Option<String>, next: &Option<String>) {
+    if next.is_none() {
+        trail.clear();
+    } else if next != current {
+        if let Some(index) = trail.iter().position(|cursor| cursor == next) {
+            trail.truncate(index);
+        } else {
+            trail.push(current.clone());
+        }
+    }
+}
 fn new_id() -> Id {
     Id::parse(uuid::Uuid::new_v4().simple().to_string()).expect("UUID format")
 }
@@ -833,6 +846,30 @@ impl Render for Sheets {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn successful_cursor_transitions_preserve_retry_routes_and_restart_cleanly() {
+        let (first, second, third) = (None, Some("page2".into()), Some("page3".into()));
+        let mut trail = Vec::new();
+        commit_cursor(&mut trail, &first, &second);
+        assert_eq!(trail.last(), Some(&None));
+        // A failed read leaves the displayed cursor and trail untouched; retry
+        // uses the same target without consuming or duplicating a boundary.
+        let retry = trail.last().cloned();
+        assert_eq!(retry, Some(first.clone()));
+        commit_cursor(&mut trail, &second, &third);
+        assert_eq!(trail.last(), Some(&second));
+        commit_cursor(&mut trail, &third, &second);
+        assert_eq!(trail, vec![None]);
+        commit_cursor(&mut trail, &second, &first);
+        assert!(trail.is_empty());
+        commit_cursor(&mut trail, &first, &second);
+        commit_cursor(&mut trail, &second, &third);
+        commit_cursor(&mut trail, &third, &first);
+        assert!(
+            trail.is_empty(),
+            "All Sheets and fresh History start at page one"
+        );
+    }
     #[test]
     fn blank_cell_typing_is_literal_and_explicit_blank_never_discards_text() {
         assert!(

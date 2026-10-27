@@ -170,7 +170,7 @@ impl Sheets {
                         ui::chip("sheets-prev", "Previous", false).on_click(cx.listener(
                             |s, _, _, cx| {
                                 if s.clean(cx)
-                                    && let Some(cursor) = s.cursors.pop()
+                                    && let Some(cursor) = s.cursors.last().cloned()
                                 {
                                     s.catalog(cursor, cx);
                                 }
@@ -182,7 +182,6 @@ impl Sheets {
                             if s.clean(cx)
                                 && let Some(next) = s.next.clone()
                             {
-                                s.cursors.push(s.cursor.clone());
                                 s.catalog(Some(next), cx);
                             }
                         },
@@ -592,9 +591,7 @@ impl Sheets {
                 s.busy = false;
                 match result {
                     Ok(page) => {
-                        if cursor.is_none() {
-                            s.history_cursors.clear();
-                        }
+                        commit_cursor(&mut s.history_cursors, &s.history_cursor, &cursor);
                         s.history = Some(page);
                         s.history_cursor = cursor;
                     }
@@ -619,7 +616,7 @@ impl Sheets {
                 ui::chip("sheet-history-prev", "Previous", false).on_click(cx.listener(
                     |s, _, _, cx| {
                         if s.clean(cx)
-                            && let Some(cursor) = s.history_cursors.pop()
+                            && let Some(cursor) = s.history_cursors.last().cloned()
                         {
                             s.load_history(cursor, cx);
                         }
@@ -633,7 +630,6 @@ impl Sheets {
                             && let Some(next) =
                                 s.history.as_ref().and_then(|p| p.next_cursor.clone())
                         {
-                            s.history_cursors.push(s.history_cursor.clone());
                             s.load_history(Some(next), cx);
                         }
                     },

@@ -371,7 +371,7 @@ impl Sheets {
     }
 }
 fn quote(s: &str) -> String {
-    if s.contains(['\t', '\n', '\r', '"']) {
+    if s.is_empty() || s.contains(['\t', '\n', '\r', '"']) {
         format!("\"{}\"", s.replace('"', "\"\""))
     } else {
         s.into()
@@ -442,6 +442,21 @@ fn parse_tsv(s: &str) -> Result<Vec<Vec<String>>, &'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn clipboard_preserves_single_column_trailing_empty_rows() {
+        for rows in [vec!["value", ""], vec!["", ""], vec![""]] {
+            let wire = rows
+                .iter()
+                .map(|cell| quote(cell))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let expected = rows
+                .iter()
+                .map(|cell| vec![cell.to_string()])
+                .collect::<Vec<_>>();
+            assert_eq!(parse_tsv(&wire).unwrap(), expected);
+        }
+    }
     #[test]
     fn clipboard_roundtrips_quotes_newlines_and_formula_like_literal_text() {
         let values = ["=literal", "two\tcolumns", "two\nlines", "a\"b", ""];
