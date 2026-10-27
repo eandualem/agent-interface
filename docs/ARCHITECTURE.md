@@ -428,8 +428,10 @@ and rolls back the app and launchers on failure. Existing library directories st
 in place: their absolute path determines the ordinary-shell socket hash. Existing
 private legacy shell sockets remain usable. Reconnection, explicit shell opening
 and saved working-directory refresh select the server containing the exact
-ordinary session across the current and legacy sockets. A failed discovery query
-does not authorize creating a replacement shell on another server. Settings,
+ordinary session across the current and legacy sockets. A verified current owner
+is used without inspecting unused legacy metadata. When no owner is verified,
+a metadata or discovery failure does not authorize creating a replacement shell
+on another server. Settings,
 themes and keymaps fall back to the old configuration directory when the new file is absent; settings writes
 use the new directory. Legacy environment overrides remain supported, with the new
 `AGENT_INTERFACE_*` names taking precedence. No database or running server is moved.

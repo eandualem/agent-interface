@@ -15,10 +15,12 @@ pub fn existing_shell_socket(
     resolved_directory: &Path,
     leaf_id: &str,
 ) -> io::Result<Option<PathBuf>> {
-    socket_for_session(&existing_shell_sockets(resolved_directory)?, leaf_id)
+    select_socket(existing_shell_sockets(resolved_directory)?, leaf_id, false)
 }
 
-fn existing_shell_sockets(resolved_directory: &Path) -> io::Result<Vec<PathBuf>> {
+fn existing_shell_sockets(
+    resolved_directory: &Path,
+) -> io::Result<impl Iterator<Item = io::Result<Option<PathBuf>>>> {
     if !resolved_directory.is_absolute() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -32,47 +34,58 @@ fn existing_shell_sockets(resolved_directory: &Path) -> io::Result<Vec<PathBuf>>
         )
     })?;
     let uid = uzers::get_current_uid();
-    let mut sockets = Vec::new();
-    for directory in [
+    let name = socket_name(text);
+    Ok([
         PathBuf::from(format!("/tmp/agent-interface-{uid}")),
         PathBuf::from(format!("/tmp/tmux-workspaces-{uid}")),
-    ] {
-        if let Some(socket) = existing_socket_in(&directory, uid, &socket_name(text))? {
-            sockets.push(socket);
-        }
-    }
-    Ok(sockets)
+    ]
+    .into_iter()
+    .map(move |directory| existing_socket_in(&directory, uid, &name)))
 }
 
-fn socket_for_session(sockets: &[PathBuf], leaf_id: &str) -> io::Result<Option<PathBuf>> {
+fn select_socket(
+    candidates: impl IntoIterator<Item = io::Result<Option<PathBuf>>>,
+    leaf_id: &str,
+    for_creation: bool,
+) -> io::Result<Option<PathBuf>> {
     let session = ordinary_session(leaf_id).ok_or_else(|| {
         io::Error::new(io::ErrorKind::InvalidInput, "Invalid saved shell identity")
     })?;
     let mut failure = None;
-    for socket in sockets {
-        match tmux_workspaces_tmux::discovery::read_sessions(socket) {
-            Ok(sessions) if sessions.contains(&session) => return Ok(Some(socket.clone())),
+    let mut preferred = None;
+    // Validate and query each candidate lazily: a verified current owner does
+    // not depend on the metadata of an unused legacy directory.
+    for candidate in candidates {
+        let socket = match candidate {
+            Ok(Some(socket)) => socket,
+            Ok(None) => continue,
+            Err(error) => {
+                failure = Some(error);
+                continue;
+            }
+        };
+        preferred.get_or_insert_with(|| socket.clone());
+        match tmux_workspaces_tmux::discovery::read_sessions(&socket) {
+            Ok(sessions) if sessions.contains(&session) => return Ok(Some(socket)),
             Ok(_) => {}
             Err(error) => failure = Some(error),
         }
     }
-    // A failed query is not evidence that the session is absent. In particular,
-    // explicit creation must not turn an unavailable server into a second shell.
+    // A metadata or query failure is not evidence that the session is absent.
+    // Explicit creation must not turn an unavailable server into a second shell.
     match failure {
         Some(error) => Err(error),
+        None if for_creation => Ok(preferred),
         None => Ok(None),
     }
-}
-
-fn creation_socket(sockets: &[PathBuf], leaf_id: &str) -> io::Result<Option<PathBuf>> {
-    Ok(socket_for_session(sockets, leaf_id)?.or_else(|| sockets.first().cloned()))
 }
 
 /// Resolve the ordinary-shell socket for an explicit creation request. Unlike
 /// lookup, this may create the private parent, but never repairs unsafe metadata.
 /// The caller must have saved an eligible ordinary leaf before using this path.
 pub fn shell_socket_for_creation(resolved_directory: &Path, leaf_id: &str) -> io::Result<PathBuf> {
-    if let Some(socket) = creation_socket(&existing_shell_sockets(resolved_directory)?, leaf_id)? {
+    if let Some(socket) = select_socket(existing_shell_sockets(resolved_directory)?, leaf_id, true)?
+    {
         return Ok(socket);
     }
     let text = resolved_directory
@@ -162,6 +175,18 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
     use std::os::unix::net::UnixListener;
 
+    fn fixture_socket(
+        sockets: &[PathBuf],
+        leaf_id: &str,
+        for_creation: bool,
+    ) -> io::Result<Option<PathBuf>> {
+        select_socket(
+            sockets.iter().map(|socket| Ok(Some(socket.clone()))),
+            leaf_id,
+            for_creation,
+        )
+    }
+
     #[test]
     fn current_and_legacy_servers_are_selected_by_exact_session_ownership() {
         use tmux_workspaces_test_support::TmuxServer;
@@ -200,12 +225,12 @@ mod tests {
                 ])
                 .unwrap();
             assert_eq!(
-                socket_for_session(&sockets, id).unwrap(),
+                fixture_socket(&sockets, id, false).unwrap(),
                 Some(sockets[index].clone())
             );
             // Explicit opening must reuse the owning server too, not create a
             // second ordinary shell on the preferred socket.
-            let selected = creation_socket(&sockets, id).unwrap().unwrap();
+            let selected = fixture_socket(&sockets, id, true).unwrap().unwrap();
             assert_eq!(selected, sockets[index]);
             let mut leaf = agent_interface_core::Leaf {
                 id: id.into(),
@@ -217,13 +242,16 @@ mod tests {
             remember_shell_directory(&mut leaf, &selected).unwrap();
             assert_eq!(leaf.cwd.as_deref(), cwd.to_str());
         }
-        assert_eq!(socket_for_session(&sockets, "111111111111").unwrap(), None);
         assert_eq!(
-            creation_socket(&sockets, "111111111111").unwrap(),
+            fixture_socket(&sockets, "111111111111", false).unwrap(),
+            None
+        );
+        assert_eq!(
+            fixture_socket(&sockets, "111111111111", true).unwrap(),
             Some(sockets[0].clone())
         );
-        assert_eq!(creation_socket(&[], "111111111111").unwrap(), None);
-        assert!(creation_socket(&sockets, "invalid").is_err());
+        assert_eq!(fixture_socket(&[], "111111111111", true).unwrap(), None);
+        assert!(fixture_socket(&sockets, "invalid", true).is_err());
         assert!(current.run(&["list-clients"]).unwrap().is_empty());
         assert!(legacy.run(&["list-clients"]).unwrap().is_empty());
         let names = tmux_workspaces_tmux::discovery::read_sessions(&sockets[0]).unwrap();
@@ -243,7 +271,7 @@ mod tests {
         );
         let unresponsive = server.address().0.join("unresponsive.sock");
         let _listener = UnixListener::bind(&unresponsive).unwrap();
-        assert!(creation_socket(&[socket, unresponsive], "0123456789ab").is_err());
+        assert!(fixture_socket(&[socket, unresponsive], "0123456789ab", true).is_err());
         assert_eq!(
             server
                 .run(&["list-sessions", "-F", "#{session_name}"])
@@ -251,6 +279,76 @@ mod tests {
             "fixture\n"
         );
         assert!(server.run(&["list-clients"]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn verified_owner_survives_unused_unsafe_metadata_but_unknown_ownership_blocks_creation() {
+        use std::cell::Cell;
+        use tmux_workspaces_test_support::TmuxServer;
+
+        let server = TmuxServer::start().unwrap();
+        let socket = PathBuf::from(
+            server
+                .run(&["display-message", "-p", "#{socket_path}"])
+                .unwrap()
+                .trim_end(),
+        );
+        server
+            .run(&[
+                "new-session",
+                "-d",
+                "-s",
+                "terminal-0123456789ab",
+                "sleep 60",
+            ])
+            .unwrap();
+        let unsafe_directory = server.address().0.join("unsafe-legacy");
+        std::fs::create_dir(&unsafe_directory).unwrap();
+        std::fs::set_permissions(&unsafe_directory, std::fs::Permissions::from_mode(0o755))
+            .unwrap();
+        for for_creation in [false, true] {
+            for (id, owned) in [("0123456789ab", true), ("111111111111", false)] {
+                let legacy_inspected = Cell::new(false);
+                let candidates =
+                    std::iter::once(Ok(Some(socket.clone()))).chain(std::iter::once_with(|| {
+                        legacy_inspected.set(true);
+                        existing_socket_in(
+                            &unsafe_directory,
+                            uzers::get_current_uid(),
+                            "unused.sock",
+                        )
+                    }));
+                let result = select_socket(candidates, id, for_creation);
+                if owned {
+                    assert_eq!(result.unwrap(), Some(socket.clone()));
+                    assert!(!legacy_inspected.get());
+                } else {
+                    assert_eq!(result.unwrap_err().kind(), io::ErrorKind::PermissionDenied);
+                    assert!(legacy_inspected.get());
+                }
+            }
+            // A verified legacy owner also survives an unusable current candidate.
+            let candidates = [
+                existing_socket_in(&unsafe_directory, uzers::get_current_uid(), "unused.sock"),
+                Ok(Some(socket.clone())),
+            ];
+            assert_eq!(
+                select_socket(candidates, "0123456789ab", for_creation).unwrap(),
+                Some(socket.clone())
+            );
+        }
+        assert_eq!(
+            server
+                .run(&["list-sessions", "-F", "#{session_name}"])
+                .unwrap(),
+            "fixture\nterminal-0123456789ab\n"
+        );
+        assert!(server.run(&["list-clients"]).unwrap().is_empty());
+        assert_eq!(
+            unsafe_directory.symlink_metadata().unwrap().mode() & 0o777,
+            0o755
+        );
+        assert!(!unsafe_directory.join("unused.sock").exists());
     }
 
     #[test]
