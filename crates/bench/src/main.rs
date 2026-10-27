@@ -2,7 +2,7 @@
 //! (`docs/BENCHMARKING.md`).
 //!
 //! A development tool, never shipped. Every tmux process it starts runs on a
-//! private server through `tmux-workspaces-test-support`. See
+//! private server through `agent-interface-test-support`. See
 //! `docs/BENCHMARKING.md` for how to run it.
 
 #![deny(unsafe_code)]
@@ -27,14 +27,14 @@ mod stats;
 
 /// The owned display data the engines fill, from the `term` crate.
 mod display {
-    pub use tmux_workspaces_term::{Attributes, Color, Cursor, Screen, Style, Underline, Width};
+    pub use agent_interface_term::{Attributes, Color, Cursor, Screen, Style, Underline, Width};
 }
 
 use std::process::ExitCode;
 
 use options::Options;
 
-const USAGE: &str = "usage: tmux-workspaces-bench gate1 --out DIR [options]
+const USAGE: &str = "usage: agent-interface-bench gate1 --out DIR [options]
   --size BYTES        bytes of each payload (20000000)
   --seed N            payload seed (1)
   --payloads LIST     comma-separated: ascii,unicode,color,scroll (all)
@@ -47,7 +47,7 @@ const USAGE: &str = "usage: tmux-workspaces-bench gate1 --out DIR [options]
   --frame-rate HZ     display refresh the read-out schedule models (120)
   --keep DIR          keep the payloads, recordings and final screens in DIR
 
-usage: tmux-workspaces-bench gate2|gate3|gate4 --out DIR [options]   (macOS)
+usage: agent-interface-bench gate2|gate3|gate4 --out DIR [options]   (macOS)
   display measurements; each measured window must stay fully
   visible, and the program running this needs Screen Recording and
   Accessibility (posting events) access
@@ -72,7 +72,7 @@ usage: tmux-workspaces-bench gate2|gate3|gate4 --out DIR [options]   (macOS)
   vtebench runs or cases than the gate needs is an exploratory subset: it can
   fail the gate but not pass it
 
-usage: tmux-workspaces-bench gate5 --out DIR [options]
+usage: agent-interface-bench gate5 --out DIR [options]
   control-mode state recovery, on the tmux first on PATH
   --scenarios LIST    attach,pause,split-attach,split-pause,resize,flow,
                       own-pause,exit,hooks (all)
@@ -80,15 +80,15 @@ usage: tmux-workspaces-bench gate5 --out DIR [options]
   --flow-seconds S    how long the flow scenario's pane counts (6)
   --pauses N          stalls in the own-pause scenario (20)
 
-usage: tmux-workspaces-bench count [--seconds S]
+usage: agent-interface-bench count [--seconds S]
   prints consecutive numbers in colour for gate 5's flow scenarios (5)
 
-usage: tmux-workspaces-bench fire|scroll-test [--seconds S] [--seed N] [--ready FILE]
+usage: agent-interface-bench fire|scroll-test [--seconds S] [--seed N] [--ready FILE]
   output the display gates run in the measured pane; --ready creates FILE
   once the first output is written; fire also takes --cols N --rows N (the
   terminal's size)
 
-usage: tmux-workspaces-bench probe-display --pid PID [options]   (macOS)
+usage: agent-interface-bench probe-display --pid PID [options]   (macOS)
   lists the windows of process PID and captures one, printing frame intervals
   --seconds N         how long to capture (5)
   --window ID         the window of PID to capture (its first one on screen)";
@@ -107,7 +107,7 @@ fn main() -> ExitCode {
         .first()
         .is_some_and(|command| command.starts_with("gate"))
         && let Err(error) =
-            tmux_workspaces_test_support::stop_servers_when_interrupted(stop_started_programs)
+            agent_interface_test_support::stop_servers_when_interrupted(stop_started_programs)
     {
         eprintln!("cannot handle interrupts: {error}");
         return ExitCode::FAILURE;
@@ -136,7 +136,7 @@ fn main() -> ExitCode {
         _ => Err(String::new()),
     };
     // An interrupt may still be stopping what a gate started.
-    tmux_workspaces_test_support::wait_if_interrupted();
+    agent_interface_test_support::wait_if_interrupted();
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(message) => {

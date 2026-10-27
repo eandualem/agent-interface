@@ -1,9 +1,9 @@
 //! Read authored updates and answers in the same native pane as other views.
 
-use gpui::{AnyElement, Context, SharedString, div, prelude::*, px};
-use tmux_workspaces_roster::views::{
+use agent_interface_roster::views::{
     ReportContent, ReportItem, ReportPage, ReportQuery, epoch_seconds,
 };
+use gpui::{AnyElement, Context, SharedString, div, prelude::*, px};
 
 use super::{ViewPane, line, list, markdown, selection, since};
 use crate::desktop::{

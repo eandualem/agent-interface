@@ -420,8 +420,7 @@ Python runtime, build toolchain, tmux server or application daemon.
 The shell installer verifies the archive checksum and target, stages a
 per-user replacement, and preserves the data directories. Linux desktop and
 window identifiers use `io.github.eandualem.agent-interface`; macOS uses the same
-bundle identifier. The executable, product crates (`agent-interface-app`,
-`agent-interface-core` and `agent-interface-store`), package archives and new
+bundle identifier. The executable, workspace crates, package archives and new
 install, configuration and data directories use `agent-interface`. The installer
 accepts its previous ownership marker when updating, removes owned legacy Linux launchers,
 and rolls back the app and launchers on failure. Existing library directories stay

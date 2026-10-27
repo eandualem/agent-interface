@@ -1,5 +1,5 @@
 [package]
-name = "tmux-workspaces-bench-rio"
+name = "agent-interface-bench-rio"
 description = "The milestone-0 benchmark's replay of rio-vt, kept apart from libghostty-vt"
 version.workspace = true
 edition.workspace = true
@@ -10,7 +10,7 @@ publish.workspace = true
 build = "../bench/build.rs"
 
 [[bin]]
-name = "tmux-workspaces-bench-rio"
+name = "agent-interface-bench-rio"
 path = "src/main.rs"
 
 [lints]
@@ -19,7 +19,7 @@ workspace = true
 [dependencies]
 libc.workspace = true
 rio-vt.workspace = true
-tmux-workspaces-tmux = { path = "../tmux" }
+agent-interface-tmux = { path = "../tmux" }
 
 [dev-dependencies]
 alacritty_terminal.workspace = true

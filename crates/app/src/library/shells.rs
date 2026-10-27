@@ -65,7 +65,7 @@ fn select_socket(
             }
         };
         preferred.get_or_insert_with(|| socket.clone());
-        match tmux_workspaces_tmux::discovery::read_sessions(&socket) {
+        match agent_interface_tmux::discovery::read_sessions(&socket) {
             Ok(sessions) if sessions.contains(&session) => return Ok(Some(socket)),
             Ok(_) => {}
             Err(error) => failure = Some(error),
@@ -162,7 +162,7 @@ pub fn remember_shell_directory(
 ) -> io::Result<()> {
     let session = ordinary_session(&leaf.id)
         .ok_or_else(|| io::Error::other("Working directory unavailable"))?;
-    let directory = tmux_workspaces_tmux::discovery::read_session_directory(socket, &session)?;
+    let directory = agent_interface_tmux::discovery::read_session_directory(socket, &session)?;
     leaf.cwd = Some(directory);
     Ok(())
 }
@@ -189,7 +189,7 @@ mod tests {
 
     #[test]
     fn current_and_legacy_servers_are_selected_by_exact_session_ownership() {
-        use tmux_workspaces_test_support::TmuxServer;
+        use agent_interface_test_support::TmuxServer;
 
         let current = TmuxServer::start().unwrap();
         let legacy = TmuxServer::start().unwrap();
@@ -254,13 +254,13 @@ mod tests {
         assert!(fixture_socket(&sockets, "invalid", true).is_err());
         assert!(current.run(&["list-clients"]).unwrap().is_empty());
         assert!(legacy.run(&["list-clients"]).unwrap().is_empty());
-        let names = tmux_workspaces_tmux::discovery::read_sessions(&sockets[0]).unwrap();
+        let names = agent_interface_tmux::discovery::read_sessions(&sockets[0]).unwrap();
         assert!(!names.contains(&"terminal-0123456789ab".into()));
     }
 
     #[test]
     fn failed_discovery_does_not_authorize_creation_on_another_socket() {
-        use tmux_workspaces_test_support::TmuxServer;
+        use agent_interface_test_support::TmuxServer;
 
         let server = TmuxServer::start().unwrap();
         let socket = PathBuf::from(
@@ -283,8 +283,8 @@ mod tests {
 
     #[test]
     fn verified_owner_survives_unused_unsafe_metadata_but_unknown_ownership_blocks_creation() {
+        use agent_interface_test_support::TmuxServer;
         use std::cell::Cell;
-        use tmux_workspaces_test_support::TmuxServer;
 
         let server = TmuxServer::start().unwrap();
         let socket = PathBuf::from(
@@ -373,7 +373,7 @@ mod tests {
     #[test]
     fn directory_refresh_uses_the_exact_ordinary_shell_and_preserves_newline_paths() {
         use agent_interface_core::{Attachment, Leaf};
-        use tmux_workspaces_test_support::TmuxServer;
+        use agent_interface_test_support::TmuxServer;
 
         let server = TmuxServer::start().unwrap();
         let socket = server

@@ -1,6 +1,6 @@
 //! The process's peak memory, read from the operating system.
 //!
-//! `tmux-workspaces-bench-rio` includes this file.
+//! `agent-interface-bench-rio` includes this file.
 
 #![allow(unsafe_code)]
 

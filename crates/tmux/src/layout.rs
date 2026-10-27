@@ -231,7 +231,7 @@ mod tests {
 
     #[test]
     fn server_layout_matches_pane_geometry_and_zoom() {
-        use tmux_workspaces_test_support::TmuxServer;
+        use agent_interface_test_support::TmuxServer;
         let server = TmuxServer::start().unwrap();
         let session = TmuxServer::SESSION;
         server.run(&["split-window", "-h", "-t", session]).unwrap();

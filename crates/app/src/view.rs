@@ -13,6 +13,11 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
+use agent_interface_term::{
+    Attributes, Color, Screen, Style, Underline, Width,
+    input::{Button, Input, KeyPress, MouseAction, Pointer, Scroll},
+};
+use agent_interface_tmux::control::PaneId;
 use futures::StreamExt;
 use futures::channel::mpsc::UnboundedReceiver;
 use gpui::{
@@ -21,11 +26,6 @@ use gpui::{
     StrikethroughStyle, TextAlign, TextRun, TextSystem, UnderlineStyle, Window, canvas, div, fill,
     point, prelude::*, px, size,
 };
-use tmux_workspaces_term::{
-    Attributes, Color, Screen, Style, Underline, Width,
-    input::{Button, Input, KeyPress, MouseAction, Pointer, Scroll},
-};
-use tmux_workspaces_tmux::control::PaneId;
 
 use crate::panes::{PaneLayout, Panes};
 
@@ -1537,8 +1537,8 @@ mod tests {
 
     #[test]
     fn closing_input_queue_delivers_mouse_release_before_shutdown() {
+        use agent_interface_test_support::TmuxServer;
         use std::time::{Duration, Instant};
-        use tmux_workspaces_test_support::TmuxServer;
         let server = TmuxServer::start().unwrap();
         let session = TmuxServer::SESSION;
         server.run(&["respawn-pane", "-k", "-t", session, "sh", "-c",
@@ -1554,7 +1554,7 @@ mod tests {
             ])
             .unwrap();
         let layout =
-            tmux_workspaces_tmux::layout::parse(format!("%layout-change {fields}").as_bytes())
+            agent_interface_tmux::layout::parse(format!("%layout-change {fields}").as_bytes())
                 .unwrap();
         let client = server
             .control(&[
@@ -1791,7 +1791,7 @@ mod tests {
             key_char: Some(char.to_owned()),
             ..key(text)
         };
-        let mut terminal = tmux_workspaces_term::Terminal::new(80, 24, 0).unwrap();
+        let mut terminal = agent_interface_term::Terminal::new(80, 24, 0).unwrap();
         let mut encode_key = |key: &Keystroke| {
             input_key(key, false)
                 .map(|input| terminal.encode_input(&input).unwrap())

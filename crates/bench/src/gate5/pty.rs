@@ -13,7 +13,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
 
-use tmux_workspaces_test_support::TmuxServer;
+use agent_interface_test_support::TmuxServer;
 
 /// An ordinary tmux client in a pseudo-terminal, as a terminal would run it.
 pub struct Reference {

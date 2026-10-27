@@ -3,8 +3,8 @@
 
 use std::time::{Duration, Instant};
 
-use tmux_workspaces_term::{Screen, Terminal};
-use tmux_workspaces_test_support::TmuxServer;
+use agent_interface_term::{Screen, Terminal};
+use agent_interface_test_support::TmuxServer;
 
 use super::{connection::TIMEOUT, pty::Reference, session::quote};
 

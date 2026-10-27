@@ -5,8 +5,8 @@
 use std::collections::BTreeMap;
 
 use agent_interface_core::View;
+use agent_interface_roster::views::{Member, Team};
 use gpui::{AnyElement, Context, SharedString, div, prelude::*, px};
-use tmux_workspaces_roster::views::{Member, Team};
 
 use super::{Grouping, ViewEvent, ViewPane, home, mono, since};
 use crate::desktop::{

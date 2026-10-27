@@ -17,10 +17,10 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use tmux_workspaces_term::{Screen, Terminal, input::Input};
-use tmux_workspaces_tmux::control::{Decoder, Message, PaneId};
-use tmux_workspaces_tmux::recovery::{Recovery, Reply, Snapshot, Step};
-use tmux_workspaces_tmux::{command, layout};
+use agent_interface_term::{Screen, Terminal, input::Input};
+use agent_interface_tmux::control::{Decoder, Message, PaneId};
+use agent_interface_tmux::recovery::{Recovery, Reply, Snapshot, Step};
+use agent_interface_tmux::{command, layout};
 
 /// The most pane output the reader queues for the worker before it stops
 /// reading, so a slow worker holds back tmux instead of growing a queue.
@@ -36,7 +36,7 @@ const INPUT_CHUNK: usize = 1024;
 pub(crate) const INPUT_LIMIT: usize = QUEUE_LIMIT;
 
 /// A pane's place in its tmux window, in terminal cells.
-pub use tmux_workspaces_tmux::layout::Pane as PaneLayout;
+pub use agent_interface_tmux::layout::Pane as PaneLayout;
 
 /// The current visible rectangles and the screens changed since the previous update.
 pub struct Update {
@@ -1338,7 +1338,7 @@ mod tests {
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
 
-    use tmux_workspaces_test_support::TmuxServer;
+    use agent_interface_test_support::TmuxServer;
 
     use super::*;
 
@@ -1954,7 +1954,7 @@ mod tests {
         assert_eq!(text, "SEEDED");
         assert_eq!(
             screen.cell(0, 0).unwrap().1.style.background,
-            tmux_workspaces_term::Color::Palette(5)
+            agent_interface_term::Color::Palette(5)
         );
         panes.send_input(pane, b"more").unwrap();
         wait_for_row(&panes, &woken, pane, "SEEDEDmore");
@@ -2193,7 +2193,7 @@ mod tests {
 
     #[test]
     fn local_history_scroll_survives_capture_and_typing_returns_to_live_output() {
-        use tmux_workspaces_term::input::Scroll;
+        use agent_interface_term::input::Scroll;
         let server = TmuxServer::start().unwrap();
         let script = "stty raw -echo; printf 'history-first\\r\\n'; i=0; while [ \"$i\" -lt 60 ]; do printf 'history-%02d\\r\\n' \"$i\"; i=$((i+1)); done; printf '\\033[2J\\033[Hlive-ready'; exec cat";
         server
@@ -2249,7 +2249,7 @@ mod tests {
 
     #[test]
     fn worker_encodes_application_keys_paste_and_mouse_in_stream_order() {
-        use tmux_workspaces_term::input::{Button, KeyPress, MouseAction, Pointer};
+        use agent_interface_term::input::{Button, KeyPress, MouseAction, Pointer};
         let server = TmuxServer::start().unwrap();
         server
             .run(&["set-option", "-s", "extended-keys", "on"])

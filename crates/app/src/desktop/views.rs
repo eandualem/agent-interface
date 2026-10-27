@@ -16,11 +16,11 @@ use std::{
 };
 
 use agent_interface_core::{AgentSection, View, ViewKind};
+use agent_interface_roster::views::{self, Data, Part, Range, Request};
 use futures::{StreamExt, channel::mpsc};
 use gpui::{
     Context, Entity, EventEmitter, SharedString, Subscription, Task, Window, div, prelude::*, px,
 };
-use tmux_workspaces_roster::views::{self, Data, Part, Range, Request};
 
 use super::{
     components as ui,
@@ -523,7 +523,7 @@ impl Render for ViewPane {
                         "{}\n{}\n{}",
                         item.provider_url,
                         item.author_id.as_deref().unwrap_or_default(),
-                        tmux_workspaces_roster::feedback::reference(item)
+                        agent_interface_roster::feedback::reference(item)
                     );
                     self.feedback
                         .entry(key)
@@ -710,7 +710,7 @@ mod tests {
 
     #[test]
     fn a_failed_section_read_keeps_the_last_section() {
-        use tmux_workspaces_roster::views::{Agent, Instructions};
+        use agent_interface_roster::views::{Agent, Instructions};
         let agent = |brief| {
             Data::Agent(Box::new(Agent {
                 name: "worker".into(),

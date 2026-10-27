@@ -3,8 +3,8 @@
 
 use std::collections::BTreeMap;
 
+use agent_interface_roster::views::{Range, Session, Tokens, Usage, epoch_seconds};
 use gpui::{AnyElement, Context, Rgba, SharedString, div, prelude::*, px, relative};
-use tmux_workspaces_roster::views::{Range, Session, Tokens, Usage, epoch_seconds};
 
 use super::{UsageBy, ViewPane, count, list, mono, since};
 use crate::desktop::{

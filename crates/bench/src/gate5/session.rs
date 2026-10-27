@@ -5,11 +5,11 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+use agent_interface_term::Terminal;
+use agent_interface_term::restore::Modes;
+use agent_interface_test_support::TmuxServer;
+use agent_interface_tmux::control::PaneId;
 use tempfile::TempDir;
-use tmux_workspaces_term::Terminal;
-use tmux_workspaces_term::restore::Modes;
-use tmux_workspaces_test_support::TmuxServer;
-use tmux_workspaces_tmux::control::PaneId;
 
 use super::Comparison;
 use super::candidate::Candidate;

@@ -138,7 +138,7 @@ People and tools on the same machine work in tmux sessions on its default
 server, and any attached client, control mode included, takes part in window
 sizing. Tests, benchmarks and scripts must never touch those sessions:
 
-- Start tmux only through `TmuxServer` in the `tmux-workspaces-test-support`
+- Start tmux only through `TmuxServer` in the `agent-interface-test-support`
   crate. It gives every server a private `TMUX_TMPDIR` and its own `-L`
   socket name, removes `TMUX` and `TMUX_PANE` from every command (an unset
   `TMUX` alone still falls back to the default server), starts tmux with no

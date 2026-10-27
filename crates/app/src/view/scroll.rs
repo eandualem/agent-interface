@@ -1,8 +1,8 @@
 //! Keep one wheel gesture's ownership independent of hit testing.
 
+use agent_interface_tmux::control::PaneId;
 use gpui::TouchPhase;
 use std::time::{Duration, Instant};
-use tmux_workspaces_tmux::control::PaneId;
 
 #[derive(Default)]
 pub(super) struct WheelGesture {

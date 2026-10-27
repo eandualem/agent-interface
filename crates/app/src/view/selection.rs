@@ -1,8 +1,8 @@
 //! Selection owns the displayed text so background output cannot change a copy.
 
+use agent_interface_term::{Screen, Width};
+use agent_interface_tmux::control::PaneId;
 use std::ops::Range;
-use tmux_workspaces_term::{Screen, Width};
-use tmux_workspaces_tmux::control::PaneId;
 
 #[derive(Clone, Copy)]
 enum Unit {
@@ -123,7 +123,7 @@ impl Selection {
         text
     }
 
-    fn cell(&self, index: usize) -> Option<(&str, tmux_workspaces_term::Cell)> {
+    fn cell(&self, index: usize) -> Option<(&str, agent_interface_term::Cell)> {
         let cols = usize::from(self.screen.cols());
         if cols == 0 {
             return None;
@@ -179,7 +179,7 @@ impl Selection {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tmux_workspaces_term::Terminal;
+    use agent_interface_term::Terminal;
 
     #[test]
     fn selection_preserves_graphemes_wraps_and_snapshot_text() {

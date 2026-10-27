@@ -321,7 +321,7 @@ mod tests {
 
     #[test]
     fn snapshots_use_only_nonempty_ordinary_sessions_in_the_previous_tab() {
-        use tmux_workspaces_test_support::TmuxServer;
+        use agent_interface_test_support::TmuxServer;
         let server = TmuxServer::start().unwrap();
         let socket = server
             .run(&["display-message", "-p", "#{socket_path}"])

@@ -54,17 +54,17 @@ allow-wildcard-paths = true
 deny = [
     { crate = "agent-interface-core", wrappers = ["agent-interface-store", "agent-interface-app"], reason = "only store and app depend on the model" },
     { crate = "agent-interface-store", wrappers = ["agent-interface-app"], reason = "only app wires storage" },
-    { crate = "tmux-workspaces-tmux", wrappers = ["agent-interface-app", "tmux-workspaces-bench", "tmux-workspaces-bench-rio"], reason = "only app connects tmux to the other crates; the benchmark harness measures the same path" },
-    { crate = "tmux-workspaces-term", wrappers = ["agent-interface-app", "tmux-workspaces-bench"], reason = "only app connects the terminal engine to the other crates; the benchmark harness measures the same path" },
-    { crate = "tmux-workspaces-roster", wrappers = ["agent-interface-app"], reason = "only app maps roster data into the model" },
-    { crate = "tmux-workspaces-test-support", wrappers = [
+    { crate = "agent-interface-tmux", wrappers = ["agent-interface-app", "agent-interface-bench", "agent-interface-bench-rio"], reason = "only app connects tmux to the other crates; the benchmark harness measures the same path" },
+    { crate = "agent-interface-term", wrappers = ["agent-interface-app", "agent-interface-bench"], reason = "only app connects the terminal engine to the other crates; the benchmark harness measures the same path" },
+    { crate = "agent-interface-roster", wrappers = ["agent-interface-app"], reason = "only app maps roster data into the model" },
+    { crate = "agent-interface-test-support", wrappers = [
         "agent-interface-core",
         "agent-interface-store",
-        "tmux-workspaces-tmux",
-        "tmux-workspaces-term",
-        "tmux-workspaces-roster",
+        "agent-interface-tmux",
+        "agent-interface-term",
+        "agent-interface-roster",
         "agent-interface-app",
-        "tmux-workspaces-bench",
+        "agent-interface-bench",
     ], reason = "only the six crates, as a development dependency, and the development-only benchmark harness use the test fixtures; review checks the dependency kind, which cargo-deny cannot tell apart" },
 ]
 

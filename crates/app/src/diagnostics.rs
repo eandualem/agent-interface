@@ -54,8 +54,8 @@ impl Level {
         // instrumented product targets are enabled, including at Trace.
         Targets::new()
             .with_target("agent_interface_app", level)
-            .with_target("tmux_workspaces_tmux", level)
-            .with_target("tmux_workspaces_roster", level)
+            .with_target("agent_interface_tmux", level)
+            .with_target("agent_interface_roster", level)
     }
 }
 

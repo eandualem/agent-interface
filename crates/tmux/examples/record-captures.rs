@@ -5,14 +5,14 @@
 //! `PATH`:
 //!
 //! ```text
-//! PATH=/path/to/tmux-3.3a:$PATH cargo run -p tmux-workspaces-tmux --example record-captures
+//! PATH=/path/to/tmux-3.3a:$PATH cargo run -p agent-interface-tmux --example record-captures
 //! ```
 //!
 //! It writes `crates/tmux/tests/captures/VERSION/FIXTURE.txt`.
 
 use std::path::Path;
 
-use tmux_workspaces_test_support::TmuxServer;
+use agent_interface_test_support::TmuxServer;
 
 /// Fixtures drawn in a 20x5 pane: a name and the `printf` format that draws
 /// it.

@@ -39,9 +39,9 @@ mod terminal;
 mod views;
 mod window_controls;
 mod workspace;
+use agent_interface_tmux::connection::SessionWindow;
 use name::{NameEvent, NameField};
 use terminal::{LiveTerminal, Target};
-use tmux_workspaces_tmux::connection::SessionWindow;
 
 const APP_ID: &str = "io.github.eandualem.agent-interface";
 
@@ -309,7 +309,7 @@ fn open_browser(
             let mut browser = Browser {
                 source: Some(source),
                 shell_environment: Some(
-                    tmux_workspaces_tmux::shells::Environment::capture()
+                    agent_interface_tmux::shells::Environment::capture()
                         .map_err(|error| error.to_string()),
                 ),
                 navigation: Some(cx.focus_handle()),
@@ -346,7 +346,7 @@ struct EditingName {
 struct Roster(Option<crate::roster::RosterSource>);
 
 impl Roster {
-    fn take_update(&self) -> Option<tmux_workspaces_roster::Snapshot> {
+    fn take_update(&self) -> Option<agent_interface_roster::Snapshot> {
         self.0
             .as_ref()
             .and_then(crate::roster::RosterSource::take_update)
@@ -536,7 +536,7 @@ struct Browser {
     icon_picker: bool,
     menu_at: Option<gpui::Point<gpui::Pixels>>,
     roster: Option<Roster>,
-    agents: Option<tmux_workspaces_roster::Snapshot>,
+    agents: Option<agent_interface_roster::Snapshot>,
     roster_updates: Option<Task<()>>,
     jump: Option<jump::Jump>,
     /// A navigation panel drag: where it started and the width then.
@@ -559,7 +559,7 @@ struct Browser {
     tabs_scroll: gpui::ScrollHandle,
     workspaces_scroll: gpui::ScrollHandle,
     shown_workspace: Option<(String, gpui::Pixels)>,
-    shell_environment: Option<Result<tmux_workspaces_tmux::shells::Environment, String>>,
+    shell_environment: Option<Result<agent_interface_tmux::shells::Environment, String>>,
     shell_after_save: Option<Leaf>,
     shell_to_open: Option<Leaf>,
     resize: Option<split_resize::Drag>,
@@ -3058,7 +3058,7 @@ mod tests {
     #[test]
     fn agent_state_lookup_omits_offline_and_unavailable_states() {
         let mut browser = Browser::default();
-        let mut snapshot = tmux_workspaces_roster::Snapshot::default();
+        let mut snapshot = agent_interface_roster::Snapshot::default();
         snapshot.update(br#"{"items":[{"name":"worker","state":"busy"},{"name":"idle","state":""},{"name":"gone","state":"offline"}]}"#);
         browser.agents = Some(snapshot);
         let states = browser.agent_states().unwrap();

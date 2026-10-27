@@ -111,10 +111,14 @@ dependencies = [
 
 [[package]]
 name = "agent-interface-app"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "agent-interface-core",
+ "agent-interface-roster",
  "agent-interface-store",
+ "agent-interface-term",
+ "agent-interface-test-support",
+ "agent-interface-tmux",
  "futures",
  "gpui-pre",
  "gpui-pre-macos",
@@ -125,10 +129,6 @@ dependencies = [
  "serde_json",
  "sha2",
  "tempfile",
- "tmux-workspaces-roster",
- "tmux-workspaces-term",
- "tmux-workspaces-test-support",
- "tmux-workspaces-tmux",
  "toml 0.8.23",
  "tracing",
  "tracing-appender",
@@ -141,8 +141,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "agent-interface-bench"
+version = "0.1.1"
+dependencies = [
+ "agent-interface-term",
+ "agent-interface-test-support",
+ "agent-interface-tmux",
+ "alacritty_terminal",
+ "block2 0.6.2",
+ "dispatch2",
+ "libc",
+ "libghostty-vt",
+ "objc2 0.6.5",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "objc2-core-media",
+ "objc2-core-video",
+ "objc2-foundation 0.3.2",
+ "objc2-screen-capture-kit",
+ "tempfile",
+]
+
+[[package]]
+name = "agent-interface-bench-rio"
+version = "0.1.1"
+dependencies = [
+ "agent-interface-tmux",
+ "alacritty_terminal",
+ "libc",
+ "rio-vt",
+]
+
+[[package]]
 name = "agent-interface-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "caseless",
  "serde_json",
@@ -152,8 +184,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "agent-interface-roster"
+version = "0.1.1"
+dependencies = [
+ "http",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "libc",
+ "log",
+ "reqwest",
+ "rusqlite",
+ "rustix",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "toml 0.8.23",
+ "tracing",
+]
+
+[[package]]
 name = "agent-interface-store"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "agent-interface-core",
  "rusqlite",
@@ -162,6 +216,42 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "unicode-properties",
+]
+
+[[package]]
+name = "agent-interface-term"
+version = "0.1.1"
+dependencies = [
+ "libghostty-vt",
+ "libghostty-vt-sys",
+ "memchr",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "agent-interface-test-support"
+version = "0.1.1"
+dependencies = [
+ "signal-hook",
+ "tempfile",
+]
+
+[[package]]
+name = "agent-interface-tmux"
+version = "0.1.1"
+dependencies = [
+ "agent-interface-test-support",
+ "libc",
+ "memchr",
+ "rustix",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tracing",
+ "unicode-properties",
+ "uzers",
 ]
 
 [[package]]
@@ -6288,96 +6378,6 @@ name = "tinyvec"
 version = "1.13.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
-
-[[package]]
-name = "tmux-workspaces-bench"
-version = "0.1.0"
-dependencies = [
- "alacritty_terminal",
- "block2 0.6.2",
- "dispatch2",
- "libc",
- "libghostty-vt",
- "objc2 0.6.5",
- "objc2-core-foundation",
- "objc2-core-graphics",
- "objc2-core-media",
- "objc2-core-video",
- "objc2-foundation 0.3.2",
- "objc2-screen-capture-kit",
- "tempfile",
- "tmux-workspaces-term",
- "tmux-workspaces-test-support",
- "tmux-workspaces-tmux",
-]
-
-[[package]]
-name = "tmux-workspaces-bench-rio"
-version = "0.1.0"
-dependencies = [
- "alacritty_terminal",
- "libc",
- "rio-vt",
- "tmux-workspaces-tmux",
-]
-
-[[package]]
-name = "tmux-workspaces-roster"
-version = "0.1.0"
-dependencies = [
- "http",
- "http-body-util",
- "hyper",
- "hyper-util",
- "libc",
- "log",
- "reqwest",
- "rusqlite",
- "rustix",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "tokio",
- "toml 0.8.23",
- "tracing",
-]
-
-[[package]]
-name = "tmux-workspaces-term"
-version = "0.1.0"
-dependencies = [
- "libghostty-vt",
- "libghostty-vt-sys",
- "memchr",
- "serde_json",
- "sha2",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "tmux-workspaces-test-support"
-version = "0.1.0"
-dependencies = [
- "signal-hook",
- "tempfile",
-]
-
-[[package]]
-name = "tmux-workspaces-tmux"
-version = "0.1.0"
-dependencies = [
- "libc",
- "memchr",
- "rustix",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
- "tmux-workspaces-test-support",
- "tracing",
- "unicode-properties",
- "uzers",
-]
 
 [[package]]
 name = "tokio"
