@@ -3,14 +3,22 @@ use std::io;
 use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt};
 use std::path::{Path, PathBuf};
 
-/// Locate an existing ordinary-shell socket for a resolved library directory.
+/// Locate the server owning an exact ordinary session in a resolved library.
 ///
 /// Pass the absolute result of [`super::library_directory`]. The socket uses
 /// Python's UTF-8 path hash and current UID. Its parent must be a real directory
 /// owned by that UID, with no group or other permissions. Missing directories
-/// or sockets return None. This reads metadata only: it does not create, repair,
-/// connect to or start anything. A socket file does not prove a server is alive.
-pub fn existing_shell_socket(resolved_directory: &Path) -> io::Result<Option<PathBuf>> {
+/// or sessions return None. Bounded read-only queries check both current and
+/// legacy sockets without starting a server or attaching a client. Call on a
+/// worker; socket existence alone does not establish session ownership.
+pub fn existing_shell_socket(
+    resolved_directory: &Path,
+    leaf_id: &str,
+) -> io::Result<Option<PathBuf>> {
+    socket_for_session(&existing_shell_sockets(resolved_directory)?, leaf_id)
+}
+
+fn existing_shell_sockets(resolved_directory: &Path) -> io::Result<Vec<PathBuf>> {
     if !resolved_directory.is_absolute() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -24,24 +32,47 @@ pub fn existing_shell_socket(resolved_directory: &Path) -> io::Result<Option<Pat
         )
     })?;
     let uid = uzers::get_current_uid();
-    let directory = PathBuf::from(format!("/tmp/agent-interface-{uid}"));
-    existing_socket_in(&directory, uid, &socket_name(text))?.map_or_else(
-        || {
-            existing_socket_in(
-                &PathBuf::from(format!("/tmp/tmux-workspaces-{uid}")),
-                uid,
-                &socket_name(text),
-            )
-        },
-        |socket| Ok(Some(socket)),
-    )
+    let mut sockets = Vec::new();
+    for directory in [
+        PathBuf::from(format!("/tmp/agent-interface-{uid}")),
+        PathBuf::from(format!("/tmp/tmux-workspaces-{uid}")),
+    ] {
+        if let Some(socket) = existing_socket_in(&directory, uid, &socket_name(text))? {
+            sockets.push(socket);
+        }
+    }
+    Ok(sockets)
+}
+
+fn socket_for_session(sockets: &[PathBuf], leaf_id: &str) -> io::Result<Option<PathBuf>> {
+    let session = ordinary_session(leaf_id).ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "Invalid saved shell identity")
+    })?;
+    let mut failure = None;
+    for socket in sockets {
+        match tmux_workspaces_tmux::discovery::read_sessions(socket) {
+            Ok(sessions) if sessions.contains(&session) => return Ok(Some(socket.clone())),
+            Ok(_) => {}
+            Err(error) => failure = Some(error),
+        }
+    }
+    // A failed query is not evidence that the session is absent. In particular,
+    // explicit creation must not turn an unavailable server into a second shell.
+    match failure {
+        Some(error) => Err(error),
+        None => Ok(None),
+    }
+}
+
+fn creation_socket(sockets: &[PathBuf], leaf_id: &str) -> io::Result<Option<PathBuf>> {
+    Ok(socket_for_session(sockets, leaf_id)?.or_else(|| sockets.first().cloned()))
 }
 
 /// Resolve the ordinary-shell socket for an explicit creation request. Unlike
 /// lookup, this may create the private parent, but never repairs unsafe metadata.
 /// The caller must have saved an eligible ordinary leaf before using this path.
-pub fn shell_socket_for_creation(resolved_directory: &Path) -> io::Result<PathBuf> {
-    if let Some(socket) = existing_shell_socket(resolved_directory)? {
+pub fn shell_socket_for_creation(resolved_directory: &Path, leaf_id: &str) -> io::Result<PathBuf> {
+    if let Some(socket) = creation_socket(&existing_shell_sockets(resolved_directory)?, leaf_id)? {
         return Ok(socket);
     }
     let text = resolved_directory
@@ -132,6 +163,97 @@ mod tests {
     use std::os::unix::net::UnixListener;
 
     #[test]
+    fn current_and_legacy_servers_are_selected_by_exact_session_ownership() {
+        use tmux_workspaces_test_support::TmuxServer;
+
+        let current = TmuxServer::start().unwrap();
+        let legacy = TmuxServer::start().unwrap();
+        let socket = |server: &TmuxServer| {
+            PathBuf::from(
+                server
+                    .run(&["display-message", "-p", "#{socket_path}"])
+                    .unwrap()
+                    .trim_end(),
+            )
+        };
+        let sockets = [socket(&current), socket(&legacy)];
+        current
+            .run(&[
+                "new-session",
+                "-d",
+                "-s",
+                "terminal-0123456789ab-extra",
+                "sleep 60",
+            ])
+            .unwrap();
+        for (index, server, id) in [(0, &current, "abcdef012345"), (1, &legacy, "0123456789ab")] {
+            let cwd = server.address().0.canonicalize().unwrap();
+            server
+                .run(&[
+                    "new-session",
+                    "-d",
+                    "-s",
+                    &ordinary_session(id).unwrap(),
+                    "-c",
+                    cwd.to_str().unwrap(),
+                    "sleep 60",
+                ])
+                .unwrap();
+            assert_eq!(
+                socket_for_session(&sockets, id).unwrap(),
+                Some(sockets[index].clone())
+            );
+            // Explicit opening must reuse the owning server too, not create a
+            // second ordinary shell on the preferred socket.
+            let selected = creation_socket(&sockets, id).unwrap().unwrap();
+            assert_eq!(selected, sockets[index]);
+            let mut leaf = agent_interface_core::Leaf {
+                id: id.into(),
+                attachment: None,
+                cwd: Some("/previous".into()),
+                empty: false,
+                view: None,
+            };
+            remember_shell_directory(&mut leaf, &selected).unwrap();
+            assert_eq!(leaf.cwd.as_deref(), cwd.to_str());
+        }
+        assert_eq!(socket_for_session(&sockets, "111111111111").unwrap(), None);
+        assert_eq!(
+            creation_socket(&sockets, "111111111111").unwrap(),
+            Some(sockets[0].clone())
+        );
+        assert_eq!(creation_socket(&[], "111111111111").unwrap(), None);
+        assert!(creation_socket(&sockets, "invalid").is_err());
+        assert!(current.run(&["list-clients"]).unwrap().is_empty());
+        assert!(legacy.run(&["list-clients"]).unwrap().is_empty());
+        let names = tmux_workspaces_tmux::discovery::read_sessions(&sockets[0]).unwrap();
+        assert!(!names.contains(&"terminal-0123456789ab".into()));
+    }
+
+    #[test]
+    fn failed_discovery_does_not_authorize_creation_on_another_socket() {
+        use tmux_workspaces_test_support::TmuxServer;
+
+        let server = TmuxServer::start().unwrap();
+        let socket = PathBuf::from(
+            server
+                .run(&["display-message", "-p", "#{socket_path}"])
+                .unwrap()
+                .trim_end(),
+        );
+        let unresponsive = server.address().0.join("unresponsive.sock");
+        let _listener = UnixListener::bind(&unresponsive).unwrap();
+        assert!(creation_socket(&[socket, unresponsive], "0123456789ab").is_err());
+        assert_eq!(
+            server
+                .run(&["list-sessions", "-F", "#{session_name}"])
+                .unwrap(),
+            "fixture\n"
+        );
+        assert!(server.run(&["list-clients"]).unwrap().is_empty());
+    }
+
+    #[test]
     fn explicit_creation_makes_only_a_private_parent_and_rejects_unsafe_reuse() {
         let root = tempfile::tempdir().unwrap();
         let parent = root.path().join("shells");
@@ -218,8 +340,14 @@ mod tests {
         for invalid in ["123", "123456ABCDEf", "session:name"] {
             assert!(ordinary_session(invalid).is_none());
         }
-        assert!(existing_shell_socket(Path::new("relative")).is_err());
-        assert!(existing_shell_socket(Path::new(OsStr::from_bytes(b"/tmp/library-\xff"))).is_err());
+        assert!(existing_shell_socket(Path::new("relative"), "123456abcdef").is_err());
+        assert!(
+            existing_shell_socket(
+                Path::new(OsStr::from_bytes(b"/tmp/library-\xff")),
+                "123456abcdef"
+            )
+            .is_err()
+        );
 
         // Short private fixture path stays within macOS's Unix socket limit.
         let fixture = tempfile::Builder::new()

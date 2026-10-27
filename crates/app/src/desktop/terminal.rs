@@ -100,7 +100,7 @@ fn connect_selected(
     } else {
         let directory =
             library::library_directory(target.directory.as_deref()).map_err(|e| e.to_string())?;
-        let socket = library::existing_shell_socket(&directory)
+        let socket = library::existing_shell_socket(&directory, &target.leaf.id)
             .map_err(|e| {
                 tracing::debug!(event = "shell_socket_lookup_failed", error_kind = ?e.kind(), os_error = e.raw_os_error(), "Ordinary shell socket lookup failed");
                 e.to_string()
@@ -315,7 +315,7 @@ impl LiveTerminal {
                     }
                     let directory = library::library_directory(target.directory.as_deref())
                         .map_err(|error| error.to_string())?;
-                    let socket = library::shell_socket_for_creation(&directory)
+                    let socket = library::shell_socket_for_creation(&directory, &target.leaf.id)
                         .map_err(|error| error.to_string())?;
                     tmux_workspaces_tmux::shells::ensure(
                         &socket,
