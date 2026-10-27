@@ -23,6 +23,7 @@ use std::{
 use agent_interface_roster::{
     conversations::{self as stored, Author, Body, Kind},
     feedback::{self, Outcome},
+    views,
     views::{ReportContent, ReportItem},
 };
 use gpui::{
@@ -106,6 +107,10 @@ pub(super) struct Conversation {
     stored: Option<Stored>,
     /// The view shows this conversation, so it reads Backbone.
     active: bool,
+    /// Who the person chose to ask when no agent is responsible, and whom
+    /// they may choose from besides the conversation's participants.
+    recipient: Option<String>,
+    candidates: Vec<String>,
     /// Whether the pane holding it is visible.
     visible: Rc<Cell<bool>>,
     _poll: Option<Task<()>>,
@@ -115,9 +120,12 @@ pub(super) struct Conversation {
 /// A conversation as Backbone keeps it.
 struct Stored {
     directory: PathBuf,
-    /// The provider the record came from; requests go nowhere else.
+    /// The provider the record came from; requests go nowhere else. Empty
+    /// until the first read for a skill or policy, which has no record.
     provider: String,
     kind: Kind,
+    /// A skill's or policy's source path; its `id` is found from it first.
+    source: Option<String>,
     id: String,
     /// `None` until Backbone first answers; `Some(false)` when it keeps none.
     supported: Option<bool>,
@@ -306,6 +314,7 @@ impl Conversation {
                 directory: directory.clone(),
                 provider: item.provider_url.clone(),
                 kind,
+                source: None,
                 id,
                 supported: None,
                 page: None,
@@ -319,19 +328,98 @@ impl Conversation {
                 redelivery: HashMap::new(),
                 turn: 0,
             });
-            conversation._poll = Some(cx.spawn(async move |this, cx| {
-                loop {
-                    let Ok(Some(wait)) = this.update(cx, |conversation, cx| conversation.poll(cx))
-                    else {
-                        break;
-                    };
-                    cx.background_executor().timer(wait).await;
-                }
-            }));
+            conversation.start_polling(cx);
         }
         conversation.record = Some((item, directory));
         conversation.surface = Some(surface);
         conversation
+    }
+
+    /// The conversation about a skill or policy, by its source path. Who
+    /// answers is the maintainer Backbone names, else an agent the person
+    /// chooses from `candidates` or the conversation's participants.
+    #[allow(clippy::too_many_arguments)]
+    pub fn about_source(
+        kind: Kind,
+        path: String,
+        about: &'static str,
+        candidates: Vec<String>,
+        directory: PathBuf,
+        visible: Rc<Cell<bool>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut conversation = Self::create(about, window, cx);
+        conversation.visible = visible;
+        conversation.candidates = candidates;
+        conversation.stored = Some(Stored {
+            directory,
+            provider: String::new(),
+            kind,
+            source: Some(path),
+            id: String::new(),
+            supported: None,
+            page: None,
+            fetched: Vec::new(),
+            earlier: Vec::new(),
+            earlier_cursor: None,
+            divider: None,
+            reading: false,
+            read_at: None,
+            marking: None,
+            redelivery: HashMap::new(),
+            turn: 0,
+        });
+        conversation.start_polling(cx);
+        conversation
+    }
+
+    fn start_polling(&mut self, cx: &mut Context<Self>) {
+        self._poll = Some(cx.spawn(async move |this, cx| {
+            loop {
+                let Ok(Some(wait)) = this.update(cx, |conversation, cx| conversation.poll(cx))
+                else {
+                    break;
+                };
+                cx.background_executor().timer(wait).await;
+            }
+        }));
+    }
+
+    /// Nobody answers unless the person names someone: Backbone names no
+    /// maintainer, or the one it names has retired.
+    fn needs_recipient(&self) -> bool {
+        self.stored
+            .as_ref()
+            .and_then(|stored| stored.page.as_ref())
+            .is_some_and(|page| {
+                page.responsible.name.is_empty() || page.responsible.status != "active"
+            })
+    }
+
+    /// Whom the person may ask: the conversation's participants, then the
+    /// candidates the view offered, each once.
+    fn askable(&self) -> Vec<String> {
+        let mut names: Vec<String> = self
+            .stored
+            .as_ref()
+            .and_then(|stored| stored.page.as_ref())
+            .map(|page| {
+                page.participants
+                    .iter()
+                    .filter(|participant| {
+                        participant.status == "active" && !participant.name.is_empty()
+                    })
+                    .map(|participant| participant.name.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        for name in &self.candidates {
+            if !names.contains(name) {
+                names.push(name.clone());
+            }
+        }
+        names
     }
 
     /// A conversation whose owning view delivers each message.
@@ -368,6 +456,8 @@ impl Conversation {
             return_focus: None,
             stored: None,
             active: false,
+            recipient: None,
+            candidates: Vec::new(),
             visible: Rc::new(Cell::new(true)),
             _poll: None,
             _input: input,
@@ -480,8 +570,35 @@ impl Conversation {
         let started = std::time::Instant::now();
         stored.read_at = Some(started);
         let unsettled = stored.unsettled();
+        let source = stored.source.clone();
         let (directory, provider, kind, id) = self.target().expect("stored conversation");
         let worker = cx.background_executor().spawn(async move {
+            // A skill or policy learns its provider and identity on its first read.
+            let provider = if provider.is_empty() {
+                stored::provider(&directory).unwrap_or_default()
+            } else {
+                provider
+            };
+            let mut team = Vec::new();
+            let id = match (&source, id.is_empty()) {
+                (Some(path), true) => match stored::resolve(&directory, &provider, kind, path) {
+                    Ok(id) => {
+                        // With nobody responsible, the person chooses from the team.
+                        if let Ok(views::Data::Team(found)) =
+                            views::read(&directory, None, &views::Request::Team, &|| true)
+                        {
+                            team = found
+                                .members
+                                .into_iter()
+                                .map(|member| member.name)
+                                .collect();
+                        }
+                        id
+                    }
+                    Err(error) => return (provider, String::new(), team, Err(error), None),
+                },
+                _ => id,
+            };
             let newest = stored::show(&directory, &provider, kind, &id, &stored::Page::Newest);
             let older = (!unsettled.is_empty() && newest.is_ok()).then(|| {
                 stored::show(
@@ -492,16 +609,30 @@ impl Conversation {
                     &stored::Page::Entries(unsettled),
                 )
             });
-            (newest, older)
+            (provider, id, team, newest, older)
         });
         cx.spawn(async move |this, cx| {
-            let (result, older) = worker.await;
+            let (provider, id, team, result, older) = worker.await;
             let _ = this.update(cx, |conversation, cx| {
                 let seen = conversation.open && conversation.shown();
                 let Some(stored) = conversation.stored.as_mut() else {
                     return;
                 };
                 stored.reading = false;
+                for name in team {
+                    if !conversation.candidates.contains(&name) {
+                        conversation.candidates.push(name);
+                    }
+                }
+                let Some(stored) = conversation.stored.as_mut() else {
+                    return;
+                };
+                if stored.provider.is_empty() {
+                    stored.provider = provider;
+                }
+                if stored.id.is_empty() {
+                    stored.id = id;
+                }
                 let mut failure = None;
                 match result {
                     Ok(page) => {
@@ -653,6 +784,7 @@ impl Conversation {
         let Some((directory, provider, kind, id)) = self.target() else {
             return;
         };
+        let recipient = self.recipient.clone().filter(|_| self.needs_recipient());
         let message = &mut self.messages[index];
         message.via = Some(Via::Stored);
         // A refused retry says nothing about an earlier attempt that may have
@@ -662,7 +794,7 @@ impl Conversation {
         let request = stored::Message {
             request_id: message.request_id.clone(),
             text: message.text.clone(),
-            recipient: None,
+            recipient,
             anchor: self.record.as_ref().map(|(item, _)| stored::Anchor {
                 revision_id: Some(item.id.to_string()),
                 label: message.anchor.clone(),
@@ -793,7 +925,10 @@ impl Conversation {
 
     fn can_send(&self, cx: &gpui::App) -> bool {
         let field = self.field.read(cx);
-        !self.blocked && !field.composing() && !field.value().trim().is_empty()
+        !self.blocked
+            && !field.composing()
+            && !field.value().trim().is_empty()
+            && (self.recipient.is_some() || !self.needs_recipient())
     }
 
     fn send(&mut self, cx: &mut Context<Self>) {
@@ -934,9 +1069,46 @@ impl Conversation {
         .into_any_element()
     }
 
+    /// With nobody responsible, the agents the person can ask, one chosen.
+    fn chooser(&self, cx: &mut Context<Self>) -> Option<gpui::Div> {
+        if !self.needs_recipient() {
+            return None;
+        }
+        let t = tokens();
+        let mut row = div()
+            .flex()
+            .flex_wrap()
+            .gap(px(t.space.s6))
+            .px(px(t.space.s14))
+            .py(px(t.space.s8))
+            .border_b(px(t.size.hairline))
+            .border_color(colors().line);
+        for name in self.askable() {
+            let chosen = self.recipient.as_deref() == Some(name.as_str());
+            row = row.child(
+                ui::chip(
+                    SharedString::from(format!("conversation-ask-{name}")),
+                    SharedString::from(name.clone()),
+                    chosen,
+                )
+                .on_click(cx.listener(move |conversation, _, _, cx| {
+                    conversation.recipient = Some(name.clone());
+                    cx.notify();
+                })),
+            );
+        }
+        Some(row)
+    }
+
     /// The agent the header names: the conversation's responsible agent once
     /// Backbone answers, else the record's author.
     fn agent(&self) -> String {
+        if self.needs_recipient() {
+            return self
+                .recipient
+                .clone()
+                .unwrap_or_else(|| "Choose who to ask".to_owned());
+        }
         self.stored
             .as_ref()
             .and_then(|stored| stored.page.as_ref())
@@ -1191,6 +1363,15 @@ fn epoch(text: &str) -> Option<f64> {
 
 impl Render for Conversation {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // A skill or policy Backbone keeps no conversation for shows none.
+        if self.record.is_none()
+            && self
+                .stored
+                .as_ref()
+                .is_some_and(|stored| stored.source.is_some() && stored.supported == Some(false))
+        {
+            return div().into_any_element();
+        }
         if std::mem::take(&mut self.toggle_requested) {
             self.toggle(window, cx);
         }
@@ -1208,6 +1389,7 @@ impl Render for Conversation {
                     cx.listener(|conversation, _, window, cx| conversation.close(window, cx)),
                 ),
             ))
+            .children(self.chooser(cx))
             .child(self.thread(cx))
             .child(ui::composer(
                 div().text_size(t.text.row.size()).child(self.field.clone()),
@@ -1253,6 +1435,7 @@ mod tests {
             directory: PathBuf::new(),
             provider: String::new(),
             kind: Kind::Report,
+            source: None,
             id: "1".into(),
             supported: Some(true),
             page: None,

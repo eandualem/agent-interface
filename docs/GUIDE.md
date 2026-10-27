@@ -283,6 +283,12 @@ record when switching tabs or workspaces; detaching or closing the pane or app
 discards the ones Backbone does not keep. A message never changes the authored
 record.
 
+A shared skill or policy opened in its reader has the same conversation, so
+you can work on it with an agent. Backbone names a maintainer only when one has
+been set; until then, choose who to ask from the agents the skill reaches, the
+conversation's participants or the team. Skills kept in a repository or a CLI's
+own folder have no conversation.
+
 Opening a document loads that exact revision. **Check for update** refreshes its
 correction information; **Open newer revision** opens the linked correction.
 An update never silently replaces the revision being read. Documents remain

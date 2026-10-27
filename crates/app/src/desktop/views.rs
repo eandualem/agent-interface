@@ -17,7 +17,10 @@ use std::{
 };
 
 use agent_interface_core::{AgentSection, View, ViewKind};
-use agent_interface_roster::views::{self, Data, Part, Range, Request};
+use agent_interface_roster::{
+    conversations::Kind,
+    views::{self, Data, Part, Range, Request},
+};
 use futures::{StreamExt, channel::mpsc};
 use gpui::{
     Context, Entity, EventEmitter, SharedString, Subscription, Task, Window, div, prelude::*, px,
@@ -682,6 +685,41 @@ impl Render for ViewPane {
                         })
                         .clone()
                 });
+        // An open skill or policy has its own conversation.
+        if self.conversation.is_none()
+            && let (Some(open), Some(directory)) = (&self.open, &self.backbone)
+        {
+            let (kind, path, about) = match &open.target {
+                Target::Skill(path) => (Kind::Skill, path, "about this skill"),
+                Target::Policy(path) => (Kind::Policy, path, "about this policy"),
+            };
+            // A skill is offered to the agents it reaches.
+            let candidates = match (&open.target, &self.data) {
+                (Target::Skill(path), Some(Data::Skills(library))) => library
+                    .store
+                    .items
+                    .iter()
+                    .find(|skill| &skill.path == path)
+                    .map(|skill| skill.reaches.clone())
+                    .unwrap_or_default(),
+                _ => Vec::new(),
+            };
+            let key = format!("{}\n{path}", kind.name());
+            let (path, directory, visible) =
+                (path.clone(), directory.clone(), self.visible.clone());
+            self.conversation = Some(
+                self.conversations
+                    .entry(key)
+                    .or_insert_with(|| {
+                        cx.new(|cx| {
+                            conversation::Conversation::about_source(
+                                kind, path, about, candidates, directory, visible, window, cx,
+                            )
+                        })
+                    })
+                    .clone(),
+            );
+        }
         // Only the shown conversation reads Backbone.
         if previous != self.conversation {
             for (conversation, active) in [(previous, false), (self.conversation.clone(), true)] {

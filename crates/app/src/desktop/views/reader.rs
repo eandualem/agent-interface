@@ -127,17 +127,32 @@ pub(super) fn render(
         .py(px(t.space.s20))
         .child(page.card)
         .child(content);
-    let footer = ui::view_footer(
-        &[("esc", "back"), ("[ ]", "previous, next"), ("S", "source")],
-        "read-only",
-    );
+    let mut hints = vec![("esc", "back"), ("[ ]", "previous, next"), ("S", "source")];
+    if pane.conversation.is_some() {
+        hints.push(("C", "conversation"));
+    }
+    let footer = ui::view_footer(&hints, "read-only");
     div()
         .size_full()
         .flex()
         .flex_col()
         .child(header)
         .child(bar)
-        .child(body)
-        .child(footer)
+        .child(
+            div()
+                .flex_1()
+                .min_h_0()
+                .flex()
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .child(body)
+                        .child(footer),
+                )
+                .children(pane.conversation.clone()),
+        )
         .into_any_element()
 }

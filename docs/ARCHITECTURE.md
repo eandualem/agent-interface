@@ -300,7 +300,11 @@ client request ID, so a send whose outcome is unknown is retried with the same
 ID and stored at most once; a stored message whose delivery failed is redelivered without a new
 entry. Opening the panel moves the owner's read marker to the newest entry and
 fixes the "new" divider where the marker was. A plain 404 or an unknown
-artifact switches the conversation back to one-way feedback.
+artifact switches the conversation back to one-way feedback. A shared skill or policy has
+no record, so its conversation finds its identity on the first read: the
+current provider, then the `artifact_id` that `/api/skills` or `/api/policies`
+lists for its source path. Without a maintainer, a message names the agent the
+person chose.
 
 Durable Documents use Backbone's metadata-only `/api/documents` list and exact
 `/api/documents/{revision_id}` JSON reads. Backbone owns immutable revisions,

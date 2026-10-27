@@ -381,6 +381,50 @@ pub fn show(
     }
 }
 
+/// The provider conversations go to now, for an artifact read without one,
+/// such as a skill. Runs on an I/O worker; the key never leaves this crate.
+pub fn provider(directory: &Path) -> Option<String> {
+    crate::configuration::configured(directory, None).map(|(provider, _)| provider)
+}
+
+/// The conversation identity of a skill or policy, by the source path the
+/// app shows it under. A provider without the identity is `Unsupported`.
+/// Runs on an I/O worker.
+pub fn resolve(directory: &Path, provider: &str, kind: Kind, path: &str) -> Result<String, Error> {
+    #[derive(Deserialize)]
+    struct Item {
+        #[serde(default)]
+        path: String,
+        #[serde(default)]
+        artifact_id: Option<String>,
+    }
+    #[derive(Deserialize)]
+    struct Listing {
+        items: Vec<Item>,
+    }
+    let route = match kind {
+        Kind::Skill => "/api/skills",
+        Kind::Policy => "/api/policies",
+        _ => return Err(Error::Unsupported),
+    };
+    let response = exchange(directory, provider, route, None)?;
+    match response.status {
+        200 => {
+            let listing: Listing = parse(&response.body)?;
+            listing
+                .items
+                .into_iter()
+                .find(|item| item.path == path)
+                .and_then(|item| item.artifact_id)
+                .filter(|id| token(id))
+                .ok_or(Error::Unsupported)
+        }
+        404 => Err(Error::Unsupported),
+        401 | 403 => Err(Error::Forbidden),
+        _ => Err(Error::Unavailable),
+    }
+}
+
 /// Badges for up to 50 conversations. Runs on an I/O worker.
 pub fn summaries(
     directory: &Path,
