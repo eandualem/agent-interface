@@ -2,8 +2,10 @@
 //! component: a rail while closed, a thread and a composer while open.
 //!
 //! Agent Backbone does not yet keep conversation history, so the thread holds
-//! the messages sent from this pane. Each is sent once through
-//! `roster::feedback` with a reference to the record.
+//! the messages sent from this pane. A record's conversation sends each once
+//! through `roster::feedback` with a reference to the record; a view with its
+//! own delivery, such as Sheets, receives [`ConversationEvent`]s and reports
+//! each outcome back with [`Conversation::complete`].
 
 use std::{cell::RefCell, path::PathBuf, rc::Rc};
 
@@ -12,8 +14,8 @@ use agent_interface_roster::{
     views::{ReportContent, ReportItem},
 };
 use gpui::{
-    AnyElement, Context, Entity, FocusHandle, SharedString, Subscription, Window, div, prelude::*,
-    px,
+    AnyElement, App, Context, Entity, EventEmitter, FocusHandle, SharedString, Subscription,
+    Window, div, prelude::*, px,
 };
 
 use super::{clock::Local, reports};
@@ -40,12 +42,28 @@ struct Message {
     delivery: Delivery,
 }
 
+/// What a view with its own delivery is asked to do with message `index`.
+pub(super) enum ConversationEvent {
+    /// Send it for the first time.
+    Send(usize),
+    /// Send the same request again.
+    Retry(usize),
+}
+
+impl EventEmitter<ConversationEvent> for Conversation {}
+
 pub(super) struct Conversation {
-    item: ReportItem,
-    directory: PathBuf,
+    /// The record messages are about and where to send them; `None` when the
+    /// owning view delivers them itself.
+    record: Option<(ReportItem, PathBuf)>,
+    agent: String,
+    about: &'static str,
+    anchor: Option<String>,
+    /// Input is held while the owning view cannot accept a message.
+    blocked: bool,
     field: Entity<NameField>,
     /// The document surface, which takes focus back when the panel closes.
-    surface: Rc<RefCell<super::artifact_web::Surface>>,
+    surface: Option<Rc<RefCell<super::artifact_web::Surface>>>,
     open: bool,
     /// A key asked to open or close the panel; done when it next renders.
     toggle_requested: bool,
@@ -55,6 +73,7 @@ pub(super) struct Conversation {
 }
 
 impl Conversation {
+    /// The conversation about an authored record, sent to its author.
     pub fn new(
         item: ReportItem,
         directory: PathBuf,
@@ -62,6 +81,24 @@ impl Conversation {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let mut conversation = Self::create(subject(&item), window, cx);
+        conversation.agent = item.author.clone();
+        conversation.anchor = Some(format!("#{}", item.id));
+        conversation.record = Some((item, directory));
+        conversation.surface = Some(surface);
+        conversation
+    }
+
+    /// A conversation whose owning view delivers each message.
+    pub fn delivered_by_owner(
+        about: &'static str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self::create(about, window, cx)
+    }
+
+    fn create(about: &'static str, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let field = cx.new(|cx| NameField::feedback(window, cx));
         let input = cx.subscribe_in(
             &field,
@@ -73,16 +110,68 @@ impl Conversation {
             },
         );
         Self {
-            item,
-            directory,
+            record: None,
+            agent: String::new(),
+            about,
+            anchor: None,
+            blocked: false,
             field,
-            surface,
+            surface: None,
             open: false,
             toggle_requested: false,
             messages: Vec::new(),
             return_focus: None,
             _input: input,
         }
+    }
+
+    /// Who receives messages, what they refer to, and whether input is held.
+    pub fn set_context(
+        &mut self,
+        agent: String,
+        anchor: Option<String>,
+        blocked: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if self.agent != agent || self.anchor != anchor || self.blocked != blocked {
+            self.agent = agent;
+            self.anchor = anchor;
+            self.hold(blocked, cx);
+        }
+    }
+
+    /// Hold or release input at once, before the owning view next renders.
+    pub fn hold(&mut self, blocked: bool, cx: &mut Context<Self>) {
+        self.blocked = blocked;
+        self.field
+            .update(cx, |field, _| field.set_read_only(blocked));
+        cx.notify();
+    }
+
+    /// The unsent draft.
+    pub fn draft<'a>(&'a self, cx: &'a App) -> &'a str {
+        self.field.read(cx).value()
+    }
+
+    /// The text of message `index`.
+    pub fn text(&self, index: usize) -> &str {
+        &self.messages[index].text
+    }
+
+    /// Message `index` is being sent again by the owning view.
+    pub fn resending(&mut self, index: usize, cx: &mut Context<Self>) {
+        self.messages[index].delivery = Delivery::Sending;
+        cx.notify();
+    }
+
+    /// What became of message `index`, as the owning view's delivery found.
+    pub fn complete(&mut self, index: usize, outcome: Outcome, cx: &mut Context<Self>) {
+        self.messages[index].delivery = match outcome {
+            Outcome::Accepted(_) => Delivery::Sent,
+            Outcome::Refused(reason) => Delivery::NotSent(reason),
+            Outcome::Unknown(reason) => Delivery::Unconfirmed(reason),
+        };
+        cx.notify();
     }
 
     /// Open or close the panel from a key, which has no window to focus with.
@@ -109,13 +198,15 @@ impl Conversation {
             Some(focus) => window.focus(&focus, cx),
             None => window.blur(cx),
         }
-        self.surface.borrow().focus();
+        if let Some(surface) = &self.surface {
+            surface.borrow().focus();
+        }
         cx.notify();
     }
 
     fn can_send(&self, cx: &gpui::App) -> bool {
         let field = self.field.read(cx);
-        !field.composing() && !field.value().trim().is_empty()
+        !self.blocked && !field.composing() && !field.value().trim().is_empty()
     }
 
     fn send(&mut self, cx: &mut Context<Self>) {
@@ -132,18 +223,36 @@ impl Conversation {
             at,
             delivery: Delivery::Sending,
         });
-        self.deliver(self.messages.len() - 1, cx);
+        let index = self.messages.len() - 1;
+        if self.record.is_some() {
+            self.deliver(index, cx);
+        } else {
+            cx.emit(ConversationEvent::Send(index));
+            cx.notify();
+        }
+    }
+
+    /// Send message `index` again: a record's conversation only when nothing
+    /// was accepted; an owning view retries the same request, which it can
+    /// also do when the outcome was unknown.
+    fn retry(&mut self, index: usize, cx: &mut Context<Self>) {
+        match (&self.record, &self.messages[index].delivery) {
+            (Some(_), Delivery::NotSent(_)) => self.deliver(index, cx),
+            (None, Delivery::NotSent(_) | Delivery::Unconfirmed(_)) => {
+                cx.emit(ConversationEvent::Retry(index))
+            }
+            _ => {}
+        }
     }
 
     /// Send message `index` once, on an I/O worker.
     fn deliver(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some((item, directory)) = self.record.clone() else {
+            return;
+        };
         let message = &mut self.messages[index];
         message.delivery = Delivery::Sending;
-        let (directory, item, text) = (
-            self.directory.clone(),
-            self.item.clone(),
-            message.text.clone(),
-        );
+        let text = message.text.clone();
         let worker = cx.background_executor().spawn(async move {
             let started = std::time::Instant::now();
             let outcome = feedback::send(&directory, &item, &text);
@@ -163,12 +272,7 @@ impl Conversation {
         cx.spawn(async move |this, cx| {
             let outcome = worker.await;
             let _ = this.update(cx, |conversation, cx| {
-                conversation.messages[index].delivery = match outcome {
-                    Outcome::Accepted(_) => Delivery::Sent,
-                    Outcome::Refused(reason) => Delivery::NotSent(reason),
-                    Outcome::Unknown(reason) => Delivery::Unconfirmed(reason),
-                };
-                cx.notify();
+                conversation.complete(index, outcome, cx)
             });
         })
         .detach();
@@ -177,11 +281,11 @@ impl Conversation {
 }
 
 /// What the conversation is about, as its header and composer name it.
-fn subject(item: &ReportItem) -> (&'static str, &'static str) {
+fn subject(item: &ReportItem) -> &'static str {
     match item.content {
-        ReportContent::Progress { .. } => ("about this report", "report"),
-        ReportContent::Response { .. } => ("about this answer", "answer"),
-        ReportContent::Document(_) => ("about this document", "document"),
+        ReportContent::Progress { .. } => "about this report",
+        ReportContent::Response { .. } => "about this answer",
+        ReportContent::Document(_) => "about this document",
     }
 }
 
@@ -191,25 +295,31 @@ impl Conversation {
             div().id("conversation-open").on_click(
                 cx.listener(|conversation, _, window, cx| conversation.toggle(window, cx)),
             ),
-            reports::mark(&self.item),
+            self.mark(),
             false,
         )
         .into_any_element()
     }
 
+    fn mark(&self) -> Option<gpui::Div> {
+        self.record
+            .as_ref()
+            .and_then(|(item, _)| reports::mark(item))
+    }
+
     fn thread(&self, cx: &mut Context<Self>) -> AnyElement {
         let (t, c) = (tokens(), colors());
-        let (_, kind) = subject(&self.item);
+        let kind = self.about.trim_start_matches("about this ");
         if self.messages.is_empty() {
             return div()
                 .flex_1()
                 .min_h_0()
                 .child(ui::empty_state(
                     ui::empty_tile("message-square", c.selected, c.text_2),
-                    format!("Talk to {} here", self.item.author),
+                    format!("Talk to {} here", self.agent),
                     format!(
                         "Messages you send here go to {} with a reference to this {kind}.",
-                        self.item.author
+                        self.agent
                     ),
                 ))
                 .into_any_element();
@@ -248,12 +358,23 @@ impl Conversation {
                             .underline()
                             .child("Retry")
                             .on_click(cx.listener(move |conversation, _, _, cx| {
-                                conversation.deliver(index, cx)
+                                conversation.retry(index, cx)
+                            })),
+                    )),
+                Delivery::Unconfirmed(reason) if self.record.is_none() => meta
+                    .child(SharedString::from(format!("Not confirmed: {reason}")))
+                    .child(ui::link(
+                        div()
+                            .id(SharedString::from(format!("conversation-retry-{index}")))
+                            .underline()
+                            .child("Retry the same request")
+                            .on_click(cx.listener(move |conversation, _, _, cx| {
+                                conversation.retry(index, cx)
                             })),
                     )),
                 Delivery::Unconfirmed(reason) => meta.child(SharedString::from(format!(
                     "Not confirmed: {reason} Ask {} before sending it again.",
-                    self.item.author
+                    self.agent
                 ))),
             };
             thread = thread.child(ui::message(
@@ -276,13 +397,12 @@ impl Render for Conversation {
             return self.rail(cx);
         }
         let t = tokens();
-        let (about, _) = subject(&self.item);
         let can_send = self.can_send(cx);
         ui::conversation_panel()
             .child(ui::conversation_header(
-                reports::mark(&self.item),
-                self.item.author.clone(),
-                about,
+                self.mark(),
+                self.agent.clone(),
+                self.about,
                 ui::icon_button("conversation-close", "panel-right-close").on_click(
                     cx.listener(|conversation, _, window, cx| conversation.close(window, cx)),
                 ),
@@ -290,7 +410,7 @@ impl Render for Conversation {
             .child(self.thread(cx))
             .child(ui::composer(
                 div().text_size(t.text.row.size()).child(self.field.clone()),
-                Some(ui::anchor(format!("#{}", self.item.id))),
+                self.anchor.clone().map(ui::anchor),
                 ui::send_button("conversation-send", can_send)
                     .on_click(cx.listener(|conversation, _, _, cx| conversation.send(cx))),
             ))

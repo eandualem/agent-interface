@@ -34,7 +34,6 @@ mod agent;
 mod artifact_web;
 mod artifacts;
 mod clock;
-mod feedback;
 mod conversation;
 mod documents;
 mod markdown;
@@ -571,9 +570,12 @@ impl Render for ViewPane {
             return div().size_full().child(artifacts.clone());
         }
         if self.showing_sheets
-            && let Some(sheets) = &self.sheets
+            && let Some(sheets) = self.sheets.clone()
         {
-            return div().size_full().child(sheets.clone());
+            return div()
+                .size_full()
+                .bg(colors().surface)
+                .child(reports::sheets_frame(self, sheets, cx));
         }
         let (t, c) = (tokens(), colors());
         self.conversation =

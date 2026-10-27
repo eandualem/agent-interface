@@ -1499,10 +1499,12 @@ pub fn shelf() -> Div {
         .flex_shrink_0()
 }
 
-/// A document on a shelf: a file tile and its tags, the title on up to two
+/// A document or workbook on a shelf: its icon on a tile and its tags, the title on up to two
 /// lines, and the author, age and size at the bottom.
+#[allow(clippy::too_many_arguments)]
 pub fn shelf_card(
     id: impl Into<SharedString>,
+    name: &str,
     selected: bool,
     tags: Vec<Div>,
     title: impl Into<SharedString>,
@@ -1548,7 +1550,7 @@ pub fn shelf_card(
                         .items_center()
                         .justify_center()
                         .child(icon(
-                            "file-text",
+                            name,
                             t.size.icon,
                             if selected { c.accent_text } else { c.text_2 },
                         )),

@@ -70,33 +70,73 @@ fn save() {
     });
 }
 
-fn key(item: &ReportItem) -> String {
-    let kind = match item.content {
-        ReportContent::Progress { .. } => "report",
-        ReportContent::Response { .. } => "response",
-        ReportContent::Document(_) => "document",
+fn lock() -> std::sync::MutexGuard<'static, Seen> {
+    SEEN.lock().unwrap_or_else(|poison| poison.into_inner())
+}
+
+/// Keys for one revision of a record, then for the record across revisions.
+fn keys(item: &ReportItem) -> (String, Option<String>) {
+    let (kind, thing) = match &item.content {
+        ReportContent::Progress { .. } => ("report", None),
+        ReportContent::Response { .. } => ("response", None),
+        ReportContent::Document(metadata) => ("document", Some(metadata.document_id.clone())),
     };
-    format!("{}|{kind}|{}", item.provider_url, item.id)
+    let base = format!("{}|{kind}", item.provider_url);
+    (
+        format!("{base}|{}", item.id),
+        thing.map(|thing| format!("{base}-thing|{thing}")),
+    )
 }
 
-/// Whether the person has opened `item`, or it predates the record of that.
-pub(super) fn is_seen(item: &ReportItem) -> bool {
-    let seen = SEEN.lock().unwrap_or_else(|poison| poison.into_inner());
-    epoch_seconds(&item.created_at).is_some_and(|at| at < seen.since)
-        || seen.keys.contains(&key(item))
+/// Whether revision `key`, published at `published`, has been opened or
+/// predates the record of what was opened.
+pub(super) fn is_seen_key(key: &str, published: &str) -> bool {
+    let seen = lock();
+    epoch_seconds(published).is_some_and(|at| at < seen.since) || seen.keys.iter().any(|k| k == key)
 }
 
-/// Remember that the person opened `item`.
-pub(super) fn mark(item: &ReportItem) {
-    let mut seen = SEEN.lock().unwrap_or_else(|poison| poison.into_inner());
-    let key = key(item);
-    if seen.keys.contains(&key) {
+/// Whether any revision of the record `thing` has been opened.
+pub(super) fn known(thing: &str) -> bool {
+    lock().keys.iter().any(|key| key == thing)
+}
+
+/// Remember that these keys were opened.
+pub(super) fn mark_keys(keys: &[String]) {
+    let mut seen = lock();
+    let mut changed = false;
+    for key in keys {
+        if !seen.keys.contains(key) {
+            seen.keys.push_back(key.clone());
+            changed = true;
+        }
+    }
+    if !changed {
         return;
     }
-    seen.keys.push_back(key);
     while seen.keys.len() > LIMIT {
         seen.keys.pop_front();
     }
     drop(seen);
     save();
+}
+
+/// Whether the person has opened `item`, or it predates the record of that.
+pub(super) fn is_seen(item: &ReportItem) -> bool {
+    is_seen_key(&keys(item).0, &item.created_at)
+}
+
+/// Whether `item` is a newer revision of a record the person has opened.
+pub(super) fn is_update(item: &ReportItem) -> bool {
+    keys(item).1.is_some_and(|thing| known(&thing))
+}
+
+/// Remember that the person opened `item`.
+pub(super) fn mark(item: &ReportItem) {
+    let (revision, thing) = keys(item);
+    mark_keys(
+        &[Some(revision), thing]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>(),
+    );
 }

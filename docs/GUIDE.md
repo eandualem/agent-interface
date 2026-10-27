@@ -415,13 +415,15 @@ The grid is read-only. Select a cell or use Shift-click or Shift-arrow to select
 range. Arrow keys and Tab move the selection. Row and column paging keep large
 workbooks bounded; labels retain canonical A1 coordinates under saved views.
 
-Click **Send feedback** to open the same feedback box used by Documents and Reports.
-Write your feedback and send it to the owning agent. Closing the box preserves its
-draft. Feedback includes the displayed revision and selected cells (up to 100);
-without a selection it refers to the whole workbook revision. Send or clear the
-draft before changing the workbook, revision, tab or page. After an uncertain
-submission, **Retry the same request** checks the original operation without
-creating another feedback message. Delivery status does not mean the agent has
+The workbook's conversation with its author sits on the right, as it does
+beside Documents and Reports. Open it, write your message and press **⌘↵**.
+The composer shows the cells it refers to, such as `Runs!C4`. Each message includes the
+displayed revision and selected cells (up to 100); without a selection it
+refers to the tab and whole workbook revision. Closing the conversation keeps
+the draft. Send or clear the draft before changing the workbook, revision, tab
+or page. After an uncertain submission, **Retry the same request** checks the
+original operation without creating another feedback message. Delivery status
+does not mean the agent has
 answered. **Copy feedback receipt** preserves the identifiers for checking delivery.
 
 **History** opens earlier retained revisions. **Refresh** loads the latest revision.

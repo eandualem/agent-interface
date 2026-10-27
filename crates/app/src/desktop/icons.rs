@@ -101,6 +101,7 @@ icons!(
     "history",
     "corner-down-right",
     "panel-right-close",
+    "sheet",
 );
 
 /// Icons a workspace can show, in the order the picker offers them.

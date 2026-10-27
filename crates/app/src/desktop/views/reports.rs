@@ -90,6 +90,23 @@ fn header(live: bool) -> gpui::Div {
         .when(live, |el| el.child(ui::live_note()))
 }
 
+/// Sheets inside Reports & updates: the same header and section bar above
+/// the workbook view.
+pub(super) fn sheets_frame(
+    pane: &ViewPane,
+    sheets: gpui::Entity<super::sheets::Sheets>,
+    cx: &mut Context<ViewPane>,
+) -> AnyElement {
+    div()
+        .size_full()
+        .flex()
+        .flex_col()
+        .child(header(true))
+        .child(controls(pane, &pane.reports.agents, cx))
+        .child(div().flex_1().min_h_0().flex().flex_col().child(sheets))
+        .into_any_element()
+}
+
 pub(super) fn refresh_toolbar(pane: &ViewPane, cx: &mut Context<ViewPane>) -> gpui::Div {
     controls(pane, &pane.reports.agents, cx)
 }
@@ -579,7 +596,7 @@ pub(super) fn body(pane: &ViewPane, page: &ReportPage, cx: &mut Context<ViewPane
                     let open = (*item).clone();
                     let mut tags = Vec::new();
                     if !seen::is_seen(item) {
-                        let label = if metadata.supersedes_id.is_some() {
+                        let label = if seen::is_update(item) {
                             "updated"
                         } else {
                             "new"
@@ -589,6 +606,7 @@ pub(super) fn body(pane: &ViewPane, page: &ReportPage, cx: &mut Context<ViewPane
                     shelf = shelf.child(
                         ui::shelf_card(
                             SharedString::from(format!("document-{}", item.id)),
+                            "file-text",
                             false,
                             tags,
                             metadata.title.clone(),
@@ -676,13 +694,23 @@ fn controls(pane: &ViewPane, agents: &[String], cx: &mut Context<ViewPane>) -> g
             ui::segment(
                 SharedString::from(format!("reports-{name}")),
                 name,
-                std::mem::discriminant(&pane.reports.query) == std::mem::discriminant(&query),
+                !pane.showing_sheets
+                    && std::mem::discriminant(&pane.reports.query)
+                        == std::mem::discriminant(&query),
             )
             .on_click(cx.listener(move |pane, _, _, cx| {
+                pane.showing_sheets = false;
+                pane.reports.open = None;
                 pane.reports.query = make();
                 pane.reports.previous.clear();
                 pane.refetch(true, cx);
             })),
+        );
+    }
+    if pane.backbone.is_some() {
+        sections = sections.child(
+            ui::segment("reports-Sheets", "Sheets", pane.showing_sheets)
+                .on_click(cx.listener(|pane, _, window, cx| pane.show_sheets(window, cx))),
         );
     }
     let agent = pane.reports.agent.as_deref().unwrap_or(

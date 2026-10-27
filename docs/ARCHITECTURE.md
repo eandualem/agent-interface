@@ -478,12 +478,14 @@ selection, history, copying values, export and contextual feedback. Virtualized 
 and bounded column pages limit rendering work. Labels retain canonical A1 coordinates
 under saved sort/filter views. No spreadsheet widget or formula engine is added.
 
-Sheets embeds the same `desktop::views::feedback::Feedback` entity used by authored
-artifacts, including its collapsed button, native text field, draft preservation,
-focus restoration, send state and outcome display. The document transport retains
-its existing behavior and restores focus to its web surface on close. Sheets supplies
-workbook context and handles the provider's feedback transaction; it does not render
-a separate composer. Feedback carries the immutable observed revision and stable
+Sheets shows the same `desktop::views::conversation::Conversation` entity as the
+record readers, beside the grid, with its native text field, draft preservation,
+focus restoration, delivery states and thread. A record's conversation sends
+through `roster::feedback` and restores focus to its web surface on close. Sheets
+creates the conversation in owner-delivered mode: it supplies the workbook's
+author and the selected cells as the anchor, receives each send and retry as an
+event, handles the provider's feedback transaction and reports the outcome back.
+Feedback carries the immutable observed revision and stable
 selected cell identities. Navigation cannot move a draft to another revision.
 
 A prepared feedback request retains exact bytes and its retry key after an uncertain
