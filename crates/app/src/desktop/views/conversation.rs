@@ -131,6 +131,8 @@ struct Stored {
     /// The read marker when the panel opened; the "new" divider follows it.
     divider: Option<u64>,
     reading: bool,
+    /// When the newest page was last asked for.
+    read_at: Option<std::time::Instant>,
     /// The marker being asked for, so a poll does not ask again meanwhile.
     marking: Option<u64>,
     /// Redeliveries by entry: `None` while asked, else what Backbone said.
@@ -262,6 +264,7 @@ impl Conversation {
                 earlier_cursor: None,
                 divider: None,
                 reading: false,
+                read_at: None,
                 marking: None,
                 redelivery: HashMap::new(),
             });
@@ -381,14 +384,17 @@ impl Conversation {
 
     /// Read again if shown, and say when to look next; `None` stops polling
     /// once Backbone turns out to keep no conversations.
+    /// It wakes at the open rate, so opening the panel speeds it up at once.
     fn poll(&mut self, cx: &mut Context<Self>) -> Option<Duration> {
-        if self.stored.as_ref()?.supported == Some(false) {
+        let stored = self.stored.as_ref()?;
+        if stored.supported == Some(false) {
             return None;
         }
-        if self.shown() {
+        let due = if self.open { OPEN_POLL } else { CLOSED_POLL };
+        if self.shown() && stored.read_at.is_none_or(|at| at.elapsed() >= due) {
             self.refresh(cx);
         }
-        Some(if self.open { OPEN_POLL } else { CLOSED_POLL })
+        Some(OPEN_POLL)
     }
 
     /// The person can see this conversation's rail or panel.
@@ -420,6 +426,7 @@ impl Conversation {
             return;
         }
         stored.reading = true;
+        stored.read_at = Some(std::time::Instant::now());
         let (directory, provider, kind, id) = self.target().expect("stored conversation");
         let worker = cx.background_executor().spawn(async move {
             stored::show(&directory, &provider, kind, &id, &stored::Page::Newest)
@@ -509,6 +516,8 @@ impl Conversation {
                 if let Ok(page) = result {
                     let mut entries = page.entries;
                     entries.append(&mut stored.earlier);
+                    // A retry can return an entry already in the older page.
+                    entries.sort_by_key(|entry| entry.id);
                     entries.dedup_by_key(|entry| entry.id);
                     stored.earlier = entries;
                     stored.earlier_cursor = page.older;
@@ -1163,6 +1172,7 @@ mod tests {
             earlier_cursor: None,
             divider: None,
             reading: false,
+            read_at: None,
             marking: None,
             redelivery: HashMap::new(),
         };
