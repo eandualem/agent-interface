@@ -5,7 +5,7 @@ use agent_interface_roster::views::{
 };
 use gpui::{AnyElement, Context, SharedString, div, prelude::*, px};
 
-use super::{Shown, ViewPane, clock::Local, line, markdown, seen, selection, since};
+use super::{Shown, ViewPane, clock::Local, line, markdown, seen, since};
 use crate::desktop::{
     components as ui,
     design::{colors, tokens},
@@ -352,6 +352,25 @@ fn runtime(pane: &ViewPane, item: &ReportItem) -> Option<gpui::Div> {
     (!runtime.is_empty()).then(|| ui::badge(runtime.clone()))
 }
 
+/// Where a link leads, short enough for the right of its row: the site and
+/// the last part of the path, such as `github.com · issues/516`.
+fn place(url: &str) -> String {
+    let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
+    let (host, path) = rest.split_once('/').unwrap_or((rest, ""));
+    let host = host.strip_prefix("www.").unwrap_or(host);
+    let parts: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
+    match parts.len() {
+        0 => host.to_owned(),
+        1 => format!("{host} · {}", parts[0]),
+        n => format!("{host} · {}/{}", parts[n - 2], parts[n - 1]),
+    }
+}
+
+/// Only web addresses open from a report.
+fn web(url: &str) -> bool {
+    url.starts_with("https://") || url.starts_with("http://")
+}
+
 /// An open report or answer, read-only, with its conversation beside it.
 fn reader(
     pane: &ViewPane,
@@ -427,11 +446,17 @@ fn reader(
             if !links.is_empty() {
                 let mut list = div().flex().flex_col().gap(px(t.space.s6));
                 for (index, link) in links.iter().enumerate() {
-                    list = list.child(ui::reference(
-                        SharedString::from(format!("report-link-{index}")),
-                        link.title.clone(),
-                        selection::text(pane, &link.url, &[], cx),
-                    ));
+                    let url = link.url.clone();
+                    list = list.child(
+                        ui::reference(
+                            SharedString::from(format!("report-link-{index}")),
+                            link.title.clone(),
+                            place(&link.url),
+                        )
+                        .when(web(&url), |row| {
+                            row.on_click(move |_, _, cx| cx.open_url(&url))
+                        }),
+                    );
                 }
                 column = column.child(ui::reader_section("LINKS", list));
             }
@@ -956,6 +981,17 @@ mod tests {
             ..page("claude")
         });
         assert!(state.runtimes.is_empty());
+    }
+
+    #[test]
+    fn a_link_names_its_site_and_where_on_it() {
+        assert_eq!(
+            place("https://github.com/eandualem/agent-backbone/issues/516"),
+            "github.com · issues/516"
+        );
+        assert_eq!(place("https://www.example.com/"), "example.com");
+        assert_eq!(place("https://example.com/docs"), "example.com · docs");
+        assert!(web("https://example.com") && !web("file:///etc/passwd"));
     }
 
     #[test]

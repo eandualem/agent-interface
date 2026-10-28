@@ -2020,12 +2020,12 @@ pub fn link(element: Stateful<Div>) -> Stateful<Div> {
     )
 }
 
-/// An authored link in a report: an icon, its title and the complete target,
-/// which wraps and can be selected. Nothing opens it automatically.
+/// An authored link in a report, on one line: its title, and where it
+/// leads on the right in `muted`.
 pub fn reference(
     id: impl Into<SharedString>,
     title: impl Into<SharedString>,
-    target: impl IntoElement,
+    target: impl Into<SharedString>,
 ) -> Stateful<Div> {
     let (t, c) = (tokens(), colors());
     text(
@@ -2033,32 +2033,33 @@ pub fn reference(
             .id(id.into())
             .flex()
             .flex_shrink_0()
-            .items_start()
+            .items_center()
             .gap(px(t.space.s10))
-            .min_h(px(t.size.reference_row))
+            .h(px(t.size.reference_row))
             .px(px(t.space.s12))
-            .py(px(t.space.s8))
             .rounded(px(t.radius.row))
             .bg(c.panel)
             .border(px(t.size.hairline))
             .border_color(c.line)
-            .text_color(c.text),
+            .text_color(c.text)
+            .cursor_pointer()
+            .hover(|el| el.bg(colors().hover)),
         &t.text.body,
     )
-    .child(
-        div()
-            .pt(px(t.space.s2))
-            .child(icon("link-2", t.size.icon, c.muted)),
-    )
+    .child(icon("link-2", t.size.icon, c.muted))
     .child(
         div()
             .flex_1()
             .min_w_0()
-            .flex()
-            .flex_col()
-            .gap(px(t.space.s2))
-            .child(title.into())
-            .child(text(div().text_color(c.muted), &t.text.meta).child(target)),
+            .overflow_hidden()
+            .whitespace_nowrap()
+            .text_ellipsis()
+            .child(title.into()),
+    )
+    .child(
+        text(div().flex_shrink_0().text_color(c.muted), &t.text.meta)
+            .whitespace_nowrap()
+            .child(target.into()),
     )
 }
 
