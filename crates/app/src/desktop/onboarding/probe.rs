@@ -5,12 +5,13 @@ use std::{
     io::Read,
     path::PathBuf,
     process::{Command, Stdio},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
-/// Commands looked up through the user's own shell.
+/// Commands looked up through the user's own shell. tmux is not among them:
+/// terminals use the app's own resolver, so setup checks with that.
 const COMMANDS: &[&str] = &[
-    "tmux", "git", "gh", "backbone", "claude", "codex", "gemini", "opencode",
+    "git", "gh", "backbone", "claude", "codex", "gemini", "opencode",
 ];
 
 /// Agent tools Backbone can run: command, name, official install command.
@@ -47,6 +48,8 @@ pub enum Backbone {
 #[derive(Clone, Debug)]
 pub struct Probe {
     found: Vec<(&'static str, PathBuf)>,
+    /// tmux as terminals will find it.
+    pub tmux: Option<PathBuf>,
     pub backbone: Backbone,
 }
 
@@ -56,6 +59,7 @@ impl Probe {
         let found = shell_lookup().unwrap_or_else(path_lookup);
         Self {
             found,
+            tmux: agent_interface_tmux::connection::tmux_binary().ok(),
             backbone: backbone(),
         }
     }
@@ -87,22 +91,20 @@ fn shell_lookup() -> Option<Vec<(&'static str, PathBuf)>> {
         .stderr(Stdio::null())
         .spawn()
         .ok()?;
-    let started = Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => break,
-            Ok(None) if started.elapsed() < SHELL_LIMIT => {
-                std::thread::sleep(Duration::from_millis(50));
-            }
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
-        }
-    }
-    let mut output = String::new();
-    child.stdout.take()?.read_to_string(&mut output).ok()?;
+    // Read on a helper thread: a background process started by a startup file
+    // can hold the pipe open after the shell exits, so the deadline covers the
+    // read as well as the shell.
+    let mut stdout = child.stdout.take()?;
+    let (sent, received) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut output = String::new();
+        let _ = stdout.read_to_string(&mut output);
+        let _ = sent.send(output);
+    });
+    let output = received.recv_timeout(SHELL_LIMIT);
+    let _ = child.kill();
+    let _ = child.wait();
+    let output = output.ok()?;
     let found = parse(&output);
     // A shell that printed nothing of ours did not run the script.
     output.contains(MARK).then_some(found)
@@ -167,14 +169,14 @@ mod tests {
     #[test]
     fn parse_keeps_only_marked_absolute_paths_for_known_commands() {
         let output = format!(
-            "Welcome back!\n{MARK}\ttmux\t/opt/homebrew/bin/tmux\n{MARK}\tgh\t\n\
-             {MARK}\tgit\tgit: aliased to hub\n{MARK}\tunknown\t/bin/x\n\
+            "Welcome back!\n{MARK}\tgit\t/usr/bin/git\n{MARK}\tgh\t\n\
+             {MARK}\tcodex\tcodex: aliased to x\n{MARK}\ttmux\t/bin/tmux\n{MARK}\tunknown\t/bin/x\n\
              {MARK}\tclaude\t/Users/me/.local/bin/claude\n"
         );
         assert_eq!(
             parse(&output),
             vec![
-                ("tmux", PathBuf::from("/opt/homebrew/bin/tmux")),
+                ("git", PathBuf::from("/usr/bin/git")),
                 ("claude", PathBuf::from("/Users/me/.local/bin/claude")),
             ]
         );

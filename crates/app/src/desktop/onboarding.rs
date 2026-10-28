@@ -90,6 +90,11 @@ pub fn show(intro: bool, cx: &mut App) {
         ..Default::default()
     };
     let intro = intro && !reduce_motion();
+    if !intro {
+        // Without the scene, record now that setup began, so an interrupted
+        // setup still resumes after other settings create the file.
+        remember(|settings| settings.intro_seen = true);
+    }
     if let Ok(handle) = cx.open_window(options, |_, cx| {
         cx.new(|cx| {
             let mut view = Onboarding {
@@ -273,6 +278,7 @@ impl Onboarding {
     fn check_step(&self, cx: &mut Context<Self>) -> gpui::Div {
         let probe = self.probe.as_ref();
         let found = |command| probe.and_then(|probe| probe.path(command)).is_some();
+        let tmux = probe.is_some_and(|probe| probe.tmux.is_some());
         let ready = (Tone::Tag, "Ready");
         let missing = (Tone::Attention, "Not found");
         let mac = cfg!(target_os = "macos");
@@ -284,8 +290,8 @@ impl Onboarding {
             "tmux",
             "tmux",
             "Keeps every terminal running, even when the window is closed.",
-            if found("tmux") { ready } else { missing },
-            (!found("tmux")).then_some(if mac {
+            if tmux { ready } else { missing },
+            (probe.is_some() && !tmux).then_some(if mac {
                 "brew install tmux"
             } else {
                 "sudo apt install tmux"
