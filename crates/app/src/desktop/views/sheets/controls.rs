@@ -123,16 +123,21 @@ impl Sheets {
         let (t, c) = (tokens(), colors());
         let body = div().flex_1().min_h_0().flex().flex_col();
         let mut shelf = ui::shelf();
-        let mut records: Vec<_> = self.catalog.iter().collect();
-        records.sort_by_cached_key(|record| {
-            let [revision, _] = super::seen_keys(record);
-            shelf_order(
-                super::super::seen::is_seen_key(&revision, &record.updated_at),
-                &record.updated_at,
-                &record.sheet_id.to_string(),
-            )
-        });
-        for record in records {
+        let mut records: Vec<_> = self
+            .catalog
+            .iter()
+            .map(|record| {
+                let [revision, _] = super::seen_keys(record);
+                let order = shelf_order(
+                    super::super::seen::is_seen_key(&revision, &record.updated_at),
+                    &record.updated_at,
+                    &record.sheet_id.to_string(),
+                );
+                (order, record)
+            })
+            .collect();
+        records.sort_by(|(a, _), (b, _)| compare_shelf_order(a, b));
+        for (_, record) in records {
             let [revision, thing] = super::seen_keys(record);
             let mut tags = Vec::new();
             if !super::super::seen::is_seen_key(&revision, &record.updated_at) {
@@ -393,14 +398,20 @@ impl Sheets {
 }
 
 /// Unread revisions lead, with the newest update first in each group.
-fn shelf_order(seen: bool, updated: &str, id: &str) -> (bool, std::cmp::Reverse<i64>, String) {
+fn shelf_order(seen: bool, updated: &str, id: &str) -> (bool, f64, String) {
     (
         seen,
-        std::cmp::Reverse(
-            agent_interface_roster::views::epoch_seconds(updated).unwrap_or(0.0) as i64,
-        ),
+        agent_interface_roster::views::epoch_seconds(updated)
+            .filter(|time| time.is_finite())
+            .unwrap_or(0.0),
         id.into(),
     )
+}
+
+fn compare_shelf_order(a: &(bool, f64, String), b: &(bool, f64, String)) -> std::cmp::Ordering {
+    a.0.cmp(&b.0)
+        .then_with(|| b.1.total_cmp(&a.1))
+        .then_with(|| a.2.cmp(&b.2))
 }
 
 #[cfg(test)]
@@ -414,10 +425,21 @@ mod tests {
             shelf_order(false, "2026-10-28T10:00:00Z", "older unread"),
             shelf_order(false, "2026-10-28T11:00:00Z", "newer unread"),
         ];
-        rows.sort();
+        rows.sort_by(compare_shelf_order);
         assert_eq!(
             rows.map(|row| row.2),
             ["newer unread", "older unread", "seen"]
         );
+    }
+
+    #[test]
+    fn same_second_updates_preserve_fractional_order_before_id() {
+        let mut rows = [
+            shelf_order(false, "2026-10-28T12:00:00.123456Z", "a-older"),
+            shelf_order(false, "2026-10-28T12:00:00.123457Z", "z-newer"),
+            shelf_order(false, "2026-10-28T12:00:00.123457Z", "b-same-time"),
+        ];
+        rows.sort_by(compare_shelf_order);
+        assert_eq!(rows.map(|row| row.2), ["b-same-time", "z-newer", "a-older"]);
     }
 }
