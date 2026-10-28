@@ -166,6 +166,19 @@ selected tab; other tabs start unexpanded in a new window. Ordinary-shell identi
 library. Closing a native window detaches its clients without issuing
 session-termination commands; navigation keeps them attached.
 
+## First-run setup
+
+A fresh install (no settings file and no library) opens a setup window instead
+of the workspace window: an eight-second opening scene, played once, then steps
+that check tmux, Agent Backbone, Git and the agent tools, and show the main
+shortcuts. Tools are looked up through the user's login shell (`$SHELL -l -i`),
+as a new terminal would find them, because an app opened from the Dock has a
+short PATH; the lookup falls back to PATH and the usual install folders. The
+Backbone check is a single read-only roster request. Setup installs nothing.
+Progress is saved as `[setup]` in `settings.toml`: an interrupted setup resumes
+without the scene, and **Set Up Agent Interface…** in the application menu
+reopens it. An explicit library directory skips setup.
+
 ## Appearance and integrations
 
 Native appearance and shortcuts are saved separately in `settings.toml` under

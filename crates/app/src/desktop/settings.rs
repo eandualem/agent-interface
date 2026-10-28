@@ -44,6 +44,8 @@ impl PaneHeaders {
 }
 
 static PANE_HEADERS: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+static INTRO_SEEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static SETUP_DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// How panes show their header now.
 pub fn pane_headers() -> PaneHeaders {
@@ -64,6 +66,10 @@ pub struct Settings {
     /// The navigation panel's width in pixels, when it was dragged.
     pub sidebar_width: Option<u32>,
     pub pane_headers: PaneHeaders,
+    /// The first-run introduction has played.
+    pub intro_seen: bool,
+    /// First-run setup was finished.
+    pub setup_done: bool,
 }
 
 impl Default for Settings {
@@ -75,6 +81,8 @@ impl Default for Settings {
             shortcuts: super::shortcuts::Bindings::default(),
             sidebar_width: None,
             pane_headers: PaneHeaders::Always,
+            intro_seen: false,
+            setup_done: false,
         }
     }
 }
@@ -113,6 +121,11 @@ impl Settings {
         {
             settings.pane_headers = *mode;
         }
+        if let Some(setup) = table.get("setup").and_then(toml::Value::as_table) {
+            let flag = |key| setup.get(key).and_then(toml::Value::as_bool) == Some(true);
+            settings.intro_seen = flag("intro_seen");
+            settings.setup_done = flag("done");
+        }
         if let Some(shortcuts) = table.get("shortcuts").and_then(toml::Value::as_table) {
             settings.shortcuts = super::shortcuts::Bindings::from_entries(
                 shortcuts
@@ -139,6 +152,12 @@ impl Settings {
         if let Some(width) = self.sidebar_width {
             text.push_str(&format!("sidebar_width = {width}\n"));
         }
+        if self.intro_seen || self.setup_done {
+            text.push_str(&format!(
+                "\n[setup]\nintro_seen = {}\ndone = {}\n",
+                self.intro_seen, self.setup_done
+            ));
+        }
         let changed = self.shortcuts.changed();
         if !changed.is_empty() {
             text.push_str("\n[shortcuts]\n");
@@ -157,6 +176,8 @@ impl Settings {
         FONT_SIZE.store(self.font_size.to_bits(), Ordering::Relaxed);
         super::shortcuts::set(self.shortcuts.clone());
         SIDEBAR_WIDTH.store(self.sidebar_width.unwrap_or(0), Ordering::Relaxed);
+        INTRO_SEEN.store(self.intro_seen, Ordering::Relaxed);
+        SETUP_DONE.store(self.setup_done, Ordering::Relaxed);
     }
 
     /// The settings windows are drawing with now.
@@ -168,6 +189,8 @@ impl Settings {
             shortcuts: super::shortcuts::current(),
             sidebar_width: sidebar_width(),
             pane_headers: pane_headers(),
+            intro_seen: INTRO_SEEN.load(Ordering::Relaxed),
+            setup_done: SETUP_DONE.load(Ordering::Relaxed),
         }
     }
 }
@@ -469,6 +492,8 @@ mod tests {
             shortcuts,
             sidebar_width: Some(260),
             pane_headers: PaneHeaders::Hover,
+            intro_seen: true,
+            setup_done: false,
         };
         assert_eq!(Settings::parse(&light.to_toml()), light);
         // Shortcuts are global; other tests rely on the defaults.
