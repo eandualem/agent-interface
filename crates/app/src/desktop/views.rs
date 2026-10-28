@@ -378,6 +378,8 @@ impl ViewPane {
             ViewKind::Policies => Request::Policies,
             ViewKind::Tags => Request::Tags,
             ViewKind::Reports => match &self.reports.open {
+                // A correction asked for by number reads only that answer.
+                _ if let Some(id) = self.reports.opening => Request::Response(id),
                 Some(item) if matches!(item.content, views::ReportContent::Document(_)) => {
                     Request::Document(item.id)
                 }

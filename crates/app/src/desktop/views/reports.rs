@@ -25,6 +25,8 @@ pub(super) struct State {
     /// The list the open record was chosen from, for moving to its
     /// neighbours; an open answer's own refresh reads only that answer.
     feed: Option<ReportPage>,
+    /// An answer asked for by number, such as a correction, until it arrives.
+    pub(super) opening: Option<u64>,
 }
 
 impl State {
@@ -43,6 +45,13 @@ impl State {
     pub fn observe(&mut self, page: &ReportPage) {
         if !page.agents.is_empty() {
             self.agents = page.agents.clone();
+        }
+        if let Some(id) = self.opening
+            && let Some(item) = page.items.iter().find(|item| item.id == id)
+        {
+            self.opening = None;
+            self.open = Some(item.clone());
+            return;
         }
         // The open record's registration and the runtimes come from the same
         // read, so a name re-registered meanwhile cannot lend its runtime; a
@@ -467,14 +476,19 @@ fn reader(
             action,
             superseded_by,
         } => {
-            if let Some(id) = superseded_by {
+            if let Some(id) = *superseded_by {
                 column = column.child(ui::notice(
                     "history",
-                    format!(
-                        "{} published a correction to this answer: #{id}.",
-                        item.author
+                    format!("{} published a correction to this answer.", item.author),
+                    Some(
+                        div()
+                            .id("read-correction")
+                            .child(format!("Read correction #{id} →"))
+                            .on_click(cx.listener(move |pane, _, _, cx| {
+                                pane.reports.opening = Some(id);
+                                pane.refetch(true, cx);
+                            })),
                     ),
-                    None,
                 ));
             }
             let labelled = |label: &'static str, body: AnyElement| {
@@ -981,6 +995,44 @@ mod tests {
             ..page("claude")
         });
         assert!(state.runtimes.is_empty());
+    }
+
+    #[test]
+    fn a_correction_asked_for_by_number_opens_when_it_arrives() {
+        let answer = |id| ReportItem {
+            id,
+            author: "worker".into(),
+            author_id: None,
+            registered: true,
+            provider_url: String::new(),
+            created_at: String::new(),
+            conversation_id: None,
+            content: ReportContent::Response {
+                question: String::new(),
+                answer: String::new(),
+                action: String::new(),
+                superseded_by: None,
+            },
+        };
+        let page = |id| ReportPage {
+            items: vec![answer(id)],
+            next: None,
+            agents: Vec::new(),
+            runtimes: Default::default(),
+        };
+        let mut state = State {
+            open: Some(answer(7)),
+            opening: Some(9),
+            ..State::default()
+        };
+        // A read of the answer still open does not end the wait.
+        state.observe(&page(7));
+        assert_eq!(
+            (state.open.as_ref().unwrap().id, state.opening),
+            (7, Some(9))
+        );
+        state.observe(&page(9));
+        assert_eq!((state.open.as_ref().unwrap().id, state.opening), (9, None));
     }
 
     #[test]
