@@ -280,6 +280,12 @@ plan_node_height = 84.0
 plan_column = 200.0         # from one step of the graph to the next
 plan_edge = 2.0             # the lines between steps
 plan_arrow = 8.0            # the head on those lines
+action = 24.0               # an icon-and-label action in a reader's bar
+revision_step = 22.0        # the arrows of a revision stepper
+sheet_tabs = 34.0           # a workbook's tab strip, under the grid
+sheet_header = 24.0         # the column letters over the grid
+sheet_row = 28.0            # a row of cells
+sheet_number = 40.0         # the row numbers' column
 
 [motion]
 spinner_ms = 1100           # one turn of the working-agent arc

@@ -1893,6 +1893,89 @@ pub fn plan_edge(x: f32, y: f32, length: f32, color: Rgba) -> Div {
         .child(icon("arrow-head", head, color))
 }
 
+// A reader's bar: the revision being read, and actions with a label.
+
+/// An icon and a label that act, such as Copy values in a workbook's bar.
+pub fn action(
+    id: impl Into<SharedString>,
+    name: &str,
+    label: impl Into<SharedString>,
+) -> Stateful<Div> {
+    let (t, c) = (tokens(), colors());
+    text(
+        div()
+            .id(id.into())
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .gap(px(t.space.s6))
+            .h(px(t.size.action))
+            .px(px(t.space.s8))
+            .rounded(px(t.radius.icon_button))
+            .text_color(c.text_2)
+            .cursor_pointer()
+            .hover(|el| el.bg(colors().selected).text_color(colors().text)),
+        &t.text.status,
+    )
+    .child(icon(name, t.size.icon - 1.0, c.muted))
+    .child(label.into())
+}
+
+/// One arrow of a [`revision_stepper`]; faded and inert when `enabled` is
+/// false.
+pub fn revision_step(id: impl Into<SharedString>, name: &str, enabled: bool) -> Stateful<Div> {
+    let (t, c) = (tokens(), colors());
+    div()
+        .id(id.into())
+        .flex()
+        .flex_shrink_0()
+        .items_center()
+        .justify_center()
+        .size(px(t.size.revision_step))
+        .rounded(px(t.radius.key + 1.0))
+        .when(enabled, |el| {
+            el.cursor_pointer().hover(|el| el.bg(colors().selected))
+        })
+        .when(!enabled, |el| el.opacity(0.35))
+        .child(icon(name, t.size.icon - 1.0, c.text_2))
+}
+
+/// Which revision is being read, between its older and newer arrows, with
+/// `latest` marked.
+pub fn revision_stepper(
+    older: Stateful<Div>,
+    label: impl Into<SharedString>,
+    latest: bool,
+    newer: Stateful<Div>,
+) -> Div {
+    let (t, c) = (tokens(), colors());
+    text(
+        div()
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .gap(px(t.space.s6))
+            .h(px(t.size.revision_step + t.space.s4))
+            .px(px(t.space.s2))
+            .rounded(px(t.radius.row))
+            .border(px(t.size.hairline))
+            .border_color(c.line_strong)
+            .bg(c.field)
+            .text_color(c.muted),
+        &t.text.status,
+    )
+    .child(older)
+    .child(
+        text(
+            div().font_family(t.font.mono.clone()).text_color(c.text),
+            &t.text.meta,
+        )
+        .child(label.into()),
+    )
+    .when(latest, |el| el.child(tag("latest", Tone::Tag)))
+    .child(newer)
+}
+
 /// The centred column of a record reader, no wider than reads well.
 pub fn reader_column() -> Div {
     let t = tokens();

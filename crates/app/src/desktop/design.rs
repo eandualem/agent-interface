@@ -139,7 +139,9 @@ group!(
         chooser_height: f32 = number,
         plan_step: f32 = number, plan_dot: f32 = number, plan_tag: f32 = number,
         plan_node_width: f32 = number, plan_node_height: f32 = number,
-        plan_column: f32 = number,
+        plan_column: f32 = number, action: f32 = number, revision_step: f32 = number,
+        sheet_tabs: f32 = number, sheet_header: f32 = number, sheet_row: f32 = number,
+        sheet_number: f32 = number,
         plan_edge: f32 = number, plan_arrow: f32 = number,
     }
 );

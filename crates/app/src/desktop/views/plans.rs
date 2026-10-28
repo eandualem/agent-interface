@@ -831,7 +831,7 @@ fn opened(pane: &ViewPane, plans: &Frame, entry: &Entry, cx: &mut Context<ViewPa
             )),
         );
     reports::plain_frame(
-        toolbar,
+        Some(toolbar),
         div()
             .flex_1()
             .min_h_0()

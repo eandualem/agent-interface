@@ -93,6 +93,8 @@ icons!(
     "agent-play",
     "step-check",
     "arrow-head",
+    "copy",
+    "download",
     "activity",
     "chevron-left",
     "layout-grid",

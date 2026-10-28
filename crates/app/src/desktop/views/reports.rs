@@ -128,16 +128,17 @@ pub(super) fn section_frame(
         .into_any_element()
 }
 
-/// Something opened from a section, such as a plan: the header, its own
-/// toolbar in place of the section bar, and the content.
-pub(super) fn plain_frame(toolbar: gpui::Div, content: impl IntoElement) -> AnyElement {
+/// Something opened from a section, such as a plan or a workbook: the
+/// header, its own toolbar in place of the section bar (or none when the
+/// content draws its own), and the content.
+pub(super) fn plain_frame(toolbar: Option<gpui::Div>, content: impl IntoElement) -> AnyElement {
     div()
         .size_full()
         .flex()
         .flex_col()
         .child(header(false))
-        .child(toolbar)
-        .child(content)
+        .children(toolbar)
+        .child(div().flex_1().min_h_0().flex().flex_col().child(content))
         .into_any_element()
 }
 
@@ -829,7 +830,15 @@ fn controls(pane: &ViewPane, agents: &[String], cx: &mut Context<ViewPane>) -> g
                         })),
                 )
             })
-            // Sheets has its own refresh beside the workbook.
+            .when(pane.shown == Shown::Sheets, |toolbar| {
+                toolbar.child(ui::icon_button("sheets-refresh", "refresh-cw").on_click(
+                    cx.listener(|pane, _, _, cx| {
+                        if let Some(sheets) = &pane.sheets {
+                            sheets.update(cx, |sheets, cx| sheets.refresh(cx));
+                        }
+                    }),
+                ))
+            })
             .when(records, |toolbar| {
                 toolbar.child(ui::icon_button("reports-refresh", "refresh-cw").on_click(
                     cx.listener(|pane, _, _, cx| {

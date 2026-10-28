@@ -464,11 +464,9 @@ impl ViewPane {
         self.plans_shown(false, cx);
         if self.sheets.is_none() {
             let sheets = cx.new(|cx| sheets::Sheets::new(directory, window, cx));
+            // An opened workbook trades the section bar for its own.
             self._search
-                .push(cx.subscribe(&sheets, |pane, _, _: &sheets::Close, cx| {
-                    pane.shown = Shown::Records;
-                    cx.notify();
-                }));
+                .push(cx.observe(&sheets, |_, _, cx| cx.notify()));
             self.sheets = Some(sheets);
         }
         self.shown = Shown::Sheets;
@@ -670,10 +668,12 @@ impl Render for ViewPane {
             conversation.update(cx, |conversation, cx| conversation.set_active(false, cx));
         }
         if let Some(sheets) = sheets {
-            return div()
-                .size_full()
-                .bg(colors().surface)
-                .child(reports::section_frame(self, sheets, cx));
+            let frame = if sheets.read(cx).is_open() {
+                reports::plain_frame(None, sheets)
+            } else {
+                reports::section_frame(self, sheets, cx)
+            };
+            return div().size_full().bg(colors().surface).child(frame);
         }
         if let Some(plans) = plans {
             // Plans render through the pane so their text can be selected.
