@@ -391,7 +391,7 @@ fn card(plans: &Frame, entry: &Entry, cx: &mut Context<ViewPane>) -> AnyElement 
         .into_any_element()
 }
 
-fn list(plans: &Frame, cx: &mut Context<ViewPane>) -> AnyElement {
+fn list(pane: &ViewPane, plans: &Frame, cx: &mut Context<ViewPane>) -> AnyElement {
     let (t, c) = (tokens(), colors());
     let body = match (&plans.page, plans.error) {
         (None, None) => ui::empty_state(
@@ -428,8 +428,11 @@ fn list(plans: &Frame, cx: &mut Context<ViewPane>) -> AnyElement {
                     )
                     .pb_0(),
                 );
+            let agent = pane.reports.agent.as_deref();
             for entry in plans.entries() {
-                column = column.child(card(plans, entry, cx));
+                if agent.is_none_or(|agent| agent == entry.agent_name) {
+                    column = column.child(card(plans, entry, cx));
+                }
             }
             column.into_any_element()
         }
@@ -847,6 +850,6 @@ pub(super) fn body(
     let frame = plans.read(cx).frame.clone();
     match frame.opened().cloned() {
         Some(entry) => opened(pane, &frame, &entry, cx),
-        None => reports::section_frame(pane, list(&frame, cx), cx),
+        None => reports::section_frame(pane, list(pane, &frame, cx), cx),
     }
 }

@@ -767,6 +767,8 @@ fn controls(pane: &ViewPane, agents: &[String], cx: &mut Context<ViewPane>) -> g
         },
     );
     let records = pane.shown == Shown::Records;
+    // Current plans filter by agent too; their list refreshes on its own.
+    let by_agent = records || pane.shown == Shown::Plans;
     let toolbar =
         ui::view_toolbar()
             .h_auto()
@@ -775,7 +777,7 @@ fn controls(pane: &ViewPane, agents: &[String], cx: &mut Context<ViewPane>) -> g
             .flex_wrap()
             .child(sections)
             .child(div().flex_1())
-            .when(records, |toolbar| {
+            .when(by_agent, |toolbar| {
                 toolbar.child(
                     ui::chip("reports-agent", "", pane.reports.agent.is_some())
                         .gap(px(t.space.s6))
@@ -789,15 +791,9 @@ fn controls(pane: &ViewPane, agents: &[String], cx: &mut Context<ViewPane>) -> g
                 )
             })
             // Sheets has its own refresh beside the workbook.
-            .when(pane.shown != Shown::Sheets, |toolbar| {
+            .when(records, |toolbar| {
                 toolbar.child(ui::icon_button("reports-refresh", "refresh-cw").on_click(
                     cx.listener(|pane, _, _, cx| {
-                        if pane.shown == Shown::Plans {
-                            if let Some(plans) = &pane.plans {
-                                plans.update(cx, |plans, cx| plans.refresh(cx));
-                            }
-                            return;
-                        }
                         pane.reports.query = first(&pane.reports.query);
                         pane.reports.previous.clear();
                         pane.refetch(true, cx);
@@ -805,7 +801,7 @@ fn controls(pane: &ViewPane, agents: &[String], cx: &mut Context<ViewPane>) -> g
                 ))
             });
     let mut agent_choices = div().flex().flex_col().flex_shrink_0();
-    if pane.reports.choosing_agent && records {
+    if pane.reports.choosing_agent && by_agent {
         if let Some(search) = &pane.search {
             agent_choices = agent_choices.child(
                 ui::view_toolbar()
