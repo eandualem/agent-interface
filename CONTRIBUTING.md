@@ -52,11 +52,7 @@ python3 scripts/package.py --engine /path/to/prepared-engine
 The engine must already contain its complete file and licence inventories.
 Private integration payloads require the explicit `--allow-private-engine`
 packaging flag and must not be published as releases. Installer transaction
-tests use inert payloads and private home directories:
-
-```sh
-python3 -m unittest discover -s scripts/tests -v
-```
+tests use inert payloads and private home directories.
 
 ```sh
 python3 scripts/prepare-native.py
@@ -202,7 +198,8 @@ The script builds for the host architecture, explicitly using Cargo's release
 profile and Ghostty `ReleaseFast` with the portable `baseline` CPU target. It
 produces an archive and adjacent SHA-256 file under `dist/`. macOS archives
 contain an ad-hoc-signed `.app`; Linux archives contain the binary and notices.
-No compiler or Python runtime is included or required by the installed app.
+App-only archives include no compiler or Python runtime. Combined archives
+include the engine's private Python runtime; no host Python is required.
 The script needs network access for hash-pinned native notices and upstream
 Rust licence texts. `cargo-about` is a build-only MIT/Apache-2.0 tool.
 
