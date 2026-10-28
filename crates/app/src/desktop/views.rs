@@ -379,7 +379,7 @@ impl ViewPane {
             ViewKind::Tags => Request::Tags,
             ViewKind::Reports => match &self.reports.open {
                 // A correction asked for by number reads only that answer.
-                _ if let Some(id) = self.reports.opening => Request::Response(id),
+                _ if let Some(id) = self.reports.pending_correction() => Request::Response(id),
                 Some(item) if matches!(item.content, views::ReportContent::Document(_)) => {
                     Request::Document(item.id)
                 }
@@ -587,7 +587,8 @@ impl ViewPane {
             return false;
         }
         if let Some(plans) = self.plans.clone().filter(|_| self.shown == Shown::Plans) {
-            return plans::key(&plans, key, cx);
+            let agent = self.reports.agent.clone();
+            return plans::key(&plans, agent.as_deref(), key, cx);
         }
         if let Some(conversation) = self.conversation.clone().filter(|_| key.key == "c") {
             conversation.update(cx, |conversation, cx| conversation.request_toggle(cx));

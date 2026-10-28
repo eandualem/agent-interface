@@ -25,11 +25,23 @@ pub(super) struct State {
     /// The list the open record was chosen from, for moving to its
     /// neighbours; an open answer's own refresh reads only that answer.
     feed: Option<ReportPage>,
-    /// An answer asked for by number, such as a correction, until it arrives.
-    pub(super) opening: Option<u64>,
+    /// A correction asked for from the open answer: that answer's number
+    /// and the correction's. It lapses once another record is open.
+    pub(super) opening: Option<(u64, u64)>,
 }
 
 impl State {
+    fn open_id(&self) -> u64 {
+        self.open.as_ref().map_or(0, |open| open.id)
+    }
+
+    /// The correction to read in place of the open answer, while that answer
+    /// is still the one open.
+    pub(super) fn pending_correction(&self) -> Option<u64> {
+        let (from, to) = self.opening?;
+        (self.open.as_ref()?.id == from).then_some(to)
+    }
+
     fn select_agent(&mut self, agent: Option<String>) {
         self.agent = agent;
         self.query = match &self.query {
@@ -46,8 +58,9 @@ impl State {
         if !page.agents.is_empty() {
             self.agents = page.agents.clone();
         }
-        if let Some(id) = self.opening
-            && let Some(item) = page.items.iter().find(|item| item.id == id)
+        self.opening = self.pending_correction().map(|to| (self.open_id(), to));
+        if let Some(to) = self.pending_correction()
+            && let Some(item) = page.items.iter().find(|item| item.id == to)
         {
             self.opening = None;
             self.open = Some(item.clone());
@@ -486,7 +499,7 @@ fn reader(
                             .id("read-correction")
                             .child(format!("Read correction #{id} →"))
                             .on_click(cx.listener(move |pane, _, _, cx| {
-                                pane.reports.opening = Some(id);
+                                pane.reports.opening = Some((pane.reports.open_id(), id));
                                 pane.refetch(true, cx);
                             })),
                     ),
@@ -1031,17 +1044,20 @@ mod tests {
         };
         let mut state = State {
             open: Some(answer(7)),
-            opening: Some(9),
+            opening: Some((7, 9)),
             ..State::default()
         };
         // A read of the answer still open does not end the wait.
         state.observe(&page(7));
-        assert_eq!(
-            (state.open.as_ref().unwrap().id, state.opening),
-            (7, Some(9))
-        );
+        assert_eq!(state.pending_correction(), Some(9));
         state.observe(&page(9));
         assert_eq!((state.open.as_ref().unwrap().id, state.opening), (9, None));
+        // Leaving the answer first lets the correction lapse.
+        state.opening = Some((9, 11));
+        state.open = None;
+        assert_eq!(state.pending_correction(), None);
+        state.observe(&page(11));
+        assert!(state.open.is_none() && state.opening.is_none());
     }
 
     #[test]

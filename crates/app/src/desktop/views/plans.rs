@@ -133,8 +133,17 @@ impl Plans {
         .detach();
     }
 
+    /// Open `author`'s plan; an agent without one stays on the list.
     fn open(&mut self, author: String, cx: &mut Context<Self>) {
         let frame = &mut self.frame;
+        let has_plan = frame.page.as_ref().is_some_and(|page| {
+            page.items
+                .iter()
+                .any(|entry| entry.author_id == author && entry.record.is_some())
+        });
+        if !has_plan {
+            return;
+        }
         frame.selected = Some(author.clone());
         frame.open = Some(author);
         frame.step = frame
@@ -151,11 +160,11 @@ impl Plans {
         cx.notify();
     }
 
-    /// Move the keyboard `by` cards on the list.
-    fn move_card(&mut self, by: isize, cx: &mut Context<Self>) {
+    /// Move the keyboard `by` cards on the list as `agent` filters it.
+    fn move_card(&mut self, by: isize, agent: Option<&str>, cx: &mut Context<Self>) {
         let frame = &mut self.frame;
         let authors: Vec<String> = frame
-            .entries()
+            .entries(agent)
             .iter()
             .map(|entry| entry.author_id.clone())
             .collect();
@@ -202,13 +211,19 @@ impl Plans {
 }
 
 impl Frame {
-    /// The agents in list order: waiting on someone first, then the most
-    /// recently updated, then those without a plan.
-    fn entries(&self) -> Vec<&Entry> {
+    /// The agents in list order, only `agent` when one is chosen: waiting on
+    /// someone first, then the most recently updated, then those without a
+    /// plan.
+    fn entries(&self, agent: Option<&str>) -> Vec<&Entry> {
         let mut entries: Vec<&Entry> = self
             .page
             .as_ref()
-            .map(|page| page.items.iter().collect())
+            .map(|page| {
+                page.items
+                    .iter()
+                    .filter(|entry| agent.is_none_or(|agent| agent == entry.agent_name))
+                    .collect()
+            })
             .unwrap_or_default();
         entries.sort_by_key(|entry| match &entry.record {
             Some(record) => (u8::from(!record.plan.blocked()), record.age_seconds),
@@ -231,6 +246,7 @@ impl Frame {
 /// opened plan.
 pub(super) fn key(
     plans: &Entity<Plans>,
+    agent: Option<&str>,
     key: &gpui::Keystroke,
     cx: &mut Context<ViewPane>,
 ) -> bool {
@@ -245,8 +261,8 @@ pub(super) fn key(
             return true;
         }
         match key.key.as_str() {
-            "up" => plans.move_card(-1, cx),
-            "down" => plans.move_card(1, cx),
+            "up" => plans.move_card(-1, agent, cx),
+            "down" => plans.move_card(1, agent, cx),
             "enter" => match plans.frame.selected.clone() {
                 Some(author) => plans.open(author, cx),
                 None => return false,
@@ -428,11 +444,8 @@ fn list(pane: &ViewPane, plans: &Frame, cx: &mut Context<ViewPane>) -> AnyElemen
                     )
                     .pb_0(),
                 );
-            let agent = pane.reports.agent.as_deref();
-            for entry in plans.entries() {
-                if agent.is_none_or(|agent| agent == entry.agent_name) {
-                    column = column.child(card(plans, entry, cx));
-                }
+            for entry in plans.entries(pane.reports.agent.as_deref()) {
+                column = column.child(card(plans, entry, cx));
             }
             column.into_any_element()
         }

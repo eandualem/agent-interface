@@ -117,7 +117,7 @@ pub(super) fn reader(pane: &ViewPane, cx: &mut Context<ViewPane>) -> AnyElement 
         .child(ui::revision_stepper(
             revision_step(
                 metadata,
-                "document-older",
+                "document-revision-older",
                 "chevron-left",
                 metadata.supersedes_id,
                 cx,
@@ -126,7 +126,7 @@ pub(super) fn reader(pane: &ViewPane, cx: &mut Context<ViewPane>) -> AnyElement 
             metadata.superseded_by.is_none(),
             revision_step(
                 metadata,
-                "document-newer",
+                "document-revision-newer",
                 "chevron-right",
                 metadata.superseded_by,
                 cx,

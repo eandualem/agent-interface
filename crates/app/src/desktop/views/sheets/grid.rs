@@ -300,7 +300,14 @@ impl Sheets {
         let more_columns = next_col < open.grid.total_columns;
         let previous_row = open.pages.rows.last().copied().unwrap_or(0);
         let previous_col = open.pages.columns.last().copied().unwrap_or(0);
-        let mut tabs = div().flex().gap(px(t.space.s4)).min_w_0().overflow_hidden();
+        // Tabs that do not fit scroll sideways rather than hide.
+        let mut tabs = div()
+            .id("sheet-tabs")
+            .flex()
+            .flex_1()
+            .gap(px(t.space.s4))
+            .min_w_0()
+            .overflow_x_scroll();
         for tab in &open.record.tabs {
             let id = tab.tab_id.clone();
             let on = id == open.grid.tab_id;
@@ -356,7 +363,6 @@ impl Sheets {
             &t.text.status,
         )
         .child(tabs)
-        .child(div().flex_1())
         .child(
             ui::text(
                 div()

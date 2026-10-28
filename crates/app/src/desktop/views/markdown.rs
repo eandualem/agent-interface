@@ -144,6 +144,31 @@ fn inline(text: &str) -> (String, Vec<Range<usize>>, Links) {
     (plain, spans, links)
 }
 
+/// The web address at the start of `text`. It ends at a space or an angle
+/// bracket, as in `<https://…>`; closing punctuation belongs to the sentence,
+/// and a closing parenthesis too unless the address opened it, as in
+/// `https://en.wikipedia.org/wiki/Rust_(programming_language)`.
+fn address(text: &str) -> &str {
+    let end = text
+        .find(|ch: char| ch.is_whitespace() || ch == '<' || ch == '>')
+        .unwrap_or(text.len());
+    let mut url = &text[..end];
+    loop {
+        let trimmed = url.trim_end_matches(['.', ',', ';', ':', '!', '?', '\'', '"']);
+        let unopened =
+            trimmed.ends_with(')') && trimmed.matches('(').count() < trimmed.matches(')').count();
+        let next = if unopened {
+            &trimmed[..trimmed.len() - 1]
+        } else {
+            trimmed
+        };
+        if next.len() == url.len() {
+            return url;
+        }
+        url = next;
+    }
+}
+
 /// Append `text` to `plain`, each address in it as its site.
 fn shorten(mut text: &str, plain: &mut String, links: &mut Links) {
     while let Some(at) = ["https://", "http://"]
@@ -153,9 +178,7 @@ fn shorten(mut text: &str, plain: &mut String, links: &mut Links) {
     {
         plain.push_str(&text[..at]);
         let rest = &text[at..];
-        let length = rest.find(char::is_whitespace).unwrap_or(rest.len());
-        // Closing punctuation belongs to the sentence, not the address.
-        let url = rest[..length].trim_end_matches(['.', ',', ';', ':', '!', '?', ')', '\'', '"']);
+        let url = address(rest);
         let site = url
             .split_once("://")
             .map_or(url, |(_, rest)| rest)
@@ -297,6 +320,18 @@ mod tests {
             inline("See https://www.example.com/a/b?c=1. Run `https://x.y` too");
         assert_eq!(plain, "See example.com ↗. Run https://x.y too");
         assert_eq!(spans.first(), Some(&(25..36)));
+        assert_eq!(
+            address("https://en.wikipedia.org/wiki/Rust_(lang)."),
+            "https://en.wikipedia.org/wiki/Rust_(lang)"
+        );
+        assert_eq!(
+            address("https://example.com/docs>, then"),
+            "https://example.com/docs"
+        );
+        assert_eq!(
+            address("https://example.com/a), more"),
+            "https://example.com/a"
+        );
         assert_eq!(
             links,
             [(4..19, "https://www.example.com/a/b?c=1".to_owned())]
