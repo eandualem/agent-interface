@@ -5,8 +5,11 @@
 
 use std::{cell::Cell, collections::BTreeMap, path::PathBuf, rc::Rc, time::Duration};
 
-use agent_interface_roster::plans::{self, Entry, Error, Item, PlansPage};
-use gpui::{AnyElement, Context, Entity, SharedString, Task, div, prelude::*, px};
+use agent_interface_roster::{
+    conversations,
+    plans::{self, Entry, Error, Item, PlansPage},
+};
+use gpui::{AnyElement, Context, Entity, SharedString, Task, Window, div, prelude::*, px};
 
 use super::{ViewPane, reports, selection};
 use crate::desktop::{
@@ -36,6 +39,9 @@ pub(super) struct Plans {
 struct Frame {
     /// The plans last read, kept when a later read fails.
     page: Option<PlansPage>,
+    provider: Option<String>,
+    /// Drafts and unresolved deliveries keep their observed plans accessible.
+    held: bool,
     /// The CLI each agent runs in, from the same read.
     runtimes: BTreeMap<String, String>,
     /// Why the latest read failed, shown beside the plans last read.
@@ -84,6 +90,20 @@ impl Plans {
         self.frame.opened().is_some()
     }
 
+    pub fn conversation(&self) -> Option<ConversationTarget> {
+        self.frame.conversation()
+    }
+
+    pub fn hold_refresh(&mut self, held: bool, cx: &mut Context<Self>) {
+        if self.frame.held != held {
+            self.frame.held = held;
+            if !held && self.shown && self.visible.get() {
+                self.refresh(cx);
+            }
+            cx.notify();
+        }
+    }
+
     fn poll(&mut self, cx: &mut Context<Self>) {
         if self.shown && self.visible.get() {
             self.refresh(cx);
@@ -93,18 +113,19 @@ impl Plans {
     fn receive(
         &mut self,
         number: u64,
-        read: Result<(PlansPage, BTreeMap<String, String>), Error>,
+        read: Result<(PlansPage, BTreeMap<String, String>, String), Error>,
         cx: &mut Context<Self>,
     ) {
         if number == self.asked {
             self.reading = false;
         }
-        if number <= self.applied {
+        if number <= self.applied || self.frame.held {
             return;
         }
         self.applied = number;
         match read {
-            Ok((page, runtimes)) => {
+            Ok((page, runtimes, provider)) => {
+                self.frame.provider = Some(provider);
                 self.frame.page = Some(page);
                 self.frame.runtimes = runtimes;
                 self.frame.error = None;
@@ -116,7 +137,7 @@ impl Plans {
 
     /// Read the plans now, as well as on the regular refresh.
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
-        if self.reading {
+        if self.reading || self.frame.held {
             return;
         }
         self.reading = true;
@@ -124,8 +145,16 @@ impl Plans {
         let number = self.asked;
         let directory = self.directory.clone();
         let read = cx.background_executor().spawn(async move {
+            let provider = conversations::provider(&directory).ok_or(Error::Unavailable)?;
             let page = plans::list_all(&directory)?;
-            Ok((page, agent_interface_roster::views::runtimes(&directory)))
+            if conversations::provider(&directory).as_ref() != Some(&provider) {
+                return Err(Error::Unavailable);
+            }
+            Ok((
+                page,
+                agent_interface_roster::views::runtimes(&directory),
+                provider,
+            ))
         });
         cx.spawn(async move |this, cx| {
             let read = read.await;
@@ -211,7 +240,49 @@ impl Plans {
     }
 }
 
+/// Immutable context for a draft and every retry of a sent message.
+pub(super) struct ConversationTarget {
+    pub provider: String,
+    pub author: String,
+    pub agent: String,
+    pub anchor: conversations::Anchor,
+}
+
+impl ConversationTarget {
+    pub fn key(&self) -> String {
+        format!(
+            "plan\n{}\n{}\n{}\n{}",
+            self.provider,
+            self.author,
+            self.anchor.revision_id.as_deref().unwrap_or_default(),
+            self.anchor.item_id.as_deref().unwrap_or_default()
+        )
+    }
+}
+
 impl Frame {
+    fn conversation(&self) -> Option<ConversationTarget> {
+        let entry = self.opened()?;
+        let record = entry.record.as_ref()?;
+        let item = self
+            .step
+            .as_ref()
+            .and_then(|id| record.plan.items.iter().find(|item| &item.item_id == id));
+        Some(ConversationTarget {
+            provider: self.provider.clone()?,
+            author: entry.author_id.clone(),
+            agent: entry.agent_name.clone(),
+            anchor: conversations::Anchor {
+                revision_id: Some(record.revision_id.clone()),
+                item_id: item.map(|item| item.item_id.clone()),
+                label: Some(
+                    item.map_or_else(|| record.plan.title.clone(), |item| item.text.clone()),
+                ),
+                ..Default::default()
+            },
+        })
+    }
+
     /// The agents in list order, only `agent` when one is chosen: waiting on
     /// someone first, then the most recently updated, then those without a
     /// plan.
@@ -609,10 +680,10 @@ fn legend() -> gpui::Div {
 fn step_panel(
     pane: &ViewPane,
     plans: &Frame,
-    entry: &Entry,
     plan: &plans::Plan,
+    window: &mut Window,
     cx: &mut Context<ViewPane>,
-) -> gpui::Div {
+) -> AnyElement {
     let (t, c) = (tokens(), colors());
     let current = plan.current().map(|item| item.item_id.clone());
     let chosen = plans
@@ -620,9 +691,12 @@ fn step_panel(
         .as_ref()
         .and_then(|id| plan.items.iter().find(|item| &item.item_id == id));
     let mut context = div()
+        .id("plan-step-context")
+        .min_h_0()
+        .max_h(gpui::relative(0.35))
+        .overflow_y_scroll()
         .flex()
         .flex_col()
-        .flex_shrink_0()
         .gap(px(t.space.s8))
         .px(px(t.space.s14))
         .py(px(t.space.s12))
@@ -684,47 +758,23 @@ fn step_panel(
         }
         context = context.child(facts);
     }
-    let close = ui::icon_button("plan-close", "panel-right-close").on_click(cx.listener(
-        |pane, _, _, cx| {
-            if let Some(plans) = &pane.plans {
-                plans.update(cx, |plans, cx| plans.close(cx));
-            }
-        },
-    ));
-    ui::conversation_panel()
-        .child(ui::conversation_header(
-            Some(mark(plan)),
-            entry.agent_name.clone(),
-            "about this plan",
-            close,
-        ))
-        .child(context)
-        .child(
-            ui::text(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .justify_center()
-                    .gap(px(t.space.s8))
-                    .p(px(t.space.s24))
-                    .text_color(c.muted),
-                &t.text.body,
-            )
-            .child(ui::empty_tile("message-square", c.selected, c.text_2))
-            .child(
-                div()
-                    .text_center()
-                    .child("Conversations about plans open here once Agent Backbone serves them."),
-            ),
-        )
+    match &pane.conversation {
+        Some(conversation) => conversation.update(cx, |conversation, cx| {
+            conversation.panel(Some(context.into_any_element()), window, cx)
+        }),
+        None => ui::conversation_panel().child(context).into_any_element(),
+    }
 }
 
 /// An opened plan: its agent, title and summary, the steps as a graph and
 /// the selected step beside it.
-fn opened(pane: &ViewPane, plans: &Frame, entry: &Entry, cx: &mut Context<ViewPane>) -> AnyElement {
+fn opened(
+    pane: &ViewPane,
+    plans: &Frame,
+    entry: &Entry,
+    window: &mut Window,
+    cx: &mut Context<ViewPane>,
+) -> AnyElement {
     let (t, c) = (tokens(), colors());
     let record = entry.record.as_ref().expect("an opened plan has a record");
     let plan = &record.plan;
@@ -861,7 +911,7 @@ fn opened(pane: &ViewPane, plans: &Frame, entry: &Entry, cx: &mut Context<ViewPa
             .min_h_0()
             .flex()
             .child(main)
-            .child(step_panel(pane, plans, entry, plan, cx)),
+            .child(step_panel(pane, plans, plan, window, cx)),
     )
 }
 
@@ -869,11 +919,66 @@ fn opened(pane: &ViewPane, plans: &Frame, entry: &Entry, cx: &mut Context<ViewPa
 pub(super) fn body(
     pane: &ViewPane,
     plans: &Entity<Plans>,
+    window: &mut Window,
     cx: &mut Context<ViewPane>,
 ) -> AnyElement {
     let frame = plans.read(cx).frame.clone();
-    match frame.opened().cloned() {
-        Some(entry) => opened(pane, &frame, &entry, cx),
+    let body = match frame.opened().cloned() {
+        Some(entry) => opened(pane, &frame, &entry, window, cx),
         None => reports::section_frame(pane, list(pane, &frame, cx), cx),
+    };
+    div()
+        .flex()
+        .flex_col()
+        .size_full()
+        .when(frame.held, |el| {
+            el.child(ui::notice(
+                "message-square",
+                "Plan refresh is paused while you have a draft or a message to finish.",
+                None,
+            ))
+        })
+        .child(div().flex_1().min_h_0().child(body))
+        .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn step_conversation_keeps_its_observed_revision_when_the_plan_changes() {
+        let page: PlansPage = serde_json::from_value(serde_json::json!({
+            "items": [{"author_id": "author", "agent_name": "builder", "record": {
+                "plan_id": "plan", "revision_id": "first", "updated_at": "2026-10-28T10:00:00Z",
+                "plan": {"title": "Build", "items": [{"item_id": "step", "text": "Check the build",
+                    "section": "now", "status": "in_progress"}]}
+            }}], "next_after_author_id": null
+        }))
+        .unwrap();
+        let mut frame = Frame {
+            page: Some(page),
+            provider: Some("unix:/tmp/provider.sock".into()),
+            open: Some("author".into()),
+            step: Some("step".into()),
+            ..Default::default()
+        };
+        let observed = frame.conversation().unwrap();
+        assert_eq!(observed.author, "author");
+        assert_eq!(observed.anchor.item_id.as_deref(), Some("step"));
+        assert_eq!(observed.anchor.label.as_deref(), Some("Check the build"));
+        let record = frame.page.as_mut().unwrap().items[0]
+            .record
+            .as_mut()
+            .unwrap();
+        record.revision_id = "second".into();
+        record.plan.items.clear();
+        let refreshed = frame.conversation().unwrap();
+        assert_eq!(observed.anchor.revision_id.as_deref(), Some("first"));
+        assert_eq!(refreshed.anchor.revision_id.as_deref(), Some("second"));
+        assert_eq!(refreshed.anchor.item_id, None);
+        assert_ne!(observed.key(), refreshed.key());
+        frame.open = None;
+        assert!(frame.conversation().is_none());
     }
 }

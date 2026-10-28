@@ -663,7 +663,7 @@ impl Render for ViewPane {
         }
         let sheets = self.sheets.clone().filter(|_| self.shown == Shown::Sheets);
         let plans = self.plans.clone().filter(|_| self.shown == Shown::Plans);
-        if (sheets.is_some() || plans.is_some())
+        if sheets.is_some()
             && let Some(conversation) = self.conversation.take()
         {
             conversation.update(cx, |conversation, cx| conversation.set_active(false, cx));
@@ -677,10 +677,52 @@ impl Render for ViewPane {
             return div().size_full().bg(colors().surface).child(frame);
         }
         if let Some(plans) = plans {
+            let previous = self.conversation.take();
+            self.conversation = plans
+                .read(cx)
+                .conversation()
+                .zip(self.backbone.clone())
+                .map(|(target, directory)| {
+                    let key = target.key();
+                    self.conversations
+                        .entry(key)
+                        .or_insert_with(|| {
+                            let conversation = cx.new(|cx| {
+                                conversation::Conversation::about_plan(
+                                    &target,
+                                    directory,
+                                    self.visible.clone(),
+                                    window,
+                                    cx,
+                                )
+                            });
+                            self._search.push(cx.observe(&conversation, |pane, _, cx| {
+                                let held = pane
+                                    .conversations
+                                    .values()
+                                    .any(|conversation| conversation.read(cx).holds_plan(cx));
+                                if let Some(plans) = &pane.plans {
+                                    plans.update(cx, |plans, cx| plans.hold_refresh(held, cx));
+                                }
+                                cx.notify();
+                            }));
+                            conversation
+                        })
+                        .clone()
+                });
+            if previous != self.conversation {
+                for (conversation, active) in [(previous, false), (self.conversation.clone(), true)]
+                {
+                    if let Some(conversation) = conversation {
+                        conversation
+                            .update(cx, |conversation, cx| conversation.set_active(active, cx));
+                    }
+                }
+            }
             // Plans render through the pane so their text can be selected.
             let body = loop {
                 self.selection.borrow_mut().begin();
-                let body = plans::body(self, &plans, cx);
+                let body = plans::body(self, &plans, window, cx);
                 if !self.selection.borrow_mut().finish() {
                     break body;
                 }

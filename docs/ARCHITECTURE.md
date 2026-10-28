@@ -506,7 +506,13 @@ the Current plans section is open. It is read-only: it publishes, approves and
 changes nothing. A missing endpoint is reported as unsupported, and a failed
 reread keeps the plans last read. Each read also takes the agents' runtimes for
 their badges. The section draws through the pane, like the record readers, so
-an opened plan's text can be selected and copied.
+an opened plan's text can be selected and copied. Its selected step uses the shared
+conversation panel, addressed by the plan author's stable identity. Drafts are
+kept by provider, author, observed revision and step; changing steps or refreshing
+a plan cannot retarget them. Messages and retries retain that revision and item
+anchor. Plan refresh pauses while a draft or unresolved delivery exists, keeping
+its step reachable until the person finishes it. The panel requires stored conversation support and never falls back to
+unanchored feedback for plans.
 
 Sheets shows the same `desktop::views::conversation::Conversation` entity as the
 record readers, beside the grid, with its native text field, draft preservation,
