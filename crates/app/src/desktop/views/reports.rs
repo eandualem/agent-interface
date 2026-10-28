@@ -106,7 +106,7 @@ fn header(live: bool) -> gpui::Div {
 /// header and section bar above it.
 pub(super) fn section_frame(
     pane: &ViewPane,
-    section: gpui::AnyView,
+    section: impl IntoElement,
     cx: &mut Context<ViewPane>,
 ) -> AnyElement {
     div()
@@ -116,6 +116,19 @@ pub(super) fn section_frame(
         .child(header(true))
         .child(controls(pane, &pane.reports.agents, cx))
         .child(div().flex_1().min_h_0().flex().flex_col().child(section))
+        .into_any_element()
+}
+
+/// Something opened from a section, such as a plan: the header, its own
+/// toolbar in place of the section bar, and the content.
+pub(super) fn plain_frame(toolbar: gpui::Div, content: impl IntoElement) -> AnyElement {
+    div()
+        .size_full()
+        .flex()
+        .flex_col()
+        .child(header(false))
+        .child(toolbar)
+        .child(content)
         .into_any_element()
 }
 
