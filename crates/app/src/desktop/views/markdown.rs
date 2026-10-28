@@ -1,6 +1,6 @@
 //! A small reader for skill documents: headings, paragraphs, lists, code
-//! blocks and inline code, drawn in the document styles. It shows the text;
-//! it does not follow links or load images.
+//! blocks and inline code, drawn in the document styles. Web addresses read
+//! as their site and open when clicked; it loads no images.
 
 use std::ops::Range;
 
@@ -121,23 +121,64 @@ fn parse_text(text: &str, front_matter: bool) -> Vec<Block> {
     blocks
 }
 
-/// `text` with its `code` spans marked, and the backticks removed.
-fn inline(text: &str) -> (String, Vec<Range<usize>>) {
+/// A link as it reads in a sentence: its site and an arrow.
+type Links = Vec<(Range<usize>, String)>;
+
+/// `text` with its `code` spans marked and the backticks removed, and each
+/// web address outside code shortened to its site, such as `x.com ↗`.
+fn inline(text: &str) -> (String, Vec<Range<usize>>, Links) {
     let mut plain = String::new();
     let mut spans = Vec::new();
+    let mut links = Vec::new();
     for (index, part) in text.split('`').enumerate() {
         let start = plain.len();
-        plain.push_str(part);
-        if index % 2 == 1 && !part.is_empty() {
-            spans.push(start..plain.len());
+        if index % 2 == 1 {
+            plain.push_str(part);
+            if !part.is_empty() {
+                spans.push(start..plain.len());
+            }
+        } else {
+            shorten(part, &mut plain, &mut links);
         }
     }
-    (plain, spans)
+    (plain, spans, links)
+}
+
+/// Append `text` to `plain`, each address in it as its site.
+fn shorten(mut text: &str, plain: &mut String, links: &mut Links) {
+    while let Some(at) = ["https://", "http://"]
+        .iter()
+        .filter_map(|scheme| text.find(scheme))
+        .min()
+    {
+        plain.push_str(&text[..at]);
+        let rest = &text[at..];
+        let length = rest.find(char::is_whitespace).unwrap_or(rest.len());
+        // Closing punctuation belongs to the sentence, not the address.
+        let url = rest[..length].trim_end_matches(['.', ',', ';', ':', '!', '?', ')', '\'', '"']);
+        let site = url
+            .split_once("://")
+            .map_or(url, |(_, rest)| rest)
+            .split(['/', '?', '#'])
+            .next()
+            .unwrap_or_default();
+        let site = site.strip_prefix("www.").unwrap_or(site);
+        if site.is_empty() {
+            plain.push_str(url);
+        } else {
+            let start = plain.len();
+            plain.push_str(site);
+            plain.push_str(" ↗");
+            links.push((start..plain.len(), url.to_owned()));
+        }
+        text = &rest[url.len()..];
+    }
+    plain.push_str(text);
 }
 
 fn styled(text: &str, pane: &ViewPane, cx: &mut Context<ViewPane>) -> impl IntoElement {
-    let (plain, spans) = inline(text);
-    selection::text(pane, &plain, &spans, cx)
+    let (plain, spans, links) = inline(text);
+    selection::linked(pane, &plain, &spans, &links, cx)
 }
 
 /// Draw the blocks as a document.
@@ -245,8 +286,20 @@ mod tests {
             ]
         );
         assert_eq!(parse("---\nText"), [Block::Paragraph("--- Text".into())]);
-        let (plain, spans) = inline("a `b` c");
+        let (plain, spans, _) = inline("a `b` c");
         assert_eq!(plain, "a b c");
         assert_eq!(spans.first(), Some(&(2..3)));
+    }
+
+    #[test]
+    fn web_addresses_read_as_their_site() {
+        let (plain, spans, links) =
+            inline("See https://www.example.com/a/b?c=1. Run `https://x.y` too");
+        assert_eq!(plain, "See example.com ↗. Run https://x.y too");
+        assert_eq!(spans.first(), Some(&(25..36)));
+        assert_eq!(
+            links,
+            [(4..19, "https://www.example.com/a/b?c=1".to_owned())]
+        );
     }
 }
