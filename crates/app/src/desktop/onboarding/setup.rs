@@ -35,8 +35,16 @@ pub struct Runtime {
     pub id: String,
     pub display_name: String,
     pub available: bool,
+    #[serde(default)]
+    pub setup_supported: bool,
     pub models: Vec<String>,
     pub authentication: String,
+}
+
+impl Runtime {
+    pub fn can_setup(&self) -> bool {
+        self.available && self.setup_supported && self.id != "shell"
+    }
 }
 
 #[derive(Deserialize)]
@@ -584,7 +592,29 @@ mod tests {
         let rows = parse_catalog(include_bytes!("fixtures/runtimes-example.json")).unwrap();
         assert_eq!(rows[0].id, "codex");
         assert!(rows[0].available);
+        assert!(rows[0].can_setup());
         assert_eq!(rows[0].authentication, "unknown");
+    }
+
+    #[test]
+    fn discovery_requires_explicit_setup_support_and_an_available_agent_tool() {
+        let mut catalog: Value =
+            serde_json::from_str(include_str!("fixtures/runtimes-example.json")).unwrap();
+        catalog["items"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("setup_supported");
+        let read = |value: &Value| parse_catalog(&serde_json::to_vec(value).unwrap()).unwrap();
+        assert!(!read(&catalog)[0].can_setup());
+        catalog["items"][0]["setup_supported"] = Value::Bool(false);
+        assert!(!read(&catalog)[0].can_setup());
+        catalog["items"][0]["setup_supported"] = Value::Bool(true);
+        assert!(read(&catalog)[0].can_setup());
+        catalog["items"][0]["available"] = Value::Bool(false);
+        assert!(!read(&catalog)[0].can_setup());
+        catalog["items"][0]["available"] = Value::Bool(true);
+        catalog["items"][0]["id"] = Value::String("shell".into());
+        assert!(!read(&catalog)[0].can_setup());
     }
 
     fn request() -> Request {

@@ -1540,6 +1540,9 @@ impl Browser {
         if self.saving || self.save_failed {
             return false;
         }
+        if let Some(update) = self.library.as_ref().and_then(Library::take_update) {
+            self.apply(update);
+        }
         let Some(source) = self
             .source
             .as_ref()

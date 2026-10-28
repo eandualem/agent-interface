@@ -184,7 +184,9 @@ The first-agent step calls the selected engine's `runtimes --json`, then submits
 `setup --file REQUEST --jsonl` only after an explicit Start action. It offers the
 `orchestrator-v1` brief or custom instructions, a name and a folder. Discovery
 reports installed tools, never verified login; permission and login prompts stay
-in the actual agent terminal. Start also requests an initial greeting, which may
+in the actual agent terminal. First-agent selection also requires an explicit
+`setup_supported: true`; older providers and unsupported tools remain unavailable
+for this setup path. Start also requests an initial greeting, which may
 use the selected account. A submitted greeting is not reported as a received reply.
 
 The app saves the exact request, launcher and effective login-shell PATH in a
@@ -205,7 +207,9 @@ immutable payload launcher only when its data directory matches the current
 connection and its canonical entrypoint remains inside that payload. Otherwise
 setup uses the detected Backbone CLI. Existing agents can be used without creating
 another agent; fresh installations may choose terminals for now and reopen setup
-later. Rechecking the computer refreshes unsubmitted discovery inputs while
+later. A saved request remains intact when the user chooses terminals after an
+attempt finishes, even if that attempt needs recovery. Rechecking the computer
+refreshes unsubmitted discovery inputs while
 retaining any saved operation unchanged. Opening a created agent adds a saved terminal attachment through
 the normal workspace save path.
 Progress is saved as `[setup]` in `settings.toml`: an interrupted setup resumes

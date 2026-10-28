@@ -5,6 +5,7 @@
       "id": "codex",
       "display_name": "Codex",
       "available": true,
+      "setup_supported": true,
       "reports_state": "hooks + terminal",
       "models": [],
       "efforts": [],

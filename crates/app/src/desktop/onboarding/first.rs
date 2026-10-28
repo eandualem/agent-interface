@@ -118,8 +118,14 @@ impl FirstAgent {
         first
     }
 
-    pub fn has_pending_request(&self) -> bool {
+    fn has_pending_request(&self) -> bool {
         self.saved.is_some() || self.busy
+    }
+
+    /// Leaving setup never discards its saved request. Allow terminal use
+    /// after any settled outcome, including an operation that needs recovery.
+    pub fn can_use_terminals(&self) -> bool {
+        !self.busy
     }
 
     /// Rechecking the computer updates an unsubmitted form, while submitted
@@ -170,7 +176,7 @@ impl FirstAgent {
                         first.error = None;
                         first.selected = rows
                             .iter()
-                            .find(|row| row.available && row.id != "shell")
+                            .find(|row| row.can_setup())
                             .map(|row| row.id.clone());
                         first.runtimes = rows;
                     }
@@ -234,7 +240,7 @@ impl FirstAgent {
             .filter(|id| {
                 self.runtimes
                     .iter()
-                    .any(|row| row.id == **id && row.available && row.id != "shell")
+                    .any(|row| row.id == **id && row.can_setup())
             })
             .ok_or("Choose an installed agent tool.")?;
         let directory = self
@@ -442,11 +448,17 @@ impl Render for FirstAgent {
             let mut tools = div().flex().flex_wrap().gap(px(t.space.s8));
             for runtime in self.runtimes.iter().filter(|row| row.id != "shell") {
                 let id = runtime.id.clone();
-                let enabled = runtime.available;
+                let enabled = runtime.can_setup();
                 let label = format!(
                     "{}{}",
                     runtime.display_name,
-                    if enabled { "" } else { " · not installed" }
+                    if !runtime.setup_supported {
+                        " · setup unavailable"
+                    } else if !runtime.available {
+                        " · not installed"
+                    } else {
+                        ""
+                    }
                 );
                 tools = tools.child(
                     ui::button(

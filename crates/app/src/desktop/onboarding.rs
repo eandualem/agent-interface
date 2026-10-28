@@ -623,7 +623,7 @@ impl Render for Onboarding {
                     && self
                         .first
                         .as_ref()
-                        .is_none_or(|first| !first.read(cx).has_pending_request()),
+                        .is_none_or(|first| first.read(cx).can_use_terminals()),
                 |footer| {
                     footer.child(
                         ui::button(
