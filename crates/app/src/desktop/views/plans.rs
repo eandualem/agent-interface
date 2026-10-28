@@ -80,7 +80,8 @@ impl Plans {
 
     /// Whether a plan is open rather than the list.
     pub fn is_open(&self) -> bool {
-        self.frame.open.is_some()
+        // As the section draws it: a plan that has since gone shows the list.
+        self.frame.opened().is_some()
     }
 
     fn poll(&mut self, cx: &mut Context<Self>) {
@@ -263,10 +264,20 @@ pub(super) fn key(
         match key.key.as_str() {
             "up" => plans.move_card(-1, agent, cx),
             "down" => plans.move_card(1, agent, cx),
-            "enter" => match plans.frame.selected.clone() {
-                Some(author) => plans.open(author, cx),
-                None => return false,
-            },
+            "enter" => {
+                // Only a card the filter shows.
+                let shown = plans.frame.selected.clone().filter(|selected| {
+                    plans
+                        .frame
+                        .entries(agent)
+                        .iter()
+                        .any(|entry| &entry.author_id == selected)
+                });
+                match shown {
+                    Some(author) => plans.open(author, cx),
+                    None => return false,
+                }
+            }
             _ => return false,
         }
         true

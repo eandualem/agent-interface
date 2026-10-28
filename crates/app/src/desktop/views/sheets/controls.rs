@@ -43,6 +43,7 @@ impl Sheets {
                 .child(
                     ui::back_button("sheets-back", "Sheets").on_click(cx.listener(
                         |s, _, _, cx| {
+                            s.export_open = false;
                             if s.clean(cx) {
                                 s.catalog(None, cx);
                             }

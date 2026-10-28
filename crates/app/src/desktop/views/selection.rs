@@ -34,6 +34,9 @@ pub(super) struct Selection {
     cursor: Option<Position>,
     dragging: bool,
     invalidated: bool,
+    /// A link pressed and not yet released; it opens on release unless the
+    /// press became a selection.
+    pressed_link: Option<String>,
 }
 
 impl Selection {
@@ -311,15 +314,9 @@ pub(super) fn linked(
             cx.listener(move |pane, event: &gpui::MouseDownEvent, _, cx| {
                 let mut selection = pane.selection.borrow_mut();
                 let at = selection.hit(index, event.position);
-                if event.click_count == 1
-                    && !event.modifiers.shift
-                    && let Some(url) = selection.link_at(at)
-                {
-                    drop(selection);
-                    cx.open_url(&url);
-                    cx.stop_propagation();
-                    return;
-                }
+                selection.pressed_link = (event.click_count == 1 && !event.modifiers.shift)
+                    .then(|| selection.link_at(at))
+                    .flatten();
                 selection.press(at, event.modifiers.shift, event.click_count);
                 cx.stop_propagation();
                 cx.notify();
@@ -365,8 +362,16 @@ pub(super) fn events(cx: &Context<ViewPane>) -> impl IntoElement {
             window.on_mouse_event(move |event: &gpui::MouseUpEvent, phase, _, cx| {
                 if phase == gpui::DispatchPhase::Capture && event.button == gpui::MouseButton::Left
                 {
-                    let _ =
-                        released.update(cx, |pane, _| pane.selection.borrow_mut().dragging = false);
+                    let _ = released.update(cx, |pane, cx| {
+                        let mut selection = pane.selection.borrow_mut();
+                        selection.dragging = false;
+                        // A press on a link that selected nothing opens it.
+                        if let Some(url) = selection.pressed_link.take()
+                            && selection.selected_text().is_empty()
+                        {
+                            cx.open_url(&url);
+                        }
+                    });
                 }
             });
         },

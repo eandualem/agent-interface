@@ -146,7 +146,7 @@ fn inline(text: &str) -> (String, Vec<Range<usize>>, Links) {
 
 /// The web address at the start of `text`. It ends at a space or an angle
 /// bracket, as in `<https://…>`; closing punctuation belongs to the sentence,
-/// and a closing parenthesis too unless the address opened it, as in
+/// and a closing parenthesis or bracket too unless the address opened it, as in
 /// `https://en.wikipedia.org/wiki/Rust_(programming_language)`.
 fn address(text: &str) -> &str {
     let end = text
@@ -155,8 +155,10 @@ fn address(text: &str) -> &str {
     let mut url = &text[..end];
     loop {
         let trimmed = url.trim_end_matches(['.', ',', ';', ':', '!', '?', '\'', '"']);
-        let unopened =
-            trimmed.ends_with(')') && trimmed.matches('(').count() < trimmed.matches(')').count();
+        let unopened = [('(', ')'), ('[', ']')].iter().any(|&(open, close)| {
+            trimmed.ends_with(close)
+                && trimmed.matches(open).count() < trimmed.matches(close).count()
+        });
         let next = if unopened {
             &trimmed[..trimmed.len() - 1]
         } else {
@@ -331,6 +333,11 @@ mod tests {
         assert_eq!(
             address("https://example.com/a), more"),
             "https://example.com/a"
+        );
+        assert_eq!(address("https://example.com/b]"), "https://example.com/b");
+        assert_eq!(
+            address("https://example.com/[x]"),
+            "https://example.com/[x]"
         );
         assert_eq!(
             links,
