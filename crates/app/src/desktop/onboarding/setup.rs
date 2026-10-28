@@ -147,7 +147,18 @@ impl Saved {
     }
 }
 
-fn request_lock(path: &Path) -> Result<File, &'static str> {
+struct RequestLock(File);
+
+impl Drop for RequestLock {
+    fn drop(&mut self) {
+        // A concurrently spawned child can briefly share the open file
+        // description before exec closes it. Closing our descriptor alone
+        // would leave the lock held by that child until then.
+        let _ = self.0.unlock();
+    }
+}
+
+fn request_lock(path: &Path) -> Result<RequestLock, &'static str> {
     let file = OpenOptions::new()
         .read(true)
         .write(true)
@@ -162,7 +173,7 @@ fn request_lock(path: &Path) -> Result<File, &'static str> {
     }
     file.try_lock()
         .map_err(|_| "Another setup window is updating this request.")?;
-    Ok(file)
+    Ok(RequestLock(file))
 }
 
 /// Installer activation is only a launcher lookup for the same installation.
@@ -611,8 +622,12 @@ mod tests {
         );
         let guard = request_lock(&path).unwrap();
         assert!(saved.archive(&path).is_err());
+        // Duplicated descriptors share the same lock, as does a child between
+        // fork and exec. Dropping the guard must release it even then.
+        let inherited = guard.0.try_clone().unwrap();
         drop(guard);
         saved.archive(&path).unwrap();
+        drop(inherited);
         let mut newer = saved.clone();
         newer.request.request_id = "newer-request".into();
         newer.create(&path).unwrap();
