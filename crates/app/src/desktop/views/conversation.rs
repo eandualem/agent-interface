@@ -450,6 +450,11 @@ impl Conversation {
                 .is_some_and(|stored| stored.source.is_some() && stored.supported == Some(false))
     }
 
+    /// Keep the observed plans reachable while a draft or delivery needs work.
+    pub fn holds_plan(&self, cx: &App) -> bool {
+        self.plan_anchor.is_some() && (!self.draft(cx).is_empty() || !self.disposable())
+    }
+
     /// Nothing would be lost by replacing it: no message still sending or
     /// awaiting a retry. A draft moves to the replacement.
     pub fn disposable(&self) -> bool {
@@ -1548,7 +1553,13 @@ impl Conversation {
                                 .child(format!("Message {} {}…", self.agent(), self.about)),
                         )
                     }),
-                self.anchor.clone().map(ui::anchor),
+                self.anchor.clone().map(|label| {
+                    ui::anchor(label)
+                        .max_w(gpui::relative(0.6))
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                }),
                 ui::send_button("conversation-send", can_send)
                     .on_click(cx.listener(|conversation, _, _, cx| conversation.send(cx))),
             ))

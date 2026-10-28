@@ -696,8 +696,16 @@ impl Render for ViewPane {
                                     cx,
                                 )
                             });
-                            self._search
-                                .push(cx.observe(&conversation, |_, _, cx| cx.notify()));
+                            self._search.push(cx.observe(&conversation, |pane, _, cx| {
+                                let held = pane
+                                    .conversations
+                                    .values()
+                                    .any(|conversation| conversation.read(cx).holds_plan(cx));
+                                if let Some(plans) = &pane.plans {
+                                    plans.update(cx, |plans, cx| plans.hold_refresh(held, cx));
+                                }
+                                cx.notify();
+                            }));
                             conversation
                         })
                         .clone()

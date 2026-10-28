@@ -40,6 +40,8 @@ struct Frame {
     /// The plans last read, kept when a later read fails.
     page: Option<PlansPage>,
     provider: Option<String>,
+    /// Drafts and unresolved deliveries keep their observed plans accessible.
+    held: bool,
     /// The CLI each agent runs in, from the same read.
     runtimes: BTreeMap<String, String>,
     /// Why the latest read failed, shown beside the plans last read.
@@ -92,6 +94,16 @@ impl Plans {
         self.frame.conversation()
     }
 
+    pub fn hold_refresh(&mut self, held: bool, cx: &mut Context<Self>) {
+        if self.frame.held != held {
+            self.frame.held = held;
+            if !held && self.shown && self.visible.get() {
+                self.refresh(cx);
+            }
+            cx.notify();
+        }
+    }
+
     fn poll(&mut self, cx: &mut Context<Self>) {
         if self.shown && self.visible.get() {
             self.refresh(cx);
@@ -107,7 +119,7 @@ impl Plans {
         if number == self.asked {
             self.reading = false;
         }
-        if number <= self.applied {
+        if number <= self.applied || self.frame.held {
             return;
         }
         self.applied = number;
@@ -125,7 +137,7 @@ impl Plans {
 
     /// Read the plans now, as well as on the regular refresh.
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
-        if self.reading {
+        if self.reading || self.frame.held {
             return;
         }
         self.reading = true;
@@ -679,9 +691,12 @@ fn step_panel(
         .as_ref()
         .and_then(|id| plan.items.iter().find(|item| &item.item_id == id));
     let mut context = div()
+        .id("plan-step-context")
+        .min_h_0()
+        .max_h(gpui::relative(0.35))
+        .overflow_y_scroll()
         .flex()
         .flex_col()
-        .flex_shrink_0()
         .gap(px(t.space.s8))
         .px(px(t.space.s14))
         .py(px(t.space.s12))
@@ -908,10 +923,23 @@ pub(super) fn body(
     cx: &mut Context<ViewPane>,
 ) -> AnyElement {
     let frame = plans.read(cx).frame.clone();
-    match frame.opened().cloned() {
+    let body = match frame.opened().cloned() {
         Some(entry) => opened(pane, &frame, &entry, window, cx),
         None => reports::section_frame(pane, list(pane, &frame, cx), cx),
-    }
+    };
+    div()
+        .flex()
+        .flex_col()
+        .size_full()
+        .when(frame.held, |el| {
+            el.child(ui::notice(
+                "message-square",
+                "Plan refresh is paused while you have a draft or a message to finish.",
+                None,
+            ))
+        })
+        .child(body)
+        .into_any_element()
 }
 
 #[cfg(test)]
