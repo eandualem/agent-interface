@@ -76,6 +76,14 @@ pub struct Saved {
 }
 
 impl Saved {
+    /// Different provider installations must never share a pending operation.
+    pub fn path(settings: &Path, data_dir: &Path) -> std::path::PathBuf {
+        use sha2::{Digest, Sha256};
+        use std::os::unix::ffi::OsStrExt;
+        let installation = Sha256::digest(data_dir.as_os_str().as_bytes());
+        settings.with_file_name(format!("onboarding-agent-{installation:x}.json"))
+    }
+
     pub fn load(path: &Path) -> Result<Option<Self>, &'static str> {
         let file = match regular_file(path) {
             Ok(file) => file,
@@ -688,6 +696,32 @@ mod tests {
         assert_eq!(
             run(&executable, &request(), "/usr/bin:/bin", |_| {}).unwrap_err(),
             UNKNOWN
+        );
+    }
+    #[test]
+    fn saved_operations_are_scoped_to_each_installation_and_survive_missing_discovery() {
+        let root = tempfile::tempdir().unwrap();
+        let settings = root.path().join("settings.toml");
+        let mut a = Saved {
+            executable: root.path().join("previous engine"),
+            path_env: "/old/tools".into(),
+            request: request(),
+        };
+        a.request.data_dir = root.path().join("installation a");
+        let mut b = a.clone();
+        b.request.data_dir = root.path().join("installation b");
+        b.request.request_id = "other-request".into();
+        let pa = Saved::path(&settings, &a.request.data_dir);
+        let pb = Saved::path(&settings, &b.request.data_dir);
+        assert_ne!(pa, pb);
+        a.create(&pa).unwrap();
+        b.create(&pb).unwrap();
+        let restored = Saved::load(&pa).unwrap().unwrap();
+        assert_eq!(restored.executable, a.executable);
+        assert_eq!(restored.path_env, "/old/tools");
+        assert_eq!(
+            Saved::load(&pb).unwrap().unwrap().request.request_id,
+            "other-request"
         );
     }
 }

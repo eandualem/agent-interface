@@ -188,7 +188,9 @@ in the actual agent terminal. Start also requests an initial greeting, which may
 use the selected account. A submitted greeting is not reported as a received reply.
 
 The app saves the exact request, launcher and effective login-shell PATH in a
-private `onboarding-agent.json` beside settings before executing it. An interrupted
+private `onboarding-agent-<installation-digest>.json` beside settings before
+executing it. The resolved provider directory scopes each saved operation.
+Recovery loads that record even when fresh tool discovery cannot find an engine. An interrupted
 attempt reuses that request ID; only a confirmed preflight failure permits editing
 choices. Saving and archiving serialize through a sibling file lock. The engine
 owns durable operation receipts and mutation deduplication. Requests are capped at

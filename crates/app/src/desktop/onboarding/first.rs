@@ -53,7 +53,7 @@ impl EventEmitter<FirstEvent> for FirstAgent {}
 
 impl FirstAgent {
     pub fn new(
-        executable: PathBuf,
+        executable: Option<PathBuf>,
         path_env: String,
         data_dir: PathBuf,
         existing: bool,
@@ -71,7 +71,7 @@ impl FirstAgent {
             cx.observe(&brief, |_, _, cx| cx.notify()),
         ];
         let save_path =
-            crate::desktop::settings::path().map(|p| p.with_file_name("onboarding-agent.json"));
+            crate::desktop::settings::path().map(|path| setup::Saved::path(&path, &data_dir));
         let loaded = save_path
             .as_deref()
             .ok_or("The settings directory is unavailable.")
@@ -86,6 +86,11 @@ impl FirstAgent {
                 field.set_read_only(true);
             });
         }
+        let (executable, path_env) = match (executable, &saved) {
+            (Some(executable), _) => (executable, path_env),
+            (None, Some(saved)) => (saved.executable.clone(), saved.path_env.clone()),
+            (None, None) => (PathBuf::new(), path_env),
+        };
         let mut first = Self {
             executable,
             path_env,
@@ -107,7 +112,9 @@ impl FirstAgent {
             progress: String::new(),
             _fields: fields,
         };
-        first.discover(cx);
+        if first.saved.is_none() {
+            first.discover(cx);
+        }
         first
     }
 
@@ -129,12 +136,18 @@ impl FirstAgent {
             matches!(probe.backbone, super::probe::Backbone::Running { agents } if agents > 0);
         self.runtimes.clear();
         self.selected = None;
+        self.discovery_generation += 1;
         self.discovering = false;
         self.discover(cx);
     }
 
     fn discover(&mut self, cx: &mut Context<Self>) {
         if self.discovering || self.busy {
+            return;
+        }
+        if self.executable.as_os_str().is_empty() {
+            self.error = Some("The setup engine is unavailable. Return to Check to reconnect it, or use terminals for now.".into());
+            cx.notify();
             return;
         }
         self.discovering = true;
@@ -371,6 +384,7 @@ impl FirstAgent {
             self.progress.clear();
             self.name.update(cx, |field, _| field.set_read_only(false));
             self.brief.update(cx, |field, _| field.set_read_only(false));
+            self.discover(cx);
         }
         cx.notify();
     }

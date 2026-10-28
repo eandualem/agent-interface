@@ -513,12 +513,12 @@ impl Render for Onboarding {
             && self.first.is_none()
             && let Ok(Some(directory)) =
                 crate::roster::provider_directory(Some(true), None, None, false)
-            && let Some(executable) = setup::active_engine(&directory).or_else(|| {
+        {
+            let executable = setup::active_engine(&directory).or_else(|| {
                 self.probe
                     .as_ref()
                     .and_then(|probe| probe.path("backbone").cloned())
-            })
-        {
+            });
             let existing = self.probe.as_ref().is_some_and(
                 |probe| matches!(probe.backbone, Backbone::Running { agents } if agents > 0),
             );
