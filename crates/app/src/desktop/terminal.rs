@@ -173,6 +173,13 @@ impl gpui::EventEmitter<OpenTerminal> for LiveTerminal {}
 impl gpui::EventEmitter<crate::view::Focus> for LiveTerminal {}
 
 impl LiveTerminal {
+    /// Follow the saved directory, so an automatic shell restart uses it.
+    pub fn set_cwd(&mut self, leaf: &Leaf) {
+        if self.target.matches_leaf(leaf) {
+            self.target.leaf.cwd = leaf.cwd.clone();
+        }
+    }
+
     /// Only the browser knows whether an attachment is a registered agent.
     pub fn set_agent(&mut self, agent: Option<(PathBuf, String)>, cx: &mut Context<Self>) {
         if self.agent != agent {

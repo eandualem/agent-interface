@@ -1980,7 +1980,10 @@ impl Render for Browser {
                 Some((self.backbone.clone()?, attachment.session.clone()))
             });
             if let Some(terminal) = self.terminals.get(&leaf.id) {
-                terminal.update(cx, |terminal, cx| terminal.set_agent(agent, cx));
+                terminal.update(cx, |terminal, cx| {
+                    terminal.set_cwd(leaf);
+                    terminal.set_agent(agent, cx)
+                });
             }
         }
         let shown: Vec<(String, View)> = self
