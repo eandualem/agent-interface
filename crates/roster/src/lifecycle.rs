@@ -58,8 +58,9 @@ fn start_at(url: &str, key: &str, name: &str, resume: bool) -> Outcome {
         serde_json::to_vec(&body).expect("launch JSON"),
         Duration::from_secs(30),
     );
-    let not_resumed =
-        "Backbone has no saved conversation to resume for this agent. Start new opens a new one.";
+    // Backbone reports a missing saved conversation like any other refusal.
+    let not_resumed = "Backbone could not resume this agent. If it has no saved conversation, \
+        Start new opens a new one; otherwise check its saved folder, runtime and model.";
     let reply = match reply {
         Ok(reply) => reply,
         Err(Some(401 | 403)) => return refused("Backbone refused access to start this agent."),

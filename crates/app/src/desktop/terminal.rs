@@ -429,6 +429,11 @@ impl LiveTerminal {
                                         .clone()
                                         .unwrap_or_else(|| "Session disconnected".into()),
                                 );
+                                // A shell lost while shown, such as when its server
+                                // stops, gets the same one automatic restart.
+                                if terminal.target.leaf.attachment.is_none() {
+                                    terminal.start(cx);
+                                }
                                 cx.notify();
                             },
                         ));
