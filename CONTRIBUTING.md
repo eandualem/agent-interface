@@ -40,6 +40,24 @@ Check the versions with `zig version` and `tmux -V`.
 
 ## Build and test
 
+Combined engine packaging additionally requires Python 3.11 or newer to verify
+the prepared payload. The optional macOS tmux builder requires Python 3.12 or
+newer and uses the pinned archives in `packaging/tmux-sources.json`:
+
+```sh
+python3 scripts/prepare-tmux.py --output /tmp/agent-interface-tmux
+python3 scripts/package.py --engine /path/to/prepared-engine
+```
+
+The engine must already contain its complete file and licence inventories.
+Private integration payloads require the explicit `--allow-private-engine`
+packaging flag and must not be published as releases. Installer transaction
+tests use inert payloads and private home directories:
+
+```sh
+python3 -m unittest discover -s scripts/tests -v
+```
+
 ```sh
 python3 scripts/prepare-native.py
 export LIBGHOSTTY_VT_SYS_OPTIMIZE=ReleaseSafe

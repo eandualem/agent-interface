@@ -314,12 +314,13 @@ fn parse_windows(bytes: &[u8], source: &str) -> io::Result<Vec<SessionWindow>> {
 
 /// The tmux executable. Finder launches do not normally inherit the shell's
 /// Homebrew PATH, so honour PATH first, then the two standard macOS
-/// installation locations.
+/// installation locations, then the packaged sibling executable.
 pub fn tmux_binary() -> io::Result<std::path::PathBuf> {
     tmux_binary_on(&std::env::var_os("PATH").unwrap_or_default())
 }
 
-/// The tmux executable on `path`, else at the standard macOS locations.
+/// Prefer existing tmux installations before the packaged fallback so an
+/// update does not silently replace the client for an already-running server.
 pub(crate) fn tmux_binary_on(path: &std::ffi::OsStr) -> io::Result<std::path::PathBuf> {
     use std::os::unix::fs::PermissionsExt;
     let candidates = std::env::split_paths(path).map(|directory| directory.join("tmux"));
@@ -333,6 +334,11 @@ pub(crate) fn tmux_binary_on(path: &std::ffi::OsStr) -> io::Result<std::path::Pa
     };
     candidates
         .chain(fallbacks)
+        .chain(
+            std::env::current_exe()
+                .ok()
+                .and_then(|path| path.parent().map(|directory| directory.join("tmux"))),
+        )
         .find(|path| {
             path.metadata().is_ok_and(|metadata| {
                 metadata.is_file() && metadata.permissions().mode() & 0o111 != 0

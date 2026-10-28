@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Build and package the native app for the host (Python is build-time only)."""
 
+import argparse
 import hashlib
 import json
 import os
@@ -12,6 +13,8 @@ import subprocess
 import tarfile
 import tempfile
 import urllib.request
+
+from engine_payload import verify as verify_engine
 
 ROOT = Path(__file__).resolve().parent.parent
 APP_ID = "io.github.eandualem.agent-interface"
@@ -81,10 +84,19 @@ def notices(destination, target, native, env):
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--engine", type=Path, help="Prepared immutable engine payload")
+    parser.add_argument("--allow-private-engine", action="store_true",
+                        help="Build a private integration archive with an unreleased engine")
+    args = parser.parse_args()
+    if args.allow_private_engine and args.engine is None:
+        parser.error("--allow-private-engine requires --engine")
     os.chdir(ROOT)
     target = next(line.removeprefix("host: ") for line in output("rustc", "-vV").splitlines() if line.startswith("host: "))
     if target not in {f"{arch}-{platform}" for arch in ("aarch64", "x86_64") for platform in ("apple-darwin", "unknown-linux-gnu")}:
         raise SystemExit("Unsupported packaging host: " + target)
+    engine = args.engine.resolve() if args.engine else None
+    engine_manifest = verify_engine(engine, target, args.allow_private_engine) if engine else None
     if output("zig", "version") != "0.15.2":
         raise SystemExit("The native engine requires Zig 0.15.2.")
     native = Path(output("python3", "scripts/prepare-native.py"))
@@ -125,6 +137,21 @@ def main():
         executable.chmod(0o755)
         run("strip", "-x" if mac else "--strip-unneeded", str(executable))
         notices(resources, target, native, env)
+        if engine is not None:
+            shutil.copytree(engine, resources / "engine")
+            verify_engine(resources / "engine", target, args.allow_private_engine)
+            shutil.copy2(engine / "libexec/tmux", bin_dir / "tmux")
+            if mac:
+                # Intel linkers need not sign executables automatically. Seal
+                # nested code before the enclosing bundle; the immutable
+                # engine payload remains untouched by app signing.
+                run("codesign", "--force", "--sign", "-", str(bin_dir / "tmux"))
+                run("codesign", "--verify", "--strict", str(bin_dir / "tmux"))
+            for helper in ("engine_payload.py", "install_engine.py"):
+                shutil.copyfile(ROOT / "scripts" / helper, resources / helper)
+            # The engine's inventory includes its redistribution notices. The
+            # sibling binary uses the same build and notices, with its own
+            # macOS code signature when embedded as app executable code.
         shutil.copyfile(ROOT / ("packaging/icon/AppIcon.icns" if mac else "packaging/icon/agent-interface.png"),
                         resources / ("AppIcon.icns" if mac else "agent-interface.png"))
         (resources / "INSTALLER").write_text(APP_ID + "\n")
@@ -134,6 +161,8 @@ def main():
             "rust": output("rustc", "--version"), "zig": "0.15.2",
             "profile": "release", "native_optimization": "ReleaseFast", "cpu": "baseline",
             "ghostty": json.loads((ROOT / "native/ghostty.json").read_text()),
+            "engine_payload_id": engine_manifest["payload_id"] if engine_manifest else None,
+            "private_integration": bool(args.allow_private_engine),
         }, indent=2) + "\n")
         if mac:
             with (bundle / "Contents/Info.plist").open("wb") as stream:
@@ -157,7 +186,7 @@ def main():
                 info = tar.gettarinfo(str(path), arcname=str(path.relative_to(stage)))
                 info.uid = info.gid = 0
                 info.uname = info.gname = ""
-                info.mode = 0o755 if path.is_dir() or path == executable else 0o644
+                info.mode = 0o755 if path.is_dir() or path.stat().st_mode & 0o111 else 0o644
                 if path.is_file():
                     with path.open("rb") as stream:
                         tar.addfile(info, stream)

@@ -1,0 +1,26 @@
+[
+  {
+    "name": "tmux-3.8.tar.gz",
+    "url": "https://github.com/tmux/tmux/releases/download/3.8/tmux-3.8.tar.gz",
+    "sha256": "e79c699c7e949dccd0a4a125e17b8d1261e311b16979dbc8eb34542f3966d82e",
+    "license": "ISC"
+  },
+  {
+    "name": "libevent-2.1.12-stable.tar.gz",
+    "url": "https://github.com/libevent/libevent/releases/download/release-2.1.12-stable/libevent-2.1.12-stable.tar.gz",
+    "sha256": "92e6de1be9ec176428fd2367677e61ceffc2ee1cb119035037a27d346b0403bb",
+    "license": "BSD-3-Clause"
+  },
+  {
+    "name": "ncurses-6.5.tar.gz",
+    "url": "https://invisible-island.net/archives/ncurses/ncurses-6.5.tar.gz",
+    "sha256": "136d91bc269a9a5785e5f9e980bc76ab57428f604ce3e5a5a90cebc767971cc6",
+    "license": "MIT"
+  },
+  {
+    "name": "utf8proc-2.11.2.tar.gz",
+    "url": "https://github.com/JuliaStrings/utf8proc/releases/download/v2.11.2/utf8proc-2.11.2.tar.gz",
+    "sha256": "da15a8b5c1ae1b267884599c8f937a006f7c1afed5c69fba01f1bdb1abfc25ff",
+    "license": "MIT and Unicode data license"
+  }
+]

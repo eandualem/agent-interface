@@ -55,16 +55,56 @@ class InstallTests(unittest.TestCase):
                 info = tarfile.TarInfo(name)
                 data = text.encode()
                 info.size = len(data)
-                info.mode = 0o755 if name == executable else 0o644
+                info.mode = 0o755 if name == executable or name.endswith("engine/python/bin/python3") else 0o644
                 tar.addfile(info, io.BytesIO(data))
         archive.with_suffix(".gz.sha256").write_text(hashlib.sha256(archive.read_bytes()).hexdigest() + "  app.tar.gz\n")
         return archive
 
-    def install(self, archive, success=True):
+    def install(self, archive, success=True, options=(), umask=-1):
         args = ["--archive", str(archive)] if archive else []
-        result = subprocess.run(["sh", str(INSTALL), *args], env=self.env, capture_output=True, text=True)
+        result = subprocess.run(["sh", str(INSTALL), *args, *options], env=self.env, capture_output=True, text=True, umask=umask)
         self.assertEqual(result.returncode == 0, success, result.stdout + result.stderr)
         return result
+
+    def test_engine_failure_restores_app_but_preserves_engine_progress(self):
+        self.install(self.package("0.1.0"))
+        marker = self.home / ".local/lib/agent-interface-engine/progress"
+        archive = self.package("0.2.0", extra={
+            "agent-interface/engine/python/bin/python3": '''#!/bin/sh
+mkdir -p "$HOME/.local/lib/agent-interface-engine"
+echo retained > "$HOME/.local/lib/agent-interface-engine/progress"
+exit 1
+''',
+        })
+        self.install(archive, success=False)
+        self.assertEqual(subprocess.check_output([self.link, "--version"], text=True).strip(), "agent-interface 0.1.0")
+        self.assertEqual(marker.read_text(), "retained\n")
+
+    def test_engine_helper_is_isolated_and_service_none_is_forwarded(self):
+        archive = self.package(extra={
+            "agent-interface/engine/python/bin/python3": '''#!/bin/sh
+printf '%s\\n' "$@" > "$HOME/engine-arguments"
+''',
+        })
+        self.install(archive, options=("--service", "none"))
+        args = (self.home / "engine-arguments").read_text().splitlines()
+        self.assertEqual(args[:2], ["-I", "-B"])
+        self.assertEqual(args[-2:], ["--service", "none"])
+        self.assertEqual(Path(args[args.index("--source") + 1]), self.destination / "engine")
+
+    def test_restrictive_umask_preserves_engine_inventory_modes(self):
+        archive = self.package(extra={
+            "agent-interface/engine/python/bin/python3": "#!/bin/sh\nexit 0\n",
+            "agent-interface/engine/engine-manifest.json": "{}\n",
+        })
+        self.install(archive, options=("--service", "none"), umask=0o077)
+        engine = self.destination / "engine"
+        self.assertEqual((engine / "python/bin/python3").stat().st_mode & 0o777, 0o755)
+        self.assertEqual((engine / "engine-manifest.json").stat().st_mode & 0o777, 0o644)
+
+    def test_app_only_install_never_invokes_engine(self):
+        archive = self.package(extra={"agent-interface/engine/python/bin/python3": "#!/bin/sh\nexit 99\n"})
+        self.install(archive, options=("--no-engine",))
 
     def mock_download(self, archive, prefix="tmux-workspaces", missing_status="404"):
         self.env.update(TEST_ARCHIVE=str(archive), TEST_PREFIX=prefix,

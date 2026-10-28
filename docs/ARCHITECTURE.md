@@ -493,8 +493,50 @@ with Ghostty explicitly set to `ReleaseFast` and the baseline CPU target. It
 packages embedded UI assets, the app icon from `packaging/icon/`, dependency
 notices and source/build metadata.
 macOS receives an ad-hoc-signed `Agent Interface.app` bundle; Linux receives a glibc
-binary linked to the system desktop libraries. Neither package includes a
-Python runtime, build toolchain, tmux server or application daemon.
+binary linked to the system desktop libraries. Standalone packages require an
+existing tmux installation and contain no Python runtime or application daemon.
+
+Passing `--engine PATH` composes a prepared Agent Backbone payload into the
+package and copies its tmux executable beside the app binary. Existing PATH and
+standard macOS tmux installations take precedence over that sibling fallback.
+The engine includes a private CPython runtime, so users need no host Python or
+build tools. The engine's versioned manifest, exact file inventory and licence
+inventory travel with it. `engine_payload.py` rejects changed hashes, missing or
+unlisted files, unexpected modes, links and special files. A payload not marked
+release-ready requires `--allow-private-engine`, and the app's build metadata
+records that private integration status.
+
+For combined packages, `install.sh` runs `install_engine.py` through the bundled
+Python with isolation and bytecode generation disabled. It verifies and copies
+the engine to an immutable per-user payload directory before initialization,
+then saves a private request with its original launcher and PATH. Interrupted
+attempts replay that same request against that payload. JSONL identity, order,
+size, deadline, final state and exit status must agree. A validated failure before
+mutation can archive its request and allow new choices; uncertain or partially
+completed attempts retain exact replay. Completion receipts preserve the original
+service choice on later app updates. Only confirmed fresh
+initialization creates `active.json`; existing engine configuration, services
+and activation are preserved. A failed install restores the previous app while
+retaining engine files and request records that a service may already reference.
+This is initialization and connection preservation, not a managed-engine upgrade
+protocol. The app still owns no daemon; Agent Backbone owns its optional user
+service. `--service none` omits that service, and `--no-engine` installs the app
+without initializing an externally managed connection.
+
+`scripts/prepare-tmux.py` prepares an optional macOS distribution input from
+the SHA-256-pinned archives in `packaging/tmux-sources.json`. It builds tmux 3.8
+(ISC) with static libevent 2.1.12 (BSD-family notices, event loop), ncurses 6.5
+(MIT, terminal capabilities) and utf8proc 2.11.2 (MIT and Unicode data licence,
+Unicode processing). It collects the upstream notices beside the binary and
+records the source hashes. The build uses a disposable prefix, system compiler
+and isolated dependency search paths; it does not install anything or start a
+server. The macOS 11 deployment target is also checked during compilation for
+unguarded newer APIs. Autoconf's link-only `pipe2` probe is disabled because a
+new SDK can expose that symbol even when the deployment target predates it.
+Metadata checks do not replace execution tests on the oldest supported OS.
+The engine payload builder incorporates this input at `libexec/tmux` before
+inventory hashing. Its service prepends `bin` for the pinned Backbone CLI and
+appends `libexec` after the captured PATH, preserving existing tmux precedence.
 
 The shell installer verifies the archive checksum and target, stages a
 per-user replacement, and preserves the data directories. Linux desktop and

@@ -7,17 +7,25 @@ main() {
 
 fail() { printf 'Agent Interface: %s\n' "$*" >&2; exit 1; }
 usage() {
-    printf '%s\n' 'Usage: sh install.sh [--archive PATH]' \
+    printf '%s\n' 'Usage: sh install.sh [--archive PATH] [--service user|none] [--no-engine]' \
         'Installs the latest published build, or a local archive with its .sha256 file.' \
+        'Combined builds initialize the engine; --service none omits its login service.' \
+        '--no-engine installs only the app, keeping an externally managed engine connection.' \
         'Quit the app before updating. Layouts and running tmux sessions are preserved.'
 }
 archive=
-case $# in
-    0) ;;
-    1) case $1 in --help|-h) usage; exit 0;; *) usage; exit 1;; esac ;;
-    2) [ "$1" = --archive ] || { usage; exit 1; }; archive=$2 ;;
-    *) usage; exit 1 ;;
-esac
+service=user
+initialize_engine=true
+while [ "$#" -gt 0 ]; do
+    case $1 in
+        --help|-h) usage; exit 0 ;;
+        --archive) [ "$#" -ge 2 ] || { usage; exit 1; }; archive=$2; shift 2 ;;
+        --service) [ "$#" -ge 2 ] || { usage; exit 1; }; service=$2; shift 2 ;;
+        --no-engine) initialize_engine=false; shift ;;
+        *) usage; exit 1 ;;
+    esac
+done
+case $service in user|none) ;; *) fail 'Service must be user or none.';; esac
 
 case $(uname -s) in
     Darwin) platform=apple-darwin ;;
@@ -217,7 +225,7 @@ awk -v root="$payload" '
 ' "$staging/members" || fail 'Unsafe archive path.'
 tar -tvzf "$staging/download.tar.gz" > "$staging/types"
 awk 'substr($0,1,1) != "-" && substr($0,1,1) != "d" {exit 1}' "$staging/types" || fail 'Archive links or special files are not supported.'
-tar -xzf "$staging/download.tar.gz" -C "$staging"
+tar -xpzf "$staging/download.tar.gz" -C "$staging"
 prepared=$staging/$payload
 [ -f "$prepared/$marker" ] || fail 'Invalid installation marker.'
 case $(cat "$prepared/$marker") in
@@ -298,6 +306,15 @@ if [ "$platform" = unknown-linux-gnu ]; then
         update-desktop-database "$data/applications" >/dev/null 2>&1 || true
     fi
 fi
+resources=$destination/$(dirname "$marker")
+if [ "$initialize_engine" = true ] && [ -d "$resources/engine" ]; then
+    # The payload is already archive- and signature-verified. Its own Python
+    # avoids a host Python prerequisite. Isolation prevents caller Python
+    # configuration from changing this installer; Backbone authority is intact.
+    "$resources/engine/python/bin/python3" -I -B "$resources/install_engine.py" \
+        --source "$resources/engine" --target "$target" --service "$service" ||
+        fail 'Engine initialization did not complete. The previous app is restored; engine progress is retained for retry.'
+fi
 printf '\nInstalled %s\n' "$destination"
 if [ "$platform" = apple-darwin ]; then
     printf '%s\n' 'Open ~/Applications in Finder and launch Agent Interface.app.' \
@@ -308,7 +325,7 @@ else
     printf '%s\n' 'Open Agent Interface from your applications menu.' \
         "For the command line, add $HOME/.local/bin to PATH if needed."
 fi
-if ! command -v tmux >/dev/null 2>&1 && [ ! -x /opt/homebrew/bin/tmux ] && [ ! -x /usr/local/bin/tmux ]; then
+if ! command -v tmux >/dev/null 2>&1 && [ ! -x /opt/homebrew/bin/tmux ] && [ ! -x /usr/local/bin/tmux ] && [ ! -x "$destination/$(dirname "$executable")/tmux" ]; then
     printf '%s\n' 'Install tmux 3.3 or newer before opening terminal panes (see the installation guide).'
 fi
 
