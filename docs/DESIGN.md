@@ -135,6 +135,7 @@ weight, applied with `components::text`:
 | `key` | Keycaps and numbers, in `mono` |
 | `empty_title`, `body` | Empty and error states; explanatory text |
 | `figure` | The headline number in a view |
+| `card_title`, `step_key`, `step_mark` | A plan's title on its card; DONE or NOW atop a step in an opened plan; the `!` in a waiting step's mark |
 
 ## Spacing, radii and sizes
 
@@ -176,7 +177,10 @@ All in `components.rs`; each takes its look from the tokens.
 | `done_symbol`, `live_note` | A finished record's `ok` ring with a check; the header's "live from Agent Backbone" note |
 | `record_row`, `question_row` | An update on a `group_card`: state mark, mono author (`record_who` wide), summary, state `tag`, age (`record_age`) and chevron; an answer: a `?` tile, the question over who answered and how the answer begins, an optional tag, age and chevron, `question_row` tall |
 | `shelf`, `shelf_card` | Documents three to a line: a file tile and tags, the title on up to two lines, author, age and size; at least `shelf_card` tall |
-| `reader_column`, `reader_label`, `reader_section`, `callout`, `notice`, `reference`, `link` | A record reader's centred column (`reader_width`); an uppercase label; a labelled section with its label in a `reader_label` column under a hairline; a tinted block (`Attention` for what waits on the person, `Follows` for what follows an answer); a notice such as a correction; an authored link shown as text (`reference_row` tall); accent text that acts |
+| `reader_column`, `reader_label`, `reader_section`, `callout`, `notice`, `reference`, `link` | A record reader's centred column (`reader_width`); an uppercase label; a labelled section with its label in a `reader_label` column under a hairline; a tinted block (`Attention` for what waits on the person, `Follows` for what follows an answer); a notice such as a correction with its action; an authored link on one `reference_row` line, its title and where it leads on the right; accent text that acts |
+| `plan_card`, `plan_step`, `step_dot`, `plan_link`, `waits_tag` with `Step` | One agent's plan on the list, ringed when selected: steps on one track (`plan_step` tall) joined by `plan_link` lines, each with its `step_dot` (`ok` check done, the turning arc now, a faint ring ahead, `!` on `attention` while it waits); under it, what a step waits on as "**who** · what → step" |
+| `plan_node`, `plan_edge` | An opened plan's graph: a `plan_node_width` × `plan_node_height` node per step with its key (DONE, NOW, NEXT, THEN, WAITS) and name on up to two lines, `plan_column` apart, joined by `plan_edge` arrows (`muted` after a finished step, `faint` ahead) |
+| `action`, `revision_stepper`, `revision_step` | A reader bar's icon-and-label action, such as Copy values; the revision being read between older and newer arrows, `latest` marked |
 | `conversation_rail`, `conversation_panel`, `conversation_header`, `thread_divider`, `thread_event`, `message`, `message_meta`, `anchor`, `composer`, `send_button`, `sending_spinner` | The one conversation beside every reader. Closed: a `conversation_rail` wide rail with its button, the agent's mark and a label, a dot for new replies. Open: a `conversation_width` panel with the agent and subject, chips to choose who to ask when nobody is responsible (scrolling past `chooser_height`), the thread (day dividers and an accent **new** divider; `thread_event` lines for a published revision or plan step, with the agent in mono; the person's messages on the right on `selected`, an agent's on the left on `surface`, `bubble` corners with a `key` tail; a dashed `attention` outline for one not sent) and the composer (field, `anchor` for what the message refers to, ⌘↵ and `send_button`) |
 | `tag_card` | A tag on the left (`tag_card_label` wide) with how many agents carry it; labelled lines of mono names on the right (agents, skills, policies), a dash when empty; `panel` fill for `all` |
 
@@ -238,8 +242,8 @@ other indicators stay still.
 ## Icons
 
 A curated subset of [Lucide](https://lucide.dev) 0.460.0 (ISC licence,
-`assets/icons/LICENSE-lucide`), plus this project's `agent-arc` and
-`agent-play` shapes. To add one, copy its SVG from the same Lucide release into
+`assets/icons/LICENSE-lucide`), plus this project's `agent-arc`,
+`agent-play`, `step-check` and `arrow-head` shapes. To add one, copy its SVG from the same Lucide release into
 `crates/app/assets/icons/` and add its name to `icons!` in `desktop/icons.rs`
 (and to `WORKSPACE` if workspaces may choose it).
 

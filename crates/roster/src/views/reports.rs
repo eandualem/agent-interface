@@ -1,5 +1,7 @@
 //! Existing Backbone report and Response reads; these never publish or acknowledge.
 
+use std::collections::BTreeMap;
+
 use serde::Deserialize;
 
 use super::{Api, UNREADABLE, document};
@@ -123,6 +125,9 @@ pub struct ReportItem {
     pub author: String,
     /// Stable author identity used to validate feedback routing.
     pub author_id: Option<String>,
+    /// Whether the provider resolved the author to a current agent, so
+    /// `author` names that agent rather than a retained, reusable name.
+    pub registered: bool,
     /// Provider address from which this record was read.
     pub provider_url: String,
     /// Server publication timestamp.
@@ -172,6 +177,8 @@ pub struct ReportPage {
     pub next: Option<ReportQuery>,
     /// Configured agents and this page's authors, for choosing a feed filter.
     pub agents: Vec<String>,
+    /// The CLI each configured agent runs in, by agent name.
+    pub runtimes: BTreeMap<String, String>,
 }
 
 #[derive(Deserialize)]
@@ -245,8 +252,10 @@ pub(super) fn read(
     // An unavailable roster must not prevent reading reports. Authors on the
     // current page still provide choices, including retained historical names.
     if let Ok(agents) = super::library::agents(api) {
-        page.agents
-            .extend(agents.into_iter().map(|agent| agent.name));
+        for agent in agents {
+            page.agents.push(agent.name.clone());
+            page.runtimes.insert(agent.name, agent.runtime);
+        }
     }
     page.agents.sort_unstable();
     page.agents.dedup();
@@ -261,6 +270,7 @@ fn response_item(record: Record<Response>) -> ReportItem {
     let text = record.content.response;
     ReportItem {
         id: record.id,
+        registered: record.agent_name.is_some(),
         author: record.agent_name.unwrap_or(record.author_name),
         author_id: record.author_id,
         provider_url: String::new(),
@@ -282,6 +292,7 @@ fn decode_response(body: &[u8]) -> Result<ReportPage, &'static str> {
         items: vec![response_item(record)],
         next: None,
         agents: Vec::new(),
+        runtimes: BTreeMap::new(),
     })
 }
 
@@ -313,6 +324,7 @@ fn decode(body: &[u8], query: &ReportQuery) -> Result<ReportPage, &'static str> 
                 }
                 items.push(ReportItem {
                     id: record.id,
+                    registered: record.agent_name.is_some(),
                     author: record.agent_name.unwrap_or(record.author_name),
                     author_id: record.author_id,
                     provider_url: String::new(),
@@ -363,6 +375,7 @@ fn decode(body: &[u8], query: &ReportQuery) -> Result<ReportPage, &'static str> 
         items,
         next,
         agents,
+        runtimes: BTreeMap::new(),
     })
 }
 
@@ -386,6 +399,7 @@ mod tests {
         .unwrap();
         assert_eq!(page.items.len(), 1);
         assert_eq!(page.items[0].author, "renamed");
+        assert!(page.items[0].registered);
         assert!(page.items[0].needs_owner());
         assert_eq!(
             page.next.unwrap().path(None),
@@ -400,6 +414,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(page.items[0].author, "worker");
+        assert!(!page.items[0].registered);
         assert!(!page.items[0].needs_owner());
         let detail = decode_response(&serde_json::to_vec(&answers["items"][0]).unwrap()).unwrap();
         assert_eq!(detail.items, page.items);

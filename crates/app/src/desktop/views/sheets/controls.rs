@@ -2,62 +2,103 @@ use super::*;
 use gpui::ClipboardItem;
 
 impl Sheets {
-    pub(super) fn toolbar(&self, cx: &mut Context<Self>) -> gpui::Div {
-        let mut bar = ui::view_toolbar().h_auto().flex_wrap().child(
-            ui::chip("sheets-close", "Reports & updates", false).on_click(cx.listener(
-                |s, _, _, cx| {
-                    if s.clean(cx) {
-                        cx.emit(Close);
-                    }
-                },
-            )),
-        );
-        if self.open.is_none() {
-            bar = bar.child(
-                ui::chip("sheets-refresh", "Refresh", false)
-                    .on_click(cx.listener(|s, _, _, cx| s.catalog(s.cursor.clone(), cx))),
-            );
-        } else {
-            bar = bar
+    /// An open workbook's bar: back to the shelf, its title, the revision
+    /// being read, and Copy values and Export on the right. The shelf has
+    /// none; the section bar serves it.
+    pub(super) fn toolbar(&self, cx: &mut Context<Self>) -> Option<gpui::Div> {
+        let open = self.open.as_ref()?;
+        let (t, c) = (tokens(), colors());
+        let latest = open.record.current_revision_id == open.record.revision_id;
+        let revision = open.record.revision_id.to_string();
+        let label = format!("rev {}", &revision[..revision.len().min(8)]);
+        let mut export = ui::action("sheet-export", "download", "Export")
+            .child(ui::icon("chevron-down", t.size.icon - 2.0, c.muted))
+            .on_click(cx.listener(|s, _, _, cx| {
+                s.export_open = !s.export_open;
+                cx.notify();
+            }));
+        if self.export_open {
+            let mut menu = ui::menu()
+                .absolute()
+                .top(px(t.size.action + t.space.s4))
+                .right_0();
+            for format in [Format::Json, Format::Xlsx, Format::Csv, Format::Tsv] {
+                menu = menu.child(
+                    ui::menu_item(
+                        SharedString::from(format!("sheet-export-{}", format.name())),
+                        None,
+                        format.name(),
+                        None,
+                    )
+                    .on_click(cx.listener(move |s, _, _, cx| {
+                        s.export_open = false;
+                        s.export(format, cx);
+                    })),
+                );
+            }
+            export = export.relative().child(menu);
+        }
+        Some(
+            ui::view_toolbar()
                 .child(
-                    ui::chip("sheets-list", "All Sheets", false)
-                        .on_click(cx.listener(|s, _, _, cx| s.catalog(None, cx))),
-                )
-                .child(
-                    ui::chip("sheets-latest", "Refresh", false)
-                        .on_click(cx.listener(|s, _, _, cx| s.latest(cx))),
-                )
-                .child(
-                    ui::chip("sheets-history", "History", self.history.is_some())
-                        .on_click(cx.listener(|s, _, _, cx| s.load_history(None, cx))),
-                )
-                .child(
-                    ui::chip("sheets-copy", "Copy values", false)
-                        .on_click(cx.listener(|s, _, _, cx| s.copy(cx))),
-                )
-                .child(
-                    ui::chip("sheets-export", "Export", self.export_open).on_click(cx.listener(
+                    ui::back_button("sheets-back", "Sheets").on_click(cx.listener(
                         |s, _, _, cx| {
-                            s.export_open = !s.export_open;
-                            cx.notify();
+                            s.export_open = false;
+                            if s.clean(cx) {
+                                s.catalog(None, cx);
+                            }
                         },
                     )),
-                );
-            if self.export_open {
-                for format in [Format::Json, Format::Xlsx, Format::Csv, Format::Tsv] {
-                    bar = bar.child(
-                        ui::chip(
-                            SharedString::from(format!("sheet-export-{}", format.name())),
-                            format.name(),
-                            false,
-                        )
-                        .on_click(cx.listener(move |s, _, _, cx| s.export(format, cx))),
-                    );
-                }
-            }
-        }
-        bar
+                )
+                .child(
+                    ui::text(
+                        div()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .text_color(c.text)
+                            .font_weight(t.text.row_selected.weight()),
+                        &t.text.row,
+                    )
+                    .child(open.record.title.clone()),
+                )
+                .child(ui::revision_stepper(
+                    ui::revision_step("sheet-older", "chevron-left", true)
+                        .on_click(cx.listener(|s, _, _, cx| s.load_history(None, cx))),
+                    label,
+                    latest,
+                    ui::revision_step("sheet-newer", "chevron-right", !latest).on_click(
+                        cx.listener(move |s, _, _, cx| {
+                            if !latest {
+                                s.latest(cx);
+                            }
+                        }),
+                    ),
+                ))
+                .child(div().flex_1())
+                .child(
+                    ui::action("sheet-copy", "copy", "Copy values")
+                        .on_click(cx.listener(|s, _, _, cx| s.copy(cx))),
+                )
+                .child(export),
+        )
     }
+
+    /// Bring the shelf or the open workbook up to date.
+    pub fn refresh(&mut self, cx: &mut Context<Self>) {
+        if self.open.is_some() {
+            self.latest(cx);
+        } else {
+            self.catalog(self.cursor.clone(), cx);
+        }
+    }
+
+    /// Whether a workbook is open rather than the shelf.
+    pub fn is_open(&self) -> bool {
+        self.open.is_some()
+    }
+
     pub(super) fn catalog_body(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let (t, c) = (tokens(), colors());
         let body = div().flex_1().min_h_0().flex().flex_col();

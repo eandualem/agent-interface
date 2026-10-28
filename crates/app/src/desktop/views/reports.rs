@@ -5,7 +5,7 @@ use agent_interface_roster::views::{
 };
 use gpui::{AnyElement, Context, SharedString, div, prelude::*, px};
 
-use super::{Shown, ViewPane, clock::Local, line, markdown, seen, selection, since};
+use super::{Shown, ViewPane, clock::Local, line, markdown, seen, since};
 use crate::desktop::{
     components as ui,
     design::{colors, tokens},
@@ -17,15 +17,31 @@ pub(super) struct State {
     pub agent: Option<String>,
     choosing_agent: bool,
     agents: Vec<String>,
+    /// The CLI each configured agent runs in, for the reader's badge.
+    runtimes: std::collections::BTreeMap<String, String>,
     pub(super) previous: Vec<ReportQuery>,
     /// Records are immutable: keep the opened answer through list refreshes.
     pub open: Option<ReportItem>,
     /// The list the open record was chosen from, for moving to its
     /// neighbours; an open answer's own refresh reads only that answer.
     feed: Option<ReportPage>,
+    /// A correction asked for from the open answer: that answer's number
+    /// and the correction's. It lapses once another record is open.
+    pub(super) opening: Option<(u64, u64)>,
 }
 
 impl State {
+    fn open_id(&self) -> u64 {
+        self.open.as_ref().map_or(0, |open| open.id)
+    }
+
+    /// The correction to read in place of the open answer, while that answer
+    /// is still the one open.
+    pub(super) fn pending_correction(&self) -> Option<u64> {
+        let (from, to) = self.opening?;
+        (self.open.as_ref()?.id == from).then_some(to)
+    }
+
     fn select_agent(&mut self, agent: Option<String>) {
         self.agent = agent;
         self.query = match &self.query {
@@ -42,7 +58,19 @@ impl State {
         if !page.agents.is_empty() {
             self.agents = page.agents.clone();
         }
+        self.opening = self.pending_correction().map(|to| (self.open_id(), to));
+        if let Some(to) = self.pending_correction()
+            && let Some(item) = page.items.iter().find(|item| item.id == to)
+        {
+            self.opening = None;
+            self.open = Some(item.clone());
+            return;
+        }
+        // The open record's registration and the runtimes come from the same
+        // read, so a name re-registered meanwhile cannot lend its runtime; a
+        // read without the roster clears them rather than keep older ones.
         if self.open.is_none() {
+            self.runtimes = page.runtimes.clone();
             self.feed = Some(page.clone());
         }
         let Some(open) = &mut self.open else { return };
@@ -100,7 +128,7 @@ fn header(live: bool) -> gpui::Div {
 /// header and section bar above it.
 pub(super) fn section_frame(
     pane: &ViewPane,
-    section: gpui::AnyView,
+    section: impl IntoElement,
     cx: &mut Context<ViewPane>,
 ) -> AnyElement {
     div()
@@ -110,6 +138,20 @@ pub(super) fn section_frame(
         .child(header(true))
         .child(controls(pane, &pane.reports.agents, cx))
         .child(div().flex_1().min_h_0().flex().flex_col().child(section))
+        .into_any_element()
+}
+
+/// Something opened from a section, such as a plan or a workbook: the
+/// header, its own toolbar in place of the section bar (or none when the
+/// content draws its own), and the content.
+pub(super) fn plain_frame(toolbar: Option<gpui::Div>, content: impl IntoElement) -> AnyElement {
+    div()
+        .size_full()
+        .flex()
+        .flex_col()
+        .child(header(false))
+        .children(toolbar)
+        .child(div().flex_1().min_h_0().flex().flex_col().child(content))
         .into_any_element()
 }
 
@@ -164,7 +206,7 @@ fn state_tag(item: &ReportItem) -> gpui::Div {
 }
 
 /// "Today 14:32", "Mon 27 Oct 09:05".
-fn when(created_at: &str) -> String {
+pub(super) fn when(created_at: &str) -> String {
     let local = epoch_seconds(created_at).and_then(Local::at);
     match (local, Local::now()) {
         (Some(local), Some(now)) => format!("{} {}", local.day_name(&now), local.time()),
@@ -322,6 +364,36 @@ fn reader_toolbar(
         )
 }
 
+/// The CLI the record's author runs in, while the provider resolves the
+/// author to a current agent: a retained name may since belong to another.
+fn runtime(pane: &ViewPane, item: &ReportItem) -> Option<gpui::Div> {
+    let runtime = pane
+        .reports
+        .runtimes
+        .get(&item.author)
+        .filter(|_| item.registered)?;
+    (!runtime.is_empty()).then(|| ui::badge(runtime.clone()))
+}
+
+/// Where a link leads, short enough for the right of its row: the site and
+/// the last part of the path, such as `github.com · issues/516`.
+fn place(url: &str) -> String {
+    let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
+    let (host, path) = rest.split_once('/').unwrap_or((rest, ""));
+    let host = host.strip_prefix("www.").unwrap_or(host);
+    let parts: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
+    match parts.len() {
+        0 => host.to_owned(),
+        1 => format!("{host} · {}", parts[0]),
+        n => format!("{host} · {}/{}", parts[n - 2], parts[n - 1]),
+    }
+}
+
+/// Only web addresses open from a report.
+fn web(url: &str) -> bool {
+    url.starts_with("https://") || url.starts_with("http://")
+}
+
 /// An open report or answer, read-only, with its conversation beside it.
 fn reader(
     pane: &ViewPane,
@@ -354,6 +426,7 @@ fn reader(
                     .pb(px(t.space.s10))
                     .children(mark(item))
                     .child(super::mono(item.author.clone()).text_color(c.text))
+                    .children(runtime(pane, item))
                     .child(state_tag(item))
                     .child(div().flex_1())
                     .child(
@@ -396,11 +469,17 @@ fn reader(
             if !links.is_empty() {
                 let mut list = div().flex().flex_col().gap(px(t.space.s6));
                 for (index, link) in links.iter().enumerate() {
-                    list = list.child(ui::reference(
-                        SharedString::from(format!("report-link-{index}")),
-                        link.title.clone(),
-                        selection::text(pane, &link.url, &[], cx),
-                    ));
+                    let url = link.url.clone();
+                    list = list.child(
+                        ui::reference(
+                            SharedString::from(format!("report-link-{index}")),
+                            link.title.clone(),
+                            place(&link.url),
+                        )
+                        .when(web(&url), |row| {
+                            row.on_click(move |_, _, cx| cx.open_url(&url))
+                        }),
+                    );
                 }
                 column = column.child(ui::reader_section("LINKS", list));
             }
@@ -411,14 +490,19 @@ fn reader(
             action,
             superseded_by,
         } => {
-            if let Some(id) = superseded_by {
+            if let Some(id) = *superseded_by {
                 column = column.child(ui::notice(
                     "history",
-                    format!(
-                        "{} published a correction to this answer: #{id}.",
-                        item.author
+                    format!("{} published a correction to this answer.", item.author),
+                    Some(
+                        div()
+                            .id("read-correction")
+                            .child(format!("Read correction #{id} →"))
+                            .on_click(cx.listener(move |pane, _, _, cx| {
+                                pane.reports.opening = Some((pane.reports.open_id(), id));
+                                pane.refetch(true, cx);
+                            })),
                     ),
-                    None,
                 ));
             }
             let labelled = |label: &'static str, body: AnyElement| {
@@ -437,6 +521,7 @@ fn reader(
                             .items_center()
                             .gap(px(t.space.s8))
                             .child(super::mono(item.author.clone()).text_color(c.text))
+                            .children(runtime(pane, item))
                             .child(div().flex_1())
                             .child(ui::text(div().text_color(c.muted), &t.text.meta).child(
                                 format!("answered {} · #{}", when(&item.created_at), item.id),
@@ -735,6 +820,8 @@ fn controls(pane: &ViewPane, agents: &[String], cx: &mut Context<ViewPane>) -> g
         },
     );
     let records = pane.shown == Shown::Records;
+    // Current plans filter by agent too; their list refreshes on its own.
+    let by_agent = records || pane.shown == Shown::Plans;
     let toolbar =
         ui::view_toolbar()
             .h_auto()
@@ -743,7 +830,7 @@ fn controls(pane: &ViewPane, agents: &[String], cx: &mut Context<ViewPane>) -> g
             .flex_wrap()
             .child(sections)
             .child(div().flex_1())
-            .when(records, |toolbar| {
+            .when(by_agent, |toolbar| {
                 toolbar.child(
                     ui::chip("reports-agent", "", pane.reports.agent.is_some())
                         .gap(px(t.space.s6))
@@ -756,16 +843,18 @@ fn controls(pane: &ViewPane, agents: &[String], cx: &mut Context<ViewPane>) -> g
                         })),
                 )
             })
-            // Sheets has its own refresh beside the workbook.
-            .when(pane.shown != Shown::Sheets, |toolbar| {
+            .when(pane.shown == Shown::Sheets, |toolbar| {
+                toolbar.child(ui::icon_button("sheets-refresh", "refresh-cw").on_click(
+                    cx.listener(|pane, _, _, cx| {
+                        if let Some(sheets) = &pane.sheets {
+                            sheets.update(cx, |sheets, cx| sheets.refresh(cx));
+                        }
+                    }),
+                ))
+            })
+            .when(records, |toolbar| {
                 toolbar.child(ui::icon_button("reports-refresh", "refresh-cw").on_click(
                     cx.listener(|pane, _, _, cx| {
-                        if pane.shown == Shown::Plans {
-                            if let Some(plans) = &pane.plans {
-                                plans.update(cx, |plans, cx| plans.refresh(cx));
-                            }
-                            return;
-                        }
                         pane.reports.query = first(&pane.reports.query);
                         pane.reports.previous.clear();
                         pane.refetch(true, cx);
@@ -773,7 +862,7 @@ fn controls(pane: &ViewPane, agents: &[String], cx: &mut Context<ViewPane>) -> g
                 ))
             });
     let mut agent_choices = div().flex().flex_col().flex_shrink_0();
-    if pane.reports.choosing_agent && records {
+    if pane.reports.choosing_agent && by_agent {
         if let Some(search) = &pane.search {
             agent_choices = agent_choices.child(
                 ui::view_toolbar()
@@ -835,6 +924,7 @@ mod tests {
             id: 7,
             author: "worker".into(),
             author_id: None,
+            registered: false,
             provider_url: String::new(),
             created_at: "2026-10-24T10:00:00Z".into(),
             conversation_id: None,
@@ -853,6 +943,7 @@ mod tests {
             items: vec![item("A different body", Some(9))],
             next: None,
             agents: Vec::new(),
+            runtimes: Default::default(),
         });
         let open = state.open.unwrap();
         assert_eq!(label(&open), "corrected by #9");
@@ -867,6 +958,7 @@ mod tests {
             id,
             author: "worker".into(),
             author_id: None,
+            registered: false,
             provider_url: String::new(),
             created_at: "2026-10-24T10:00:00Z".into(),
             conversation_id: None,
@@ -881,12 +973,102 @@ mod tests {
             items: ids.iter().map(|id| item(*id)).collect(),
             next: None,
             agents: Vec::new(),
+            runtimes: Default::default(),
         };
         let mut state = State::default();
         state.observe(&page(&[3, 2, 1]));
         state.open = Some(item(2));
         state.observe(&page(&[2]));
         assert_eq!(state.feed.unwrap().items.len(), 3);
+    }
+
+    #[test]
+    fn an_open_record_keeps_the_runtimes_its_feed_read() {
+        let page = |runtime: &str| ReportPage {
+            items: Vec::new(),
+            next: None,
+            agents: vec!["worker".into()],
+            runtimes: [("worker".into(), runtime.into())].into(),
+        };
+        let mut state = State::default();
+        state.observe(&page("codex"));
+        state.open = Some(ReportItem {
+            id: 1,
+            author: "worker".into(),
+            author_id: None,
+            registered: true,
+            provider_url: String::new(),
+            created_at: String::new(),
+            conversation_id: None,
+            content: ReportContent::Response {
+                question: String::new(),
+                answer: String::new(),
+                action: String::new(),
+                superseded_by: None,
+            },
+        });
+        // The name was re-registered to another agent while the record was open.
+        state.observe(&page("claude"));
+        assert_eq!(state.runtimes["worker"], "codex");
+        // Closed again, a read whose roster failed leaves no runtime to show.
+        state.open = None;
+        state.observe(&ReportPage {
+            runtimes: Default::default(),
+            ..page("claude")
+        });
+        assert!(state.runtimes.is_empty());
+    }
+
+    #[test]
+    fn a_correction_asked_for_by_number_opens_when_it_arrives() {
+        let answer = |id| ReportItem {
+            id,
+            author: "worker".into(),
+            author_id: None,
+            registered: true,
+            provider_url: String::new(),
+            created_at: String::new(),
+            conversation_id: None,
+            content: ReportContent::Response {
+                question: String::new(),
+                answer: String::new(),
+                action: String::new(),
+                superseded_by: None,
+            },
+        };
+        let page = |id| ReportPage {
+            items: vec![answer(id)],
+            next: None,
+            agents: Vec::new(),
+            runtimes: Default::default(),
+        };
+        let mut state = State {
+            open: Some(answer(7)),
+            opening: Some((7, 9)),
+            ..State::default()
+        };
+        // A read of the answer still open does not end the wait.
+        state.observe(&page(7));
+        assert_eq!(state.pending_correction(), Some(9));
+        state.observe(&page(9));
+        assert_eq!((state.open.as_ref().unwrap().id, state.opening), (9, None));
+        // Leaving the answer first lets the correction lapse.
+        state.opening = Some((9, 11));
+        state.open = None;
+        assert_eq!(state.pending_correction(), None);
+        state.observe(&page(11));
+        assert!(state.open.is_none() && state.opening.is_none());
+    }
+
+    #[test]
+    fn a_link_names_its_site_and_where_on_it() {
+        assert_eq!(
+            place("https://github.com/eandualem/agent-backbone/issues/516"),
+            "github.com · issues/516"
+        );
+        assert_eq!(place("https://www.example.com/"), "example.com");
+        assert_eq!(place("https://example.com/docs"), "example.com · docs");
+        assert!(web("https://example.com") && !web("file:///etc/passwd"));
     }
 
     #[test]

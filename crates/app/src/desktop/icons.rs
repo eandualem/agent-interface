@@ -1,5 +1,6 @@
 //! Bundled vector icons: a curated subset of Lucide 0.460.0 (ISC licence,
-//! `assets/icons/LICENSE-lucide`), plus this project's two `agent-*` shapes.
+//! `assets/icons/LICENSE-lucide`), plus this project's own `agent-*`,
+//! `step-check` and `arrow-head` shapes.
 //! GPUI draws each as a mask in the text color.
 
 use std::borrow::Cow;
@@ -90,6 +91,10 @@ icons!(
     "circle-check",
     "agent-arc",
     "agent-play",
+    "step-check",
+    "arrow-head",
+    "copy",
+    "download",
     "activity",
     "chevron-left",
     "layout-grid",

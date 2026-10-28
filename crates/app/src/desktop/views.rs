@@ -378,6 +378,8 @@ impl ViewPane {
             ViewKind::Policies => Request::Policies,
             ViewKind::Tags => Request::Tags,
             ViewKind::Reports => match &self.reports.open {
+                // A correction asked for by number reads only that answer.
+                _ if let Some(id) = self.reports.pending_correction() => Request::Response(id),
                 Some(item) if matches!(item.content, views::ReportContent::Document(_)) => {
                     Request::Document(item.id)
                 }
@@ -444,7 +446,10 @@ impl ViewPane {
             Some(_) => self.plans_shown(true, cx),
             None => {
                 let visible = self.visible.clone();
-                self.plans = Some(cx.new(|cx| plans::Plans::new(directory, visible, cx)));
+                let plans = cx.new(|cx| plans::Plans::new(directory, visible, cx));
+                self._search
+                    .push(cx.observe(&plans, |_, _, cx| cx.notify()));
+                self.plans = Some(plans);
             }
         }
         self.shown = Shown::Plans;
@@ -459,11 +464,9 @@ impl ViewPane {
         self.plans_shown(false, cx);
         if self.sheets.is_none() {
             let sheets = cx.new(|cx| sheets::Sheets::new(directory, window, cx));
+            // An opened workbook trades the section bar for its own.
             self._search
-                .push(cx.subscribe(&sheets, |pane, _, _: &sheets::Close, cx| {
-                    pane.shown = Shown::Records;
-                    cx.notify();
-                }));
+                .push(cx.observe(&sheets, |_, _, cx| cx.notify()));
             self.sheets = Some(sheets);
         }
         self.shown = Shown::Sheets;
@@ -583,6 +586,10 @@ impl ViewPane {
         if key.modifiers.modified() {
             return false;
         }
+        if let Some(plans) = self.plans.clone().filter(|_| self.shown == Shown::Plans) {
+            let agent = self.reports.agent.clone();
+            return plans::key(&plans, agent.as_deref(), key, cx);
+        }
         if let Some(conversation) = self.conversation.clone().filter(|_| key.key == "c") {
             conversation.update(cx, |conversation, cx| conversation.request_toggle(cx));
             return true;
@@ -654,19 +661,36 @@ impl Render for ViewPane {
         if let Some(artifacts) = &self.artifacts {
             return div().size_full().child(artifacts.clone());
         }
-        let section = match self.shown {
-            Shown::Sheets => self.sheets.clone().map(gpui::AnyView::from),
-            Shown::Plans => self.plans.clone().map(gpui::AnyView::from),
-            Shown::Records => None,
-        };
-        if let Some(section) = section {
-            if let Some(conversation) = self.conversation.take() {
-                conversation.update(cx, |conversation, cx| conversation.set_active(false, cx));
-            }
+        let sheets = self.sheets.clone().filter(|_| self.shown == Shown::Sheets);
+        let plans = self.plans.clone().filter(|_| self.shown == Shown::Plans);
+        if (sheets.is_some() || plans.is_some())
+            && let Some(conversation) = self.conversation.take()
+        {
+            conversation.update(cx, |conversation, cx| conversation.set_active(false, cx));
+        }
+        if let Some(sheets) = sheets {
+            let frame = if sheets.read(cx).is_open() {
+                reports::plain_frame(None, sheets)
+            } else {
+                reports::section_frame(self, sheets, cx)
+            };
+            return div().size_full().bg(colors().surface).child(frame);
+        }
+        if let Some(plans) = plans {
+            // Plans render through the pane so their text can be selected.
+            let body = loop {
+                self.selection.borrow_mut().begin();
+                let body = plans::body(self, &plans, cx);
+                if !self.selection.borrow_mut().finish() {
+                    break body;
+                }
+            };
             return div()
+                .relative()
                 .size_full()
                 .bg(colors().surface)
-                .child(reports::section_frame(self, section, cx));
+                .child(body)
+                .child(selection::events(cx));
         }
         let (t, c) = (tokens(), colors());
         let previous = self.conversation.take();

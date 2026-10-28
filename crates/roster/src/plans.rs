@@ -76,6 +76,18 @@ pub struct Item {
     /// A blocker or useful context.
     #[serde(default)]
     pub detail: String,
+    /// What the step points to, such as the document behind it.
+    #[serde(default)]
+    pub references: Vec<Reference>,
+}
+
+/// Something a step points to.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+pub struct Reference {
+    /// `issue`, `sheet` or `document`.
+    pub kind: String,
+    /// Which one, as the agent named it.
+    pub target: String,
 }
 
 impl Item {

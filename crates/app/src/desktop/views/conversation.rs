@@ -1473,7 +1473,21 @@ impl Render for Conversation {
             .children(self.chooser(cx))
             .child(self.thread(cx))
             .child(ui::composer(
-                div().text_size(t.text.row.size()).child(self.field.clone()),
+                div()
+                    .relative()
+                    .text_size(t.text.row.size())
+                    .child(self.field.clone())
+                    // The board's placeholder, until something is typed.
+                    .when(self.draft(cx).is_empty(), |el| {
+                        el.child(
+                            div()
+                                .absolute()
+                                .top_0()
+                                .left_0()
+                                .text_color(colors().faint)
+                                .child(format!("Message {} {}…", self.agent(), self.about)),
+                        )
+                    }),
                 self.anchor.clone().map(ui::anchor),
                 ui::send_button("conversation-send", can_send)
                     .on_click(cx.listener(|conversation, _, _, cx| conversation.send(cx))),

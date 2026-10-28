@@ -328,20 +328,7 @@ pub fn agent_symbol(state: AgentState) -> Div {
                     .border(px(t.size.minimap_stroke * 1.5))
                     .border_color(c.accent_soft),
             )
-            .child(
-                div().absolute().inset_0().child(
-                    icon("agent-arc", size, c.accent).with_animation(
-                        "working-arc",
-                        Animation::new(std::time::Duration::from_millis(
-                            t.motion.spinner_ms as u64,
-                        ))
-                        .repeat(),
-                        |arc, delta| {
-                            arc.with_transformation(Transformation::rotate(percentage(delta)))
-                        },
-                    ),
-                ),
-            )
+            .child(turning_arc(size))
             .child(icon("agent-play", size, c.accent)),
         AgentState::Idle => frame.child(
             div()
@@ -1304,7 +1291,7 @@ pub fn done_symbol() -> Div {
         .flex()
         .items_center()
         .justify_center()
-        .child(icon("check", t.size.agent_symbol - t.space.s6, c.ok))
+        .child(icon("step-check", t.size.agent_symbol * 9.0 / 16.0, c.ok))
 }
 
 /// A "● live from Agent Backbone" note for the right of a view's header.
@@ -1582,8 +1569,11 @@ pub fn shelf_card(
         )
 }
 
+// A plan: one card per agent on the list, its steps on a track and what
+// they wait on as short tags; an opened plan draws the same steps as a graph.
+
 /// Where a step stands in its plan.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Step {
     Done,
     /// Being worked on now.
@@ -1594,41 +1584,396 @@ pub enum Step {
     Ahead,
 }
 
-/// One step of a plan, as a small pill: done in `ok` with a check, now in
-/// the accent, waiting in the attention tint with "!", ahead outlined.
+/// A step's mark: a check in `ok` once done, the turning arc while now, a
+/// faint ring ahead, and "!" on the attention fill while it waits.
+pub fn step_dot(step: Step) -> Div {
+    let (t, c) = (tokens(), colors());
+    let size = t.size.plan_dot;
+    let frame = div()
+        .flex_shrink_0()
+        .size(px(size))
+        .relative()
+        .rounded_full()
+        .flex()
+        .items_center()
+        .justify_center();
+    let ring = |frame: Div, color| {
+        frame
+            .border(px(t.size.minimap_stroke * 1.5))
+            .border_color(color)
+    };
+    match step {
+        Step::Done => ring(frame, c.ok).child(icon("step-check", size * 2.0 / 3.0, c.ok)),
+        Step::Now => ring(frame, c.accent_soft).child(turning_arc(size)),
+        Step::Ahead => ring(frame, c.faint),
+        Step::Waits => frame.bg(c.attention).child(
+            text(
+                div()
+                    .font_family(t.font.mono.clone())
+                    .text_color(c.on_attention),
+                &t.text.step_mark,
+            )
+            .child("!"),
+        ),
+    }
+}
+
+/// The accent arc that turns around a working mark of `size`.
+fn turning_arc(size: f32) -> Div {
+    let t = tokens();
+    div()
+        .absolute()
+        .inset_0()
+        .child(icon("agent-arc", size, colors().accent).with_animation(
+            "working-arc",
+            Animation::new(std::time::Duration::from_millis(t.motion.spinner_ms as u64)).repeat(),
+            |arc, delta| arc.with_transformation(Transformation::rotate(percentage(delta))),
+        ))
+}
+
+/// One step on a plan card's track: its mark and name, done in `muted`, now
+/// on the accent tint, ahead in `text_2`, waiting in a dashed attention
+/// outline. A long name ends in an ellipsis rather than wrapping the track.
 pub fn plan_step(label: impl Into<SharedString>, step: Step) -> Div {
     let (t, c) = (tokens(), colors());
     let pill = text(
         div()
             .flex()
-            .flex_shrink_0()
+            .min_w_0()
             .items_center()
-            .gap(px(t.space.s4))
-            .h(px(t.size.chip))
+            .gap(px(t.space.s6))
+            .h(px(t.size.plan_step))
+            .pl(px(t.space.s6))
+            .pr(px(t.space.s8 + 1.0))
+            .rounded(px(t.size.plan_step / 2.0))
+            .border(px(t.size.hairline))
+            .border_color(gpui::transparent_black()),
+        &t.text.status,
+    );
+    let pill = match step {
+        Step::Done => pill.text_color(c.muted),
+        Step::Now => pill
+            .bg(c.accent_soft)
+            .text_color(c.accent_text)
+            .font_weight(t.text.row_selected.weight()),
+        Step::Ahead => pill.text_color(c.text_2),
+        Step::Waits => pill
+            .border_dashed()
+            .border_color(c.attention)
+            .text_color(c.attention_text),
+    };
+    pill.child(step_dot(step)).child(
+        div()
+            .min_w_0()
+            .overflow_hidden()
+            .whitespace_nowrap()
+            .text_ellipsis()
+            .child(label.into()),
+    )
+}
+
+/// The line from one step on a track to the next: `muted` once the step
+/// before it is done, else `line_strong`.
+pub fn plan_link(done: bool) -> Div {
+    let (t, c) = (tokens(), colors());
+    div()
+        .flex_1()
+        .min_w(px(t.space.s10))
+        .h(px(t.size.hairline))
+        .bg(if done { c.muted } else { c.line_strong })
+}
+
+/// What a step waits on, under a card's track: who in bold, then what, then
+/// the step it holds, such as "**You** · scope decision → Publish". Waiting
+/// on the person takes the attention tint.
+pub fn waits_tag(
+    who: impl Into<SharedString>,
+    what: Option<SharedString>,
+    step: impl Into<SharedString>,
+    you: bool,
+) -> Div {
+    let (t, c) = (tokens(), colors());
+    let tag = text(
+        div()
+            .flex()
+            .min_w_0()
+            .items_center()
+            .gap(px(t.space.s4 + 1.0))
+            .h(px(t.size.plan_tag))
             .px(px(t.space.s8))
             .rounded(px(t.radius.pill))
             .border(px(t.size.hairline))
-            .whitespace_nowrap(),
+            .whitespace_nowrap()
+            .overflow_hidden(),
         &t.text.meta,
     );
-    let pill = match step {
-        Step::Done => pill.border_color(c.line).text_color(c.muted).child(icon(
-            "check",
-            t.size.icon - 3.0,
-            c.ok,
-        )),
-        Step::Now => pill
-            .bg(c.accent_soft)
-            .border_color(gpui::transparent_black())
-            .text_color(c.accent_text),
-        Step::Waits => pill
-            .bg(c.attention_soft)
-            .border_color(gpui::transparent_black())
-            .text_color(c.attention_text)
-            .child(div().font_weight(gpui::FontWeight::BOLD).child("!")),
-        Step::Ahead => pill.border_color(c.line_strong).text_color(c.text_2),
+    let (tag, strong) = if you {
+        (
+            tag.bg(c.attention_soft)
+                .border_color(gpui::transparent_black())
+                .text_color(c.attention_text),
+            c.attention_text,
+        )
+    } else {
+        (
+            tag.border_color(c.line_strong).text_color(c.muted),
+            c.text_2,
+        )
     };
-    pill.child(label.into())
+    let mut said = String::new();
+    if let Some(what) = what {
+        said.push_str(" · ");
+        said.push_str(&what);
+    }
+    said.push_str(" → ");
+    said.push_str(&step.into());
+    tag.child(
+        div()
+            .flex_shrink_0()
+            .font_weight(t.text.row_selected.weight())
+            .text_color(strong)
+            .child(who.into()),
+    )
+    .child(
+        div()
+            .min_w_0()
+            .overflow_hidden()
+            .text_ellipsis()
+            .child(said),
+    )
+}
+
+/// A plan's card on the list: hovered, and ringed while selected.
+pub fn plan_card(id: impl Into<SharedString>, selected: bool) -> Stateful<Div> {
+    let (t, c) = (tokens(), colors());
+    div()
+        .id(id.into())
+        .flex()
+        .flex_col()
+        .flex_shrink_0()
+        .w_full()
+        .gap(px(t.space.s8 + 1.0))
+        .px(px(t.space.s14))
+        .py(px(t.space.s12))
+        .rounded(px(t.radius.popover))
+        .bg(c.panel)
+        .border(px(t.size.hairline))
+        .border_color(c.line)
+        .cursor_pointer()
+        .relative()
+        .hover(|el| el.bg(colors().hover))
+        .when(selected, |el| el.child(selection_ring(t.radius.popover)))
+}
+
+/// The ring around a selected card or node, drawn just outside its border
+/// as an outline: a shadow would show through a translucent fill.
+fn selection_ring(radius: f32) -> Div {
+    let (t, c) = (tokens(), colors());
+    let outset = t.size.focus_ring + t.size.hairline;
+    div()
+        .absolute()
+        .top(px(-outset))
+        .left(px(-outset))
+        .right(px(-outset))
+        .bottom(px(-outset))
+        .rounded(px(radius + outset))
+        .border(px(t.size.focus_ring))
+        .border_color(c.focus)
+}
+
+/// A node of an opened plan's graph, at its place in the graph: a mark, a
+/// key such as DONE or NOW, the step's name over at most two lines and a
+/// short note. The caller positions it.
+pub fn plan_node(
+    id: impl Into<SharedString>,
+    step: Step,
+    key: impl Into<SharedString>,
+    title: impl Into<SharedString>,
+    note: Option<SharedString>,
+    selected: bool,
+) -> Stateful<Div> {
+    let (t, c) = (tokens(), colors());
+    let frame = text(
+        div()
+            .id(id.into())
+            .absolute()
+            .w(px(t.size.plan_node_width))
+            .h(px(t.size.plan_node_height))
+            .flex()
+            .items_start()
+            .gap(px(t.space.s8))
+            .px(px(t.space.s12))
+            .py(px(t.space.s10))
+            .rounded(px(t.radius.popover))
+            .border(px(t.size.hairline))
+            .line_height(px(16.0))
+            .cursor_pointer(),
+        &t.text.body,
+    );
+    let (frame, mark, key_color) = match step {
+        Step::Done => (
+            frame.bg(c.panel).border_color(c.line).text_color(c.text_2),
+            done_symbol(),
+            c.ok,
+        ),
+        Step::Now => (
+            frame
+                .bg(c.accent_soft)
+                .border(px(t.size.minimap_stroke * 1.5))
+                .border_color(c.accent)
+                .text_color(c.text),
+            agent_symbol(AgentState::Working),
+            c.accent_text,
+        ),
+        Step::Ahead => (
+            frame
+                .bg(c.surface)
+                .border_color(c.line_strong)
+                .text_color(c.text),
+            agent_symbol(AgentState::Idle),
+            c.muted,
+        ),
+        Step::Waits => (
+            frame
+                .bg(c.attention_soft)
+                .border_dashed()
+                .border_color(c.attention)
+                .text_color(c.text),
+            agent_symbol(AgentState::NeedsYou),
+            c.attention_text,
+        ),
+    };
+    let mut words = div()
+        .flex()
+        .flex_col()
+        .min_w_0()
+        .child(
+            text(div().text_color(key_color), &t.text.step_key)
+                .whitespace_nowrap()
+                .overflow_hidden()
+                .text_ellipsis()
+                .child(key.into()),
+        )
+        .child(
+            div()
+                .font_weight(t.text.workspace.weight())
+                .line_clamp(2)
+                .text_ellipsis()
+                .child(title.into()),
+        );
+    if let Some(note) = note {
+        words = words.child(
+            text(div().text_color(c.muted), &t.text.meta)
+                .whitespace_nowrap()
+                .overflow_hidden()
+                .text_ellipsis()
+                .child(note),
+        );
+    }
+    frame
+        .child(mark)
+        .child(words)
+        .when(selected, |el| el.child(selection_ring(t.radius.popover)))
+}
+
+/// The arrow from one step of an opened plan's graph to the next: from
+/// `(x, y)` rightwards for `length`, its head at the end, in `color`.
+pub fn plan_edge(x: f32, y: f32, length: f32, color: Rgba) -> Div {
+    let t = tokens();
+    let (w, head) = (t.size.plan_edge, t.size.plan_arrow);
+    div()
+        .absolute()
+        .left(px(x))
+        .top(px(y - head / 2.0))
+        .w(px(length))
+        .h(px(head))
+        .flex()
+        .items_center()
+        .child(div().flex_1().h(px(w)).bg(color))
+        .child(icon("arrow-head", head, color))
+}
+
+// A reader's bar: the revision being read, and actions with a label.
+
+/// An icon and a label that act, such as Copy values in a workbook's bar.
+pub fn action(
+    id: impl Into<SharedString>,
+    name: &str,
+    label: impl Into<SharedString>,
+) -> Stateful<Div> {
+    let (t, c) = (tokens(), colors());
+    text(
+        div()
+            .id(id.into())
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .gap(px(t.space.s6))
+            .h(px(t.size.action))
+            .px(px(t.space.s8))
+            .rounded(px(t.radius.icon_button))
+            .text_color(c.text_2)
+            .cursor_pointer()
+            .hover(|el| el.bg(colors().selected).text_color(colors().text)),
+        &t.text.status,
+    )
+    .child(icon(name, t.size.icon - 1.0, c.muted))
+    .child(label.into())
+}
+
+/// One arrow of a [`revision_stepper`]; faded and inert when `enabled` is
+/// false.
+pub fn revision_step(id: impl Into<SharedString>, name: &str, enabled: bool) -> Stateful<Div> {
+    let (t, c) = (tokens(), colors());
+    div()
+        .id(id.into())
+        .flex()
+        .flex_shrink_0()
+        .items_center()
+        .justify_center()
+        .size(px(t.size.revision_step))
+        .rounded(px(t.radius.key + 1.0))
+        .when(enabled, |el| {
+            el.cursor_pointer().hover(|el| el.bg(colors().selected))
+        })
+        .when(!enabled, |el| el.opacity(0.35))
+        .child(icon(name, t.size.icon - 1.0, c.text_2))
+}
+
+/// Which revision is being read, between its older and newer arrows, with
+/// `latest` marked.
+pub fn revision_stepper(
+    older: Stateful<Div>,
+    label: impl Into<SharedString>,
+    latest: bool,
+    newer: Stateful<Div>,
+) -> Div {
+    let (t, c) = (tokens(), colors());
+    text(
+        div()
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .gap(px(t.space.s6))
+            .h(px(t.size.revision_step + t.space.s4))
+            .px(px(t.space.s2))
+            .rounded(px(t.radius.row))
+            .border(px(t.size.hairline))
+            .border_color(c.line_strong)
+            .bg(c.field)
+            .text_color(c.muted),
+        &t.text.status,
+    )
+    .child(older)
+    .child(
+        text(
+            div().font_family(t.font.mono.clone()).text_color(c.text),
+            &t.text.meta,
+        )
+        .child(label.into()),
+    )
+    .when(latest, |el| el.child(tag("latest", Tone::Tag)))
+    .child(newer)
 }
 
 /// The centred column of a record reader, no wider than reads well.
@@ -1758,12 +2103,12 @@ pub fn link(element: Stateful<Div>) -> Stateful<Div> {
     )
 }
 
-/// An authored link in a report: an icon, its title and the complete target,
-/// which wraps and can be selected. Nothing opens it automatically.
+/// An authored link in a report, on one line: its title, and where it
+/// leads on the right in `muted`.
 pub fn reference(
     id: impl Into<SharedString>,
     title: impl Into<SharedString>,
-    target: impl IntoElement,
+    target: impl Into<SharedString>,
 ) -> Stateful<Div> {
     let (t, c) = (tokens(), colors());
     text(
@@ -1771,32 +2116,33 @@ pub fn reference(
             .id(id.into())
             .flex()
             .flex_shrink_0()
-            .items_start()
+            .items_center()
             .gap(px(t.space.s10))
-            .min_h(px(t.size.reference_row))
+            .h(px(t.size.reference_row))
             .px(px(t.space.s12))
-            .py(px(t.space.s8))
             .rounded(px(t.radius.row))
             .bg(c.panel)
             .border(px(t.size.hairline))
             .border_color(c.line)
-            .text_color(c.text),
+            .text_color(c.text)
+            .cursor_pointer()
+            .hover(|el| el.bg(colors().hover)),
         &t.text.body,
     )
-    .child(
-        div()
-            .pt(px(t.space.s2))
-            .child(icon("link-2", t.size.icon, c.muted)),
-    )
+    .child(icon("link-2", t.size.icon, c.muted))
     .child(
         div()
             .flex_1()
             .min_w_0()
-            .flex()
-            .flex_col()
-            .gap(px(t.space.s2))
-            .child(title.into())
-            .child(text(div().text_color(c.muted), &t.text.meta).child(target)),
+            .overflow_hidden()
+            .whitespace_nowrap()
+            .text_ellipsis()
+            .child(title.into()),
+    )
+    .child(
+        text(div().flex_shrink_0().text_color(c.muted), &t.text.meta)
+            .whitespace_nowrap()
+            .child(target.into()),
     )
 }
 

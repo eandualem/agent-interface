@@ -152,6 +152,18 @@ weight = 400
 size = 15.0
 weight = 500
 
+[text.card_title]           # what a plan undertakes, on its card
+size = 14.0
+weight = 600
+
+[text.step_key]             # DONE, NOW, WAITS atop a step in an opened plan
+size = 10.5
+weight = 600
+
+[text.step_mark]            # the "!" in a waiting step's dot
+size = 9.0
+weight = 700
+
 # ---------------------------------------------------------------- spacing
 
 # A 2 px base. Views use these names, never raw numbers.
@@ -260,6 +272,20 @@ composer_field = 56.0       # the message field in a conversation
 send_button = 26.0
 anchor = 18.0               # what a message refers to: a revision or cells
 chooser_height = 84.0       # the most the recipient chooser takes before it scrolls
+plan_step = 24.0            # a step on a plan card's track
+plan_dot = 12.0             # the mark beside that step
+plan_tag = 20.0             # what a step waits on, under the track
+plan_node_width = 152.0     # a step in an opened plan's graph
+plan_node_height = 84.0
+plan_column = 200.0         # from one step of the graph to the next
+plan_edge = 2.0             # the lines between steps
+plan_arrow = 8.0            # the head on those lines
+action = 24.0               # an icon-and-label action in a reader's bar
+revision_step = 22.0        # the arrows of a revision stepper
+sheet_tabs = 34.0           # a workbook's tab strip, under the grid
+sheet_header = 24.0         # the column letters over the grid
+sheet_row = 28.0            # a row of cells
+sheet_number = 40.0         # the row numbers' column
 
 [motion]
 spinner_ms = 1100           # one turn of the working-agent arc

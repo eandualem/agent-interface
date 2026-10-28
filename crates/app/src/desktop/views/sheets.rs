@@ -11,15 +11,12 @@ use agent_interface_roster::{
     sheets::{self as api, *},
 };
 use gpui::{
-    Context, Entity, EventEmitter, ScrollHandle, ScrollStrategy, SharedString, Subscription,
+    Context, Entity, ScrollHandle, ScrollStrategy, SharedString, Subscription,
     UniformListScrollHandle, Window, div, prelude::*, px,
 };
 use std::path::PathBuf;
 mod controls;
 mod grid;
-
-pub(super) struct Close;
-impl EventEmitter<Close> for Sheets {}
 
 struct Open {
     record: Record,
@@ -557,7 +554,7 @@ impl Render for Sheets {
             .flex()
             .flex_col()
             .bg(c.surface)
-            .child(self.toolbar(cx))
+            .children(self.toolbar(cx))
             .when_some(self.feedback_receipt.clone(), |e, receipt| {
                 e.child(self.feedback_receipt_controls(&receipt, cx))
             })
@@ -596,9 +593,9 @@ fn reveal_column(offset: gpui::Pixels, viewport: gpui::Pixels, column: usize) ->
     if viewport <= px(0.) {
         return offset;
     }
-    let left = px(54. + column as f32 * 160.);
-    let right = left + px(160.);
-    if left + offset < px(0.) || viewport < px(160.) {
+    let left = px(tokens().size.sheet_number + column as f32 * grid::CELL);
+    let right = left + px(grid::CELL);
+    if left + offset < px(0.) || viewport < px(grid::CELL) {
         -left
     } else if right + offset > viewport {
         viewport - right
@@ -666,10 +663,10 @@ mod tests {
     fn keyboard_columns_remain_visible_in_both_directions() {
         assert_eq!(reveal_column(px(0.), px(400.), 0), px(0.));
         let right = reveal_column(px(0.), px(400.), 3);
-        assert_eq!(right, px(-294.));
+        assert_eq!(right, px(-280.));
         assert_eq!(reveal_column(right, px(400.), 3), right);
-        assert_eq!(reveal_column(right, px(400.), 0), px(-54.));
-        assert_eq!(reveal_column(px(0.), px(80.), 2), px(-374.));
+        assert_eq!(reveal_column(right, px(400.), 0), px(-40.));
+        assert_eq!(reveal_column(px(0.), px(80.), 2), px(-360.));
         assert_eq!(reveal_column(px(0.), px(0.), 2), px(0.));
     }
     #[test]

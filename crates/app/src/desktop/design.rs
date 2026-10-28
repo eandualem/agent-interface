@@ -78,6 +78,7 @@ group!(
         key: TextStyle = style, empty_title: TextStyle = style, body: TextStyle = style,
         figure: TextStyle = style, group_title: TextStyle = style, doc_title: TextStyle = style,
         doc_heading: TextStyle = style, doc_body: TextStyle = style, quote: TextStyle = style,
+        card_title: TextStyle = style, step_key: TextStyle = style, step_mark: TextStyle = style,
     }
 );
 
@@ -136,6 +137,12 @@ group!(
         conversation_width: f32 = number, conversation_header: f32 = number,
         composer_field: f32 = number, send_button: f32 = number, anchor: f32 = number,
         chooser_height: f32 = number,
+        plan_step: f32 = number, plan_dot: f32 = number, plan_tag: f32 = number,
+        plan_node_width: f32 = number, plan_node_height: f32 = number,
+        plan_column: f32 = number, action: f32 = number, revision_step: f32 = number,
+        sheet_tabs: f32 = number, sheet_header: f32 = number, sheet_row: f32 = number,
+        sheet_number: f32 = number,
+        plan_edge: f32 = number, plan_arrow: f32 = number,
     }
 );
 
