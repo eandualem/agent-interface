@@ -2,10 +2,10 @@
 //! and whether Agent Backbone answers. Read-only; nothing is installed here.
 
 use std::{
-    io::Read,
+    io::{Read, Seek},
     path::PathBuf,
     process::{Command, Stdio},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 /// Commands looked up through the user's own shell. tmux is not among them:
@@ -32,6 +32,8 @@ pub const TOOLS: &[(&str, &str, &str)] = &[
 
 const MARK: &str = "@@agent-interface-probe";
 const SHELL_LIMIT: Duration = Duration::from_secs(8);
+/// More than enough for our lines after any startup-file noise.
+const OUTPUT_LIMIT: u64 = 256 * 1024;
 
 /// Whether Agent Backbone is set up and answering.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -84,27 +86,27 @@ fn shell_lookup() -> Option<Vec<(&'static str, PathBuf)>> {
         "for c in {}; do printf '{MARK}\\t%s\\t%s\\n' \"$c\" \"$(command -v \"$c\" 2>/dev/null)\"; done",
         COMMANDS.join(" ")
     );
+    // Output goes to a file, not a pipe: a background process started by a
+    // startup file can keep a pipe open forever, but cannot stop a file read.
+    let mut file = tempfile::tempfile().ok()?;
     let mut child = Command::new(shell)
         .args(["-l", "-i", "-c", &script])
         .stdin(Stdio::null())
-        .stdout(Stdio::piped())
+        .stdout(file.try_clone().ok()?)
         .stderr(Stdio::null())
         .spawn()
         .ok()?;
-    // Read on a helper thread: a background process started by a startup file
-    // can hold the pipe open after the shell exits, so the deadline covers the
-    // read as well as the shell.
-    let mut stdout = child.stdout.take()?;
-    let (sent, received) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let mut output = String::new();
-        let _ = stdout.read_to_string(&mut output);
-        let _ = sent.send(output);
-    });
-    let output = received.recv_timeout(SHELL_LIMIT);
+    let deadline = Instant::now() + SHELL_LIMIT;
+    while matches!(child.try_wait(), Ok(None)) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
     let _ = child.kill();
     let _ = child.wait();
-    let output = output.ok()?;
+    let mut bytes = Vec::new();
+    file.seek(std::io::SeekFrom::Start(0)).ok()?;
+    file.take(OUTPUT_LIMIT).read_to_end(&mut bytes).ok()?;
+    // Startup-file noise need not be UTF-8; our lines are.
+    let output = String::from_utf8_lossy(&bytes);
     let found = parse(&output);
     // A shell that printed nothing of ours did not run the script.
     output.contains(MARK).then_some(found)
