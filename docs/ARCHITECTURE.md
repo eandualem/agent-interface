@@ -269,19 +269,22 @@ An open Response is polled by ID so its correction metadata stays current even
 after newer publications move it off its former list page.
 Authored status and blocker text do not change runtime state or grant approval.
 
-A native feedback composer sits outside the authored content and opens only when
-the user chooses Send feedback. Closing it preserves the draft. It retains drafts
-by provider, author and record identity while its saved pane exists, including
-hidden tabs. Hidden readers pause polling and release their web surface; feedback
-workers can still finish and retain their result. On explicit Send,
+Every reader places one native conversation (`views/conversation.rs`) beside
+the authored content: a rail while closed, a thread and composer while open.
+No authored HTML can reach it. It retains its thread and draft by provider,
+author and record identity while its saved pane exists, including hidden tabs.
+Hidden readers pause polling and release their web surface; delivery workers
+can still finish and retain their result. On explicit send,
 `roster::feedback` re-reads the exact record, checks the original stable author ID
 and current registered name, then uses the existing authenticated `/api/messages`
-POST as `agent-interface-app`. No authored HTML can invoke it. The message carries
+POST as `agent-interface-app`. The message carries
 the record kind and ID plus the user's text, not the original content. This is
 ordinary feedback, without signed owner-confirmation provenance. The existing
-name-based API cannot make source lookup and recipient routing atomic. Duplicate
-clicks are blocked in flight; unknown delivery is retained without automatic
-resubmission. Drafts and status are window-owned, not a persistent message history.
+name-based API cannot make source lookup and recipient routing atomic. Each
+message is sent once; a refused message can be retried, and an unknown delivery
+is marked without automatic resubmission. Backbone does not yet keep
+conversation history, so the thread holds only this pane's messages and is not
+persistent.
 
 Durable Documents use Backbone's metadata-only `/api/documents` list and exact
 `/api/documents/{revision_id}` JSON reads. Backbone owns immutable revisions,
@@ -391,6 +394,10 @@ those dependencies.
   formatter, reloadable filter and nonblocking background writer. The small
   app-owned file writer adds size-based rotation and explicit write-health
   reporting; it does not implement another logging facade.
+- **`chrono` 0.4.45:** MIT OR Apache-2.0, pinned exactly with only its `clock`
+  feature. It names local days and times for records and messages without
+  `unsafe` code in the app. GPUI already builds the same version and feature,
+  so it adds no package to the graph.
 
 The native terminal source is prepared from a pinned Ghostty commit plus
 [`native/ghostty.patch`](../native/ghostty.patch). The preparation script checks
@@ -471,12 +478,20 @@ selection, history, copying values, export and contextual feedback. Virtualized 
 and bounded column pages limit rendering work. Labels retain canonical A1 coordinates
 under saved sort/filter views. No spreadsheet widget or formula engine is added.
 
-Sheets embeds the same `desktop::views::feedback::Feedback` entity used by authored
-artifacts, including its collapsed button, native text field, draft preservation,
-focus restoration, send state and outcome display. The document transport retains
-its existing behavior and restores focus to its web surface on close. Sheets supplies
-workbook context and handles the provider's feedback transaction; it does not render
-a separate composer. Feedback carries the immutable observed revision and stable
+`roster::plans` reads Backbone's `/api/current-plans` list over the same
+authenticated local transport as Sheets, on a worker, every 20 seconds while
+the Current plans section is open. It is read-only: it publishes, approves and
+changes nothing. A missing endpoint is reported as unsupported, and a failed
+reread keeps the plans last read.
+
+Sheets shows the same `desktop::views::conversation::Conversation` entity as the
+record readers, beside the grid, with its native text field, draft preservation,
+focus restoration, delivery states and thread. A record's conversation sends
+through `roster::feedback` and restores focus to its web surface on close. Sheets
+creates the conversation in owner-delivered mode: it supplies the workbook's
+author and the selected cells as the anchor, receives each send and retry as an
+event, handles the provider's feedback transaction and reports the outcome back.
+Feedback carries the immutable observed revision and stable
 selected cell identities. Navigation cannot move a draft to another revision.
 
 A prepared feedback request retains exact bytes and its retry key after an uncertain

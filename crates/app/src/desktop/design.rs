@@ -77,7 +77,7 @@ group!(
         status: TextStyle = style, meta: TextStyle = style, label: TextStyle = style,
         key: TextStyle = style, empty_title: TextStyle = style, body: TextStyle = style,
         figure: TextStyle = style, group_title: TextStyle = style, doc_title: TextStyle = style,
-        doc_heading: TextStyle = style, doc_body: TextStyle = style,
+        doc_heading: TextStyle = style, doc_body: TextStyle = style, quote: TextStyle = style,
     }
 );
 
@@ -96,6 +96,7 @@ group!(
         key: f32 = number, icon_button: f32 = number, menu_item: f32 = number,
         row: f32 = number,
         slot: f32 = number, pane: f32 = number, popover: f32 = number, pill: f32 = number,
+        bubble: f32 = number,
     }
 );
 
@@ -128,7 +129,12 @@ group!(
         fact_label: f32 = number, choice_button: f32 = number, filter: f32 = number,
         choice_row: f32 = number, hint_bar: f32 = number,
         tag_card_label: f32 = number, grouped_width: f32 = number,
-        group_row: f32 = number,
+        group_row: f32 = number, record_who: f32 = number, record_age: f32 = number,
+        question_row: f32 = number, shelf_card: f32 = number, reader_width: f32 = number,
+        reader_label: f32 = number, reference_row: f32 = number,
+        conversation_rail: f32 = number, rail_button: f32 = number,
+        conversation_width: f32 = number, conversation_header: f32 = number,
+        composer_field: f32 = number, send_button: f32 = number, anchor: f32 = number,
     }
 );
 

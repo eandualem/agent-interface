@@ -94,6 +94,14 @@ icons!(
     "chevron-left",
     "layout-grid",
     "align-left",
+    "send",
+    "file",
+    "file-text",
+    "refresh-cw",
+    "history",
+    "corner-down-right",
+    "panel-right-close",
+    "sheet",
 );
 
 /// Icons a workspace can show, in the order the picker offers them.

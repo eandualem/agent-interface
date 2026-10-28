@@ -33,12 +33,15 @@ mod activity;
 mod agent;
 mod artifact_web;
 mod artifacts;
+mod clock;
+mod conversation;
 mod documents;
-mod feedback;
 mod markdown;
+mod plans;
 mod policies;
 mod reader;
 mod reports;
+mod seen;
 mod selection;
 mod sheets;
 mod skills;
@@ -106,6 +109,26 @@ pub(super) enum Records {
     Held,
 }
 
+/// Which kind of Reports & updates section a pane shows.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Shown {
+    /// A record feed: waiting on you, updates, answers or documents.
+    Records,
+    Plans,
+    Sheets,
+}
+
+/// A Reports & updates section a new pane opens on, in the bar's order.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Section {
+    Waiting,
+    Plans,
+    Updates,
+    Responses,
+    Documents,
+    Sheets,
+}
+
 /// Something a list can open in the reader, by its file or folder.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum Target {
@@ -151,11 +174,16 @@ pub(super) struct ViewPane {
     selection: RefCell<selection::Selection>,
     reports: reports::State,
     backbone: Option<PathBuf>,
-    feedback: HashMap<String, Entity<feedback::Feedback>>,
+    /// Conversations by provider, author and record, kept while the pane exists.
+    conversations: HashMap<String, Entity<conversation::Conversation>>,
+    /// The open record's conversation, for its reader to place.
+    conversation: Option<Entity<conversation::Conversation>>,
     documents: documents::State,
     artifacts: Option<Entity<artifacts::ArtifactPane>>,
     sheets: Option<Entity<sheets::Sheets>>,
-    showing_sheets: bool,
+    plans: Option<Entity<plans::Plans>>,
+    /// The Reports & updates section shown when it is not a record feed.
+    pub(super) shown: Shown,
     _updates: Option<Task<()>>,
     _search: Vec<Subscription>,
 }
@@ -163,9 +191,9 @@ pub(super) struct ViewPane {
 impl EventEmitter<ViewEvent> for ViewPane {}
 
 impl ViewPane {
-    /// Keep drafts and in-flight delivery state while this saved pane is hidden.
-    pub fn has_feedback(&self) -> bool {
-        !self.feedback.is_empty() || self.sheets.is_some()
+    /// Keep drafts, threads and in-flight delivery while this saved pane is hidden.
+    pub fn has_conversations(&self) -> bool {
+        !self.conversations.is_empty() || self.sheets.is_some()
     }
 
     /// Native child views must repaint when an overlay stops occluding them.
@@ -228,11 +256,13 @@ impl ViewPane {
             selection: RefCell::default(),
             reports: reports::State::default(),
             backbone: backbone.clone(),
-            feedback: HashMap::new(),
+            conversations: HashMap::new(),
+            conversation: None,
             documents: documents::State::default(),
             artifacts: None,
             sheets: None,
-            showing_sheets: false,
+            plans: None,
+            shown: Shown::Records,
             _updates: None,
             _search: Vec::new(),
             view,
@@ -361,6 +391,46 @@ impl ViewPane {
         }
     }
 
+    /// Open on `section`, as the new-pane chooser asks; the pane does not
+    /// remember it.
+    pub(super) fn open_section(
+        &mut self,
+        section: Section,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let query = match section {
+            Section::Plans => return self.show_plans(cx),
+            Section::Sheets => return self.show_sheets(window, cx),
+            Section::Waiting => views::ReportQuery::Latest(None),
+            Section::Updates => views::ReportQuery::Recent(None),
+            Section::Responses => views::ReportQuery::Responses(None),
+            Section::Documents => views::ReportQuery::Documents(None, None),
+        };
+        self.show_records(query, cx);
+    }
+
+    /// Show a record feed from its first page.
+    fn show_records(&mut self, query: views::ReportQuery, cx: &mut Context<Self>) {
+        self.shown = Shown::Records;
+        self.reports.open = None;
+        self.reports.query = query;
+        self.reports.previous.clear();
+        self.refetch(true, cx);
+    }
+
+    fn show_plans(&mut self, cx: &mut Context<Self>) {
+        let Some(directory) = self.backbone.clone() else {
+            return;
+        };
+        self.documents.surface.borrow_mut().clear();
+        if self.plans.is_none() {
+            self.plans = Some(cx.new(|cx| plans::Plans::new(directory, cx)));
+        }
+        self.shown = Shown::Plans;
+        cx.notify();
+    }
+
     fn show_sheets(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(directory) = self.backbone.clone() else {
             return;
@@ -370,12 +440,12 @@ impl ViewPane {
             let sheets = cx.new(|cx| sheets::Sheets::new(directory, window, cx));
             self._search
                 .push(cx.subscribe(&sheets, |pane, _, _: &sheets::Close, cx| {
-                    pane.showing_sheets = false;
+                    pane.shown = Shown::Records;
                     cx.notify();
                 }));
             self.sheets = Some(sheets);
         }
-        self.showing_sheets = true;
+        self.shown = Shown::Sheets;
         cx.notify();
     }
 
@@ -476,6 +546,13 @@ impl ViewPane {
         }
     }
 
+    /// Open the newer (`by < 0`) or older record beside the open report or answer.
+    fn step_record(&mut self, by: isize, cx: &mut Context<Self>) {
+        if let Some(Data::Reports(page)) = self.data.clone() {
+            reports::step(self, &page, by, cx);
+        }
+    }
+
     /// Keys a view understands while its pane is selected. Returns whether
     /// `key` was one of them.
     pub fn key(&mut self, key: &gpui::Keystroke, cx: &mut Context<Self>) -> bool {
@@ -484,6 +561,27 @@ impl ViewPane {
         }
         if key.modifiers.modified() {
             return false;
+        }
+        if let Some(conversation) = self.conversation.clone().filter(|_| key.key == "c") {
+            conversation.update(cx, |conversation, cx| conversation.request_toggle(cx));
+            return true;
+        }
+        if self.reports.open.is_some() && documents::selected(self).is_none() {
+            match key.key.as_str() {
+                "[" => {
+                    return {
+                        self.step_record(-1, cx);
+                        true
+                    };
+                }
+                "]" => {
+                    return {
+                        self.step_record(1, cx);
+                        true
+                    };
+                }
+                _ => {}
+            }
         }
         if self.reports.open.is_some() && key.key == "escape" {
             self.documents.clear();
@@ -535,13 +633,19 @@ impl Render for ViewPane {
         if let Some(artifacts) = &self.artifacts {
             return div().size_full().child(artifacts.clone());
         }
-        if self.showing_sheets
-            && let Some(sheets) = &self.sheets
-        {
-            return div().size_full().child(sheets.clone());
+        let section = match self.shown {
+            Shown::Sheets => self.sheets.clone().map(gpui::AnyView::from),
+            Shown::Plans => self.plans.clone().map(gpui::AnyView::from),
+            Shown::Records => None,
+        };
+        if let Some(section) = section {
+            return div()
+                .size_full()
+                .bg(colors().surface)
+                .child(reports::section_frame(self, section, cx));
         }
         let (t, c) = (tokens(), colors());
-        let feedback =
+        self.conversation =
             self.reports
                 .open
                 .as_ref()
@@ -553,11 +657,11 @@ impl Render for ViewPane {
                         item.author_id.as_deref().unwrap_or_default(),
                         agent_interface_roster::feedback::reference(item)
                     );
-                    self.feedback
+                    self.conversations
                         .entry(key)
                         .or_insert_with(|| {
                             cx.new(|cx| {
-                                feedback::Feedback::new(
+                                conversation::Conversation::new(
                                     item.clone(),
                                     directory.clone(),
                                     self.documents.surface.clone(),
@@ -629,7 +733,6 @@ impl Render for ViewPane {
             .flex_col()
             .bg(c.surface)
             .child(div().flex_1().min_h_0().flex().flex_col().child(body))
-            .children(feedback)
             .child(selection::events(cx))
             .children(
                 self.data

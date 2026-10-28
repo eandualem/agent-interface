@@ -258,15 +258,20 @@ document and choose **More from this author** to follow its stable author even
 after an agent is renamed or removed. **Back** restores the selected page and
 filter. **Refresh** returns to the newest documents.
 
-Choose the small **Send feedback** button below an open report, Response or
-Document to open its reply editor. **Close** returns to reading and keeps the
-draft. Enter supports paragraphs; choose **Send feedback** in the editor to submit up to
-4,000 characters. The message includes a reference to the exact record being
-read. The app checks that the author is still registered before sending, and
-shows Backbone's delivery detail. Queued or held messages do not mean the author
-has read them. If delivery is uncertain, check with the author before starting a
-new reply. Drafts remain with their record when switching tabs or workspaces; detaching or
-closing the pane or app discards them. Feedback never changes the authored record.
+An open report, Response or Document has a conversation with its author on
+the right edge. Choose its button, or press **C**, to open it; press **C** or
+Esc in the message field to close it again, keeping the draft. Enter adds a
+paragraph and **⌘↵** sends up to 4,000 characters. Each message includes a
+reference to the exact record being read, and the app checks that the author
+is still registered before sending. A message shows **Sending…** until Agent
+Backbone answers, then the time it was sent; **Not sent** offers **Retry**,
+and **Edit** to move the text back into an empty message field.
+If delivery is uncertain, the message says so: check with the author before
+sending it again. Delivered or queued does not mean the author has read it.
+The thread shows the messages sent from this pane; replies are not shown yet.
+Threads and drafts remain with their record when switching tabs or workspaces;
+detaching or closing the pane or app discards them. A message never changes
+the authored record.
 
 Opening a document loads that exact revision. **Check for update** refreshes its
 correction information; **Open newer revision** opens the linked correction.
@@ -397,6 +402,17 @@ bindings, which are saved separately in `settings.toml`. The legacy prefix is no
 dispatched by the desktop.
 
 
+## Current plans
+
+**Reports & updates → Current plans** shows one card per agent: what its
+current plan undertakes, each step as done, now, waiting or still ahead, and
+what the waiting steps wait on. Agents with something waiting come first; an
+agent that has not published a plan says so. Plans are what each agent
+declares it is doing, kept current by the agent; the view only reads them and
+rereads them every 20 seconds while open. A plan not updated for a day is
+marked stale, which does not mean it is complete. The section needs an Agent
+Backbone that offers current plans; an older one says it does not.
+
 ## Sheets
 
 Use Sheets for research comparisons, budgets, opportunity trackers and test results.
@@ -411,13 +427,17 @@ The grid is read-only. Select a cell or use Shift-click or Shift-arrow to select
 range. Arrow keys and Tab move the selection. Row and column paging keep large
 workbooks bounded; labels retain canonical A1 coordinates under saved views.
 
-Click **Send feedback** to open the same feedback box used by Documents and Reports.
-Write your feedback and send it to the owning agent. Closing the box preserves its
-draft. Feedback includes the displayed revision and selected cells (up to 100);
-without a selection it refers to the whole workbook revision. Send or clear the
-draft before changing the workbook, revision, tab or page. After an uncertain
-submission, **Retry the same request** checks the original operation without
-creating another feedback message. Delivery status does not mean the agent has
+The workbook's conversation with its author sits on the right, as it does
+beside Documents and Reports. Open it, write your message and press **⌘↵**.
+The composer shows the cells it refers to, such as `Runs!C4`. Each message includes the
+displayed revision and selected cells (up to 100); without a selection it
+refers to the tab and whole workbook revision. Closing the conversation keeps
+the draft. Send or clear the draft before changing the workbook, revision, tab
+or page. After an uncertain submission, **Retry the same request** checks the
+original operation without creating another feedback message. A message that
+was not sent offers **Edit**, so you can resend it with the current selection.
+Each workbook keeps its own conversation. Delivery status
+does not mean the agent has
 answered. **Copy feedback receipt** preserves the identifiers for checking delivery.
 
 **History** opens earlier retained revisions. **Refresh** loads the latest revision.

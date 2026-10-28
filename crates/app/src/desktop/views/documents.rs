@@ -45,15 +45,17 @@ fn open(pane: &mut ViewPane, metadata: DocumentMetadata, cx: &mut Context<ViewPa
         .as_ref()
         .map(|item| item.provider_url.clone())
         .unwrap_or_default();
-    pane.documents.clear();
-    pane.reports.open = Some(ReportItem {
+    let item = ReportItem {
         id: metadata.id,
         author: metadata.author().to_owned(),
         author_id: Some(metadata.author_id.clone()),
         provider_url,
         created_at: metadata.created_at.clone(),
         content: ReportContent::Document(metadata),
-    });
+    };
+    super::seen::mark(&item);
+    pane.documents.clear();
+    pane.reports.open = Some(item);
     pane.refetch(false, cx);
 }
 
@@ -68,12 +70,7 @@ pub(super) fn reader(pane: &ViewPane, cx: &mut Context<ViewPane>) -> AnyElement 
         .unwrap_or(selected_meta);
     let id = metadata.id;
     let author_id = metadata.author_id.clone();
-    let mut toolbar = ui::view_toolbar()
-        .h_auto()
-        .min_h(px(t.size.view_toolbar))
-        .py(px(t.space.s6))
-        .flex_wrap()
-        .gap(px(t.space.s8))
+    let toolbar = ui::view_toolbar()
         .child(
             ui::back_button("documents-back", "Documents").on_click(cx.listener(
                 |pane, _, _, cx| {
@@ -83,39 +80,72 @@ pub(super) fn reader(pane: &ViewPane, cx: &mut Context<ViewPane>) -> AnyElement 
                 },
             )),
         )
-        .child(super::mono(metadata.title.clone()).flex_1().min_w_0())
         .child(
-            ui::chip("document-refresh", "Check for update", false).on_click(cx.listener(
+            ui::text(
+                div()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .text_color(c.text),
+                &t.text.row_selected,
+            )
+            .child(metadata.title.clone()),
+        )
+        .child(div().flex_1())
+        .child(
+            ui::chip(
+                "document-author",
+                format!("More from {}", metadata.author()),
+                false,
+            )
+            .on_click(cx.listener(move |pane, _, _, cx| {
+                pane.documents.clear();
+                pane.reports.open = None;
+                pane.reports.agent = None;
+                pane.reports.query = ReportQuery::Documents(None, Some(author_id.clone()));
+                pane.reports.previous.clear();
+                pane.refetch(true, cx);
+            })),
+        )
+        .child(
+            ui::icon_button("document-refresh", "refresh-cw").on_click(cx.listener(
                 |pane, _, _, cx| {
                     pane.documents.error = None;
                     pane.refetch(false, cx);
                 },
             )),
-        )
-        .child(
-            ui::chip("document-author", "More from this author", false).on_click(cx.listener(
-                move |pane, _, _, cx| {
-                    pane.documents.clear();
-                    pane.reports.open = None;
-                    pane.reports.agent = None;
-                    pane.reports.query = ReportQuery::Documents(None, Some(author_id.clone()));
-                    pane.reports.previous.clear();
-                    pane.refetch(true, cx);
-                },
-            )),
         );
-    if let Some(next) = metadata.superseded_by {
+    let newer = metadata.superseded_by.map(|next| {
         let mut newer = metadata.clone();
         newer.id = next;
         newer.superseded_by = None;
-        toolbar = toolbar.child(
-            ui::chip("document-newer", "Open newer revision", false).on_click(cx.listener(
-                move |pane, _, _, cx| {
-                    open(pane, newer.clone(), cx);
-                },
-            )),
-        );
-    }
+        div()
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .gap(px(t.space.s8))
+            .h(px(t.size.view_toolbar))
+            .pl(px(t.space.s16))
+            .pr(px(t.space.s10))
+            .bg(c.accent_soft)
+            .border_b(px(t.size.hairline))
+            .border_color(c.line)
+            .child(ui::icon("history", t.size.icon, c.accent_text))
+            .child(
+                ui::text(div().flex_1().min_w_0().text_color(c.text), &t.text.body)
+                    .child("You're reading an earlier revision. A newer one is published."),
+            )
+            .child(ui::link(
+                div()
+                    .id("document-newer")
+                    .px(px(t.space.s8))
+                    .child("Open newer revision →")
+                    .on_click(cx.listener(move |pane, _, _, cx| {
+                        open(pane, newer.clone(), cx);
+                    })),
+            ))
+    });
     let body = if let Some(error) = &pane.documents.error {
         div()
             .p(px(t.space.s16))
@@ -163,27 +193,31 @@ pub(super) fn reader(pane: &ViewPane, cx: &mut Context<ViewPane>) -> AnyElement 
             .child(pane.error.unwrap_or("Reading document…"))
             .into_any_element()
     };
-    div()
+    let content = div()
         .size_full()
         .flex()
         .flex_col()
-        .child(ui::view_header("message-square", "Reports & updates"))
-        .child(toolbar)
         .child(
             ui::text(
                 div()
-                    .px(px(t.space.s14))
-                    .py(px(t.space.s6))
+                    .flex()
+                    .flex_shrink_0()
+                    .items_center()
+                    .gap(px(t.space.s6))
+                    .h(px(t.size.pane_header))
+                    .px(px(t.space.s16))
+                    .border_b(px(t.size.hairline))
+                    .border_color(c.line)
                     .text_color(c.muted),
                 &t.text.meta,
             )
+            .child(super::mono(metadata.author().to_owned()).text_color(c.text_2))
             .child(SharedString::from(format!(
-                "{} · {} · revision #{}",
-                metadata.author(),
-                metadata.created_at,
-                id
+                "· {} · revision #{id}",
+                metadata.created_at
             ))),
         )
-        .child(div().flex_1().min_h_0().child(body))
-        .into_any_element()
+        .children(newer)
+        .child(div().flex_1().min_h_0().child(body));
+    super::reports::reader_frame(pane, toolbar, content)
 }

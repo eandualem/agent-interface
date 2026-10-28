@@ -61,35 +61,56 @@ impl Sheets {
     pub(super) fn catalog_body(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let (t, c) = (tokens(), colors());
         let body = div().flex_1().min_h_0().flex().flex_col();
-        let mut list = div()
-            .id("sheet-catalog")
-            .flex_1()
-            .min_h_0()
-            .overflow_y_scroll()
-            .flex()
-            .flex_col();
+        let mut shelf = ui::shelf();
         for record in &self.catalog {
+            let [revision, thing] = super::seen_keys(record);
+            let mut tags = Vec::new();
+            if !super::super::seen::is_seen_key(&revision, &record.updated_at) {
+                let label = if super::super::seen::known(&thing) {
+                    "updated"
+                } else {
+                    "new"
+                };
+                tags.push(ui::tag(label, ui::Tone::Tag));
+            }
+            let tabs = record.tabs.len();
             let record = record.clone();
-            list = list.child(
-                ui::row(
+            shelf = shelf.child(
+                ui::shelf_card(
                     SharedString::from(format!("sheet-{}", record.sheet_id)),
+                    "sheet",
                     false,
+                    tags,
+                    record.title.clone(),
+                    record
+                        .agent_name
+                        .clone()
+                        .unwrap_or_else(|| record.author_name.clone()),
+                    format!(
+                        "{} ago",
+                        super::super::since(agent_interface_roster::views::epoch_seconds(
+                            &record.updated_at
+                        ))
+                    ),
+                    format!("{tabs} {}", if tabs == 1 { "tab" } else { "tabs" }),
                 )
-                .h_auto()
-                .min_h(px(42.))
-                .child(div().flex().flex_col().child(record.title.clone()).child(
-                    ui::text(div().text_color(c.muted), &t.text.meta).child(format!(
-                        "{} · {} tabs · {}",
-                        record.author_name,
-                        record.tabs.len(),
-                        record.updated_at
-                    )),
-                ))
                 .on_click(
                     cx.listener(move |s, _, _, cx| s.open_record(record.clone(), None, 0, 0, cx)),
                 ),
             );
         }
+        let mut list = ui::grouped_page(
+            "sheet-catalog",
+            div()
+                .child(ui::group_label(
+                    div()
+                        .text_color(c.text_2)
+                        .font_weight(t.text.row_selected.weight())
+                        .child("Workbooks"),
+                    "latest revision of each workbook · read-only",
+                ))
+                .child(shelf),
+        );
         if self.catalog.is_empty() && !self.busy {
             list = list.child(
                 ui::text(div().p(px(t.space.s12)).text_color(c.muted), &t.text.body)
@@ -208,12 +229,26 @@ impl Sheets {
                 ),
             )
     }
-    pub(super) fn send_feedback(&mut self, cx: &mut Context<Self>) {
-        if self.busy || self.pending.is_some() || self.feedback.read(cx).value(cx).trim().is_empty()
-        {
+    pub(super) fn send_feedback(
+        &mut self,
+        conversation: Entity<Conversation>,
+        index: usize,
+        cx: &mut Context<Self>,
+    ) {
+        if self.busy || self.pending.is_some() {
+            conversation.update(cx, |c, cx| {
+                c.complete(
+                    index,
+                    Outcome::Refused("Wait for the earlier message to finish.".into()),
+                    cx,
+                )
+            });
             return;
         }
         let Some((client, open)) = self.client.as_ref().zip(self.open.as_ref()) else {
+            conversation.update(cx, |c, cx| {
+                c.complete(index, Outcome::Refused("No workbook is open.".into()), cx)
+            });
             return;
         };
         let anchor = self.selection.map(|selection| {
@@ -230,13 +265,13 @@ impl Sheets {
             new_id(),
             open.record.revision_id.clone(),
             FeedbackKind::Feedback,
-            self.feedback.read(cx).value(cx).into(),
+            conversation.read(cx).text(index).into(),
             anchor,
         );
         match client.prepare_feedback(&open.record.sheet_id, &feedback) {
-            Ok(request) => self.submit(request, cx),
-            Err(e) => self.feedback.update(cx, |f, cx| {
-                f.complete(Outcome::Refused(e.message().into()), cx)
+            Ok(request) => self.submit(request, conversation.clone(), index, cx),
+            Err(e) => conversation.update(cx, |c, cx| {
+                c.complete(index, Outcome::Refused(e.message().into()), cx)
             }),
         }
     }

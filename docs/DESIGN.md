@@ -170,17 +170,24 @@ All in `components.rs`; each takes its look from the tokens.
 | `fact` | A label and value, one line of an agent's card |
 | `choice_button`, `filter_frame`, `choice_frame`, `choice_key`, `hint_bar` | The chooser's two buttons, filter, selectable row with its ring, number key and centred key row |
 | `view_header`, `back_button`, `pill`, `info_card` | A view's 28 px header; the reading view's way back; a tag; a summary panel |
-| `tag` with `Tone` | How something is delivered: `Plain` for `all` and plain facts, `Tag` in the accent tint for a tag, `Quiet` outline for a direct assignment |
+| `tag` with `Tone` | How something is delivered: `Plain` for `all` and plain facts, `Tag` in the accent tint for a tag, `Quiet` outline for a direct assignment; a record's state: `Tag` for active, `Attention` for waiting on the person, `Done` for complete |
 | `grouped_page`, `group_title`, `group_label`, `group_card`, `group_row`, `group_note` | How a view lays out a list people browse: a padded page with a centred column no wider than `grouped_width`; a major section's title (`group_title` text) and one line saying what it holds; a subgroup's label, which may be a `tag`; rows on a rounded `panel` card, one line each, `group_row` tall, separated by hairlines, with a name, meta on the right and a chevron; a quiet line for what a section does not list |
 | `number_tile` | A round tile with a position, such as a policy's place in a brief |
+| `done_symbol`, `live_note` | A finished record's `ok` ring with a check; the header's "live from Agent Backbone" note |
+| `record_row`, `question_row` | An update on a `group_card`: state mark, mono author (`record_who` wide), summary, state `tag`, age (`record_age`) and chevron; an answer: a `?` tile, the question over who answered and how the answer begins, an optional tag, age and chevron, `question_row` tall |
+| `shelf`, `shelf_card` | Documents three to a line: a file tile and tags, the title on up to two lines, author, age and size; at least `shelf_card` tall |
+| `reader_column`, `reader_label`, `reader_section`, `callout`, `notice`, `reference`, `link` | A record reader's centred column (`reader_width`); an uppercase label; a labelled section with its label in a `reader_label` column under a hairline; a tinted block (`Attention` for what waits on the person, `Follows` for what follows an answer); a notice such as a correction; an authored link shown as text (`reference_row` tall); accent text that acts |
+| `conversation_rail`, `conversation_panel`, `conversation_header`, `thread_divider`, `message`, `message_meta`, `anchor`, `composer`, `send_button`, `sending_spinner` | The one conversation beside every reader. Closed: a `conversation_rail` wide rail with its button, the agent's mark and a label, a dot for new replies. Open: a `conversation_width` panel with the agent and subject, the thread (day dividers; the person's messages on the right on `selected`, an agent's on the left on `surface`, `bubble` corners with a `key` tail; a dashed `attention` outline for one not sent) and the composer (field, `anchor` for what the message refers to, ⌘↵ and `send_button`) |
 | `tag_card` | A tag on the left (`tag_card_label` wide) with how many agents carry it; labelled lines of mono names on the right (agents, skills, policies), a dash when empty; `panel` fill for `all` |
 
 ## Backbone views
 
 A pane can show a view instead of a terminal.
 An empty pane shows the new-pane chooser (`desktop/new_pane.rs`): Open
-terminal and **Skills, usage, team…**, a filter, Backbone agents then other
-tmux sessions, and the views list. Each view lives in `desktop/views/` and
+terminal, **Reports & updates** and **Skills, usage, team…**, a filter, Backbone
+agents then other tmux sessions, the six Reports & updates sections and the
+views list. Tab and Shift-Tab move between the lists; a chosen section opens
+once and is not saved with the pane. Each view lives in `desktop/views/` and
 follows its design board with its own header (`view_header`), controls, list
 and footer; a view pane has no generic pane header.
 A view keeps its last data when Backbone stops answering and says so in a

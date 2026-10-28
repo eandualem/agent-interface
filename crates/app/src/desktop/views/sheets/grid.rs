@@ -96,8 +96,9 @@ impl Sheets {
                         .min_h_0(),
                     ),
             );
-        div()
+        let sheet = div()
             .flex_1()
+            .min_w_0()
             .min_h_0()
             .flex()
             .flex_col()
@@ -122,8 +123,13 @@ impl Sheets {
             )
             .child(tabs)
             .child(table)
-            .child(self.page_controls(cx))
-            .child(self.feedback.clone())
+            .child(self.page_controls(cx));
+        div()
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .child(sheet)
+            .child(self.conversation.clone())
             .into_any_element()
     }
     fn row(&self, row: usize, cx: &mut Context<Self>) -> gpui::Div {

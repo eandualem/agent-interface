@@ -1,7 +1,7 @@
 //! Native read-only spreadsheets with contextual feedback. Agents own edits;
 //! immutable displayed revisions and feedback retries remain pinned in this pane.
 
-use super::feedback::{Feedback, FeedbackEvent};
+use super::conversation::{Conversation, ConversationEvent};
 use crate::desktop::{
     components as ui,
     design::{colors, tokens},
@@ -89,7 +89,13 @@ pub(super) struct Sheets {
     history_cursors: Vec<Option<String>>,
     history_cursor: Option<String>,
     selection: Option<Selection>,
-    feedback: Entity<Feedback>,
+    /// The open workbook's conversation.
+    conversation: Entity<Conversation>,
+    /// Each workbook's conversation, by workbook identity, so a thread never
+    /// moves to another workbook or recipient.
+    conversations: std::collections::HashMap<String, Entity<Conversation>>,
+    /// The message whose request is pending, and its conversation.
+    message: Option<(Entity<Conversation>, usize)>,
     export_open: bool,
     pending: Option<Prepared>,
     pending_uncertain: bool,
@@ -98,18 +104,13 @@ pub(super) struct Sheets {
     error: Option<String>,
     notice: Option<String>,
     _input: Subscription,
+    _inputs: Vec<Subscription>,
 }
 impl Sheets {
     pub fn new(directory: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let feedback = cx.new(|cx| Feedback::for_sheet(window, cx));
-        let input = cx.subscribe(&feedback, |s, _, event, cx| match event {
-            FeedbackEvent::Send => s.send_feedback(cx),
-            FeedbackEvent::Retry => {
-                if let Some(request) = s.pending.clone() {
-                    s.submit(request, cx);
-                }
-            }
-        });
+        let conversation =
+            cx.new(|cx| Conversation::delivered_by_owner("about this sheet", window, cx));
+        let input = Self::watch(&conversation, cx);
         let mut state = Self {
             focus: cx.focus_handle(),
             rows_scroll: UniformListScrollHandle::new(),
@@ -125,7 +126,9 @@ impl Sheets {
             history_cursors: Vec::new(),
             history_cursor: None,
             selection: None,
-            feedback,
+            conversation,
+            conversations: std::collections::HashMap::new(),
+            message: None,
             export_open: false,
             pending: None,
             pending_uncertain: false,
@@ -134,6 +137,7 @@ impl Sheets {
             error: None,
             notice: None,
             _input: input,
+            _inputs: Vec::new(),
         };
         state.catalog(None, cx);
         state
@@ -181,7 +185,7 @@ impl Sheets {
         cx.stop_propagation();
     }
     fn clean(&mut self, cx: &mut Context<Self>) -> bool {
-        if !self.feedback.read(cx).value(cx).is_empty() {
+        if !self.conversation.read(cx).draft(cx).is_empty() {
             self.fail(
                 "Send or clear the feedback draft before changing the workbook or revision.",
                 cx,
@@ -196,7 +200,7 @@ impl Sheets {
     }
     fn begin(&mut self, cx: &mut Context<Self>) {
         // Block native input before yielding; waiting for render leaves an input gap.
-        self.feedback.update(cx, |f, cx| f.block_input(cx));
+        self.conversation.update(cx, |c, cx| c.hold(true, cx));
         self.busy = true;
         self.error = None;
         self.notice = None;
@@ -248,6 +252,7 @@ impl Sheets {
         if !self.clean(cx) {
             return;
         }
+        super::seen::mark_keys(&seen_keys(&record));
         self.read_grid(record, tab, row, column, cx);
     }
     fn read_grid(
@@ -309,7 +314,7 @@ impl Sheets {
                 match result {
                     Ok(open) => {
                         // A draft must never acquire a different revision or page context.
-                        if !s.feedback.read(cx).value(cx).is_empty() {
+                        if !s.conversation.read(cx).draft(cx).is_empty() {
                             s.fail(
                                 "The displayed revision was kept to preserve your feedback draft.",
                                 cx,
@@ -332,7 +337,7 @@ impl Sheets {
         .detach();
     }
     fn latest(&mut self, cx: &mut Context<Self>) {
-        if !self.feedback.read(cx).value(cx).is_empty() {
+        if !self.conversation.read(cx).draft(cx).is_empty() {
             self.fail(
                 "Send or clear the feedback draft before changing the revision.",
                 cx,
@@ -385,15 +390,37 @@ impl Sheets {
         });
         cx.notify();
     }
-    fn submit(&mut self, request: Prepared, cx: &mut Context<Self>) {
+    /// Route a conversation's sends and retries to this view's delivery.
+    fn watch(conversation: &Entity<Conversation>, cx: &mut Context<Self>) -> Subscription {
+        cx.subscribe(conversation, |s, conversation, event, cx| match *event {
+            ConversationEvent::Send(index) => s.send_feedback(conversation, index, cx),
+            ConversationEvent::Retry(index) => {
+                let same = s
+                    .message
+                    .as_ref()
+                    .is_some_and(|(pending, at)| *pending == conversation && *at == index);
+                if let Some(request) = s.pending.clone().filter(|_| same) {
+                    s.submit(request, conversation, index, cx);
+                }
+            }
+        })
+    }
+    fn submit(
+        &mut self,
+        request: Prepared,
+        conversation: Entity<Conversation>,
+        index: usize,
+        cx: &mut Context<Self>,
+    ) {
         if self.busy {
             return;
         }
         let Some(client) = self.client.clone() else {
             return;
         };
-        self.feedback.update(cx, |f, cx| f.retrying(cx));
+        conversation.update(cx, |c, cx| c.resending(index, cx));
         self.pending = Some(request.clone());
+        self.message = Some((conversation.clone(), index));
         self.begin(cx);
         let work = cx
             .background_executor()
@@ -405,19 +432,19 @@ impl Sheets {
                 match result {
                     Ok(Accepted::Feedback(receipt)) => {
                         s.pending = None; s.pending_uncertain = false;
-                        s.feedback.update(cx, |f,cx| f.complete(Outcome::Accepted(receipt.delivery.message().into()), cx));
+                        conversation.update(cx, |c,cx| c.complete(index, Outcome::Accepted(receipt.delivery.message().into()), cx));
                         s.notice = Some(receipt.delivery.message().into());
                         s.feedback_receipt = Some(receipt);
                     }
                     Ok(_) => {
                         s.pending_uncertain = true;
-                        s.feedback.update(cx, |f,cx| f.complete(Outcome::Unknown("Could not confirm feedback. Retry the same request to check its outcome.".into()), cx));
+                        conversation.update(cx, |c,cx| c.complete(index, Outcome::Unknown("Could not confirm feedback. Retry the same request to check its outcome.".into()), cx));
                     }
                     Err(error) => {
                         s.pending_uncertain = unresolved_mutation(s.pending_uncertain, &error);
                         if !s.pending_uncertain { s.pending = None; }
                         let outcome = if s.pending_uncertain { Outcome::Unknown(error.message().into()) } else { Outcome::Refused(error.message().into()) };
-                        s.feedback.update(cx, |f,cx| f.complete(outcome, cx));
+                        conversation.update(cx, |c,cx| c.complete(index, outcome, cx));
                     }
                 }
                 cx.notify();
@@ -425,6 +452,46 @@ impl Sheets {
         }).detach();
     }
 }
+impl Sheets {
+    /// What a message refers to: the selected cells on their tab, such as
+    /// `Runs!C4` or `Runs!B2:F9`, or the tab while nothing is selected.
+    fn anchor(&self, open: &Open) -> Option<String> {
+        let tab = open
+            .record
+            .tabs
+            .iter()
+            .find(|tab| tab.tab_id == open.grid.tab_id)?
+            .name
+            .clone();
+        let Some(selection) = self.selection else {
+            return Some(tab);
+        };
+        let (rows, columns) = selection.bounds();
+        let cell = |row: usize, column: usize| {
+            Some(format!(
+                "{}{}",
+                column_name(open.grid.columns.get(column)?.index),
+                open.grid.rows.get(row)?.index
+            ))
+        };
+        let start = cell(*rows.start(), *columns.start())?;
+        let end = cell(*rows.end(), *columns.end())?;
+        Some(if start == end {
+            format!("{tab}!{start}")
+        } else {
+            format!("{tab}!{start}:{end}")
+        })
+    }
+}
+
+/// Keys for a workbook revision, then for the workbook across revisions.
+fn seen_keys(record: &Record) -> [String; 2] {
+    [
+        format!("sheet|{}", record.revision_id),
+        format!("sheet-thing|{}", record.sheet_id),
+    ]
+}
+
 fn unresolved_mutation(previously_uncertain: bool, error: &api::Error) -> bool {
     previously_uncertain || *error == api::Error::Unknown
 }
@@ -453,30 +520,25 @@ fn column_name(mut n: usize) -> String {
 }
 
 impl Render for Sheets {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if let Some(open) = &self.open {
+            let sheet = open.record.sheet_id.to_string();
+            if !self.conversations.contains_key(&sheet) {
+                let conversation =
+                    cx.new(|cx| Conversation::delivered_by_owner("about this sheet", window, cx));
+                self._inputs.push(Self::watch(&conversation, cx));
+                self.conversations.insert(sheet.clone(), conversation);
+            }
+            self.conversation = self.conversations[&sheet].clone();
+        }
         let frozen = self.busy || self.pending.is_some();
-        let target = self
+        let (agent, anchor) = self
             .open
             .as_ref()
-            .map(|open| format!("{}:{}", open.record.sheet_id, open.record.revision_id));
-        let label = self
-            .open
-            .as_ref()
-            .map(|open| {
-                format!(
-                    "Feedback to {} · {}{}",
-                    open.record.author_name,
-                    open.record.title,
-                    if self.selection.is_some() {
-                        " · selected cells"
-                    } else {
-                        ""
-                    }
-                )
-            })
+            .map(|open| (open.record.author_name.clone(), self.anchor(open)))
             .unwrap_or_default();
-        self.feedback.update(cx, |composer, cx| {
-            composer.sheet_context(target, label, frozen, cx)
+        self.conversation.update(cx, |conversation, cx| {
+            conversation.set_context(agent, anchor, frozen, cx)
         });
         let (t, c) = (tokens(), colors());
         div()
@@ -495,7 +557,6 @@ impl Render for Sheets {
             .flex()
             .flex_col()
             .bg(c.surface)
-            .child(ui::view_header("layout-grid", "Sheets"))
             .child(self.toolbar(cx))
             .when_some(self.feedback_receipt.clone(), |e, receipt| {
                 e.child(self.feedback_receipt_controls(&receipt, cx))
