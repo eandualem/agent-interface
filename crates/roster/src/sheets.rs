@@ -182,6 +182,25 @@ impl Client {
         }
         self.page("/api/sheets", author_id, cursor)
     }
+    /// Read the workbook shelf across bounded pages so unread ordering is global.
+    /// Refuse cycles or an excessive catalog rather than silently hiding records.
+    pub fn list_all(&self) -> Result<Vec<Record>, Error> {
+        let mut records = Vec::new();
+        let mut cursor = None;
+        let mut visited = std::collections::HashSet::new();
+        for _ in 0..20 {
+            let page = self.list(None, cursor.as_deref())?;
+            records.extend(page.items);
+            let Some(next) = page.next_cursor else {
+                return Ok(records);
+            };
+            if !visited.insert(next.clone()) {
+                return Err(Error::Unreadable);
+            }
+            cursor = Some(next);
+        }
+        Err(Error::Unreadable)
+    }
     fn page(
         &self,
         base: &str,

@@ -143,7 +143,7 @@ impl Sheets {
             }
             _ => (
                 String::new(),
-                "Select cells to copy them or talk about them".to_owned(),
+                "Copy displayed values, or select cells to copy or discuss".to_owned(),
             ),
         };
         ui::text(
@@ -378,24 +378,18 @@ impl Sheets {
                 open.grid.total_rows
             )),
         )
-        .child(
-            ui::icon_button("sheet-rows-prev", "chevron-left").on_click(cx.listener(
-                move |s, _, _, cx| {
-                    if row > 0 {
-                        s.navigate(previous_row, col, cx);
-                    }
-                },
-            )),
-        )
-        .child(
-            ui::icon_button("sheet-rows-next", "chevron-right").on_click(cx.listener(
-                move |s, _, _, cx| {
-                    if let Some(row) = next_row {
-                        s.navigate(row, col, cx);
-                    }
-                },
-            )),
-        )
+        .when(row > 0, |el| {
+            el.child(
+                ui::action("sheet-rows-prev", "chevron-left", "Earlier rows")
+                    .on_click(cx.listener(move |s, _, _, cx| s.navigate(previous_row, col, cx))),
+            )
+        })
+        .when_some(next_row, |el, next| {
+            el.child(
+                ui::action("sheet-rows-next", "chevron-right", "More rows")
+                    .on_click(cx.listener(move |s, _, _, cx| s.navigate(next, col, cx))),
+            )
+        })
         // Columns page only when the tab has more than one page of them.
         .when(col > 0, |el| {
             el.child(
@@ -422,7 +416,16 @@ impl Sheets {
         }
     }
     pub(super) fn copy(&mut self, cx: &mut Context<Self>) {
-        let Some((open, selection)) = self.open.as_ref().zip(self.selection) else {
+        let Some(open) = self.open.as_ref() else {
+            return;
+        };
+        let Some(selection) = copy_selection(
+            self.selection,
+            open.grid.rows.len(),
+            open.grid.columns.len(),
+        ) else {
+            self.notice = Some("There are no displayed cells to copy.".into());
+            cx.notify();
             return;
         };
         let (rows, cols) = selection.bounds();
@@ -448,6 +451,16 @@ impl Sheets {
         cx.notify();
     }
 }
+fn copy_selection(selection: Option<Selection>, rows: usize, columns: usize) -> Option<Selection> {
+    if rows == 0 || columns == 0 {
+        return None;
+    }
+    selection.or(Some(Selection {
+        anchor: (0, 0),
+        end: (rows - 1, columns - 1),
+    }))
+}
+
 fn quote(s: &str) -> String {
     if s.is_empty() || s.contains(['\t', '\n', '\r', '"']) {
         format!("\"{}\"", s.replace('"', "\"\""))
@@ -469,6 +482,21 @@ fn clipboard_value(display: &str, text: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn copying_without_selection_uses_all_displayed_cells() {
+        let all = copy_selection(None, 3, 4).unwrap();
+        assert_eq!(all.bounds(), (0..=2, 0..=3));
+        let selected = Selection {
+            anchor: (1, 2),
+            end: (2, 3),
+        };
+        assert_eq!(
+            copy_selection(Some(selected), 3, 4).unwrap().bounds(),
+            selected.bounds()
+        );
+        assert!(copy_selection(None, 0, 4).is_none());
+    }
 
     #[test]
     fn copied_text_stays_literal_without_changing_numeric_results() {
