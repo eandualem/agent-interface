@@ -150,7 +150,8 @@ Drag a tab onto another tab in the sidebar to move it to that position;
 the order is saved while the selected tab stays selected.
 The existing pane remains intact and the new pane asks what it should run: Open
 terminal, or Attach a session. New tabs
-use the launch directory; splits inherit the ordinary shell’s remembered directory.
+use the launch directory, or your home folder when the app was opened from the
+Dock or Finder; splits inherit the ordinary shell’s remembered directory.
 The new arrangement appears after saving. Navigation made while saving stays local;
 otherwise the new tab or pane is selected.
 
@@ -194,10 +195,14 @@ without optional agent metadata.
 
 Attached sessions reconnect automatically when the saved session returns on its
 source server. Attempts run at the two-second window-refresh interval and never
-start an agent or create a session. **Reconnect** retries immediately; **Detach**
-returns the pane to its chooser. An ordinary terminal whose saved shell cannot be
-reached also offers **Open terminal** to reuse the shell or start it if absent.
-Starting a new shell does not restore a lost shell's process state.
+start an agent or create a session on their own. When the pane shows a stopped
+Agent Backbone agent, **Resume** asks Backbone to continue its saved conversation
+and **Start new** starts a new one, both with the agent's saved runtime and model;
+the pane connects once the agent's session appears. **Detach** returns the pane
+to its chooser. An ordinary terminal whose saved shell is no longer running, such
+as after a restart, starts a new shell in its saved directory once, automatically.
+If that fails, **Open terminal** tries again. Starting a new shell does not
+restore a lost shell's process state.
 **Detach** in tab options, or Command-Shift-X
 (Ctrl+Shift+X on Linux), works with attached sessions, ordinary terminals and
 native views such as skills and reports. Detaching keeps the pane and its saved
