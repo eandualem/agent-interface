@@ -25,6 +25,8 @@ impl Sheets {
                 .id("sheet-export-menu")
                 .occlude()
                 .on_mouse_down_out(cx.listener(|s, _, _, cx| {
+                    // Dismiss this menu without activating the underlying trigger.
+                    cx.stop_propagation();
                     s.export_open = false;
                     cx.notify();
                 }));
