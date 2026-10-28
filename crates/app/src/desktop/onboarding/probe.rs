@@ -2,7 +2,7 @@
 //! and whether Agent Backbone answers. Read-only; nothing is installed here.
 
 use std::{
-    io::{Read, Seek},
+    os::unix::fs::FileExt,
     path::PathBuf,
     process::{Command, Stdio},
     time::{Duration, Instant},
@@ -33,7 +33,7 @@ pub const TOOLS: &[(&str, &str, &str)] = &[
 const MARK: &str = "@@agent-interface-probe";
 const SHELL_LIMIT: Duration = Duration::from_secs(8);
 /// More than enough for our lines after any startup-file noise.
-const OUTPUT_LIMIT: u64 = 256 * 1024;
+const OUTPUT_LIMIT: usize = 256 * 1024;
 
 /// Whether Agent Backbone is set up and answering.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -88,7 +88,7 @@ fn shell_lookup() -> Option<Vec<(&'static str, PathBuf)>> {
     );
     // Output goes to a file, not a pipe: a background process started by a
     // startup file can keep a pipe open forever, but cannot stop a file read.
-    let mut file = tempfile::tempfile().ok()?;
+    let file = tempfile::tempfile().ok()?;
     let mut child = Command::new(shell)
         .args(["-l", "-i", "-c", &script])
         .stdin(Stdio::null())
@@ -102,9 +102,19 @@ fn shell_lookup() -> Option<Vec<(&'static str, PathBuf)>> {
     }
     let _ = child.kill();
     let _ = child.wait();
-    let mut bytes = Vec::new();
-    file.seek(std::io::SeekFrom::Start(0)).ok()?;
-    file.take(OUTPUT_LIMIT).read_to_end(&mut bytes).ok()?;
+    // Positional reads leave the shared file offset alone, so a process still
+    // writing cannot overwrite our lines or skip the reader past them.
+    let mut bytes = vec![0; OUTPUT_LIMIT];
+    let mut length = 0;
+    while length < bytes.len() {
+        match file.read_at(&mut bytes[length..], length as u64) {
+            Ok(0) => break,
+            Ok(read) => length += read,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => return None,
+        }
+    }
+    bytes.truncate(length);
     // Startup-file noise need not be UTF-8; our lines are.
     let output = String::from_utf8_lossy(&bytes);
     let found = parse(&output);
