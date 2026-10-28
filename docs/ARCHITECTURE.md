@@ -523,7 +523,7 @@ protocol. The app still owns no daemon; Agent Backbone owns its optional user
 service. `--service none` omits that service, and `--no-engine` installs the app
 without initializing an externally managed connection.
 
-`scripts/prepare-tmux.py` prepares an optional macOS distribution input from
+`scripts/prepare-tmux.py` prepares an optional native macOS or glibc Linux distribution input from
 the SHA-256-pinned archives in `packaging/tmux-sources.json`. It builds tmux 3.8
 (ISC) with static libevent 2.1.12 (BSD-family notices, event loop), ncurses 6.5
 (MIT, terminal capabilities) and utf8proc 2.11.2 (MIT and Unicode data licence,
@@ -533,7 +533,17 @@ and isolated dependency search paths; it does not install anything or start a
 server. The macOS 11 deployment target is also checked during compilation for
 unguarded newer APIs. Autoconf's link-only `pipe2` probe is disabled because a
 new SDK can expose that symbol even when the deployment target predates it.
-Metadata checks do not replace execution tests on the oldest supported OS.
+The optional `--target` argument rejects a mismatched build host; this is not
+a cross-compiler. Mach-O outputs must match the native architecture and macOS
+11 deployment metadata. Linux outputs must be 64-bit little-endian ELF for
+the selected architecture, use its standard glibc interpreter, link only the
+allowed glibc system libraries and contain no embedded library search path.
+The build records required GLIBC symbol versions, including their maximum,
+instead of claiming a fixed Linux compatibility baseline. Building on a newer
+distribution can therefore require a newer glibc. `BUILD.json` retains the
+target, compiler identity, source hashes and inspected binary requirements.
+Metadata checks do not replace native execution tests or tests on the oldest
+supported OS; a target-capable builder alone is not platform acceptance.
 The engine payload builder incorporates this input at `libexec/tmux` before
 inventory hashing. Its service prepends `bin` for the pinned Backbone CLI and
 appends `libexec` after the captured PATH, preserving existing tmux precedence.

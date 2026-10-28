@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Build the pinned, statically linked tmux payload on macOS.
+"""Build tmux with pinned static dependencies on a matching macOS/Linux host.
 
-Requires the Apple command-line tools, make and Python 3.12 or later. Never
+Requires a system C toolchain, make and Python 3.12 or later. Never
 starts a server. Dependencies are built in a private prefix, not installed on
 the host. The output is a build input; it is not installed or published.
 """
@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import re
 import shutil
 import subprocess
 import tarfile
@@ -19,6 +20,81 @@ import tempfile
 import urllib.request
 
 ROOT = Path(__file__).resolve().parent.parent
+
+TARGETS = {f"{arch}-{system}" for arch in ("aarch64", "x86_64")
+           for system in ("apple-darwin", "unknown-linux-gnu")}
+
+
+def native_target(expected=None):
+    system = {"Darwin": "apple-darwin", "Linux": "unknown-linux-gnu"}.get(platform.system())
+    arch = {"arm64": "aarch64", "aarch64": "aarch64", "x86_64": "x86_64"}.get(platform.machine())
+    if system is None or arch is None:
+        raise ValueError("Unsupported native build host")
+    if system == "unknown-linux-gnu" and platform.libc_ver()[0] != "glibc":
+        raise ValueError("Linux builds require a glibc host")
+    target = f"{arch}-{system}"
+    if expected is not None and expected != target:
+        raise ValueError("Expected target does not match the native build host")
+    return target
+
+
+def binary_report(binary, target):
+    """Inspect without executing the binary; runtime acceptance is separate."""
+    if target not in TARGETS:
+        raise ValueError("Unsupported binary target")
+
+    def output(*args):
+        return subprocess.check_output(args, text=True, env={"PATH": "/usr/bin:/bin", "LC_ALL": "C"})
+
+    if target.endswith("apple-darwin"):
+        expected = "arm64" if target.startswith("aarch64-") else "x86_64"
+        if output("/usr/bin/lipo", "-archs", str(binary)).split() != [expected]:
+            raise ValueError("tmux Mach-O architecture does not match target")
+        deps = output("/usr/bin/otool", "-L", str(binary))
+        libraries = [line.strip().split(" (compatibility", 1)[0]
+                     for line in deps.splitlines() if " (compatibility" in line]
+        if not libraries or any(not name.startswith("/usr/lib/") for name in libraries):
+            raise ValueError("tmux links a non-system library: " + deps)
+        commands = output("/usr/bin/otool", "-l", str(binary))
+        versions = re.findall(r"\bminos\s+(\d+(?:\.\d+)+)", commands)
+        versions += re.findall(r"cmd LC_VERSION_MIN_MACOSX\s+cmdsize \d+\s+version (\d+(?:\.\d+)+)", commands)
+        if not versions or any(tuple(map(int, value.split("."))) > (11, 0, 0)
+                               for value in versions):
+            raise ValueError("tmux minimum macOS exceeds 11.0 or is missing")
+        if "_pipe2" in output("/usr/bin/nm", "-u", str(binary)).split():
+            raise ValueError("tmux unexpectedly requires macOS 27 pipe2")
+        return {"format": "Mach-O", "architecture": expected,
+                "minimum_macos": versions, "libraries": libraries}
+
+    header = output("/usr/bin/readelf", "-hW", str(binary))
+    machine = "AArch64" if target.startswith("aarch64-") else "Advanced Micro Devices X86-64"
+    if (not re.search(r"Class:\s+ELF64\b", header)
+            or not re.search(r"Data:\s+2's complement, little endian", header)
+            or not re.search(r"Machine:\s+" + re.escape(machine) + r"\s*$", header, re.M)
+            or not re.search(r"Type:\s+(EXEC|DYN)\b", header)):
+        raise ValueError("tmux ELF architecture or format does not match target")
+    dynamic = output("/usr/bin/readelf", "-dW", str(binary))
+    libraries = re.findall(r"\(NEEDED\).*?\[([^\]]+)\]", dynamic)
+    allowed = {"libc.so.6", "libm.so.6", "libdl.so.2", "libpthread.so.0",
+               "librt.so.1", "libutil.so.1", "libresolv.so.2"}
+    if "libc.so.6" not in libraries or set(libraries) - allowed:
+        raise ValueError("tmux ELF links unexpected or non-glibc libraries")
+    if re.search(r"\((RPATH|RUNPATH)\)", dynamic):
+        raise ValueError("tmux ELF must not embed a library search path")
+    program = output("/usr/bin/readelf", "-lW", str(binary))
+    interpreters = re.findall(r"\[Requesting program interpreter: ([^\]]+)\]", program)
+    expected = "/lib/ld-linux-aarch64.so.1" if target.startswith("aarch64-") else "/lib64/ld-linux-x86-64.so.2"
+    if interpreters != [expected]:
+        raise ValueError("tmux ELF interpreter does not match the glibc target")
+    versions = output("/usr/bin/readelf", "--version-info", "-W", str(binary))
+    if "GLIBC_PRIVATE" in versions:
+        raise ValueError("tmux ELF uses a private glibc ABI")
+    required = sorted(set(re.findall(r"\bGLIBC_(\d+(?:\.\d+)+)\b", versions)),
+                      key=lambda value: tuple(map(int, value.split("."))))
+    if not required:
+        raise ValueError("tmux ELF has no verifiable glibc version requirements")
+    return {"format": "ELF", "architecture": machine, "interpreter": expected,
+            "libraries": libraries, "glibc_versions": required, "minimum_glibc": required[-1]}
 
 
 def fetch(item, cache):
@@ -40,9 +116,11 @@ def fetch(item, cache):
     return archive
 
 
-def build(destination, cache):
-    if platform.system() != "Darwin":
-        raise SystemExit("This builder currently supports macOS hosts only.")
+def build(destination, cache, expected_target=None):
+    target = native_target(expected_target)
+    mac = target.endswith("apple-darwin")
+    if destination.exists() or destination.is_symlink():
+        raise ValueError("Output already exists")
     sources = json.loads((ROOT / "packaging/tmux-sources.json").read_text())
     cache.mkdir(parents=True, exist_ok=True)
     archives = [fetch(item, cache) for item in sources]
@@ -55,20 +133,24 @@ def build(destination, cache):
             with tarfile.open(archive) as tar:
                 tar.extractall(work, filter="data")
         env = {key: value for key, value in os.environ.items() if key in {
-            "HOME", "TMPDIR", "LANG", "LC_ALL", "DEVELOPER_DIR", "SDKROOT",
+            "HOME", "TMPDIR",
         }}
         env.update(
-            PATH="/usr/bin:/bin:/usr/sbin:/sbin", CC="/usr/bin/clang",
-            MACOSX_DEPLOYMENT_TARGET="11.0",
-            CFLAGS=("-O2 -mmacosx-version-min=11.0 -Werror=unguarded-availability-new "
-                    "-ffile-prefix-map=" + str(work) + "=/build/tmux"),
-            LDFLAGS="-mmacosx-version-min=11.0",
+            PATH="/usr/bin:/bin:/usr/sbin:/sbin", LC_ALL="C",
+            CC="/usr/bin/clang" if mac else "/usr/bin/cc",
+            CFLAGS="-O2 -ffile-prefix-map=" + str(work) + "=/build/tmux",
+            LDFLAGS="",
             PKG_CONFIG_LIBDIR=str(prefix / "lib/pkgconfig"),
             PKG_CONFIG_PATH=str(prefix / "lib/pkgconfig"),
+        )
+        if mac:
+            env.update({key: os.environ[key] for key in ("DEVELOPER_DIR", "SDKROOT") if key in os.environ})
+            env.update(MACOSX_DEPLOYMENT_TARGET="11.0",
+                       LDFLAGS="-mmacosx-version-min=11.0",
+                       CFLAGS=env["CFLAGS"] + " -mmacosx-version-min=11.0 -Werror=unguarded-availability-new",
             # AC_CHECK_FUNCS links without including the availability-marked
             # declaration. A new SDK can therefore falsely enable pipe2.
-            ac_cv_func_pipe2="no",
-        )
+                       ac_cv_func_pipe2="no")
 
         def run(folder, *args, extra=None):
             subprocess.run(args, cwd=work / folder, env=env | (extra or {}), check=True)
@@ -103,12 +185,7 @@ def build(destination, cache):
             "--sysconfdir=/etc", "--enable-utf8proc", "--disable-jemalloc", extra=libraries)
         run("tmux-3.8", "make", "-j4", extra=libraries)
         binary = work / "tmux-3.8/tmux"
-        deps = subprocess.check_output(["otool", "-L", binary], text=True)
-        if any(not line.strip().startswith("/usr/lib/") for line in deps.splitlines()[1:]):
-            raise ValueError("tmux links a non-system library: " + deps)
-        symbols = subprocess.check_output(["nm", "-u", binary], text=True).splitlines()
-        if "_pipe2" in symbols:
-            raise ValueError("tmux unexpectedly requires macOS 27 pipe2")
+        report = binary_report(binary, target)
         destination.mkdir(parents=True, exist_ok=False)
         shutil.copy2(binary, destination / "tmux")
         notices = []
@@ -123,7 +200,9 @@ def build(destination, cache):
         (destination / "LICENSES.txt").write_text("\n\n".join(notices))
         (destination / "BUILD.json").write_text(json.dumps({
             "schema_version": 1, "version": "3.8", "machine": platform.machine(),
-            "minimum_macos": "11.0", "sources": sources,
+            "target": target, "minimum_macos": "11.0" if mac else None, "sources": sources,
+            "compiler": subprocess.check_output([env["CC"], "--version"], env=env, text=True).splitlines()[0],
+            "binary": report,
             "sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
         }, indent=2) + "\n")
 
@@ -132,5 +211,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True, help="New output directory")
     parser.add_argument("--cache", type=Path, default=ROOT / ".native/tmux-downloads")
+    parser.add_argument("--target", choices=sorted(TARGETS), help="Require this native host target; cross-compilation is unsupported")
     args = parser.parse_args()
-    build(args.output.resolve(), args.cache.resolve())
+    build(args.output.absolute(), args.cache.resolve(), args.target)

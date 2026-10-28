@@ -41,13 +41,27 @@ Check the versions with `zig version` and `tmux -V`.
 ## Build and test
 
 Combined engine packaging additionally requires Python 3.11 or newer to verify
-the prepared payload. The optional macOS tmux builder requires Python 3.12 or
-newer and uses the pinned archives in `packaging/tmux-sources.json`:
+the prepared payload. The optional native tmux builder requires Python 3.12 or
+newer, a system C compiler and make. It supports Intel/Apple Silicon macOS and
+x86-64/AArch64 glibc Linux. Linux also needs binutils (`readelf`) and a yacc
+provider such as `bison` (`sudo apt install build-essential binutils bison`
+on Debian/Ubuntu); macOS needs
+the Apple command-line tools. It uses the pinned archives in
+`packaging/tmux-sources.json`:
 
 ```sh
 python3 scripts/prepare-tmux.py --output /tmp/agent-interface-tmux
 python3 scripts/package.py --engine /path/to/prepared-engine
 ```
+
+Use `--target x86_64-unknown-linux-gnu` (or another supported target triple)
+to require a matching native build host. Cross-compilation is not supported.
+Keep the generated `tmux`, `LICENSES.txt` and `BUILD.json` together as engine
+inputs. The Linux receipt records the resulting glibc requirements; use the
+intended oldest build environment when choosing a compatibility baseline.
+Test each output on its native host with an explicitly isolated tmux server
+before treating it as a verified platform input. The builder itself starts no
+server and performs no installation.
 
 The engine must already contain its complete file and licence inventories.
 Private integration payloads require the explicit `--allow-private-engine`
