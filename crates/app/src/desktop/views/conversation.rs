@@ -74,6 +74,7 @@ struct Message {
     text: String,
     /// What it referred to when it was written.
     anchor: Option<String>,
+    stored_anchor: Option<stored::Anchor>,
     at: f64,
     delivery: Delivery,
 }
@@ -95,6 +96,7 @@ pub(super) struct Conversation {
     agent: String,
     about: &'static str,
     anchor: Option<String>,
+    plan_anchor: Option<stored::Anchor>,
     /// Input is held while the owning view cannot accept a message.
     blocked: bool,
     field: Entity<NameField>,
@@ -346,6 +348,42 @@ impl Conversation {
         conversation
     }
 
+    /// A plan conversation retains the provider, author and observed step.
+    pub fn about_plan(
+        target: &super::plans::ConversationTarget,
+        directory: PathBuf,
+        visible: Rc<Cell<bool>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut conversation = Self::create("about this plan", window, cx);
+        conversation.visible = visible;
+        conversation.agent = target.agent.clone();
+        conversation.anchor = target.anchor.label.clone();
+        conversation.plan_anchor = Some(target.anchor.clone());
+        conversation.open = true;
+        conversation.stored = Some(Stored {
+            directory,
+            provider: target.provider.clone(),
+            kind: Kind::Plan,
+            source: None,
+            id: target.author.clone(),
+            supported: None,
+            page: None,
+            fetched: Vec::new(),
+            earlier: Vec::new(),
+            earlier_cursor: None,
+            divider: None,
+            reading: false,
+            read_at: None,
+            marking: None,
+            redelivery: HashMap::new(),
+            turn: 0,
+        });
+        conversation.start_polling(cx);
+        conversation
+    }
+
     /// The conversation about a skill or policy, by its source path. Who
     /// answers is the maintainer Backbone names, else an agent the person
     /// chooses from `candidates` or the conversation's participants.
@@ -484,6 +522,7 @@ impl Conversation {
             agent: String::new(),
             about,
             anchor: None,
+            plan_anchor: None,
             blocked: false,
             field,
             surface: None,
@@ -745,7 +784,7 @@ impl Conversation {
         for index in waiting {
             match supported {
                 Some(true) => self.post(index, cx),
-                Some(false) => self.deliver(index, cx),
+                Some(false) => self.route(index, cx),
                 None => {
                     self.messages[index].delivery = Delivery::NotSent(match failure {
                         Some(error) => format!("{} Nothing was sent.", error.message()),
@@ -859,11 +898,7 @@ impl Conversation {
             request_id: message.request_id.clone(),
             text: message.text.clone(),
             recipient,
-            anchor: self.record.as_ref().map(|(item, _)| stored::Anchor {
-                revision_id: Some(item.id.to_string()),
-                label: message.anchor.clone(),
-                ..stored::Anchor::default()
-            }),
+            anchor: message.stored_anchor.clone(),
         };
         let worker = cx
             .background_executor()
@@ -992,10 +1027,9 @@ impl Conversation {
     fn can_send(&self, cx: &gpui::App) -> bool {
         let field = self.field.read(cx);
         // A skill or policy sends only once Backbone has its conversation.
-        let ready = self
-            .stored
-            .as_ref()
-            .is_none_or(|stored| stored.source.is_none() || stored.live());
+        let ready = self.stored.as_ref().is_none_or(|stored| {
+            (stored.source.is_none() && stored.kind != Kind::Plan) || stored.live()
+        });
         ready
             && !self.blocked
             && !field.composing()
@@ -1018,6 +1052,13 @@ impl Conversation {
             recipient: None,
             text,
             anchor: self.anchor.clone(),
+            stored_anchor: self.plan_anchor.clone().or_else(|| {
+                self.record.as_ref().map(|(item, _)| stored::Anchor {
+                    revision_id: Some(item.id.to_string()),
+                    label: self.anchor.clone(),
+                    ..stored::Anchor::default()
+                })
+            }),
             at,
             delivery: Delivery::Sending,
         });
@@ -1036,6 +1077,12 @@ impl Conversation {
                 cx.notify();
             }
             _ if self.record.is_some() => self.deliver(index, cx),
+            _ if self.plan_anchor.is_some() => {
+                self.messages[index].delivery = Delivery::NotSent(
+                    "Backbone could not open this plan conversation. Nothing was sent.".into(),
+                );
+                cx.notify();
+            }
             _ => {
                 self.messages[index].via = Some(Via::Owner);
                 cx.emit(ConversationEvent::Send(index));
@@ -1443,6 +1490,18 @@ fn epoch(text: &str) -> Option<f64> {
 
 impl Render for Conversation {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.panel(None, window, cx)
+    }
+}
+
+impl Conversation {
+    /// Draw the shared thread and composer with the reader's selected context.
+    pub fn panel(
+        &mut self,
+        context: Option<AnyElement>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         // A skill or policy Backbone keeps no conversation for shows none.
         if self.record.is_none()
             && self
@@ -1470,6 +1529,7 @@ impl Render for Conversation {
                     cx.listener(|conversation, _, window, cx| conversation.close(window, cx)),
                 ),
             ))
+            .children(context)
             .children(self.chooser(cx))
             .child(self.thread(cx))
             .child(ui::composer(
