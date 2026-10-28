@@ -2,7 +2,7 @@
 //! and whether Agent Backbone answers. Read-only; nothing is installed here.
 
 use std::{
-    os::unix::fs::FileExt,
+    os::unix::{fs::FileExt, process::CommandExt},
     path::PathBuf,
     process::{Command, Stdio},
     time::{Duration, Instant},
@@ -89,8 +89,7 @@ fn shell_lookup() -> Option<Vec<(&'static str, PathBuf)>> {
     // Output goes to a file, not a pipe: a background process started by a
     // startup file can keep a pipe open forever, but cannot stop a file read.
     let file = tempfile::tempfile().ok()?;
-    let mut child = Command::new(shell)
-        .args(["-l", "-i", "-c", &script])
+    let mut child = probe_command(&shell, &script)
         .stdin(Stdio::null())
         .stdout(file.try_clone().ok()?)
         .stderr(Stdio::null())
@@ -120,6 +119,26 @@ fn shell_lookup() -> Option<Vec<(&'static str, PathBuf)>> {
     let found = parse(&output);
     // A shell that printed nothing of ours did not run the script.
     output.contains(MARK).then_some(found)
+}
+
+/// Let the login shell initialize PATH, then parse the probe with POSIX sh.
+/// C shells request login mode through argv[0]; their -l must stand alone.
+fn probe_command(shell: &std::ffi::OsStr, script: &str) -> Command {
+    let mut command = Command::new(shell);
+    let name = std::path::Path::new(shell)
+        .file_name()
+        .and_then(|name| name.to_str());
+    if matches!(name, Some("csh" | "tcsh")) {
+        command
+            .arg0(format!("-{}", name.unwrap()))
+            .args(["-i", "-c"]);
+    } else {
+        command.args(["-l", "-i", "-c"]);
+    }
+    command
+        .env("AGENT_INTERFACE_PROBE", script)
+        .arg("exec /bin/sh -c \"$AGENT_INTERFACE_PROBE\"");
+    command
 }
 
 /// Our marked lines from the shell's output; startup-file noise is ignored.
@@ -192,5 +211,62 @@ mod tests {
                 ("claude", PathBuf::from("/Users/me/.local/bin/claude")),
             ]
         );
+    }
+
+    #[test]
+    fn login_shell_startup_path_reaches_the_posix_probe() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = tempfile::tempdir().unwrap();
+        let tools = home.path().join("extra tools");
+        std::fs::create_dir(&tools).unwrap();
+        let tool = tools.join("codex");
+        std::fs::write(&tool, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let posix = format!("export PATH=\"{}:$PATH\"\n", tools.display());
+        let csh = format!("setenv PATH \"{}:$PATH\"\n", tools.display());
+        for file in [".bash_profile", ".zprofile"] {
+            std::fs::write(home.path().join(file), &posix).unwrap();
+        }
+        for file in [".cshrc", ".tcshrc"] {
+            std::fs::write(home.path().join(file), &csh).unwrap();
+        }
+        std::fs::create_dir_all(home.path().join(".config/fish")).unwrap();
+        std::fs::write(
+            home.path().join(".config/fish/config.fish"),
+            format!("set -gx PATH \"{}\" $PATH\n", tools.display()),
+        )
+        .unwrap();
+        let script = format!(
+            "for c in codex; do printf '{MARK}\\t%s\\t%s\\n' \"$c\" \"$(command -v \"$c\")\"; done"
+        );
+        for shell in [
+            "/bin/bash",
+            "/bin/zsh",
+            "/bin/csh",
+            "/bin/tcsh",
+            "/usr/bin/fish",
+            "/opt/homebrew/bin/fish",
+        ] {
+            if !std::path::Path::new(shell).exists() {
+                continue;
+            }
+            let output = probe_command(shell.as_ref(), &script)
+                .env("HOME", home.path())
+                .env("ZDOTDIR", home.path())
+                .env("XDG_CONFIG_HOME", home.path().join(".config"))
+                .stdin(Stdio::null())
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{shell}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(
+                parse(&String::from_utf8_lossy(&output.stdout)),
+                vec![("codex", tool.clone())],
+                "{shell}"
+            );
+        }
     }
 }

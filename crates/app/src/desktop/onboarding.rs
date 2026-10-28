@@ -46,7 +46,6 @@ fn fresh_install() -> bool {
 enum Stage {
     Scene,
     Step(usize),
-    Done,
 }
 
 pub struct Onboarding {
@@ -54,6 +53,7 @@ pub struct Onboarding {
     probe: Option<Probe>,
     checking: bool,
     copied: Option<&'static str>,
+    open_error: Option<&'static str>,
 }
 
 struct Open(WindowHandle<Onboarding>);
@@ -102,6 +102,7 @@ pub fn show(intro: bool, cx: &mut App) {
                 probe: None,
                 checking: false,
                 copied: None,
+                open_error: None,
             };
             // The scene covers the first check, so step one opens with answers.
             view.check(cx);
@@ -168,18 +169,19 @@ impl Onboarding {
         cx.notify();
     }
 
-    /// Finish: mark setup done, open the workspace window if none is open,
-    /// then close this one (in that order, so the app does not quit).
+    /// Open the workspace before completing setup, so a failed window open
+    /// leaves the last page usable and can be retried.
     fn finish(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.stage = Stage::Done;
-        remember(|settings| settings.setup_done = true);
         if super::browser_window(cx).is_none() {
             let source = crate::sessions::source_socket(None).map_err(|e| e.to_string());
             if let Err(error) = super::open_browser(None, source, cx) {
                 tracing::warn!(event = "setup_open_failed", %error, "Workspace window not opened");
+                self.open_error = Some("The workspace window could not open. Try again.");
+                cx.notify();
                 return;
             }
         }
+        remember(|settings| settings.setup_done = true);
         window.remove_window();
     }
 
@@ -491,7 +493,15 @@ impl Render for Onboarding {
             0 => self.check_step(cx),
             1 => self.tools_step(cx),
             _ => self.shortcuts_step(cx),
-        };
+        }
+        .when_some(self.open_error, |page, error| {
+            page.child(
+                div()
+                    .pt(px(t.space.s12))
+                    .text_color(c.attention_text)
+                    .child(error),
+            )
+        });
         let last = index + 1 == STEPS.len();
         let footer = div()
             .flex()

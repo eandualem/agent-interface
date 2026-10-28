@@ -171,9 +171,13 @@ session-termination commands; navigation keeps them attached.
 A fresh install (no settings file and no library) opens a setup window instead
 of the workspace window: an eight-second opening scene, played once, then steps
 that check tmux, Agent Backbone, Git and the agent tools, and show the main
-shortcuts. Tools are looked up through the user's login shell (`$SHELL -l -i`),
-as a new terminal would find them, because an app opened from the Dock has a
-short PATH; the lookup falls back to PATH and the usual install folders. The
+shortcuts. tmux uses the terminal pane's `tmux_binary` resolver. Git, GitHub CLI,
+Backbone and agent tools are looked up after the user's interactive login shell
+runs its startup files, because an app opened from the Dock has a short PATH.
+The probe itself runs in `/bin/sh` so non-POSIX login shells can supply PATH too.
+The shell has an eight-second deadline; its output goes to a temporary file
+instead of a pipe, with positional reads limited to 256 KiB. The lookup falls
+back to PATH and the usual install folders. The
 Backbone check is a single read-only roster request. Setup installs nothing.
 Progress is saved as `[setup]` in `settings.toml`: an interrupted setup resumes
 without the scene, and **Set Up Agent Interface…** in the application menu
