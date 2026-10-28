@@ -938,7 +938,7 @@ pub(super) fn body(
                 None,
             ))
         })
-        .child(body)
+        .child(div().flex_1().min_h_0().child(body))
         .into_any_element()
 }
 
