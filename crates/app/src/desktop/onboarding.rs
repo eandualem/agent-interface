@@ -3,14 +3,16 @@
 //! It opens instead of the workspace window on a fresh install, and from
 //! the application menu at any time after.
 
+mod first;
 mod probe;
+mod setup;
 
 use std::time::Duration;
 
 use gpui::{
-    Animation, AnimationExt, App, Bounds, BoxShadow, ClipboardItem, Context, Global, Rgba,
-    SharedString, TitlebarOptions, Window, WindowBounds, WindowHandle, WindowOptions, div, point,
-    prelude::*, px, size,
+    Animation, AnimationExt, App, Bounds, BoxShadow, ClipboardItem, Context, Entity, Global, Rgba,
+    SharedString, Subscription, TitlebarOptions, Window, WindowBounds, WindowHandle, WindowOptions,
+    div, point, prelude::*, px, size,
 };
 
 use self::probe::{Backbone, Probe, TOOLS};
@@ -24,7 +26,7 @@ use super::{
 /// The opening scene's length; it plays once, without a skip.
 const SCENE: Duration = Duration::from_millis(8000);
 const TAGLINE: &str = "Your agents. Working together. On your machine.";
-const STEPS: [&str; 3] = ["Check", "Agent tools", "Shortcuts"];
+const STEPS: [&str; 4] = ["Check", "Agent tools", "Your agent", "Shortcuts"];
 
 /// Whether this launch opens through setup instead of the workspace window:
 /// setup was started but not finished, or nothing has been saved yet.
@@ -54,6 +56,10 @@ pub struct Onboarding {
     checking: bool,
     copied: Option<&'static str>,
     open_error: Option<&'static str>,
+    first: Option<Entity<first::FirstAgent>>,
+    first_ready: bool,
+    first_agent: Option<String>,
+    first_events: Option<Subscription>,
 }
 
 struct Open(WindowHandle<Onboarding>);
@@ -103,6 +109,10 @@ pub fn show(intro: bool, cx: &mut App) {
                 checking: false,
                 copied: None,
                 open_error: None,
+                first: None,
+                first_ready: false,
+                first_agent: None,
+                first_events: None,
             };
             // The scene covers the first check, so step one opens with answers.
             view.check(cx);
@@ -154,6 +164,9 @@ impl Onboarding {
         cx.spawn(async |view, cx| {
             let probe = cx.background_executor().spawn(async { Probe::run() }).await;
             let _ = view.update(cx, |view, cx| {
+                if let Some(first) = &view.first {
+                    first.update(cx, |first, cx| first.refresh(&probe, cx));
+                }
                 view.probe = Some(probe);
                 view.checking = false;
                 cx.notify();
@@ -180,6 +193,13 @@ impl Onboarding {
                 cx.notify();
                 return;
             }
+        }
+        if let Some(name) = &self.first_agent
+            && let Err(error) = show_agent(name.clone(), cx)
+        {
+            self.open_error = Some(error);
+            cx.notify();
+            return;
         }
         remember(|settings| settings.setup_done = true);
         window.remove_window();
@@ -489,9 +509,69 @@ impl Render for Onboarding {
             let body = root.child(self.scene());
             return super::window_controls::frame(body, "Welcome", window);
         };
+        if index == 2
+            && self.first.is_none()
+            && let Ok(Some(directory)) =
+                crate::roster::provider_directory(Some(true), None, None, false)
+            && let Some(executable) = setup::active_engine(&directory).or_else(|| {
+                self.probe
+                    .as_ref()
+                    .and_then(|probe| probe.path("backbone").cloned())
+            })
+        {
+            let existing = self.probe.as_ref().is_some_and(
+                |probe| matches!(probe.backbone, Backbone::Running { agents } if agents > 0),
+            );
+            let first = cx.new(|cx| {
+                first::FirstAgent::new(
+                    executable,
+                    self.probe
+                        .as_ref()
+                        .map(|probe| probe.path_env.clone())
+                        .unwrap_or_default(),
+                    directory,
+                    existing,
+                    window,
+                    cx,
+                )
+            });
+            self.first_events = Some(cx.subscribe(&first, |view, _, event, cx| {
+                match event {
+                    first::FirstEvent::Pending => {
+                        view.first_ready = false;
+                        view.first_agent = None;
+                    }
+                    first::FirstEvent::Ready(name) => {
+                        view.first_ready = true;
+                        view.first_agent = Some(name.clone());
+                    }
+                    first::FirstEvent::Existing => {
+                        view.first_ready = true;
+                        view.first_agent = None;
+                    }
+                    first::FirstEvent::OpenTerminal(name) => {
+                        view.open_error = show_agent(name.clone(), cx).err();
+                    }
+                }
+                cx.notify();
+            }));
+            self.first = Some(first);
+        }
         let page = match index {
             0 => self.check_step(cx),
             1 => self.tools_step(cx),
+            2 => match &self.first {
+                Some(first) => div().child(first.clone()),
+                None => heading("Your first agent", "The setup engine is unavailable. Return to Check, then install or reconnect the engine before creating an agent.")
+                    .when(self.probe.as_ref().is_some_and(|probe| matches!(probe.backbone, Backbone::Running { agents } if agents > 0)), |page| {
+                        page.child(ui::button("keep-existing-agents", "Use my existing agents", Button::Secondary)
+                            .on_click(cx.listener(|view, _, _, cx| {
+                                view.first_ready = true;
+                                view.first_agent = None;
+                                cx.notify();
+                            })))
+                    }),
+            },
             _ => self.shortcuts_step(cx),
         }
         .when_some(self.open_error, |page, error| {
@@ -503,6 +583,7 @@ impl Render for Onboarding {
             )
         });
         let last = index + 1 == STEPS.len();
+        let can_continue = index != 2 || self.first_ready;
         let footer = div()
             .flex()
             .items_center()
@@ -537,6 +618,28 @@ impl Render for Onboarding {
                 )
             })
             .child(div().flex_1())
+            .when(
+                index == 2
+                    && self
+                        .first
+                        .as_ref()
+                        .is_none_or(|first| !first.read(cx).has_pending_request()),
+                |footer| {
+                    footer.child(
+                        ui::button(
+                            "terminals-for-now",
+                            "Use terminals for now",
+                            Button::Secondary,
+                        )
+                        .on_click(cx.listener(|view, _, _, cx| {
+                            view.first_agent = None;
+                            view.first_ready = true;
+                            view.stage = Stage::Step(3);
+                            cx.notify();
+                        })),
+                    )
+                },
+            )
             .child(
                 ui::button(
                     "continue",
@@ -547,7 +650,11 @@ impl Render for Onboarding {
                     },
                     Button::Primary,
                 )
+                .opacity(if can_continue { 1.0 } else { 0.45 })
                 .on_click(cx.listener(move |view, _, window, cx| {
+                    if !can_continue {
+                        return;
+                    }
                     if last {
                         view.finish(window, cx);
                     } else {
@@ -578,6 +685,40 @@ impl Render for Onboarding {
         );
         super::window_controls::frame(body, "Welcome", window)
     }
+}
+
+/// Show the actual agent terminal for login/permissions or the introduction.
+/// The saved library may still be loading when setup opens the workspace.
+fn show_agent(name: String, cx: &mut App) -> Result<(), &'static str> {
+    if super::browser_window(cx).is_none() {
+        let source = crate::sessions::source_socket(None).map_err(|error| error.to_string());
+        super::open_browser(None, source, cx)
+            .map_err(|_| "The agent window could not open. Try again.")?;
+    }
+    let handle = super::browser_window(cx).ok_or("The agent window could not open. Try again.")?;
+    cx.spawn(async move |cx| {
+        for _ in 0..50 {
+            let opened = handle
+                .update(cx, |browser, window, cx| {
+                    browser.open_setup_agent(&name, window, cx)
+                })
+                .unwrap_or(true);
+            if opened {
+                return;
+            }
+            cx.background_executor()
+                .timer(Duration::from_millis(100))
+                .await;
+        }
+        let _ = handle.update(cx, |browser, _, cx| {
+            browser.save_notice = Some(format!(
+                "Could not open {name}. Check the workspace connection, then reopen it from setup."
+            ));
+            cx.notify();
+        });
+    })
+    .detach();
+    Ok(())
 }
 
 fn heading(title: &str, note: &str) -> gpui::Div {
@@ -643,7 +784,7 @@ impl Frame {
             tagline: rise(4000.0, 500.0) * (1.0 - rise(5000.0, 400.0)),
             steps: rise(5200.0, 400.0),
             lit: (0..STEPS.len())
-                .filter(|step| ms >= 5500.0 + *step as f32 * 450.0)
+                .filter(|step| ms >= 5500.0 + *step as f32 * 300.0)
                 .count(),
             leave: rise(7000.0, 1000.0),
         }

@@ -49,6 +49,7 @@ pub enum Backbone {
 /// One complete check.
 #[derive(Clone, Debug)]
 pub struct Probe {
+    pub path_env: String,
     found: Vec<(&'static str, PathBuf)>,
     /// tmux as terminals will find it.
     pub tmux: Option<PathBuf>,
@@ -58,9 +59,11 @@ pub struct Probe {
 impl Probe {
     /// Look everything up. Blocks for up to a few seconds; call off the UI thread.
     pub fn run() -> Self {
-        let found = shell_lookup().unwrap_or_else(path_lookup);
+        let (found, path_env) = shell_lookup()
+            .unwrap_or_else(|| (path_lookup(), std::env::var("PATH").unwrap_or_default()));
         Self {
             found,
+            path_env,
             tmux: agent_interface_tmux::connection::tmux_binary().ok(),
             backbone: backbone(),
         }
@@ -78,14 +81,14 @@ impl Probe {
 /// Ask the user's login shell, as a new terminal pane would, so tools added
 /// to PATH in shell startup files are found even when the app was opened
 /// from the Dock with launchd's short PATH.
-fn shell_lookup() -> Option<Vec<(&'static str, PathBuf)>> {
+fn shell_lookup() -> Option<(Vec<(&'static str, PathBuf)>, String)> {
     let shell = std::env::var_os("SHELL")
         .filter(|shell| !shell.is_empty())
         .unwrap_or_else(|| "/bin/sh".into());
     let script = format!(
         "for c in {}; do printf '{MARK}\\t%s\\t%s\\n' \"$c\" \"$(command -v \"$c\" 2>/dev/null)\"; done",
         COMMANDS.join(" ")
-    );
+    ) + "\nprintf '@@agent-interface-path\t%s\n' \"$PATH\"";
     // Output goes to a file, not a pipe: a background process started by a
     // startup file can keep a pipe open forever, but cannot stop a file read.
     let file = tempfile::tempfile().ok()?;
@@ -118,7 +121,11 @@ fn shell_lookup() -> Option<Vec<(&'static str, PathBuf)>> {
     let output = String::from_utf8_lossy(&bytes);
     let found = parse(&output);
     // A shell that printed nothing of ours did not run the script.
-    output.contains(MARK).then_some(found)
+    let path_env = output
+        .lines()
+        .find_map(|line| line.strip_prefix("@@agent-interface-path\t"))?
+        .to_owned();
+    output.contains(MARK).then_some((found, path_env))
 }
 
 /// Let the login shell initialize PATH, then parse the probe with POSIX sh.

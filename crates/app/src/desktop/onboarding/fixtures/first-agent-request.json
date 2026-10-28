@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "request_id": "onboarding-first-agent-01",
+  "action": "first_agent",
+  "data_dir": "/absolute/path/to/backbone-data",
+  "hooks": [
+    "codex"
+  ],
+  "agent": {
+    "name": "guide",
+    "directory": "/absolute/path/to/agent-home",
+    "create_directory": true,
+    "runtime": "codex",
+    "model": null,
+    "brief": {
+      "template": "orchestrator-v1"
+    }
+  },
+  "start_greeting": true
+}

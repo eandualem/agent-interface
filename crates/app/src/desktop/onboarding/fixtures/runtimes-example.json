@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "items": [
+    {
+      "id": "codex",
+      "display_name": "Codex",
+      "available": true,
+      "reports_state": "hooks + terminal",
+      "models": [],
+      "efforts": [],
+      "unattended": {
+        "supported": true,
+        "args": [],
+        "sandboxed": true
+      },
+      "authentication": "unknown"
+    }
+  ]
+}

@@ -1529,6 +1529,63 @@ impl Browser {
         cx.notify();
     }
 
+    /// The first-agent setup action already started the session. Open a saved
+    /// attachment, preserving every existing pane and applying normal save rules.
+    fn open_setup_agent(
+        &mut self,
+        name: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.saving || self.save_failed {
+            return false;
+        }
+        let Some(source) = self
+            .source
+            .as_ref()
+            .and_then(|source| source.as_ref().ok())
+            .and_then(|path| path.to_str())
+            .map(str::to_owned)
+        else {
+            return false;
+        };
+        let Some(layout) = &mut self.layout else {
+            return false;
+        };
+        let resolved = crate::library::location::resolve_path(std::path::Path::new(&source)).ok();
+        if agent_destination(layout.model(), name, |socket| match socket {
+            None => resolved.is_some(),
+            Some(socket) => {
+                resolved.is_some()
+                    && crate::library::location::resolve_path(std::path::Path::new(socket)).ok()
+                        == resolved
+            }
+        })
+        .is_some()
+        {
+            self.go_to_agent(name, window, cx);
+            window.activate_window();
+            return true;
+        }
+        let (base, mut model) = layout.save_snapshot();
+        let cwd = std::env::var_os("HOME")
+            .map(|home| PathBuf::from(home).to_string_lossy().into_owned())
+            .unwrap_or_else(|| "/".into());
+        if !model.add_tab(Some(name.into()), cwd, true)
+            || !model.attach(Some(Attachment {
+                session: name.into(),
+                source_socket: Some(source),
+            }))
+        {
+            return false;
+        }
+        self.creation_from = Some(Selection::capture(layout.model()));
+        self.pending_save = Some((base, model));
+        self.save(cx);
+        window.activate_window();
+        true
+    }
+
     fn open_attach(&mut self, pane: &str, window: &mut Window, cx: &mut Context<Self>) {
         if self.saving || self.save_failed {
             return;
