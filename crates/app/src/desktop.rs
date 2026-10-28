@@ -1902,6 +1902,21 @@ impl Render for Browser {
                 .as_ref()
                 .is_some_and(|layout| terminal.read(cx).target.exists_in(layout.model()))
         });
+        // Terminals in hidden tabs also restart lost shells, so every retained
+        // terminal follows its saved directory.
+        if let Some(layout) = &self.layout {
+            for leaf in layout
+                .model()
+                .workspaces
+                .iter()
+                .flat_map(|workspace| &workspace.tabs)
+                .flat_map(|tab| tab.tree.leaves())
+            {
+                if let Some(terminal) = self.terminals.get(&leaf.id) {
+                    terminal.update(cx, |terminal, _| terminal.set_cwd(leaf));
+                }
+            }
+        }
         for leaf in &leaves {
             let target = Target {
                 leaf: leaf.clone(),
@@ -1980,10 +1995,7 @@ impl Render for Browser {
                 Some((self.backbone.clone()?, attachment.session.clone()))
             });
             if let Some(terminal) = self.terminals.get(&leaf.id) {
-                terminal.update(cx, |terminal, cx| {
-                    terminal.set_cwd(leaf);
-                    terminal.set_agent(agent, cx)
-                });
+                terminal.update(cx, |terminal, cx| terminal.set_agent(agent, cx));
             }
         }
         let shown: Vec<(String, View)> = self
