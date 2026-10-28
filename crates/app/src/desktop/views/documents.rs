@@ -51,6 +51,7 @@ fn open(pane: &mut ViewPane, metadata: DocumentMetadata, cx: &mut Context<ViewPa
         author_id: Some(metadata.author_id.clone()),
         provider_url,
         created_at: metadata.created_at.clone(),
+        conversation_id: None,
         content: ReportContent::Document(metadata),
     };
     super::seen::mark(&item);

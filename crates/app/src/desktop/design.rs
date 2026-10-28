@@ -135,6 +135,7 @@ group!(
         conversation_rail: f32 = number, rail_button: f32 = number,
         conversation_width: f32 = number, conversation_header: f32 = number,
         composer_field: f32 = number, send_button: f32 = number, anchor: f32 = number,
+        chooser_height: f32 = number,
     }
 );
 

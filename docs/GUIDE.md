@@ -266,12 +266,28 @@ reference to the exact record being read, and the app checks that the author
 is still registered before sending. A message shows **Sending…** until Agent
 Backbone answers, then the time it was sent; **Not sent** offers **Retry**,
 and **Edit** to move the text back into an empty message field.
-If delivery is uncertain, the message says so: check with the author before
-sending it again. Delivered or queued does not mean the author has read it.
-The thread shows the messages sent from this pane; replies are not shown yet.
-Threads and drafts remain with their record when switching tabs or workspaces;
-detaching or closing the pane or app discards them. A message never changes
-the authored record.
+When Agent Backbone keeps conversations, the thread is the record's stored
+conversation: your messages, the author's replies and the record's new
+revisions, in order, with a **new** divider before what arrived since you last
+looked. It is read every few seconds while open, and the rail shows a mark when
+something new arrives while it is closed. **Earlier messages** loads older
+ones. Retrying a message Backbone did not confirm is safe: it is stored once.
+A message whose delivery failed after Backbone stored it offers **Retry**,
+which delivers it again without adding it twice.
+
+With an Agent Backbone that does not keep conversations, the thread shows only
+the messages sent from this pane, and if delivery is uncertain the message
+says so: check with the author before sending it again. Delivered or queued
+does not mean the author has read it. Threads and drafts remain with their
+record when switching tabs or workspaces; detaching or closing the pane or app
+discards the ones Backbone does not keep. A message never changes the authored
+record.
+
+A shared skill or policy opened in its reader has the same conversation, so
+you can work on it with an agent. Backbone names a maintainer only when one has
+been set; until then, choose who to ask from the agents the skill reaches, the
+conversation's participants or the team. Skills kept in a repository or a CLI's
+own folder have no conversation.
 
 Opening a document loads that exact revision. **Check for update** refreshes its
 correction information; **Open newer revision** opens the linked correction.

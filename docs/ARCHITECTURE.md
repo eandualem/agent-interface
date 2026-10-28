@@ -282,9 +282,29 @@ the record kind and ID plus the user's text, not the original content. This is
 ordinary feedback, without signed owner-confirmation provenance. The existing
 name-based API cannot make source lookup and recipient routing atomic. Each
 message is sent once; a refused message can be retried, and an unknown delivery
-is marked without automatic resubmission. Backbone does not yet keep
-conversation history, so the thread holds only this pane's messages and is not
-persistent.
+is marked without automatic resubmission. That is the path for a provider
+without conversations.
+
+Where Backbone keeps per-artifact conversations, `roster::conversations` reads
+and writes them instead (`/api/conversations/{kind}/{id}`). A record names its
+conversation: a document by its stable document ID, a report or answer by the
+root of its correction chain. Requests go only to the provider the record was
+read from; after a connection change they are refused until it is reopened.
+Only the conversation shown in a visible pane polls, every 5 seconds while
+open and every 25 while closed, and re-reads the newest page; entries that page
+no longer holds stay with the older ones, which load on request, and older
+owner messages still pending or held are re-read by ID with each poll. Until
+Backbone first answers, a message waits rather than choosing a path, and a
+retry always takes the path the message first took. Each message carries a
+client request ID, so a send whose outcome is unknown is retried with the same
+ID and stored at most once; a stored message whose delivery failed is redelivered without a new
+entry. Opening the panel moves the owner's read marker to the newest entry and
+fixes the "new" divider where the marker was. A plain 404 or an unknown
+artifact switches the conversation back to one-way feedback. A shared skill or policy has
+no record, so its conversation finds its identity on the first read: the
+current provider, then the `artifact_id` that `/api/skills` or `/api/policies`
+lists for its source path. Without a maintainer, a message names the agent the
+person chose.
 
 Durable Documents use Backbone's metadata-only `/api/documents` list and exact
 `/api/documents/{revision_id}` JSON reads. Backbone owns immutable revisions,

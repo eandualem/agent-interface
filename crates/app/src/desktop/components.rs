@@ -1927,6 +1927,37 @@ pub fn thread_divider(label: impl Into<SharedString>, new: bool) -> Div {
     .child(rule())
 }
 
+/// Something the artifact did, in its thread: an icon, the agent in mono,
+/// what happened, and at most one action at the far end.
+pub fn thread_event(
+    icon: &'static str,
+    actor: impl Into<SharedString>,
+    happened: impl Into<SharedString>,
+    action: Option<Stateful<Div>>,
+) -> Div {
+    let (t, c) = (tokens(), colors());
+    text(
+        div()
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .gap(px(t.space.s6))
+            .py(px(t.space.s2))
+            .text_color(c.muted),
+        &t.text.meta,
+    )
+    .child(self::icon(icon, t.size.icon, c.muted))
+    .child(
+        div()
+            .font_family(t.font.mono.clone())
+            .text_color(c.text_2)
+            .child(actor.into()),
+    )
+    .child(happened.into())
+    .child(div().flex_1())
+    .children(action.map(|action| action.text_color(c.accent_text).cursor_pointer()))
+}
+
 /// Who sent a message and when, above or below its bubble.
 pub fn message_meta() -> Div {
     let (t, c) = (tokens(), colors());

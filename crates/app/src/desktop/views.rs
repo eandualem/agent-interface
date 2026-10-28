@@ -9,14 +9,18 @@
 //! Artifacts have their own local catalog and an isolated system-webview renderer rather than a Backbone worker.
 
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::{HashMap, HashSet},
     path::PathBuf,
+    rc::Rc,
     time::Duration,
 };
 
 use agent_interface_core::{AgentSection, View, ViewKind};
-use agent_interface_roster::views::{self, Data, Part, Range, Request};
+use agent_interface_roster::{
+    conversations::Kind,
+    views::{self, Data, Part, Range, Request},
+};
 use futures::{StreamExt, channel::mpsc};
 use gpui::{
     Context, Entity, EventEmitter, SharedString, Subscription, Task, Window, div, prelude::*, px,
@@ -178,6 +182,8 @@ pub(super) struct ViewPane {
     conversations: HashMap<String, Entity<conversation::Conversation>>,
     /// The open record's conversation, for its reader to place.
     conversation: Option<Entity<conversation::Conversation>>,
+    /// Whether this pane is visible; its conversations read Backbone only then.
+    visible: Rc<Cell<bool>>,
     documents: documents::State,
     artifacts: Option<Entity<artifacts::ArtifactPane>>,
     sheets: Option<Entity<sheets::Sheets>>,
@@ -202,6 +208,7 @@ impl ViewPane {
     }
 
     pub fn set_visible(&self, visible: bool, cx: &gpui::App) {
+        self.visible.set(visible);
         if !visible {
             self.documents.surface.borrow_mut().clear();
         }
@@ -258,6 +265,7 @@ impl ViewPane {
             backbone: backbone.clone(),
             conversations: HashMap::new(),
             conversation: None,
+            visible: Rc::new(Cell::new(true)),
             documents: documents::State::default(),
             artifacts: None,
             sheets: None,
@@ -412,6 +420,7 @@ impl ViewPane {
 
     /// Show a record feed from its first page.
     fn show_records(&mut self, query: views::ReportQuery, cx: &mut Context<Self>) {
+        self.plans_shown(false, cx);
         self.shown = Shown::Records;
         self.reports.open = None;
         self.reports.query = query;
@@ -419,13 +428,24 @@ impl ViewPane {
         self.refetch(true, cx);
     }
 
+    /// Current plans read Backbone only while their section is selected.
+    fn plans_shown(&self, shown: bool, cx: &mut Context<Self>) {
+        if let Some(plans) = &self.plans {
+            plans.update(cx, |plans, cx| plans.set_shown(shown, cx));
+        }
+    }
+
     fn show_plans(&mut self, cx: &mut Context<Self>) {
         let Some(directory) = self.backbone.clone() else {
             return;
         };
         self.documents.surface.borrow_mut().clear();
-        if self.plans.is_none() {
-            self.plans = Some(cx.new(|cx| plans::Plans::new(directory, cx)));
+        match &self.plans {
+            Some(_) => self.plans_shown(true, cx),
+            None => {
+                let visible = self.visible.clone();
+                self.plans = Some(cx.new(|cx| plans::Plans::new(directory, visible, cx)));
+            }
         }
         self.shown = Shown::Plans;
         cx.notify();
@@ -436,6 +456,7 @@ impl ViewPane {
             return;
         };
         self.documents.surface.borrow_mut().clear();
+        self.plans_shown(false, cx);
         if self.sheets.is_none() {
             let sheets = cx.new(|cx| sheets::Sheets::new(directory, window, cx));
             self._search
@@ -639,12 +660,16 @@ impl Render for ViewPane {
             Shown::Records => None,
         };
         if let Some(section) = section {
+            if let Some(conversation) = self.conversation.take() {
+                conversation.update(cx, |conversation, cx| conversation.set_active(false, cx));
+            }
             return div()
                 .size_full()
                 .bg(colors().surface)
                 .child(reports::section_frame(self, section, cx));
         }
         let (t, c) = (tokens(), colors());
+        let previous = self.conversation.take();
         self.conversation =
             self.reports
                 .open
@@ -665,6 +690,7 @@ impl Render for ViewPane {
                                     item.clone(),
                                     directory.clone(),
                                     self.documents.surface.clone(),
+                                    self.visible.clone(),
                                     window,
                                     cx,
                                 )
@@ -672,6 +698,69 @@ impl Render for ViewPane {
                         })
                         .clone()
                 });
+        // An open skill or policy has its own conversation.
+        if self.conversation.is_none()
+            && let (Some(open), Some(directory)) = (&self.open, &self.backbone)
+        {
+            let (kind, path, about) = match &open.target {
+                Target::Skill(path) => (Kind::Skill, path, "about this skill"),
+                Target::Policy(path) => (Kind::Policy, path, "about this policy"),
+            };
+            // A skill is offered to the agents it reaches.
+            let candidates = match (&open.target, &self.data) {
+                (Target::Skill(path), Some(Data::Skills(library))) => library
+                    .store
+                    .items
+                    .iter()
+                    .find(|skill| &skill.path == path)
+                    .map(|skill| skill.reaches.clone())
+                    .unwrap_or_default(),
+                _ => Vec::new(),
+            };
+            let key = format!("{}\n{path}", kind.name());
+            let (path, directory, visible) =
+                (path.clone(), directory.clone(), self.visible.clone());
+            let mut draft = String::new();
+            // Reopened after the connection changed, or where Backbone had no
+            // conversation: a new one asks again; messages are never retargeted.
+            if let Some(cached) = self.conversations.get(&key)
+                && previous.as_ref() != Some(cached)
+                && cached.read(cx).stale()
+                && cached.read(cx).disposable()
+            {
+                draft = cached.read(cx).draft(cx).to_owned();
+                self.conversations.remove(&key);
+            }
+            let conversation = match self.conversations.get(&key) {
+                Some(conversation) => {
+                    let conversation = conversation.clone();
+                    conversation.update(cx, |conversation, _| {
+                        conversation.set_candidates(candidates)
+                    });
+                    conversation
+                }
+                None => {
+                    let conversation = cx.new(|cx| {
+                        let mut conversation = conversation::Conversation::about_source(
+                            kind, path, about, candidates, directory, visible, window, cx,
+                        );
+                        conversation.restore_draft(&draft, cx);
+                        conversation
+                    });
+                    self.conversations.insert(key, conversation.clone());
+                    conversation
+                }
+            };
+            self.conversation = Some(conversation);
+        }
+        // Only the shown conversation reads Backbone.
+        if previous != self.conversation {
+            for (conversation, active) in [(previous, false), (self.conversation.clone(), true)] {
+                if let Some(conversation) = conversation {
+                    conversation.update(cx, |conversation, cx| conversation.set_active(active, cx));
+                }
+            }
+        }
         let about = about(self.view.kind);
         // Lent to the body for this frame and put back below.
         let data = self.data.take();
