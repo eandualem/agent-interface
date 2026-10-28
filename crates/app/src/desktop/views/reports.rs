@@ -193,7 +193,7 @@ fn state_tag(item: &ReportItem) -> gpui::Div {
 }
 
 /// "Today 14:32", "Mon 27 Oct 09:05".
-fn when(created_at: &str) -> String {
+pub(super) fn when(created_at: &str) -> String {
     let local = epoch_seconds(created_at).and_then(Local::at);
     match (local, Local::now()) {
         (Some(local), Some(now)) => format!("{} {}", local.day_name(&now), local.time()),

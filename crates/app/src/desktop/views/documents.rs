@@ -61,6 +61,26 @@ fn open(pane: &mut ViewPane, metadata: DocumentMetadata, cx: &mut Context<ViewPa
     pane.refetch(false, cx);
 }
 
+/// An arrow of the reader's revision stepper, opening revision `to`; inert
+/// at either end.
+fn revision_step(
+    metadata: &DocumentMetadata,
+    id: &'static str,
+    icon: &str,
+    to: Option<u64>,
+    cx: &mut Context<ViewPane>,
+) -> gpui::Stateful<gpui::Div> {
+    let step = ui::revision_step(id, icon, to.is_some());
+    let Some(to) = to else {
+        return step;
+    };
+    let mut revision = metadata.clone();
+    revision.id = to;
+    revision.supersedes_id = None;
+    revision.superseded_by = None;
+    step.on_click(cx.listener(move |pane, _, _, cx| open(pane, revision.clone(), cx)))
+}
+
 pub(super) fn reader(pane: &ViewPane, cx: &mut Context<ViewPane>) -> AnyElement {
     let (t, c) = (tokens(), colors());
     let selected_meta = selected(pane).expect("selected document reader");
@@ -94,6 +114,24 @@ pub(super) fn reader(pane: &ViewPane, cx: &mut Context<ViewPane>) -> AnyElement 
             )
             .child(metadata.title.clone()),
         )
+        .child(ui::revision_stepper(
+            revision_step(
+                metadata,
+                "document-older",
+                "chevron-left",
+                metadata.supersedes_id,
+                cx,
+            ),
+            format!("rev #{id}"),
+            metadata.superseded_by.is_none(),
+            revision_step(
+                metadata,
+                "document-newer",
+                "chevron-right",
+                metadata.superseded_by,
+                cx,
+            ),
+        ))
         .child(div().flex_1())
         .child(
             ui::chip(
@@ -215,8 +253,12 @@ pub(super) fn reader(pane: &ViewPane, cx: &mut Context<ViewPane>) -> AnyElement 
             )
             .child(super::mono(metadata.author().to_owned()).text_color(c.text_2))
             .child(SharedString::from(format!(
-                "· {} · revision #{id}",
-                metadata.created_at
+                "· {} · revision #{id}{}",
+                super::reports::when(&metadata.created_at),
+                metadata
+                    .supersedes_id
+                    .map(|older| format!(" · replaces #{older}"))
+                    .unwrap_or_default()
             ))),
         )
         .children(newer)
