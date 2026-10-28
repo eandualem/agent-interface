@@ -1,0 +1,688 @@
+{
+  "create": {
+    "record": {
+      "sheet_id": "674071ef70e145c9ba59e9d4a9fae63a",
+      "title": "Opportunity tracker",
+      "author_id": "71d0fa8404b647b5961447baea2c6779",
+      "author_name": "example-agent",
+      "created_at": "2026-10-27T05:44:02.851033Z",
+      "current_revision_id": "c861dbc9e9d246db8da8c36058eee229",
+      "agent_name": "example-agent",
+      "revision_id": "c861dbc9e9d246db8da8c36058eee229",
+      "parent_revision_id": null,
+      "updated_at": "2026-10-27T05:44:02.851655Z",
+      "editor_kind": "agent",
+      "editor_id": "71d0fa8404b647b5961447baea2c6779",
+      "editor_name": "example-agent",
+      "calculation_engine": "ironcalc",
+      "calculation_version": "0.9.1",
+      "content_sha256": "d81e7f48a02e68b6258c368beb9f90d05e85a934350c2aee09556b94f9820aa8",
+      "tabs": [
+        {
+          "column_count": 6,
+          "name": "Opportunities",
+          "row_count": 5,
+          "tab_id": "dd01fcfa08e254d49cdd3d91819966ed",
+          "view": {
+            "filters": [],
+            "header_row_id": "f07649606b1c53d489f4ff7f9f333993",
+            "sort": []
+          }
+        },
+        {
+          "column_count": 1,
+          "name": "Summary",
+          "row_count": 1,
+          "tab_id": "ae6e262b083c5562b8a279943bb70ec6",
+          "view": {
+            "filters": [],
+            "header_row_id": null,
+            "sort": []
+          }
+        }
+      ]
+    },
+    "created": true
+  },
+  "list": {
+    "items": [
+      {
+        "sheet_id": "674071ef70e145c9ba59e9d4a9fae63a",
+        "title": "Opportunity tracker",
+        "author_id": "71d0fa8404b647b5961447baea2c6779",
+        "author_name": "example-agent",
+        "created_at": "2026-10-27T05:44:02.851033Z",
+        "current_revision_id": "c861dbc9e9d246db8da8c36058eee229",
+        "agent_name": "example-agent",
+        "revision_id": "c861dbc9e9d246db8da8c36058eee229",
+        "parent_revision_id": null,
+        "updated_at": "2026-10-27T05:44:02.851655Z",
+        "editor_kind": "agent",
+        "editor_id": "71d0fa8404b647b5961447baea2c6779",
+        "editor_name": "example-agent",
+        "calculation_engine": "ironcalc",
+        "calculation_version": "0.9.1",
+        "content_sha256": "d81e7f48a02e68b6258c368beb9f90d05e85a934350c2aee09556b94f9820aa8",
+        "tabs": [
+          {
+            "column_count": 6,
+            "name": "Opportunities",
+            "row_count": 5,
+            "tab_id": "dd01fcfa08e254d49cdd3d91819966ed",
+            "view": {
+              "filters": [],
+              "header_row_id": "f07649606b1c53d489f4ff7f9f333993",
+              "sort": []
+            }
+          },
+          {
+            "column_count": 1,
+            "name": "Summary",
+            "row_count": 1,
+            "tab_id": "ae6e262b083c5562b8a279943bb70ec6",
+            "view": {
+              "filters": [],
+              "header_row_id": null,
+              "sort": []
+            }
+          }
+        ]
+      }
+    ],
+    "next_cursor": null
+  },
+  "metadata": {
+    "sheet_id": "674071ef70e145c9ba59e9d4a9fae63a",
+    "title": "Opportunity tracker",
+    "author_id": "71d0fa8404b647b5961447baea2c6779",
+    "author_name": "example-agent",
+    "created_at": "2026-10-27T05:44:02.851033Z",
+    "current_revision_id": "c861dbc9e9d246db8da8c36058eee229",
+    "agent_name": "example-agent",
+    "revision_id": "c861dbc9e9d246db8da8c36058eee229",
+    "parent_revision_id": null,
+    "updated_at": "2026-10-27T05:44:02.851655Z",
+    "editor_kind": "agent",
+    "editor_id": "71d0fa8404b647b5961447baea2c6779",
+    "editor_name": "example-agent",
+    "calculation_engine": "ironcalc",
+    "calculation_version": "0.9.1",
+    "content_sha256": "d81e7f48a02e68b6258c368beb9f90d05e85a934350c2aee09556b94f9820aa8",
+    "tabs": [
+      {
+        "column_count": 6,
+        "name": "Opportunities",
+        "row_count": 5,
+        "tab_id": "dd01fcfa08e254d49cdd3d91819966ed",
+        "view": {
+          "filters": [],
+          "header_row_id": "f07649606b1c53d489f4ff7f9f333993",
+          "sort": []
+        }
+      },
+      {
+        "column_count": 1,
+        "name": "Summary",
+        "row_count": 1,
+        "tab_id": "ae6e262b083c5562b8a279943bb70ec6",
+        "view": {
+          "filters": [],
+          "header_row_id": null,
+          "sort": []
+        }
+      }
+    ]
+  },
+  "history": {
+    "items": [
+      {
+        "sheet_id": "674071ef70e145c9ba59e9d4a9fae63a",
+        "title": "Opportunity tracker",
+        "author_id": "71d0fa8404b647b5961447baea2c6779",
+        "author_name": "example-agent",
+        "created_at": "2026-10-27T05:44:02.851033Z",
+        "current_revision_id": "c861dbc9e9d246db8da8c36058eee229",
+        "agent_name": "example-agent",
+        "revision_id": "c861dbc9e9d246db8da8c36058eee229",
+        "parent_revision_id": null,
+        "updated_at": "2026-10-27T05:44:02.851655Z",
+        "editor_kind": "agent",
+        "editor_id": "71d0fa8404b647b5961447baea2c6779",
+        "editor_name": "example-agent",
+        "calculation_engine": "ironcalc",
+        "calculation_version": "0.9.1",
+        "content_sha256": "d81e7f48a02e68b6258c368beb9f90d05e85a934350c2aee09556b94f9820aa8",
+        "tabs": [
+          {
+            "column_count": 6,
+            "name": "Opportunities",
+            "row_count": 5,
+            "tab_id": "dd01fcfa08e254d49cdd3d91819966ed",
+            "view": {
+              "filters": [],
+              "header_row_id": "f07649606b1c53d489f4ff7f9f333993",
+              "sort": []
+            }
+          },
+          {
+            "column_count": 1,
+            "name": "Summary",
+            "row_count": 1,
+            "tab_id": "ae6e262b083c5562b8a279943bb70ec6",
+            "view": {
+              "filters": [],
+              "header_row_id": null,
+              "sort": []
+            }
+          }
+        ]
+      }
+    ],
+    "next_cursor": null
+  },
+  "range": {
+    "sheet_id": "674071ef70e145c9ba59e9d4a9fae63a",
+    "revision_id": "c861dbc9e9d246db8da8c36058eee229",
+    "tab_id": "dd01fcfa08e254d49cdd3d91819966ed",
+    "order": "canonical",
+    "total_rows": 5,
+    "total_columns": 6,
+    "rows": [
+      {
+        "row_id": "f07649606b1c53d489f4ff7f9f333993",
+        "index": 1
+      },
+      {
+        "row_id": "754a529cad9b5ddcbf68287f2fc35f14",
+        "index": 2
+      },
+      {
+        "row_id": "0d06e9b73b685348bfce7d5ebb6f3348",
+        "index": 3
+      },
+      {
+        "row_id": "9cc15604e9a5535c8b07a143c088249b",
+        "index": 4
+      },
+      {
+        "row_id": "db25767913e35de889ce4cfdbb5545c7",
+        "index": 5
+      }
+    ],
+    "columns": [
+      {
+        "column_id": "d8739daf54455ee985e9fa172f1fad96",
+        "index": 1
+      },
+      {
+        "column_id": "91bd155629085c8a8ea32b37068ecfdd",
+        "index": 2
+      },
+      {
+        "column_id": "c7137ba4645457f1bd56198dc4c4939a",
+        "index": 3
+      },
+      {
+        "column_id": "213aaa1a59955085a90ef0b438432177",
+        "index": 4
+      },
+      {
+        "column_id": "d32e35fe926656e69661340fc438024b",
+        "index": 5
+      },
+      {
+        "column_id": "0780d6cd56a4540c82177357e1545eb7",
+        "index": 6
+      }
+    ],
+    "cells": [
+      {
+        "column_id": "d8739daf54455ee985e9fa172f1fad96",
+        "display": "Opportunity",
+        "input": {
+          "kind": "text",
+          "value": "Opportunity"
+        },
+        "number_format": null,
+        "row_id": "f07649606b1c53d489f4ff7f9f333993",
+        "value": {
+          "kind": "text",
+          "value": "Opportunity"
+        }
+      },
+      {
+        "column_id": "91bd155629085c8a8ea32b37068ecfdd",
+        "display": "Stage",
+        "input": {
+          "kind": "text",
+          "value": "Stage"
+        },
+        "number_format": null,
+        "row_id": "f07649606b1c53d489f4ff7f9f333993",
+        "value": {
+          "kind": "text",
+          "value": "Stage"
+        }
+      },
+      {
+        "column_id": "c7137ba4645457f1bd56198dc4c4939a",
+        "display": "Applied",
+        "input": {
+          "kind": "text",
+          "value": "Applied"
+        },
+        "number_format": null,
+        "row_id": "f07649606b1c53d489f4ff7f9f333993",
+        "value": {
+          "kind": "text",
+          "value": "Applied"
+        }
+      },
+      {
+        "column_id": "213aaa1a59955085a90ef0b438432177",
+        "display": "Initial response",
+        "input": {
+          "kind": "text",
+          "value": "Initial response"
+        },
+        "number_format": null,
+        "row_id": "f07649606b1c53d489f4ff7f9f333993",
+        "value": {
+          "kind": "text",
+          "value": "Initial response"
+        }
+      },
+      {
+        "column_id": "d32e35fe926656e69661340fc438024b",
+        "display": "Next action",
+        "input": {
+          "kind": "text",
+          "value": "Next action"
+        },
+        "number_format": null,
+        "row_id": "f07649606b1c53d489f4ff7f9f333993",
+        "value": {
+          "kind": "text",
+          "value": "Next action"
+        }
+      },
+      {
+        "column_id": "0780d6cd56a4540c82177357e1545eb7",
+        "display": "Updated",
+        "input": {
+          "kind": "text",
+          "value": "Updated"
+        },
+        "number_format": null,
+        "row_id": "f07649606b1c53d489f4ff7f9f333993",
+        "value": {
+          "kind": "text",
+          "value": "Updated"
+        }
+      },
+      {
+        "column_id": "d8739daf54455ee985e9fa172f1fad96",
+        "display": "Community demo",
+        "input": {
+          "kind": "text",
+          "value": "Community demo"
+        },
+        "number_format": null,
+        "row_id": "754a529cad9b5ddcbf68287f2fc35f14",
+        "value": {
+          "kind": "text",
+          "value": "Community demo"
+        }
+      },
+      {
+        "column_id": "91bd155629085c8a8ea32b37068ecfdd",
+        "display": "Research",
+        "input": {
+          "kind": "text",
+          "value": "Research"
+        },
+        "number_format": null,
+        "row_id": "754a529cad9b5ddcbf68287f2fc35f14",
+        "value": {
+          "kind": "text",
+          "value": "Research"
+        }
+      },
+      {
+        "column_id": "c7137ba4645457f1bd56198dc4c4939a",
+        "display": "FALSE",
+        "input": {
+          "kind": "boolean",
+          "value": false
+        },
+        "number_format": null,
+        "row_id": "754a529cad9b5ddcbf68287f2fc35f14",
+        "value": {
+          "kind": "boolean",
+          "value": false
+        }
+      },
+      {
+        "column_id": "213aaa1a59955085a90ef0b438432177",
+        "display": "",
+        "input": {
+          "kind": "text",
+          "value": ""
+        },
+        "number_format": null,
+        "row_id": "754a529cad9b5ddcbf68287f2fc35f14",
+        "value": {
+          "kind": "text",
+          "value": ""
+        }
+      },
+      {
+        "column_id": "d32e35fe926656e69661340fc438024b",
+        "display": "Prepare a demo",
+        "input": {
+          "kind": "text",
+          "value": "Prepare a demo"
+        },
+        "number_format": null,
+        "row_id": "754a529cad9b5ddcbf68287f2fc35f14",
+        "value": {
+          "kind": "text",
+          "value": "Prepare a demo"
+        }
+      },
+      {
+        "column_id": "0780d6cd56a4540c82177357e1545eb7",
+        "display": "2026-10-27",
+        "input": {
+          "kind": "date",
+          "value": "2026-10-27"
+        },
+        "number_format": null,
+        "row_id": "754a529cad9b5ddcbf68287f2fc35f14",
+        "value": {
+          "kind": "date",
+          "value": "2026-10-27"
+        }
+      },
+      {
+        "column_id": "d8739daf54455ee985e9fa172f1fad96",
+        "display": "Open tools program",
+        "input": {
+          "kind": "text",
+          "value": "Open tools program"
+        },
+        "number_format": null,
+        "row_id": "0d06e9b73b685348bfce7d5ebb6f3348",
+        "value": {
+          "kind": "text",
+          "value": "Open tools program"
+        }
+      },
+      {
+        "column_id": "91bd155629085c8a8ea32b37068ecfdd",
+        "display": "Application",
+        "input": {
+          "kind": "text",
+          "value": "Application"
+        },
+        "number_format": null,
+        "row_id": "0d06e9b73b685348bfce7d5ebb6f3348",
+        "value": {
+          "kind": "text",
+          "value": "Application"
+        }
+      },
+      {
+        "column_id": "c7137ba4645457f1bd56198dc4c4939a",
+        "display": "TRUE",
+        "input": {
+          "kind": "boolean",
+          "value": true
+        },
+        "number_format": null,
+        "row_id": "0d06e9b73b685348bfce7d5ebb6f3348",
+        "value": {
+          "kind": "boolean",
+          "value": true
+        }
+      },
+      {
+        "column_id": "213aaa1a59955085a90ef0b438432177",
+        "display": "Received",
+        "input": {
+          "kind": "text",
+          "value": "Received"
+        },
+        "number_format": null,
+        "row_id": "0d06e9b73b685348bfce7d5ebb6f3348",
+        "value": {
+          "kind": "text",
+          "value": "Received"
+        }
+      },
+      {
+        "column_id": "d32e35fe926656e69661340fc438024b",
+        "display": "Review requirements",
+        "input": {
+          "kind": "text",
+          "value": "Review requirements"
+        },
+        "number_format": null,
+        "row_id": "0d06e9b73b685348bfce7d5ebb6f3348",
+        "value": {
+          "kind": "text",
+          "value": "Review requirements"
+        }
+      },
+      {
+        "column_id": "0780d6cd56a4540c82177357e1545eb7",
+        "display": "2026-10-27",
+        "input": {
+          "kind": "date",
+          "value": "2026-10-27"
+        },
+        "number_format": null,
+        "row_id": "0d06e9b73b685348bfce7d5ebb6f3348",
+        "value": {
+          "kind": "date",
+          "value": "2026-10-27"
+        }
+      },
+      {
+        "column_id": "d8739daf54455ee985e9fa172f1fad96",
+        "display": "Partner workshop",
+        "input": {
+          "kind": "text",
+          "value": "Partner workshop"
+        },
+        "number_format": null,
+        "row_id": "9cc15604e9a5535c8b07a143c088249b",
+        "value": {
+          "kind": "text",
+          "value": "Partner workshop"
+        }
+      },
+      {
+        "column_id": "91bd155629085c8a8ea32b37068ecfdd",
+        "display": "Conversation",
+        "input": {
+          "kind": "text",
+          "value": "Conversation"
+        },
+        "number_format": null,
+        "row_id": "9cc15604e9a5535c8b07a143c088249b",
+        "value": {
+          "kind": "text",
+          "value": "Conversation"
+        }
+      },
+      {
+        "column_id": "c7137ba4645457f1bd56198dc4c4939a",
+        "display": "FALSE",
+        "input": {
+          "kind": "boolean",
+          "value": false
+        },
+        "number_format": null,
+        "row_id": "9cc15604e9a5535c8b07a143c088249b",
+        "value": {
+          "kind": "boolean",
+          "value": false
+        }
+      },
+      {
+        "column_id": "213aaa1a59955085a90ef0b438432177",
+        "display": "Interested",
+        "input": {
+          "kind": "text",
+          "value": "Interested"
+        },
+        "number_format": null,
+        "row_id": "9cc15604e9a5535c8b07a143c088249b",
+        "value": {
+          "kind": "text",
+          "value": "Interested"
+        }
+      },
+      {
+        "column_id": "d32e35fe926656e69661340fc438024b",
+        "display": "Draft agenda",
+        "input": {
+          "kind": "text",
+          "value": "Draft agenda"
+        },
+        "number_format": null,
+        "row_id": "9cc15604e9a5535c8b07a143c088249b",
+        "value": {
+          "kind": "text",
+          "value": "Draft agenda"
+        }
+      },
+      {
+        "column_id": "0780d6cd56a4540c82177357e1545eb7",
+        "display": "2026-10-27",
+        "input": {
+          "kind": "date",
+          "value": "2026-10-27"
+        },
+        "number_format": null,
+        "row_id": "9cc15604e9a5535c8b07a143c088249b",
+        "value": {
+          "kind": "date",
+          "value": "2026-10-27"
+        }
+      }
+    ],
+    "next_row_offset": null
+  },
+  "edit": {
+    "record": {
+      "sheet_id": "674071ef70e145c9ba59e9d4a9fae63a",
+      "title": "Opportunity tracker",
+      "author_id": "71d0fa8404b647b5961447baea2c6779",
+      "author_name": "example-agent",
+      "created_at": "2026-10-27T05:44:02.851033Z",
+      "current_revision_id": "77c3f6f87d054f14af07cb04ea3fc579",
+      "agent_name": "example-agent",
+      "revision_id": "77c3f6f87d054f14af07cb04ea3fc579",
+      "parent_revision_id": "c861dbc9e9d246db8da8c36058eee229",
+      "updated_at": "2026-10-27T05:44:02.956190Z",
+      "editor_kind": "operator",
+      "editor_id": null,
+      "editor_name": "operator",
+      "calculation_engine": "ironcalc",
+      "calculation_version": "0.9.1",
+      "content_sha256": "f9ac59da789cff45ec3ec0cc87648026d4f89e628018a9feda99a5a90b509a63",
+      "tabs": [
+        {
+          "column_count": 6,
+          "name": "Opportunities",
+          "row_count": 5,
+          "tab_id": "dd01fcfa08e254d49cdd3d91819966ed",
+          "view": {
+            "filters": [],
+            "header_row_id": "f07649606b1c53d489f4ff7f9f333993",
+            "sort": []
+          }
+        },
+        {
+          "column_count": 1,
+          "name": "Summary",
+          "row_count": 1,
+          "tab_id": "ae6e262b083c5562b8a279943bb70ec6",
+          "view": {
+            "filters": [],
+            "header_row_id": null,
+            "sort": []
+          }
+        }
+      ]
+    },
+    "created": true
+  },
+  "stale": {
+    "detail": {
+      "code": "stale_revision",
+      "message": "reload before reapplying the saved draft",
+      "sheet_id": "674071ef70e145c9ba59e9d4a9fae63a",
+      "base_revision_id": "c861dbc9e9d246db8da8c36058eee229",
+      "current_revision_id": "77c3f6f87d054f14af07cb04ea3fc579"
+    }
+  },
+  "import": {
+    "record": {
+      "sheet_id": "6190c000f96944368393bee640b7f76d",
+      "title": "Literal CSV",
+      "author_id": "71d0fa8404b647b5961447baea2c6779",
+      "author_name": "example-agent",
+      "created_at": "2026-10-27T05:44:03.047817Z",
+      "current_revision_id": "cd889c059993426a9e6dd28b95fd5d8b",
+      "agent_name": "example-agent",
+      "revision_id": "cd889c059993426a9e6dd28b95fd5d8b",
+      "parent_revision_id": null,
+      "updated_at": "2026-10-27T05:44:03.048160Z",
+      "editor_kind": "agent",
+      "editor_id": "71d0fa8404b647b5961447baea2c6779",
+      "editor_name": "example-agent",
+      "calculation_engine": "ironcalc",
+      "calculation_version": "0.9.1",
+      "content_sha256": "f9a25447b021eaab317e2c83ef1eba247ddd621bcaec5a6e38e3a6bff8dc6486",
+      "tabs": [
+        {
+          "column_count": 2,
+          "name": "Sheet1",
+          "row_count": 2,
+          "tab_id": "31d585eacefd4c9eb7c9ba4104db4e0e",
+          "view": {
+            "filters": [],
+            "header_row_id": null,
+            "sort": []
+          }
+        }
+      ]
+    },
+    "created": true,
+    "warnings": [
+      "Delimited input is literal text in one tab; no types, formulas, formatting or views are inferred."
+    ]
+  },
+  "feedback": {
+    "feedback_id": "9329f37d054442299306a22b51a291fe",
+    "sheet_id": "674071ef70e145c9ba59e9d4a9fae63a",
+    "observed_revision_id": "c861dbc9e9d246db8da8c36058eee229",
+    "operation_id": "3c12bf8e97bb4515831a5e16b53bc43b",
+    "delivery": {
+      "operation_id": "3c12bf8e97bb4515831a5e16b53bc43b",
+      "delivery_id": null,
+      "queue_id": 1,
+      "ok": false,
+      "session": "example-agent",
+      "outcome": "queued",
+      "queued": true,
+      "queue": "stored",
+      "detail": "Feedback delivery: queued. This does not mean the agent has answered.",
+      "confirmation_id": null,
+      "receipt": null
+    }
+  }
+}

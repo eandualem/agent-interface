@@ -316,6 +316,10 @@ fn controls(pane: &ViewPane, agents: &[String], cx: &mut Context<ViewPane>) -> g
         );
     }
     toolbar = toolbar.child(
+        ui::chip("reports-sheets", "Sheets", false)
+            .on_click(cx.listener(|pane, _, window, cx| pane.show_sheets(window, cx))),
+    );
+    toolbar = toolbar.child(
         ui::chip(
             "reports-agent",
             SharedString::from(format!(

@@ -451,3 +451,44 @@ uucode/Unicode, simdutf, Highway, X11 color data and compiler runtimes. The
 package retains Lucide's ISC notice and SQLite's public-domain dedication.
 The manual package workflow uses `actions/upload-artifact` v7.0.0 (MIT), pinned
 to a full commit, to retain build artifacts; it does not publish releases.
+
+
+### Retained Sheets
+
+`agent-interface-roster::sheets` owns the typed workbook protocol and bounded local
+transport through the existing authenticated private Unix socket. Stable workbook,
+revision, tab, row and column identifiers are validated before constructing URLs.
+Reads pin one immutable revision and never combine pages from different revisions.
+Range and metadata response-size refusals reduce page size without changing the
+revision or discovery/history cursor. Other failures do not trigger automatic retries.
+Agent Backbone owns canonical data, calculated results, engine versions, storage
+admission and atomic updates. The app does not calculate formulas.
+
+`desktop::views::sheets` supplies a read-only native GPUI grid beside Documents and
+Responses in Reports & updates. Agents manage workbook creation, cell and structural
+edits, saved views and imports through Backbone. The native UI exposes inspection,
+selection, history, copying values, export and contextual feedback. Virtualized rows
+and bounded column pages limit rendering work. Labels retain canonical A1 coordinates
+under saved sort/filter views. No spreadsheet widget or formula engine is added.
+
+Sheets embeds the same `desktop::views::feedback::Feedback` entity used by authored
+artifacts, including its collapsed button, native text field, draft preservation,
+focus restoration, send state and outcome display. The document transport retains
+its existing behavior and restores focus to its web surface on close. Sheets supplies
+workbook context and handles the provider's feedback transaction; it does not render
+a separate composer. Feedback carries the immutable observed revision and stable
+selected cell identities. Navigation cannot move a draft to another revision.
+
+A prepared feedback request retains exact bytes and its retry key after an uncertain
+response. The composer freezes while that request is unresolved and offers a retry of
+the same operation. Accepted feedback retains its receipt and distinguishes delivery
+states without claiming an agent answer. No agent workflow or service is started by
+the view. The typed adapter also represents provider mutation APIs, but the native
+Sheets view calls only reads, export and feedback submission.
+
+JSON/XLSX exports preserve supported workbook features; CSV/TSV export one tab as
+values. Export warnings are bounded and displayed; malformed diagnostics fail
+visibly. The first integration does not claim full Excel formula compatibility,
+Google account integration, macros, network formulas, charts, pivots or live keystroke
+coediting. The provider isolates calculation in a bounded worker; macOS resident
+memory monitoring can overshoot between samples and is not a hard allocation sandbox.

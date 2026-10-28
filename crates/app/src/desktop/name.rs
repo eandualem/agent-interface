@@ -137,6 +137,7 @@ pub(super) struct NameField {
     scroll: Pixels,
     dragging: bool,
     cancel_on_blur: bool,
+    read_only: bool,
     _blur: Subscription,
 }
 
@@ -166,6 +167,7 @@ impl NameField {
             scroll: px(0.),
             dragging: false,
             cancel_on_blur: true,
+            read_only: false,
             _blur: blur,
         }
     }
@@ -198,6 +200,10 @@ impl NameField {
     }
 
     /// Empty the field without announcing a change.
+    pub fn set_read_only(&mut self, read_only: bool) {
+        self.read_only = read_only;
+    }
+
     pub fn clear(&mut self, cx: &mut Context<Self>) {
         self.text.value.clear();
         self.text.anchor = 0;
@@ -246,6 +252,9 @@ impl NameField {
     }
 
     fn key(&mut self, event: &gpui::KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.read_only {
+            return;
+        }
         // The platform input method owns navigation and confirmation while composing.
         if self.text.marked.is_some() {
             return;
@@ -552,6 +561,9 @@ impl EntityInputHandler for NameField {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.read_only {
+            return;
+        }
         self.text.replace(range, text, false);
         cx.emit(NameEvent::Changed(self.text.value.clone()));
         cx.notify();
@@ -564,6 +576,9 @@ impl EntityInputHandler for NameField {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.read_only {
+            return;
+        }
         self.text.compose(range, text, selection);
         cx.emit(NameEvent::Changed(self.text.value.clone()));
         cx.notify();

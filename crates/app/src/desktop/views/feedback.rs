@@ -6,7 +6,9 @@ use agent_interface_roster::{
     feedback::{self, Outcome},
     views::ReportItem,
 };
-use gpui::{Context, Entity, Subscription, Window, div, prelude::*, px, relative};
+use gpui::{
+    App, Context, Entity, EventEmitter, Subscription, Window, div, prelude::*, px, relative,
+};
 
 use crate::desktop::{
     components as ui,
@@ -14,11 +16,20 @@ use crate::desktop::{
     name::{NameEvent, NameField},
 };
 
+pub(super) enum FeedbackEvent {
+    Send,
+    Retry,
+}
+impl EventEmitter<FeedbackEvent> for Feedback {}
+
 pub(super) struct Feedback {
-    item: ReportItem,
-    directory: PathBuf,
+    report: Option<(ReportItem, PathBuf)>,
+    label: String,
+    sheet_target: Option<String>,
+    blocked: bool,
+    submitted: String,
     field: Entity<NameField>,
-    surface: Rc<RefCell<super::artifact_web::Surface>>,
+    surface: Option<Rc<RefCell<super::artifact_web::Surface>>>,
     expanded: bool,
     return_focus: Option<gpui::FocusHandle>,
     sending: bool,
@@ -31,6 +42,26 @@ impl Feedback {
         item: ReportItem,
         directory: PathBuf,
         surface: Rc<RefCell<super::artifact_web::Surface>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self::create(
+            format!("Feedback to {} · #{}", item.author, item.id),
+            Some((item, directory)),
+            Some(surface),
+            window,
+            cx,
+        )
+    }
+
+    pub fn for_sheet(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        Self::create(String::new(), None, None, window, cx)
+    }
+
+    fn create(
+        label: String,
+        report: Option<(ReportItem, PathBuf)>,
+        surface: Option<Rc<RefCell<super::artifact_web::Surface>>>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -47,8 +78,11 @@ impl Feedback {
             }
         });
         Self {
-            item,
-            directory,
+            report,
+            label,
+            sheet_target: None,
+            blocked: false,
+            submitted: String::new(),
             field,
             surface,
             expanded: false,
@@ -59,9 +93,57 @@ impl Feedback {
         }
     }
 
+    pub fn value<'a>(&'a self, cx: &'a App) -> &'a str {
+        self.field.read(cx).value()
+    }
+
+    pub fn sheet_context(
+        &mut self,
+        target: Option<String>,
+        label: String,
+        blocked: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let changed = self.sheet_target != target || self.label != label || self.blocked != blocked;
+        if self.sheet_target != target && !self.sending && self.value(cx).is_empty() {
+            self.outcome = None;
+            self.expanded = false;
+        }
+        self.sheet_target = target;
+        self.label = label;
+        self.blocked = blocked;
+        self.field
+            .update(cx, |field, _| field.set_read_only(blocked));
+        if changed {
+            cx.notify();
+        }
+    }
+
+    pub fn block_input(&mut self, cx: &mut Context<Self>) {
+        self.blocked = true;
+        self.field.update(cx, |field, _| field.set_read_only(true));
+        cx.notify();
+    }
+
+    pub fn retrying(&mut self, cx: &mut Context<Self>) {
+        self.sending = true;
+        cx.notify();
+    }
+
+    pub fn complete(&mut self, outcome: Outcome, cx: &mut Context<Self>) {
+        self.sending = false;
+        if matches!(outcome, Outcome::Accepted(_)) && self.field.read(cx).value() == self.submitted
+        {
+            self.field.update(cx, |field, cx| field.clear(cx));
+        }
+        self.outcome = Some(outcome);
+        cx.notify();
+    }
+
     fn send(&mut self, cx: &mut Context<Self>) {
         let text = self.field.read(cx).value().to_owned();
         if self.sending
+            || self.blocked
             || self.field.read(cx).composing()
             || text.trim().is_empty()
             || matches!(self.outcome, Some(Outcome::Unknown(_)))
@@ -70,8 +152,12 @@ impl Feedback {
         }
         self.sending = true;
         self.outcome = None;
-        let directory = self.directory.clone();
-        let item = self.item.clone();
+        self.submitted = text.clone();
+        let Some((item, directory)) = self.report.clone() else {
+            cx.emit(FeedbackEvent::Send);
+            cx.notify();
+            return;
+        };
         let submitted = text.clone();
         let worker = cx.background_executor().spawn(async move {
             let started = std::time::Instant::now();
@@ -92,14 +178,7 @@ impl Feedback {
         cx.spawn(async move |this, cx| {
             let outcome = worker.await;
             let _ = this.update(cx, |composer, cx| {
-                composer.sending = false;
-                if matches!(outcome, Outcome::Accepted(_))
-                    && composer.field.read(cx).value() == text
-                {
-                    composer.field.update(cx, |field, cx| field.clear(cx));
-                }
-                composer.outcome = Some(outcome);
-                cx.notify();
+                composer.complete(outcome, cx);
             });
         })
         .detach();
@@ -133,6 +212,7 @@ impl Render for Feedback {
         let text = self.field.read(cx).value();
         let count = text.chars().count();
         let can_send = !self.sending
+            && !self.blocked
             && !self.field.read(cx).composing()
             && !text.trim().is_empty()
             && !matches!(self.outcome, Some(Outcome::Unknown(_)));
@@ -152,10 +232,7 @@ impl Render for Feedback {
                     .justify_between()
                     .gap(px(t.space.s6))
                     .child(
-                        ui::text(div().text_color(c.muted), &t.text.meta).child(format!(
-                            "Feedback to {} · #{}",
-                            self.item.author, self.item.id
-                        )),
+                        ui::text(div().text_color(c.muted), &t.text.meta).child(self.label.clone()),
                     )
                     .child(
                         ui::chip("close-feedback", "Close", false).on_click(cx.listener(
@@ -165,7 +242,9 @@ impl Render for Feedback {
                                     Some(focus) => window.focus(&focus, cx),
                                     None => window.blur(cx),
                                 }
-                                composer.surface.borrow().focus();
+                                if let Some(surface) = &composer.surface {
+                                    surface.borrow().focus();
+                                }
                                 cx.notify();
                             },
                         )),
@@ -209,12 +288,27 @@ impl Render for Feedback {
                 )
                 .when(matches!(outcome, Outcome::Unknown(_)), |body| {
                     body.child(
-                        ui::button("new-feedback", "Start a new reply", ui::Button::Secondary)
-                            .on_click(cx.listener(|composer, _, _, cx| {
+                        ui::button(
+                            "new-feedback",
+                            if self.report.is_some() {
+                                "Start a new reply"
+                            } else {
+                                "Retry the same request"
+                            },
+                            ui::Button::Secondary,
+                        )
+                        .on_click(cx.listener(|composer, _, _, cx| {
+                            if composer.sending {
+                                return;
+                            }
+                            if composer.report.is_none() {
+                                cx.emit(FeedbackEvent::Retry);
+                            } else {
                                 composer.field.update(cx, |field, cx| field.clear(cx));
                                 composer.outcome = None;
-                                cx.notify();
-                            })),
+                            }
+                            cx.notify();
+                        })),
                     )
                 })
             });

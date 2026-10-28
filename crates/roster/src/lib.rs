@@ -13,6 +13,7 @@ use serde_json::value::RawValue;
 
 mod configuration;
 pub mod feedback;
+pub mod sheets;
 mod transport;
 pub mod views;
 

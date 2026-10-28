@@ -20,6 +20,41 @@ pub(super) fn request(
     limit: usize,
     timeout: Duration,
 ) -> Result<Vec<u8>, Option<u16>> {
+    let response = exchange(socket, path, key, body, limit, timeout, false)?;
+    if (200..300).contains(&response.status) {
+        Ok(response.body)
+    } else {
+        Err(Some(response.status))
+    }
+}
+
+/// Bounded status and body, including structured refusal details.
+pub(crate) struct Response {
+    pub status: u16,
+    pub body: Vec<u8>,
+    pub sheet_warnings: Option<Vec<u8>>,
+}
+
+pub(crate) fn response(
+    socket: &str,
+    path: &str,
+    key: &str,
+    body: Option<Vec<u8>>,
+    limit: usize,
+    timeout: Duration,
+) -> Result<Response, Option<u16>> {
+    exchange(socket, path, key, body, limit, timeout, true)
+}
+
+fn exchange(
+    socket: &str,
+    path: &str,
+    key: &str,
+    body: Option<Vec<u8>>,
+    limit: usize,
+    timeout: Duration,
+    retain_errors: bool,
+) -> Result<Response, Option<u16>> {
     let socket = Path::new(socket);
     let uid = rustix::process::geteuid().as_raw();
     let metadata = fs::symlink_metadata(socket).map_err(|error| {
@@ -82,9 +117,17 @@ pub(super) fn request(
             let connection = tokio::spawn(connection);
             let result = async {
                 let response = sender.send_request(request).await.map_err(|_| None)?;
-                if !response.status().is_success() {
-                    return Err(Some(response.status().as_u16()));
+                let status = response.status().as_u16();
+                if !retain_errors && !response.status().is_success() {
+                    return Ok(Response { status, body: Vec::new(), sheet_warnings: None });
                 }
+                let sheet_warnings = if retain_errors {
+                    match response.headers().get("X-Backbone-Sheet-Warnings") {
+                        Some(header) if header.as_bytes().len() <= 4096 => Some(header.as_bytes().to_vec()),
+                        Some(_) => return Err(None),
+                        None => None,
+                    }
+                } else { None };
                 let mut body = response.into_body();
                 let mut bytes = Vec::new();
                 while let Some(frame) = body.frame().await {
@@ -96,7 +139,7 @@ pub(super) fn request(
                         }
                     }
                 }
-                Ok(bytes)
+                Ok(Response { status, body: bytes, sheet_warnings })
             }
             .await;
             connection.abort();

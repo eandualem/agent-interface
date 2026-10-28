@@ -395,3 +395,35 @@ no configuration. These options inspect the Python-compatible `keymap.toml`;
 they do not configure the native desktop. Use **Settings → Shortcuts** for native
 bindings, which are saved separately in `settings.toml`. The legacy prefix is not
 dispatched by the desktop.
+
+
+## Sheets
+
+Use Sheets for research comparisons, budgets, opportunity trackers and test results.
+Agents create and update the workbooks through Agent Backbone. In the app, readers
+inspect the results and send feedback. Documents hold the longer explanation,
+Reports record progress, and Responses answer specific questions; link to the
+workbook from those artifacts so readers can inspect the underlying data.
+
+Open **Reports & updates → Sheets**, choose a workbook, then a tab. Agent Backbone
+must support Sheets and be configured through its normal private local connection.
+The grid is read-only. Select a cell or use Shift-click or Shift-arrow to select a
+range. Arrow keys and Tab move the selection. Row and column paging keep large
+workbooks bounded; labels retain canonical A1 coordinates under saved views.
+
+Click **Send feedback** to open the same feedback box used by Documents and Reports.
+Write your feedback and send it to the owning agent. Closing the box preserves its
+draft. Feedback includes the displayed revision and selected cells (up to 100);
+without a selection it refers to the whole workbook revision. Send or clear the
+draft before changing the workbook, revision, tab or page. After an uncertain
+submission, **Retry the same request** checks the original operation without
+creating another feedback message. Delivery status does not mean the agent has
+answered. **Copy feedback receipt** preserves the identifiers for checking delivery.
+
+**History** opens earlier retained revisions. **Refresh** loads the latest revision.
+**Copy values** copies selected cells as tab-separated text. Text values that could
+be interpreted as formulas receive a leading apostrophe for pasting into a spreadsheet;
+numeric values are preserved. **Export** saves the displayed revision. JSON/XLSX preserve supported workbook features, while CSV/TSV
+export one tab as values only. Read any export warnings. This is not a claim of full
+Excel or Google Sheets compatibility. Cell editing, workbook creation and import
+are managed by agents, with no editing controls in this view.
