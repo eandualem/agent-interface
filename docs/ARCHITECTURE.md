@@ -67,9 +67,11 @@ UI thread to draw, so drawing does not borrow a live engine or wait for I/O.
 If copying a screen fails, the worker reports a connection failure and stops
 publishing updates. Partially copied frames never replace the last complete
 display. Embedded attachments retry the saved socket and session on the existing
-two-second window-refresh loop; retries never create a session. Ordinary shells
-offer explicit reconnect and open actions, with creation still gated by saving
-the pane first.
+two-second window-refresh loop; retries never create a session. A stopped
+Backbone agent's pane can ask Backbone to start or resume it (one authenticated
+local request, never retried), after which the same loop connects. An ordinary
+shell that cannot be reached is started once through the same guarded creation
+path as Open terminal, which refuses when the owning server cannot be verified.
 
 On connection or recovery, the worker captures the pane's current state and
 only the history its local scrollback retains, then continues with subsequent

@@ -155,6 +155,13 @@ pub(super) struct LiveTerminal {
     socket: Option<PathBuf>,
     task: Option<Task<()>>,
     closed: Option<gpui::Subscription>,
+    /// Starts this ordinary terminal's shell when it is no longer running.
+    environment: Option<agent_interface_tmux::shells::Environment>,
+    restoring: bool,
+    /// The Backbone data directory and name of the agent this attachment shows.
+    agent: Option<(PathBuf, String)>,
+    launching: bool,
+    launch_result: Option<agent_interface_roster::lifecycle::Outcome>,
     _windows: Task<()>,
 }
 
@@ -166,6 +173,42 @@ impl gpui::EventEmitter<OpenTerminal> for LiveTerminal {}
 impl gpui::EventEmitter<crate::view::Focus> for LiveTerminal {}
 
 impl LiveTerminal {
+    /// Only the browser knows whether an attachment is a registered agent.
+    pub fn set_agent(&mut self, agent: Option<(PathBuf, String)>, cx: &mut Context<Self>) {
+        if self.agent != agent {
+            self.agent = agent;
+            self.launch_result = None;
+            cx.notify();
+        }
+    }
+
+    /// Ask Backbone once to resume or start this pane's agent. The saved
+    /// attachment then connects through the automatic retry.
+    fn launch_agent(&mut self, resume: bool, cx: &mut Context<Self>) {
+        let Some(agent) = self.agent.clone().filter(|_| !self.launching) else {
+            return;
+        };
+        self.launching = true;
+        self.launch_result = None;
+        let target = agent.clone();
+        let work = cx.background_executor().spawn(async move {
+            agent_interface_roster::lifecycle::start(&target.0, &target.1, resume)
+        });
+        cx.spawn(async move |this, cx| {
+            let result = work.await;
+            let _ = this.update(cx, |terminal, cx| {
+                terminal.launching = false;
+                if terminal.agent == Some(agent) {
+                    terminal.launch_result = Some(result);
+                    terminal.start(cx);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
     pub fn hide(&mut self, cx: &mut Context<Self>) {
         if let Some(view) = &self.view {
             view.update(cx, |view, cx| view.hide(cx));
@@ -204,7 +247,12 @@ impl LiveTerminal {
         self.selected_window.clone()
     }
 
-    pub fn new(target: Target, selected: Option<SessionWindow>, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        target: Target,
+        selected: Option<SessionWindow>,
+        environment: Option<agent_interface_tmux::shells::Environment>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let mut terminal = Self {
             target,
             view: None,
@@ -215,6 +263,11 @@ impl LiveTerminal {
             socket: None,
             task: None,
             closed: None,
+            environment,
+            restoring: false,
+            agent: None,
+            launching: false,
+            launch_result: None,
             _windows: cx.spawn(async |this, cx| {
                 // tmux shows a session's windows live. Follow additions,
                 // removals and renames without a refresh control.
@@ -301,6 +354,7 @@ impl LiveTerminal {
         // an empty Connecting panel on every automatic attempt.
         self.connecting = true;
         let target = self.target.clone();
+        let opened_shell = environment.is_some();
         let connection = cx.background_executor().spawn(async move {
             let attempt = CONNECTION_ATTEMPTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let span = tracing::debug_span!("terminal_connect", attempt, pane_id = %target.leaf.id, attached = target.leaf.attachment.is_some(), explicit_open = environment.is_some());
@@ -346,6 +400,8 @@ impl LiveTerminal {
                 match result {
                     Ok(mut ready) => {
                         terminal.error = None;
+                        terminal.restoring = false;
+                        terminal.launch_result = None;
                         terminal.socket = Some(ready.socket.clone());
                         terminal.windows = std::mem::take(&mut ready.windows);
                         terminal.selected_window = terminal
@@ -382,7 +438,26 @@ impl LiveTerminal {
                         .detach();
                         terminal.view = Some(view);
                     }
-                    Err(error) => terminal.error = Some(error),
+                    Err(error) => {
+                        // An ordinary shell that is no longer running, such as
+                        // after a restart, starts again once in its saved folder.
+                        if !terminal.restoring
+                            && !opened_shell
+                            && terminal.target.leaf.attachment.is_none()
+                            && let Some(environment) = terminal.environment.clone()
+                        {
+                            terminal.restoring = true;
+                            terminal.start_window(
+                                terminal.selected_window.clone(),
+                                Some(environment),
+                                false,
+                                cx,
+                            );
+                        } else {
+                            terminal.restoring = false;
+                            terminal.error = Some(error);
+                        }
+                    }
                 }
                 cx.notify();
             });
@@ -441,42 +516,56 @@ impl Render for LiveTerminal {
             .overflow_hidden()
             .bg(c.surface)
             .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .children(
-                        (!self.connecting || self.error.is_some())
-                            .then(|| self.view.clone())
-                            .flatten(),
-                    ),
+                div().flex_1().min_h_0().children(
+                    (!self.connecting || self.error.is_some())
+                        .then(|| self.view.clone())
+                        .flatten(),
+                ),
             )
             .when(self.connecting && self.error.is_none(), |el| {
                 el.child(line("Connecting…".into(), c.muted))
             })
-            .when_some(self.error.clone(), |el, error| {
-                el.child(line(error, c.attention_text))
-            })
+            // A stopped agent is not an error; say so and offer its launch.
+            .when_some(
+                self.error.clone().filter(|_| self.agent.is_none()),
+                |el, error| el.child(line(error, c.attention_text)),
+            )
             .when(self.error.is_some(), |el| {
                 let attached = self.target.leaf.attachment.is_some();
+                let launching = self.launching;
                 el.child(line(
-                    if attached {
-                        "Waiting for this session. Reconnecting automatically."
-                    } else {
-                        "Cannot reach this terminal’s saved shell. Open terminal can start it if it is no longer running."
-                    }
-                    .into(),
+                    match (&self.agent, attached) {
+                        (Some((_, name)), _) => format!("{name} is not running."),
+                        (None, true) => {
+                            "Waiting for this session. Reconnecting automatically.".into()
+                        }
+                        (None, false) => "Could not start this terminal’s shell.".into(),
+                    },
                     c.muted,
                 ))
                 .child(
                     div()
                         .flex()
+                        .flex_wrap()
                         .gap(gpui::px(t.space.s8))
                         .px(gpui::px(t.space.s12))
                         .pb(gpui::px(t.space.s8))
-                        .child(
-                            ui::button("reconnect", "Reconnect", ui::Button::Secondary)
-                                .on_click(cx.listener(|terminal, _, _, cx| terminal.start(cx))),
-                        )
+                        .when(self.agent.is_some(), |el| {
+                            el.child(
+                                ui::button("resume-agent", "Resume", ui::Button::Primary)
+                                    .when(launching, |el| el.opacity(0.4))
+                                    .on_click(cx.listener(|terminal, _, _, cx| {
+                                        terminal.launch_agent(true, cx)
+                                    })),
+                            )
+                            .child(
+                                ui::button("start-agent", "Start new", ui::Button::Secondary)
+                                    .when(launching, |el| el.opacity(0.4))
+                                    .on_click(cx.listener(|terminal, _, _, cx| {
+                                        terminal.launch_agent(false, cx)
+                                    })),
+                            )
+                        })
                         .when(!attached, |el| {
                             el.child(
                                 ui::button("open-terminal", "Open terminal", ui::Button::Secondary)
@@ -490,6 +579,12 @@ impl Render for LiveTerminal {
                             )
                         }),
                 )
+                .when(launching, |el| {
+                    el.child(line("Asking Backbone…".into(), c.muted))
+                })
+                .when_some(self.launch_result.as_ref(), |el, result| {
+                    el.child(line(result.message(), c.muted))
+                })
             })
     }
 }

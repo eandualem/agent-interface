@@ -1023,8 +1023,17 @@ impl Browser {
         let Some(layout) = &self.layout else {
             return;
         };
+        // An app opened from the Dock or Finder runs in "/". New terminals
+        // start in the home folder instead, as other terminal apps do.
         let cwd = match std::env::current_dir()
             .ok()
+            .map(|path| {
+                if path.as_os_str() == "/" {
+                    crate::library::location::user_home(None).unwrap_or(path)
+                } else {
+                    path
+                }
+            })
             .and_then(|path| path.to_str().map(str::to_owned))
         {
             Some(cwd) => cwd,
@@ -1912,7 +1921,12 @@ impl Render for Browser {
                     .get(&leaf.id)
                     .filter(|(previous, _)| previous.same_session(&target))
                     .map(|(_, selected)| selected.clone());
-                let terminal = cx.new(|cx| LiveTerminal::new(target, selected, cx));
+                let environment = self
+                    .shell_environment
+                    .as_ref()
+                    .and_then(|environment| environment.as_ref().ok())
+                    .cloned();
+                let terminal = cx.new(|cx| LiveTerminal::new(target, selected, environment, cx));
                 cx.subscribe_in(
                     &terminal,
                     window,
@@ -1953,6 +1967,20 @@ impl Render for Browser {
                 )
                 .detach();
                 self.terminals.insert(leaf.id.clone(), terminal);
+            }
+            // A stopped Backbone agent's pane offers Resume and Start new.
+            let agent = leaf.attachment.as_ref().and_then(|attachment| {
+                let snapshot = self.agents.as_ref()?;
+                if snapshot.error.is_some()
+                    || snapshot.states.get(&attachment.session)? != "offline"
+                    || !self.is_window_source(attachment.source_socket.as_deref())
+                {
+                    return None;
+                }
+                Some((self.backbone.clone()?, attachment.session.clone()))
+            });
+            if let Some(terminal) = self.terminals.get(&leaf.id) {
+                terminal.update(cx, |terminal, cx| terminal.set_agent(agent, cx));
             }
         }
         let shown: Vec<(String, View)> = self
