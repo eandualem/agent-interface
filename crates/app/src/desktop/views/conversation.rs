@@ -1521,7 +1521,23 @@ impl Conversation {
             self.toggle(window, cx);
         }
         if !self.open {
-            return self.rail(cx);
+            let rail = self.rail(cx);
+            return match context {
+                Some(context) => ui::conversation_panel()
+                    .flex_row()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .h_full()
+                            .flex()
+                            .flex_col()
+                            .child(context),
+                    )
+                    .child(rail)
+                    .into_any_element(),
+                None => rail,
+            };
         }
         let t = tokens();
         let can_send = self.can_send(cx);
