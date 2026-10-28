@@ -40,8 +40,8 @@ Check the versions with `zig version` and `tmux -V`.
 
 ## Build and test
 
-Combined engine packaging additionally requires Python 3.11 or newer to verify
-the prepared payload. The optional native tmux builder requires Python 3.12 or
+Combined engine packaging and the installer regression tests additionally require
+Python 3.11 or newer. The optional native tmux builder requires Python 3.12 or
 newer, a system C compiler and make. It supports Intel/Apple Silicon macOS and
 x86-64/AArch64 glibc Linux. Linux also needs binutils (`readelf`) and a yacc
 provider such as `bison` (`sudo apt install build-essential binutils bison`
@@ -227,7 +227,8 @@ the library chooser on the intended desktop before publishing that target.
 The packaged `BUILD.json` must identify clean, reviewed source. Audit the
 unpacked binary and notices, and retain the archive checksum with the release.
 
-Installer regression checks use inert payloads and temporary home directories:
+Installer regression checks require Python 3.11 or newer and use inert payloads
+and temporary home directories:
 
 ```sh
 python3 -B -m unittest discover -s scripts/tests -v

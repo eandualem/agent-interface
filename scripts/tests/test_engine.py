@@ -53,6 +53,9 @@ print(json.dumps(result))
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(text)
             path.chmod(0o755 if name in {"bin/backbone", "python/bin/python3", "libexec/tmux"} else 0o644)
+        for directory in root.rglob("*"):
+            if directory.is_dir():
+                directory.chmod(0o755)
         self.inventory(root)
         return root
 
