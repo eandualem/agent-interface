@@ -78,9 +78,6 @@ pub(super) struct Sheets {
     directory: PathBuf,
     client: Option<Client>,
     catalog: Vec<Record>,
-    next: Option<String>,
-    cursors: Vec<Option<String>>,
-    cursor: Option<String>,
     open: Option<Open>,
     history: Option<Page>,
     history_cursors: Vec<Option<String>>,
@@ -115,9 +112,6 @@ impl Sheets {
             directory,
             client: None,
             catalog: Vec::new(),
-            next: None,
-            cursors: Vec::new(),
-            cursor: None,
             open: None,
             history: None,
             history_cursors: Vec::new(),
@@ -136,7 +130,7 @@ impl Sheets {
             _input: input,
             _inputs: Vec::new(),
         };
-        state.catalog(None, cx);
+        state.catalog(cx);
         state
     }
     fn key(&mut self, event: &gpui::KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -203,29 +197,25 @@ impl Sheets {
         self.notice = None;
         cx.notify();
     }
-    fn catalog(&mut self, cursor: Option<String>, cx: &mut Context<Self>) {
+    fn catalog(&mut self, cx: &mut Context<Self>) {
         if !self.clean(cx) {
             return;
         }
         self.begin(cx);
         let directory = self.directory.clone();
-        let requested = cursor.clone();
         let work = cx.background_executor().spawn(async move {
             let client = Client::connect(&directory)?;
-            let page = client.list(None, requested.as_deref())?;
-            Ok::<_, api::Error>((client, page))
+            let records = client.list_all()?;
+            Ok::<_, api::Error>((client, records))
         });
         cx.spawn(async move |this, cx| {
             let result = work.await;
             let _ = this.update(cx, |s, cx| {
                 s.busy = false;
                 match result {
-                    Ok((client, page)) => {
+                    Ok((client, records)) => {
                         s.client = Some(client);
-                        s.catalog = page.items;
-                        s.next = page.next_cursor;
-                        commit_cursor(&mut s.cursors, &s.cursor, &cursor);
-                        s.cursor = cursor;
+                        s.catalog = records;
                         s.open = None;
                         s.history = None;
                         s.history_cursors.clear();

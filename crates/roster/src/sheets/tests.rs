@@ -157,6 +157,22 @@ fn private_http_fixture_checks_lost_reply_retry_and_stale_drafts() {
             413,
             json!({"detail":{"code":"metadata_too_large"}}),
         );
+        // The shelf follows all pages; cyclic cursors must stop promptly.
+        for (cursor, next, revision) in [
+            ("", Some("page2"), 8),
+            ("&cursor=page2", None, 9),
+            ("", Some("loop"), 8),
+            ("&cursor=loop", Some("loop"), 9),
+        ] {
+            let (mut stream, _) = listener.accept().unwrap();
+            let (headers, _) = request(&mut stream);
+            assert!(headers.starts_with(&format!("GET /api/sheets?limit=50{cursor} HTTP/1.1")));
+            reply(
+                &mut stream,
+                200,
+                json!({"items":[record(revision)], "next_cursor":next}),
+            );
+        }
     });
     let status = Command::new(std::env::current_exe().unwrap())
         .args([
@@ -214,6 +230,14 @@ fn transport_fixture_child() {
         client.history(&id(1), None),
         Err(Error::Refused(413))
     ));
+    let all = client.list_all().unwrap();
+    assert_eq!(
+        all.iter()
+            .map(|record| record.revision_id.clone())
+            .collect::<Vec<_>>(),
+        vec![id(8), id(9)]
+    );
+    assert!(matches!(client.list_all(), Err(Error::Unreadable)));
 }
 
 #[test]

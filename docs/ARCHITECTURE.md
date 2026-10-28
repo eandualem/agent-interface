@@ -498,7 +498,12 @@ Responses in Reports & updates. Agents manage workbook creation, cell and struct
 edits, saved views and imports through Backbone. The native UI exposes inspection,
 selection, history, copying values, export and contextual feedback. Virtualized rows
 and bounded column pages limit rendering work. Labels retain canonical A1 coordinates
-under saved sort/filter views. No spreadsheet widget or formula engine is added.
+under saved sort/filter views. The shelf reads up to 20 metadata pages, rejects
+cursor cycles, and orders unread revisions first, newest updates first within each
+group. It has no separate page controls. Grid navigation appears only when more
+rows or columns exist. Copy uses selected cells or the displayed range; the label
+states its scope. Export uses an occluding deferred menu above the grid.
+No spreadsheet widget or formula engine is added.
 
 `roster::plans` reads Backbone's `/api/current-plans` list over the same
 authenticated local transport as Sheets, on a worker, every 20 seconds while
