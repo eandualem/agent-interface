@@ -11,6 +11,7 @@
 
 use std::{
     ffi::OsString,
+    ops::Range,
     path::{Path, PathBuf},
     rc::Rc,
     sync::{
@@ -21,18 +22,19 @@ use std::{
 
 use futures::channel::oneshot;
 use gpui::{
-    Action, ActivationPolicy, AnyWindowHandle, AppLifecyclePhase, BackgroundExecutor, Bounds,
+    Action, ActivationPolicy, AnyWindowHandle, App, AppLifecyclePhase, BackgroundExecutor, Bounds,
     Capslock, ClipboardItem, ClipboardReadError, CursorStyle, Decorations, DispatchEventResult,
     DisplayId, ExternalDragPayload, FileDropEvent, ForegroundExecutor, GpuSpecs,
-    GraphicalEnvironment, Keymap, Menu, MenuItem, Modifiers, OwnedMenu, PathPromptOptions, Pixels,
-    Platform, PlatformAtlas, PlatformDisplay, PlatformGestures, PlatformInput,
-    PlatformInputHandler, PlatformKeyboardLayout, PlatformKeyboardMapper, PlatformTextSystem,
-    PlatformWindow, Point, PromptButton, PromptLevel, RequestFrameOptions, ResizeEdge, Scene,
-    ScreenCaptureSource, ScrollDelta, Size, SystemNotification, SystemNotificationResponse,
-    SystemWindowTab, Task, TextInputConfiguration, TextInputStateChange, ThermalState,
-    WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowButtonLayout,
-    WindowControlArea, WindowControls, WindowDecorations, WindowInsets, WindowParams,
-    WindowVisibility, WindowingRequest, point, size,
+    GraphicalEnvironment, InputHandler, Keymap, Menu, MenuItem, Modifiers, OwnedMenu,
+    PathPromptOptions, Pixels, Platform, PlatformAtlas, PlatformDisplay, PlatformGestures,
+    PlatformInput, PlatformInputHandler, PlatformKeyboardLayout, PlatformKeyboardMapper,
+    PlatformTextSystem, PlatformWindow, Point, PromptButton, PromptLevel, RequestFrameOptions,
+    ResizeEdge, Scene, ScreenCaptureSource, ScrollDelta, Size, SystemNotification,
+    SystemNotificationResponse, SystemWindowTab, Task, TextInputConfiguration,
+    TextInputStateChange, ThermalState, UTF16Selection, WindowAppearance,
+    WindowBackgroundAppearance, WindowBounds, WindowButtonLayout, WindowControlArea,
+    WindowControls, WindowDecorations, WindowInsets, WindowParams, WindowVisibility,
+    WindowingRequest, point, size,
 };
 use raw_window_handle::{
     DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle, WindowHandle,
@@ -484,9 +486,7 @@ impl PlatformWindow for Window {
     fn capslock(&self) -> Capslock {
         self.0.capslock()
     }
-    // Text input reports caret bounds through the handler, which the
-    // platform reads directly, so an input method's candidate window can sit
-    // away from the caret at sizes other than 100%.
+    // Handlers registered through `input` already report native geometry.
     fn set_input_handler(&mut self, input_handler: PlatformInputHandler) {
         self.0.set_input_handler(input_handler)
     }
@@ -712,8 +712,9 @@ impl PlatformWindow for Window {
     fn gpu_specs(&self) -> Option<GpuSpecs> {
         self.0.gpu_specs()
     }
+    // GPUI takes these bounds from the input handler, which `input` converts.
     fn update_ime_position(&self, bounds: Bounds<Pixels>) {
-        self.0.update_ime_position(grow(bounds))
+        self.0.update_ime_position(bounds)
     }
     // Insets and the soft keyboard belong to mobile platforms.
     fn insets(&self) -> WindowInsets {
@@ -748,5 +749,127 @@ impl PlatformWindow for Window {
     }
     fn a11y_update_window_bounds(&self) {
         self.0.a11y_update_window_bounds()
+    }
+}
+
+/// A text input handler whose caret geometry the platform reads in its own
+/// coordinates. Register every input handler through this.
+pub fn input(handler: impl InputHandler) -> impl InputHandler {
+    Input(handler)
+}
+
+struct Input<H>(H);
+
+impl<H: InputHandler> InputHandler for Input<H> {
+    fn selected_text_range(
+        &mut self,
+        ignore_disabled_input: bool,
+        window: &mut gpui::Window,
+        cx: &mut App,
+    ) -> Option<UTF16Selection> {
+        self.0
+            .selected_text_range(ignore_disabled_input, window, cx)
+    }
+    fn marked_text_range(
+        &mut self,
+        window: &mut gpui::Window,
+        cx: &mut App,
+    ) -> Option<Range<usize>> {
+        self.0.marked_text_range(window, cx)
+    }
+    fn text_for_range(
+        &mut self,
+        range_utf16: Range<usize>,
+        adjusted_range: &mut Option<Range<usize>>,
+        window: &mut gpui::Window,
+        cx: &mut App,
+    ) -> Option<String> {
+        self.0
+            .text_for_range(range_utf16, adjusted_range, window, cx)
+    }
+    fn replace_text_in_range(
+        &mut self,
+        replacement_range: Option<Range<usize>>,
+        text: &str,
+        window: &mut gpui::Window,
+        cx: &mut App,
+    ) {
+        self.0
+            .replace_text_in_range(replacement_range, text, window, cx)
+    }
+    fn replace_and_mark_text_in_range(
+        &mut self,
+        range_utf16: Option<Range<usize>>,
+        new_text: &str,
+        new_selected_range: Option<Range<usize>>,
+        window: &mut gpui::Window,
+        cx: &mut App,
+    ) {
+        self.0
+            .replace_and_mark_text_in_range(range_utf16, new_text, new_selected_range, window, cx)
+    }
+    fn unmark_text(&mut self, window: &mut gpui::Window, cx: &mut App) {
+        self.0.unmark_text(window, cx)
+    }
+    fn paste(&mut self, item: ClipboardItem, window: &mut gpui::Window, cx: &mut App) {
+        self.0.paste(item, window, cx)
+    }
+    fn bounds_for_range(
+        &mut self,
+        range_utf16: Range<usize>,
+        window: &mut gpui::Window,
+        cx: &mut App,
+    ) -> Option<Bounds<Pixels>> {
+        self.0.bounds_for_range(range_utf16, window, cx).map(grow)
+    }
+    fn character_index_for_point(
+        &mut self,
+        point: Point<Pixels>,
+        window: &mut gpui::Window,
+        cx: &mut App,
+    ) -> Option<usize> {
+        self.0
+            .character_index_for_point(shrink_point(point), window, cx)
+    }
+    fn set_selected_text_range(
+        &mut self,
+        range_utf16: Range<usize>,
+        window: &mut gpui::Window,
+        cx: &mut App,
+    ) {
+        self.0.set_selected_text_range(range_utf16, window, cx)
+    }
+    fn element_bounds(
+        &mut self,
+        window: &mut gpui::Window,
+        cx: &mut App,
+    ) -> Option<Bounds<Pixels>> {
+        self.0.element_bounds(window, cx).map(grow)
+    }
+    fn text_length_utf16(&mut self, window: &mut gpui::Window, cx: &mut App) -> Option<usize> {
+        self.0.text_length_utf16(window, cx)
+    }
+    fn apple_press_and_hold_enabled(&mut self) -> bool {
+        self.0.apple_press_and_hold_enabled()
+    }
+    fn accepts_text_input(&mut self, window: &mut gpui::Window, cx: &mut App) -> bool {
+        self.0.accepts_text_input(window, cx)
+    }
+    fn text_input_editable_range(
+        &mut self,
+        window: &mut gpui::Window,
+        cx: &mut App,
+    ) -> Option<Range<usize>> {
+        self.0.text_input_editable_range(window, cx)
+    }
+    fn prefers_ime_for_printable_keys(&mut self, window: &mut gpui::Window, cx: &mut App) -> bool {
+        self.0.prefers_ime_for_printable_keys(window, cx)
+    }
+    fn text_input_configuration(
+        &mut self,
+        window: &mut gpui::Window,
+        cx: &mut App,
+    ) -> TextInputConfiguration {
+        self.0.text_input_configuration(window, cx)
     }
 }
