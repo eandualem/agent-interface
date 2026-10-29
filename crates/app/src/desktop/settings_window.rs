@@ -133,7 +133,17 @@ impl SettingsWindow {
     fn change(&mut self, update: impl FnOnce(&mut Settings), cx: &mut Context<Self>) {
         let mut next = Settings::current();
         update(&mut next);
+        let resized = next.interface_size != Settings::current().interface_size;
         next.apply();
+        if resized {
+            // Each window takes the new scale and lays out again; deferred so
+            // this window is no longer borrowed.
+            cx.defer(|cx| {
+                for window in cx.windows() {
+                    let _ = window.update(cx, |_, window, cx| window.bounds_changed(cx));
+                }
+            });
+        }
         super::configure_menu(cx);
         // Apply at once; save on a worker and report the outcome when it ends.
         let (done, saved) = futures::channel::oneshot::channel();
@@ -442,6 +452,28 @@ impl SettingsWindow {
                 .child(glyph)
         };
         let (min, max) = (9, 24);
+        let sizes = super::zoom::SIZES;
+        let at = sizes
+            .iter()
+            .position(|&percent| percent == current.interface_size);
+        let resize = |id: &'static str, glyph: &'static str, next: Option<u32>| {
+            div()
+                .id(id)
+                .w(px(t.size.button))
+                .h(px(t.size.button - t.space.s2))
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_color(if next.is_some() { c.text_2 } else { c.faint })
+                .when_some(next, |el, next| {
+                    el.cursor_pointer()
+                        .hover(|el| el.bg(colors().hover))
+                        .on_click(cx.listener(move |view, _, _, cx| {
+                            view.change(|settings| settings.interface_size = next, cx)
+                        }))
+                })
+                .child(glyph)
+        };
         let mut modes = div()
             .flex()
             .gap(px(t.space.s2))
@@ -487,6 +519,43 @@ impl SettingsWindow {
                     .gap(px(t.space.s12))
                     .child(card("theme-dark", "Dark", &design::tokens().dark, false))
                     .child(card("theme-light", "Light", &design::tokens().light, true))
+                    .into_any_element(),
+            ]))
+            .child(Self::section([
+                Self::label("INTERFACE SIZE").into_any_element(),
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(t.space.s14))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .rounded(px(t.radius.row))
+                            .border(px(t.size.hairline))
+                            .border_color(c.line_strong)
+                            .bg(c.field)
+                            .child(resize(
+                                "interface-smaller",
+                                "−",
+                                at.and_then(|at| at.checked_sub(1)).map(|at| sizes[at]),
+                            ))
+                            .child(
+                                div()
+                                    .w(px(t.size.button + t.space.s10))
+                                    .flex()
+                                    .justify_center()
+                                    .child(format!("{}%", current.interface_size)),
+                            )
+                            .child(resize(
+                                "interface-larger",
+                                "+",
+                                at.and_then(|at| sizes.get(at + 1).copied()),
+                            )),
+                    )
+                    .child(Self::note(
+                        "Scales the whole window, terminals included, for screens that draw it too small or too large.",
+                    ))
                     .into_any_element(),
             ]))
             .child(Self::section([

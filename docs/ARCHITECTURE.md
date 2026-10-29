@@ -394,6 +394,14 @@ those dependencies.
   on window creation so the first external query sees the rendered text tree.
   This builds accessibility data during rendering even before a client connects;
   it trades some rendering work for reliable first-use dictation detection.
+  The app wraps GPUI's platform to provide the interface size setting: the
+  wrapper multiplies each window's display scale by the chosen size and
+  converts logical coordinates at the boundary, so views stay unaware of it.
+  Input-method candidate windows are placed from caret bounds the wrapper
+  cannot reach, so they can sit away from the caret at sizes other than 100%.
+- **`raw-window-handle` 0.6.2:** the window handle traits that wrapper
+  forwards. MIT OR Apache-2.0 OR Zlib, pinned exactly; GPUI already builds
+  this version, so it adds no package.
   The dependency graph remains unchanged.
 - **Plasma Wayland protocols:** GPUI's Linux backend uses the MIT-licensed
   `wayland-protocols-plasma` wrapper. Its vendored protocol definitions also

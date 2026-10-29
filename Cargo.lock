@@ -125,6 +125,7 @@ dependencies = [
  "gpui-pre-macos",
  "gpui-pre-platform",
  "libc",
+ "raw-window-handle",
  "rusqlite",
  "serde",
  "serde_json",

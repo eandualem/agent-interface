@@ -191,7 +191,9 @@ been measured.
 
 For a first test, add a tab with Ctrl+Shift+T, choose **Open terminal**, and run
 `pwd`. Quit and reopen the app to check that the saved workspace and terminal
-reconnect. The terminals run inside that Ubuntu distribution. If no window
+reconnect. The terminals run inside that Ubuntu distribution. On a
+high-resolution display WSL can draw the window too small; change
+**Settings → Appearance → Interface size** to suit it. If no window
 appears, check
 [Microsoft's WSLg display troubleshooting](https://github.com/microsoft/wslg/wiki/Diagnosing-%22cannot-open-display%22-type-issues-with-WSLg)
 and the app's [diagnostic logging](GUIDE.md#find-work-and-change-appearance).
