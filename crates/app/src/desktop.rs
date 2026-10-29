@@ -1297,6 +1297,18 @@ impl Browser {
         self.icon_picker = false;
     }
 
+    fn web_content_occluded(&self) -> bool {
+        self.workspace_menu
+            || self.icon_picker
+            || self.tab_menu.is_some()
+            || self.editing.is_some()
+            || self.chooser.is_some()
+            || self.jump.is_some()
+            || self.resize.is_some()
+            || self.sidebar_drag.is_some()
+            || self.pane_drag.as_ref().is_some_and(|drag| drag.dragging)
+    }
+
     fn set_symbol(&mut self, symbol: Option<&str>, cx: &mut Context<Self>) {
         self.close_menus();
         if self.saving || self.save_failed {
@@ -2128,7 +2140,11 @@ impl Render for Browser {
                             }
                         }
                         views::ViewEvent::Focus => {
-                            if let Some(layout) = &mut browser.layout {
+                            // Page IPC is asynchronous: a click notification can
+                            // arrive after a native overlay has taken focus.
+                            if !browser.web_content_occluded()
+                                && let Some(layout) = &mut browser.layout
+                            {
                                 layout.model_mut().choose_pane(&leaf);
                                 // GPUI also handles key equivalents forwarded by
                                 // child webviews. Leave any terminal's dispatch
@@ -2166,18 +2182,7 @@ impl Render for Browser {
             );
             // Native child views are above GPUI drawing. Hide them while a
             // popover or geometry gesture needs that space or its pointer input.
-            view.read(cx).occlude_web(
-                self.workspace_menu
-                    || self.icon_picker
-                    || self.tab_menu.is_some()
-                    || self.editing.is_some()
-                    || self.chooser.is_some()
-                    || self.jump.is_some()
-                    || self.resize.is_some()
-                    || self.sidebar_drag.is_some()
-                    || self.pane_drag.as_ref().is_some_and(|drag| drag.dragging),
-                cx,
-            );
+            view.read(cx).occlude_web(self.web_content_occluded(), cx);
         }
         let empty: Vec<String> = self
             .layout

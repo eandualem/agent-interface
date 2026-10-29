@@ -71,7 +71,7 @@ with tempfile.TemporaryDirectory(prefix="document-smoke-") as directory:
 body { font: 24px sans-serif; padding: 24px; } button,input {font:inherit;margin:12px;}
 button,input { border: 0; padding: 8px; }
 </style></head><body><h1>DOCUMENTREADY</h1><p id="result">WAITING</p>
-<button id="action" onclick="this.textContent='CLICKPASSED'">INTERACT</button>
+<button id="action" onclick="if(this.textContent==='CLICKPASSED')setTimeout(()=>window.ipc.postMessage('focus'),500);this.textContent='CLICKPASSED'">INTERACT</button>
 <input aria-label="Input" placeholder="TYPEHERE" oninput="document.getElementById('typed').textContent=this.value"><input id="file" type="file" hidden>
 <button onclick="document.getElementById('file').click();this.textContent='FILEBLOCKED'">FILETEST</button>
 <p id="typed">INPUTWAITING</p>
@@ -244,6 +244,9 @@ try { new WebSocket('TARGET/socket'.replace('http:', 'ws:')); } catch (_) {}
             command('xdotool', 'key', '--clearmodifiers', 'ctrl+shift+k')
             wait_for(lambda: find('Settings'), 'app shortcut from HTML input')
             assert not find('DOCUMENTREADY'), 'webview must hide beneath native overlay'
+            # A delayed page click notification must not steal the search field's
+            # focus after the native overlay opens. The second button click queues it.
+            time.sleep(2)
             command('xdotool', 'key', 'Escape')
             wait_for(lambda: find('CLICKPASSED'), 'page restored after native overlay')
             native_windows = set(command('xdotool', 'search', '--onlyvisible', '--pid', str(app.pid)).splitlines())
@@ -310,7 +313,8 @@ try { new WebSocket('TARGET/socket'.replace('http:', 'ws:')); } catch (_) {}
             (OUTPUT / 'result.json').write_text(json.dumps(dict(checks=[
                 'Document API load', 'HTML render', 'inline script', 'HTML input', 'app shortcut from HTML',
                 'HTML keeps focus after pointer movement', 'native click restores X input focus', 'document X windows destroyed',
-                'overlay hides/restores view', 'return to shelf destroys view', 'file chooser denied',
+                'overlay hides/restores view', 'late page focus preserves native overlay input',
+                'return to shelf destroys view', 'file chooser denied',
                 'WebRTC disabled', 'fetch/image/WebSocket blocked', 'external navigation/new windows denied', 'resize retains state', 'process seccomp and mount isolation', 'display DPI placement',
                 *(['tab/workspace PageUp/PageDown and numbered navigation from HTML'] if SCALE == 100 and DPI == 96 else []),
                 'fixed new-window shortcut from HTML', 'parent close preserves second window', 'clean quit', 'unsafe sandbox override refused'],

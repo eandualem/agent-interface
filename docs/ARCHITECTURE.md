@@ -720,7 +720,9 @@ property update runs. Expected BadWindow errors are logged at debug level; other
 X errors are warnings. The trap is scoped to the document bridge, so a late child
 update cannot terminate other native windows.
 Native document clicks focus the GTK child so moving the pointer does not redirect
-subsequent typing. Native interface clicks restore X input focus to the original GPUI parent, not GTK's
+subsequent typing. Late page focus notifications are ignored while native overlays
+or geometry gestures occlude the page, preserving the active native input field.
+Native interface clicks restore X input focus to the original GPUI parent, not GTK's
 intermediary window. GTK retains its registered GdkWindow, reparented beneath the
 X11 container; replacing that window with a foreign one breaks GTK teardown.
 The Wry patch destroys the GTK owner before the owned container synchronously,
