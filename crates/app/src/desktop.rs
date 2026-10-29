@@ -110,7 +110,13 @@ pub fn run(directory: Option<PathBuf>) -> Result<(), String> {
             // Defer: a window that is dispatching this action cannot be updated
             // until dispatch returns.
             cx.on_action(|_: &OpenSettings, cx| cx.defer(settings_window::show));
-            cx.on_action(|_: &RunSetup, cx| cx.defer(|cx| onboarding::show(false, cx)));
+            cx.on_action(|_: &RunSetup, cx| {
+                cx.defer(|cx| {
+                    if let Err(error) = onboarding::show(false, cx) {
+                        tracing::error!(event = "setup_window_failed", %error, "Cannot open setup");
+                    }
+                })
+            });
             cx.on_action(|_: &ClosePane, cx| {
                 if let Some(window) = cx.active_window() {
                     cx.defer(move |cx| {
@@ -188,9 +194,12 @@ pub fn run(directory: Option<PathBuf>) -> Result<(), String> {
             })
             .detach();
             // A fresh install opens through setup; an explicit library never does.
-            if directory.is_none() && onboarding::first_run(&preferences) {
-                onboarding::show(!preferences.intro_seen, cx);
-            } else if let Err(error) = open_browser(directory, source, cx) {
+            let result = if directory.is_none() && onboarding::first_run(&preferences) {
+                onboarding::show(!preferences.intro_seen, cx)
+            } else {
+                open_browser(directory, source, cx)
+            };
+            if let Err(error) = result {
                 *opened.borrow_mut() = Some(format!("cannot open window: {error}"));
                 cx.spawn(async |cx| cx.update(|cx| cx.quit())).detach();
                 return;

@@ -62,16 +62,19 @@ flowchart LR
 You need macOS or Linux and tmux 3.3 or newer (`brew install tmux` on macOS).
 On Linux, install the [runtime libraries](docs/INSTALL.md#runtime-prerequisites) first.
 
-**1. Install the app.** The installer downloads the compiled package for your
-platform from the [latest release](https://github.com/eandualem/agent-interface/releases)
-and checks its checksum. No Rust or Python is needed.
+**1. Install Agent Interface and Agent Backbone.** The installer downloads the
+compiled app from the [latest release](https://github.com/eandualem/agent-interface/releases),
+checks its checksum, and installs the latest compatible published Backbone.
+It supplies uv and Python when needed; no Rust or manual Python installation is required.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/eandualem/agent-interface/main/install.sh | sh
 ```
 
-**2. Add Agent Backbone.** The app needs a Backbone newer than its 0.3.0
-release, so [install it from its repository and connect the app](docs/INSTALL.md#connect-agent-backbone).
+**2. Open Agent Interface.** Continue through native onboarding to choose an
+installed, signed-in agent tool and create your first agent. Existing Backbone
+configuration is preserved; see [connection guidance](docs/INSTALL.md#connect-agent-backbone)
+if you manage that installation independently.
 
 The [installation guide](docs/INSTALL.md) covers package architectures, manual
 downloads, the experimental Windows 11 / WSL route, updates and removal.

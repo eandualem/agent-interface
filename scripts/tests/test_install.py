@@ -270,5 +270,60 @@ if [ "$write_status" = true ]; then printf 200; fi
         self.assertEqual(backups[0].read_bytes(), before)
 
 
+    def backbone_tools(self):
+        self.env.update(FIXTURE_TOOLS=str(self.root / "uv tools"),
+                        FIXTURE_LOG=str(self.root / "provider.log"),
+                        FIXTURE_PYTHON=str(self.tools / "provider-python"))
+        self.command("provider-python", '''
+printf '%s\\n' "$*" >> "$FIXTURE_LOG"
+case "$*" in *--resume-pending*) exit "${FIXTURE_RESUME:-0}";; esac
+exit "${FIXTURE_SETUP_FAIL:-0}"
+''')
+        self.command("uv", '''
+printf '%s\\n' "$*" >> "$FIXTURE_LOG"
+case "$1 $2" in
+    "tool dir") printf '%s\\n' "$FIXTURE_TOOLS";;
+    "tool install")
+        [ "${FIXTURE_INSTALL_FAIL:-0}" = 0 ] || exit 1
+        mkdir -p "$FIXTURE_TOOLS/agent-backbone/bin"
+        cp "$FIXTURE_PYTHON" "$FIXTURE_TOOLS/agent-backbone/bin/python"
+        chmod 755 "$FIXTURE_TOOLS/agent-backbone/bin/python";;
+    "tool update-shell") :;;
+    *) exit 1;;
+esac
+''')
+
+    def test_latest_provider_install_and_pending_resume_order(self):
+        self.backbone_tools()
+        archive = self.package("0.2.0", extra={"agent-interface/setup_backbone.py": "fixture helper"})
+        self.install(archive)
+        log = Path(self.env["FIXTURE_LOG"])
+        lines = log.read_text().splitlines()
+        self.assertIn("tool install --upgrade --prerelease disallow --python >=3.11,<3.14 agent-backbone>=0.4.0", lines)
+        self.assertTrue(lines[-1].startswith("-I -B "))
+        self.env["FIXTURE_RESUME"] = "3"
+        log.write_text("")
+        self.install(archive)
+        lines = log.read_text().splitlines()
+        self.assertTrue(any("--resume-pending" in line for line in lines))
+        self.assertFalse(any(line.startswith("tool install") for line in lines))
+
+    def test_provider_failure_keeps_previous_app(self):
+        self.install(self.package("0.1.1"))
+        self.backbone_tools()
+        archive = self.package("0.2.0", extra={"agent-interface/setup_backbone.py": "fixture helper"})
+        self.env["FIXTURE_INSTALL_FAIL"] = "1"
+        self.install(archive, success=False)
+        self.assertIn("0.1.1", subprocess.check_output([self.link, "--version"], text=True))
+        self.env["FIXTURE_INSTALL_FAIL"] = "0"
+        self.env["FIXTURE_SETUP_FAIL"] = "1"
+        self.install(archive, success=False)
+        self.assertIn("0.1.1", subprocess.check_output([self.link, "--version"], text=True))
+        self.env["FIXTURE_RESUME"] = "1"
+        Path(self.env["FIXTURE_LOG"]).write_text("")
+        self.install(archive, success=False)
+        self.assertNotIn("tool install", Path(self.env["FIXTURE_LOG"]).read_text())
+
+
 if __name__ == "__main__":
     unittest.main()

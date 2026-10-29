@@ -506,6 +506,26 @@ macOS receives an ad-hoc-signed `Agent Interface.app` bundle; Linux receives a g
 binary linked to the system desktop libraries. Neither package includes a
 Python runtime, build toolchain, tmux server or application daemon.
 
+The archive includes `setup_backbone.py`, a standard-library installer helper.
+`install.sh` installs the latest stable published `agent-backbone>=0.4.0` with
+uv, independently of the app archive. Backbone (MIT) owns its package, dependency
+testing and publication. uv (MIT OR Apache-2.0) installs the Python environment;
+when uv is absent, its 0.13.6 installer is version- and SHA-256-pinned. No Backbone
+source checkout or portable payload is composed into Interface's packages.
+
+The helper uses Backbone's versioned setup command and retains its exact request
+and progress in a private per-user state directory. Pending setup is resumed
+before any package upgrade, with the provider version, distribution metadata and
+launcher checked against the saved installation. For a fresh installation only,
+it enables the private socket and restarts the service after checking the saved
+installation identity, service definition and loaded service owner. Interrupted
+socket writes are reconciled against the intended value; conflicting choices
+are preserved. Existing installations and completed setup keep their settings
+and services. The final socket probe sends only an unauthenticated health request;
+the app's native transport performs peer verification before sending credentials.
+Provider installation/setup finishes before replacing the app; provider state
+is retained if a later app replacement fails.
+
 The shell installer verifies the archive checksum and target, stages a
 per-user replacement, and preserves the data directories. Linux desktop and
 window identifiers use `io.github.eandualem.agent-interface`; macOS uses the same

@@ -66,14 +66,14 @@ struct Open(WindowHandle<Onboarding>);
 impl Global for Open {}
 
 /// Open setup, with the opening scene first when `intro` is set.
-pub fn show(intro: bool, cx: &mut App) {
+pub fn show(intro: bool, cx: &mut App) -> Result<(), String> {
     let open = cx.try_global::<Open>().map(|Open(handle)| *handle);
     if let Some(handle) = open
         && handle
             .update(cx, |_, window, _| window.activate_window())
             .is_ok()
     {
-        return;
+        return Ok(());
     }
     let t = tokens();
     let options = WindowOptions {
@@ -101,37 +101,39 @@ pub fn show(intro: bool, cx: &mut App) {
         // setup still resumes after other settings create the file.
         remember(|settings| settings.intro_seen = true);
     }
-    if let Ok(handle) = cx.open_window(options, |_, cx| {
-        cx.new(|cx| {
-            let mut view = Onboarding {
-                stage: if intro { Stage::Scene } else { Stage::Step(0) },
-                probe: None,
-                checking: false,
-                copied: None,
-                open_error: None,
-                first: None,
-                first_ready: false,
-                first_agent: None,
-                first_events: None,
-            };
-            // The scene covers the first check, so step one opens with answers.
-            view.check(cx);
-            if intro {
-                cx.spawn(async |view, cx| {
-                    cx.background_executor().timer(SCENE).await;
-                    let _ = view.update(cx, |view, cx| {
-                        view.stage = Stage::Step(0);
-                        remember(|settings| settings.intro_seen = true);
-                        cx.notify();
-                    });
-                })
-                .detach();
-            }
-            view
+    let handle = cx
+        .open_window(options, |_, cx| {
+            cx.new(|cx| {
+                let mut view = Onboarding {
+                    stage: if intro { Stage::Scene } else { Stage::Step(0) },
+                    probe: None,
+                    checking: false,
+                    copied: None,
+                    open_error: None,
+                    first: None,
+                    first_ready: false,
+                    first_agent: None,
+                    first_events: None,
+                };
+                // The scene covers the first check, so step one opens with answers.
+                view.check(cx);
+                if intro {
+                    cx.spawn(async |view, cx| {
+                        cx.background_executor().timer(SCENE).await;
+                        let _ = view.update(cx, |view, cx| {
+                            view.stage = Stage::Step(0);
+                            remember(|settings| settings.intro_seen = true);
+                            cx.notify();
+                        });
+                    })
+                    .detach();
+                }
+                view
+            })
         })
-    }) {
-        cx.set_global(Open(handle));
-    }
+        .map_err(|error| error.to_string())?;
+    cx.set_global(Open(handle));
+    Ok(())
 }
 
 /// The system asks for less motion: open straight on the first step.
@@ -342,8 +344,9 @@ impl Onboarding {
             ),
             Some(Backbone::NotSetUp) => (
                 (Tone::Attention, "Not set up"),
-                "Agents need it; terminals work without it.".into(),
-                Some("uv tool install agent-backbone && backbone help setup"),
+                "Run the Agent Interface installer again to finish setting up Agent Backbone."
+                    .into(),
+                None,
             ),
         };
         page = page.child(self.row("backbone", "Agent Backbone", note, state, command, cx));
@@ -511,24 +514,17 @@ impl Render for Onboarding {
         };
         if index == 2
             && self.first.is_none()
+            && let Some(probe) = &self.probe
             && let Ok(Some(directory)) =
                 crate::roster::provider_directory(Some(true), None, None, false)
         {
-            let executable = setup::active_engine(&directory).or_else(|| {
-                self.probe
-                    .as_ref()
-                    .and_then(|probe| probe.path("backbone").cloned())
-            });
-            let existing = self.probe.as_ref().is_some_and(
-                |probe| matches!(probe.backbone, Backbone::Running { agents } if agents > 0),
-            );
+            let executable =
+                setup::active_engine(&directory).or_else(|| probe.path("backbone").cloned());
+            let existing = matches!(probe.backbone, Backbone::Running { agents } if agents > 0);
             let first = cx.new(|cx| {
                 first::FirstAgent::new(
                     executable,
-                    self.probe
-                        .as_ref()
-                        .map(|probe| probe.path_env.clone())
-                        .unwrap_or_default(),
+                    probe.path_env.clone(),
                     directory,
                     existing,
                     window,
@@ -562,6 +558,7 @@ impl Render for Onboarding {
             1 => self.tools_step(cx),
             2 => match &self.first {
                 Some(first) => div().child(first.clone()),
+                None if self.probe.is_none() => heading("Your first agent", "Checking your tools and shell environment…"),
                 None => heading("Your first agent", "The setup engine is unavailable. Return to Check, then install or reconnect the engine before creating an agent.")
                     .when(self.probe.as_ref().is_some_and(|probe| matches!(probe.backbone, Backbone::Running { agents } if agents > 0)), |page| {
                         page.child(ui::button("keep-existing-agents", "Use my existing agents", Button::Secondary)
