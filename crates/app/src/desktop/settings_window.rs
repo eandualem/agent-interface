@@ -139,8 +139,18 @@ impl SettingsWindow {
             // Each window takes the new scale and lays out again; deferred so
             // this window is no longer borrowed.
             cx.defer(|cx| {
+                #[cfg(target_os = "macos")]
+                let controls = gpui::point(
+                    px(tokens().size.window_controls_x),
+                    px(tokens().size.window_controls_y),
+                );
                 for window in cx.windows() {
-                    let _ = window.update(cx, |_, window, cx| window.bounds_changed(cx));
+                    let _ = window.update(cx, |_, window, cx| {
+                        // Native window buttons keep their place in the panel's top strip.
+                        #[cfg(target_os = "macos")]
+                        window.set_traffic_light_position(controls);
+                        window.bounds_changed(cx)
+                    });
                 }
             });
         }

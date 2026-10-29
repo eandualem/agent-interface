@@ -397,8 +397,11 @@ those dependencies.
   The app wraps GPUI's platform to provide the interface size setting: the
   wrapper multiplies each window's display scale by the chosen size and
   converts logical coordinates at the boundary, so views stay unaware of it.
-  Input-method candidate windows are placed from caret bounds the wrapper
-  cannot reach, so they can sit away from the caret at sizes other than 100%.
+  Input-method candidate windows, and macOS text lookup, use caret geometry
+  the wrapper cannot reach, so they can sit away from the caret at sizes other
+  than 100%. A window keeps the minimum size it opened with until reopened.
+  The macOS artifact web view sits outside GPUI and is positioned and zoomed
+  separately.
 - **`raw-window-handle` 0.6.2:** the window handle traits that wrapper
   forwards. MIT OR Apache-2.0 OR Zlib, pinned exactly; GPUI already builds
   this version, so it adds no package.

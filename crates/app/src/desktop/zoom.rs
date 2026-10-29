@@ -209,6 +209,9 @@ impl Platform for Zoomed {
     ) -> gpui::Result<Box<dyn PlatformWindow>> {
         options.bounds = grow(options.bounds);
         options.window_min_size = options.window_min_size.map(grow_size);
+        if let Some(titlebar) = &mut options.titlebar {
+            titlebar.traffic_light_position = titlebar.traffic_light_position.map(grow_point);
+        }
         Ok(Box::new(Window(self.0.open_window(handle, options)?)))
     }
     fn window_appearance(&self) -> WindowAppearance {
