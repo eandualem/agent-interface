@@ -69,7 +69,7 @@ with tempfile.TemporaryDirectory(prefix="document-smoke-") as directory:
     target = f'http://127.0.0.1:{trap.server_port}'
     html = '''<!doctype html><html><head><meta charset="utf-8"><style>
 body { font: 24px sans-serif; padding: 24px; } button,input {font:inherit;margin:12px;}
-button { border: 0; padding: 8px; }
+button,input { border: 0; padding: 8px; }
 </style></head><body><h1>DOCUMENTREADY</h1><p id="result">WAITING</p>
 <button id="action" onclick="this.textContent='CLICKPASSED'">INTERACT</button>
 <input aria-label="Input" placeholder="TYPEHERE" oninput="document.getElementById('typed').textContent=this.value"><input id="file" type="file" hidden>
