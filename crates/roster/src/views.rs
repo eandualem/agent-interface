@@ -195,6 +195,28 @@ fn usage_path(range: Range) -> String {
     format!("/api/usage?refresh=false&limit=1000&since={since}")
 }
 
+/// The CLI each configured agent runs in, by name; empty when the roster
+/// cannot be read. Blocks like [`read`], so call it on an I/O worker.
+pub fn runtimes(data_dir: &Path) -> std::collections::BTreeMap<String, String> {
+    let Some((url, key)) = configured(data_dir, None) else {
+        return Default::default();
+    };
+    let live = || true;
+    let api = Api {
+        url,
+        key,
+        live: &live,
+    };
+    library::agents(&api)
+        .map(|agents| {
+            agents
+                .into_iter()
+                .map(|agent| (agent.name, agent.runtime))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Read one request from an enabled provider. Blocks for up to three seconds
 /// per GET, so call it on an I/O worker. Configuration is re-read every time.
 /// A library read stops starting per-agent requests once `live` says no one

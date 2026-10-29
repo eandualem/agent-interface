@@ -12,7 +12,6 @@ use gpui::{
     TitlebarOptions, Window, WindowBounds, WindowOptions, actions, div, point, prelude::*, px,
     size,
 };
-use gpui_platform::application;
 
 use crate::library::{Library, Update, WindowLayout};
 mod chooser;
@@ -27,6 +26,7 @@ mod frame;
 mod icons;
 mod jump;
 mod menus;
+mod onboarding;
 mod pane_cards;
 mod pane_drag;
 mod settings;
@@ -39,6 +39,7 @@ mod terminal;
 mod views;
 mod window_controls;
 mod workspace;
+mod zoom;
 use agent_interface_tmux::connection::SessionWindow;
 use name::{NameEvent, NameField};
 use terminal::{LiveTerminal, Target};
@@ -56,6 +57,8 @@ actions!(
         OpenLibrary,
         /// Show the Settings window.
         OpenSettings,
+        /// Open first-run setup again.
+        RunSetup,
         /// Close the focused pane; the last pane closes its tab.
         ClosePane,
         /// Close the selected tab, leaving its sessions under tmux's ownership.
@@ -80,7 +83,7 @@ pub fn run(directory: Option<PathBuf>) -> Result<(), String> {
     let mut logging = crate::diagnostics::start(preferences.logging);
     let failure = Rc::new(RefCell::new(None));
     let opened = Rc::clone(&failure);
-    application()
+    gpui::Application::with_platform(zoom::platform())
         .with_assets(icons::Assets)
         .run(move |cx: &mut App| {
             cx.set_app_identity(APP_ID, "Agent Interface");
@@ -107,6 +110,13 @@ pub fn run(directory: Option<PathBuf>) -> Result<(), String> {
             // Defer: a window that is dispatching this action cannot be updated
             // until dispatch returns.
             cx.on_action(|_: &OpenSettings, cx| cx.defer(settings_window::show));
+            cx.on_action(|_: &RunSetup, cx| {
+                cx.defer(|cx| {
+                    if let Err(error) = onboarding::show(false, cx) {
+                        tracing::error!(event = "setup_window_failed", %error, "Cannot open setup");
+                    }
+                })
+            });
             cx.on_action(|_: &ClosePane, cx| {
                 if let Some(window) = cx.active_window() {
                     cx.defer(move |cx| {
@@ -183,7 +193,13 @@ pub fn run(directory: Option<PathBuf>) -> Result<(), String> {
                 }
             })
             .detach();
-            if let Err(error) = open_browser(directory, source, cx) {
+            // A fresh install opens through setup; an explicit library never does.
+            let result = if directory.is_none() && onboarding::first_run(&preferences) {
+                onboarding::show(!preferences.intro_seen, cx)
+            } else {
+                open_browser(directory, source, cx)
+            };
+            if let Err(error) = result {
                 *opened.borrow_mut() = Some(format!("cannot open window: {error}"));
                 cx.spawn(async |cx| cx.update(|cx| cx.quit())).detach();
                 return;
@@ -228,6 +244,7 @@ fn configure_menu(cx: &mut App) {
                 MenuItem::action("New Window", NewWindow),
                 MenuItem::action("Open Library…", OpenLibrary),
                 MenuItem::action("Settings…", OpenSettings),
+                MenuItem::action("Set Up Agent Interface…", RunSetup),
                 MenuItem::action("Close Pane", ClosePane),
                 MenuItem::action("Detach", DetachSession),
                 MenuItem::action("Close Tab", CloseTab),
@@ -573,6 +590,10 @@ struct Browser {
     views: HashMap<String, (gpui::Entity<views::ViewPane>, gpui::Subscription)>,
     /// The chooser in each shown empty pane, with its event subscription.
     new_panes: HashMap<String, (gpui::Entity<new_pane::NewPane>, gpui::Subscription)>,
+    /// The section each pane opening Reports & updates shows once its view
+    /// appears, and the pane whose save is still deciding its choice.
+    opening_sections: HashMap<String, views::Section>,
+    section_saving: Option<String>,
 }
 
 impl Browser {
@@ -1019,8 +1040,17 @@ impl Browser {
         let Some(layout) = &self.layout else {
             return;
         };
+        // An app opened from the Dock or Finder runs in "/". New terminals
+        // start in the home folder instead, as other terminal apps do.
         let cwd = match std::env::current_dir()
             .ok()
+            .map(|path| {
+                if path.as_os_str() == "/" {
+                    crate::library::location::user_home(None).unwrap_or(path)
+                } else {
+                    path
+                }
+            })
             .and_then(|path| path.to_str().map(str::to_owned))
         {
             Some(cwd) => cwd,
@@ -1099,8 +1129,12 @@ impl Browser {
                         browser.shell_to_open = if result.conflict { browser.shell_after_save = None; None } else { browser.shell_after_save.take() };
                         browser.start_reader(cx);
                         if result.conflict {
+                            if let Some(pane) = browser.section_saving.take() {
+                                browser.opening_sections.remove(&pane);
+                            }
                             browser.save_notice = Some("The library changed. Your edit was not saved; repeat it on the latest layout to retry.".into());
                         }
+                        browser.section_saving = None;
                     }
                     Err(error) => {
                         browser.save_failed = true;
@@ -1119,6 +1153,9 @@ impl Browser {
             return;
         }
         self.pending_save = None;
+        if let Some(pane) = self.section_saving.take() {
+            self.opening_sections.remove(&pane);
+        }
         self.pending_creation = None;
         self.creation_from = None;
         self.shell_after_save = None;
@@ -1357,15 +1394,22 @@ impl Browser {
 
     /// Show a view in an empty pane. Like opening a terminal, the pane changes
     /// only once the library has saved it.
-    fn open_view(&mut self, pane: &str, view: View, window: &mut Window, cx: &mut Context<Self>) {
+    /// Returns whether the save started.
+    fn open_view(
+        &mut self,
+        pane: &str,
+        view: View,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         if self.saving || self.save_failed {
-            return;
+            return false;
         }
         if let Some(update) = self.library.as_ref().and_then(Library::take_update) {
             self.apply(update);
         }
         let Some(layout) = &mut self.layout else {
-            return;
+            return false;
         };
         if !layout
             .model()
@@ -1373,16 +1417,16 @@ impl Browser {
             .is_some_and(|tab| !layout.model().focus_mode() || tab.focus == pane)
             || !layout.model_mut().choose_pane(pane)
         {
-            return;
+            return false;
         }
         let Some(target) = AttachmentEdit::capture(layout.model()) else {
-            return;
+            return false;
         };
         let (base, mut proposed) = layout.save_snapshot();
         if !target.displayed(&proposed) || !proposed.show_view(&target.tab, &target.pane, view) {
             self.save_notice = Some("The pane changed. Choose the view again.".into());
             cx.notify();
-            return;
+            return false;
         }
         let _ = layout.model_mut().retain_navigation(&proposed);
         self.pending_save = Some((base, proposed));
@@ -1393,6 +1437,7 @@ impl Browser {
             window.focus(focus, cx);
         }
         self.save(cx);
+        true
     }
 
     /// Split `pane` and show `view` in the new pane to its right, saved like
@@ -1491,6 +1536,66 @@ impl Browser {
             window.focus(focus, cx);
         }
         cx.notify();
+    }
+
+    /// The first-agent setup action already started the session. Open a saved
+    /// attachment, preserving every existing pane and applying normal save rules.
+    fn open_setup_agent(
+        &mut self,
+        name: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.saving || self.save_failed {
+            return false;
+        }
+        if let Some(update) = self.library.as_ref().and_then(Library::take_update) {
+            self.apply(update);
+        }
+        let Some(source) = self
+            .source
+            .as_ref()
+            .and_then(|source| source.as_ref().ok())
+            .and_then(|path| path.to_str())
+            .map(str::to_owned)
+        else {
+            return false;
+        };
+        let Some(layout) = &mut self.layout else {
+            return false;
+        };
+        let resolved = crate::library::location::resolve_path(std::path::Path::new(&source)).ok();
+        if agent_destination(layout.model(), name, |socket| match socket {
+            None => resolved.is_some(),
+            Some(socket) => {
+                resolved.is_some()
+                    && crate::library::location::resolve_path(std::path::Path::new(socket)).ok()
+                        == resolved
+            }
+        })
+        .is_some()
+        {
+            self.go_to_agent(name, window, cx);
+            window.activate_window();
+            return true;
+        }
+        let (base, mut model) = layout.save_snapshot();
+        let cwd = std::env::var_os("HOME")
+            .map(|home| PathBuf::from(home).to_string_lossy().into_owned())
+            .unwrap_or_else(|| "/".into());
+        if !model.add_tab(Some(name.into()), cwd, true)
+            || !model.attach(Some(Attachment {
+                session: name.into(),
+                source_socket: Some(source),
+            }))
+        {
+            return false;
+        }
+        self.creation_from = Some(Selection::capture(layout.model()));
+        self.pending_save = Some((base, model));
+        self.save(cx);
+        window.activate_window();
+        true
     }
 
     fn open_attach(&mut self, pane: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -1874,6 +1979,21 @@ impl Render for Browser {
                 .as_ref()
                 .is_some_and(|layout| terminal.read(cx).target.exists_in(layout.model()))
         });
+        // Terminals in hidden tabs also restart lost shells, so every retained
+        // terminal follows its saved directory.
+        if let Some(layout) = &self.layout {
+            for leaf in layout
+                .model()
+                .workspaces
+                .iter()
+                .flat_map(|workspace| &workspace.tabs)
+                .flat_map(|tab| tab.tree.leaves())
+            {
+                if let Some(terminal) = self.terminals.get(&leaf.id) {
+                    terminal.update(cx, |terminal, _| terminal.set_cwd(leaf));
+                }
+            }
+        }
         for leaf in &leaves {
             let target = Target {
                 leaf: leaf.clone(),
@@ -1893,7 +2013,12 @@ impl Render for Browser {
                     .get(&leaf.id)
                     .filter(|(previous, _)| previous.same_session(&target))
                     .map(|(_, selected)| selected.clone());
-                let terminal = cx.new(|cx| LiveTerminal::new(target, selected, cx));
+                let environment = self
+                    .shell_environment
+                    .as_ref()
+                    .and_then(|environment| environment.as_ref().ok())
+                    .cloned();
+                let terminal = cx.new(|cx| LiveTerminal::new(target, selected, environment, cx));
                 cx.subscribe_in(
                     &terminal,
                     window,
@@ -1935,6 +2060,20 @@ impl Render for Browser {
                 .detach();
                 self.terminals.insert(leaf.id.clone(), terminal);
             }
+            // A stopped Backbone agent's pane offers Resume and Start new.
+            let agent = leaf.attachment.as_ref().and_then(|attachment| {
+                let snapshot = self.agents.as_ref()?;
+                if snapshot.error.is_some()
+                    || snapshot.states.get(&attachment.session)? != "offline"
+                    || !self.is_window_source(attachment.source_socket.as_deref())
+                {
+                    return None;
+                }
+                Some((self.backbone.clone()?, attachment.session.clone()))
+            });
+            if let Some(terminal) = self.terminals.get(&leaf.id) {
+                terminal.update(cx, |terminal, cx| terminal.set_agent(agent, cx));
+            }
         }
         let shown: Vec<(String, View)> = self
             .layout
@@ -1953,7 +2092,7 @@ impl Render for Browser {
             shown
                 .iter()
                 .any(|(leaf, view)| leaf == id && &pane.view == view)
-                || (pane.has_feedback()
+                || (pane.has_conversations()
                     && self
                         .layout
                         .as_ref()
@@ -1963,7 +2102,13 @@ impl Render for Browser {
             if !self.views.contains_key(&id) {
                 let backbone = self.backbone.clone();
                 let directory = self.directory.clone();
+                let reports = view.kind == agent_interface_core::ViewKind::Reports;
                 let pane = cx.new(|cx| views::ViewPane::new(view, backbone, directory, window, cx));
+                if let Some(section) = self.opening_sections.remove(&id)
+                    && reports
+                {
+                    pane.update(cx, |pane, cx| pane.open_section(section, window, cx));
+                }
                 let leaf = id.clone();
                 let events = cx.subscribe_in(
                     &pane,
@@ -2062,7 +2207,18 @@ impl Render for Browser {
                                 browser.attach_into(&pane, name, window, cx)
                             }
                             new_pane::NewPaneEvent::OpenView(view) => {
-                                browser.open_view(&pane, view.clone(), window, cx)
+                                browser.open_view(&pane, view.clone(), window, cx);
+                            }
+                            new_pane::NewPaneEvent::OpenSection(section) => {
+                                if browser.open_view(
+                                    &pane,
+                                    View::of(agent_interface_core::ViewKind::Reports),
+                                    window,
+                                    cx,
+                                ) {
+                                    browser.opening_sections.insert(pane.clone(), *section);
+                                    browser.section_saving = Some(pane.clone());
+                                }
                             }
                         }
                     });

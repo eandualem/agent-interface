@@ -1,4 +1,4 @@
-mod local;
+pub(crate) mod local;
 
 use std::{
     io::Read,
@@ -144,6 +144,18 @@ fn client() -> Option<reqwest::blocking::Client> {
         )
         .build()
         .ok()
+}
+
+/// One bounded authenticated local mutation. The caller supplies a fixed or validated path.
+pub(super) fn post_local(
+    socket: &str,
+    path: &str,
+    key: &str,
+    body: Vec<u8>,
+    timeout: Duration,
+) -> Result<Vec<u8>, Option<u16>> {
+    let bytes = local::request(socket, path, key, Some(body), 65536, timeout)?;
+    (bytes.len() <= 65536).then_some(bytes).ok_or(None)
 }
 
 /// One explicit feedback submission. Never retry a POST with an unknown outcome.

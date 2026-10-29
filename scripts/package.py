@@ -125,6 +125,7 @@ def main():
         executable.chmod(0o755)
         run("strip", "-x" if mac else "--strip-unneeded", str(executable))
         notices(resources, target, native, env)
+        shutil.copyfile(ROOT / "scripts/setup_backbone.py", resources / "setup_backbone.py")
         shutil.copyfile(ROOT / ("packaging/icon/AppIcon.icns" if mac else "packaging/icon/agent-interface.png"),
                         resources / ("AppIcon.icns" if mac else "agent-interface.png"))
         (resources / "INSTALLER").write_text(APP_ID + "\n")

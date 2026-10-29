@@ -1,5 +1,7 @@
 //! Existing Backbone report and Response reads; these never publish or acknowledge.
 
+use std::collections::BTreeMap;
+
 use serde::Deserialize;
 
 use super::{Api, UNREADABLE, document};
@@ -123,10 +125,16 @@ pub struct ReportItem {
     pub author: String,
     /// Stable author identity used to validate feedback routing.
     pub author_id: Option<String>,
+    /// Whether the provider resolved the author to a current agent, so
+    /// `author` names that agent rather than a retained, reusable name.
+    pub registered: bool,
     /// Provider address from which this record was read.
     pub provider_url: String,
     /// Server publication timestamp.
     pub created_at: String,
+    /// Reports and answers: the root of the correction chain, which keys the
+    /// record's conversation. `None` from a provider without conversations.
+    pub conversation_id: Option<String>,
     /// The record itself.
     pub content: ReportContent,
 }
@@ -138,6 +146,18 @@ impl ReportItem {
             ReportContent::Document(metadata) => &metadata.title,
             ReportContent::Progress { sections, .. } => &sections[0].1.text,
             ReportContent::Response { question, .. } => question,
+        }
+    }
+
+    /// The conversation about this record, when the provider names one.
+    pub fn conversation(&self) -> Option<(crate::conversations::Kind, String)> {
+        use crate::conversations::Kind;
+        match &self.content {
+            ReportContent::Document(metadata) => {
+                Some((Kind::Document, metadata.document_id.clone()))
+            }
+            ReportContent::Progress { .. } => Some((Kind::Report, self.conversation_id.clone()?)),
+            ReportContent::Response { .. } => Some((Kind::Response, self.conversation_id.clone()?)),
         }
     }
 
@@ -157,6 +177,8 @@ pub struct ReportPage {
     pub next: Option<ReportQuery>,
     /// Configured agents and this page's authors, for choosing a feed filter.
     pub agents: Vec<String>,
+    /// The CLI each configured agent runs in, by agent name.
+    pub runtimes: BTreeMap<String, String>,
 }
 
 #[derive(Deserialize)]
@@ -167,8 +189,27 @@ struct Record<T> {
     author_id: Option<String>,
     agent_name: Option<String>,
     created_at: String,
+    #[serde(default, deserialize_with = "conversation_id")]
+    conversation_id: Option<String>,
     #[serde(flatten)]
     content: T,
+}
+
+/// A chain root as the provider writes it, a number or a string.
+fn conversation_id<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Id {
+        Number(u64),
+        Text(String),
+    }
+    Ok(match Option::<Id>::deserialize(deserializer)? {
+        Some(Id::Number(id)) => Some(id.to_string()),
+        Some(Id::Text(id)) => Some(id),
+        None => None,
+    })
 }
 
 #[derive(Deserialize)]
@@ -211,8 +252,10 @@ pub(super) fn read(
     // An unavailable roster must not prevent reading reports. Authors on the
     // current page still provide choices, including retained historical names.
     if let Ok(agents) = super::library::agents(api) {
-        page.agents
-            .extend(agents.into_iter().map(|agent| agent.name));
+        for agent in agents {
+            page.agents.push(agent.name.clone());
+            page.runtimes.insert(agent.name, agent.runtime);
+        }
     }
     page.agents.sort_unstable();
     page.agents.dedup();
@@ -227,10 +270,12 @@ fn response_item(record: Record<Response>) -> ReportItem {
     let text = record.content.response;
     ReportItem {
         id: record.id,
+        registered: record.agent_name.is_some(),
         author: record.agent_name.unwrap_or(record.author_name),
         author_id: record.author_id,
         provider_url: String::new(),
         created_at: record.created_at,
+        conversation_id: record.conversation_id,
         content: ReportContent::Response {
             question: text.question,
             answer: text.answer,
@@ -247,6 +292,7 @@ fn decode_response(body: &[u8]) -> Result<ReportPage, &'static str> {
         items: vec![response_item(record)],
         next: None,
         agents: Vec::new(),
+        runtimes: BTreeMap::new(),
     })
 }
 
@@ -278,10 +324,12 @@ fn decode(body: &[u8], query: &ReportQuery) -> Result<ReportPage, &'static str> 
                 }
                 items.push(ReportItem {
                     id: record.id,
+                    registered: record.agent_name.is_some(),
                     author: record.agent_name.unwrap_or(record.author_name),
                     author_id: record.author_id,
                     provider_url: String::new(),
                     created_at: record.created_at,
+                    conversation_id: record.conversation_id,
                     content: ReportContent::Progress {
                         status: text.status,
                         sections,
@@ -327,6 +375,7 @@ fn decode(body: &[u8], query: &ReportQuery) -> Result<ReportPage, &'static str> 
         items,
         next,
         agents,
+        runtimes: BTreeMap::new(),
     })
 }
 
@@ -350,6 +399,7 @@ mod tests {
         .unwrap();
         assert_eq!(page.items.len(), 1);
         assert_eq!(page.items[0].author, "renamed");
+        assert!(page.items[0].registered);
         assert!(page.items[0].needs_owner());
         assert_eq!(
             page.next.unwrap().path(None),
@@ -364,6 +414,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(page.items[0].author, "worker");
+        assert!(!page.items[0].registered);
         assert!(!page.items[0].needs_owner());
         let detail = decode_response(&serde_json::to_vec(&answers["items"][0]).unwrap()).unwrap();
         assert_eq!(detail.items, page.items);

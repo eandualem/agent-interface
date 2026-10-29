@@ -111,7 +111,7 @@ dependencies = [
 
 [[package]]
 name = "agent-interface-app"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "agent-interface-core",
  "agent-interface-roster",
@@ -119,11 +119,13 @@ dependencies = [
  "agent-interface-term",
  "agent-interface-test-support",
  "agent-interface-tmux",
+ "chrono",
  "futures",
  "gpui-pre",
  "gpui-pre-macos",
  "gpui-pre-platform",
  "libc",
+ "raw-window-handle",
  "rusqlite",
  "serde",
  "serde_json",
@@ -142,7 +144,7 @@ dependencies = [
 
 [[package]]
 name = "agent-interface-bench"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "agent-interface-term",
  "agent-interface-test-support",
@@ -164,7 +166,7 @@ dependencies = [
 
 [[package]]
 name = "agent-interface-bench-rio"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "agent-interface-tmux",
  "alacritty_terminal",
@@ -174,7 +176,7 @@ dependencies = [
 
 [[package]]
 name = "agent-interface-core"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "caseless",
  "serde_json",
@@ -185,7 +187,7 @@ dependencies = [
 
 [[package]]
 name = "agent-interface-roster"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "http",
  "http-body-util",
@@ -207,7 +209,7 @@ dependencies = [
 
 [[package]]
 name = "agent-interface-store"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "agent-interface-core",
  "rusqlite",
@@ -220,7 +222,7 @@ dependencies = [
 
 [[package]]
 name = "agent-interface-term"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "libghostty-vt",
  "libghostty-vt-sys",
@@ -232,7 +234,7 @@ dependencies = [
 
 [[package]]
 name = "agent-interface-test-support"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "signal-hook",
  "tempfile",
@@ -240,7 +242,7 @@ dependencies = [
 
 [[package]]
 name = "agent-interface-tmux"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "agent-interface-test-support",
  "libc",

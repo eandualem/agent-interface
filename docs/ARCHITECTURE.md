@@ -67,9 +67,11 @@ UI thread to draw, so drawing does not borrow a live engine or wait for I/O.
 If copying a screen fails, the worker reports a connection failure and stops
 publishing updates. Partially copied frames never replace the last complete
 display. Embedded attachments retry the saved socket and session on the existing
-two-second window-refresh loop; retries never create a session. Ordinary shells
-offer explicit reconnect and open actions, with creation still gated by saving
-the pane first.
+two-second window-refresh loop; retries never create a session. A stopped
+Backbone agent's pane can ask Backbone to start or resume it (one authenticated
+local request, never retried), after which the same loop connects. An ordinary
+shell that cannot be reached is started once through the same guarded creation
+path as Open terminal, which refuses when the owning server cannot be verified.
 
 On connection or recovery, the worker captures the pane's current state and
 only the history its local scrollback retains, then continues with subsequent
@@ -163,6 +165,56 @@ library refreshes. The schema-v2 root `focus` flag still seeds only the initiall
 selected tab; other tabs start unexpanded in a new window. Ordinary-shell identities belong to the saved
 library. Closing a native window detaches its clients without issuing
 session-termination commands; navigation keeps them attached.
+
+## First-run setup
+
+A fresh install (no settings file and no library) opens a setup window instead
+of the workspace window: an eight-second opening scene, played once, then steps
+that check tmux, Agent Backbone, Git and the agent tools, create a first agent,
+and show the main shortcuts. tmux uses the terminal pane's `tmux_binary` resolver. Git, GitHub CLI,
+Backbone and agent tools are looked up after the user's interactive login shell
+runs its startup files, because an app opened from the Dock has a short PATH.
+The probe itself runs in `/bin/sh` so non-POSIX login shells can supply PATH too.
+The shell has an eight-second deadline; its output goes to a temporary file
+instead of a pipe, with positional reads limited to 256 KiB. The lookup falls
+back to PATH and the usual install folders. The
+Backbone check is a single read-only roster request. These checks install nothing.
+
+The first-agent step calls the selected engine's `runtimes --json`, then submits
+`setup --file REQUEST --jsonl` only after an explicit Start action. It offers the
+`orchestrator-v1` brief or custom instructions, a name and a folder. Discovery
+reports installed tools, never verified login; permission and login prompts stay
+in the actual agent terminal. First-agent selection also requires an explicit
+`setup_supported: true`; older providers and unsupported tools remain unavailable
+for this setup path. Start also requests an initial greeting, which may
+use the selected account. A submitted greeting is not reported as a received reply.
+
+The app saves the exact request, launcher and effective login-shell PATH in a
+private `onboarding-agent-<installation-digest>.json` beside settings before
+executing it. The resolved provider directory scopes each saved operation.
+Recovery loads that record even when fresh tool discovery cannot find an engine. An interrupted
+attempt reuses that request ID; only a confirmed preflight failure permits editing
+choices. Saving and archiving serialize through a sibling file lock. The engine
+owns durable operation receipts and mutation deduplication. Requests are capped at
+32 KiB; stdout uses positional reads with a 1 MiB total limit, 64 KiB lines,
+1,024 events and a five-minute deadline. Request identity, sequence, final state
+and exit status must agree. Missing or contradictory results preserve the saved
+request and show an unknown outcome. Discovery has a fifteen-second deadline.
+Inherited authority remains intact; the app never substitutes an operator key.
+
+An installer activation record under the private engine root may select an
+immutable payload launcher only when its data directory matches the current
+connection and its canonical entrypoint remains inside that payload. Otherwise
+setup uses the detected Backbone CLI. Existing agents can be used without creating
+another agent; fresh installations may choose terminals for now and reopen setup
+later. A saved request remains intact when the user chooses terminals after an
+attempt finishes, even if that attempt needs recovery. Rechecking the computer
+refreshes unsubmitted discovery inputs while
+retaining any saved operation unchanged. Opening a created agent adds a saved terminal attachment through
+the normal workspace save path.
+Progress is saved as `[setup]` in `settings.toml`: an interrupted setup resumes
+without the scene, and **Set Up Agent Interface…** in the application menu
+reopens it. An explicit library directory skips setup.
 
 ## Appearance and integrations
 
@@ -269,19 +321,45 @@ An open Response is polled by ID so its correction metadata stays current even
 after newer publications move it off its former list page.
 Authored status and blocker text do not change runtime state or grant approval.
 
-A native feedback composer sits outside the authored content and opens only when
-the user chooses Send feedback. Closing it preserves the draft. It retains drafts
-by provider, author and record identity while its saved pane exists, including
-hidden tabs. Hidden readers pause polling and release their web surface; feedback
-workers can still finish and retain their result. On explicit Send,
+Every reader places one native conversation (`views/conversation.rs`) beside
+the authored content: a rail while closed, a thread and composer while open.
+No authored HTML can reach it. It retains its thread and draft by provider,
+author and record identity while its saved pane exists, including hidden tabs.
+Hidden readers pause polling and release their web surface; delivery workers
+can still finish and retain their result. On explicit send,
 `roster::feedback` re-reads the exact record, checks the original stable author ID
 and current registered name, then uses the existing authenticated `/api/messages`
-POST as `agent-interface-app`. No authored HTML can invoke it. The message carries
+POST as `agent-interface-app`. The message carries
 the record kind and ID plus the user's text, not the original content. This is
 ordinary feedback, without signed owner-confirmation provenance. The existing
-name-based API cannot make source lookup and recipient routing atomic. Duplicate
-clicks are blocked in flight; unknown delivery is retained without automatic
-resubmission. Drafts and status are window-owned, not a persistent message history.
+name-based API cannot make source lookup and recipient routing atomic. Each
+message is sent once; a refused message can be retried, and an unknown delivery
+is marked without automatic resubmission. That is the path for a provider
+without conversations.
+
+Where Backbone keeps per-artifact conversations, `roster::conversations` reads
+and writes them instead (`/api/conversations/{kind}/{id}`). A record names its
+conversation: a document by its stable document ID, a report or answer by the
+root of its correction chain. Requests go only to the provider the record was
+read from; after a connection change they are refused until it is reopened.
+Only the conversation shown in a visible pane polls, every 5 seconds while
+open and every 25 while closed, and re-reads the newest page; entries that page
+no longer holds stay with the older ones, which load on request, and older
+owner messages still pending or held are re-read by ID with each poll. Until
+Backbone first answers, a message waits rather than choosing a path, and a
+retry always takes the path the message first took. Each message carries a
+client request ID, so a send whose outcome is unknown is retried with the same
+ID and stored at most once; a stored message whose delivery failed is redelivered without a new
+entry. Opening the panel reveals the newest messages; later arrivals follow only
+while the reader stays at the bottom. A painted frame at the bottom advances
+the owner's read marker through that frame's fetched entries. The "new" divider
+stays at the marker from when the panel opened. Read acknowledgements retry at
+most once per polling interval, including after failure. A plain 404 or an unknown
+artifact switches the conversation back to one-way feedback. A shared skill or policy has
+no record, so its conversation finds its identity on the first read: the
+current provider, then the `artifact_id` that `/api/skills` or `/api/policies`
+lists for its source path. Without a maintainer, a message names the agent the
+person chose.
 
 Durable Documents use Backbone's metadata-only `/api/documents` list and exact
 `/api/documents/{revision_id}` JSON reads. Backbone owns immutable revisions,
@@ -352,6 +430,16 @@ those dependencies.
   on window creation so the first external query sees the rendered text tree.
   This builds accessibility data during rendering even before a client connects;
   it trades some rendering work for reliable first-use dictation detection.
+  The app wraps GPUI's platform to provide the interface size setting: the
+  wrapper multiplies each window's display scale by the chosen size and
+  converts logical coordinates at the boundary, so views stay unaware of it.
+  Text input handlers are registered through the same module, so input-method
+  candidate windows follow the caret. A window keeps the minimum size it opened with until reopened.
+  The macOS artifact web view sits outside GPUI and is positioned and zoomed
+  separately.
+- **`raw-window-handle` 0.6.2:** the window handle traits that wrapper
+  forwards. MIT OR Apache-2.0 OR Zlib, pinned exactly; GPUI already builds
+  this version, so it adds no package.
   The dependency graph remains unchanged.
 - **Plasma Wayland protocols:** GPUI's Linux backend uses the MIT-licensed
   `wayland-protocols-plasma` wrapper. Its vendored protocol definitions also
@@ -391,6 +479,10 @@ those dependencies.
   formatter, reloadable filter and nonblocking background writer. The small
   app-owned file writer adds size-based rotation and explicit write-health
   reporting; it does not implement another logging facade.
+- **`chrono` 0.4.45:** MIT OR Apache-2.0, pinned exactly with only its `clock`
+  feature. It names local days and times for records and messages without
+  `unsafe` code in the app. GPUI already builds the same version and feature,
+  so it adds no package to the graph.
 
 The native terminal source is prepared from a pinned Ghostty commit plus
 [`native/ghostty.patch`](../native/ghostty.patch). The preparation script checks
@@ -416,6 +508,26 @@ notices and source/build metadata.
 macOS receives an ad-hoc-signed `Agent Interface.app` bundle; Linux receives a glibc
 binary linked to the system desktop libraries. Neither package includes a
 Python runtime, build toolchain, tmux server or application daemon.
+
+The archive includes `setup_backbone.py`, a standard-library installer helper.
+`install.sh` installs the latest stable published `agent-backbone>=0.4.0` with
+uv, independently of the app archive. Backbone (MIT) owns its package, dependency
+testing and publication. uv (MIT OR Apache-2.0) installs the Python environment;
+when uv is absent, its 0.13.6 installer is version- and SHA-256-pinned. No Backbone
+source checkout or portable payload is composed into Interface's packages.
+
+The helper uses Backbone's versioned setup command and retains its exact request
+and progress in a private per-user state directory. Pending setup is resumed
+before any package upgrade, with the provider version, distribution metadata and
+launcher checked against the saved installation. For a fresh installation only,
+it enables the private socket and restarts the service after checking the saved
+installation identity, service definition and loaded service owner. Interrupted
+socket writes are reconciled against the intended value; conflicting choices
+are preserved. Existing installations and completed setup keep their settings
+and services. The final socket probe sends only an unauthenticated health request;
+the app's native transport performs peer verification before sending credentials.
+Provider installation/setup finishes before replacing the app; provider state
+is retained if a later app replacement fails.
 
 The shell installer verifies the archive checksum and target, stages a
 per-user replacement, and preserves the data directories. Linux desktop and
@@ -451,3 +563,65 @@ uucode/Unicode, simdutf, Highway, X11 color data and compiler runtimes. The
 package retains Lucide's ISC notice and SQLite's public-domain dedication.
 The manual package workflow uses `actions/upload-artifact` v7.0.0 (MIT), pinned
 to a full commit, to retain build artifacts; it does not publish releases.
+
+
+### Retained Sheets
+
+`agent-interface-roster::sheets` owns the typed workbook protocol and bounded local
+transport through the existing authenticated private Unix socket. Stable workbook,
+revision, tab, row and column identifiers are validated before constructing URLs.
+Reads pin one immutable revision and never combine pages from different revisions.
+Range and metadata response-size refusals reduce page size without changing the
+revision or discovery/history cursor. Other failures do not trigger automatic retries.
+Agent Backbone owns canonical data, calculated results, engine versions, storage
+admission and atomic updates. The app does not calculate formulas.
+
+`desktop::views::sheets` supplies a read-only native GPUI grid beside Documents and
+Responses in Reports & updates. Agents manage workbook creation, cell and structural
+edits, saved views and imports through Backbone. The native UI exposes inspection,
+selection, history, copying values, export and contextual feedback. Virtualized rows
+and bounded column pages limit rendering work. Labels retain canonical A1 coordinates
+under saved sort/filter views. The shelf reads up to 20 metadata pages, rejects
+cursor cycles, and orders unread revisions first, newest updates first within each
+group. It has no separate page controls. Grid navigation appears only when more
+rows or columns exist. Copy uses selected cells or the displayed range; the label
+states its scope. Export uses an occluding deferred menu above the grid.
+No spreadsheet widget or formula engine is added.
+
+`roster::plans` reads Backbone's `/api/current-plans` list over the same
+authenticated local transport as Sheets, on a worker, every 20 seconds while
+the Current plans section is open. It is read-only: it publishes, approves and
+changes nothing. A missing endpoint is reported as unsupported, and a failed
+reread keeps the plans last read. Each read also takes the agents' runtimes for
+their badges. The section draws through the pane, like the record readers, so
+an opened plan's text can be selected and copied. Its selected step uses the shared
+conversation panel, addressed by the plan author's stable identity. Drafts are
+kept by provider, author, observed revision and step; changing steps or refreshing
+a plan cannot retarget them. Messages and retries retain that revision and item
+anchor. Plan refresh pauses while a draft or unresolved delivery exists, keeping
+its step reachable until the person finishes it. The panel requires stored conversation support and never falls back to
+unanchored feedback for plans.
+
+Sheets shows the same `desktop::views::conversation::Conversation` entity as the
+record readers, beside the grid, with its native text field, draft preservation,
+focus restoration, delivery states and thread. A record's conversation sends
+through `roster::feedback` and restores focus to its web surface on close. Sheets
+creates the conversation in owner-delivered mode: it supplies the workbook's
+author and the selected cells as the anchor, receives each send and retry as an
+event, handles the provider's feedback transaction and reports the outcome back.
+Feedback carries the immutable observed revision and stable
+selected cell identities. Navigation cannot move a draft to another revision.
+
+A prepared feedback request retains exact bytes and its retry key after an uncertain
+response. The composer freezes while that request is unresolved and offers a retry of
+the same operation. Accepted feedback retains its receipt and distinguishes delivery
+states without claiming an agent answer. No agent workflow or service is started by
+the view. The typed adapter also represents provider mutation APIs, but the native
+Sheets view calls only reads, export and feedback submission.
+
+JSON/XLSX exports preserve supported workbook features; CSV/TSV export one tab as
+values. Export warnings are bounded and displayed; malformed diagnostics fail
+visibly. The first integration does not claim full Excel formula compatibility,
+Google account integration, macros, network formulas, charts, pivots or live keystroke
+coediting. The provider isolates calculation in a bounded worker; macOS resident
+memory monitoring can overshoot between samples and is not a hard allocation sandbox.

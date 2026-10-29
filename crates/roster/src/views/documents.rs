@@ -160,8 +160,10 @@ fn decode_list(body: &[u8], author_id: Option<&str>) -> Result<ReportPage, &'sta
             id: metadata.id,
             author: metadata.author().to_owned(),
             author_id: Some(metadata.author_id.clone()),
+            registered: false,
             provider_url: String::new(),
             created_at: metadata.created_at.clone(),
+            conversation_id: None,
             content: ReportContent::Document(metadata),
         })
         .collect();
@@ -169,6 +171,7 @@ fn decode_list(body: &[u8], author_id: Option<&str>) -> Result<ReportPage, &'sta
         items,
         next,
         agents,
+        runtimes: Default::default(),
     })
 }
 

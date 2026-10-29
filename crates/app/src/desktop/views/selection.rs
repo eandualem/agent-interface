@@ -19,6 +19,9 @@ struct Position {
 
 struct Part {
     text: String,
+    /// Links shown as short labels: each label's range and its address,
+    /// which a copy gives back in place of the label.
+    links: Vec<(Range<usize>, String)>,
     layout: TextLayout,
     bounds: Option<Bounds<Pixels>>,
 }
@@ -31,6 +34,9 @@ pub(super) struct Selection {
     cursor: Option<Position>,
     dragging: bool,
     invalidated: bool,
+    /// A link pressed and not yet released; it opens on release unless the
+    /// press became a selection.
+    pressed_link: Option<String>,
 }
 
 impl Selection {
@@ -54,7 +60,7 @@ impl Selection {
         self.dragging = false;
     }
 
-    fn register(&mut self, text: &str) -> usize {
+    fn register(&mut self, text: &str, links: &[(Range<usize>, String)]) -> usize {
         let index = self.next;
         self.next += 1;
         if self.parts.get(index).is_none_or(|part| part.text != text) {
@@ -62,6 +68,7 @@ impl Selection {
         }
         let part = Part {
             text: text.into(),
+            links: links.to_vec(),
             layout: TextLayout::default(),
             bounds: None,
         };
@@ -93,10 +100,19 @@ impl Selection {
             .enumerate()
             .filter_map(|(index, part)| {
                 let range = self.range(index);
-                (!range.is_empty()).then(|| &part.text[range])
+                (!range.is_empty()).then(|| copied(part, range))
             })
             .collect::<Vec<_>>()
             .join("\n\n")
+    }
+
+    /// The link at `position`, if a label is there.
+    fn link_at(&self, position: Position) -> Option<String> {
+        self.parts[position.part]
+            .links
+            .iter()
+            .find(|(range, _)| range.contains(&position.byte))
+            .map(|(_, url)| url.clone())
     }
 
     /// TextLayout reports UTF-8 byte offsets. Snap to a whole grapheme before
@@ -206,6 +222,27 @@ impl Selection {
     }
 }
 
+/// The text of `range` in `part`, with each link label it touches given
+/// back as the link's address.
+fn copied(part: &Part, range: Range<usize>) -> String {
+    let mut text = String::new();
+    let mut at = range.start;
+    for (label, url) in &part.links {
+        if label.end <= range.start || label.start >= range.end {
+            continue;
+        }
+        if label.start > at {
+            text.push_str(&part.text[at..label.start]);
+        }
+        text.push_str(url);
+        at = label.end.min(range.end).max(at);
+    }
+    if at < range.end {
+        text.push_str(&part.text[at..range.end]);
+    }
+    text
+}
+
 /// One block with the existing typography and inline-code styling. The caller
 /// supplies its outer styles; selection adds no field chrome or editing.
 pub(super) fn text(
@@ -214,11 +251,23 @@ pub(super) fn text(
     code: &[Range<usize>],
     cx: &mut Context<ViewPane>,
 ) -> gpui::Stateful<gpui::Div> {
-    let index = pane.selection.borrow_mut().register(text);
+    linked(pane, text, code, &[], cx)
+}
+
+/// [`text`] with links: each label in `links` is drawn in the accent and
+/// opens its address when clicked.
+pub(super) fn linked(
+    pane: &ViewPane,
+    text: &str,
+    code: &[Range<usize>],
+    links: &[(Range<usize>, String)],
+    cx: &mut Context<ViewPane>,
+) -> gpui::Stateful<gpui::Div> {
+    let index = pane.selection.borrow_mut().register(text, links);
     let selected = pane.selection.borrow().range(index);
     let c = colors();
     let mut boundaries = vec![0, text.len(), selected.start, selected.end];
-    for range in code {
+    for range in code.iter().chain(links.iter().map(|(range, _)| range)) {
         boundaries.extend([range.start, range.end]);
     }
     boundaries.sort_unstable();
@@ -235,6 +284,11 @@ pub(super) fn text(
             HighlightStyle {
                 color: Some(c.on_accent.into()),
                 background_color: Some(c.accent.into()),
+                ..Default::default()
+            }
+        } else if links.iter().any(|(link, _)| link.contains(&range.start)) {
+            HighlightStyle {
+                color: Some(c.accent_text.into()),
                 ..Default::default()
             }
         } else if code.peek().is_some_and(|code| code.contains(&range.start)) {
@@ -260,6 +314,9 @@ pub(super) fn text(
             cx.listener(move |pane, event: &gpui::MouseDownEvent, _, cx| {
                 let mut selection = pane.selection.borrow_mut();
                 let at = selection.hit(index, event.position);
+                selection.pressed_link = (event.click_count == 1 && !event.modifiers.shift)
+                    .then(|| selection.link_at(at))
+                    .flatten();
                 selection.press(at, event.modifiers.shift, event.click_count);
                 cx.stop_propagation();
                 cx.notify();
@@ -305,8 +362,16 @@ pub(super) fn events(cx: &Context<ViewPane>) -> impl IntoElement {
             window.on_mouse_event(move |event: &gpui::MouseUpEvent, phase, _, cx| {
                 if phase == gpui::DispatchPhase::Capture && event.button == gpui::MouseButton::Left
                 {
-                    let _ =
-                        released.update(cx, |pane, _| pane.selection.borrow_mut().dragging = false);
+                    let _ = released.update(cx, |pane, cx| {
+                        let mut selection = pane.selection.borrow_mut();
+                        selection.dragging = false;
+                        // A press on a link that selected nothing opens it.
+                        if let Some(url) = selection.pressed_link.take()
+                            && selection.selected_text().is_empty()
+                        {
+                            cx.open_url(&url);
+                        }
+                    });
                 }
             });
         },
@@ -322,8 +387,8 @@ mod tests {
     #[test]
     fn selection_copies_across_blocks_in_both_directions_and_resets_on_new_text() {
         let mut selection = Selection::default();
-        selection.register("First café");
-        selection.register("Second 👩‍💻 block");
+        selection.register("First café", &[]);
+        selection.register("Second 👩‍💻 block", &[]);
         selection.anchor = Some(Position { part: 0, byte: 6 });
         selection.cursor = Some(Position {
             part: 1,
@@ -333,15 +398,36 @@ mod tests {
         std::mem::swap(&mut selection.anchor, &mut selection.cursor);
         assert_eq!(selection.selected_text(), "café\n\nSecond 👩‍💻");
         selection.begin();
-        selection.register("Another document");
+        selection.register("Another document", &[]);
         selection.finish();
         assert_eq!(selection.selected_text(), "");
     }
 
     #[test]
+    fn a_copied_link_label_gives_back_its_address() {
+        let mut selection = Selection::default();
+        let text = "See x.com ↗ now";
+        let label = 4.."See x.com ↗".len();
+        selection.register(text, &[(label, "https://x.com/a".into())]);
+        selection.anchor = Some(Position { part: 0, byte: 0 });
+        selection.cursor = Some(Position {
+            part: 0,
+            byte: text.len(),
+        });
+        assert_eq!(selection.selected_text(), "See https://x.com/a now");
+        // Part of a label still copies the whole address.
+        selection.anchor = Some(Position { part: 0, byte: 6 });
+        assert_eq!(selection.selected_text(), "https://x.com/a now");
+        assert_eq!(
+            selection.link_at(Position { part: 0, byte: 5 }).as_deref(),
+            Some("https://x.com/a")
+        );
+    }
+
+    #[test]
     fn double_click_selects_a_word_and_shift_click_extends_it() {
         let mut selection = Selection::default();
-        selection.register("Read café here");
+        selection.register("Read café here", &[]);
         selection.press(Position { part: 0, byte: 6 }, false, 2);
         assert_eq!(selection.selected_text(), "café");
         selection.press(
@@ -360,24 +446,24 @@ mod tests {
         let mut selection = Selection::default();
         for later in [Some("Changed later"), None] {
             selection.begin();
-            selection.register("Selected first");
-            selection.register("Original later");
+            selection.register("Selected first", &[]);
+            selection.register("Original later", &[]);
             selection.finish();
             selection.press(Position { part: 0, byte: 1 }, false, 2);
 
             selection.begin();
-            selection.register("Selected first");
+            selection.register("Selected first", &[]);
             assert!(!selection.range(0).is_empty());
             if let Some(later) = later {
-                selection.register(later);
+                selection.register(later, &[]);
             }
             assert!(selection.finish());
 
             selection.begin();
-            selection.register("Selected first");
+            selection.register("Selected first", &[]);
             assert!(selection.range(0).is_empty());
             if let Some(later) = later {
-                selection.register(later);
+                selection.register(later, &[]);
             }
             assert!(!selection.finish());
             assert!(selection.selected_text().is_empty());

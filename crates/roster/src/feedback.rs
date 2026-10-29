@@ -196,8 +196,10 @@ mod tests {
             id: 7,
             author: "previous-name".into(),
             author_id: Some("a".repeat(32)),
+            registered: false,
             provider_url: url.into(),
             created_at: String::new(),
+            conversation_id: None,
             content: ReportContent::Response {
                 question: "Question".into(),
                 answer: "Private answer body".into(),

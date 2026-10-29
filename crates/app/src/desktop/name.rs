@@ -137,6 +137,7 @@ pub(super) struct NameField {
     scroll: Pixels,
     dragging: bool,
     cancel_on_blur: bool,
+    read_only: bool,
     _blur: Subscription,
 }
 
@@ -166,6 +167,7 @@ impl NameField {
             scroll: px(0.),
             dragging: false,
             cancel_on_blur: true,
+            read_only: false,
             _blur: blur,
         }
     }
@@ -197,7 +199,21 @@ impl NameField {
         field
     }
 
+    /// Replace the text with `text`, the caret at its end, and announce it.
+    pub fn set_value(&mut self, text: &str, cx: &mut Context<Self>) {
+        self.text.value = text.to_owned();
+        self.text.anchor = text.len();
+        self.text.cursor = text.len();
+        self.text.marked = None;
+        cx.emit(NameEvent::Changed(self.text.value.clone()));
+        cx.notify();
+    }
+
     /// Empty the field without announcing a change.
+    pub fn set_read_only(&mut self, read_only: bool) {
+        self.read_only = read_only;
+    }
+
     pub fn clear(&mut self, cx: &mut Context<Self>) {
         self.text.value.clear();
         self.text.anchor = 0;
@@ -246,6 +262,9 @@ impl NameField {
     }
 
     fn key(&mut self, event: &gpui::KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.read_only {
+            return;
+        }
         // The platform input method owns navigation and confirmation while composing.
         if self.text.marked.is_some() {
             return;
@@ -261,6 +280,7 @@ impl NameField {
         let range = self.text.selection();
         match key.key.as_str() {
             "escape" => cx.emit(NameEvent::Cancel),
+            "enter" if self.text.feedback && command && !mods.alt => cx.emit(NameEvent::Save),
             "enter" if self.text.feedback && !mods.platform && !mods.control && !mods.alt => {
                 self.text.replace(None, "\n", false);
             }
@@ -552,6 +572,9 @@ impl EntityInputHandler for NameField {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.read_only {
+            return;
+        }
         self.text.replace(range, text, false);
         cx.emit(NameEvent::Changed(self.text.value.clone()));
         cx.notify();
@@ -564,6 +587,9 @@ impl EntityInputHandler for NameField {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.read_only {
+            return;
+        }
         self.text.compose(range, text, selection);
         cx.emit(NameEvent::Changed(self.text.value.clone()));
         cx.notify();
@@ -616,22 +642,27 @@ impl Render for NameField {
         // A name is edited in place, one cell high in the selection's colors,
         // as the source's inline editor is; the chooser's filter keeps a frame.
         let search = self.text.search;
+        let feedback = self.text.feedback;
         div()
             .w_full()
             .min_w_0()
-            .h(px(if self.text.feedback {
-                100.
+            .h(px(if feedback {
+                super::design::tokens().size.composer_field
             } else if search {
                 super::design::tokens().size.jump_field
             } else {
                 super::design::tokens().size.row - super::design::tokens().space.s8
             }))
-            .px(px(super::design::tokens().space.s6))
-            .rounded(px(super::design::tokens().radius.key))
-            .bg(super::design::colors().field)
             .text_color(super::design::colors().text)
-            .border(px(super::design::tokens().size.hairline))
-            .border_color(super::design::colors().accent)
+            // A message field sits bare inside the conversation's composer frame.
+            .when(!feedback, |field| {
+                field
+                    .px(px(super::design::tokens().space.s6))
+                    .rounded(px(super::design::tokens().radius.key))
+                    .bg(super::design::colors().field)
+                    .border(px(super::design::tokens().size.hairline))
+                    .border_color(super::design::colors().accent)
+            })
             .id("name-field")
             .on_click(cx.listener(|_, _, _, cx| cx.stop_propagation()))
             .track_focus(&self.focus)
@@ -663,7 +694,7 @@ impl Render for NameField {
                         let focus = entity.read(cx).focus.clone();
                         window.handle_input(
                             &focus,
-                            ElementInputHandler::new(bounds, entity.clone()),
+                            super::zoom::input(ElementInputHandler::new(bounds, entity.clone())),
                             cx,
                         );
                         entity.update(cx, |field, cx| field.paint(bounds, window, cx));

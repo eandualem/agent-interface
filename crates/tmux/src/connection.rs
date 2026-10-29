@@ -315,7 +315,7 @@ fn parse_windows(bytes: &[u8], source: &str) -> io::Result<Vec<SessionWindow>> {
 /// The tmux executable. Finder launches do not normally inherit the shell's
 /// Homebrew PATH, so honour PATH first, then the two standard macOS
 /// installation locations.
-pub(crate) fn tmux_binary() -> io::Result<std::path::PathBuf> {
+pub fn tmux_binary() -> io::Result<std::path::PathBuf> {
     tmux_binary_on(&std::env::var_os("PATH").unwrap_or_default())
 }
 

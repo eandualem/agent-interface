@@ -1,7 +1,8 @@
 # Install Agent Interface
 
-Native packages need no Rust, Zig, or Python installation. It uses **tmux 3.3 or
-newer** for terminal sessions.
+You do not need to install Rust, Zig, or Python yourself. The installer installs
+Agent Interface and the latest compatible published Agent Backbone, using uv to
+supply Python when needed. Terminal sessions require **tmux 3.3 or newer**.
 
 The executable, archives and new installation/data paths use `agent-interface`.
 The desktop app is named **Agent Interface**. Existing libraries and preferences
@@ -191,10 +192,54 @@ been measured.
 
 For a first test, add a tab with Ctrl+Shift+T, choose **Open terminal**, and run
 `pwd`. Quit and reopen the app to check that the saved workspace and terminal
-reconnect. The terminals run inside that Ubuntu distribution. If no window
+reconnect. The terminals run inside that Ubuntu distribution. On a
+high-resolution display WSL can draw the window too small; change
+**Settings → Appearance → Interface size** to suit it. If no window
 appears, check
 [Microsoft's WSLg display troubleshooting](https://github.com/microsoft/wslg/wiki/Diagnosing-%22cannot-open-display%22-type-issues-with-WSLg)
 and the app's [diagnostic logging](GUIDE.md#find-work-and-change-appearance).
+
+## Connect Agent Backbone
+
+The installation command above also installs
+[Agent Backbone](https://github.com/eandualem/agent-backbone) from its published
+Python package. A fresh installation initializes its user service and enables
+the private Unix socket used by the app. Open Agent Interface to continue
+onboarding; no separate Backbone installation command is needed. Agent tools
+still need to be installed and signed in before creating an agent.
+
+This integration requires Backbone 0.4.0 or newer. If a compatible published
+release is unavailable, installation stops before replacing the app. Setup
+failures show Backbone's diagnostic and recovery guidance. When retry is allowed,
+rerun the same installer: it retains the request and resumes pending steps using
+the same installed Backbone version. A later installation can check
+for an upgrade once setup is complete. It refuses automatic recovery if that
+pending installation or its saved service/socket choices have changed.
+
+An existing Backbone installation keeps its configuration and service choices.
+The installer upgrades the `agent-backbone` tool itself to the latest compatible
+published package, including when it was installed from Git or a development
+source. There is no package opt-out; do not run this installer if you need to
+preserve that tool installation.
+
+For an independently managed installation without a private socket, its operator
+can enable the connection through Backbone's configuration:
+
+```sh
+mkdir -p "$HOME/.local/share/agent-backbone/run"
+chmod 700 "$HOME/.local/share/agent-backbone/run"
+backbone config set backbone.socket_path "$HOME/.local/share/agent-backbone/run/backbone.sock"
+backbone service restart
+```
+
+If Agent Interface was already open, quit and reopen it after changing the
+connection.
+
+The app reads the saved `backbone.socket_path` setting. To use another socket,
+set `BACKBONE_SOCKET_PATH` in the app's launch environment. The path must be
+absolute. The socket must be owned by your user with permissions 0600, in a
+directory owned by your user with permissions 0700. The app does not send
+credentials over TCP.
 
 ## Update or remove
 

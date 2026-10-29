@@ -44,6 +44,8 @@ impl PaneHeaders {
 }
 
 static PANE_HEADERS: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+static INTRO_SEEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static SETUP_DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// How panes show their header now.
 pub fn pane_headers() -> PaneHeaders {
@@ -60,10 +62,16 @@ pub struct Settings {
     pub logging: crate::diagnostics::Level,
     pub light: bool,
     pub font_size: f32,
+    /// The interface size in percent, one of [`super::zoom::SIZES`].
+    pub interface_size: u32,
     pub shortcuts: super::shortcuts::Bindings,
     /// The navigation panel's width in pixels, when it was dragged.
     pub sidebar_width: Option<u32>,
     pub pane_headers: PaneHeaders,
+    /// The first-run introduction has played.
+    pub intro_seen: bool,
+    /// First-run setup was finished.
+    pub setup_done: bool,
 }
 
 impl Default for Settings {
@@ -72,9 +80,12 @@ impl Default for Settings {
             logging: crate::diagnostics::Level::Warnings,
             light: false,
             font_size: super::design::tokens().font.terminal_size,
+            interface_size: 100,
             shortcuts: super::shortcuts::Bindings::default(),
             sidebar_width: None,
             pane_headers: PaneHeaders::Always,
+            intro_seen: false,
+            setup_done: false,
         }
     }
 }
@@ -102,6 +113,14 @@ impl Settings {
         {
             settings.font_size = size as f32;
         }
+        if let Some(size) = table
+            .get("interface_size")
+            .and_then(toml::Value::as_integer)
+            && let Ok(size) = u32::try_from(size)
+            && super::zoom::SIZES.contains(&size)
+        {
+            settings.interface_size = size;
+        }
         if let Some(width) = table.get("sidebar_width").and_then(toml::Value::as_integer)
             && let Ok(width) = u32::try_from(width)
             && sidebar_widths().contains(&width)
@@ -112,6 +131,11 @@ impl Settings {
             && let Some((mode, ..)) = PaneHeaders::ALL.iter().find(|(_, name, _)| *name == mode)
         {
             settings.pane_headers = *mode;
+        }
+        if let Some(setup) = table.get("setup").and_then(toml::Value::as_table) {
+            let flag = |key| setup.get(key).and_then(toml::Value::as_bool) == Some(true);
+            settings.intro_seen = flag("intro_seen");
+            settings.setup_done = flag("done");
         }
         if let Some(shortcuts) = table.get("shortcuts").and_then(toml::Value::as_table) {
             settings.shortcuts = super::shortcuts::Bindings::from_entries(
@@ -130,6 +154,9 @@ impl Settings {
             self.font_size as u32
         );
         text.push_str(&format!("logging = \"{}\"\n", self.logging.name()));
+        if self.interface_size != 100 {
+            text.push_str(&format!("interface_size = {}\n", self.interface_size));
+        }
         if self.pane_headers != PaneHeaders::Always {
             text.push_str(&format!(
                 "pane_headers = \"{}\"\n",
@@ -138,6 +165,12 @@ impl Settings {
         }
         if let Some(width) = self.sidebar_width {
             text.push_str(&format!("sidebar_width = {width}\n"));
+        }
+        if self.intro_seen || self.setup_done {
+            text.push_str(&format!(
+                "\n[setup]\nintro_seen = {}\ndone = {}\n",
+                self.intro_seen, self.setup_done
+            ));
         }
         let changed = self.shortcuts.changed();
         if !changed.is_empty() {
@@ -155,8 +188,11 @@ impl Settings {
         super::design::set_light(self.light);
         PANE_HEADERS.store(self.pane_headers as u8, Ordering::Relaxed);
         FONT_SIZE.store(self.font_size.to_bits(), Ordering::Relaxed);
+        super::zoom::set(self.interface_size);
         super::shortcuts::set(self.shortcuts.clone());
         SIDEBAR_WIDTH.store(self.sidebar_width.unwrap_or(0), Ordering::Relaxed);
+        INTRO_SEEN.store(self.intro_seen, Ordering::Relaxed);
+        SETUP_DONE.store(self.setup_done, Ordering::Relaxed);
     }
 
     /// The settings windows are drawing with now.
@@ -165,9 +201,12 @@ impl Settings {
             logging: crate::diagnostics::level(),
             light: super::design::is_light(),
             font_size: font_size(),
+            interface_size: (super::zoom::factor() * 100.0).round() as u32,
             shortcuts: super::shortcuts::current(),
             sidebar_width: sidebar_width(),
             pane_headers: pane_headers(),
+            intro_seen: INTRO_SEEN.load(Ordering::Relaxed),
+            setup_done: SETUP_DONE.load(Ordering::Relaxed),
         }
     }
 }
@@ -466,9 +505,12 @@ mod tests {
             logging: crate::diagnostics::Level::Warnings,
             light: true,
             font_size: 16.0,
+            interface_size: 150,
             shortcuts,
             sidebar_width: Some(260),
             pane_headers: PaneHeaders::Hover,
+            intro_seen: true,
+            setup_done: false,
         };
         assert_eq!(Settings::parse(&light.to_toml()), light);
         // Shortcuts are global; other tests rely on the defaults.
@@ -481,8 +523,9 @@ mod tests {
         Settings::default().apply();
         assert_eq!(Settings::current(), Settings::default());
         assert_eq!(Settings::parse("not toml ["), Settings::default());
-        let odd =
-            Settings::parse("theme = \"sepia\"\nfont_size = 99\nsidebar_width = 9000\nother = 1\n");
+        let odd = Settings::parse(
+            "theme = \"sepia\"\nfont_size = 99\ninterface_size = 130\nsidebar_width = 9000\nother = 1\n",
+        );
         assert_eq!(odd, Settings::default());
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("nested/settings.toml");

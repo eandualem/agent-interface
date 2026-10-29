@@ -1,0 +1,3 @@
+{"schema_version":1,"request_id":"onboarding-first-agent-01","seq":1,"type":"step","step":"preflight","status":"running"}
+{"schema_version":1,"request_id":"onboarding-first-agent-01","seq":2,"type":"step","step":"preflight","status":"completed"}
+{"schema_version":1,"request_id":"onboarding-first-agent-01","seq":3,"type":"result","action":"first_agent","status":"action_required","code":"runtime_permission","message":"Continue in the agent terminal.","data":{"agent_name":"guide","launch_id":"example-launch-id","ready":"waiting_for_human","greeting_delivery_id":null},"completed_steps":["preflight","hooks","agent"],"retry":"same_request"}

@@ -85,11 +85,14 @@ Double-click a pane header to expand it, then double-click again or press Escape
 to restore the split layout. Expansion belongs to that tab: switching tabs leaves
 their own layouts unchanged, and returning restores the tab's previous view.
 
-Settings (Command-comma) offers a dark or light theme, the terminal text size,
-whether panes show headers (always, on hover or never) and editable shortcuts;
+Settings (Command-comma) offers a dark or light theme, the interface size,
+the terminal text size, whether panes show headers (always, on hover or never) and editable shortcuts;
 changes apply to every window at once and are saved in
 `$XDG_CONFIG_HOME/agent-interface/settings.toml`, or
 `~/.config/agent-interface/settings.toml` when that variable is unset.
+**Interface size** (75% to 200%) scales the whole window, terminals included,
+on top of the display's own scale. Use it when a screen draws the app too
+small or too large, such as a 4K display under WSL.
 In **Settings → Shortcuts**, commands are grouped by Workspace, Tab and Pane,
 with separate Navigation, Terminal and Application groups. Click **Change**
 beside a shortcut and press the new keys. Changes apply and save immediately;
@@ -150,7 +153,8 @@ Drag a tab onto another tab in the sidebar to move it to that position;
 the order is saved while the selected tab stays selected.
 The existing pane remains intact and the new pane asks what it should run: Open
 terminal, or Attach a session. New tabs
-use the launch directory; splits inherit the ordinary shell’s remembered directory.
+use the launch directory, or your home folder when the app was opened from the
+Dock or Finder; splits inherit the ordinary shell’s remembered directory.
 The new arrangement appears after saving. Navigation made while saving stays local;
 otherwise the new tab or pane is selected.
 
@@ -194,10 +198,14 @@ without optional agent metadata.
 
 Attached sessions reconnect automatically when the saved session returns on its
 source server. Attempts run at the two-second window-refresh interval and never
-start an agent or create a session. **Reconnect** retries immediately; **Detach**
-returns the pane to its chooser. An ordinary terminal whose saved shell cannot be
-reached also offers **Open terminal** to reuse the shell or start it if absent.
-Starting a new shell does not restore a lost shell's process state.
+start an agent or create a session on their own. When the pane shows a stopped
+Agent Backbone agent, **Resume** asks Backbone to continue its saved conversation
+and **Start new** starts a new one, both with the agent's saved runtime and model;
+the pane connects once the agent's session appears. **Detach** returns the pane
+to its chooser. An ordinary terminal whose saved shell is no longer running, such
+as after a restart, starts a new shell in its saved directory once, automatically.
+If that fails, **Open terminal** tries again. Starting a new shell does not
+restore a lost shell's process state.
 **Detach** in tab options, or Command-Shift-X
 (Ctrl+Shift+X on Linux), works with attached sessions, ordinary terminals and
 native views such as skills and reports. Detaching keeps the pane and its saved
@@ -258,15 +266,36 @@ document and choose **More from this author** to follow its stable author even
 after an agent is renamed or removed. **Back** restores the selected page and
 filter. **Refresh** returns to the newest documents.
 
-Choose the small **Send feedback** button below an open report, Response or
-Document to open its reply editor. **Close** returns to reading and keeps the
-draft. Enter supports paragraphs; choose **Send feedback** in the editor to submit up to
-4,000 characters. The message includes a reference to the exact record being
-read. The app checks that the author is still registered before sending, and
-shows Backbone's delivery detail. Queued or held messages do not mean the author
-has read them. If delivery is uncertain, check with the author before starting a
-new reply. Drafts remain with their record when switching tabs or workspaces; detaching or
-closing the pane or app discards them. Feedback never changes the authored record.
+An open report, Response or Document has a conversation with its author on
+the right edge. Choose its button, or press **C**, to open it; press **C** or
+Esc in the message field to close it again, keeping the draft. Enter adds a
+paragraph and **⌘↵** sends up to 4,000 characters. Each message includes a
+reference to the exact record being read, and the app checks that the author
+is still registered before sending. A message shows **Sending…** until Agent
+Backbone answers, then the time it was sent; **Not sent** offers **Retry**,
+and **Edit** to move the text back into an empty message field.
+When Agent Backbone keeps conversations, the thread is the record's stored
+conversation: your messages, the author's replies and the record's new
+revisions, in order, with a **new** divider before what arrived since you last
+looked. It is read every few seconds while open, and the rail shows a mark when
+something new arrives while it is closed. **Earlier messages** loads older
+ones. Retrying a message Backbone did not confirm is safe: it is stored once.
+A message whose delivery failed after Backbone stored it offers **Retry**,
+which delivers it again without adding it twice.
+
+With an Agent Backbone that does not keep conversations, the thread shows only
+the messages sent from this pane, and if delivery is uncertain the message
+says so: check with the author before sending it again. Delivered or queued
+does not mean the author has read it. Threads and drafts remain with their
+record when switching tabs or workspaces; detaching or closing the pane or app
+discards the ones Backbone does not keep. A message never changes the authored
+record.
+
+A shared skill or policy opened in its reader has the same conversation, so
+you can work on it with an agent. Backbone names a maintainer only when one has
+been set; until then, choose who to ask from the agents the skill reaches, the
+conversation's participants or the team. Skills kept in a repository or a CLI's
+own folder have no conversation.
 
 Opening a document loads that exact revision. **Check for update** refreshes its
 correction information; **Open newer revision** opens the linked correction.
@@ -395,3 +424,50 @@ no configuration. These options inspect the Python-compatible `keymap.toml`;
 they do not configure the native desktop. Use **Settings → Shortcuts** for native
 bindings, which are saved separately in `settings.toml`. The legacy prefix is not
 dispatched by the desktop.
+
+
+## Current plans
+
+**Reports & updates → Current plans** shows one card per agent: what its
+current plan undertakes, each step as done, now, waiting or still ahead, and
+what the waiting steps wait on. Agents with something waiting come first; an
+agent that has not published a plan says so. Plans are what each agent
+declares it is doing, kept current by the agent; the view only reads them and
+rereads them every 20 seconds while open. A plan not updated for a day is
+marked stale, which does not mean it is complete. The section needs an Agent
+Backbone that offers current plans; an older one says it does not.
+
+## Sheets
+
+Use Sheets for research comparisons, budgets, opportunity trackers and test results.
+Agents create and update the workbooks through Agent Backbone. In the app, readers
+inspect the results and send feedback. Documents hold the longer explanation,
+Reports record progress, and Responses answer specific questions; link to the
+workbook from those artifacts so readers can inspect the underlying data.
+
+Open **Reports & updates → Sheets**, choose a workbook, then a tab. Agent Backbone
+must support Sheets and be configured through its normal private local connection.
+The grid is read-only. Select a cell or use Shift-click or Shift-arrow to select a
+range. Arrow keys and Tab move the selection. Row and column paging keep large
+workbooks bounded; labels retain canonical A1 coordinates under saved views.
+
+The workbook's conversation with its author sits on the right, as it does
+beside Documents and Reports. Open it, write your message and press **⌘↵**.
+The composer shows the cells it refers to, such as `Runs!C4`. Each message includes the
+displayed revision and selected cells (up to 100); without a selection it
+refers to the tab and whole workbook revision. Closing the conversation keeps
+the draft. Send or clear the draft before changing the workbook, revision, tab
+or page. After an uncertain submission, **Retry the same request** checks the
+original operation without creating another feedback message. A message that
+was not sent offers **Edit**, so you can resend it with the current selection.
+Each workbook keeps its own conversation. Delivery status
+does not mean the agent has
+answered. **Copy feedback receipt** preserves the identifiers for checking delivery.
+
+**History** opens earlier retained revisions. **Refresh** loads the latest revision.
+**Copy values** copies selected cells as tab-separated text. Text values that could
+be interpreted as formulas receive a leading apostrophe for pasting into a spreadsheet;
+numeric values are preserved. **Export** saves the displayed revision. JSON/XLSX preserve supported workbook features, while CSV/TSV
+export one tab as values only. Read any export warnings. This is not a claim of full
+Excel or Google Sheets compatibility. Cell editing, workbook creation and import
+are managed by agents, with no editing controls in this view.

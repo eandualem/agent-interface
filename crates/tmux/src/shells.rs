@@ -77,7 +77,10 @@ impl Environment {
             .unwrap_or_else(|| "/bin/sh".into());
         Ok(Self {
             variables,
-            cwd: std::env::current_dir()?,
+            // An app opened from the Dock or Finder runs in "/"; use home instead.
+            cwd: Some(std::env::current_dir()?)
+                .filter(|cwd| cwd.as_os_str() != "/")
+                .unwrap_or_else(|| home.clone()),
             home,
             shell,
         })
