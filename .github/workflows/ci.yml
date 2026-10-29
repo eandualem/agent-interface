@@ -92,6 +92,15 @@ jobs:
         if: runner.os == 'Linux'
         run: cargo test -p agent-interface-webview-host --release variant_string_iterator --locked
 
+      - name: Prepare application-scoped sandbox profile (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apparmor_parser --skip-kernel-load packaging/agent-interface.apparmor
+          if [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null)" = 1 ]; then
+            printf 'abi <abi/4.0>,\nprofile agent-interface-ci "%s/target/debug/agent-interface" flags=(unconfined) {\n userns,\n}\n' "$GITHUB_WORKSPACE" > "$RUNNER_TEMP/agent-interface-ci.apparmor"
+            sudo apparmor_parser -r "$RUNNER_TEMP/agent-interface-ci.apparmor"
+          fi
+
       - name: Linux graphical regression checks
         if: runner.os == 'Linux'
         run: |

@@ -4,6 +4,7 @@ use gpui::{Bounds, Pixels, Window};
 
 #[cfg(target_os = "linux")]
 thread_local! {
+    static SANDBOX_ERROR: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
     static LIVE_VIEWS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
@@ -60,6 +61,8 @@ pub(super) struct Surface {
     zoom: f32,
     theme: String,
     occluded: bool,
+    #[cfg(target_os = "linux")]
+    failure: std::rc::Rc<std::cell::RefCell<Option<String>>>,
 }
 
 impl Surface {
@@ -80,6 +83,10 @@ impl Surface {
     }
 
     pub fn clear(&mut self) {
+        #[cfg(target_os = "linux")]
+        {
+            self.failure = Default::default();
+        }
         self.focus_parent();
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         {
@@ -111,6 +118,15 @@ impl Surface {
         theme: &str,
         on_focus: impl Fn() + 'static,
     ) -> Result<(), String> {
+        #[cfg(target_os = "linux")]
+        {
+            if let Some(error) = SANDBOX_ERROR.with(|error| error.borrow().clone()) {
+                return Err(error);
+            }
+            if let Some(error) = self.failure.borrow().clone() {
+                return Err(error);
+            }
+        }
         #[cfg(not(target_os = "linux"))]
         let _ = cx;
         #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -225,7 +241,18 @@ impl Surface {
                     .with_initialization_script(theme)
                     .build_as_child(parent).map_err(|error| error.to_string())?;
                 #[cfg(target_os = "linux")]
-                configure_linux(&view, on_key)?;
+                configure_linux(&view, on_key, {
+                    let failure = self.failure.clone();
+                    let context = cx.to_async();
+                    move |message| {
+                        *failure.borrow_mut() = Some(message);
+                        // Repaint after returning from GTK; the next paint uses
+                        // the existing native error UI and releases this view.
+                        context
+                            .spawn(async move |cx| cx.update(|cx| cx.refresh()))
+                            .detach();
+                    }
+                })?;
                 // Load authored code only after native networking/file permissions
                 // have been restricted, on both platforms.
                 view.load_url("artifact://document/index.html")
@@ -301,7 +328,12 @@ body ::selection{{background:var(--ai-accent)!important;color:{}!important;}}"#,
 #[cfg(target_os = "linux")]
 pub(in crate::desktop) fn initialize_linux() -> Result<(), String> {
     gtk::gdk::set_allowed_backends("x11");
-    gtk::init().map_err(|error| format!("Document rendering needs X11 or XWayland: {error}"))
+    gtk::init().map_err(|error| {
+        format!("the workspace browser requires a graphical desktop (X11 or XWayland): {error}")
+    })?;
+    // A sandbox failure must not take away native terminals or other views.
+    SANDBOX_ERROR.with(|error| *error.borrow_mut() = probe_linux_sandbox().err());
+    Ok(())
 }
 
 #[cfg(target_os = "linux")]
@@ -333,11 +365,26 @@ pub(in crate::desktop) fn pump_linux(cx: &mut gpui::App) {
 fn configure_linux(
     view: &wry::WebView,
     on_key: impl Fn(gpui::Keystroke) -> bool + 'static,
+    on_error: impl Fn(String) + 'static,
 ) -> Result<(), String> {
     use gtk::prelude::WidgetExt;
     use webkit2gtk::{FileChooserRequestExt, SettingsExt, WebContextExt, WebViewExt};
     use wry::WebViewExtUnix;
     let native = view.webview();
+    let on_error = std::rc::Rc::new(on_error);
+    let failed_load = on_error.clone();
+    native.connect_load_failed(move |_, _, uri, _| {
+        if uri == "artifact://document/index.html" {
+            failed_load(
+                "The document renderer could not load this page. Reopen the document to try again."
+                    .into(),
+            );
+        }
+        true
+    });
+    native.connect_web_process_terminated(move |_, _| {
+        on_error("The document renderer stopped. Reopen the document to try again; if this repeats, check Linux sandbox support in the installation guide.".into());
+    });
     let context = native.context().ok_or("WebKitGTK context is unavailable")?;
     // The pinned Wry context enables this before constructing any WebView.
     if !context.is_sandbox_enabled() {
@@ -435,5 +482,57 @@ fn page_zoom(window: &Window, view: &wry::WebView) -> f32 {
     {
         let _ = (window, view);
         crate::desktop::zoom::factor()
+    }
+}
+
+/// WebKitGTK can abort the host when bubblewrap cannot create its namespaces.
+/// Probe once, before any web view, with a short deadline and no host writes.
+#[cfg(target_os = "linux")]
+fn probe_linux_sandbox() -> Result<(), String> {
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+    if std::env::var_os("WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS")
+        .is_some_and(|value| value == "1")
+    {
+        return Err("Documents require the WebKit sandbox. Remove WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS from the launch environment and reopen the app.".into());
+    }
+    let unavailable = || {
+        "The document sandbox could not start. Run the installer to configure Linux sandbox support, then reopen the app. Containers must allow nested user namespaces.".to_owned()
+    };
+    let mut child = Command::new("/usr/bin/bwrap")
+        .args([
+            "--ro-bind",
+            "/",
+            "/",
+            "--proc",
+            "/proc",
+            "--dev",
+            "/dev",
+            "--unshare-all",
+            "--",
+            "/bin/true",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|_| unavailable())?;
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                return if status.success() {
+                    Ok(())
+                } else {
+                    Err(unavailable())
+                };
+            }
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(unavailable());
+            }
+        }
     }
 }

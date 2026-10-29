@@ -140,6 +140,20 @@ Updates from the earlier `tmux-workspaces` installation preserve saved libraries
 and settings. The installer replaces its owned legacy app and launchers; the new
 command is `agent-interface`. Existing data directories remain readable in place.
 
+### Linux document sandbox
+
+Documents use WebKitGTK's process sandbox. On Ubuntu systems that restrict user
+namespaces, the installer uses sudo to install an application-specific AppArmor
+profile for the standard installation path. It preserves existing custom profiles
+and does not change global namespace restrictions. This requires the distribution's
+AppArmor tools. Manual installations at another path need a matching profile;
+[`packaging/agent-interface.apparmor`](../packaging/agent-interface.apparmor) is the template.
+
+Containers must allow nested user, mount, PID and network namespaces for WebKitGTK.
+The app checks sandbox startup before opening Documents and reports an unavailable
+sandbox without disabling native terminals. Do not set
+`WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS`; Documents refuse that override.
+
 ## Windows 11 with WSL
 
 Use the Linux package inside Ubuntu 24.04 or newer on **WSL 2 with WSLg**.
@@ -270,6 +284,17 @@ On Linux, quit the app and remove these installation files:
 rm -rf "$HOME/.local/lib/agent-interface" "$HOME/.local/lib/.agent-interface-download"
 rm -f "$HOME/.local/bin/agent-interface"
 rm -f "${XDG_DATA_HOME:-$HOME/.local/share}/applications/io.github.eandualem.agent-interface.desktop"
+```
+
+If this is the last installation on the computer, remove the shared sandbox
+profile only when its installer marker matches:
+
+```sh
+profile=/etc/apparmor.d/agent-interface-userns
+if [ -f "$profile" ] && [ ! -L "$profile" ] &&
+    grep -Fqx '# Agent Interface user namespace profile' "$profile"; then
+    sudo /usr/sbin/apparmor_parser -R "$profile" && sudo rm -f -- "$profile"
+fi
 ```
 
 These commands leave your data and terminal sessions intact. See the

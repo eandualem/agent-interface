@@ -399,6 +399,24 @@ if [ -n "$wsl_launcher" ]; then
 fi
 "$prepared/$executable" --version || fail 'The binary cannot run on this system. Check the documented runtime requirements.'
 resources=$prepared/$(dirname "$marker")
+# Ubuntu's user-namespace restriction needs an application-specific exception
+# for WebKitGTK's own sandbox. Never change the host's global sysctl policy.
+if [ "$platform" = unknown-linux-gnu ] && [ -f "$resources/agent-interface.apparmor" ] &&
+    [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null || true)" = 1 ] &&
+    [ -d /sys/kernel/security/apparmor ]; then
+    sandbox_profile=/etc/apparmor.d/agent-interface-userns
+    if [ -L "$sandbox_profile" ] || { [ -e "$sandbox_profile" ] &&
+        ! grep -Fqx '# Agent Interface user namespace profile' "$sandbox_profile"; }; then
+        fail 'An existing custom Agent Interface AppArmor profile was preserved. Configure its userns permission before installing.'
+    fi
+    [ -x /usr/sbin/apparmor_parser ] || fail 'Linux sandbox setup needs the distribution AppArmor tools.'
+    printf '%s\n' 'Configuring the Agent Interface document sandbox. sudo may ask for your Linux password.'
+    sudo -v || fail 'Could not authorize the application-specific sandbox profile.'
+    # Compile and load successfully before replacing any on-disk policy.
+    run_step 'Loading the document sandbox profile' sudo /usr/sbin/apparmor_parser -r "$resources/agent-interface.apparmor" ||
+        fail 'Could not load the application-specific sandbox profile.'
+    sudo install -m 644 -- "$resources/agent-interface.apparmor" "$sandbox_profile" || fail 'Could not persist the application-specific sandbox profile.'
+fi
 if [ -f "$resources/setup_backbone.py" ]; then
     # Backbone publishes its own package. Install that release independently
     # of the app archive; uv supplies Python when a suitable runtime is absent.

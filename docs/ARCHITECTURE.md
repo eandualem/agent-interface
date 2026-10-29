@@ -725,5 +725,10 @@ requests, subframes, objects and forms; navigation stays within the document,
 new windows and downloads are denied, and the only IPC message reports focus.
 The local MIT/Apache-2.0 Wry patch enables the ephemeral WebKit context process
 sandbox before constructing any view; the app verifies
-that it is enabled before loading authored content. `LIBGL_ALWAYS_SOFTWARE=1` selects
+that it is enabled before loading authored content. A bounded bubblewrap probe
+runs before any web view; denied namespace creation disables Documents with an
+explicit error while native views remain usable. Renderer load/process failures
+also reach the native error view. The unsafe WebKit sandbox environment override
+is refused. On restricted Ubuntu hosts the installer supplies a scoped AppArmor
+userns profile for the standard app path, without changing global kernel policy. `LIBGL_ALWAYS_SOFTWARE=1` selects
 WebKitGTK's nonaccelerated drawing policy for headless/software environments.

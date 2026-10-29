@@ -1,0 +1,9 @@
+# Agent Interface user namespace profile
+# Allow this app to create WebKitGTK sandboxes without changing global policy.
+abi <abi/4.0>,
+include <tunables/global>
+
+profile agent-interface-userns @{HOME}/.local/lib/agent-interface/bin/agent-interface flags=(unconfined) {
+  userns,
+  include if exists <local/agent-interface-userns>
+}

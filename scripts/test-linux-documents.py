@@ -188,7 +188,11 @@ try { new WebSocket('TARGET/socket'.replace('http:', 'ws:')); } catch (_) {}
                         pid = parents[pid]
                     if pid == app.pid:
                         assert status.get('Seccomp', '').strip() == '2', 'WebKit process lacks seccomp'
-                        assert os.readlink(process / 'ns/mnt') != os.readlink(f'/proc/{app.pid}/ns/mnt'), 'WebKit shares host mount namespace'
+                        try:
+                            child_mount = os.readlink(process / 'ns/mnt')
+                        except (FileNotFoundError, PermissionError):
+                            continue  # A process exited or changed identity during startup.
+                        assert child_mount != os.readlink(f'/proc/{app.pid}/ns/mnt'), 'WebKit shares host mount namespace'
                         found.append(int(process.name))
                 return found
 
@@ -244,11 +248,27 @@ try { new WebSocket('TARGET/socket'.replace('http:', 'ws:')); } catch (_) {}
             command('xdotool', 'windowactivate', '--sync', second)
             command('xdotool', 'key', '--clearmodifiers', 'ctrl+shift+q')
             assert app.wait(timeout=15) == 0, 'application quit failed'
+            # An inherited escape hatch must fail closed in the native UI.
+            env['WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS'] = '1'
+            app = subprocess.Popen([str(ROOT / 'target/debug/agent-interface'), '--data-dir', str(library)],
+                                   env=env, stdout=app_log, stderr=subprocess.STDOUT)
+            window = wait_for(lambda: command('xdotool', 'search', '--onlyvisible', '--pid', str(app.pid), check=False),
+                              'override-check window').splitlines()[0]
+            command('xdotool', 'windowactivate', '--sync', window)
+            click('Documents', last=True)
+            click('Renderer')
+            wait_for(lambda: 'Documents require the WebKit sandbox' in ' '.join(w.get('text', '') for w in words()),
+                     'sandbox override refused in native error view')
+            assert not find('DOCUMENTREADY'), 'unsafe override rendered authored content'
+            assert not sandboxed_processes(), 'override started a web process'
+            command('import', '-window', window, str(OUTPUT / 'override-refused.png'))
+            command('xdotool', 'key', '--clearmodifiers', 'ctrl+shift+q')
+            assert app.wait(timeout=15) == 0
             (OUTPUT / 'result.json').write_text(json.dumps(dict(checks=[
                 'Document API load', 'HTML render', 'inline script', 'HTML input', 'app shortcut from HTML',
                 'overlay hides/restores view', 'return to shelf destroys view', 'file chooser denied',
                 'WebRTC disabled', 'fetch/image/WebSocket blocked', 'external navigation/new windows denied', 'resize retains state', 'process seccomp and mount isolation', 'display DPI placement',
-                'fixed new-window shortcut from HTML', 'parent close preserves second window', 'clean quit'],
+                'fixed new-window shortcut from HTML', 'parent close preserves second window', 'clean quit', 'unsafe sandbox override refused'],
                 scale=SCALE, dpi=DPI, sandbox_pids=sandbox_pids, requests=requests), indent=2))
             print('Linux Documents smoke passed')
         finally:
