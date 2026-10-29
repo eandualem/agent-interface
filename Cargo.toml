@@ -80,6 +80,9 @@ tracing-subscriber = { version = "=0.3.23", default-features = false, features =
 tracing-appender = "=0.2.5"
 
 uuid = { version = "=1.28.0", features = ["v4"] }
+# Window handle traits a platform wrapper must forward. GPUI already builds
+# this version, so it adds no package.
+raw-window-handle = "=0.6.2"
 
 [workspace.lints.rust]
 missing_docs = "warn"

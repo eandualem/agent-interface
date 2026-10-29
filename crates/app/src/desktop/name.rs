@@ -694,7 +694,7 @@ impl Render for NameField {
                         let focus = entity.read(cx).focus.clone();
                         window.handle_input(
                             &focus,
-                            ElementInputHandler::new(bounds, entity.clone()),
+                            super::zoom::input(ElementInputHandler::new(bounds, entity.clone())),
                             cx,
                         );
                         entity.update(cx, |field, cx| field.paint(bounds, window, cx));

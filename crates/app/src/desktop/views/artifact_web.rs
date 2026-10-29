@@ -7,6 +7,9 @@ pub(super) struct Surface {
     #[cfg(target_os = "macos")]
     view: Option<wry::WebView>,
     bounds: Option<Bounds<Pixels>>,
+    /// The interface size the page was last zoomed to.
+    #[cfg(target_os = "macos")]
+    zoom: f32,
     theme: String,
     occluded: bool,
 }
@@ -65,6 +68,13 @@ impl Surface {
                 Rect, WebViewBuilder, WebViewBuilderExtMacos,
                 dpi::{LogicalPosition, LogicalSize},
             };
+            // The child view sits outside GPUI, so it takes native
+            // coordinates and zooms its page to the interface size.
+            let zoom = crate::desktop::zoom::factor();
+            let bounds = Bounds::new(
+                gpui::point(bounds.origin.x * zoom, bounds.origin.y * zoom),
+                gpui::size(bounds.size.width * zoom, bounds.size.height * zoom),
+            );
             let rect = Rect {
                 position: LogicalPosition::new(
                     f64::from(f32::from(bounds.origin.x)),
@@ -80,6 +90,10 @@ impl Surface {
             if let Some(view) = &self.view {
                 if self.bounds != Some(bounds) {
                     view.set_bounds(rect).map_err(|error| error.to_string())?;
+                }
+                if self.zoom != zoom {
+                    view.zoom(f64::from(zoom))
+                        .map_err(|error| error.to_string())?;
                 }
                 if self.theme != theme {
                     view.set_background_color(background())
@@ -113,9 +127,12 @@ impl Surface {
                     .with_ipc_handler(move |request| { if request.body() == "focus" { on_focus(); } })
                     .with_initialization_script(theme)
                     .build_as_child(window).map_err(|error| error.to_string())?;
+                view.zoom(f64::from(zoom))
+                    .map_err(|error| error.to_string())?;
                 self.view = Some(view);
             }
             self.bounds = Some(bounds);
+            self.zoom = zoom;
             self.theme = theme.into();
             Ok(())
         }

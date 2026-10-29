@@ -12,7 +12,6 @@ use gpui::{
     TitlebarOptions, Window, WindowBounds, WindowOptions, actions, div, point, prelude::*, px,
     size,
 };
-use gpui_platform::application;
 
 use crate::library::{Library, Update, WindowLayout};
 mod chooser;
@@ -40,6 +39,7 @@ mod terminal;
 mod views;
 mod window_controls;
 mod workspace;
+mod zoom;
 use agent_interface_tmux::connection::SessionWindow;
 use name::{NameEvent, NameField};
 use terminal::{LiveTerminal, Target};
@@ -83,7 +83,7 @@ pub fn run(directory: Option<PathBuf>) -> Result<(), String> {
     let mut logging = crate::diagnostics::start(preferences.logging);
     let failure = Rc::new(RefCell::new(None));
     let opened = Rc::clone(&failure);
-    application()
+    gpui::Application::with_platform(zoom::platform())
         .with_assets(icons::Assets)
         .run(move |cx: &mut App| {
             cx.set_app_identity(APP_ID, "Agent Interface");

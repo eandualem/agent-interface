@@ -85,11 +85,14 @@ Double-click a pane header to expand it, then double-click again or press Escape
 to restore the split layout. Expansion belongs to that tab: switching tabs leaves
 their own layouts unchanged, and returning restores the tab's previous view.
 
-Settings (Command-comma) offers a dark or light theme, the terminal text size,
-whether panes show headers (always, on hover or never) and editable shortcuts;
+Settings (Command-comma) offers a dark or light theme, the interface size,
+the terminal text size, whether panes show headers (always, on hover or never) and editable shortcuts;
 changes apply to every window at once and are saved in
 `$XDG_CONFIG_HOME/agent-interface/settings.toml`, or
 `~/.config/agent-interface/settings.toml` when that variable is unset.
+**Interface size** (75% to 200%) scales the whole window, terminals included,
+on top of the display's own scale. Use it when a screen draws the app too
+small or too large, such as a 4K display under WSL.
 In **Settings → Shortcuts**, commands are grouped by Workspace, Tab and Pane,
 with separate Navigation, Terminal and Application groups. Click **Change**
 beside a shortcut and press the new keys. Changes apply and save immediately;
