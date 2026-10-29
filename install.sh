@@ -236,6 +236,48 @@ if [ "$platform" = apple-darwin ]; then
     codesign --verify --strict "$prepared" || fail 'App signature verification failed.'
 fi
 "$prepared/$executable" --version || fail 'The binary cannot run on this system. Check the documented runtime requirements.'
+resources=$prepared/$(dirname "$marker")
+if [ -f "$resources/setup_backbone.py" ]; then
+    # Backbone publishes its own package. Install that release independently
+    # of the app archive; uv supplies Python when a suitable runtime is absent.
+    uv=$(command -v uv || true)
+    if [ -z "$uv" ] && [ -x "$HOME/.local/bin/uv" ]; then uv=$HOME/.local/bin/uv; fi
+    if [ -z "$uv" ]; then
+        curl -fsSL https://astral.sh/uv/0.13.6/install.sh -o "$staging/uv-install.sh" || fail 'Could not download the Python installer.'
+        if command -v sha256sum >/dev/null 2>&1; then
+            uv_hash=$(sha256sum "$staging/uv-install.sh" | awk '{print $1}')
+        else
+            uv_hash=$(shasum -a 256 "$staging/uv-install.sh" | awk '{print $1}')
+        fi
+        [ "$uv_hash" = f7a56e7afaec49a3bcbc3ac3cdbe917e7c6ce30e0d815308a12e531aa5ef23b7 ] || fail 'Python installer checksum mismatch.'
+        UV_INSTALL_DIR="$HOME/.local/bin" sh "$staging/uv-install.sh" || fail 'Could not install uv.'
+        uv=$HOME/.local/bin/uv
+    fi
+    tools=$("$uv" tool dir) || fail 'Could not locate the Agent Backbone installation directory.'
+    backbone_resumed=false
+    if [ -x "$tools/agent-backbone/bin/python" ]; then
+        if "$tools/agent-backbone/bin/python" -I -B "$resources/setup_backbone.py" \
+            --executable "$tools/agent-backbone/bin/backbone" --resume-pending; then
+            :
+        else
+            resume_status=$?
+            [ "$resume_status" -eq 3 ] || fail 'Interrupted Backbone setup needs attention. Its installed version was preserved.'
+            backbone_resumed=true
+        fi
+    fi
+    if [ "$backbone_resumed" = false ]; then
+        "$uv" tool install --upgrade --prerelease disallow --python '>=3.11,<3.14' 'agent-backbone>=0.4.0' ||
+            fail 'Could not install a compatible published Agent Backbone release. The app was not replaced.'
+        "$uv" tool update-shell || fail 'Could not make Agent Backbone available to new terminals.'
+        tools=$("$uv" tool dir) || fail 'Could not locate the installed Agent Backbone.'
+        PATH="$tools/agent-backbone/bin:$(dirname "$uv"):$PATH" \
+        "$tools/agent-backbone/bin/python" -I -B "$resources/setup_backbone.py" \
+            --executable "$tools/agent-backbone/bin/backbone" ||
+            fail 'Agent Backbone setup did not finish. The app was not replaced; rerun this installer to resume.'
+    else
+        printf '%s\n' 'Resumed Agent Backbone setup with its saved version. A later install can check for an upgrade.'
+    fi
+fi
 if [ "$platform" = unknown-linux-gnu ]; then
     mkdir -p "$data/applications" "$HOME/.local/bin"
     # Stage beside the launcher so replacement stays atomic with a separate XDG volume.

@@ -1,7 +1,8 @@
 # Install Agent Interface
 
-Native packages need no Rust, Zig, or Python installation. It uses **tmux 3.3 or
-newer** for terminal sessions.
+You do not need to install Rust, Zig, or Python yourself. The installer installs
+Agent Interface and the latest compatible published Agent Backbone, using uv to
+supply Python when needed. Terminal sessions require **tmux 3.3 or newer**.
 
 The executable, archives and new installation/data paths use `agent-interface`.
 The desktop app is named **Agent Interface**. Existing libraries and preferences
@@ -200,25 +201,23 @@ and the app's [diagnostic logging](GUIDE.md#find-work-and-change-appearance).
 
 ## Connect Agent Backbone
 
-The agents list and agent views read from a running
-[Agent Backbone](https://github.com/eandualem/agent-backbone) on the same
-computer. The app sends Backbone's API key only over a private Unix socket,
-which Backbone added after its 0.3.0 release. Until a newer release is
-published, install Backbone from its repository. You need
-[uv](https://docs.astral.sh/uv/), Git, Python 3.11 or newer, and an agent CLI
-that is installed and signed in. This command also replaces an existing
-installation made with `uv tool install`:
+The installation command above also installs
+[Agent Backbone](https://github.com/eandualem/agent-backbone) from its published
+Python package. A fresh installation initializes its user service and enables
+the private Unix socket used by the app. Open Agent Interface to continue
+onboarding; no separate Backbone installation command is needed. Agent tools
+still need to be installed and signed in before creating an agent.
 
-```sh
-uv tool install git+https://github.com/eandualem/agent-backbone
-```
+This integration requires Backbone 0.4.0 or newer. If a compatible published
+release is unavailable, installation stops before replacing the app. Rerun the
+same installer after a setup failure: it retains the request and resumes pending
+steps using the same installed Backbone version. A later installation can check
+for an upgrade once setup is complete. It refuses automatic recovery if that
+pending installation or its saved service/socket choices have changed.
 
-Then set it up and start its service with Backbone's
-[quick start](https://github.com/eandualem/agent-backbone#quick-start),
-skipping its install command.
-
-Enable the socket in Backbone's data directory, then restart its service so it
-binds the socket:
+An existing Backbone installation keeps its configuration and service choices.
+For an independently managed installation without a private socket, its operator
+can enable the connection through Backbone's configuration:
 
 ```sh
 mkdir -p "$HOME/.local/share/agent-backbone/run"
@@ -227,8 +226,8 @@ backbone config set backbone.socket_path "$HOME/.local/share/agent-backbone/run/
 backbone service restart
 ```
 
-If Agent Interface was already open before you first set up Backbone, quit and
-reopen it so it finds Backbone.
+If Agent Interface was already open, quit and reopen it after changing the
+connection.
 
 The app reads the saved `backbone.socket_path` setting. To use another socket,
 set `BACKBONE_SOCKET_PATH` in the app's launch environment. The path must be

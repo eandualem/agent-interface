@@ -344,8 +344,9 @@ impl Onboarding {
             ),
             Some(Backbone::NotSetUp) => (
                 (Tone::Attention, "Not set up"),
-                "Agents need it; terminals work without it.".into(),
-                Some("uv tool install agent-backbone && backbone help setup"),
+                "Run the Agent Interface installer again to finish setting up Agent Backbone."
+                    .into(),
+                None,
             ),
         };
         page = page.child(self.row("backbone", "Agent Backbone", note, state, command, cx));
