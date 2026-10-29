@@ -444,7 +444,7 @@ impl Sheets {
     /// `Runs!C4` or `Runs!B2:F9`, or the whole workbook without a selection.
     fn anchor(&self, open: &Open) -> Option<String> {
         let Some(selection) = self.selection else {
-            return Some(format!("{} (whole workbook)", open.record.title));
+            return Some(format!("Whole workbook: {}", open.record.title));
         };
         let tab = open
             .record
@@ -467,6 +467,10 @@ impl Sheets {
 }
 
 fn selection_label(tab: &str, rows: &[usize], columns: &[usize]) -> Option<String> {
+    let mut rows = rows.to_vec();
+    let mut columns = columns.to_vec();
+    rows.sort_unstable();
+    columns.sort_unstable();
     let start = format!("{}{}", column_name(*columns.first()?), rows.first()?);
     let end = format!("{}{}", column_name(*columns.last()?), rows.last()?);
     let contiguous = |indices: &[usize]| {
@@ -474,7 +478,7 @@ fn selection_label(tab: &str, rows: &[usize], columns: &[usize]) -> Option<Strin
             .windows(2)
             .all(|pair| pair[0].checked_add(1) == Some(pair[1]))
     };
-    Some(if !contiguous(rows) || !contiguous(columns) {
+    Some(if !contiguous(&rows) || !contiguous(&columns) {
         format!("{tab}: {} selected cells", rows.len() * columns.len())
     } else if start == end {
         format!("{tab}!{start}")
@@ -663,6 +667,10 @@ mod tests {
         assert_eq!(
             selection_label("Runs", &[2, 3, 4], &[1, 2]).as_deref(),
             Some("Runs!A2:B4")
+        );
+        assert_eq!(
+            selection_label("Runs", &[2, 1], &[2, 1]).as_deref(),
+            Some("Runs!A1:B2")
         );
         assert_eq!(
             selection_label("Runs", &[2, 5], &[1]).as_deref(),

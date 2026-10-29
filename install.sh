@@ -243,7 +243,8 @@ if [ -f "$resources/setup_backbone.py" ]; then
     uv=$(command -v uv || true)
     if [ -z "$uv" ] && [ -x "$HOME/.local/bin/uv" ]; then uv=$HOME/.local/bin/uv; fi
     if [ -z "$uv" ]; then
-        curl -fsSL https://astral.sh/uv/0.13.6/install.sh -o "$staging/uv-install.sh" || fail 'Could not download the Python installer.'
+        curl --fail --location --silent --show-error --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 60 \
+            https://astral.sh/uv/0.13.6/install.sh -o "$staging/uv-install.sh" || fail 'Could not download the Python installer.'
         if command -v sha256sum >/dev/null 2>&1; then
             uv_hash=$(sha256sum "$staging/uv-install.sh" | awk '{print $1}')
         else

@@ -217,6 +217,11 @@ for an upgrade once setup is complete. It refuses automatic recovery if that
 pending installation or its saved service/socket choices have changed.
 
 An existing Backbone installation keeps its configuration and service choices.
+The installer upgrades the `agent-backbone` tool itself to the latest compatible
+published package, including when it was installed from Git or a development
+source. There is no package opt-out; do not run this installer if you need to
+preserve that tool installation.
+
 For an independently managed installation without a private socket, its operator
 can enable the connection through Backbone's configuration:
 
