@@ -34,7 +34,7 @@ names, safe messages, live state and continuity. Agent Interface is where you wo
 with that team.
 
 - **Know who needs you.** Active agents show their state, such as working, idle
-  or waiting on you. Click one to open the tab holding its session.
+  or waiting on you. Click one to go to the tab that shows its session.
 - **Real terminals.** Panes are drawn natively with GPUI and Ghostty's terminal
   core. tmux keeps every process running, and you can attach the sessions you
   already use.
@@ -79,11 +79,12 @@ downloads, the experimental Windows 11 / WSL route, updates and removal.
 
 ## Get started
 
-1. Press **⌘T** (Ctrl+Shift+T on Linux) and choose **Open terminal** or **Attach a session**.
+1. Press **⌘T** (Ctrl+Shift+T on Linux), then choose **Open terminal** or pick a
+   running tmux session to attach it.
 2. Split the pane with **⌘D**, or **⌘⇧D** to split below (Ctrl+Shift+D and
    Ctrl+Shift+E on Linux).
 3. In an empty pane, choose a view such as **Team** or **Reports & updates**.
-4. Click an agent in the sidebar to open the tab holding its session.
+4. Once an agent's session is in a tab, click the agent in the sidebar to go there.
 
 The [user guide](docs/GUIDE.md) covers every view, shortcut and setting.
 
