@@ -381,7 +381,7 @@ if [ -n "$wsl_launcher" ]; then
     missing=
     for package in tmux git fonts-dejavu-core libfontconfig1 libfreetype6 libxcb1 libxkbcommon0 \
         libxkbcommon-x11-0 libwayland-client0 libvulkan1 libegl1 libgl1-mesa-dri \
-        mesa-vulkan-drivers xdg-desktop-portal xdg-desktop-portal-gtk; do
+        mesa-vulkan-drivers libwebkit2gtk-4.1-0 xwayland xdg-desktop-portal xdg-desktop-portal-gtk; do
         if [ "$(dpkg-query -W -f='${Status}' "$package" 2>/dev/null || true)" != 'install ok installed' ]; then
             missing="$missing $package"
         fi

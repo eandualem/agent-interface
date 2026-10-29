@@ -2,8 +2,8 @@
 
 Agent Interface is a native desktop client for tmux. The app owns the window
 and saved arrangement; tmux owns sessions and their processes. Terminals are
-drawn with GPUI, using Ghostty's terminal core to interpret output. There is no
-web view and no app daemon.
+drawn with GPUI, using Ghostty's terminal core to interpret output. Terminals never use a web view. HTML Documents use an isolated system
+webview; the app runs no daemon.
 
 ## Processes and connections
 
@@ -39,6 +39,7 @@ another client's selected window.
 | `tmux` | Server discovery and validation, control-mode protocol, pane capture, recovery and input commands |
 | `term` | Terminal engine ownership, input encoding and owned display snapshots |
 | `roster` | Agent Backbone roster and pane-view reads, plus explicit user feedback through bounded local requests |
+| `webview-host` | Borrowed XCB-to-Xlib window-handle adaptation for Linux document embedding; no application state or process ownership |
 | `app` | Native windows, input routing, storage and terminal workers, and integration between the other crates |
 
 `app` connects the product crates. `store` also depends on `core`; the other
@@ -480,9 +481,23 @@ those dependencies.
   bound values; serialization writes the initial database through an open file handle.
 - **`libc`:** Unix constants for nonblocking configuration reads in the app
   and roster, and the existing process integration. MIT OR Apache-2.0.
-- **`wry` 0.57.1:** macOS system WebKit child views for experimental HTML
-  artifacts, pinned exactly and enabled only on macOS. MIT OR Apache-2.0.
+- **`wry` 0.57.1:** system WebKit child views for HTML Documents and legacy
+  artifacts on macOS and Linux, pinned exactly. MIT OR Apache-2.0.
   It does not render terminals or supply a bundled browser engine.
+- **`gtk` 0.18.2 and `webkit2gtk` 2.0.2:** MIT-licensed Rust bindings, pinned
+  exactly, for the Linux system WebKitGTK 4.1 runtime, native security settings
+  and GTK event dispatch. Their MIT GLib 0.18.5 dependency uses the local
+  `native/glib` backport of upstream gtk-rs-core#1343, fixing the mutable
+  output-pointer bug in `VariantStrIter` (RUSTSEC-2024-0429); an optimized Linux
+  regression test exercises both iteration directions. GTK and WebKitGTK remain dynamically linked system
+  libraries, installed and updated through the distribution's package manager.
+- **`target-lexicon` 0.12.16:** Apache-2.0 WITH LLVM-exception; build-time
+  target detection through GTK's `system-deps`. GTK's build-time
+  `proc-macro-error` 1.0.4 is unmaintained (RUSTSEC-2024-0370), with no vulnerability
+  in that advisory; the narrowly documented audit exception remains until the
+  GTK3 binding graph can be replaced.
+- **`gpui-pre-linux` 0.3.9:** existing Apache-2.0 platform implementation,
+  now selected explicitly for the X11 host needed by embedded WebKitGTK.
 - **Hyper 1.12.0, hyper-util 0.1.21, http-body-util 0.1.5 and Tokio 1.53.3:**
   MIT HTTP/runtime dependencies, pinned exactly, for HTTP over a connected
   Unix socket after the peer identity check.
@@ -678,3 +693,29 @@ visibly. The first integration does not claim full Excel formula compatibility,
 Google account integration, macros, network formulas, charts, pivots or live keystroke
 coediting. The provider isolates calculation in a bounded worker; macOS resident
 memory monitoring can overshoot between samples and is not a hard allocation sandbox.
+
+### Linux HTML document host
+
+Linux uses WebKitGTK 4.1 inside the same native window. GPUI exposes an XCB
+window; `webview-host` borrows that window identity as an Xlib handle for Wry.
+The adapter changes only the representation of the XID and retains the source
+handle's lifetime. It does not create a second connection or own the window.
+The application selects X11 on Linux; Wayland desktops and Windows WSLg use
+XWayland. A Wayland session without XWayland cannot host these child views.
+Terminals and all navigation remain native GPUI rendering.
+
+GTK initializes on the main thread with the X11 backend. A foreground task
+services its events beside GPUI's loop, bounded to 64 iterations or 2 ms per
+turn. It wakes every 16 ms with live document views, otherwise every 250 ms.
+Native GTK key events forward configured application shortcuts to GPUI, while
+ordinary typing and text editing stay in WebKit; authored IPC cannot invoke
+those shortcuts. The child follows pane bounds, interface zoom, theme and overlay visibility;
+closing or hiding a document destroys its ephemeral view.
+
+Authored HTML loads only after native settings disable WebRTC (not governed
+by CSP), DNS prefetch, hyperlink auditing and scripted clipboard/file access.
+File chooser requests are cancelled. The shared content policy blocks network
+requests, subframes, objects and forms; navigation stays within the document,
+new windows and downloads are denied, and the only IPC message reports focus.
+The engine's process sandbox is not disabled. `LIBGL_ALWAYS_SOFTWARE=1` selects
+WebKitGTK's nonaccelerated drawing policy for headless/software environments.

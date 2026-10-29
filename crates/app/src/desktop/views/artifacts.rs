@@ -172,16 +172,17 @@ impl Render for ArtifactPane {
                     move |bounds, (), window, cx| {
                         let focus_entity = focus_entity.clone();
                         let async_cx = async_cx.clone();
-                        if let Err(error) =
-                            surface
-                                .borrow_mut()
-                                .paint(bounds, window, &html, &theme, move || {
-                                    let _ = focus_entity
-                                        .update(&mut *async_cx.borrow_mut(), |_, cx| {
-                                            cx.emit(Focus)
-                                        });
-                                })
-                        {
+                        if let Err(error) = surface.borrow_mut().paint(
+                            bounds,
+                            window,
+                            cx,
+                            &html,
+                            &theme,
+                            move || {
+                                let _ = focus_entity
+                                    .update(&mut *async_cx.borrow_mut(), |_, cx| cx.emit(Focus));
+                            },
+                        ) {
                             cx.defer(move |cx| {
                                 let _ = entity.update(cx, |pane, cx| {
                                     pane.surface.borrow_mut().clear();

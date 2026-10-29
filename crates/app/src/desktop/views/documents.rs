@@ -207,7 +207,7 @@ pub(super) fn reader(pane: &ViewPane, cx: &mut Context<ViewPane>) -> AnyElement 
                 if let Err(error) =
                     surface
                         .borrow_mut()
-                        .paint(bounds, window, &html, &theme, move || {
+                        .paint(bounds, window, cx, &html, &theme, move || {
                             let _ = focus_entity.update(&mut *async_cx.borrow_mut(), |_, cx| {
                                 cx.emit(ViewEvent::Focus)
                             });

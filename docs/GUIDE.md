@@ -312,14 +312,15 @@ backbone documents publish --file revised.html --title "Explanation" --supersede
 
 Documents need an Agent Backbone version with the Documents API. Older or
 unavailable providers show an explicit error. Rich HTML renders inside the app
-on macOS; the Linux reader currently shows that HTML rendering is unavailable.
+on macOS and Linux, including Windows through WSLg. Linux uses WebKitGTK 4.1
+and X11 (XWayland on Wayland desktops and WSLg).
 Self-contained HTML is limited to 4 MiB, including inline assets. Network
 requests, external resources, new windows, downloads and host-command access
 are disabled. Native terminal rendering is unchanged.
 
 Existing **Artifacts** panes hold agent-created HTML documents in the current
-library and work without Backbone. This experimental renderer is available on
-macOS but is no longer offered in the new-pane chooser.
+library and work without Backbone. This legacy view uses the same system renderer as Documents but is no longer
+offered in the new-pane chooser.
 To publish a document from the source build:
 
 ```sh

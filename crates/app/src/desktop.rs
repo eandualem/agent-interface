@@ -77,6 +77,8 @@ actions!(
 /// Open the native workspace window and connect its saved, existing sessions.
 /// An absent directory uses the shared library's normal path lookup.
 pub fn run(directory: Option<PathBuf>) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    views::artifact_web::initialize_linux()?;
     let source = crate::sessions::source_socket(None).map_err(|e| e.to_string());
     let preferences = settings::load();
     preferences.apply();
@@ -95,6 +97,8 @@ pub fn run(directory: Option<PathBuf>) -> Result<(), String> {
                 cx.spawn(async |cx| cx.update(|cx| cx.quit())).detach();
                 return;
             }
+            #[cfg(target_os = "linux")]
+            views::artifact_web::pump_linux(cx);
             configure_menu(cx);
             cx.on_app_quit(move |_| {
                 // The synchronous observer runs before GPUI's short async quit

@@ -25,14 +25,15 @@ brew install tmux
 ```
 
 On Linux, the desktop must provide system fonts, fontconfig, FreeType, XCB, xkbcommon,
-xkbcommon-x11, and a usable Vulkan or EGL/OpenGL driver. Wayland sessions also
-need the Wayland client library. **Open Library…** uses `xdg-desktop-portal` and
+xkbcommon-x11, and a usable Vulkan or EGL/OpenGL driver. HTML Documents need WebKitGTK 4.1. Wayland sessions also
+need the Wayland client library and XWayland; the app uses X11 for embedded
+Documents on both Wayland desktops and WSLg. **Open Library…** uses `xdg-desktop-portal` and
 a portal backend for your desktop, normally installed by the distribution.
 On Ubuntu 24.04, the basic runtime packages are:
 
 ```sh
 sudo apt install curl tmux fonts-dejavu-core libfontconfig1 libfreetype6 libxcb1 libxkbcommon0 \
-  libxkbcommon-x11-0 libwayland-client0 libvulkan1 libegl1 xdg-desktop-portal
+  libxkbcommon-x11-0 libwayland-client0 libvulkan1 libegl1 libwebkit2gtk-4.1-0 xwayland xdg-desktop-portal
 ```
 
 Keep your desktop's portal backend and GPU driver installed. A headless server
