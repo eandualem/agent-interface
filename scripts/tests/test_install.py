@@ -360,7 +360,8 @@ case "$1 $2" in
         if [ "${FIXTURE_SHELL_FAIL:-0}" != 0 ]; then
             echo 'error: PATH is stale but the Bash configuration files are already up-to-date' >&2
             exit 1
-        fi;;
+        fi
+        echo 'Restart your shell to apply changes' >&2;;
     *) exit 1;;
 esac
 ''')
@@ -368,7 +369,9 @@ esac
     def test_latest_provider_install_and_pending_resume_order(self):
         self.backbone_tools()
         archive = self.package("0.2.0", extra={"agent-interface/setup_backbone.py": "fixture helper"})
-        self.install(archive)
+        first = self.install(archive)
+        self.assertIn('Backbone command: "' + self.env["FIXTURE_BIN"] + '/backbone"', first.stdout)
+        self.assertIn("Restart your shell to apply changes", first.stderr)
         log = Path(self.env["FIXTURE_LOG"])
         lines = log.read_text().splitlines()
         self.assertIn("tool install --upgrade --prerelease disallow --python >=3.11,<3.14 agent-backbone>=0.4.1", lines)
@@ -386,8 +389,9 @@ esac
         self.env["FIXTURE_SHELL_FAIL"] = "1"
         result = self.install(self.package(extra={"agent-interface/setup_backbone.py": "fixture helper"}))
         self.assertTrue(self.link.is_symlink())
-        self.assertIn("Shell PATH was not refreshed", result.stdout)
-        self.assertNotIn("error: PATH", result.stderr)
+        self.assertIn('Backbone command: "' + self.env["FIXTURE_BIN"] + '/backbone"', result.stdout)
+        self.assertIn("Shell setup notice (app installation will continue)", result.stderr)
+        self.assertIn("Bash configuration files are already up-to-date", result.stderr)
         self.assertIn("Starting and checking Agent Backbone: done.", result.stderr)
 
     def test_quiet_setup_reports_elapsed_time_and_cleans_up_progress(self):

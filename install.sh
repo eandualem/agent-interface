@@ -339,7 +339,7 @@ if [ -f "$resources/setup_backbone.py" ]; then
             uv_hash=$(shasum -a 256 "$staging/uv-install.sh" | awk '{print $1}')
         fi
         [ "$uv_hash" = f7a56e7afaec49a3bcbc3ac3cdbe917e7c6ce30e0d815308a12e531aa5ef23b7 ] || fail 'Python installer checksum mismatch.'
-        UV_INSTALL_DIR="$HOME/.local/bin" run_step 'Installing Python tools' sh "$staging/uv-install.sh" || fail 'Could not install uv.'
+        run_step 'Installing Python tools' env UV_INSTALL_DIR="$HOME/.local/bin" sh "$staging/uv-install.sh" || fail 'Could not install uv.'
         uv=$HOME/.local/bin/uv
     fi
     tools=$("$uv" tool dir) || fail 'Could not locate the Agent Backbone installation directory.'
@@ -366,13 +366,15 @@ if [ -f "$resources/setup_backbone.py" ]; then
         # files are already correct but this terminal still has its old PATH.
         # App setup uses absolute executables regardless of shell configuration.
         if ! "$uv" tool update-shell > "$staging/shell-setup.log" 2>&1; then
-            printf 'Shell PATH was not refreshed. Backbone commands are available at: %s/backbone\n' "$tool_bin"
+            printf '%s\n' 'Shell setup notice (app installation will continue):' >&2
         fi
+        cat "$staging/shell-setup.log" >&2
+        printf 'Backbone command: "%s/backbone"\n' "$tool_bin"
         PATH="$tool_bin:$PATH"
         export PATH
         tools=$("$uv" tool dir) || fail 'Could not locate the installed Agent Backbone.'
-        PATH="$tools/agent-backbone/bin:$(dirname "$uv"):$PATH" \
-        run_step 'Starting and checking Agent Backbone' "$tools/agent-backbone/bin/python" -I -B "$resources/setup_backbone.py" \
+        run_step 'Starting and checking Agent Backbone' env PATH="$tools/agent-backbone/bin:$(dirname "$uv"):$PATH" \
+            "$tools/agent-backbone/bin/python" -I -B "$resources/setup_backbone.py" \
             --executable "$tools/agent-backbone/bin/backbone" ||
             fail 'Agent Backbone setup did not finish. The app was not replaced; rerun this installer to resume.'
     else
