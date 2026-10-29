@@ -1,5 +1,5 @@
 #!/bin/sh
-# Install the native desktop app for the current user. No sudo or build tools.
+# Install the native desktop app for the current user. No build tools.
 set -eu
 
 # Wait for the complete script before changing anything when piped from curl.
@@ -42,6 +42,9 @@ fi
 legacy=
 legacy_link=
 legacy_launcher=
+wsl_launcher=
+wsl_launcher_backup=
+new_wsl_launcher=false
 if [ "$platform" = apple-darwin ]; then
     parent=$HOME/Applications
     destination="$parent/Agent Interface.app"
@@ -63,6 +66,17 @@ else
     link=$HOME/.local/bin/agent-interface
     legacy_link=$HOME/.local/bin/tmux-workspaces
     legacy_launcher=$data/applications/io.github.eandualem.tmux-workspaces.desktop
+    if [ -n "${WSL_DISTRO_NAME:-}" ]; then
+        # WSLg scans system application directories, not XDG_DATA_HOME.
+        # Keep the desktop ID aligned with the window ID for taskbar grouping.
+        wsl_launcher=/usr/share/applications/io.github.eandualem.agent-interface.desktop
+        if [ -e "$wsl_launcher" ] || [ -L "$wsl_launcher" ]; then
+            [ ! -L "$wsl_launcher" ] && [ -f "$wsl_launcher" ] &&
+                grep -qx 'X-AgentInterface-Installer=1' "$wsl_launcher" &&
+                grep -Fqx "X-AgentInterface-Home=$HOME" "$wsl_launcher" ||
+                fail "Refusing to replace $wsl_launcher."
+        fi
+    fi
     if [ -e "$launcher" ] || [ -L "$launcher" ]; then
         [ -f "$launcher" ] && grep -qx 'X-AgentInterface-Installer=1' "$launcher" || fail "Refusing to replace $launcher."
     fi
@@ -112,6 +126,17 @@ cleanup() {
     set +e
     rollback_ok=true
     if [ "$status" -ne 0 ]; then
+        if [ "$new_wsl_launcher" = true ]; then
+            if [ -n "$wsl_launcher_backup" ]; then
+                if ! sudo install -m 644 -- "$wsl_launcher_backup" "$wsl_launcher"; then
+                    printf 'Previous Windows launcher retained at %s\n' "$wsl_launcher_backup" >&2
+                    rollback_ok=false
+                fi
+            elif ! sudo rm -f -- "$wsl_launcher"; then
+                printf 'Could not remove Windows launcher %s\n' "$wsl_launcher" >&2
+                rollback_ok=false
+            fi
+        fi
         if [ "$installed" = true ]; then rm -rf "$destination"; fi
         if [ "$new_link" = true ]; then rm -f "$link"; fi
         if [ -n "$link_backup" ] && [ -L "$link_backup" ]; then
@@ -167,6 +192,33 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
 staging=$(mktemp -d "$parent/.agent-interface-stage.XXXXXX")
+if [ -n "$wsl_launcher" ]; then
+    [ -n "${WAYLAND_DISPLAY:-}${DISPLAY:-}" ] ||
+        fail 'This installation needs WSL 2 with GUI support (WSLg). See the Windows installation guide.'
+    command -v apt-get >/dev/null 2>&1 && command -v dpkg-query >/dev/null 2>&1 ||
+        fail 'Automatic WSL setup requires Ubuntu 24.04 or newer.'
+    command -v sudo >/dev/null 2>&1 || fail 'WSL setup requires sudo for runtime packages and the Windows launcher.'
+    printf '%s\n' 'Preparing WSL runtime packages and Windows Start menu entry. sudo may ask for your Linux password.'
+    sudo -v || fail 'Could not authorize WSL runtime and launcher installation.'
+    missing=
+    for package in tmux git fonts-dejavu-core libfontconfig1 libfreetype6 libxcb1 libxkbcommon0 \
+        libxkbcommon-x11-0 libwayland-client0 libvulkan1 libegl1 libgl1-mesa-dri \
+        mesa-vulkan-drivers xdg-desktop-portal xdg-desktop-portal-gtk; do
+        if [ "$(dpkg-query -W -f='${Status}' "$package" 2>/dev/null || true)" != 'install ok installed' ]; then
+            missing="$missing $package"
+        fi
+    done
+    if [ -n "$missing" ]; then
+        sudo apt-get update || fail 'Could not refresh Ubuntu package information.'
+        # The list contains only the fixed package names above.
+        # shellcheck disable=SC2086
+        sudo apt-get install -y $missing || fail 'Could not install the WSL runtime packages.'
+    fi
+    if [ -f "$wsl_launcher" ]; then
+        wsl_launcher_backup=$staging/previous-wsl-launcher
+        cp "$wsl_launcher" "$wsl_launcher_backup"
+    fi
+fi
 if [ -n "$archive" ]; then
     [ -f "$archive" ] && [ -f "$archive.sha256" ] || fail 'The archive and its adjacent .sha256 file are required.'
     cp "$archive" "$staging/download.tar.gz"
@@ -267,7 +319,7 @@ if [ -f "$resources/setup_backbone.py" ]; then
         fi
     fi
     if [ "$backbone_resumed" = false ]; then
-        "$uv" tool install --upgrade --prerelease disallow --python '>=3.11,<3.14' 'agent-backbone>=0.4.0' ||
+        "$uv" tool install --upgrade --prerelease disallow --python '>=3.11,<3.14' 'agent-backbone>=0.4.1' ||
             fail 'Could not install a compatible published Agent Backbone release. The app was not replaced.'
         "$uv" tool update-shell || fail 'Could not make Agent Backbone available to new terminals.'
         tools=$("$uv" tool dir) || fail 'Could not locate the installed Agent Backbone.'
@@ -302,6 +354,7 @@ Categories=Development;System;TerminalEmulator;
 Keywords=tmux;terminal;workspace;
 StartupWMClass=$(cat "$prepared/$marker")
 X-AgentInterface-Installer=1
+X-AgentInterface-Home=$HOME
 EOF
 fi
 if [ -e "$destination" ]; then
@@ -326,6 +379,12 @@ if [ "$platform" = unknown-linux-gnu ]; then
     fi
     new_launcher=true
     mv -f "$launcher_stage" "$launcher"
+    chmod 644 "$launcher"
+    if [ -n "$wsl_launcher" ]; then
+        new_wsl_launcher=true
+        sudo install -m 644 -- "$launcher" "$wsl_launcher" ||
+            fail 'Could not register Agent Interface in Windows Start. The app update will be rolled back.'
+    fi
     if [ -L "$legacy_link" ]; then
         legacy_link_backup=$staging/legacy-link
         mv "$legacy_link" "$legacy_link_backup"
@@ -348,8 +407,12 @@ if [ "$platform" = apple-darwin ]; then
         'This app is ad-hoc signed, not notarized. If macOS blocks the first launch,' \
         'use System Settings > Privacy & Security > Open Anyway for this app.'
 else
-    printf '%s\n' 'Open Agent Interface from your applications menu.' \
-        "For the command line, add $HOME/.local/bin to PATH if needed."
+    if [ -n "$wsl_launcher" ]; then
+        printf '%s\n' "Open Agent Interface under $WSL_DISTRO_NAME in Windows Start."
+    else
+        printf '%s\n' 'Open Agent Interface from your applications menu.'
+    fi
+    printf 'Or run: "%s/.local/bin/agent-interface"\n' "$HOME"
 fi
 if ! command -v tmux >/dev/null 2>&1 && [ ! -x /opt/homebrew/bin/tmux ] && [ ! -x /usr/local/bin/tmux ]; then
     printf '%s\n' 'Install tmux 3.3 or newer before opening terminal panes (see the installation guide).'

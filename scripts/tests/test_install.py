@@ -26,6 +26,8 @@ class InstallTests(unittest.TestCase):
         self.command("getconf", "echo glibc 2.39")
         self.env = dict(os.environ, HOME=str(self.home), PATH=str(self.tools) + os.pathsep + os.environ["PATH"])
         self.env.pop("XDG_DATA_HOME", None)
+        self.env.pop("WSL_DISTRO_NAME", None)
+        self.installer = INSTALL
         self.destination = self.home / ".local/lib/agent-interface"
         self.launcher = self.home / f".local/share/applications/{APP_ID}.desktop"
         self.link = self.home / ".local/bin/agent-interface"
@@ -62,9 +64,67 @@ class InstallTests(unittest.TestCase):
 
     def install(self, archive, success=True):
         args = ["--archive", str(archive)] if archive else []
-        result = subprocess.run(["sh", str(INSTALL), *args], env=self.env, capture_output=True, text=True)
+        result = subprocess.run(["sh", str(self.installer), *args], env=self.env, capture_output=True, text=True)
         self.assertEqual(result.returncode == 0, success, result.stdout + result.stderr)
         return result
+
+    def wsl(self):
+        # Redirect the one system path into the fixture. sudo is always inert;
+        # these tests never write system launchers or install real packages.
+        self.system_apps = self.root / "system-applications"
+        self.system_apps.mkdir()
+        self.installer = self.root / "install.sh"
+        self.installer.write_text(INSTALL.read_text().replace(
+            "/usr/share/applications", str(self.system_apps)))
+        self.env.update(WSL_DISTRO_NAME="Ubuntu", DISPLAY=":0",
+                        TEST_SYSTEM_ACTIONS=str(self.root / "system-actions"))
+        self.command("dpkg-query", "exit 1")
+        self.command("apt-get", "exit 99")
+        self.command("sudo", '''
+printf '%s\\n' "$*" >> "$TEST_SYSTEM_ACTIONS"
+case "$1" in
+    -v) exit 0;;
+    apt-get) exit 0;;
+    install)
+        if [ "${TEST_FAIL_SHORTCUT:-}" = yes ]; then exit 1; fi
+        shift; exec /usr/bin/install "$@";;
+    rm) shift; exec /bin/rm "$@";;
+    *) exit 99;;
+esac
+''')
+        return self.system_apps / f"{APP_ID}.desktop"
+
+    def test_wsl_installs_runtime_and_registers_start_menu_entry(self):
+        shortcut = self.wsl()
+        result = self.install(self.package())
+        self.assertEqual(shortcut.read_bytes(), self.launcher.read_bytes())
+        self.assertEqual(shortcut.stat().st_mode & 0o777, 0o644)
+        self.assertIn("Windows Start", result.stdout)
+        actions = (self.root / "system-actions").read_text()
+        self.assertIn("apt-get update", actions)
+        self.assertIn("apt-get install -y tmux git", actions)
+        self.command("dpkg-query", "printf 'install ok installed'")
+        (self.root / "system-actions").write_text("")
+        self.install(self.package("0.0.1"))
+        self.assertNotIn("apt-get", (self.root / "system-actions").read_text())
+
+    def test_wsl_shortcut_failure_rolls_back_app(self):
+        self.install(self.package("0.0.0"))
+        before = self.launcher.read_bytes()
+        shortcut = self.wsl()
+        self.env["TEST_FAIL_SHORTCUT"] = "yes"
+        self.install(self.package("0.0.1"), success=False)
+        self.assertFalse(shortcut.exists())
+        self.assertEqual(self.launcher.read_bytes(), before)
+        self.assertEqual(subprocess.check_output([self.link], text=True).strip(),
+                         "agent-interface 0.0.0")
+
+    def test_wsl_preserves_unowned_system_launcher(self):
+        shortcut = self.wsl()
+        shortcut.write_text("[Desktop Entry]\nName=Another installation\n")
+        self.install(self.package(), success=False)
+        self.assertEqual(shortcut.read_text(), "[Desktop Entry]\nName=Another installation\n")
+        self.assertFalse((self.root / "system-actions").exists())
 
     def mock_download(self, archive, prefix="tmux-workspaces", missing_status="404"):
         self.env.update(TEST_ARCHIVE=str(archive), TEST_PREFIX=prefix,
@@ -299,7 +359,7 @@ esac
         self.install(archive)
         log = Path(self.env["FIXTURE_LOG"])
         lines = log.read_text().splitlines()
-        self.assertIn("tool install --upgrade --prerelease disallow --python >=3.11,<3.14 agent-backbone>=0.4.0", lines)
+        self.assertIn("tool install --upgrade --prerelease disallow --python >=3.11,<3.14 agent-backbone>=0.4.1", lines)
         self.assertTrue(lines[-1].startswith("-I -B "))
         self.env["FIXTURE_RESUME"] = "3"
         log.write_text("")

@@ -10,9 +10,9 @@ mod setup;
 use std::time::Duration;
 
 use gpui::{
-    Animation, AnimationExt, App, Bounds, BoxShadow, ClipboardItem, Context, Entity, Global, Rgba,
-    SharedString, Subscription, TitlebarOptions, Window, WindowBounds, WindowHandle, WindowOptions,
-    div, point, prelude::*, px, size,
+    Animation, AnimationExt, App, Bounds, BoxShadow, ClipboardItem, Context, Entity, Global,
+    Pixels, Rgba, SharedString, Size, Subscription, TitlebarOptions, Window, WindowBounds,
+    WindowHandle, WindowOptions, div, point, prelude::*, px, size,
 };
 
 use self::probe::{Backbone, Probe, TOOLS};
@@ -29,19 +29,10 @@ const TAGLINE: &str = "Your agents. Working together. On your machine.";
 const STEPS: [&str; 4] = ["Check", "Agent tools", "Your agent", "Shortcuts"];
 
 /// Whether this launch opens through setup instead of the workspace window:
-/// setup was started but not finished, or nothing has been saved yet.
+/// only a completed setup skips onboarding. Existing libraries and preferences
+/// may predate onboarding and do not establish that setup was completed.
 pub fn first_run(preferences: &Settings) -> bool {
-    !preferences.setup_done && (preferences.intro_seen || fresh_install())
-}
-
-/// No settings file and no library: this app has never run here.
-fn fresh_install() -> bool {
-    let settings = settings::path()
-        .and_then(|path| Some(path.parent()?.parent()?.to_owned()))
-        .is_some_and(|config| crate::compat::config_file(&config, "settings.toml").exists());
-    let library = crate::library::location::library_location(None)
-        .is_ok_and(|path| path.join("layouts.db").exists());
-    !settings && !library
+    !preferences.setup_done
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -84,7 +75,7 @@ pub fn show(intro: bool, cx: &mut App) -> Result<(), String> {
             size(px(t.size.settings_width), px(t.size.settings_height)),
             cx,
         ))),
-        is_resizable: false,
+        is_resizable: true,
         titlebar: Some(TitlebarOptions {
             title: Some("Welcome to Agent Interface".into()),
             appears_transparent: true,
@@ -157,7 +148,119 @@ fn remember(update: impl FnOnce(&mut Settings)) {
     });
 }
 
+fn resize_limit(
+    current: Bounds<Pixels>,
+    visible: Bounds<Pixels>,
+    bottom_anchor: bool,
+) -> Size<Pixels> {
+    // AppKit keeps the bottom edge fixed; Linux grows from the top edge.
+    let height = if bottom_anchor {
+        current.bottom() - visible.origin.y
+    } else {
+        visible.bottom() - current.origin.y
+    };
+    size(
+        (visible.right() - current.origin.x - px(16.)).max(px(1.)),
+        (height - px(16.)).max(px(1.)),
+    )
+}
+
 impl Onboarding {
+    fn scale_controls(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let (t, c) = (tokens(), colors());
+        let percent = Settings::current().interface_size;
+        let sizes = super::zoom::SIZES;
+        let at = sizes.iter().position(|size| *size == percent).unwrap_or(1);
+        let button = |id, label, next: Option<u32>| {
+            ui::button(id, label, Button::Secondary)
+                .opacity(if next.is_some() { 1.0 } else { 0.4 })
+                .when_some(next, |el, next| {
+                    el.on_click(cx.listener(move |_, _, window, cx| {
+                        remember(|settings| settings.interface_size = next);
+                        if !window.is_maximized() && !window.is_fullscreen() {
+                            let wayland = raw_window_handle::HasWindowHandle::window_handle(window)
+                                .is_ok_and(|handle| {
+                                    matches!(
+                                        handle.as_raw(),
+                                        raw_window_handle::RawWindowHandle::Wayland(_)
+                                    )
+                                });
+                            if wayland {
+                                // Wayland owns placement and does not expose a
+                                // global window origin. Let the compositor fit
+                                // larger text instead of mixing local/global bounds.
+                                if next > percent {
+                                    if window.window_controls().maximize {
+                                        window.zoom_window();
+                                    } else if let Some(display) = window.display(cx) {
+                                        // Some compositors do not offer maximize.
+                                        // Only the output's extent is meaningful here.
+                                        window.resize(
+                                            size(
+                                                px(tokens().size.settings_width),
+                                                px(tokens().size.settings_height),
+                                            )
+                                            .min(&display.visible_bounds().size),
+                                        );
+                                    }
+                                }
+                            } else {
+                                // Both bounds use the new zoom factor. Respect the
+                                // platform's fixed edge when growing the window.
+                                let current = window.bounds();
+                                let available =
+                                    window.display(cx).map_or(current.size, |display| {
+                                        resize_limit(
+                                            current,
+                                            display.visible_bounds(),
+                                            cfg!(target_os = "macos"),
+                                        )
+                                    });
+                                window.resize(
+                                    size(
+                                        px(tokens().size.settings_width),
+                                        px(tokens().size.settings_height),
+                                    )
+                                    .min(&available),
+                                );
+                            }
+                        }
+                        cx.defer(|cx| {
+                            for handle in cx.windows() {
+                                let _ = handle.update(cx, |_, window, cx| {
+                                    #[cfg(target_os = "macos")]
+                                    window.set_traffic_light_position(point(
+                                        px(tokens().size.window_controls_x),
+                                        px(tokens().size.window_controls_y),
+                                    ));
+                                    window.bounds_changed(cx);
+                                });
+                            }
+                        });
+                        cx.refresh_windows();
+                    }))
+                })
+        };
+        div()
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .justify_end()
+            .gap(px(t.space.s8))
+            .px(px(t.space.s24))
+            .py(px(t.space.s8))
+            .border_t(px(t.size.hairline))
+            .border_color(c.line)
+            .child("Interface size")
+            .child(button(
+                "setup-smaller",
+                "−",
+                at.checked_sub(1).map(|at| sizes[at]),
+            ))
+            .child(format!("{percent}%"))
+            .child(button("setup-larger", "+", sizes.get(at + 1).copied()))
+    }
+
     fn check(&mut self, cx: &mut Context<Self>) {
         if self.checking {
             return;
@@ -391,10 +494,16 @@ impl Onboarding {
         for (command, name, install) in TOOLS {
             let path = probe.and_then(|probe| probe.path(command));
             any |= path.is_some();
-            let note = match path {
+            let mut note = match path {
                 Some(path) => format!("Installed at {}", path.display()),
+                None if cfg!(target_os = "linux") => {
+                    "Not installed. Run this in a Linux terminal; on Windows, use WSL.".into()
+                }
                 None => "Not installed. Paste this in a terminal to add it.".into(),
             };
+            if *command == "opencode" {
+                note.push_str(" Agent setup requires OpenCode 2.1.4 or newer; this command installs or updates OpenCode 2.");
+            }
             let state = match (probe, path) {
                 (None, _) => (Tone::Plain, "Checking"),
                 (_, Some(_)) => (Tone::Tag, "Installed"),
@@ -405,7 +514,7 @@ impl Onboarding {
                 name,
                 note,
                 state,
-                path.is_none().then_some(*install),
+                (path.is_none() || *command == "opencode").then_some(*install),
                 cx,
             ));
         }
@@ -503,13 +612,16 @@ impl Render for Onboarding {
             div()
                 .size_full()
                 .flex()
+                .flex_col()
                 .bg(c.surface)
                 .text_color(c.text)
                 .font_family(t.font.ui.clone()),
             &t.text.row,
         );
         let Stage::Step(index) = self.stage else {
-            let body = root.child(self.scene());
+            let body = root
+                .child(div().flex_1().min_h_0().child(self.scene()))
+                .child(self.scale_controls(cx));
             return super::window_controls::frame(body, "Welcome", window);
         };
         if index == 2
@@ -533,6 +645,7 @@ impl Render for Onboarding {
             });
             self.first_events = Some(cx.subscribe(&first, |view, _, event, cx| {
                 match event {
+                    first::FirstEvent::RefreshTools => view.check(cx),
                     first::FirstEvent::Pending => {
                         view.first_ready = false;
                         view.first_agent = None;
@@ -583,6 +696,8 @@ impl Render for Onboarding {
         let can_continue = index != 2 || self.first_ready;
         let footer = div()
             .flex()
+            .flex_wrap()
+            .flex_shrink_0()
             .items_center()
             .gap(px(t.space.s8))
             .px(px(t.space.s24))
@@ -661,25 +776,29 @@ impl Render for Onboarding {
                     }
                 })),
             );
-        let body = root.child(self.rail()).child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .h_full()
-                .flex()
-                .flex_col()
-                .child(
+        let body = root
+            .child(
+                div().flex().flex_1().min_h_0().child(self.rail()).child(
                     div()
-                        .id("setup-page")
                         .flex_1()
-                        .min_h_0()
-                        .pt(px(t.size.titlebar))
-                        .px(px(t.space.s24))
-                        .overflow_y_scroll()
-                        .child(page),
-                )
-                .child(footer),
-        );
+                        .min_w_0()
+                        .h_full()
+                        .flex()
+                        .flex_col()
+                        .child(
+                            div()
+                                .id("setup-page")
+                                .flex_1()
+                                .min_h_0()
+                                .pt(px(t.size.titlebar))
+                                .px(px(t.space.s24))
+                                .overflow_y_scroll()
+                                .child(page),
+                        )
+                        .child(footer),
+                ),
+            )
+            .child(self.scale_controls(cx));
         super::window_controls::frame(body, "Welcome", window)
     }
 }
@@ -913,6 +1032,38 @@ fn rgba(hex: u32, alpha: f32) -> Rgba {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn enlarged_setup_stays_visible_for_both_resize_anchors() {
+        // A 768px display at 200%, with setup near either vertical edge.
+        let visible = Bounds::new(point(px(0.), px(12.)), size(px(683.), px(360.)));
+        for top in [px(20.), px(120.)] {
+            let current = Bounds::new(point(px(170.), top), size(px(340.), px(240.)));
+            for bottom_anchor in [false, true] {
+                let extent =
+                    size(px(680.), px(480.)).min(&resize_limit(current, visible, bottom_anchor));
+                let y = if bottom_anchor {
+                    current.bottom() - extent.height
+                } else {
+                    top
+                };
+                let resized = Bounds::new(point(current.origin.x, y), extent);
+                assert!(resized.origin.y >= visible.origin.y);
+                assert!(resized.bottom() <= visible.bottom());
+                assert!(resized.right() <= visible.right());
+            }
+        }
+    }
+
+    #[test]
+    fn only_completed_setup_skips_onboarding() {
+        let mut preferences = Settings::parse("theme = \"light\"\nfont_size = 14\n");
+        assert!(first_run(&preferences));
+        preferences.intro_seen = true;
+        assert!(first_run(&preferences));
+        preferences.setup_done = true;
+        assert!(!first_run(&preferences));
+    }
 
     #[test]
     fn the_scene_builds_then_dissolves() {

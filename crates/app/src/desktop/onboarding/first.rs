@@ -16,6 +16,7 @@ use crate::desktop::{
 };
 
 pub enum FirstEvent {
+    RefreshTools,
     Pending,
     Ready(String),
     Existing,
@@ -455,7 +456,7 @@ impl Render for FirstAgent {
                     if !runtime.setup_supported {
                         " · setup unavailable"
                     } else if !runtime.available {
-                        " · not installed"
+                        " · unavailable"
                     } else {
                         ""
                     }
@@ -486,7 +487,7 @@ impl Render for FirstAgent {
             }));
             page = page.child(
                 ui::button("refresh-tools", "Check tools again", Button::Secondary)
-                    .on_click(cx.listener(|first, _, _, cx| first.discover(cx))),
+                    .on_click(cx.listener(|_, _, _, cx| cx.emit(FirstEvent::RefreshTools))),
             );
             let folder = self
                 .folder(cx)
