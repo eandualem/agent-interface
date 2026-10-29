@@ -30,7 +30,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-15, ubuntu-24.04]
+        os: [macos-15, ubuntu-24.04, ubuntu-24.04-arm]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
@@ -104,7 +104,7 @@ jobs:
         if: always() && runner.os == 'Linux'
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0, MIT
         with:
-          name: linux-desktop-smoke
+          name: linux-desktop-smoke-${{ matrix.os }}
           path: |
             target/linux-desktop-smoke/
             target/linux-documents-smoke/
