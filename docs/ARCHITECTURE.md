@@ -714,9 +714,11 @@ ordinary typing and text editing stay in WebKit; authored IPC cannot invoke
 those shortcuts. The child follows pane bounds, interface zoom, theme and overlay visibility;
 closing or hiding a document destroys its ephemeral view. Child placement uses
 physical pixels on Linux, and page zoom compensates for GPUI's fractional display
-scale versus GTK's integer scale. Teardown traps GDK X errors around Wry's destroy:
-closing the GPUI parent may already have destroyed its child XID. Expected
-BadWindow errors at destruction are harmless; other teardown errors are logged.
+scale versus GTK's integer scale. Teardown and queued GTK event dispatch trap
+GDK X errors: closing the GPUI parent can destroy its child XID before a queued
+property update runs. Expected BadWindow errors are logged at debug level; other
+X errors are warnings. The trap is scoped to the document bridge, so a late child
+update cannot terminate other native windows.
 Native document clicks focus the GTK child so moving the pointer does not redirect
 subsequent typing. Native interface clicks restore X input focus to the original GPUI parent, not GTK's
 intermediary window. GTK retains its registered GdkWindow, reparented beneath the

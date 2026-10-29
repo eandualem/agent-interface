@@ -28,25 +28,51 @@ impl std::ops::Deref for NativeView {
     }
 }
 
+/// GDK may process queued property changes after GPUI closes a foreign X11
+/// parent. Both immediate destruction and later main-loop dispatch can then
+/// encounter BadWindow; neither should terminate unrelated native windows.
 #[cfg(target_os = "linux")]
-impl Drop for NativeView {
-    fn drop(&mut self) {
+struct LinuxXErrorTrap {
+    display: Option<gdkx11::X11Display>,
+    event: &'static str,
+}
+
+#[cfg(target_os = "linux")]
+impl LinuxXErrorTrap {
+    fn new(event: &'static str) -> Self {
         use gtk::prelude::Cast;
-        // GPUI may already have destroyed the parent X window, which also
-        // destroys its children. Trap only teardown's X errors so Wry's final
-        // XDestroyWindow cannot turn that normal ordering into a fatal BadWindow.
         let display = gtk::gdk::Display::default()
             .and_then(|display| display.downcast::<gdkx11::X11Display>().ok());
         if let Some(display) = &display {
             display.error_trap_push();
         }
-        drop(self.0.take());
-        if let Some(display) = display {
+        Self { display, event }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for LinuxXErrorTrap {
+    fn drop(&mut self) {
+        if let Some(display) = &self.display {
             let error = display.error_trap_pop();
-            if error != 0 && error != 3 {
-                tracing::warn!(event = "document_teardown_x_error", code = error);
+            if error == 3 {
+                tracing::debug!(
+                    event = self.event,
+                    code = error,
+                    "document X window already closed"
+                );
+            } else if error != 0 {
+                tracing::warn!(event = self.event, code = error);
             }
         }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for NativeView {
+    fn drop(&mut self) {
+        let _trap = LinuxXErrorTrap::new("document_teardown_x_error");
+        drop(self.0.take());
         LIVE_VIEWS.with(|count| count.set(count.get() - 1));
     }
 }
@@ -345,6 +371,7 @@ pub(in crate::desktop) fn pump_linux(cx: &mut gpui::App) {
                 .await;
             // Bound each dispatch so a busy page cannot starve GPUI. Dispatch
             // outside App::update: focus notifications may update a GPUI entity.
+            let _trap = LinuxXErrorTrap::new("document_dispatch_x_error");
             let started = std::time::Instant::now();
             for _ in 0..64 {
                 if !gtk::events_pending()

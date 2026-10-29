@@ -158,10 +158,11 @@ try { new WebSocket('TARGET/socket'.replace('http:', 'ws:')); } catch (_) {}
                 assert app.poll() is None, 'application exited'
                 command('import', '-window', window, str(OUTPUT / 'current.png'))
                 tsv = command('tesseract', str(OUTPUT / 'current.png'), 'stdout', 'tsv')
+                (OUTPUT / 'current.tsv').write_text(tsv)
                 return list(csv.DictReader(io.StringIO(tsv), delimiter='\t'))
 
             def find(text, last=False):
-                found = [word for word in words() if (word.get('text') or '').strip() == text]
+                found = [word for word in words() if (word.get('text') or '').strip().rstrip('.,:;') == text]
                 found.sort(key=lambda word: (int(word['top']), int(word['left'])))
                 return (found[-1] if last else found[0]) if found else None
 
