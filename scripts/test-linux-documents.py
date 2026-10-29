@@ -132,7 +132,7 @@ try { new WebSocket('TARGET/socket'.replace('http:', 'ws:')); } catch (_) {}
         return subprocess.run(args, env=env, text=True, capture_output=True,
                               timeout=15, check=check).stdout.strip()
 
-    app = wm = None
+    app = wm = window = None
     with (OUTPUT / 'app.txt').open('w') as app_log, (OUTPUT / 'wm.txt').open('w') as wm_log:
         try:
             subprocess.run(['xrdb', '-merge'], input=f'Xft.dpi: {DPI}\n', text=True, env=env, check=True)
@@ -154,6 +154,7 @@ try { new WebSocket('TARGET/socket'.replace('http:', 'ws:')); } catch (_) {}
 
             def find(text, last=False):
                 found = [word for word in words() if (word.get('text') or '').strip() == text]
+                found.sort(key=lambda word: (int(word['top']), int(word['left'])))
                 return (found[-1] if last else found[0]) if found else None
 
             def click(text, last=False):
@@ -272,6 +273,12 @@ try { new WebSocket('TARGET/socket'.replace('http:', 'ws:')); } catch (_) {}
                 scale=SCALE, dpi=DPI, sandbox_pids=sandbox_pids, requests=requests), indent=2))
             print('Linux Documents smoke passed')
         finally:
+            (OUTPUT / 'requests.json').write_text(json.dumps(requests, indent=2))
+            if app and app.poll() is None and window:
+                try:
+                    command('import', '-window', window, str(OUTPUT / 'current.png'))
+                except subprocess.SubprocessError:
+                    pass
             if app and app.poll() is None:
                 app.terminate()
                 app.wait(timeout=15)
