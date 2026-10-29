@@ -157,7 +157,9 @@ try { new WebSocket('TARGET/socket'.replace('http:', 'ws:')); } catch (_) {}
             def words():
                 assert app.poll() is None, 'application exited'
                 command('import', '-window', window, str(OUTPUT / 'current.png'))
-                tsv = command('tesseract', str(OUTPUT / 'current.png'), 'stdout', 'tsv')
+                # Desktop controls are sparse text, not a scanned page. Automatic
+                # page segmentation can omit the large HTML heading entirely.
+                tsv = command('tesseract', str(OUTPUT / 'current.png'), 'stdout', '--psm', '11', 'tsv')
                 (OUTPUT / 'current.tsv').write_text(tsv)
                 return list(csv.DictReader(io.StringIO(tsv), delimiter='\t'))
 
