@@ -70,9 +70,8 @@ and checks its checksum. No Rust or Python is needed.
 curl -fsSL https://raw.githubusercontent.com/eandualem/agent-interface/main/install.sh | sh
 ```
 
-**2. Add Agent Backbone.** Install it, start its service and set up your first
-agent with Backbone's [quick start](https://github.com/eandualem/agent-backbone#quick-start).
-Then [connect the app to it](docs/INSTALL.md#connect-agent-backbone).
+**2. Add Agent Backbone.** The app needs a Backbone newer than its 0.3.0
+release, so [install it from its repository and connect the app](docs/INSTALL.md#connect-agent-backbone).
 
 The [installation guide](docs/INSTALL.md) covers package architectures, manual
 downloads, the experimental Windows 11 / WSL route, updates and removal.

@@ -200,14 +200,25 @@ and the app's [diagnostic logging](GUIDE.md#find-work-and-change-appearance).
 
 The agents list and agent views read from a running
 [Agent Backbone](https://github.com/eandualem/agent-backbone) on the same
-computer. Install it and start its service with Backbone's
-[quick start](https://github.com/eandualem/agent-backbone#quick-start).
-
-The app sends Backbone's API key only over a private Unix socket. Enable one in
-Backbone's data directory, then restart its service so it binds the socket:
+computer. The app sends Backbone's API key only over a private Unix socket,
+which Backbone added after its 0.3.0 release. Until a newer release is
+published, install Backbone from its repository. This also replaces an
+existing installation made with `uv tool install`:
 
 ```sh
-mkdir -p -m 700 "$HOME/.local/share/agent-backbone/run"
+uv tool install git+https://github.com/eandualem/agent-backbone
+```
+
+Then set it up and start its service with Backbone's
+[quick start](https://github.com/eandualem/agent-backbone#quick-start),
+skipping its install command.
+
+Enable the socket in Backbone's data directory, then restart its service so it
+binds the socket:
+
+```sh
+mkdir -p "$HOME/.local/share/agent-backbone/run"
+chmod 700 "$HOME/.local/share/agent-backbone/run"
 backbone config set backbone.socket_path "$HOME/.local/share/agent-backbone/run/backbone.sock"
 backbone service restart
 ```
