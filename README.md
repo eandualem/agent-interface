@@ -1,90 +1,112 @@
+<div align="center">
+
+<img src="packaging/icon/agent-interface.svg" alt="" width="96">
+
 # Agent Interface
 
-**A native workspace for your agents and terminals.**
+**The native desktop for your agent team.**
 
-Run agents and shells in full native terminals, arranged in saved workspaces,
-tabs and split panes. Open live views of your agents' work right beside them,
-and attach the tmux sessions you already use without disconnecting. tmux keeps
-every process running; Agent Interface is the desktop around them.
+Run Claude Code, Codex and OpenCode agents in real terminals, see at a glance
+which one needs you, and read their reports and documents beside the work.
 
-[Get started](#get-started) · [User guide](docs/GUIDE.md) · [Contribute](CONTRIBUTING.md) · [Architecture](docs/ARCHITECTURE.md)
+[![Release](https://img.shields.io/github/v/release/eandualem/agent-interface)](https://github.com/eandualem/agent-interface/releases)
+[![CI](https://github.com/eandualem/agent-interface/actions/workflows/ci.yml/badge.svg?branch=develop)](https://github.com/eandualem/agent-interface/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-## What you can do
+[Website](https://agentinterface.dev) · [Install](#install) · [User guide](docs/GUIDE.md) · [Architecture](docs/ARCHITECTURE.md) · [Contribute](CONTRIBUTING.md)
 
-- Arrange terminal panes in saved tabs and workspaces.
-- Attach existing tmux sessions and switch between their windows.
-- Search tabs, panes and commands with Jump.
-- Choose a light or dark theme and customize keyboard shortcuts.
-- Follow live agent states, with animation while agents work.
-- Open Team, Activity, Usage, Skills, Policies and Tags views beside your
-  terminals, or inspect a single agent, through the built-in
-  [Agent Backbone](https://github.com/eandualem/agent-backbone) integration.
-- Revisit reports, answers and durable rich documents in **Reports & updates**
-  through Agent Backbone. Rich HTML rendering currently requires macOS.
-- Detach a session to reuse its pane, or close a tab while tmux manages its sessions.
+</div>
 
-The app draws terminals natively and needs no Python runtime. It can open
-existing schema-v2 libraries from
-[tmux-workspaces](https://github.com/eandualem/tmux-workspaces).
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/media/workspace-dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="docs/media/workspace-light.png">
+    <img alt="The Agent Interface window: a sidebar of tabs and agents with three needing attention, a builder agent's terminal, a reviewer agent asking a question, and the Skills view." src="docs/media/workspace-light.png">
+  </picture>
+</p>
+<p align="center"><em>Illustration with example data.</em></p>
 
-The executable and packages are named `agent-interface`. The desktop app is
-**Agent Interface**. Updates preserve existing libraries and settings.
+## One system for agent work
 
-## Get started
+Agent Interface and [Agent Backbone](https://github.com/eandualem/agent-backbone)
+work together. Backbone turns agents across CLIs and projects into one team, with
+names, safe messages, live state and continuity. Agent Interface is where you work
+with that team.
 
-Agent Interface runs on macOS and Linux and needs tmux 3.3 or newer. Native
-packages contain the compiled app; installing one needs no Rust, Zig or Python.
-Install the [runtime prerequisites](docs/INSTALL.md#runtime-prerequisites), then
-use the installer for a package available on the
-[releases page](https://github.com/eandualem/agent-interface/releases):
+- **Know who needs you.** Every agent shows as working, idle or waiting on you.
+  Click one to open the tab holding its session.
+- **Real terminals.** Panes are drawn natively with GPUI and Ghostty's terminal
+  core. tmux keeps every process running, and you can attach the sessions you
+  already use.
+- **The team beside the work.** Open Team, Activity, Usage, Skills, Policies and
+  Tags views in a pane, next to the agents they describe.
+- **Reports, answers and documents.** **Reports & updates** collects progress
+  reports, saved answers, current plans, Documents and Sheets. Reply to the author
+  from the record you are reading.
+- **Workspaces that come back.** Tabs and split panes are saved in workspaces.
+  Jump (⌘K) finds tabs, panes, agents and commands.
+
+Without Backbone, Agent Interface is still a native workspace for tmux.
+
+```mermaid
+flowchart LR
+  you([You]) --> app[Agent Interface]
+  app -- terminals --> tmux[tmux]
+  app -- "team, reports, documents" --> backbone[Agent Backbone]
+  backbone -- "messages and state" --> agents["Agents: Claude Code, Codex, OpenCode"]
+  tmux --- agents
+```
+
+## Install
+
+You need macOS or Linux and tmux 3.3 or newer (`brew install tmux` on macOS).
+On Linux, install the [runtime libraries](docs/INSTALL.md#runtime-prerequisites) first.
+
+**1. Install the app.** The installer downloads the compiled package for your
+platform from the [latest release](https://github.com/eandualem/agent-interface/releases)
+and checks its checksum. No Rust or Python is needed.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/eandualem/agent-interface/main/install.sh | sh
 ```
 
-The installer requires a published package for your platform. The
-[installation guide](docs/INSTALL.md) covers package availability, launch commands,
-updates and removal, including the experimental
-[Windows 11 / WSL setup](docs/INSTALL.md#windows-11-with-wsl-experimental).
-Developers can [build from source](CONTRIBUTING.md#set-up).
+**2. Add Agent Backbone.** Install it, start its service and set up your first
+agent with Backbone's [quick start](https://github.com/eandualem/agent-backbone#quick-start).
+Then [connect the app to it](docs/INSTALL.md#connect-agent-backbone).
 
-Agent views connect to a running Agent Backbone. Authenticated access requires
-Backbone's private Unix listener. The app reads the provider's saved
-`backbone.socket_path` setting; `BACKBONE_SOCKET_PATH` in the app's launch
-environment can override it. The socket path must be absolute. The socket must be
-owned by your user with permissions 0600, in a directory owned by your user with
-permissions 0700. TCP-only configurations do not receive credentials.
+The [installation guide](docs/INSTALL.md) covers package architectures, manual
+downloads, the experimental Windows 11 / WSL route, updates and removal.
 
-The first launch creates an empty workspace. Add a tab with **+** or
-Command-T, then choose **Open terminal** or **Attach a session**. On Linux,
-use Ctrl+Shift+T. Click a terminal before typing.
-Close the selected tab with Command-W, or Ctrl+Shift+W on Linux.
+## Get started
 
-To open another saved library, open Settings, choose **Open another**, and
-select its folder. The shortcut is Command-O on macOS or Ctrl+Shift+O on Linux.
+1. Press **⌘T** (Ctrl+Shift+T on Linux) and choose **Open terminal** or **Attach a session**.
+2. Split the pane with **⌘D**, or **⌘⇧D** to split below (Ctrl+Shift+D and
+   Ctrl+Shift+E on Linux).
+3. In an empty pane, choose a view such as **Team** or **Reports & updates**.
+4. Click an agent in the sidebar to open the tab holding its session.
 
-This release uses tmux sessions on the same computer. It does not connect to
-sessions on another host or synchronize live sessions between computers.
+The [user guide](docs/GUIDE.md) covers every view, shortcut and setting.
 
-## Guides
+## Documentation
 
-- [Use the app](docs/GUIDE.md): workspaces, sessions, settings, shortcuts and saved libraries.
-- [Build and contribute](CONTRIBUTING.md): prerequisites, native builds, tests and pull requests.
-- [Architecture](docs/ARCHITECTURE.md): processes, crate boundaries and data flow.
+- [User guide](docs/GUIDE.md): workspaces, sessions, agent views, reports, shortcuts and libraries.
+- [Installation](docs/INSTALL.md): packages, prerequisites, Backbone connection, updates and removal.
+- [Architecture](docs/ARCHITECTURE.md): processes, crate boundaries, data flow and dependencies.
 - [Design](docs/DESIGN.md): appearance, components and design tokens.
-- [Run benchmarks](docs/BENCHMARKING.md): repeatable measurements on isolated sessions.
+- [Benchmarks](docs/BENCHMARKING.md): repeatable measurements on isolated tmux servers.
+- [Contributing](CONTRIBUTING.md): building from source, tests and pull requests.
 
-## Platform support
+## Status
 
-The app runs natively on macOS and Linux, with Wayland and X11 backends on Linux.
-See the [installation guide](docs/INSTALL.md) for package architectures and
-runtime requirements. Native Windows is not supported. The Linux package can be
-tried through WSL 2 / WSLg on Windows 11; this app's WSL compatibility has not
-been verified.
+Agent Interface runs on macOS and Linux (Wayland and X11). Windows 11 can try the
+Linux package through WSL 2; that route has not been verified. Sessions run on the
+same computer as the app. Rich HTML Documents render on macOS only.
 
-Terminal input methods, accessible terminal text, key-release events and
-selection across history pages are not yet implemented. See the
-[user guide](docs/GUIDE.md) for supported interactions and limits.
+Not yet implemented: terminal input methods, accessible terminal text, key-release
+events and selection across history pages.
+
+Agent Interface reimplements [tmux-workspaces](https://github.com/eandualem/tmux-workspaces)
+in Rust and opens its saved schema-v2 libraries. It needs no Python runtime.
 
 ## Licence
 
