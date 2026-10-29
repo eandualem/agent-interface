@@ -202,12 +202,13 @@ the private Unix socket used by the app. Open Agent Interface to continue
 onboarding; no separate Backbone installation command is needed. Agent tools
 still need to be installed and signed in before creating an agent.
 
-This integration requires Backbone 0.4.1 or newer. If a compatible published
+New installations and upgrades select Backbone 0.4.1 or newer. If a compatible published
 release is unavailable, installation stops before replacing the app. Setup
 failures show Backbone's diagnostic and recovery guidance. When retry is allowed,
 rerun the same installer: it retains the request and resumes pending steps using
-the same installed Backbone version. A later installation can check
-for an upgrade once setup is complete. It refuses automatic recovery if that
+the same installed Backbone version, including 0.4.0 for a saved, compatible
+setup. That recovery can finish the app installation with the saved version;
+run the installer again afterward to upgrade Backbone. It refuses automatic recovery if that
 pending installation or its saved service/socket choices have changed.
 
 An existing Backbone installation keeps its configuration and service choices.
@@ -254,8 +255,16 @@ rm -f "${XDG_DATA_HOME:-$HOME/.local/share}/applications/io.github.eandualem.age
 These commands leave your data and terminal sessions intact. See the
 [user guide](GUIDE.md) for library and settings locations.
 
-On WSL, also remove the Windows Start registration for your Linux user:
+On WSL, also remove the Windows Start registration only if its installer marker
+and recorded home directory identify your Linux user:
 
 ```sh
-sudo rm -f /usr/share/applications/io.github.eandualem.agent-interface.desktop
+wsl_launcher=/usr/share/applications/io.github.eandualem.agent-interface.desktop
+if [ -f "$wsl_launcher" ] && [ ! -L "$wsl_launcher" ] &&
+    grep -qx 'X-AgentInterface-Installer=1' "$wsl_launcher" &&
+    grep -Fqx "X-AgentInterface-Home=$HOME" "$wsl_launcher"; then
+    sudo rm -f -- "$wsl_launcher"
+else
+    printf '%s\n' 'No installer-owned Windows launcher for this user; leaving it unchanged.'
+fi
 ```
