@@ -75,7 +75,7 @@ pub fn show(intro: bool, cx: &mut App) -> Result<(), String> {
             size(px(t.size.settings_width), px(t.size.settings_height)),
             cx,
         ))),
-        is_resizable: false,
+        is_resizable: true,
         titlebar: Some(TitlebarOptions {
             title: Some("Welcome to Agent Interface".into()),
             appears_transparent: true,
@@ -160,11 +160,23 @@ impl Onboarding {
                 .when_some(next, |el, next| {
                     el.on_click(cx.listener(move |_, _, window, cx| {
                         remember(|settings| settings.interface_size = next);
-                        // Keep the setup layout readable as its physical size grows.
-                        window.resize(size(
-                            px(tokens().size.settings_width),
-                            px(tokens().size.settings_height),
-                        ));
+                        // Both bounds use the new zoom factor. Grow only into
+                        // the visible space below/right of the current origin.
+                        let current = window.bounds();
+                        let available = window.display(cx).map_or(current.size, |display| {
+                            let visible = display.visible_bounds();
+                            size(
+                                (visible.right() - current.origin.x - px(16.)).max(px(1.)),
+                                (visible.bottom() - current.origin.y - px(16.)).max(px(1.)),
+                            )
+                        });
+                        window.resize(
+                            size(
+                                px(tokens().size.settings_width),
+                                px(tokens().size.settings_height),
+                            )
+                            .min(&available),
+                        );
                         cx.defer(|cx| {
                             for handle in cx.windows() {
                                 let _ = handle.update(cx, |_, window, cx| {
@@ -183,6 +195,7 @@ impl Onboarding {
         };
         div()
             .flex()
+            .flex_shrink_0()
             .items_center()
             .justify_end()
             .gap(px(t.space.s8))
@@ -635,6 +648,8 @@ impl Render for Onboarding {
         let can_continue = index != 2 || self.first_ready;
         let footer = div()
             .flex()
+            .flex_wrap()
+            .flex_shrink_0()
             .items_center()
             .gap(px(t.space.s8))
             .px(px(t.space.s24))
