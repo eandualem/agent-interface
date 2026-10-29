@@ -542,6 +542,16 @@ the app's native transport performs peer verification before sending credentials
 Provider installation/setup finishes before replacing the app; provider state
 is retained if a later app replacement fails.
 
+Shell command integration through `uv tool update-shell` is best-effort. Its
+nonzero status can mean startup files already contain the executable directory
+but the current terminal has not loaded them. The installer adds the tool binary
+directory to its own PATH and runs provider setup by absolute path, so this
+optional integration cannot abort an otherwise usable app installation. Actual
+provider installation and setup failures remain fatal. Archive transfers use
+curl's progress bar; quiet package/setup commands emit elapsed-time updates from
+a shell helper that is stopped and reaped when the command finishes. No extra
+progress library is required.
+
 The shell installer verifies the archive checksum and target, stages a
 per-user replacement, and preserves the data directories. Linux desktop and
 window identifiers use `io.github.eandualem.agent-interface`; macOS uses the same

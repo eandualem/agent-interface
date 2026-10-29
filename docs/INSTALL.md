@@ -60,6 +60,15 @@ before extracting or running it. You can also download and inspect `install.sh`
 first, then run it with `sh install.sh`. Checksums detect corrupt downloads;
 they rely on the same GitHub release as the archive.
 
+Downloads show a progress bar. Package installation and Backbone setup print
+elapsed-time updates every five seconds while running; these updates indicate
+that the step is still active, not a percentage of work completed.
+
+The installer uses Backbone's installed executables directly. An older terminal
+may still have a stale `PATH` even after its shell configuration is updated;
+this does not prevent app installation. Open a new terminal to load shell changes,
+or use the absolute command path printed by the installer.
+
 For a local build or a manually downloaded archive, download the archive and its
 matching `.tar.gz.sha256` file into the same folder. Keep the archive compressed.
 Choose the filename for your computer:

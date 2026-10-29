@@ -64,7 +64,7 @@ class InstallTests(unittest.TestCase):
 
     def install(self, archive, success=True):
         args = ["--archive", str(archive)] if archive else []
-        result = subprocess.run(["sh", str(self.installer), *args], env=self.env, capture_output=True, text=True)
+        result = subprocess.run(["sh", str(self.installer), *args], env=self.env, capture_output=True, text=True, timeout=60)
         self.assertEqual(result.returncode == 0, success, result.stdout + result.stderr)
         return result
 
@@ -130,6 +130,7 @@ esac
         self.env.update(TEST_ARCHIVE=str(archive), TEST_PREFIX=prefix,
                         TEST_DOWNLOADS=str(self.root / "downloads"), TEST_MISSING_STATUS=missing_status)
         self.command("curl", '''
+printf '%s\\n' "$*" >> "$TEST_DOWNLOADS.args"
 url= output= write_status=false
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -161,6 +162,8 @@ if [ "$write_status" = true ]; then printf 200; fi
             "agent-interface-x86_64-unknown-linux-gnu.tar.gz",
             "tmux-workspaces-x86_64-unknown-linux-gnu.tar.gz",
             "tmux-workspaces-x86_64-unknown-linux-gnu.tar.gz.sha256"])
+        requests = (self.root / "downloads.args").read_text().splitlines()
+        self.assertTrue(all("--progress-bar" in line for line in requests[:2]))
         archive = self.package("0.1.1")
         self.mock_download(archive, prefix="agent-interface")
         self.install(None)
@@ -332,23 +335,32 @@ if [ "$write_status" = true ]; then printf 200; fi
 
     def backbone_tools(self):
         self.env.update(FIXTURE_TOOLS=str(self.root / "uv tools"),
+                        FIXTURE_BIN=str(self.home / ".local/bin"),
                         FIXTURE_LOG=str(self.root / "provider.log"),
                         FIXTURE_PYTHON=str(self.tools / "provider-python"))
         self.command("provider-python", '''
 printf '%s\\n' "$*" >> "$FIXTURE_LOG"
 case "$*" in *--resume-pending*) exit "${FIXTURE_RESUME:-0}";; esac
+case ":$PATH:" in *":$FIXTURE_BIN:"*) :;; *) exit 89;; esac
+if [ "${FIXTURE_SETUP_DELAY:-0}" != 0 ]; then sleep "$FIXTURE_SETUP_DELAY"; fi
 exit "${FIXTURE_SETUP_FAIL:-0}"
 ''')
         self.command("uv", '''
 printf '%s\\n' "$*" >> "$FIXTURE_LOG"
 case "$1 $2" in
-    "tool dir") printf '%s\\n' "$FIXTURE_TOOLS";;
+    "tool dir")
+        if [ "${3:-}" = --bin ]; then printf '%s\\n' "$FIXTURE_BIN";
+        else printf '%s\\n' "$FIXTURE_TOOLS"; fi;;
     "tool install")
         [ "${FIXTURE_INSTALL_FAIL:-0}" = 0 ] || exit 1
         mkdir -p "$FIXTURE_TOOLS/agent-backbone/bin"
         cp "$FIXTURE_PYTHON" "$FIXTURE_TOOLS/agent-backbone/bin/python"
         chmod 755 "$FIXTURE_TOOLS/agent-backbone/bin/python";;
-    "tool update-shell") :;;
+    "tool update-shell")
+        if [ "${FIXTURE_SHELL_FAIL:-0}" != 0 ]; then
+            echo 'error: PATH is stale but the Bash configuration files are already up-to-date' >&2
+            exit 1
+        fi;;
     *) exit 1;;
 esac
 ''')
@@ -363,10 +375,38 @@ esac
         self.assertTrue(lines[-1].startswith("-I -B "))
         self.env["FIXTURE_RESUME"] = "3"
         log.write_text("")
-        self.install(archive)
+        result = self.install(archive)
         lines = log.read_text().splitlines()
         self.assertTrue(any("--resume-pending" in line for line in lines))
         self.assertFalse(any(line.startswith("tool install") for line in lines))
+        self.assertNotIn(": failed.", result.stderr)
+
+    def test_stale_shell_path_does_not_block_app_or_provider_setup(self):
+        self.backbone_tools()
+        self.env["FIXTURE_SHELL_FAIL"] = "1"
+        result = self.install(self.package(extra={"agent-interface/setup_backbone.py": "fixture helper"}))
+        self.assertTrue(self.link.is_symlink())
+        self.assertIn("Shell PATH was not refreshed", result.stdout)
+        self.assertNotIn("error: PATH", result.stderr)
+        self.assertIn("Starting and checking Agent Backbone: done.", result.stderr)
+
+    def test_quiet_setup_reports_elapsed_time_and_cleans_up_progress(self):
+        self.backbone_tools()
+        self.env["FIXTURE_SETUP_DELAY"] = "6"
+        result = self.install(self.package(extra={"agent-interface/setup_backbone.py": "fixture helper"}))
+        self.assertIn("Starting and checking Agent Backbone: still running (5s elapsed)", result.stderr)
+        self.assertIn("Starting and checking Agent Backbone: done.", result.stderr)
+        # install() has a bounded timeout: an orphan heartbeat would otherwise
+        # retain its capture pipe indefinitely. It must emit no later updates.
+        self.assertTrue(result.stderr.rstrip().endswith("Starting and checking Agent Backbone: done."))
+
+    def test_setup_failure_reports_failed_step_and_preserves_old_app(self):
+        self.install(self.package("0.1.1"))
+        self.backbone_tools()
+        self.env.update(FIXTURE_SHELL_FAIL="1", FIXTURE_SETUP_FAIL="1")
+        result = self.install(self.package(extra={"agent-interface/setup_backbone.py": "fixture helper"}), success=False)
+        self.assertIn("Starting and checking Agent Backbone: failed.", result.stderr)
+        self.assertIn("0.1.1", subprocess.check_output([self.link, "--version"], text=True))
 
     def test_provider_failure_keeps_previous_app(self):
         self.install(self.package("0.1.1"))
