@@ -472,7 +472,7 @@ if [ -f "$resources/setup_backbone.py" ]; then
             fail 'Interrupted Backbone setup needs attention. Its installed version was preserved.'
     fi
     if [ "$backbone_resumed" = false ]; then
-        run_step 'Installing Agent Backbone' "$uv" tool install --upgrade --prerelease disallow --python '>=3.11,<3.14' 'agent-backbone>=0.4.1' ||
+        run_step 'Installing Agent Backbone' "$uv" tool install --upgrade --prerelease disallow --python '>=3.11,<3.14' 'agent-backbone>=0.4.2' ||
             fail 'Could not install a compatible published Agent Backbone release. The app was not replaced.'
         tool_bin=$("$uv" tool dir --bin) || fail 'Could not locate Agent Backbone commands.'
         # Shell integration is optional: uv can return nonzero when startup
