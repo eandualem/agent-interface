@@ -104,6 +104,8 @@ jobs:
       - name: Linux graphical regression checks
         if: runner.os == 'Linux'
         run: |
+          # Build caches must not contribute evidence from an earlier test run.
+          rm -rf -- target/linux-desktop-smoke target/linux-documents-smoke
           xvfb-run -a cargo test -p agent-interface-app linux_terminal_font_has_uniform_ascii_cells --locked -- --ignored --nocapture
           xvfb-run -a -s '-screen 0 1440x900x24' dbus-run-session -- python3 scripts/test-linux-desktop.py
           for settings in '100 96' '150 96' '100 144' '100 192'; do

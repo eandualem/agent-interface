@@ -220,11 +220,13 @@ try { new WebSocket('TARGET/socket'.replace('http:', 'ws:')); } catch (_) {}
             click('TYPEHERE')
             command('xdotool', 'type', '--clearmodifiers', 'INPUTPASSED')
             wait_for(lambda: find('INPUTPASSED'), 'HTML keyboard input')
-            assert command('xdotool', 'getwindowfocus') != window, 'HTML did not take X input focus'
+            # Without -f, xdotool reports a containing top-level instead of
+            # the actual focused child, masking embedded-view focus changes.
+            assert command('xdotool', 'getwindowfocus', '-f') != window, 'HTML did not take X input focus'
             # Click empty native sidebar space without hiding the document.
             command('xdotool', 'mousemove', '--window', window,
                     str(round(20 * display_scale)), str(round(400 * display_scale)), 'click', '1')
-            wait_for(lambda: command('xdotool', 'getwindowfocus') == window, 'native click restores X input focus')
+            wait_for(lambda: command('xdotool', 'getwindowfocus', '-f') == window, 'native click restores X input focus')
             assert find('DOCUMENTREADY'), 'native focus check must keep the document mapped'
             click('CLICKPASSED')
             command('xdotool', 'key', '--clearmodifiers', 'ctrl+shift+k')
