@@ -6,6 +6,40 @@ set -eu
 main() {
 
 fail() { printf 'Agent Interface: %s\n' "$*" >&2; exit 1; }
+progress_pid=
+stop_progress() {
+    if [ -n "$progress_pid" ]; then
+        kill "$progress_pid" 2>/dev/null || true
+        wait "$progress_pid" 2>/dev/null || true
+        progress_pid=
+    fi
+}
+run_step() {
+    step_title=$1
+    shift
+    printf '%s...\n' "$step_title" >&2
+    (
+        tick=
+        trap '[ -z "$tick" ] || { kill "$tick" 2>/dev/null || :; wait "$tick" 2>/dev/null || :; }; exit 0' HUP INT TERM
+        elapsed=0
+        while :; do
+            sleep 5 &
+            tick=$!
+            wait "$tick" || exit 0
+            elapsed=$((elapsed + 5))
+            printf '  %s: still running (%ss elapsed)\n' "$step_title" "$elapsed" >&2
+        done
+    ) &
+    progress_pid=$!
+    if "$@"; then step_status=0; else step_status=$?; fi
+    stop_progress
+    if [ "$step_status" -eq 0 ]; then
+        printf '%s: done.\n' "$step_title" >&2
+    else
+        printf '%s: failed.\n' "$step_title" >&2
+    fi
+    return "$step_status"
+}
 usage() {
     printf '%s\n' 'Usage: sh install.sh [--archive PATH]' \
         'Installs the latest published build, or a local archive with its .sha256 file.' \
@@ -124,6 +158,7 @@ cleanup() {
     status=$?
     trap - EXIT HUP INT TERM
     set +e
+    stop_progress
     rollback_ok=true
     if [ "$status" -ne 0 ]; then
         if [ "$new_wsl_launcher" = true ]; then
@@ -209,10 +244,10 @@ if [ -n "$wsl_launcher" ]; then
         fi
     done
     if [ -n "$missing" ]; then
-        sudo apt-get update || fail 'Could not refresh Ubuntu package information.'
+        run_step 'Refreshing Ubuntu package information' sudo apt-get update || fail 'Could not refresh Ubuntu package information.'
         # The list contains only the fixed package names above.
         # shellcheck disable=SC2086
-        sudo apt-get install -y $missing || fail 'Could not install the WSL runtime packages.'
+        run_step 'Installing WSL runtime packages' sudo apt-get install -y $missing || fail 'Could not install the WSL runtime packages.'
     fi
     if [ -f "$wsl_launcher" ]; then
         wsl_launcher_backup=$staging/previous-wsl-launcher
@@ -228,7 +263,7 @@ else
     base=https://github.com/eandualem/agent-interface/releases/latest/download
     name=agent-interface-$target.tar.gz
     printf 'Downloading %s\n' "$name"
-    if status=$(curl --fail --location --silent --show-error --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 600 \
+    if status=$(curl --fail --location --progress-bar --show-error --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 600 \
         --write-out '%{http_code}' "$base/$name" -o "$staging/download.tar.gz"); then
         :
     elif [ "$status" = 404 ]; then
@@ -236,7 +271,7 @@ else
         # contains the next installer. Only a missing asset permits fallback.
         name=tmux-workspaces-$target.tar.gz
         printf 'Checking earlier release archive %s\n' "$name"
-        curl --fail --location --silent --show-error --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 600 \
+        curl --fail --location --progress-bar --show-error --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 600 \
             "$base/$name" -o "$staging/download.tar.gz" || fail 'Download failed. Check that a release exists for this platform.'
     else
         fail 'Download failed. Check that a release exists for this platform.'
@@ -244,6 +279,7 @@ else
     curl --fail --location --silent --show-error --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 60 \
         "$base/$name.sha256" -o "$staging/checksum"
 fi
+printf '%s\n' 'Verifying and unpacking the app...'
 expected=$(awk 'NR == 1 {print $1}' "$staging/checksum")
 [ ${#expected} -eq 64 ] || fail 'Invalid SHA-256 checksum.'
 case $expected in *[!0-9a-f]*) fail 'Invalid SHA-256 checksum.';; esac
@@ -303,34 +339,55 @@ if [ -f "$resources/setup_backbone.py" ]; then
             uv_hash=$(shasum -a 256 "$staging/uv-install.sh" | awk '{print $1}')
         fi
         [ "$uv_hash" = f7a56e7afaec49a3bcbc3ac3cdbe917e7c6ce30e0d815308a12e531aa5ef23b7 ] || fail 'Python installer checksum mismatch.'
-        UV_INSTALL_DIR="$HOME/.local/bin" sh "$staging/uv-install.sh" || fail 'Could not install uv.'
+        run_step 'Installing Python tools' env UV_INSTALL_DIR="$HOME/.local/bin" sh "$staging/uv-install.sh" || fail 'Could not install uv.'
         uv=$HOME/.local/bin/uv
     fi
     tools=$("$uv" tool dir) || fail 'Could not locate the Agent Backbone installation directory.'
     backbone_resumed=false
-    if [ -x "$tools/agent-backbone/bin/python" ]; then
+    resume_backbone() {
         if "$tools/agent-backbone/bin/python" -I -B "$resources/setup_backbone.py" \
             --executable "$tools/agent-backbone/bin/backbone" --resume-pending; then
             :
         else
             resume_status=$?
-            [ "$resume_status" -eq 3 ] || fail 'Interrupted Backbone setup needs attention. Its installed version was preserved.'
+            [ "$resume_status" -eq 3 ] || return "$resume_status"
             backbone_resumed=true
         fi
+    }
+    if [ -x "$tools/agent-backbone/bin/python" ]; then
+        run_step 'Checking saved Backbone setup' resume_backbone ||
+            fail 'Interrupted Backbone setup needs attention. Its installed version was preserved.'
     fi
     if [ "$backbone_resumed" = false ]; then
-        "$uv" tool install --upgrade --prerelease disallow --python '>=3.11,<3.14' 'agent-backbone>=0.4.1' ||
+        run_step 'Installing Agent Backbone' "$uv" tool install --upgrade --prerelease disallow --python '>=3.11,<3.14' 'agent-backbone>=0.4.1' ||
             fail 'Could not install a compatible published Agent Backbone release. The app was not replaced.'
-        "$uv" tool update-shell || fail 'Could not make Agent Backbone available to new terminals.'
+        tool_bin=$("$uv" tool dir --bin) || fail 'Could not locate Agent Backbone commands.'
+        # Shell integration is optional: uv can return nonzero when startup
+        # files are already correct but this terminal still has its old PATH.
+        # App setup uses absolute executables regardless of shell configuration.
+        if ! "$uv" tool update-shell > "$staging/shell-setup.log" 2>&1; then
+            printf '%s\n' 'Shell setup notice (app installation will continue):' >&2
+        fi
+        cat "$staging/shell-setup.log" >&2
+        printf 'Backbone command: "%s/backbone"\n' "$tool_bin"
+        PATH="$tool_bin:$PATH"
+        export PATH
         tools=$("$uv" tool dir) || fail 'Could not locate the installed Agent Backbone.'
-        PATH="$tools/agent-backbone/bin:$(dirname "$uv"):$PATH" \
-        "$tools/agent-backbone/bin/python" -I -B "$resources/setup_backbone.py" \
-            --executable "$tools/agent-backbone/bin/backbone" ||
+        run_backbone_setup() (
+            PATH="$tools/agent-backbone/bin:$(dirname "$uv"):$PATH"
+            export PATH
+            # Execute the path directly: env treats paths containing '=' as
+            # additional assignments rather than the program to run.
+            exec "$tools/agent-backbone/bin/python" -I -B "$resources/setup_backbone.py" \
+                --executable "$tools/agent-backbone/bin/backbone"
+        )
+        run_step 'Starting and checking Agent Backbone' run_backbone_setup ||
             fail 'Agent Backbone setup did not finish. The app was not replaced; rerun this installer to resume.'
     else
         printf '%s\n' 'Resumed Agent Backbone setup with its saved version. A later install can check for an upgrade.'
     fi
 fi
+printf '%s\n' 'Installing the app and its launcher...'
 if [ "$platform" = unknown-linux-gnu ]; then
     mkdir -p "$data/applications" "$HOME/.local/bin"
     # Stage beside the launcher so replacement stays atomic with a separate XDG volume.
