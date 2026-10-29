@@ -125,7 +125,12 @@ try { new WebSocket('TARGET/socket'.replace('http:', 'ws:')); } catch (_) {}
     leaf = dict(id="000000000003", agent=None, view="reports")
     model = dict(version=2, focus=False, selected="000000000001", workspaces=[
         dict(id="000000000001", name="Fixture", selected="000000000002", tabs=[
-            dict(id="000000000002", name="Fixture tab", focus=leaf['id'], tree=leaf)])])
+            dict(id="000000000002", name="Fixture tab", focus=leaf['id'], tree=leaf),
+            dict(id="000000000004", name="Other tab", focus="000000000005",
+                 tree=dict(id="000000000005", agent=None, view="reports"))]),
+        dict(id="000000000006", name="Other workspace", selected="000000000007", tabs=[
+            dict(id="000000000007", name="Other workspace tab", focus="000000000008",
+                 tree=dict(id="000000000008", agent=None, view="reports"))])])
     with sqlite3.connect(library / 'layouts.db') as db:
         db.execute('CREATE TABLE terminal_layout (id INTEGER PRIMARY KEY, value TEXT)')
         db.execute('INSERT INTO terminal_layout VALUES (1, ?)', (json.dumps(model),))
@@ -220,13 +225,13 @@ try { new WebSocket('TARGET/socket'.replace('http:', 'ws:')); } catch (_) {}
             click('TYPEHERE')
             command('xdotool', 'type', '--clearmodifiers', 'INPUTPASSED')
             wait_for(lambda: find('INPUTPASSED'), 'HTML keyboard input')
-            # X11 can deliver keys to an inferior under the pointer even when
-            # the parent is the focus window. Exercise the stronger case: an
-            # embedded GTK child explicitly owns focus before a native click.
-            document_xids = set(command('xdotool', 'search', '--onlyvisible', '--pid', str(app.pid)).splitlines()) - native_xids
-            assert document_xids, 'embedded GTK window not found'
-            command('xdotool', 'windowfocus', '--sync', sorted(document_xids)[0])
-            assert command('xdotool', 'getwindowfocus', '-f') != window, 'fixture did not focus the embedded child'
+            # Moving the pointer must not send subsequent typing back to the
+            # native ancestor while the HTML input remains focused.
+            command('xdotool', 'mousemove', '--window', window,
+                    str(round(20 * display_scale)), str(round(400 * display_scale)))
+            command('xdotool', 'type', '--clearmodifiers', 'RETAINED')
+            wait_for(lambda: find('INPUTPASSEDRETAINED'), 'HTML keeps keyboard focus after pointer movement')
+            assert command('xdotool', 'getwindowfocus', '-f') != window, 'HTML click did not focus the embedded child'
             # Click empty native sidebar space without hiding the document.
             command('xdotool', 'mousemove', '--window', window,
                     str(round(20 * display_scale)), str(round(400 * display_scale)), 'click', '1')
@@ -250,6 +255,18 @@ try { new WebSocket('TARGET/socket'.replace('http:', 'ws:')); } catch (_) {}
             command('import', '-window', window, str(OUTPUT / 'document.png'))
             command('xdotool', 'windowsize', '--sync', window, str(round(1100 * display_scale)), str(round(760 * display_scale)))
             wait_for(lambda: find('CLICKPASSED'), 'state retained across resize')
+            if SCALE == 100 and DPI == 96:
+                for chord, restore in (
+                    ('ctrl+Page_Down', 'alt+1'), ('ctrl+Page_Up', 'alt+1'),
+                    ('alt+2', 'alt+1'), ('ctrl+alt+2', 'ctrl+alt+1'),
+                    ('ctrl+shift+Page_Down', 'ctrl+alt+1'),
+                    ('ctrl+shift+Page_Up', 'ctrl+alt+1'),
+                ):
+                    click('DOCUMENTREADY')
+                    command('xdotool', 'key', '--clearmodifiers', chord)
+                    wait_for(lambda: not find('DOCUMENTREADY'), f'{chord} leaves Document pane')
+                    command('xdotool', 'key', '--clearmodifiers', restore)
+                    wait_for(lambda: find('DOCUMENTREADY'), f'{restore} restores Document pane')
             assert not leaks, f'document made network requests: {leaks}'
             command('import', '-window', window, str(OUTPUT / 'resized.png'))
             click('Documents')
@@ -289,9 +306,10 @@ try { new WebSocket('TARGET/socket'.replace('http:', 'ws:')); } catch (_) {}
             assert app.wait(timeout=15) == 0
             (OUTPUT / 'result.json').write_text(json.dumps(dict(checks=[
                 'Document API load', 'HTML render', 'inline script', 'HTML input', 'app shortcut from HTML',
-                'native click restores X input focus', 'document X windows destroyed',
+                'HTML keeps focus after pointer movement', 'native click restores X input focus', 'document X windows destroyed',
                 'overlay hides/restores view', 'return to shelf destroys view', 'file chooser denied',
                 'WebRTC disabled', 'fetch/image/WebSocket blocked', 'external navigation/new windows denied', 'resize retains state', 'process seccomp and mount isolation', 'display DPI placement',
+                *(['tab/workspace PageUp/PageDown and numbered navigation from HTML'] if SCALE == 100 and DPI == 96 else []),
                 'fixed new-window shortcut from HTML', 'parent close preserves second window', 'clean quit', 'unsafe sandbox override refused'],
                 scale=SCALE, dpi=DPI, sandbox_pids=sandbox_pids, requests=requests), indent=2))
             print('Linux Documents smoke passed')

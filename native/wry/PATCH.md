@@ -4,7 +4,8 @@ This is the crates.io Wry 0.57.1 source under MIT OR Apache-2.0, with both
 licences retained; trailing whitespace in SECURITY.md is normalized. The patches:
 
 - Enable WebKitGTK process sandboxing in `WebContextImpl::create_context`, before a WebView is constructed.
-- Retain the embedding X11 parent XID and focus it when returning to native controls,
+- Focus the GTK child on native pointer clicks so keyboard input stays there
+  after pointer movement. Retain the embedding X11 parent XID and focus it when returning to native controls,
   instead of focusing GTK's intermediary window.
 - Preserve GTK ownership of its realized GdkWindow and reparent it beneath the
   X11 container instead of replacing it with an unregistered foreign window.

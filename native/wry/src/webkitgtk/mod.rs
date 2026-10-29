@@ -186,6 +186,23 @@ impl InnerWebView {
     };
 
     Self::new_gtk(&vbox, attributes, pl_attrs).map(|mut w| {
+      if let Some(owned_window) = x11.gtk_window.window() {
+        let focus_window = unsafe {
+          gdkx11::ffi::gdk_x11_window_get_xid(owned_window.as_ptr() as _)
+        };
+        let set_input_focus = x11.xlib.XSetInputFocus;
+        let flush = x11.xlib.XFlush;
+        // A child can receive keys through its focused ancestor while the
+        // pointer is inside it. Explicitly focus on a native click so typing
+        // stays in the document after the pointer moves elsewhere.
+        w.webview.connect_button_press_event(move |_, event| {
+          unsafe {
+            set_input_focus(x11_display as _, focus_window, RevertToParent, event.time().into());
+            flush(x11_display as _);
+          }
+          gtk::glib::Propagation::Proceed
+        });
+      }
       x11.gtk_window.show_all();
       w.x11.replace(x11);
       if let Some(bounds) = bounds {
@@ -993,7 +1010,7 @@ impl InnerWebView {
 
   pub fn set_bounds(&self, bounds: Rect) -> Result<()> {
     let scale_factor = self.webview.scale_factor() as f64;
-    let (width, height) = bounds.size.to_logical::<i32>(scale_factor).into();
+    let (width, height): (i32, i32) = bounds.size.to_logical::<i32>(scale_factor).into();
     let (x, y) = bounds.position.to_logical::<i32>(scale_factor).into();
 
     #[cfg(feature = "x11")]

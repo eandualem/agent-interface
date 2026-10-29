@@ -444,10 +444,26 @@ fn linux_shortcut(event: &gtk::gdk::EventKey) -> Option<gpui::Keystroke> {
         "Return" | "KP_Enter" => "enter".into(),
         "Tab" | "ISO_Left_Tab" => "tab".into(),
         "Escape" => "escape".into(),
-        "Left" => "left".into(),
-        "Right" => "right".into(),
-        "Up" => "up".into(),
-        "Down" => "down".into(),
+        "Left" | "KP_Left" => "left".into(),
+        "Right" | "KP_Right" => "right".into(),
+        "Up" | "KP_Up" => "up".into(),
+        "Down" | "KP_Down" => "down".into(),
+        "Page_Up" | "Prior" | "KP_Page_Up" | "KP_Prior" => "pageup".into(),
+        "Page_Down" | "Next" | "KP_Page_Down" | "KP_Next" => "pagedown".into(),
+        "Home" | "KP_Home" => "home".into(),
+        "End" | "KP_End" => "end".into(),
+        "BackSpace" => "backspace".into(),
+        "Delete" | "KP_Delete" => "delete".into(),
+        "Insert" | "KP_Insert" => "insert".into(),
+        "space" | "KP_Space" => "space".into(),
+        name if name.strip_prefix('F').is_some_and(|number| {
+            number
+                .parse::<u8>()
+                .is_ok_and(|number| (1..=35).contains(&number))
+        }) =>
+        {
+            name.to_ascii_lowercase()
+        }
         _ => keyval.to_unicode()?.to_lowercase().to_string(),
     };
     let key = gpui::Keystroke {
@@ -465,7 +481,10 @@ fn linux_shortcut(event: &gtk::gdk::EventKey) -> Option<gpui::Keystroke> {
         gpui::Keystroke::parse(crate::desktop::shortcuts::platform_key(chord))
             .is_ok_and(|binding| binding.key == key.key && binding.modifiers == key.modifiers)
     });
-    (fixed || crate::desktop::shortcuts::command_for(&key).is_some()).then_some(key)
+    (fixed
+        || crate::desktop::shortcuts::numbered(&key).is_some()
+        || crate::desktop::shortcuts::command_for(&key).is_some())
+    .then_some(key)
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
