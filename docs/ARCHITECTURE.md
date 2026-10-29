@@ -350,8 +350,11 @@ Backbone first answers, a message waits rather than choosing a path, and a
 retry always takes the path the message first took. Each message carries a
 client request ID, so a send whose outcome is unknown is retried with the same
 ID and stored at most once; a stored message whose delivery failed is redelivered without a new
-entry. Opening the panel moves the owner's read marker to the newest entry and
-fixes the "new" divider where the marker was. A plain 404 or an unknown
+entry. Opening the panel reveals the newest messages; later arrivals follow only
+while the reader stays at the bottom. A painted frame at the bottom advances
+the owner's read marker through that frame's fetched entries. The "new" divider
+stays at the marker from when the panel opened. Read acknowledgements retry at
+most once per polling interval, including after failure. A plain 404 or an unknown
 artifact switches the conversation back to one-way feedback. A shared skill or policy has
 no record, so its conversation finds its identity on the first read: the
 current provider, then the `artifact_id` that `/api/skills` or `/api/policies`
