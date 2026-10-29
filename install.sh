@@ -319,7 +319,7 @@ if [ -f "$resources/setup_backbone.py" ]; then
         fi
     fi
     if [ "$backbone_resumed" = false ]; then
-        "$uv" tool install --upgrade --prerelease disallow --python '>=3.11,<3.14' 'agent-backbone>=0.4.0' ||
+        "$uv" tool install --upgrade --prerelease disallow --python '>=3.11,<3.14' 'agent-backbone>=0.4.1' ||
             fail 'Could not install a compatible published Agent Backbone release. The app was not replaced.'
         "$uv" tool update-shell || fail 'Could not make Agent Backbone available to new terminals.'
         tools=$("$uv" tool dir) || fail 'Could not locate the installed Agent Backbone.'

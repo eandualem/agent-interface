@@ -179,6 +179,10 @@ have not been measured.
 Open **Agent Interface** from Windows Start to begin setup. Existing workspaces
 are preserved; setup appears until you finish it. You can also launch it inside
 WSL with `"$HOME/.local/bin/agent-interface"`.
+Use **Interface size** at the bottom of the welcome window if the text is too
+small. Run agent-tool installation commands inside WSL as well. After installing
+a tool, choose **Check again** or **Check tools again** in setup; you do not need
+to restart the app.
 
 After setup, add a tab with Ctrl+Shift+T, choose **Open terminal**, and run
 `pwd`. Quit and reopen the app to check that the saved workspace and terminal

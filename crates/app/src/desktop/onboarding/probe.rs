@@ -3,7 +3,7 @@
 
 use std::{
     os::unix::{fs::FileExt, process::CommandExt},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
     time::{Duration, Instant},
 };
@@ -26,7 +26,7 @@ pub const TOOLS: &[(&str, &str, &str)] = &[
     (
         "opencode",
         "OpenCode",
-        "curl -fsSL https://opencode.ai/install | bash",
+        "curl -fsSL https://opencode.ai/v2/install | bash",
     ),
 ];
 
@@ -59,8 +59,15 @@ pub struct Probe {
 impl Probe {
     /// Look everything up. Blocks for up to a few seconds; call off the UI thread.
     pub fn run() -> Self {
-        let (found, path_env) = shell_lookup()
-            .unwrap_or_else(|| (path_lookup(), std::env::var("PATH").unwrap_or_default()));
+        let (mut found, path_env) = shell_lookup()
+            .unwrap_or_else(|| (Vec::new(), std::env::var("PATH").unwrap_or_default()));
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let (fallback, path_env) = path_lookup(&path_env, home.as_deref());
+        for (name, path) in fallback {
+            if !found.iter().any(|(existing, _)| *existing == name) {
+                found.push((name, path));
+            }
+        }
         Self {
             found,
             path_env,
@@ -163,25 +170,46 @@ fn parse(output: &str) -> Vec<(&'static str, PathBuf)> {
         .collect()
 }
 
-/// Without a usable shell: this process's PATH and the usual install places.
-fn path_lookup() -> Vec<(&'static str, PathBuf)> {
-    let home = std::env::var_os("HOME").map(PathBuf::from);
-    let mut directories: Vec<PathBuf> =
-        std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()).collect();
-    directories.extend(["/opt/homebrew/bin", "/usr/local/bin"].map(PathBuf::from));
+/// Keep the shell's precedence, but also find tools installed while the app
+/// was open. Some login profiles do not source the installer's shell rc file.
+/// Use this same PATH for provider discovery and the submitted setup request.
+fn path_lookup(path_env: &str, home: Option<&Path>) -> (Vec<(&'static str, PathBuf)>, String) {
+    use std::os::unix::fs::PermissionsExt;
+    let mut directories: Vec<PathBuf> = std::env::split_paths(path_env).collect();
+    let mut extra = Vec::new();
     if let Some(home) = home {
-        directories.push(home.join(".local/bin"));
+        extra.extend([home.join(".local/bin"), home.join(".opencode/bin")]);
     }
-    COMMANDS
+    extra.extend([
+        PathBuf::from("/opt/homebrew/bin"),
+        PathBuf::from("/usr/local/bin"),
+    ]);
+    for directory in extra {
+        if directory.is_dir()
+            && !directories.contains(&directory)
+            && directory.to_str().is_some_and(|path| !path.contains(':'))
+        {
+            directories.push(directory);
+        }
+    }
+    let path_env = std::env::join_paths(&directories)
+        .ok()
+        .and_then(|path| path.into_string().ok())
+        .unwrap_or_else(|| path_env.to_owned());
+    let found = COMMANDS
         .iter()
         .filter_map(|command| {
             directories
                 .iter()
                 .map(|directory| directory.join(command))
-                .find(|path| path.is_file())
+                .find(|path| {
+                    path.metadata()
+                        .is_ok_and(|info| info.is_file() && info.permissions().mode() & 0o111 != 0)
+                })
                 .map(|path| (*command, path))
         })
-        .collect()
+        .collect();
+    (found, path_env)
 }
 
 fn backbone() -> Backbone {
@@ -203,6 +231,30 @@ fn backbone() -> Backbone {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn newly_installed_opencode_is_found_and_reaches_the_provider_path() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = tempfile::tempdir().unwrap();
+        let bin = home.path().join(".opencode/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let tool = bin.join("opencode");
+        std::fs::write(&tool, "#!/bin/sh\nexit 0\n").unwrap();
+        let (found, _) = path_lookup("/usr/bin:/bin", Some(home.path()));
+        assert!(!found.iter().any(|(_, path)| path == &tool));
+        std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let (found, path_env) = path_lookup("/usr/bin:/bin", Some(home.path()));
+        assert!(found.contains(&("opencode", tool.clone())));
+        let output = Command::new("/bin/sh")
+            .args(["-c", "command -v opencode"])
+            .env("PATH", path_env)
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap().trim(),
+            tool.to_str().unwrap()
+        );
+    }
 
     #[test]
     fn parse_keeps_only_marked_absolute_paths_for_known_commands() {

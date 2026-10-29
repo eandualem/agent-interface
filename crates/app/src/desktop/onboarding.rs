@@ -149,6 +149,57 @@ fn remember(update: impl FnOnce(&mut Settings)) {
 }
 
 impl Onboarding {
+    fn scale_controls(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let (t, c) = (tokens(), colors());
+        let percent = Settings::current().interface_size;
+        let sizes = super::zoom::SIZES;
+        let at = sizes.iter().position(|size| *size == percent).unwrap_or(1);
+        let button = |id, label, next: Option<u32>| {
+            ui::button(id, label, Button::Secondary)
+                .opacity(if next.is_some() { 1.0 } else { 0.4 })
+                .when_some(next, |el, next| {
+                    el.on_click(cx.listener(move |_, _, window, cx| {
+                        remember(|settings| settings.interface_size = next);
+                        // Keep the setup layout readable as its physical size grows.
+                        window.resize(size(
+                            px(tokens().size.settings_width),
+                            px(tokens().size.settings_height),
+                        ));
+                        cx.defer(|cx| {
+                            for handle in cx.windows() {
+                                let _ = handle.update(cx, |_, window, cx| {
+                                    #[cfg(target_os = "macos")]
+                                    window.set_traffic_light_position(point(
+                                        px(tokens().size.window_controls_x),
+                                        px(tokens().size.window_controls_y),
+                                    ));
+                                    window.bounds_changed(cx);
+                                });
+                            }
+                        });
+                        cx.refresh_windows();
+                    }))
+                })
+        };
+        div()
+            .flex()
+            .items_center()
+            .justify_end()
+            .gap(px(t.space.s8))
+            .px(px(t.space.s24))
+            .py(px(t.space.s8))
+            .border_t(px(t.size.hairline))
+            .border_color(c.line)
+            .child("Interface size")
+            .child(button(
+                "setup-smaller",
+                "−",
+                at.checked_sub(1).map(|at| sizes[at]),
+            ))
+            .child(format!("{percent}%"))
+            .child(button("setup-larger", "+", sizes.get(at + 1).copied()))
+    }
+
     fn check(&mut self, cx: &mut Context<Self>) {
         if self.checking {
             return;
@@ -382,10 +433,16 @@ impl Onboarding {
         for (command, name, install) in TOOLS {
             let path = probe.and_then(|probe| probe.path(command));
             any |= path.is_some();
-            let note = match path {
+            let mut note = match path {
                 Some(path) => format!("Installed at {}", path.display()),
+                None if cfg!(target_os = "linux") => {
+                    "Not installed. Run this in a Linux terminal; on Windows, use WSL.".into()
+                }
                 None => "Not installed. Paste this in a terminal to add it.".into(),
             };
+            if *command == "opencode" {
+                note.push_str(" Agent setup requires OpenCode 2.1.4 or newer; this command installs or updates OpenCode 2.");
+            }
             let state = match (probe, path) {
                 (None, _) => (Tone::Plain, "Checking"),
                 (_, Some(_)) => (Tone::Tag, "Installed"),
@@ -396,7 +453,7 @@ impl Onboarding {
                 name,
                 note,
                 state,
-                path.is_none().then_some(*install),
+                (path.is_none() || *command == "opencode").then_some(*install),
                 cx,
             ));
         }
@@ -494,13 +551,16 @@ impl Render for Onboarding {
             div()
                 .size_full()
                 .flex()
+                .flex_col()
                 .bg(c.surface)
                 .text_color(c.text)
                 .font_family(t.font.ui.clone()),
             &t.text.row,
         );
         let Stage::Step(index) = self.stage else {
-            let body = root.child(self.scene());
+            let body = root
+                .child(div().flex_1().min_h_0().child(self.scene()))
+                .child(self.scale_controls(cx));
             return super::window_controls::frame(body, "Welcome", window);
         };
         if index == 2
@@ -524,6 +584,7 @@ impl Render for Onboarding {
             });
             self.first_events = Some(cx.subscribe(&first, |view, _, event, cx| {
                 match event {
+                    first::FirstEvent::RefreshTools => view.check(cx),
                     first::FirstEvent::Pending => {
                         view.first_ready = false;
                         view.first_agent = None;
@@ -652,25 +713,29 @@ impl Render for Onboarding {
                     }
                 })),
             );
-        let body = root.child(self.rail()).child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .h_full()
-                .flex()
-                .flex_col()
-                .child(
+        let body = root
+            .child(
+                div().flex().flex_1().min_h_0().child(self.rail()).child(
                     div()
-                        .id("setup-page")
                         .flex_1()
-                        .min_h_0()
-                        .pt(px(t.size.titlebar))
-                        .px(px(t.space.s24))
-                        .overflow_y_scroll()
-                        .child(page),
-                )
-                .child(footer),
-        );
+                        .min_w_0()
+                        .h_full()
+                        .flex()
+                        .flex_col()
+                        .child(
+                            div()
+                                .id("setup-page")
+                                .flex_1()
+                                .min_h_0()
+                                .pt(px(t.size.titlebar))
+                                .px(px(t.space.s24))
+                                .overflow_y_scroll()
+                                .child(page),
+                        )
+                        .child(footer),
+                ),
+            )
+            .child(self.scale_controls(cx));
         super::window_controls::frame(body, "Welcome", window)
     }
 }

@@ -359,7 +359,7 @@ esac
         self.install(archive)
         log = Path(self.env["FIXTURE_LOG"])
         lines = log.read_text().splitlines()
-        self.assertIn("tool install --upgrade --prerelease disallow --python >=3.11,<3.14 agent-backbone>=0.4.0", lines)
+        self.assertIn("tool install --upgrade --prerelease disallow --python >=3.11,<3.14 agent-backbone>=0.4.1", lines)
         self.assertTrue(lines[-1].startswith("-I -B "))
         self.env["FIXTURE_RESUME"] = "3"
         log.write_text("")

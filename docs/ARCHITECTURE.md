@@ -177,10 +177,17 @@ and show the main shortcuts. tmux uses the terminal pane's `tmux_binary` resolve
 Backbone and agent tools are looked up after the user's interactive login shell
 runs its startup files, because an app opened from the Dock has a short PATH.
 The probe itself runs in `/bin/sh` so non-POSIX login shells can supply PATH too.
+Standard installation directories, including OpenCode's `~/.opencode/bin`, are
+appended without overriding the shell's PATH order. Refresh checks those paths
+again and passes the refreshed PATH to both runtime discovery and first-agent
+setup. Submitted requests retain their original environment for replay.
 The shell has an eight-second deadline; its output goes to a temporary file
 instead of a pipe, with positional reads limited to 256 KiB. The lookup falls
 back to PATH and the usual install folders. The
 Backbone check is a single read-only roster request. These checks install nothing.
+The welcome window offers the same persistent interface-size setting as the
+workspace, including during the opening scene, so display scaling can be adjusted
+before setup is complete.
 
 The first-agent step calls the selected engine's `runtimes --json`, then submits
 `setup --file REQUEST --jsonl` only after an explicit Start action. It offers the
@@ -512,7 +519,7 @@ binary linked to the system desktop libraries. Neither package includes a
 Python runtime, build toolchain, tmux server or application daemon.
 
 The archive includes `setup_backbone.py`, a standard-library installer helper.
-`install.sh` installs the latest stable published `agent-backbone>=0.4.0` with
+`install.sh` installs the latest stable published `agent-backbone>=0.4.1` with
 uv, independently of the app archive. Backbone (MIT) owns its package, dependency
 testing and publication. uv (MIT OR Apache-2.0) installs the Python environment;
 when uv is absent, its 0.13.6 installer is version- and SHA-256-pinned. No Backbone
