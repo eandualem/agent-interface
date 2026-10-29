@@ -177,23 +177,54 @@ impl Onboarding {
                 .when_some(next, |el, next| {
                     el.on_click(cx.listener(move |_, _, window, cx| {
                         remember(|settings| settings.interface_size = next);
-                        // Both bounds use the new zoom factor. Respect the
-                        // platform's fixed edge when growing the window.
-                        let current = window.bounds();
-                        let available = window.display(cx).map_or(current.size, |display| {
-                            resize_limit(
-                                current,
-                                display.visible_bounds(),
-                                cfg!(target_os = "macos"),
-                            )
-                        });
-                        window.resize(
-                            size(
-                                px(tokens().size.settings_width),
-                                px(tokens().size.settings_height),
-                            )
-                            .min(&available),
-                        );
+                        if !window.is_maximized() && !window.is_fullscreen() {
+                            let wayland = raw_window_handle::HasWindowHandle::window_handle(window)
+                                .is_ok_and(|handle| {
+                                    matches!(
+                                        handle.as_raw(),
+                                        raw_window_handle::RawWindowHandle::Wayland(_)
+                                    )
+                                });
+                            if wayland {
+                                // Wayland owns placement and does not expose a
+                                // global window origin. Let the compositor fit
+                                // larger text instead of mixing local/global bounds.
+                                if next > percent {
+                                    if window.window_controls().maximize {
+                                        window.zoom_window();
+                                    } else if let Some(display) = window.display(cx) {
+                                        // Some compositors do not offer maximize.
+                                        // Only the output's extent is meaningful here.
+                                        window.resize(
+                                            size(
+                                                px(tokens().size.settings_width),
+                                                px(tokens().size.settings_height),
+                                            )
+                                            .min(&display.visible_bounds().size),
+                                        );
+                                    }
+                                }
+                            } else {
+                                // Both bounds use the new zoom factor. Respect the
+                                // platform's fixed edge when growing the window.
+                                let current = window.bounds();
+                                let available =
+                                    window.display(cx).map_or(current.size, |display| {
+                                        resize_limit(
+                                            current,
+                                            display.visible_bounds(),
+                                            cfg!(target_os = "macos"),
+                                        )
+                                    });
+                                window.resize(
+                                    size(
+                                        px(tokens().size.settings_width),
+                                        px(tokens().size.settings_height),
+                                    )
+                                    .min(&available),
+                                );
+                            }
+                        }
                         cx.defer(|cx| {
                             for handle in cx.windows() {
                                 let _ = handle.update(cx, |_, window, cx| {
