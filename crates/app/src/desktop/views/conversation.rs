@@ -158,6 +158,8 @@ struct Stored {
     read_at: Option<std::time::Instant>,
     /// The marker being asked for, so a poll does not ask again meanwhile.
     marking: Option<u64>,
+    /// A failed acknowledgement waits for the next polling interval.
+    mark_at: Option<std::time::Instant>,
     /// Redeliveries by entry, followed until a fresh read shows them settled.
     redelivery: HashMap<u64, Redelivery>,
     /// Where the next batch of older entries to re-read starts.
@@ -340,6 +342,7 @@ impl Conversation {
                 reading: false,
                 read_at: None,
                 marking: None,
+                mark_at: None,
                 redelivery: HashMap::new(),
                 turn: 0,
             });
@@ -379,6 +382,7 @@ impl Conversation {
             reading: false,
             read_at: None,
             marking: None,
+            mark_at: None,
             redelivery: HashMap::new(),
             turn: 0,
         });
@@ -418,6 +422,7 @@ impl Conversation {
             reading: false,
             read_at: None,
             marking: None,
+            mark_at: None,
             redelivery: HashMap::new(),
             turn: 0,
         });
@@ -850,6 +855,9 @@ impl Conversation {
         let Some(stored) = self.stored.as_mut() else {
             return;
         };
+        if !read_marker_due(stored.mark_at, std::time::Instant::now()) {
+            return;
+        }
         let (Some(last), Some(page)) = (stored.last(), stored.page.as_ref()) else {
             return;
         };
@@ -858,6 +866,7 @@ impl Conversation {
             return;
         }
         stored.marking = Some(last);
+        stored.mark_at = Some(std::time::Instant::now());
         let (directory, provider, kind, id) = target.expect("stored conversation");
         let worker = cx
             .background_executor()
@@ -1536,6 +1545,10 @@ impl Conversation {
     }
 }
 
+fn read_marker_due(last_attempt: Option<std::time::Instant>, now: std::time::Instant) -> bool {
+    last_attempt.is_none_or(|at| now.saturating_duration_since(at) >= Duration::from_secs(5))
+}
+
 fn at_latest(height: gpui::Pixels, offset: gpui::Pixels, maximum: gpui::Pixels) -> bool {
     height > px(0.) && offset + maximum <= px(1.)
 }
@@ -1642,6 +1655,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn failed_read_receipts_wait_for_the_poll_interval_despite_repaints() {
+        let attempt = std::time::Instant::now();
+        assert!(read_marker_due(None, attempt));
+        for frame in 0..300 {
+            assert!(!read_marker_due(
+                Some(attempt),
+                attempt + Duration::from_millis(frame * 16),
+            ));
+        }
+        assert!(read_marker_due(
+            Some(attempt),
+            attempt + Duration::from_secs(5)
+        ));
+    }
+
+    #[test]
     fn arrivals_are_unread_until_the_scrolled_view_reaches_them() {
         // A 300px panel is following a 900px thread. Another 100px reply
         // arrives: the old offset must not qualify for a read receipt.
@@ -1696,6 +1725,7 @@ mod tests {
             reading: false,
             read_at: None,
             marking: None,
+            mark_at: None,
             redelivery: HashMap::new(),
             turn: 0,
         };

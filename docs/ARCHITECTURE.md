@@ -353,7 +353,8 @@ ID and stored at most once; a stored message whose delivery failed is redelivere
 entry. Opening the panel reveals the newest messages; later arrivals follow only
 while the reader stays at the bottom. A painted frame at the bottom advances
 the owner's read marker through that frame's fetched entries. The "new" divider
-stays at the marker from when the panel opened. A plain 404 or an unknown
+stays at the marker from when the panel opened. Read acknowledgements retry at
+most once per polling interval, including after failure. A plain 404 or an unknown
 artifact switches the conversation back to one-way feedback. A shared skill or policy has
 no record, so its conversation finds its identity on the first read: the
 current provider, then the `artifact_id` that `/api/skills` or `/api/policies`
