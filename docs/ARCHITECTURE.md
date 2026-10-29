@@ -193,10 +193,13 @@ global window positions are unavailable, so app-calculated position limits canno
 safely place it. macOS and X11 instead bound resizing
 against the display, respecting the platform resize anchor.
 
-The first-agent step calls the selected engine's `runtimes --json`, then submits
+The first-agent step calls the selected engine's `runtimes --json --check-setup`
+(falling back to `runtimes --json` when an older CLI rejects the option), then submits
 `setup --file REQUEST --jsonl` only after an explicit Start action. It offers the
 `orchestrator-v1` brief or custom instructions, a name and a folder. Discovery
-reports installed tools, never verified login; permission and login prompts stay
+reports installed tools and opt-in setup compatibility, never verified login;
+incompatible tools show their diagnostic and selected executable rather than
+remaining selectable. Permission and login prompts stay
 in the actual agent terminal. First-agent selection also requires an explicit
 `setup_supported: true`; older providers and unsupported tools remain unavailable
 for this setup path. Start also requests an initial greeting, which may
@@ -206,8 +209,16 @@ The app saves the exact request, launcher and effective login-shell PATH in a
 private `onboarding-agent-<installation-digest>.json` beside settings before
 executing it. The resolved provider directory scopes each saved operation.
 Recovery loads that record even when fresh tool discovery cannot find an engine. An interrupted
-attempt reuses that request ID; only a confirmed preflight failure permits editing
-choices. Saving and archiving serialize through a sibling file lock. The engine
+attempt reuses that request ID. Change agent tool first durably records cancellation
+intent, then submits the same fields and ID with `action=cancel_first_agent`.
+Only a matching `request_cancelled` completion with `can_start_new_request=true`
+retires the local request and unlocks the form. The name, folder and brief survive;
+tool discovery and the login-shell PATH refresh before a new request is created.
+After interruption, cancellation intent resumes cancellation rather than starting
+the previous tool. The provider refuses cancellation after setup effects begin;
+the app retains the original record on refusal or an uncertain result. Saving,
+execution, cancellation and archiving serialize through a sibling file lock, and
+each worker checks that its request is still current before invoking the engine. The engine
 owns durable operation receipts and mutation deduplication. Requests are capped at
 32 KiB; stdout uses positional reads with a 1 MiB total limit, 64 KiB lines,
 1,024 events and a five-minute deadline. Request identity, sequence, final state

@@ -503,6 +503,8 @@ impl Onboarding {
             };
             if *command == "opencode" {
                 note.push_str(" Agent setup requires OpenCode 2.1.4 or newer; this command installs or updates OpenCode 2.");
+            } else if *command == "gemini" && path.is_none() {
+                note.push_str(" Gemini CLI requires Node.js 20 or newer with npm. Claude Code, Codex and OpenCode use standalone installers.");
             }
             let state = match (probe, path) {
                 (None, _) => (Tone::Plain, "Checking"),
