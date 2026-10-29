@@ -29,19 +29,10 @@ const TAGLINE: &str = "Your agents. Working together. On your machine.";
 const STEPS: [&str; 4] = ["Check", "Agent tools", "Your agent", "Shortcuts"];
 
 /// Whether this launch opens through setup instead of the workspace window:
-/// setup was started but not finished, or nothing has been saved yet.
+/// only a completed setup skips onboarding. Existing libraries and preferences
+/// may predate onboarding and do not establish that setup was completed.
 pub fn first_run(preferences: &Settings) -> bool {
-    !preferences.setup_done && (preferences.intro_seen || fresh_install())
-}
-
-/// No settings file and no library: this app has never run here.
-fn fresh_install() -> bool {
-    let settings = settings::path()
-        .and_then(|path| Some(path.parent()?.parent()?.to_owned()))
-        .is_some_and(|config| crate::compat::config_file(&config, "settings.toml").exists());
-    let library = crate::library::location::library_location(None)
-        .is_ok_and(|path| path.join("layouts.db").exists());
-    !settings && !library
+    !preferences.setup_done
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -913,6 +904,16 @@ fn rgba(hex: u32, alpha: f32) -> Rgba {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_completed_setup_skips_onboarding() {
+        let mut preferences = Settings::parse("theme = \"light\"\nfont_size = 14\n");
+        assert!(first_run(&preferences));
+        preferences.intro_seen = true;
+        assert!(first_run(&preferences));
+        preferences.setup_done = true;
+        assert!(!first_run(&preferences));
+    }
 
     #[test]
     fn the_scene_builds_then_dissolves() {

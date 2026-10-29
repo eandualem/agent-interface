@@ -77,7 +77,7 @@ configuration is preserved; see [connection guidance](docs/INSTALL.md#connect-ag
 if you manage that installation independently.
 
 The [installation guide](docs/INSTALL.md) covers package architectures, manual
-downloads, the experimental Windows 11 / WSL route, updates and removal.
+downloads, Windows 11 / WSL setup, updates and removal.
 
 ## Get started
 
@@ -101,8 +101,8 @@ The [user guide](docs/GUIDE.md) covers every view, shortcut and setting.
 
 ## Status
 
-Agent Interface runs on macOS and Linux (Wayland and X11). Windows 11 can try the
-Linux package through WSL 2; that route has not been verified. Sessions run on the
+Agent Interface runs on macOS and Linux (Wayland and X11). Windows 11 runs the
+Linux package through WSL 2 with WSLg. Sessions run on the
 same computer as the app. Rich HTML Documents render on macOS only.
 
 Not yet implemented: terminal input methods, accessible terminal text, key-release

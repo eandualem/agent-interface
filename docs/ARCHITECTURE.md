@@ -168,8 +168,10 @@ session-termination commands; navigation keeps them attached.
 
 ## First-run setup
 
-A fresh install (no settings file and no library) opens a setup window instead
-of the workspace window: an eight-second opening scene, played once, then steps
+Until setup is explicitly completed, an ordinary launch opens a setup window
+instead of the workspace window. Existing libraries and preferences, including
+pre-rename data, are preserved and do not count as completed setup. An explicit
+`--data-dir` launch opens that library directly. Setup has an eight-second opening scene, played once, then steps
 that check tmux, Agent Backbone, Git and the agent tools, create a first agent,
 and show the main shortcuts. tmux uses the terminal pane's `tmux_binary` resolver. Git, GitHub CLI,
 Backbone and agent tools are looked up after the user's interactive login shell
@@ -547,6 +549,12 @@ themes and keymaps fall back to the old configuration directory when the new fil
 use the new directory. Legacy environment overrides remain supported, with the new
 `AGENT_INTERFACE_*` names taking precedence. No database or running server is moved.
 The Linux launcher uses the packaged Agent Interface icon.
+Under WSL, the installer installs missing Ubuntu runtime packages through apt
+and registers its desktop entry in `/usr/share/applications`, which
+WSLg scans for Windows Start integration. These steps require sudo; the app and
+Backbone still run as the invoking user. The system entry carries the installer
+marker and home directory, is checked before replacement, and participates in
+launcher rollback. An ordinary Linux desktop keeps its per-user XDG launcher.
 
 Linux windows request client decorations and draw a matching right-side caption
 with minimize, maximize/restore and close controls, plus resize edges. If the X11
