@@ -27,8 +27,8 @@ use agent_interface_roster::{
     views::{ReportContent, ReportItem},
 };
 use gpui::{
-    AnyElement, App, Context, Entity, EventEmitter, FocusHandle, SharedString, Subscription, Task,
-    Window, div, prelude::*, px,
+    AnyElement, App, Context, Entity, EventEmitter, FocusHandle, ScrollHandle, SharedString,
+    Subscription, Task, Window, div, prelude::*, px,
 };
 
 use super::{clock::Local, reports};
@@ -106,6 +106,8 @@ pub(super) struct Conversation {
     /// A key asked to open or close the panel; done when it next renders.
     toggle_requested: bool,
     messages: Vec<Message>,
+    /// Retains the reader's position; new replies follow only at the bottom.
+    scroll: ScrollHandle,
     return_focus: Option<FocusHandle>,
     /// The conversation Backbone keeps, for a record that has one.
     stored: Option<Stored>,
@@ -534,6 +536,7 @@ impl Conversation {
             open: false,
             toggle_requested: false,
             messages: Vec::new(),
+            scroll: ScrollHandle::new(),
             return_focus: None,
             stored: None,
             active: false,
@@ -753,9 +756,6 @@ impl Conversation {
                             }
                         }
                         stored.settle(started, &returned);
-                        if seen {
-                            conversation.mark_read(cx);
-                        }
                     }
                     // A provider without conversations, or one that does not
                     // know this record, keeps the one-way messages.
@@ -841,8 +841,8 @@ impl Conversation {
         .detach();
     }
 
-    /// Move the owner's read marker to the newest entry shown.
-    fn mark_read(&mut self, cx: &mut Context<Self>) {
+    /// A painted frame reached this entry; never include a later poll.
+    fn mark_read(&mut self, painted_last: u64, cx: &mut Context<Self>) {
         if !(self.open && self.shown()) {
             return;
         }
@@ -853,6 +853,7 @@ impl Conversation {
         let (Some(last), Some(page)) = (stored.last(), stored.page.as_ref()) else {
             return;
         };
+        let last = last.min(painted_last);
         if page.read_through.is_some_and(|read| read >= last) || stored.marking >= Some(last) {
             return;
         }
@@ -1006,7 +1007,7 @@ impl Conversation {
                     .as_ref()
                     .map(|page| page.read_through.unwrap_or_default());
             }
-            self.mark_read(cx);
+            self.scroll = ScrollHandle::new();
             self.refresh(cx);
             let focus = self.field.read(cx).focus.clone();
             window.focus(&focus, cx);
@@ -1411,8 +1412,20 @@ impl Conversation {
                 ))
                 .into_any_element();
         }
+        // The handle still describes the previous frame here. Preserve an
+        // older reading position, or follow the bottom through the new layout.
+        if self.scroll.bounds().size.height <= px(0.)
+            || at_latest(
+                self.scroll.bounds().size.height,
+                self.scroll.offset().y,
+                self.scroll.max_offset().y,
+            )
+        {
+            self.scroll.scroll_to_bottom();
+        }
         let mut thread = div()
             .id("conversation-thread")
+            .track_scroll(&self.scroll)
             .flex_1()
             .min_h_0()
             .overflow_y_scroll()
@@ -1482,8 +1495,49 @@ impl Conversation {
                 message.text.clone(),
             ));
         }
-        thread.into_any_element()
+        let scroll = self.scroll.clone();
+        let entity = cx.entity().downgrade();
+        let last = self.stored.as_ref().and_then(Stored::last);
+        div()
+            .relative()
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .child(thread)
+            .child(
+                gpui::canvas(
+                    |_, _, _| (),
+                    move |_, (), _, cx| {
+                        // Paint runs after layout has applied scrolling. The
+                        // captured ID belongs to this frame, not a future poll.
+                        if let Some(last) = last
+                            && at_latest(
+                                scroll.bounds().size.height,
+                                scroll.offset().y,
+                                scroll.max_offset().y,
+                            )
+                        {
+                            let entity = entity.clone();
+                            cx.defer(move |cx| {
+                                let _ = entity.update(cx, |conversation, cx| {
+                                    conversation.mark_read(last, cx);
+                                });
+                            });
+                        }
+                    },
+                )
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full(),
+            )
+            .into_any_element()
     }
+}
+
+fn at_latest(height: gpui::Pixels, offset: gpui::Pixels, maximum: gpui::Pixels) -> bool {
+    height > px(0.) && offset + maximum <= px(1.)
 }
 
 /// Seconds since the epoch for an RFC 3339 time.
@@ -1586,6 +1640,20 @@ impl Conversation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn arrivals_are_unread_until_the_scrolled_view_reaches_them() {
+        // A 300px panel is following a 900px thread. Another 100px reply
+        // arrives: the old offset must not qualify for a read receipt.
+        assert!(at_latest(px(300.), px(-600.), px(600.)));
+        assert!(!at_latest(px(300.), px(-600.), px(700.)));
+        assert!(at_latest(px(300.), px(-700.), px(700.)));
+        // A reader back in history, and a panel not yet laid out, cannot
+        // acknowledge the newest entry. Short threads need no scrolling.
+        assert!(!at_latest(px(300.), px(-200.), px(700.)));
+        assert!(!at_latest(px(0.), px(0.), px(0.)));
+        assert!(at_latest(px(300.), px(0.), px(0.)));
+    }
 
     #[test]
     fn stored_times_read_as_seconds_since_the_epoch() {
