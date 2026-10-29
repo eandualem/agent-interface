@@ -153,7 +153,7 @@ try { new WebSocket('TARGET/socket'.replace('http:', 'ws:')); } catch (_) {}
                 return list(csv.DictReader(io.StringIO(tsv), delimiter='\t'))
 
             def find(text, last=False):
-                found = [word for word in words() if word.get('text', '').strip() == text]
+                found = [word for word in words() if (word.get('text') or '').strip() == text]
                 return (found[-1] if last else found[0]) if found else None
 
             def click(text, last=False):
@@ -257,7 +257,7 @@ try { new WebSocket('TARGET/socket'.replace('http:', 'ws:')); } catch (_) {}
             command('xdotool', 'windowactivate', '--sync', window)
             click('Documents', last=True)
             click('Renderer')
-            wait_for(lambda: 'Documents require the WebKit sandbox' in ' '.join(w.get('text', '') for w in words()),
+            wait_for(lambda: 'Documents require the WebKit sandbox' in ' '.join(w.get('text') or '' for w in words()),
                      'sandbox override refused in native error view')
             assert not find('DOCUMENTREADY'), 'unsafe override rendered authored content'
             assert not sandboxed_processes(), 'override started a web process'

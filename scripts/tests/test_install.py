@@ -34,7 +34,15 @@ class InstallTests(unittest.TestCase):
         self.env = dict(os.environ, HOME=str(self.home), PATH=str(self.tools) + os.pathsep + os.environ["PATH"])
         self.env.pop("XDG_DATA_HOME", None)
         self.env.pop("WSL_DISTRO_NAME", None)
-        self.installer = INSTALL
+        # Ordinary fixtures must never inspect or configure the host's sandbox
+        # policy. Sandbox cases opt into their own redirected paths below.
+        self.installer = self.root / "install.sh"
+        self.installer.write_text(INSTALL.read_text().replace(
+            "/proc/sys/kernel/apparmor_restrict_unprivileged_userns",
+            str(self.root / "no-host-userns-policy")))
+        self.command("sudo", "exit 99")
+        self.command("apt-get", "exit 99")
+        self.command("apparmor_parser", "exit 99")
         self.destination = self.home / ".local/lib/agent-interface"
         self.launcher = self.home / f".local/share/applications/{APP_ID}.desktop"
         self.link = self.home / ".local/bin/agent-interface"
@@ -81,7 +89,7 @@ class InstallTests(unittest.TestCase):
         self.system_apps = self.root / "system-applications"
         self.system_apps.mkdir()
         self.installer = self.root / "install.sh"
-        self.installer.write_text(INSTALL.read_text().replace(
+        self.installer.write_text(self.installer.read_text().replace(
             "/usr/share/applications", str(self.system_apps)))
         self.env.update(WSL_DISTRO_NAME="Ubuntu", DISPLAY=":0",
                         TEST_SYSTEM_ACTIONS=str(self.root / "system-actions"))
