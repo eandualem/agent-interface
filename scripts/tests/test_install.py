@@ -1,12 +1,19 @@
 """Exercise installer transactions with inert payloads in private homes."""
 
 import hashlib
+import http.server
 import io
+import json
+import shlex
+import shutil
+import socket
+import sys
 import os
 from pathlib import Path
 import subprocess
 import tarfile
 import tempfile
+import threading
 import unittest
 
 INSTALL = Path(__file__).resolve().parents[2] / "install.sh"
@@ -140,6 +147,7 @@ while [ "$#" -gt 0 ]; do
         *) shift;;
     esac
 done
+case "$url" in */releases/latest) printf 'https://github.com/eandualem/agent-interface/releases/tag/vfixture'; exit 0;; esac
 name=${url##*/}
 printf '%s\\n' "$name" >> "$TEST_DOWNLOADS"
 case "$name" in
@@ -159,11 +167,11 @@ if [ "$write_status" = true ]; then printf 200; fi
         self.assertTrue((self.destination / "agent-interface.png").is_file())
         self.assertIn("StartupWMClass=io.github.eandualem.tmux-workspaces\n", self.launcher.read_text())
         self.assertEqual((self.root / "downloads").read_text().splitlines(), [
-            "agent-interface-x86_64-unknown-linux-gnu.tar.gz",
-            "tmux-workspaces-x86_64-unknown-linux-gnu.tar.gz",
-            "tmux-workspaces-x86_64-unknown-linux-gnu.tar.gz.sha256"])
+            "agent-interface-x86_64-unknown-linux-gnu.tar.gz.sha256",
+            "tmux-workspaces-x86_64-unknown-linux-gnu.tar.gz.sha256",
+            "tmux-workspaces-x86_64-unknown-linux-gnu.tar.gz"])
         requests = (self.root / "downloads.args").read_text().splitlines()
-        self.assertTrue(all("--progress-bar" in line for line in requests[:2]))
+        self.assertIn("--progress-bar", requests[3])
         archive = self.package("0.1.1")
         self.mock_download(archive, prefix="agent-interface")
         self.install(None)
@@ -186,7 +194,7 @@ if [ "$write_status" = true ]; then printf 200; fi
         self.mock_download(self.package("0.1.0", legacy=True), missing_status="500")
         self.install(None, success=False)
         self.assertEqual(subprocess.check_output([self.link, "--version"], text=True).strip(), "agent-interface 0.1.1")
-        self.assertEqual((self.root / "downloads").read_text().splitlines(), ["agent-interface-x86_64-unknown-linux-gnu.tar.gz"])
+        self.assertEqual((self.root / "downloads").read_text().splitlines(), ["agent-interface-x86_64-unknown-linux-gnu.tar.gz.sha256"])
 
     def test_legacy_download_checksum_failure_preserves_installation(self):
         self.install(self.package("0.1.1"))
@@ -194,8 +202,214 @@ if [ "$write_status" = true ]; then printf 200; fi
         with archive.open("ab") as stream:
             stream.write(b"corrupt")
         self.mock_download(archive)
+        self.command("sleep", 'case "$1" in 2|4|8|16) exit 0;; *) exec /bin/sleep "$@";; esac')
         self.install(None, success=False)
         self.assertEqual(subprocess.check_output([self.link, "--version"], text=True).strip(), "agent-interface 0.1.1")
+
+    def unreliable_download(self, archive, outcomes):
+        self.env.update(TEST_ARCHIVE=str(archive), TEST_OUTCOMES=','.join(outcomes),
+                        TEST_TRANSFERS=str(self.root / "transfers"))
+        self.command("sleep", 'case "$1" in 2|4|8|16) exit 0;; *) exec /bin/sleep "$@";; esac')
+        stub = self.root / "download.py"
+        stub.write_text('''import json, os, sys
+from pathlib import Path
+args = sys.argv[1:]
+output = Path(args[args.index('-o') + 1])
+url = next(arg for arg in args if arg.startswith('https://'))
+archive = Path(os.environ['TEST_ARCHIVE'])
+if url.endswith('/releases/latest'):
+    print('https://github.com/eandualem/agent-interface/releases/tag/vfixture', end='')
+    sys.exit(0)
+assert '/releases/download/vfixture/' in url
+if url.endswith('.sha256'):
+    output.write_bytes(Path(str(archive) + '.sha256').read_bytes())
+    print('200', end='')
+    sys.exit(0)
+assert '--continue-at' in args and args[args.index('--continue-at') + 1] == '-'
+assert '--max-time' not in args
+assert args[args.index('--speed-limit') + 1] == '1'
+assert args[args.index('--speed-time') + 1] == '60'
+log = Path(os.environ['TEST_TRANSFERS'])
+records = json.loads(log.read_text()) if log.exists() else []
+offset = output.stat().st_size if output.exists() else 0
+records.append(offset)
+log.write_text(json.dumps(records))
+plan = os.environ['TEST_OUTCOMES'].split(',')
+outcome = plan[min(len(records) - 1, len(plan) - 1)]
+if outcome in ('33', '416', '503', '404'):
+    print(outcome if outcome != '33' else '200', end='')
+    sys.exit(33 if outcome == '33' else 0 if outcome == '416' else 22)
+data = archive.read_bytes()
+if outcome == 'corrupt':
+    output.write_bytes(b'bad archive')
+else:
+    end = len(data) if outcome == 'ok' else min(len(data) - 1, offset + 17)
+    with output.open('ab') as stream:
+        stream.write(data[offset:end])
+print('206' if offset else '200', end='')
+sys.exit(0 if outcome in ('ok', 'corrupt') else int(outcome))
+''')
+        self.command("curl", f"exec {shlex.quote(sys.executable)} {shlex.quote(str(stub))} \"$@\"")
+
+    def real_curl_resume(self, reject_range=False):
+        archive = self.package()
+        body = archive.read_bytes()
+        checksum = Path(str(archive) + '.sha256').read_bytes()
+        offsets = []
+        heads = []
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_HEAD(self):
+                heads.append(self.path)
+                if self.path == '/releases/latest':
+                    self.send_response(302)
+                    self.send_header('Location', '/releases/tag/vfixture')
+                elif self.path == '/releases/tag/vfixture':
+                    self.send_response(200)
+                else:
+                    self.send_response(404)
+                self.send_header('Content-Length', '0')
+                self.end_headers()
+
+            def do_GET(self):
+                if not self.path.startswith('/releases/download/vfixture/'):
+                    self.send_error(404)
+                    return
+                if self.path.endswith('.sha256'):
+                    self.send_response(200)
+                    self.send_header('Content-Length', str(len(checksum)))
+                    self.end_headers()
+                    self.wfile.write(checksum)
+                    return
+                offset = int(self.headers.get('Range', 'bytes=0-')[6:-1])
+                offsets.append(offset)
+                if reject_range and len(offsets) == 2:
+                    self.send_response(416)
+                    self.send_header('Content-Range', f'bytes */{len(body)}')
+                    self.send_header('Content-Length', '0')
+                    self.end_headers()
+                    return
+                self.send_response(206 if offset else 200)
+                self.send_header('Content-Length', str(len(body) - offset))
+                if offset:
+                    self.send_header('Content-Range', f'bytes {offset}-{len(body) - 1}/{len(body)}')
+                self.end_headers()
+                if len(offsets) == 1:
+                    self.wfile.write(body[:37])
+                    self.wfile.flush()
+                    self.connection.shutdown(socket.SHUT_RDWR)
+                    self.connection.close()
+                else:
+                    self.wfile.write(body[offset:])
+
+        server = http.server.HTTPServer(('127.0.0.1', 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        real_curl = shutil.which('curl')
+        self.assertIsNotNone(real_curl)
+        proxy = self.root / 'curl-proxy.py'
+        # Only this fixture routes GitHub requests through its local HTTP
+        # server. Real curl resolves HEAD redirects and transfers the archive;
+        # translate its effective local URL back for production's origin check.
+        local = f'http://127.0.0.1:{server.server_port}'
+        repository = 'https://github.com/eandualem/agent-interface'
+        proxy.write_text('import subprocess, sys\n' +
+                         f'local, repository = {local!r}, {repository!r}\n' +
+                         'args = [arg.replace("=https", "=http").replace(repository, local) for arg in sys.argv[1:]]\n' +
+                         f'result = subprocess.run([{real_curl!r}, "--noproxy", "*", *args], stdout=subprocess.PIPE)\n' +
+                         'sys.stdout.buffer.write(result.stdout.replace(local.encode(), repository.encode()))\n' +
+                         'sys.exit(result.returncode)\n')
+        self.command('curl', f'exec {shlex.quote(sys.executable)} {shlex.quote(str(proxy))} "$@"')
+        try:
+            result = self.install(None)
+            if reject_range:
+                self.assertIn('Server could not resume', result.stderr)
+            self.assertEqual(heads, ['/releases/latest', '/releases/tag/vfixture'])
+            self.assertEqual(offsets, [0, 37, 0] if reject_range else [0, 37])
+            self.assertEqual((self.destination.parent / '.agent-interface-download/archive.part').read_bytes(), body)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_real_curl_resumes_a_truncated_http_response(self):
+        self.real_curl_resume()
+
+    def test_real_curl_range_rejection_starts_fresh(self):
+        self.real_curl_resume(reject_range=True)
+
+    def test_download_resumes_after_reset_and_stall(self):
+        self.unreliable_download(self.package(), ['56', '28', 'ok'])
+        result = self.install(None)
+        self.assertEqual(json.loads((self.root / 'transfers').read_text()), [0, 17, 34])
+        self.assertIn('attempt 3/5; 34 bytes saved', result.stderr)
+        self.assertTrue(self.link.exists())
+
+    def test_download_exhaustion_retains_bytes_for_next_installer_run(self):
+        self.wsl()
+        self.unreliable_download(self.package(), ['56'] * 5 + ['ok'])
+        result = self.install(None, success=False)
+        self.assertIn('rerun the installer to resume', result.stderr)
+        self.assertFalse((self.root / 'system-actions').exists())
+        self.assertFalse(self.destination.exists())
+        self.install(None)
+        self.assertEqual(json.loads((self.root / 'transfers').read_text()), [0, 17, 34, 51, 68, 85])
+        self.assertIn('-v', (self.root / 'system-actions').read_text())
+        # A verified archive is also reused if a later installation step failed.
+        self.install(None)
+        self.assertEqual(len(json.loads((self.root / 'transfers').read_text())), 6)
+
+    def test_changed_release_does_not_resume_old_bytes(self):
+        self.unreliable_download(self.package('0.0.0'), ['56'] * 5 + ['ok'])
+        self.install(None, success=False)
+        self.package('0.0.1')
+        self.install(None)
+        self.assertEqual(json.loads((self.root / 'transfers').read_text())[-1], 0)
+        self.assertEqual(subprocess.check_output([self.link], text=True).strip(), 'agent-interface 0.0.1')
+
+    def test_download_recovers_when_server_rejects_range(self):
+        for rejection in ('33', '416'):
+            with self.subTest(rejection=rejection):
+                archive = self.package('0.0.' + rejection)
+                (self.root / 'transfers').unlink(missing_ok=True)
+                self.unreliable_download(archive, ['56', rejection, 'ok'])
+                self.install(None)
+                self.assertEqual(json.loads((self.root / 'transfers').read_text()), [0, 17, 0])
+
+    def test_download_retries_server_error_and_corrupt_success(self):
+        self.unreliable_download(self.package(), ['503', 'corrupt', 'ok'])
+        self.install(None)
+        self.assertEqual(json.loads((self.root / 'transfers').read_text()), [0, 0, 0])
+
+    def test_download_missing_asset_does_not_loop_or_claim_network_failure(self):
+        self.unreliable_download(self.package(), ['404'])
+        result = self.install(None, success=False)
+        self.assertIn('HTTP 404', result.stderr)
+        self.assertEqual(json.loads((self.root / 'transfers').read_text()), [0])
+        self.assertFalse(self.destination.exists())
+
+    def test_release_resolution_requires_a_tag_in_the_same_repository(self):
+        self.command('curl', "printf 'https://example.invalid/releases/tag/vfixture'")
+        result = self.install(None, success=False)
+        self.assertIn('did not resolve to a release tag', result.stderr)
+        self.assertFalse((self.destination.parent / '.agent-interface-download').exists())
+
+    def test_download_cache_rejects_symlink(self):
+        archive = self.package()
+        self.unreliable_download(archive, ['ok'])
+        parent = self.destination.parent
+        parent.mkdir(parents=True)
+        cache = parent / '.agent-interface-download'
+        cache.mkdir()
+        outside = self.root / 'unrelated'
+        outside.write_text('preserve')
+        (cache / 'archive.part').symlink_to(outside)
+        self.install(None, success=False)
+        self.assertEqual(outside.read_text(), 'preserve')
+        self.assertFalse((self.root / 'transfers').exists())
 
     def test_transitional_link_is_restored_after_update_failure(self):
         self.install(self.package("0.1.0", legacy=True))

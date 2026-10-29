@@ -550,7 +550,17 @@ optional integration cannot abort an otherwise usable app installation. Actual
 provider installation and setup failures remain fatal. Archive transfers use
 curl's progress bar; quiet package/setup commands emit elapsed-time updates from
 a shell helper that is stopped and reaped when the command finishes. No extra
-progress library is required.
+progress library is required. Each run resolves the latest release to a fixed tag
+before fetching its checksum and archive, so retries cannot switch releases.
+Downloads resume from a private cache beside the
+installation, protected by the installer lock and keyed by the published SHA-256
+checksum. Five attempts with exponential backoff tolerate interrupted connections;
+a 60-second stalled-transfer timeout replaces a total download deadline. A later
+installer run reuses partial or verified bytes for the same checksum. A changed
+checksum invalidates the cache, and range rejection or checksum failure starts a
+fresh transfer. Verification still precedes extraction and execution. WSL runtime
+installation and its sudo prompt occur after the archive is verified, so a long
+download does not consume the authorization window.
 
 The shell installer verifies the archive checksum and target, stages a
 per-user replacement, and preserves the data directories. Linux desktop and

@@ -252,11 +252,21 @@ checks the replacement before updating its own installation. Existing layouts,
 settings, and tmux sessions are preserved. It refuses to overwrite an installation
 it does not recognize; move that installation yourself if you want to replace it.
 
+The installer retains one archive in a hidden download cache so interrupted
+installs and repeated attempts can reuse it. Include that cache when removing
+the installation.
+
 To remove the macOS app, quit it and move `~/Applications/Agent Interface.app` to
-the Trash. On Linux, quit it and remove these installation files:
+the Trash, then remove its download cache:
 
 ```sh
-rm -rf "$HOME/.local/lib/agent-interface"
+rm -rf "$HOME/Applications/.agent-interface-download"
+```
+
+On Linux, quit the app and remove these installation files:
+
+```sh
+rm -rf "$HOME/.local/lib/agent-interface" "$HOME/.local/lib/.agent-interface-download"
 rm -f "$HOME/.local/bin/agent-interface"
 rm -f "${XDG_DATA_HOME:-$HOME/.local/share}/applications/io.github.eandualem.agent-interface.desktop"
 ```
