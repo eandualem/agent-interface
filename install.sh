@@ -399,24 +399,45 @@ if [ -n "$wsl_launcher" ]; then
 fi
 "$prepared/$executable" --version || fail 'The binary cannot run on this system. Check the documented runtime requirements.'
 resources=$prepared/$(dirname "$marker")
-# Ubuntu's user-namespace restriction needs an application-specific exception
-# for WebKitGTK's own sandbox. Never change the host's global sysctl policy.
-if [ "$platform" = unknown-linux-gnu ] && [ -f "$resources/agent-interface.apparmor" ] &&
-    [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null || true)" = 1 ] &&
-    [ -d /sys/kernel/security/apparmor ]; then
-    sandbox_profile=/etc/apparmor.d/agent-interface-userns
-    if [ -L "$sandbox_profile" ] || { [ -e "$sandbox_profile" ] &&
-        ! grep -Fqx '# Agent Interface user namespace profile' "$sandbox_profile"; }; then
-        fail 'An existing custom Agent Interface AppArmor profile was preserved. Configure its userns permission before installing.'
+# Use the distribution's root-owned Bubblewrap policy when its sandbox cannot
+# start. Never grant userns to writable app paths or replace an existing policy.
+configure_linux_sandbox() {
+    [ "$platform" = unknown-linux-gnu ] || return 0
+    [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null || true)" = 1 ] || return 0
+    [ -d /sys/kernel/security/apparmor ] || return 0
+    if timeout 5 /usr/bin/bwrap --ro-bind / / --proc /proc --dev /dev --unshare-all -- /bin/true >/dev/null 2>&1; then return 0; fi
+    sandbox_warning='Documents need Linux sandbox support; native terminals and other views remain available. See the Linux installation guide.'
+    sandbox_source=/usr/share/apparmor/extra-profiles/bwrap-userns-restrict
+    sandbox_profile=/etc/apparmor.d/bwrap-userns-restrict
+    if [ -e "$sandbox_profile" ] || [ -L "$sandbox_profile" ]; then
+        printf 'Agent Interface: Existing Bubblewrap policy preserved. %s\n' "$sandbox_warning" >&2
+        return 0
     fi
-    [ -x /usr/sbin/apparmor_parser ] || fail 'Linux sandbox setup needs the distribution AppArmor tools.'
-    printf '%s\n' 'Configuring the Agent Interface document sandbox. sudo may ask for your Linux password.'
-    sudo -v || fail 'Could not authorize the application-specific sandbox profile.'
-    # Compile and load successfully before replacing any on-disk policy.
-    run_step 'Loading the document sandbox profile' sudo /usr/sbin/apparmor_parser -r "$resources/agent-interface.apparmor" ||
-        fail 'Could not load the application-specific sandbox profile.'
-    sudo install -m 644 -- "$resources/agent-interface.apparmor" "$sandbox_profile" || fail 'Could not persist the application-specific sandbox profile.'
-fi
+    printf '%s\n' 'Preparing distribution Bubblewrap sandbox support. sudo may ask for your Linux password.'
+    if ! sudo -v; then printf 'Agent Interface: %s\n' "$sandbox_warning" >&2; return 0; fi
+    if ! sudo test -r /sys/kernel/security/apparmor/profiles ||
+        sudo grep -Eq '^(bwrap|unpriv_bwrap) \(' /sys/kernel/security/apparmor/profiles; then
+        printf 'Agent Interface: Existing or unreadable sandbox policy preserved. %s\n' "$sandbox_warning" >&2
+        return 0
+    fi
+    if [ ! -f "$sandbox_source" ]; then
+        if ! command -v apt-get >/dev/null 2>&1 ||
+            ! run_step 'Refreshing sandbox package information' sudo apt-get update ||
+            ! run_step 'Installing distribution sandbox policy' sudo apt-get install -y apparmor-profiles; then
+            printf 'Agent Interface: %s\n' "$sandbox_warning" >&2
+            return 0
+        fi
+    fi
+    if [ ! -f "$sandbox_source" ] || [ ! -x /usr/sbin/apparmor_parser ] ||
+        ! run_step 'Loading distribution sandbox policy' sudo /usr/sbin/apparmor_parser -r "$sandbox_source"; then
+        printf 'Agent Interface: Could not load the distribution sandbox policy. %s\n' "$sandbox_warning" >&2
+        return 0
+    fi
+    if ! sudo install -m 644 -- "$sandbox_source" "$sandbox_profile"; then
+        printf 'Agent Interface: Sandbox policy is active but could not be saved for restart.\n' >&2
+    fi
+}
+configure_linux_sandbox
 if [ -f "$resources/setup_backbone.py" ]; then
     # Backbone publishes its own package. Install that release independently
     # of the app archive; uv supplies Python when a suitable runtime is absent.

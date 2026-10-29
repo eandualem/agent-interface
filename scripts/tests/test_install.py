@@ -104,52 +104,68 @@ esac
     def sandbox_fixture(self):
         policy = self.root / "apparmor"
         policy.mkdir()
+        (policy / "profiles").write_text("")
         restriction = self.root / "restrict-userns"
         restriction.write_text("1\n")
+        source = self.root / "distribution-policy"
+        source.write_text("# inert distribution policy fixture\n")
         parser = self.tools / "apparmor_parser"
         self.command("apparmor_parser", 'exit "${TEST_PARSER_STATUS:-0}"')
-        self.sandbox_profile = policy / "agent-interface-userns"
+        self.command("timeout", "exit 1")
+        self.sandbox_profile = policy / "bwrap-userns-restrict"
         self.installer = self.root / "install-sandbox.sh"
         self.installer.write_text(INSTALL.read_text()
             .replace("/proc/sys/kernel/apparmor_restrict_unprivileged_userns", str(restriction))
             .replace("/sys/kernel/security/apparmor", str(policy))
             .replace("/etc/apparmor.d", str(policy))
+            .replace("/usr/share/apparmor/extra-profiles/bwrap-userns-restrict", str(source))
             .replace("/usr/sbin/apparmor_parser", str(parser)))
         self.env["TEST_SYSTEM_ACTIONS"] = str(self.root / "sandbox-actions")
         self.command("sudo", """
 printf '%s\\n' "$*" >> "$TEST_SYSTEM_ACTIONS"
-[ "$1" != -v ] || exit 0
+[ "$1" != -v ] || exit "${TEST_SUDO_STATUS:-0}"
 exec "$@"
 """)
-        profile = (INSTALL.parent / "packaging/agent-interface.apparmor").read_text()
-        return self.package(extra={"agent-interface/agent-interface.apparmor": profile})
+        return self.package()
 
-    def test_sandbox_profile_is_scoped_and_loaded(self):
-        archive = self.sandbox_fixture()
-        self.install(archive)
-        profile = self.sandbox_profile.read_text()
-        self.assertIn("@{HOME}/.local/lib/agent-interface/bin/agent-interface", profile)
-        self.assertIn("userns,", profile)
+    def test_distribution_sandbox_policy_is_loaded(self):
+        self.install(self.sandbox_fixture())
+        self.assertEqual(self.sandbox_profile.read_text(), "# inert distribution policy fixture\n")
         actions = Path(self.env["TEST_SYSTEM_ACTIONS"]).read_text()
         self.assertIn("apparmor_parser -r", actions)
         self.assertNotIn("sysctl", actions)
 
-    def test_sandbox_custom_profile_is_preserved(self):
+    def test_sandbox_custom_policy_is_preserved(self):
         archive = self.sandbox_fixture()
         self.sandbox_profile.write_text("custom policy\n")
-        result = self.install(archive, success=False)
+        result = self.install(archive)
         self.assertEqual(self.sandbox_profile.read_text(), "custom policy\n")
-        self.assertIn("custom Agent Interface AppArmor profile was preserved", result.stderr)
-        self.assertFalse(self.destination.exists())
+        self.assertIn("Existing Bubblewrap policy preserved", result.stderr)
+        self.assertTrue(self.destination.exists())
 
-    def test_sandbox_parser_failure_keeps_previous_app(self):
-        self.install(self.package(version="old"))
+    def test_loaded_sandbox_policy_is_not_replaced(self):
+        archive = self.sandbox_fixture()
+        (self.sandbox_profile.parent / "profiles").write_text("bwrap (enforce)\n")
+        result = self.install(archive)
+        self.assertIn("Existing or unreadable sandbox policy preserved", result.stderr)
+        self.assertFalse(self.sandbox_profile.exists())
+        self.assertNotIn("apparmor_parser", Path(self.env["TEST_SYSTEM_ACTIONS"]).read_text())
+
+    def test_sandbox_setup_without_sudo_still_installs_native_app(self):
+        archive = self.sandbox_fixture()
+        self.env["TEST_SUDO_STATUS"] = "1"
+        result = self.install(archive)
+        self.assertIn("native terminals and other views remain available", result.stderr)
+        self.assertFalse(self.sandbox_profile.exists())
+        self.assertTrue(self.destination.exists())
+
+    def test_sandbox_parser_failure_does_not_persist_policy(self):
         archive = self.sandbox_fixture()
         self.env["TEST_PARSER_STATUS"] = "1"
-        result = self.install(archive, success=False)
+        result = self.install(archive)
         self.assertIn("Could not load", result.stderr)
         self.assertFalse(self.sandbox_profile.exists())
-        self.assertIn("old", (self.destination / "bin/agent-interface").read_text())
+        self.assertTrue(self.destination.exists())
 
     def test_wsl_installs_runtime_and_registers_start_menu_entry(self):
         shortcut = self.wsl()

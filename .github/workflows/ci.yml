@@ -67,7 +67,8 @@ jobs:
           tmux -V
           cc --version
 
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0, MIT
+      - id: cargo-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0, MIT
         with:
           path: |
             ~/.cargo/registry/index
@@ -92,13 +93,12 @@ jobs:
         if: runner.os == 'Linux'
         run: cargo test -p agent-interface-webview-host --release variant_string_iterator --locked
 
-      - name: Prepare application-scoped sandbox profile (Ubuntu)
+      - name: Prepare distribution sandbox support (Ubuntu)
         if: runner.os == 'Linux'
         run: |
-          sudo apparmor_parser --skip-kernel-load packaging/agent-interface.apparmor
-          if [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null)" = 1 ]; then
-            printf 'abi <abi/4.0>,\nprofile agent-interface-ci "%s/target/debug/agent-interface" flags=(unconfined) {\n userns,\n}\n' "$GITHUB_WORKSPACE" > "$RUNNER_TEMP/agent-interface-ci.apparmor"
-            sudo apparmor_parser -r "$RUNNER_TEMP/agent-interface-ci.apparmor"
+          if ! timeout 5 bwrap --ro-bind / / --proc /proc --dev /dev --unshare-all -- /bin/true; then
+            sudo apt-get install -y apparmor-profiles
+            sudo apparmor_parser -r /usr/share/apparmor/extra-profiles/bwrap-userns-restrict
           fi
 
       - name: Linux graphical regression checks
@@ -121,6 +121,17 @@ jobs:
             target/linux-documents-smoke/
           if-no-files-found: ignore
           retention-days: 7
+
+      - name: Preserve compilation for a corrected check
+        if: failure() && steps.cargo-cache.outcome == 'success' && steps.cargo-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0, MIT
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: cargo-${{ runner.os }}-${{ runner.arch }}-zig-${{ env.ZIG_VERSION }}-cpu-${{ env.LIBGHOSTTY_VT_SYS_CPU }}-mode-${{ env.LIBGHOSTTY_VT_SYS_OPTIMIZE }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'native/ghostty.json') }}
 
       - name: Docs
         run: cargo doc --workspace --no-deps --locked

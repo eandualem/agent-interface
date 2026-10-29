@@ -142,12 +142,14 @@ command is `agent-interface`. Existing data directories remain readable in place
 
 ### Linux document sandbox
 
-Documents use WebKitGTK's process sandbox. On Ubuntu systems that restrict user
-namespaces, the installer uses sudo to install an application-specific AppArmor
-profile for the standard installation path. It preserves existing custom profiles
-and does not change global namespace restrictions. This requires the distribution's
-AppArmor tools. Manual installations at another path need a matching profile;
-[`packaging/agent-interface.apparmor`](../packaging/agent-interface.apparmor) is the template.
+Documents use WebKitGTK's process sandbox. If Ubuntu's namespace restrictions
+prevent Bubblewrap from starting, the installer offers sudo setup using the
+Ubuntu `apparmor-profiles` package's `bwrap-userns-restrict` policy. This policy
+attaches to the root-owned `/usr/bin/bwrap` helper and restricts capabilities in
+its children. The installer preserves existing policy files and loaded profiles;
+it does not grant permissions to user-writable app paths or change global sysctls.
+If setup is declined or unavailable, installation continues with native views;
+Documents explain that sandbox support needs configuration by an administrator.
 
 Containers must allow nested user, mount, PID and network namespaces for WebKitGTK.
 The app checks sandbox startup before opening Documents and reports an unavailable
@@ -286,16 +288,9 @@ rm -f "$HOME/.local/bin/agent-interface"
 rm -f "${XDG_DATA_HOME:-$HOME/.local/share}/applications/io.github.eandualem.agent-interface.desktop"
 ```
 
-If this is the last installation on the computer, remove the shared sandbox
-profile only when its installer marker matches:
-
-```sh
-profile=/etc/apparmor.d/agent-interface-userns
-if [ -f "$profile" ] && [ ! -L "$profile" ] &&
-    grep -Fqx '# Agent Interface user namespace profile' "$profile"; then
-    sudo /usr/sbin/apparmor_parser -R "$profile" && sudo rm -f -- "$profile"
-fi
-```
+The distribution Bubblewrap policy is shared system sandbox support, like the
+runtime libraries. Uninstalling this app does not remove it or change other apps'
+sandbox configuration.
 
 These commands leave your data and terminal sessions intact. See the
 [user guide](GUIDE.md) for library and settings locations.

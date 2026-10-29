@@ -126,8 +126,6 @@ def main():
         run("strip", "-x" if mac else "--strip-unneeded", str(executable))
         notices(resources, target, native, env)
         shutil.copyfile(ROOT / "scripts/setup_backbone.py", resources / "setup_backbone.py")
-        if not mac:
-            shutil.copyfile(ROOT / "packaging/agent-interface.apparmor", resources / "agent-interface.apparmor")
         shutil.copyfile(ROOT / ("packaging/icon/AppIcon.icns" if mac else "packaging/icon/agent-interface.png"),
                         resources / ("AppIcon.icns" if mac else "agent-interface.png"))
         (resources / "INSTALLER").write_text(APP_ID + "\n")

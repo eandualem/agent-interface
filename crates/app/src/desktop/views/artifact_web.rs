@@ -248,9 +248,7 @@ impl Surface {
                         *failure.borrow_mut() = Some(message);
                         // Repaint after returning from GTK; the next paint uses
                         // the existing native error UI and releases this view.
-                        context
-                            .spawn(async move |cx| cx.update(|cx| cx.refresh()))
-                            .detach();
+                        context.spawn(async move |cx| cx.refresh()).detach();
                     }
                 })?;
                 // Load authored code only after native networking/file permissions
