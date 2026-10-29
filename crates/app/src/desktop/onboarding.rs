@@ -514,24 +514,17 @@ impl Render for Onboarding {
         };
         if index == 2
             && self.first.is_none()
+            && let Some(probe) = &self.probe
             && let Ok(Some(directory)) =
                 crate::roster::provider_directory(Some(true), None, None, false)
         {
-            let executable = setup::active_engine(&directory).or_else(|| {
-                self.probe
-                    .as_ref()
-                    .and_then(|probe| probe.path("backbone").cloned())
-            });
-            let existing = self.probe.as_ref().is_some_and(
-                |probe| matches!(probe.backbone, Backbone::Running { agents } if agents > 0),
-            );
+            let executable =
+                setup::active_engine(&directory).or_else(|| probe.path("backbone").cloned());
+            let existing = matches!(probe.backbone, Backbone::Running { agents } if agents > 0);
             let first = cx.new(|cx| {
                 first::FirstAgent::new(
                     executable,
-                    self.probe
-                        .as_ref()
-                        .map(|probe| probe.path_env.clone())
-                        .unwrap_or_default(),
+                    probe.path_env.clone(),
                     directory,
                     existing,
                     window,
@@ -565,6 +558,7 @@ impl Render for Onboarding {
             1 => self.tools_step(cx),
             2 => match &self.first {
                 Some(first) => div().child(first.clone()),
+                None if self.probe.is_none() => heading("Your first agent", "Checking your tools and shell environment…"),
                 None => heading("Your first agent", "The setup engine is unavailable. Return to Check, then install or reconnect the engine before creating an agent.")
                     .when(self.probe.as_ref().is_some_and(|probe| matches!(probe.backbone, Backbone::Running { agents } if agents > 0)), |page| {
                         page.child(ui::button("keep-existing-agents", "Use my existing agents", Button::Secondary)
