@@ -717,6 +717,10 @@ physical pixels on Linux, and page zoom compensates for GPUI's fractional displa
 scale versus GTK's integer scale. Teardown traps GDK X errors around Wry's destroy:
 closing the GPUI parent may already have destroyed its child XID. Expected
 BadWindow errors at destruction are harmless; other teardown errors are logged.
+Native clicks restore X input focus to the original GPUI parent, not GTK's
+intermediary window. The Wry patch destroys the GTK owner synchronously, including
+without a window manager, and uses a weak view reference in the IPC handler so
+closing a document or switching revisions does not retain its ephemeral context.
 
 Authored HTML loads only after native settings disable WebRTC (not governed
 by CSP), DNS prefetch, hyperlink auditing and scripted clipboard/file access.

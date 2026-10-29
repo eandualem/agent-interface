@@ -74,6 +74,7 @@ struct X11Data {
   xlib: Xlib,
   x11_display: *mut std::ffi::c_void,
   x11_window: c_ulong,
+  parent_window: c_ulong,
   gtk_window: gtk::Window,
 }
 
@@ -81,7 +82,9 @@ struct X11Data {
 impl Drop for X11Data {
   fn drop(&mut self) {
     unsafe { (self.xlib.XDestroyWindow)(self.x11_display as _, self.x11_window) };
-    self.gtk_window.close();
+    // Do not enqueue a window-manager close request: embedded views must
+    // release their GTK owner even on desktops without a window manager.
+    unsafe { self.gtk_window.destroy() };
   }
 }
 
@@ -185,6 +188,7 @@ impl InnerWebView {
         xlib,
         x11_display: x11_display as _,
         x11_window,
+        parent_window: parent,
         gtk_window,
       });
 
@@ -735,11 +739,17 @@ impl InnerWebView {
       .expect("WebView does not have UserContentManager");
 
     // Connect before registering as recommended by the docs
+    // The manager belongs to this WebView. A strong capture would retain both
+    // after the embedded view is removed or its document revision changes.
+    let webview = webview.downgrade();
     manager.connect_script_message_received(None, move |_m, msg| {
       #[cfg(feature = "tracing")]
       let _span = tracing::info_span!(parent: None, "wry::ipc::handle").entered();
 
       if let Some(js) = msg.js_value() {
+        let Some(webview) = webview.upgrade() else {
+          return;
+        };
         let uri = webview.uri().map(|u| u.to_string()).unwrap_or_default();
         match Request::builder().uri(uri).body(js.to_string()) {
           Ok(request) => ipc_handler(request),
@@ -1045,6 +1055,21 @@ impl InnerWebView {
   }
 
   pub fn focus_parent(&self) -> Result<()> {
+    #[cfg(feature = "x11")]
+    if let Some(data) = &self.x11 {
+      // GTK's parent_window is an intermediary, not the embedding app window.
+      // Native controls need keyboard events delivered to the original parent.
+      unsafe {
+        (data.xlib.XSetInputFocus)(
+          data.x11_display as _,
+          data.parent_window,
+          RevertToParent,
+          CurrentTime,
+        );
+        (data.xlib.XFlush)(data.x11_display as _);
+      }
+      return Ok(());
+    }
     if let Some(window) = self.webview.parent_window() {
       window.focus(gdk::ffi::GDK_CURRENT_TIME.try_into().unwrap_or(0));
     }

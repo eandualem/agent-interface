@@ -125,7 +125,7 @@ try { new WebSocket('TARGET/socket'.replace('http:', 'ws:')); } catch (_) {}
     leaf = dict(id="000000000003", agent=None, view="reports")
     model = dict(version=2, focus=False, selected="000000000001", workspaces=[
         dict(id="000000000001", name="Fixture", selected="000000000002", tabs=[
-            dict(id="000000000002", name="Documents", focus=leaf['id'], tree=leaf)])])
+            dict(id="000000000002", name="Fixture tab", focus=leaf['id'], tree=leaf)])])
     with sqlite3.connect(library / 'layouts.db') as db:
         db.execute('CREATE TABLE terminal_layout (id INTEGER PRIMARY KEY, value TEXT)')
         db.execute('INSERT INTO terminal_layout VALUES (1, ?)', (json.dumps(model),))
@@ -171,6 +171,9 @@ try { new WebSocket('TARGET/socket'.replace('http:', 'ws:')); } catch (_) {}
                 return {str(int(w, 16)) for w in clients
                         if command('xprop', '-id', w, '_NET_WM_PID', check=False).endswith(f'= {app.pid}')}
 
+            def all_app_windows():
+                return set(command('xdotool', 'search', '--pid', str(app.pid), check=False).splitlines())
+
             def sandboxed_processes():
                 # Inspect only this fixture's descendants, without command arguments.
                 parents, web = {}, []
@@ -200,9 +203,11 @@ try { new WebSocket('TARGET/socket'.replace('http:', 'ws:')); } catch (_) {}
                         found.append(int(process.name))
                 return found
 
-            # Select the section bar above the sidebar tab and bottom breadcrumb.
+            # The fixture tab has a distinct label so a partially loaded frame
+            # cannot mistake the sidebar/breadcrumb for the Documents section.
             click('Documents')
             wait_for(lambda: any(p.startswith('/api/documents?') for p in requests), 'document list request')
+            native_xids = all_app_windows()
             click('Renderer')
             wait_for(lambda: find('DOCUMENTREADY'), 'rendered HTML')
             wait_for(lambda: find('ISOLATIONPASSED'), 'native WebRTC restriction and CSP')
@@ -215,6 +220,13 @@ try { new WebSocket('TARGET/socket'.replace('http:', 'ws:')); } catch (_) {}
             click('TYPEHERE')
             command('xdotool', 'type', '--clearmodifiers', 'INPUTPASSED')
             wait_for(lambda: find('INPUTPASSED'), 'HTML keyboard input')
+            assert command('xdotool', 'getwindowfocus') != window, 'HTML did not take X input focus'
+            # Click empty native sidebar space without hiding the document.
+            command('xdotool', 'mousemove', '--window', window,
+                    str(round(20 * display_scale)), str(round(400 * display_scale)), 'click', '1')
+            wait_for(lambda: command('xdotool', 'getwindowfocus') == window, 'native click restores X input focus')
+            assert find('DOCUMENTREADY'), 'native focus check must keep the document mapped'
+            click('CLICKPASSED')
             command('xdotool', 'key', '--clearmodifiers', 'ctrl+shift+k')
             wait_for(lambda: find('Settings'), 'app shortcut from HTML input')
             assert not find('DOCUMENTREADY'), 'webview must hide beneath native overlay'
@@ -237,6 +249,7 @@ try { new WebSocket('TARGET/socket'.replace('http:', 'ws:')); } catch (_) {}
             click('Documents')
             wait_for(lambda: find('Renderer'), 'return to document shelf')
             assert not find('DOCUMENTREADY'), 'closed document view still visible'
+            wait_for(lambda: all_app_windows() <= native_xids, 'document X windows destroyed')
             # Close a live child view's parent while another app window remains.
             click('Renderer')
             wait_for(lambda: find('DOCUMENTREADY'), 'document reopened')
@@ -270,6 +283,7 @@ try { new WebSocket('TARGET/socket'.replace('http:', 'ws:')); } catch (_) {}
             assert app.wait(timeout=15) == 0
             (OUTPUT / 'result.json').write_text(json.dumps(dict(checks=[
                 'Document API load', 'HTML render', 'inline script', 'HTML input', 'app shortcut from HTML',
+                'native click restores X input focus', 'document X windows destroyed',
                 'overlay hides/restores view', 'return to shelf destroys view', 'file chooser denied',
                 'WebRTC disabled', 'fetch/image/WebSocket blocked', 'external navigation/new windows denied', 'resize retains state', 'process seccomp and mount isolation', 'display DPI placement',
                 'fixed new-window shortcut from HTML', 'parent close preserves second window', 'clean quit', 'unsafe sandbox override refused'],
