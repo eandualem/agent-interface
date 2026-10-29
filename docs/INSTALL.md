@@ -15,8 +15,10 @@ and x86-64 on glibc Linux. Linux packages built by the workflow target Ubuntu
 24.04 or newer, with a graphical desktop. Older distributions and musl-based
 systems such as Alpine are not supported by those packages.
 
-Install the prerequisites before running the installer, which checks the
-packaged executable before finishing. On macOS, if you use Homebrew, run:
+On Ubuntu under WSL, the installer installs missing runtime packages and registers
+the Windows Start entry, asking for your Linux password through sudo when needed.
+On other systems, install the prerequisites before running the installer, which
+checks the packaged executable before finishing. On macOS, if you use Homebrew, run:
 
 ```sh
 brew install tmux
@@ -128,12 +130,12 @@ Updates from the earlier `tmux-workspaces` installation preserve saved libraries
 and settings. The installer replaces its owned legacy app and launchers; the new
 command is `agent-interface`. Existing data directories remain readable in place.
 
-## Windows 11 with WSL (experimental)
+## Windows 11 with WSL
 
 Use the Linux package inside Ubuntu 24.04 or newer on **WSL 2 with WSLg**.
-There is no native Windows executable. This app's WSL compatibility has not
-been verified; the steps below are for testing it once a Linux release is
-available. Agent Backbone is optional for terminals and saved workspaces.
+There is no native Windows executable. The installer runs inside your Linux
+distribution and registers the app in Windows Start. Agent Backbone is optional
+for terminals and saved workspaces.
 
 If WSL or a suitable Ubuntu distribution is missing, run this in an
 **administrator PowerShell**, restart Windows if prompted, and complete Ubuntu's
@@ -162,35 +164,27 @@ for GPU drivers and restarting WSL after an update. Save your work first:
 sessions and processes. An ordinary app install does not require that shutdown.
 
 Open your **Ubuntu 24.04 or newer** distribution from the Windows Start menu.
-Run the remaining commands in its Linux terminal. Check the Ubuntu version:
-
-```sh
-cat /etc/os-release
-```
-
-On Ubuntu 24.04 or newer, install the runtime prerequisites once:
-
-```sh
-sudo apt update
-sudo apt install -y curl tmux fonts-dejavu-core libfontconfig1 libfreetype6 \
-  libxcb1 libxkbcommon0 libxkbcommon-x11-0 libwayland-client0 libvulkan1 \
-  libegl1 libgl1-mesa-dri mesa-vulkan-drivers xdg-desktop-portal \
-  xdg-desktop-portal-gtk
-```
-
-Then install and launch the app:
+Run the installer in its Linux terminal, not PowerShell:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/eandualem/agent-interface/main/install.sh | sh
-"$HOME/.local/bin/agent-interface"
 ```
 
-This downloads a prebuilt Linux app; no compiler or source checkout is needed.
-The prerequisite downloads and installation take additional time on a fresh
-Ubuntu installation. Installation speed and GPU rendering under WSL have not
-been measured.
+The installer installs missing runtime packages, downloads the prebuilt app,
+sets up Agent Backbone, and adds **Agent Interface** under your distribution's
+name in Windows Start. Enter your Linux password if sudo asks for it. No compiler
+or source checkout is needed. Installation speed and GPU rendering under WSL
+have not been measured.
 
-For a first test, add a tab with Ctrl+Shift+T, choose **Open terminal**, and run
+Open **Agent Interface** from Windows Start to begin setup. Existing workspaces
+are preserved; setup appears until you finish it. You can also launch it inside
+WSL with `"$HOME/.local/bin/agent-interface"`.
+Use **Interface size** at the bottom of the welcome window if the text is too
+small. Run agent-tool installation commands inside WSL as well. After installing
+a tool, choose **Check again** or **Check tools again** in setup; you do not need
+to restart the app.
+
+After setup, add a tab with Ctrl+Shift+T, choose **Open terminal**, and run
 `pwd`. Quit and reopen the app to check that the saved workspace and terminal
 reconnect. The terminals run inside that Ubuntu distribution. On a
 high-resolution display WSL can draw the window too small; change
@@ -208,12 +202,13 @@ the private Unix socket used by the app. Open Agent Interface to continue
 onboarding; no separate Backbone installation command is needed. Agent tools
 still need to be installed and signed in before creating an agent.
 
-This integration requires Backbone 0.4.0 or newer. If a compatible published
+New installations and upgrades select Backbone 0.4.1 or newer. If a compatible published
 release is unavailable, installation stops before replacing the app. Setup
 failures show Backbone's diagnostic and recovery guidance. When retry is allowed,
 rerun the same installer: it retains the request and resumes pending steps using
-the same installed Backbone version. A later installation can check
-for an upgrade once setup is complete. It refuses automatic recovery if that
+the same installed Backbone version, including 0.4.0 for a saved, compatible
+setup. That recovery can finish the app installation with the saved version;
+run the installer again afterward to upgrade Backbone. It refuses automatic recovery if that
 pending installation or its saved service/socket choices have changed.
 
 An existing Backbone installation keeps its configuration and service choices.
@@ -259,3 +254,17 @@ rm -f "${XDG_DATA_HOME:-$HOME/.local/share}/applications/io.github.eandualem.age
 
 These commands leave your data and terminal sessions intact. See the
 [user guide](GUIDE.md) for library and settings locations.
+
+On WSL, also remove the Windows Start registration only if its installer marker
+and recorded home directory identify your Linux user:
+
+```sh
+wsl_launcher=/usr/share/applications/io.github.eandualem.agent-interface.desktop
+if [ -f "$wsl_launcher" ] && [ ! -L "$wsl_launcher" ] &&
+    grep -qx 'X-AgentInterface-Installer=1' "$wsl_launcher" &&
+    grep -Fqx "X-AgentInterface-Home=$HOME" "$wsl_launcher"; then
+    sudo rm -f -- "$wsl_launcher"
+else
+    printf '%s\n' 'No installer-owned Windows launcher for this user; leaving it unchanged.'
+fi
+```

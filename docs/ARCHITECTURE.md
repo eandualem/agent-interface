@@ -168,17 +168,26 @@ session-termination commands; navigation keeps them attached.
 
 ## First-run setup
 
-A fresh install (no settings file and no library) opens a setup window instead
-of the workspace window: an eight-second opening scene, played once, then steps
+Until setup is explicitly completed, an ordinary launch opens a setup window
+instead of the workspace window. Existing libraries and preferences, including
+pre-rename data, are preserved and do not count as completed setup. An explicit
+`--data-dir` launch opens that library directly. Setup has an eight-second opening scene, played once, then steps
 that check tmux, Agent Backbone, Git and the agent tools, create a first agent,
 and show the main shortcuts. tmux uses the terminal pane's `tmux_binary` resolver. Git, GitHub CLI,
 Backbone and agent tools are looked up after the user's interactive login shell
 runs its startup files, because an app opened from the Dock has a short PATH.
 The probe itself runs in `/bin/sh` so non-POSIX login shells can supply PATH too.
+Standard installation directories, including OpenCode's `~/.opencode/bin`, are
+appended without overriding the shell's PATH order. Refresh checks those paths
+again and passes the refreshed PATH to both runtime discovery and first-agent
+setup. Submitted requests retain their original environment for replay.
 The shell has an eight-second deadline; its output goes to a temporary file
 instead of a pipe, with positional reads limited to 256 KiB. The lookup falls
 back to PATH and the usual install folders. The
 Backbone check is a single read-only roster request. These checks install nothing.
+The welcome window offers the same persistent interface-size setting as the
+workspace, including during the opening scene, so display scaling can be adjusted
+before setup is complete.
 
 The first-agent step calls the selected engine's `runtimes --json`, then submits
 `setup --file REQUEST --jsonl` only after an explicit Start action. It offers the
@@ -510,7 +519,7 @@ binary linked to the system desktop libraries. Neither package includes a
 Python runtime, build toolchain, tmux server or application daemon.
 
 The archive includes `setup_backbone.py`, a standard-library installer helper.
-`install.sh` installs the latest stable published `agent-backbone>=0.4.0` with
+`install.sh` installs the latest stable published `agent-backbone>=0.4.1` with
 uv, independently of the app archive. Backbone (MIT) owns its package, dependency
 testing and publication. uv (MIT OR Apache-2.0) installs the Python environment;
 when uv is absent, its 0.13.6 installer is version- and SHA-256-pinned. No Backbone
@@ -547,6 +556,12 @@ themes and keymaps fall back to the old configuration directory when the new fil
 use the new directory. Legacy environment overrides remain supported, with the new
 `AGENT_INTERFACE_*` names taking precedence. No database or running server is moved.
 The Linux launcher uses the packaged Agent Interface icon.
+Under WSL, the installer installs missing Ubuntu runtime packages through apt
+and registers its desktop entry in `/usr/share/applications`, which
+WSLg scans for Windows Start integration. These steps require sudo; the app and
+Backbone still run as the invoking user. The system entry carries the installer
+marker and home directory, is checked before replacement, and participates in
+launcher rollback. An ordinary Linux desktop keeps its per-user XDG launcher.
 
 Linux windows request client decorations and draw a matching right-side caption
 with minimize, maximize/restore and close controls, plus resize edges. If the X11
