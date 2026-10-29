@@ -120,7 +120,7 @@ try { new WebSocket('TARGET/socket'.replace('http:', 'ws:')); } catch (_) {}
     threading.Thread(target=server.serve_forever, daemon=True).start()
     library = root / 'library'
     library.mkdir()
-    leaf = dict(id="000000000003", view="reports")
+    leaf = dict(id="000000000003", agent=None, view="reports")
     model = dict(version=2, focus=False, selected="000000000001", workspaces=[
         dict(id="000000000001", name="Fixture", selected="000000000002", tabs=[
             dict(id="000000000002", name="Documents", focus=leaf['id'], tree=leaf)])])
@@ -133,7 +133,7 @@ try { new WebSocket('TARGET/socket'.replace('http:', 'ws:')); } catch (_) {}
                               timeout=15, check=check).stdout.strip()
 
     app = wm = None
-    with (OUTPUT / 'app.log').open('w') as app_log, (OUTPUT / 'wm.log').open('w') as wm_log:
+    with (OUTPUT / 'app.txt').open('w') as app_log, (OUTPUT / 'wm.txt').open('w') as wm_log:
         try:
             subprocess.run(['xrdb', '-merge'], input=f'Xft.dpi: {DPI}\n', text=True, env=env, check=True)
             wm = subprocess.Popen(['xfwm4', '--compositor=on', '--sm-client-disable'],
