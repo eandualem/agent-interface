@@ -10,9 +10,9 @@ mod setup;
 use std::time::Duration;
 
 use gpui::{
-    Animation, AnimationExt, App, Bounds, BoxShadow, ClipboardItem, Context, Entity, Global, Rgba,
-    SharedString, Subscription, TitlebarOptions, Window, WindowBounds, WindowHandle, WindowOptions,
-    div, point, prelude::*, px, size,
+    Animation, AnimationExt, App, Bounds, BoxShadow, ClipboardItem, Context, Entity, Global,
+    Pixels, Rgba, SharedString, Size, Subscription, TitlebarOptions, Window, WindowBounds,
+    WindowHandle, WindowOptions, div, point, prelude::*, px, size,
 };
 
 use self::probe::{Backbone, Probe, TOOLS};
@@ -148,6 +148,23 @@ fn remember(update: impl FnOnce(&mut Settings)) {
     });
 }
 
+fn resize_limit(
+    current: Bounds<Pixels>,
+    visible: Bounds<Pixels>,
+    bottom_anchor: bool,
+) -> Size<Pixels> {
+    // AppKit keeps the bottom edge fixed; Linux grows from the top edge.
+    let height = if bottom_anchor {
+        current.bottom() - visible.origin.y
+    } else {
+        visible.bottom() - current.origin.y
+    };
+    size(
+        (visible.right() - current.origin.x - px(16.)).max(px(1.)),
+        (height - px(16.)).max(px(1.)),
+    )
+}
+
 impl Onboarding {
     fn scale_controls(&self, cx: &mut Context<Self>) -> gpui::Div {
         let (t, c) = (tokens(), colors());
@@ -160,14 +177,14 @@ impl Onboarding {
                 .when_some(next, |el, next| {
                     el.on_click(cx.listener(move |_, _, window, cx| {
                         remember(|settings| settings.interface_size = next);
-                        // Both bounds use the new zoom factor. Grow only into
-                        // the visible space below/right of the current origin.
+                        // Both bounds use the new zoom factor. Respect the
+                        // platform's fixed edge when growing the window.
                         let current = window.bounds();
                         let available = window.display(cx).map_or(current.size, |display| {
-                            let visible = display.visible_bounds();
-                            size(
-                                (visible.right() - current.origin.x - px(16.)).max(px(1.)),
-                                (visible.bottom() - current.origin.y - px(16.)).max(px(1.)),
+                            resize_limit(
+                                current,
+                                display.visible_bounds(),
+                                cfg!(target_os = "macos"),
                             )
                         });
                         window.resize(
@@ -984,6 +1001,28 @@ fn rgba(hex: u32, alpha: f32) -> Rgba {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn enlarged_setup_stays_visible_for_both_resize_anchors() {
+        // A 768px display at 200%, with setup near either vertical edge.
+        let visible = Bounds::new(point(px(0.), px(12.)), size(px(683.), px(360.)));
+        for top in [px(20.), px(120.)] {
+            let current = Bounds::new(point(px(170.), top), size(px(340.), px(240.)));
+            for bottom_anchor in [false, true] {
+                let extent =
+                    size(px(680.), px(480.)).min(&resize_limit(current, visible, bottom_anchor));
+                let y = if bottom_anchor {
+                    current.bottom() - extent.height
+                } else {
+                    top
+                };
+                let resized = Bounds::new(point(current.origin.x, y), extent);
+                assert!(resized.origin.y >= visible.origin.y);
+                assert!(resized.bottom() <= visible.bottom());
+                assert!(resized.right() <= visible.right());
+            }
+        }
+    }
 
     #[test]
     fn only_completed_setup_skips_onboarding() {
