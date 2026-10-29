@@ -211,6 +211,9 @@ executing it. The resolved provider directory scopes each saved operation.
 Recovery loads that record even when fresh tool discovery cannot find an engine. An interrupted
 attempt reuses that request ID. Change agent tool first durably records cancellation
 intent, then submits the same fields and ID with `action=cancel_first_agent`.
+Cancellation uses the active or discovered engine and refreshed PATH when
+available, falling back to the saved executable and PATH. Normal setup replay
+always uses the saved launcher and PATH.
 Only a matching `request_cancelled` completion with `can_start_new_request=true`
 retires the local request and unlocks the form. The name, folder and brief survive;
 tool discovery and the login-shell PATH refresh before a new request is created.
