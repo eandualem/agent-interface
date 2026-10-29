@@ -71,8 +71,9 @@ with tempfile.TemporaryDirectory(prefix="document-smoke-") as directory:
 body { font: 24px sans-serif; padding: 24px; } button,input {font:inherit;margin:12px;}
 </style></head><body><h1>DOCUMENTREADY</h1><p id="result">WAITING</p>
 <button id="action" onclick="this.textContent='CLICKPASSED'">INTERACT</button>
-<input aria-label="Input" placeholder="TYPEHERE"><input id="file" type="file" hidden>
+<input aria-label="Input" placeholder="TYPEHERE" oninput="document.getElementById('typed').textContent=this.value"><input id="file" type="file" hidden>
 <button onclick="document.getElementById('file').click();this.textContent='FILEBLOCKED'">FILETEST</button>
+<p id="typed">INPUTWAITING</p>
 <p><a href="TARGET/navigation">NAVTEST</a> <button onclick="window.open('TARGET/popup');this.textContent='POPUPBLOCKED'">POPUPTEST</button></p>
 <svg width="100" height="60"><rect width="100" height="60" fill="#3498db"/></svg>
 <canvas id="chart" width="100" height="60"></canvas>
@@ -144,7 +145,8 @@ try { new WebSocket('TARGET/socket'.replace('http:', 'ws:')); } catch (_) {}
             window = wait_for(lambda: command('xdotool', 'search', '--onlyvisible', '--pid', str(app.pid), check=False),
                               'app window').splitlines()[0]
             command('xdotool', 'windowactivate', '--sync', window)
-            command('xdotool', 'windowsize', '--sync', window, str(round(1200 * DPI / 96)), str(round(820 * DPI / 96)))
+            display_scale = DPI / 96 * SCALE / 100
+            command('xdotool', 'windowsize', '--sync', window, str(round(1200 * display_scale)), str(round(820 * display_scale)))
 
             def words():
                 assert app.poll() is None, 'application exited'
@@ -227,7 +229,7 @@ try { new WebSocket('TARGET/socket'.replace('http:', 'ws:')); } catch (_) {}
             wait_for(lambda: find('POPUPBLOCKED'), 'new window denied')
             assert set(command('xdotool', 'search', '--onlyvisible', '--pid', str(app.pid)).splitlines()) == native_windows, 'unexpected popup'
             command('import', '-window', window, str(OUTPUT / 'document.png'))
-            command('xdotool', 'windowsize', '--sync', window, str(round(1100 * DPI / 96)), str(round(760 * DPI / 96)))
+            command('xdotool', 'windowsize', '--sync', window, str(round(1100 * display_scale)), str(round(760 * display_scale)))
             wait_for(lambda: find('CLICKPASSED'), 'state retained across resize')
             assert not leaks, f'document made network requests: {leaks}'
             command('import', '-window', window, str(OUTPUT / 'resized.png'))
