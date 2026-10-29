@@ -16,6 +16,8 @@ use serde_json::Value;
 const OUTPUT_LIMIT: usize = 1024 * 1024;
 const LINE_LIMIT: usize = 64 * 1024;
 const REQUEST_LIMIT: usize = 32 * 1024;
+// Room for consumer metadata added to records written by older app versions.
+const SAVED_LIMIT: usize = REQUEST_LIMIT + 128;
 const EVENT_LIMIT: u64 = 1024;
 
 // Avoid blocking the UI on a FIFO or following a substituted metadata file.
@@ -39,11 +41,27 @@ pub struct Runtime {
     pub setup_supported: bool,
     pub models: Vec<String>,
     pub authentication: String,
+    #[serde(default)]
+    pub setup_compatibility: Option<Compatibility>,
+}
+
+#[derive(Clone, Deserialize)]
+pub struct Compatibility {
+    pub compatible: bool,
+    pub message: String,
+    pub path: Option<String>,
+    pub version: Option<String>,
 }
 
 impl Runtime {
     pub fn can_setup(&self) -> bool {
-        self.available && self.setup_supported && self.id != "shell"
+        self.available
+            && self.setup_supported
+            && self.id != "shell"
+            && self
+                .setup_compatibility
+                .as_ref()
+                .is_none_or(|check| check.compatible)
     }
 }
 
@@ -78,6 +96,8 @@ pub struct Agent {
 
 #[derive(Clone, Deserialize, Serialize)]
 pub struct Saved {
+    #[serde(default)]
+    pub cancelling: bool,
     pub path_env: String,
     pub executable: std::path::PathBuf,
     pub request: Request,
@@ -100,10 +120,10 @@ impl Saved {
         };
         use std::io::Read;
         let mut bytes = Vec::new();
-        file.take((REQUEST_LIMIT + 1) as u64)
+        file.take((SAVED_LIMIT + 1) as u64)
             .read_to_end(&mut bytes)
             .map_err(|_| "The saved setup request cannot be read.")?;
-        if bytes.len() > REQUEST_LIMIT {
+        if bytes.len() > SAVED_LIMIT {
             return Err("The saved setup request is too large.");
         }
         let saved: Self = serde_json::from_slice(&bytes)
@@ -122,15 +142,112 @@ impl Saved {
 
     /// Only abandon a provider-confirmed preflight failure. Serialize this with
     /// creation so another setup window cannot have its newer request archived.
-    pub fn archive(&self, path: &Path) -> Result<(), &'static str> {
+    #[cfg(test)]
+    fn archive(&self, path: &Path) -> Result<(), &'static str> {
         let _guard = request_lock(path)?;
+        self.verify_current(path)?;
+        self.archive_locked(path, None)
+    }
+
+    fn archive_locked(
+        &self,
+        path: &Path,
+        confirmation: Option<&Event>,
+    ) -> Result<(), &'static str> {
+        let archive =
+            path.with_file_name(format!("onboarding-agent-{}.json", uuid::Uuid::new_v4()));
+        let parent = path
+            .parent()
+            .ok_or("Cannot retain the previous setup request.")?;
+        let mut file = tempfile::NamedTempFile::new_in(parent)
+            .map_err(|_| "Cannot retain the previous setup request.")?;
+        let bytes = serde_json::to_vec(&serde_json::json!({"saved":self,"result":confirmation}))
+            .map_err(|_| "Cannot retain the previous setup request.")?;
+        file.write_all(&bytes)
+            .map_err(|_| "Cannot retain the previous setup request.")?;
+        file.as_file()
+            .sync_all()
+            .map_err(|_| "Cannot retain the previous setup request.")?;
+        file.persist_noclobber(archive)
+            .map_err(|_| "Cannot retain the previous setup request.")?;
+        std::fs::remove_file(path).map_err(|_| "Cannot retire the previous setup request.")
+    }
+
+    fn verify_current(&self, path: &Path) -> Result<(), &'static str> {
         let disk = Self::load(path)?.ok_or("Saved setup changed. Reopen setup.")?;
         if serde_json::to_vec(&disk).ok() != serde_json::to_vec(self).ok() {
             return Err("Saved setup changed. Reopen setup.");
         }
-        let archive =
-            path.with_file_name(format!("onboarding-agent-{}.json", uuid::Uuid::new_v4()));
-        std::fs::rename(path, archive).map_err(|_| "Cannot retain the previous setup request.")
+        Ok(())
+    }
+
+    /// Serialize execution with retirement, not only with writing the form.
+    /// A stale window must not replay an attempt after another window changed it.
+    pub fn run_saved(&self, path: &Path, emit: impl FnMut(Event)) -> Result<Event, &'static str> {
+        let _guard = request_lock(path)?;
+        self.verify_current(path)?;
+        if self.cancelling {
+            return Err("Changing tools is pending. Retry changing tools to finish safely.");
+        }
+        run(&self.executable, &self.request, &self.path_env, emit)
+    }
+
+    /// Record the user's intent before contacting the provider. Even after a
+    /// crash, Resume must retry cancellation rather than start the old tool.
+    pub fn begin_cancel(&mut self, path: &Path) -> Result<(), &'static str> {
+        let _guard = request_lock(path)?;
+        self.verify_current(path)?;
+        let mut next = self.clone();
+        next.cancelling = true;
+        next.replace_locked(path)?;
+        *self = next;
+        Ok(())
+    }
+
+    fn replace_locked(&self, path: &Path) -> Result<(), &'static str> {
+        let parent = path.parent().ok_or("Cannot save setup progress.")?;
+        let mut file =
+            tempfile::NamedTempFile::new_in(parent).map_err(|_| "Cannot save the tool change.")?;
+        let bytes = serde_json::to_vec(self).map_err(|_| "Cannot save the tool change.")?;
+        file.write_all(&bytes)
+            .map_err(|_| "Cannot save the tool change.")?;
+        file.as_file()
+            .sync_all()
+            .map_err(|_| "Cannot save the tool change.")?;
+        file.persist(path)
+            .map_err(|_| "Cannot save the tool change.")?;
+        Ok(())
+    }
+
+    pub fn cancel_saved(
+        &self,
+        path: &Path,
+        executable: &Path,
+        path_env: &str,
+    ) -> Result<Event, &'static str> {
+        let _guard = request_lock(path)?;
+        self.verify_current(path)?;
+        if !self.cancelling {
+            return Err("Save the tool change before cancelling setup.");
+        }
+        let mut request = self.request.clone();
+        request.action = "cancel_first_agent".into();
+        // Cancellation can use the updated engine for the same installation;
+        // normal setup replay still uses the saved launcher and environment.
+        let result = run(executable, &request, path_env, |_| {})?;
+        if result.cancelled(&request.request_id) {
+            self.archive_locked(path, Some(&result))?;
+        } else if result.status == "action_required"
+            && result.code == "cancellation_unsafe"
+            && result.retry == "none"
+        {
+            // The provider definitively refused cancellation; preserve the
+            // original operation and let the user explicitly resume it.
+            let mut next = self.clone();
+            next.cancelling = false;
+            next.replace_locked(path)?;
+        }
+        Ok(result)
     }
 
     /// Never replace a pending operation, including one from another window.
@@ -236,7 +353,7 @@ pub enum Brief {
     Text { text: String },
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Event {
     pub schema_version: u32,
     pub request_id: String,
@@ -260,12 +377,34 @@ pub struct Event {
     pub data: Value,
 }
 
+impl Event {
+    pub fn cancelled(&self, request_id: &str) -> bool {
+        self.action == "cancel_first_agent"
+            && self.request_id == request_id
+            && self.status == "completed"
+            && self.code == "request_cancelled"
+            && self.retry == "new_request"
+            && self.completed_steps.is_empty()
+            && self
+                .data
+                .get("cancelled_request_id")
+                .and_then(Value::as_str)
+                == Some(request_id)
+            && self
+                .data
+                .get("can_start_new_request")
+                .and_then(Value::as_bool)
+                == Some(true)
+    }
+}
+
 /// A missing or contradictory final result cannot establish what was changed.
 pub const UNKNOWN: &str =
     "Setup's outcome is unknown. Retry the saved request to check it; do not create another agent.";
 
 struct Stream {
     request_id: String,
+    action: String,
     sequence: u64,
     pending: Vec<u8>,
     total: usize,
@@ -276,6 +415,7 @@ impl Stream {
     fn new(request_id: &str) -> Self {
         Self {
             request_id: request_id.into(),
+            action: "first_agent".into(),
             sequence: 0,
             pending: Vec::new(),
             total: 0,
@@ -319,7 +459,7 @@ impl Stream {
                     "running" | "completed" | "skipped" | "failed"
                 ) => {}
             "result"
-                if event.action == "first_agent"
+                if event.action == self.action
                     && matches!(
                         event.status.as_str(),
                         "completed" | "action_required" | "failed"
@@ -404,7 +544,13 @@ fn run_with_timeout(
     timeout: Duration,
 ) -> Result<Event, &'static str> {
     let bytes = serde_json::to_vec(request).map_err(|_| "Cannot prepare setup request.")?;
-    if bytes.len() > REQUEST_LIMIT {
+    let limit = REQUEST_LIMIT
+        + if request.action == "cancel_first_agent" {
+            "cancel_".len()
+        } else {
+            0
+        };
+    if bytes.len() > limit {
         return Err("The agent instructions are too long.");
     }
     let mut input = tempfile::NamedTempFile::new().map_err(|_| "Cannot prepare setup request.")?;
@@ -427,6 +573,7 @@ fn run_with_timeout(
         .spawn()
         .map_err(|_| "Cannot start the setup engine.")?;
     let mut stream = Stream::new(&request.request_id);
+    stream.action = request.action.clone();
     let mut offset = 0;
     let deadline = Instant::now() + timeout;
     let result = loop {
@@ -443,6 +590,12 @@ fn run_with_timeout(
                     break Err(error);
                 }
                 break stream.finish(exit, &mut emit).and_then(|result| {
+                    if request.action == "cancel_first_agent" && result.status == "completed" {
+                        return result
+                            .cancelled(&request.request_id)
+                            .then_some(result)
+                            .ok_or(UNKNOWN);
+                    }
                     if result.status == "completed"
                         && (result.code != "agent_ready"
                             || result.data.get("agent_name").and_then(Value::as_str)
@@ -467,10 +620,26 @@ fn run_with_timeout(
 }
 
 pub fn runtimes(executable: &Path, path_env: &str) -> Result<Vec<Runtime>, &'static str> {
+    match runtime_catalog(executable, path_env, true) {
+        Err(DISCOVERY_FLAG_UNSUPPORTED) => runtime_catalog(executable, path_env, false),
+        result => result,
+    }
+}
+
+const DISCOVERY_FLAG_UNSUPPORTED: &str = "This engine does not support compatibility checks.";
+
+fn runtime_catalog(
+    executable: &Path,
+    path_env: &str,
+    check_setup: bool,
+) -> Result<Vec<Runtime>, &'static str> {
     let output = tempfile::tempfile().map_err(|_| "Cannot read available agent tools.")?;
-    let mut child = Command::new(executable)
-        .env("PATH", path_env)
-        .args(["runtimes", "--json"])
+    let mut command = Command::new(executable);
+    command.env("PATH", path_env).args(["runtimes", "--json"]);
+    if check_setup {
+        command.arg("--check-setup");
+    }
+    let mut child = command
         .stdin(Stdio::null())
         .stdout(
             output
@@ -501,6 +670,9 @@ pub fn runtimes(executable: &Path, path_env: &str) -> Result<Vec<Runtime>, &'sta
                 }
                 break parse_catalog(&bytes);
             }
+            Ok(Some(exit)) if check_setup && exit.code() == Some(2) => {
+                break Err(DISCOVERY_FLAG_UNSUPPORTED);
+            }
             Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
             _ => {
                 break Err(
@@ -528,6 +700,14 @@ fn parse_catalog(bytes: &[u8]) -> Result<Vec<Runtime>, &'static str> {
                 || !ids.insert(&row.id)
                 || row.display_name.len() > 128
                 || row.models.len() > 256
+                || row.setup_compatibility.as_ref().is_some_and(|check| {
+                    check.message.len() > 4096
+                        || check.path.as_ref().is_some_and(|path| path.len() > 4096)
+                        || check
+                            .version
+                            .as_ref()
+                            .is_some_and(|version| version.len() > 128)
+                })
                 || !matches!(row.authentication.as_str(), "unknown" | "not_applicable")
         })
     {
@@ -617,6 +797,51 @@ mod tests {
         assert!(!read(&catalog)[0].can_setup());
     }
 
+    #[test]
+    fn compatibility_checks_disable_old_tools_without_hiding_the_diagnosis() {
+        let mut catalog: Value =
+            serde_json::from_str(include_str!("fixtures/runtimes-example.json")).unwrap();
+        catalog["items"][0]["setup_compatibility"] = serde_json::json!({
+            "compatible":false,"reason":"version_too_old","message":"Update this tool.",
+            "path":"/old/bin/opencode","version":"1.19.5","version_error":null});
+        let rows = parse_catalog(&serde_json::to_vec(&catalog).unwrap()).unwrap();
+        assert!(!rows[0].can_setup());
+        assert_eq!(
+            rows[0]
+                .setup_compatibility
+                .as_ref()
+                .unwrap()
+                .version
+                .as_deref(),
+            Some("1.19.5")
+        );
+    }
+
+    #[test]
+    fn discovery_falls_back_only_for_an_unsupported_cli_option() {
+        let root = tempfile::tempdir().unwrap();
+        let catalog = include_str!("fixtures/runtimes-example.json");
+        let engine = fake_engine(
+            root.path(),
+            &format!(
+                "printf '%s\\n' \"$*\" >> \"$0.calls\"\n[ \"$3\" != --check-setup ] || exit 2\ncat <<'CATALOG'\n{catalog}\nCATALOG"
+            ),
+        );
+        assert!(runtimes(&engine, "/usr/bin:/bin").is_ok());
+        let calls = engine.with_file_name("fake engine.calls");
+        assert_eq!(
+            std::fs::read_to_string(&calls).unwrap(),
+            "runtimes --json --check-setup\nruntimes --json\n"
+        );
+        std::fs::remove_file(&calls).unwrap();
+        fake_engine(
+            root.path(),
+            "printf '%s\\n' \"$*\" >> \"$0.calls\"\nprintf 'invalid json'",
+        );
+        assert!(runtimes(&engine, "/usr/bin:/bin").is_err());
+        assert_eq!(std::fs::read_to_string(calls).unwrap().lines().count(), 1);
+    }
+
     fn request() -> Request {
         serde_json::from_str(include_str!("fixtures/first-agent-request.json")).unwrap()
     }
@@ -629,12 +854,150 @@ mod tests {
         path
     }
 
+    fn cancellation_result() -> Value {
+        serde_json::json!({"schema_version":1,"request_id":request().request_id,
+            "seq":1,"type":"result","action":"cancel_first_agent",
+            "status":"completed","code":"request_cancelled","retry":"new_request",
+            "data":{"cancelled_request_id":request().request_id,"can_start_new_request":true}})
+    }
+
+    #[test]
+    fn tool_change_survives_restart_and_retires_only_confirmed_cancellation() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("saved.json");
+        let engine = fake_engine(
+            root.path(),
+            &format!(
+                "cp \"$3\" \"$0.request\"\nprintf '%s\\n' '{}'",
+                cancellation_result()
+            ),
+        );
+        let mut saved = Saved {
+            cancelling: false,
+            executable: engine.clone(),
+            path_env: "/usr/bin:/bin".into(),
+            request: request(),
+        };
+        saved.create(&path).unwrap();
+        let stale = saved.clone();
+        saved.begin_cancel(&path).unwrap();
+        assert!(stale.run_saved(&path, |_| {}).is_err());
+        let restored = Saved::load(&path).unwrap().unwrap();
+        assert!(restored.cancelling);
+        assert!(restored.run_saved(&path, |_| {}).is_err());
+        assert!(!engine.with_file_name("fake engine.request").exists());
+        let result = restored
+            .cancel_saved(&path, &engine, "/usr/bin:/bin")
+            .unwrap();
+        assert!(result.cancelled(&request().request_id));
+        assert!(Saved::load(&path).unwrap().is_none());
+        let archive = std::fs::read_dir(root.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| {
+                path.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with("onboarding-agent-")
+            })
+            .unwrap();
+        let retained: Value = serde_json::from_slice(&std::fs::read(archive).unwrap()).unwrap();
+        assert_eq!(retained["result"]["code"], "request_cancelled");
+        assert_eq!(
+            retained["saved"]["request"],
+            serde_json::to_value(request()).unwrap()
+        );
+        let mut submitted: Value = serde_json::from_slice(
+            &std::fs::read(engine.with_file_name("fake engine.request")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(submitted["action"], "cancel_first_agent");
+        submitted["action"] = Value::String("first_agent".into());
+        assert_eq!(submitted, serde_json::to_value(request()).unwrap());
+        assert!(restored.run_saved(&path, |_| {}).is_err());
+    }
+
+    #[test]
+    fn unsafe_missing_or_mismatched_cancellation_never_unlocks_the_form() {
+        let mut wrong_id = cancellation_result();
+        wrong_id["data"]["cancelled_request_id"] = "someone-else".into();
+        let mut wrong_action = cancellation_result();
+        wrong_action["action"] = "first_agent".into();
+        let mut unsafe_result = cancellation_result();
+        unsafe_result["status"] = "action_required".into();
+        unsafe_result["code"] = "cancellation_unsafe".into();
+        unsafe_result["retry"] = "none".into();
+        unsafe_result["data"] = serde_json::json!({});
+        for (result, exit) in [
+            (wrong_id, 0),
+            (wrong_action, 0),
+            (unsafe_result, 3),
+            (Value::Null, 0),
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join("saved.json");
+            let engine = fake_engine(
+                root.path(),
+                &format!("printf '%s\\n' '{result}'\nexit {exit}"),
+            );
+            let mut saved = Saved {
+                cancelling: false,
+                executable: engine,
+                path_env: "/usr/bin:/bin".into(),
+                request: request(),
+            };
+            saved.create(&path).unwrap();
+            saved.begin_cancel(&path).unwrap();
+            let result = saved.cancel_saved(&path, &saved.executable, &saved.path_env);
+            assert!(!result.is_ok_and(|event| event.cancelled(&request().request_id)));
+            let restored = Saved::load(&path).unwrap().unwrap();
+            assert_eq!(restored.request.request_id, request().request_id);
+            assert_eq!(restored.cancelling, exit != 3);
+        }
+    }
+
+    #[test]
+    fn maximum_request_and_legacy_saved_record_remain_cancellable() {
+        let root = tempfile::tempdir().unwrap();
+        let engine = fake_engine(
+            root.path(),
+            &format!("printf '%s\\n' '{}'", cancellation_result()),
+        );
+        let mut input = request();
+        input.agent.brief = Brief::Text {
+            text: String::new(),
+        };
+        let size = serde_json::to_vec(&input).unwrap().len();
+        input.agent.brief = Brief::Text {
+            text: "x".repeat(REQUEST_LIMIT - size),
+        };
+        assert_eq!(serde_json::to_vec(&input).unwrap().len(), REQUEST_LIMIT);
+        input.action = "cancel_first_agent".into();
+        assert!(
+            run(&engine, &input, "/usr/bin:/bin", |_| {})
+                .unwrap()
+                .cancelled(&input.request_id)
+        );
+
+        let path = root.path().join("legacy.json");
+        let mut legacy =
+            serde_json::json!({"executable":engine,"path_env":"/usr/bin:/bin","request":request()});
+        legacy["request"]["agent"]["brief"] = serde_json::json!({"text":""});
+        let size = serde_json::to_vec(&legacy).unwrap().len();
+        legacy["request"]["agent"]["brief"]["text"] = "x".repeat(REQUEST_LIMIT - size).into();
+        std::fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+        let mut saved = Saved::load(&path).unwrap().unwrap();
+        saved.begin_cancel(&path).unwrap();
+        assert!(Saved::load(&path).unwrap().unwrap().cancelling);
+    }
+
     #[test]
     fn saved_operation_is_private_exclusive_and_cannot_archive_a_newer_request() {
         use std::os::unix::fs::PermissionsExt;
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("saved.json");
         let saved = Saved {
+            cancelling: false,
             executable: root.path().join("engine"),
             path_env: "/usr/bin:/bin".into(),
             request: request(),
@@ -652,6 +1015,10 @@ mod tests {
         );
         let guard = request_lock(&path).unwrap();
         assert!(saved.archive(&path).is_err());
+        assert_eq!(
+            saved.run_saved(&path, |_| {}).unwrap_err(),
+            "Another setup window is updating this request."
+        );
         // Duplicated descriptors share the same lock, as does a child between
         // fork and exec. Dropping the guard must release it even then.
         let inherited = guard.0.try_clone().unwrap();
@@ -662,6 +1029,10 @@ mod tests {
         newer.request.request_id = "newer-request".into();
         newer.create(&path).unwrap();
         assert!(saved.archive(&path).is_err());
+        assert_eq!(
+            saved.run_saved(&path, |_| {}).unwrap_err(),
+            "Saved setup changed. Reopen setup."
+        );
         assert_eq!(
             Saved::load(&path).unwrap().unwrap().request.request_id,
             "newer-request"
@@ -748,6 +1119,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let settings = root.path().join("settings.toml");
         let mut a = Saved {
+            cancelling: false,
             executable: root.path().join("previous engine"),
             path_env: "/old/tools".into(),
             request: request(),

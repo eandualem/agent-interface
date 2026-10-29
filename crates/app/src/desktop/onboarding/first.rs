@@ -1,5 +1,5 @@
-//! The explicit first-agent choice. A saved request freezes the choices until
-//! its result is known; retry always uses its original engine and identity.
+//! First-agent selection with durable retries and explicit tool changes.
+//! The provider cancels the previous request before its choices are unlocked.
 
 use std::path::PathBuf;
 
@@ -132,13 +132,21 @@ impl FirstAgent {
     /// Rechecking the computer updates an unsubmitted form, while submitted
     /// requests retain their original launcher and environment for replay.
     pub fn refresh(&mut self, probe: &super::probe::Probe, cx: &mut Context<Self>) {
+        if let Some(executable) =
+            setup::active_engine(&self.data_dir).or_else(|| probe.path("backbone").cloned())
+        {
+            self.executable = executable;
+            self.path_env = probe.path_env.clone();
+        } else if let Some(saved) = &self.saved {
+            self.executable = saved.executable.clone();
+            self.path_env = saved.path_env.clone();
+        } else {
+            self.executable = PathBuf::new();
+            self.path_env = probe.path_env.clone();
+        }
         if self.has_pending_request() {
             return;
         }
-        self.executable = setup::active_engine(&self.data_dir)
-            .or_else(|| probe.path("backbone").cloned())
-            .unwrap_or_default();
-        self.path_env = probe.path_env.clone();
         self.existing =
             matches!(probe.backbone, super::probe::Backbone::Running { agents } if agents > 0);
         self.runtimes.clear();
@@ -260,6 +268,7 @@ impl FirstAgent {
             }
         };
         Ok(setup::Saved {
+            cancelling: false,
             path_env: self.path_env.clone(),
             executable: self.executable.clone(),
             request: setup::Request {
@@ -283,6 +292,10 @@ impl FirstAgent {
 
     fn start(&mut self, cx: &mut Context<Self>) {
         if self.busy {
+            return;
+        }
+        if self.saved.as_ref().is_some_and(|saved| saved.cancelling) {
+            self.edit_choices(cx);
             return;
         }
         if self.saved.is_none() {
@@ -313,16 +326,12 @@ impl FirstAgent {
         self.result = None;
         self.progress = "Starting setup…".into();
         let (sender, mut receiver) = mpsc::unbounded();
+        let save_path = self.save_path.clone();
         cx.background_executor()
             .spawn(async move {
-                let result = setup::run(
-                    &saved.executable,
-                    &saved.request,
-                    &saved.path_env,
-                    |event| {
-                        let _ = sender.unbounded_send(Update::Progress(event));
-                    },
-                );
+                let result = saved.run_saved(&save_path, |event| {
+                    let _ = sender.unbounded_send(Update::Progress(event));
+                });
                 let _ = sender.unbounded_send(Update::Finished(result));
             })
             .detach();
@@ -374,42 +383,86 @@ impl FirstAgent {
     }
 
     fn edit_choices(&mut self, cx: &mut Context<Self>) {
-        if self.busy || !self.can_edit_again() {
+        if self.busy || self.saved.is_none() || self.is_ready() {
             return;
         }
-        let result = self
+        if self
             .saved
             .as_ref()
-            .ok_or("No saved setup request.")
-            .and_then(|saved| saved.archive(&self.save_path));
-        if let Err(error) = result {
-            self.error = Some(error.into());
-        } else {
-            self.saved = None;
-            self.result = None;
-            self.error = None;
-            self.progress.clear();
-            self.name.update(cx, |field, _| field.set_read_only(false));
-            self.brief.update(cx, |field, _| field.set_read_only(false));
-            self.discover(cx);
+            .is_some_and(|saved| saved.request.data_dir != self.data_dir)
+        {
+            self.error = Some(
+                "Reconnect to the saved setup's original installation before changing tools."
+                    .into(),
+            );
+            cx.notify();
+            return;
         }
+        let saved = self.saved.as_mut().unwrap();
+        if let Err(error) = saved.begin_cancel(&self.save_path) {
+            self.error = Some(error.into());
+            cx.notify();
+            return;
+        }
+        let saved = saved.clone();
+        let path = self.save_path.clone();
+        let executable = self.executable.clone();
+        let path_env = self.path_env.clone();
+        self.busy = true;
+        self.error = None;
+        self.progress = "Releasing the previous setup before changing tools…".into();
+        cx.emit(FirstEvent::Pending);
+        cx.spawn(async move |this, cx| {
+            let result = cx.background_executor().spawn(async move {
+                    let result = saved.cancel_saved(&path, &executable, &path_env);
+                (saved, result)
+            }).await;
+            let _ = this.update(cx, |first, cx| {
+                let (saved, result) = result;
+                first.busy = false;
+                first.progress.clear();
+                match result {
+                    Ok(result) if result.cancelled(&saved.request.request_id) => {
+                        first.directory = Some(saved.request.agent.directory.clone());
+                        first.name.update(cx, |field, cx| {
+                            field.set_value(&saved.request.agent.name, cx);
+                            field.set_read_only(false);
+                        });
+                        first.custom_brief = matches!(saved.request.agent.brief, setup::Brief::Text { .. });
+                        first.brief.update(cx, |field, cx| {
+                            if let setup::Brief::Text { text } = &saved.request.agent.brief {
+                                field.set_value(text, cx);
+                            }
+                            field.set_read_only(false);
+                        });
+                        first.saved = None;
+                        first.result = None;
+                        first.runtimes.clear();
+                        first.selected = None;
+                        cx.emit(FirstEvent::RefreshTools);
+                    }
+                    Ok(result) => {
+                        if let Ok(Some(current)) = setup::Saved::load(&first.save_path) {
+                            first.saved = Some(current);
+                        }
+                        first.error = Some(format!("Could not change tools: {} Your saved setup is retained.", result.message));
+                    }
+                    Err(_) => {
+                        first.error = Some("The tool change is not confirmed. Retry changing tools; the previous setup will not be started. If your Backbone version does not support changing tools, update it first.".into());
+                    }
+                }
+                cx.notify();
+            });
+        }).detach();
         cx.notify();
     }
 
-    fn can_edit_again(&self) -> bool {
-        self.result.as_ref().is_some_and(|result| {
-            result.status == "failed"
-                && result.retry == "new_request"
-                && result
-                    .completed_steps
-                    .iter()
-                    .all(|step| step == "preflight")
-                && result.data.get("launch_id").is_none_or(Value::is_null)
-        })
+    fn is_ready(&self) -> bool {
+        self.result
+            .as_ref()
+            .is_some_and(|result| result.status == "completed" && result.code == "agent_ready")
     }
 }
-
-use serde_json::Value;
 
 impl Render for FirstAgent {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -433,7 +486,11 @@ impl Render for FirstAgent {
                 saved.request.agent.runtime,
                 saved.request.agent.directory.display()
             )));
-            page = page.child(div().text_color(c.muted).child("These choices are saved. Resume uses the same request and does not create a second agent."));
+            page = page.child(div().text_color(c.muted).child(if saved.cancelling {
+                "A tool change is pending. Retry it to choose another tool; your name, folder and instructions will be kept."
+            } else {
+                "Resume this setup, or change agent tools. Your name, folder and instructions will be kept."
+            }));
         } else {
             page = page.child(div().pt(px(t.space.s12)).child("Name")).child(
                 div()
@@ -457,6 +514,8 @@ impl Render for FirstAgent {
                         " · setup unavailable"
                     } else if !runtime.available {
                         " · unavailable"
+                    } else if !enabled {
+                        " · needs attention"
                     } else {
                         ""
                     }
@@ -480,6 +539,28 @@ impl Render for FirstAgent {
                 );
             }
             page = page.child(tools);
+            for runtime in &self.runtimes {
+                if let Some(check) = &runtime.setup_compatibility
+                    && !check.compatible
+                    && runtime.available
+                {
+                    page = page.child(
+                        div()
+                            .text_color(c.attention_text)
+                            .child(format!("{}: {}", runtime.display_name, check.message)),
+                    );
+                    if let Some(path) = &check.path {
+                        page = page.child(div().text_color(c.muted).child(format!(
+                                "Detected: {path}{}",
+                                check
+                                    .version
+                                    .as_ref()
+                                    .map(|version| format!(" · {version}"))
+                                    .unwrap_or_default()
+                            )));
+                    }
+                }
+            }
             page = page.child(div().text_color(c.muted).child(if self.discovering {
                 "Checking agent tools…"
             } else {
@@ -537,17 +618,26 @@ impl Render for FirstAgent {
                 ),
             );
         }
-        if self.can_edit_again() {
+        let cancelling = self.saved.as_ref().is_some_and(|saved| saved.cancelling);
+        if self.saved.is_some() && !self.busy && !self.is_ready() {
             page = page.child(
-                ui::button("edit-agent", "Edit choices", Button::Secondary)
-                    .on_click(cx.listener(|first, _, _, cx| first.edit_choices(cx))),
+                ui::button(
+                    "edit-agent",
+                    if cancelling {
+                        "Retry changing tool"
+                    } else {
+                        "Change agent tool"
+                    },
+                    Button::Secondary,
+                )
+                .on_click(cx.listener(|first, _, _, cx| first.edit_choices(cx))),
             );
         }
         let retry = self
             .result
             .as_ref()
             .is_none_or(|result| result.retry == "same_request");
-        if retry {
+        if retry && !cancelling {
             page = page.child(
                 ui::button(
                     "start-agent",
