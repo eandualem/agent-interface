@@ -202,8 +202,10 @@ The agents list and agent views read from a running
 [Agent Backbone](https://github.com/eandualem/agent-backbone) on the same
 computer. The app sends Backbone's API key only over a private Unix socket,
 which Backbone added after its 0.3.0 release. Until a newer release is
-published, install Backbone from its repository. This also replaces an
-existing installation made with `uv tool install`:
+published, install Backbone from its repository. You need
+[uv](https://docs.astral.sh/uv/), Git, Python 3.11 or newer, and an agent CLI
+that is installed and signed in. This command also replaces an existing
+installation made with `uv tool install`:
 
 ```sh
 uv tool install git+https://github.com/eandualem/agent-backbone
