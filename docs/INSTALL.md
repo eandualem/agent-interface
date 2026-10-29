@@ -209,9 +209,10 @@ onboarding; no separate Backbone installation command is needed. Agent tools
 still need to be installed and signed in before creating an agent.
 
 This integration requires Backbone 0.4.0 or newer. If a compatible published
-release is unavailable, installation stops before replacing the app. Rerun the
-same installer after a setup failure: it retains the request and resumes pending
-steps using the same installed Backbone version. A later installation can check
+release is unavailable, installation stops before replacing the app. Setup
+failures show Backbone's diagnostic and recovery guidance. When retry is allowed,
+rerun the same installer: it retains the request and resumes pending steps using
+the same installed Backbone version. A later installation can check
 for an upgrade once setup is complete. It refuses automatic recovery if that
 pending installation or its saved service/socket choices have changed.
 

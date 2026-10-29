@@ -112,6 +112,33 @@ class SetupTests(unittest.TestCase):
         self.assertNotIn(("service", "restart"), self.calls)
 
 
+    def test_completed_receipt_does_not_prevent_clean_reinstall(self):
+        import shutil
+
+        self.install()
+        original = self.calls[0][1]["request_id"]
+        shutil.rmtree(self.data)
+        self.setting, self.healthy = "", False
+        self.assertFalse(self.install(resume=True)[1])
+        self.install()
+        requests = [call[1] for call in self.calls if call[0] == "initialize"]
+        self.assertEqual(len(requests), 2)
+        self.assertNotEqual(requests[-1]["request_id"], original)
+        self.assertTrue(self.healthy)
+
+    def test_provider_diagnostic_and_no_retry_are_preserved(self):
+        result = {"status": "action_required", "code": "operator_required",
+                  "message": "Use the existing installation operator key.",
+                  "retry": "none", "completed_steps": ["preflight"]}
+        with patch.object(setup, "initialize", return_value=result) as initialize:
+            for _ in range(2):
+                with self.assertRaisesRegex(ValueError, "operator_required:.*operator key.*Automatic retry is disabled"):
+                    self.install()
+            self.assertEqual(initialize.call_count, 1)
+        result["message"] = "control\x1b[2J"
+        self.assertNotIn("\x1b", str(setup.initialization_error(result)))
+
+
 class SchemaTests(unittest.TestCase):
     def test_old_provider_is_rejected_before_initialize(self):
         with patch.object(setup, "command", return_value=b'{}'):
@@ -149,6 +176,20 @@ class ServiceIdentityTests(unittest.TestCase):
                     with patch.object(setup, "command", return_value=loaded):
                         with self.assertRaisesRegex(ValueError, "different installation"):
                             setup.service_identity(home, data, executable, {})
+
+    def test_provider_generated_systemd_unit_with_dollar_and_percent(self):
+        # Retained output of Backbone's _unit, including its ExecStart escaping.
+        fixture = Path(__file__).parent / "fixtures/backbone-user.service"
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary)
+            path = home / ".config/systemd/user/agent-backbone.service"
+            path.parent.mkdir(parents=True)
+            path.write_bytes(fixture.read_bytes())
+            data = Path("/home/fixture $cash%/data")
+            executable = Path("/home/fixture $cash%/tools/bin/backbone")
+            with patch("platform.system", return_value="Linux"), patch.object(
+                    setup, "command", return_value=b'"BACKBONE_DATA_DIR=/home/fixture $cash%/data"'):
+                self.assertEqual(len(setup.service_identity(home, data, executable, {})), 64)
 
     def test_health_probe_uses_private_socket_without_credentials(self):
         import socket

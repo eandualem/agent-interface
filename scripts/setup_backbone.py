@@ -88,7 +88,9 @@ def parse_result(data, request, returncode):
     if returncode not in expected.get(last.get("status"), set()):
         raise ValueError("Setup result and exit status disagree")
     if last["status"] != "completed":
-        if (last.get("retry") not in {"same_request", "new_request", "none"}
+        if (not isinstance(last.get("code"), str) or not 1 <= len(last["code"]) <= 100
+                or not isinstance(last.get("message"), str) or len(last["message"]) > 2000
+                or last.get("retry") not in {"same_request", "new_request", "none"}
                 or not isinstance(last.get("completed_steps"), list)
                 or any(not isinstance(step, str) for step in last["completed_steps"])):
             raise ValueError("Invalid initialization recovery state")
@@ -190,7 +192,7 @@ def service_identity(home, data_dir, executable, env):
                   for item in shlex.split(line.partition("=")[2].replace("%%", "%"))]
         owners_on_disk = [item.partition("=")[2] for item in values if item.startswith("BACKBONE_DATA_DIR=")]
         owner = owners_on_disk[0] if len(owners_on_disk) == 1 else None
-        starts = [line.partition("=")[2].replace("%%", "%") for line in lines if line.startswith("ExecStart=")]
+        starts = [line.partition("=")[2].replace("%%", "%").replace("$$", "$") for line in lines if line.startswith("ExecStart=")]
         arguments = shlex.split(starts[0]) if len(starts) == 1 else []
         loaded = command("systemctl", ["--user", "show", "agent-backbone.service",
                                       "--property=Environment", "--value"], env).decode()
@@ -291,6 +293,22 @@ def finish_socket(executable, home, data_dir, record, state, outcome_path, env):
     save_outcome(outcome_path, record, state)
 
 
+
+def initialization_error(result):
+    # The finite API supplies redacted messages, not raw subprocess stderr.
+    # Escape terminal control characters before displaying provider diagnostics.
+    def display(value):
+        return json.dumps(value, ensure_ascii=True)[1:-1]
+
+    guidance = {
+        "same_request": "Resolve the reported issue, then rerun the installer to resume the saved request.",
+        "new_request": "Resolve the reported issue; only a confirmed preflight failure can start a new request automatically.",
+        "none": "Automatic retry is disabled. Resolve this through Backbone's operator setup guidance; the original request is retained.",
+    }
+    return ValueError(f"Backbone {display(result['code'])}: {display(result['message'])} "
+                      + guidance[result["retry"]])
+
+
 def install(executable, home, data_dir, version, provider_identity, resume_only=False):
     root = home / ".local/state/agent-interface/backbone"
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -313,11 +331,16 @@ def install(executable, home, data_dir, version, provider_identity, resume_only=
             if saved.get("record") != record:
                 raise ValueError("The saved setup outcome does not match its request")
             state = saved.get("result", {})
-        if state.get("status") == "completed":
+        reset = state.get("status") == "completed" and not data_dir.exists() and not data_dir.is_symlink()
+        if state.get("status") == "completed" and not reset:
+            if not (data_dir / ".env").is_file():
+                raise ValueError("The completed Backbone installation is incomplete; repair it through Backbone setup. Its saved request was retained")
             if not resume_only:
                 check_schema(executable, dict(os.environ, BACKBONE_DATA_DIR=str(data_dir)))
             return "Existing Backbone configuration and service preserved.", False
-        if can_start_new(state):
+        if state.get("status") in {"failed", "action_required"} and state.get("retry") == "none":
+            raise initialization_error(state)
+        if reset or can_start_new(state):
             archive = root / ("previous-" + uuid.uuid4().hex)
             request_path.rename(archive.with_suffix(".json"))
             outcome_path.rename(archive.with_suffix(".result.json"))
@@ -346,7 +369,7 @@ def install(executable, home, data_dir, version, provider_identity, resume_only=
             result = initialize(executable, request, record["path_env"])
             if result["status"] != "completed":
                 save_outcome(outcome_path, record, result)
-                raise ValueError("Backbone initialization needs attention; rerun the installer to resume")
+                raise initialization_error(result)
             if result["code"] == "existing_preserved":
                 save_outcome(outcome_path, record, {"status": "completed"})
                 return "Existing Backbone configuration and service preserved.", resume_only
