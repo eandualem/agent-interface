@@ -53,7 +53,7 @@ mod tests {
         let RawWindowHandle::Xlib(xlib) = as_xlib(xcb.into()) else {
             panic!("expected Xlib")
         };
-        assert_eq!(xlib.window, u32::MAX.into());
+        assert_eq!(xlib.window, std::os::raw::c_ulong::from(u32::MAX));
         assert_eq!(xlib.visual_id, 47);
         xcb.visual_id = None;
         let RawWindowHandle::Xlib(xlib) = as_xlib(xcb.into()) else {

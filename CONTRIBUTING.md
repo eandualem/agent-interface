@@ -76,9 +76,11 @@ Install the version CI
 uses with `cargo install cargo-deny --version 0.20.2 --locked`.
 
 The CI workflow defines the same checks with `--locked` for macOS
-(`macos-15`, arm64) and Linux (`ubuntu-24.04`, x86-64). Hosted CI and automated
-reviews are enabled when the repository becomes public; while it is private,
-record local verification in the pull request.
+(`macos-15`, arm64) and Linux (`ubuntu-24.04`, x86-64 and
+`ubuntu-24.04-arm`, arm64). Linux graphical checks include Documents under
+software Mesa and Xvfb, with interface zoom, display DPI, keyboard input,
+window teardown and process-isolation checks. Record local verification in the
+pull request alongside hosted CI.
 
 ## The terminal engine's native build
 
