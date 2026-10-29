@@ -196,15 +196,15 @@ try { new WebSocket('TARGET/socket'.replace('http:', 'ws:')); } catch (_) {}
                         found.append(int(process.name))
                 return found
 
-            # The tab and the feed both say Documents; the feed is below the tab.
-            click('Documents', last=True)
+            # Select the section bar above the sidebar tab and bottom breadcrumb.
+            click('Documents')
             wait_for(lambda: any(p.startswith('/api/documents?') for p in requests), 'document list request')
             click('Renderer')
             wait_for(lambda: find('DOCUMENTREADY'), 'rendered HTML')
             wait_for(lambda: find('ISOLATIONPASSED'), 'native WebRTC restriction and CSP')
             sandbox_pids = wait_for(sandboxed_processes, 'sandboxed WebKit process')
             heading = find('DOCUMENTREADY')
-            toolbar = find('Documents', last=True)
+            toolbar = find('Documents')
             assert toolbar and int(heading['top']) > int(toolbar['top']) + int(toolbar['height']), 'webview overlaps native toolbar'
             click('INTERACT')
             wait_for(lambda: find('CLICKPASSED'), 'JavaScript button')
@@ -230,7 +230,7 @@ try { new WebSocket('TARGET/socket'.replace('http:', 'ws:')); } catch (_) {}
             wait_for(lambda: find('CLICKPASSED'), 'state retained across resize')
             assert not leaks, f'document made network requests: {leaks}'
             command('import', '-window', window, str(OUTPUT / 'resized.png'))
-            click('Documents', last=True)
+            click('Documents')
             wait_for(lambda: find('Renderer'), 'return to document shelf')
             assert not find('DOCUMENTREADY'), 'closed document view still visible'
             # Close a live child view's parent while another app window remains.
@@ -255,7 +255,7 @@ try { new WebSocket('TARGET/socket'.replace('http:', 'ws:')); } catch (_) {}
             window = wait_for(lambda: command('xdotool', 'search', '--onlyvisible', '--pid', str(app.pid), check=False),
                               'override-check window').splitlines()[0]
             command('xdotool', 'windowactivate', '--sync', window)
-            click('Documents', last=True)
+            click('Documents')
             click('Renderer')
             wait_for(lambda: 'Documents require the WebKit sandbox' in ' '.join(w.get('text') or '' for w in words()),
                      'sandbox override refused in native error view')
