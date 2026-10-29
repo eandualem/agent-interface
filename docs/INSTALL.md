@@ -212,6 +212,9 @@ backbone config set backbone.socket_path "$HOME/.local/share/agent-backbone/run/
 backbone service restart
 ```
 
+If Agent Interface was already open before you first set up Backbone, quit and
+reopen it so it finds Backbone.
+
 The app reads the saved `backbone.socket_path` setting. To use another socket,
 set `BACKBONE_SOCKET_PATH` in the app's launch environment. The path must be
 absolute. The socket must be owned by your user with permissions 0600, in a

@@ -33,16 +33,16 @@ work together. Backbone turns agents across CLIs and projects into one team, wit
 names, safe messages, live state and continuity. Agent Interface is where you work
 with that team.
 
-- **Know who needs you.** Every agent shows as working, idle or waiting on you.
-  Click one to open the tab holding its session.
+- **Know who needs you.** Active agents show their state, such as working, idle
+  or waiting on you. Click one to open the tab holding its session.
 - **Real terminals.** Panes are drawn natively with GPUI and Ghostty's terminal
   core. tmux keeps every process running, and you can attach the sessions you
   already use.
 - **The team beside the work.** Open Team, Activity, Usage, Skills, Policies and
   Tags views in a pane, next to the agents they describe.
 - **Reports, answers and documents.** **Reports & updates** collects progress
-  reports, saved answers, current plans, Documents and Sheets. Reply to the author
-  from the record you are reading.
+  reports, saved answers and Documents. Reply to the author from the record you
+  are reading.
 - **Workspaces that come back.** Tabs and split panes are saved in workspaces.
   Jump (⌘K) finds tabs, panes, agents and commands.
 
