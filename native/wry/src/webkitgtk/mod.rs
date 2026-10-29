@@ -1001,7 +1001,8 @@ impl InnerWebView {
       let window = &x11_data.gtk_window;
       if x11_data.is_child {
         let (physical_x, physical_y) = bounds.position.to_physical::<i32>(scale_factor).into();
-        let (physical_width, physical_height) = bounds.size.to_physical::<u32>(scale_factor).into();
+        let (physical_width, physical_height): (u32, u32) =
+          bounds.size.to_physical::<u32>(scale_factor).into();
         unsafe {
           (x11_data.xlib.XMoveResizeWindow)(
             x11_data.x11_display as _,
