@@ -190,7 +190,19 @@ impl Onboarding {
                                 // global window origin. Let the compositor fit
                                 // larger text instead of mixing local/global bounds.
                                 if next > percent {
-                                    window.zoom_window();
+                                    if window.window_controls().maximize {
+                                        window.zoom_window();
+                                    } else if let Some(display) = window.display(cx) {
+                                        // Some compositors do not offer maximize.
+                                        // Only the output's extent is meaningful here.
+                                        window.resize(
+                                            size(
+                                                px(tokens().size.settings_width),
+                                                px(tokens().size.settings_height),
+                                            )
+                                            .min(&display.visible_bounds().size),
+                                        );
+                                    }
                                 }
                             } else {
                                 // Both bounds use the new zoom factor. Respect the

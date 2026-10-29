@@ -188,8 +188,9 @@ Backbone check is a single read-only roster request. These checks install nothin
 The welcome window offers the same persistent interface-size setting as the
 workspace, including during the opening scene, so display scaling can be adjusted
 before setup is complete. On Wayland, increasing this size asks the compositor
-to maximize setup; global window positions are unavailable, so app-calculated
-position limits cannot safely place it. macOS and X11 instead bound resizing
+to maximize setup, or uses the display extent alone if maximizing is unsupported;
+global window positions are unavailable, so app-calculated position limits cannot
+safely place it. macOS and X11 instead bound resizing
 against the display, respecting the platform resize anchor.
 
 The first-agent step calls the selected engine's `runtimes --json`, then submits
