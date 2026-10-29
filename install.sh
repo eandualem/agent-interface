@@ -373,9 +373,15 @@ if [ -f "$resources/setup_backbone.py" ]; then
         PATH="$tool_bin:$PATH"
         export PATH
         tools=$("$uv" tool dir) || fail 'Could not locate the installed Agent Backbone.'
-        run_step 'Starting and checking Agent Backbone' env PATH="$tools/agent-backbone/bin:$(dirname "$uv"):$PATH" \
-            "$tools/agent-backbone/bin/python" -I -B "$resources/setup_backbone.py" \
-            --executable "$tools/agent-backbone/bin/backbone" ||
+        run_backbone_setup() (
+            PATH="$tools/agent-backbone/bin:$(dirname "$uv"):$PATH"
+            export PATH
+            # Execute the path directly: env treats paths containing '=' as
+            # additional assignments rather than the program to run.
+            exec "$tools/agent-backbone/bin/python" -I -B "$resources/setup_backbone.py" \
+                --executable "$tools/agent-backbone/bin/backbone"
+        )
+        run_step 'Starting and checking Agent Backbone' run_backbone_setup ||
             fail 'Agent Backbone setup did not finish. The app was not replaced; rerun this installer to resume.'
     else
         printf '%s\n' 'Resumed Agent Backbone setup with its saved version. A later install can check for an upgrade.'

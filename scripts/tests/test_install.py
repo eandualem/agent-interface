@@ -394,6 +394,12 @@ esac
         self.assertIn("Bash configuration files are already up-to-date", result.stderr)
         self.assertIn("Starting and checking Agent Backbone: done.", result.stderr)
 
+    def test_provider_install_path_with_equals_is_executed(self):
+        self.backbone_tools()
+        self.env["FIXTURE_TOOLS"] = str(self.root / "uv=tools")
+        self.install(self.package(extra={"agent-interface/setup_backbone.py": "fixture helper"}))
+        self.assertTrue(self.link.is_symlink())
+
     def test_quiet_setup_reports_elapsed_time_and_cleans_up_progress(self):
         self.backbone_tools()
         self.env["FIXTURE_SETUP_DELAY"] = "6"
