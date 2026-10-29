@@ -441,8 +441,11 @@ impl Sheets {
 }
 impl Sheets {
     /// What a message refers to: the selected cells on their tab, such as
-    /// `Runs!C4` or `Runs!B2:F9`, or the tab while nothing is selected.
+    /// `Runs!C4` or `Runs!B2:F9`, or the whole workbook without a selection.
     fn anchor(&self, open: &Open) -> Option<String> {
+        let Some(selection) = self.selection else {
+            return Some(format!("{} (whole workbook)", open.record.title));
+        };
         let tab = open
             .record
             .tabs
@@ -450,25 +453,34 @@ impl Sheets {
             .find(|tab| tab.tab_id == open.grid.tab_id)?
             .name
             .clone();
-        let Some(selection) = self.selection else {
-            return Some(tab);
-        };
         let (rows, columns) = selection.bounds();
-        let cell = |row: usize, column: usize| {
-            Some(format!(
-                "{}{}",
-                column_name(open.grid.columns.get(column)?.index),
-                open.grid.rows.get(row)?.index
-            ))
-        };
-        let start = cell(*rows.start(), *columns.start())?;
-        let end = cell(*rows.end(), *columns.end())?;
-        Some(if start == end {
-            format!("{tab}!{start}")
-        } else {
-            format!("{tab}!{start}:{end}")
-        })
+        let rows: Vec<_> = open.grid.rows.get(rows)?.iter().map(|r| r.index).collect();
+        let columns: Vec<_> = open
+            .grid
+            .columns
+            .get(columns)?
+            .iter()
+            .map(|c| c.index)
+            .collect();
+        selection_label(&tab, &rows, &columns)
     }
+}
+
+fn selection_label(tab: &str, rows: &[usize], columns: &[usize]) -> Option<String> {
+    let start = format!("{}{}", column_name(*columns.first()?), rows.first()?);
+    let end = format!("{}{}", column_name(*columns.last()?), rows.last()?);
+    let contiguous = |indices: &[usize]| {
+        indices
+            .windows(2)
+            .all(|pair| pair[0].checked_add(1) == Some(pair[1]))
+    };
+    Some(if !contiguous(rows) || !contiguous(columns) {
+        format!("{tab}: {} selected cells", rows.len() * columns.len())
+    } else if start == end {
+        format!("{tab}!{start}")
+    } else {
+        format!("{tab}!{start}:{end}")
+    })
 }
 
 /// Keys for a workbook revision, then for the workbook across revisions.
@@ -648,6 +660,22 @@ mod tests {
         };
         assert!(selection.contains(3, 2));
         assert!(!selection.contains(1, 2));
+        assert_eq!(
+            selection_label("Runs", &[2, 3, 4], &[1, 2]).as_deref(),
+            Some("Runs!A2:B4")
+        );
+        assert_eq!(
+            selection_label("Runs", &[2, 5], &[1]).as_deref(),
+            Some("Runs: 2 selected cells")
+        );
+        assert_eq!(
+            selection_label("Runs", &[5, 2], &[1]).as_deref(),
+            Some("Runs: 2 selected cells")
+        );
+        assert_eq!(
+            selection_label("Runs", &[2], &[3, 1]).as_deref(),
+            Some("Runs: 2 selected cells")
+        );
     }
     #[test]
     fn keyboard_columns_remain_visible_in_both_directions() {

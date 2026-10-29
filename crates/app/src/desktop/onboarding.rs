@@ -66,14 +66,14 @@ struct Open(WindowHandle<Onboarding>);
 impl Global for Open {}
 
 /// Open setup, with the opening scene first when `intro` is set.
-pub fn show(intro: bool, cx: &mut App) {
+pub fn show(intro: bool, cx: &mut App) -> Result<(), String> {
     let open = cx.try_global::<Open>().map(|Open(handle)| *handle);
     if let Some(handle) = open
         && handle
             .update(cx, |_, window, _| window.activate_window())
             .is_ok()
     {
-        return;
+        return Ok(());
     }
     let t = tokens();
     let options = WindowOptions {
@@ -101,37 +101,39 @@ pub fn show(intro: bool, cx: &mut App) {
         // setup still resumes after other settings create the file.
         remember(|settings| settings.intro_seen = true);
     }
-    if let Ok(handle) = cx.open_window(options, |_, cx| {
-        cx.new(|cx| {
-            let mut view = Onboarding {
-                stage: if intro { Stage::Scene } else { Stage::Step(0) },
-                probe: None,
-                checking: false,
-                copied: None,
-                open_error: None,
-                first: None,
-                first_ready: false,
-                first_agent: None,
-                first_events: None,
-            };
-            // The scene covers the first check, so step one opens with answers.
-            view.check(cx);
-            if intro {
-                cx.spawn(async |view, cx| {
-                    cx.background_executor().timer(SCENE).await;
-                    let _ = view.update(cx, |view, cx| {
-                        view.stage = Stage::Step(0);
-                        remember(|settings| settings.intro_seen = true);
-                        cx.notify();
-                    });
-                })
-                .detach();
-            }
-            view
+    let handle = cx
+        .open_window(options, |_, cx| {
+            cx.new(|cx| {
+                let mut view = Onboarding {
+                    stage: if intro { Stage::Scene } else { Stage::Step(0) },
+                    probe: None,
+                    checking: false,
+                    copied: None,
+                    open_error: None,
+                    first: None,
+                    first_ready: false,
+                    first_agent: None,
+                    first_events: None,
+                };
+                // The scene covers the first check, so step one opens with answers.
+                view.check(cx);
+                if intro {
+                    cx.spawn(async |view, cx| {
+                        cx.background_executor().timer(SCENE).await;
+                        let _ = view.update(cx, |view, cx| {
+                            view.stage = Stage::Step(0);
+                            remember(|settings| settings.intro_seen = true);
+                            cx.notify();
+                        });
+                    })
+                    .detach();
+                }
+                view
+            })
         })
-    }) {
-        cx.set_global(Open(handle));
-    }
+        .map_err(|error| error.to_string())?;
+    cx.set_global(Open(handle));
+    Ok(())
 }
 
 /// The system asks for less motion: open straight on the first step.
