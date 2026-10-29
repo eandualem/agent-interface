@@ -45,6 +45,7 @@ agent-interface-tmux = { path = "../tmux" }
 # WebKitGTK embedding and its main loop (MIT).
 wry = { version = "=0.57.1", default-features = false, features = ["os-webview", "x11"] }
 gtk = "=0.18.2"
+gdkx11 = "=0.18.2"
 webkit2gtk = { version = "=2.0.2", features = ["v2_38"] }
 # Select GPUI's X11 host, also under Wayland through XWayland (Apache-2.0).
 gpui_linux = { package = "gpui-pre-linux", version = "=0.3.9", default-features = false, features = ["x11"] }

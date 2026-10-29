@@ -103,7 +103,7 @@ The [user guide](docs/GUIDE.md) covers every view, shortcut and setting.
 
 Agent Interface runs on macOS and Linux (X11, or XWayland on Wayland desktops). Windows 11 runs the
 Linux package through WSL 2 with WSLg. Sessions run on the
-same computer as the app. Rich HTML Documents render on macOS only.
+same computer as the app. Rich HTML Documents render on macOS and Linux, including Windows through WSLg.
 
 Not yet implemented: terminal input methods, accessible terminal text, key-release
 events and selection across history pages.

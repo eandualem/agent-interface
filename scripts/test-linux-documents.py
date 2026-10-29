@@ -10,6 +10,7 @@ import http.server
 import io
 import json
 import os
+import re
 from pathlib import Path
 import socketserver
 import sqlite3
@@ -20,8 +21,9 @@ import time
 
 ROOT = Path(__file__).resolve().parents[1]
 SCALE = int(os.environ.get("DOCUMENT_TEST_SCALE", "100"))
-assert SCALE in (100, 150)
-OUTPUT = ROOT / "target/linux-documents-smoke" / str(SCALE)
+DPI = int(os.environ.get("DOCUMENT_TEST_DPI", "96"))
+assert SCALE in (100, 150) and DPI in (96, 144, 192)
+OUTPUT = ROOT / "target/linux-documents-smoke" / f"{SCALE}-{DPI}"
 OUTPUT.mkdir(parents=True, exist_ok=True)
 
 
@@ -133,6 +135,7 @@ try { new WebSocket('TARGET/socket'.replace('http:', 'ws:')); } catch (_) {}
     app = wm = None
     with (OUTPUT / 'app.log').open('w') as app_log, (OUTPUT / 'wm.log').open('w') as wm_log:
         try:
+            subprocess.run(['xrdb', '-merge'], input=f'Xft.dpi: {DPI}\n', text=True, env=env, check=True)
             wm = subprocess.Popen(['xfwm4', '--compositor=on', '--sm-client-disable'],
                                   env=env, stdout=wm_log, stderr=subprocess.STDOUT)
             wait_for(lambda: '_GTK_FRAME_EXTENTS' in command('xprop', '-root', '_NET_SUPPORTED'), 'window manager')
@@ -141,6 +144,7 @@ try { new WebSocket('TARGET/socket'.replace('http:', 'ws:')); } catch (_) {}
             window = wait_for(lambda: command('xdotool', 'search', '--onlyvisible', '--pid', str(app.pid), check=False),
                               'app window').splitlines()[0]
             command('xdotool', 'windowactivate', '--sync', window)
+            command('xdotool', 'windowsize', '--sync', window, str(round(1200 * DPI / 96)), str(round(820 * DPI / 96)))
 
             def words():
                 assert app.poll() is None, 'application exited'
@@ -158,12 +162,46 @@ try { new WebSocket('TARGET/socket'.replace('http:', 'ws:')); } catch (_) {}
                 y = int(word['top']) + int(word['height']) // 2
                 command('xdotool', 'mousemove', '--window', window, str(x), str(y), 'click', '1')
 
+            def app_windows():
+                clients = re.findall(r'0x[0-9a-fA-F]+', command('xprop', '-root', '_NET_CLIENT_LIST'))
+                return {str(int(w, 16)) for w in clients
+                        if command('xprop', '-id', w, '_NET_WM_PID', check=False).endswith(f'= {app.pid}')}
+
+            def sandboxed_processes():
+                # Inspect only this fixture's descendants, without command arguments.
+                parents, web = {}, []
+                for process in Path('/proc').iterdir():
+                    if not process.name.isdigit():
+                        continue
+                    try:
+                        status = dict(line.split(':', 1) for line in (process / 'status').read_text().splitlines() if ':' in line)
+                        parents[int(process.name)] = int(status['PPid'])
+                        if status.get('Name', '').strip().startswith('WebKitWeb'):
+                            web.append((process, status))
+                    except (OSError, ValueError, KeyError):
+                        continue
+                found = []
+                for process, status in web:
+                    pid, seen = int(process.name), set()
+                    while pid != app.pid and pid in parents and pid not in seen:
+                        seen.add(pid)
+                        pid = parents[pid]
+                    if pid == app.pid:
+                        assert status.get('Seccomp', '').strip() == '2', 'WebKit process lacks seccomp'
+                        assert os.readlink(process / 'ns/mnt') != os.readlink(f'/proc/{app.pid}/ns/mnt'), 'WebKit shares host mount namespace'
+                        found.append(int(process.name))
+                return found
+
             # The tab and the feed both say Documents; the feed is below the tab.
             click('Documents', last=True)
             wait_for(lambda: any(p.startswith('/api/documents?') for p in requests), 'document list request')
             click('Renderer')
             wait_for(lambda: find('DOCUMENTREADY'), 'rendered HTML')
             wait_for(lambda: find('ISOLATIONPASSED'), 'native WebRTC restriction and CSP')
+            sandbox_pids = wait_for(sandboxed_processes, 'sandboxed WebKit process')
+            heading = find('DOCUMENTREADY')
+            toolbar = find('Documents', last=True)
+            assert toolbar and int(heading['top']) > int(toolbar['top']) + int(toolbar['height']), 'webview overlaps native toolbar'
             click('INTERACT')
             wait_for(lambda: find('CLICKPASSED'), 'JavaScript button')
             click('TYPEHERE')
@@ -184,17 +222,34 @@ try { new WebSocket('TARGET/socket'.replace('http:', 'ws:')); } catch (_) {}
             wait_for(lambda: find('POPUPBLOCKED'), 'new window denied')
             assert set(command('xdotool', 'search', '--onlyvisible', '--pid', str(app.pid)).splitlines()) == native_windows, 'unexpected popup'
             command('import', '-window', window, str(OUTPUT / 'document.png'))
-            command('xdotool', 'windowsize', '--sync', window, '1100', '760')
+            command('xdotool', 'windowsize', '--sync', window, str(round(1100 * DPI / 96)), str(round(760 * DPI / 96)))
             wait_for(lambda: find('CLICKPASSED'), 'state retained across resize')
             assert not leaks, f'document made network requests: {leaks}'
             command('import', '-window', window, str(OUTPUT / 'resized.png'))
             click('Documents', last=True)
             wait_for(lambda: find('Renderer'), 'return to document shelf')
             assert not find('DOCUMENTREADY'), 'closed document view still visible'
+            # Close a live child view's parent while another app window remains.
+            click('Renderer')
+            wait_for(lambda: find('DOCUMENTREADY'), 'document reopened')
+            click('TYPEHERE')
+            before = app_windows()
+            command('xdotool', 'key', '--clearmodifiers', 'ctrl+shift+n')
+            second = wait_for(lambda: app_windows() - before, 'new window shortcut from HTML').pop()
+            command('xdotool', 'windowactivate', '--sync', window)
+            command('xdotool', 'key', '--clearmodifiers', 'alt+F4')
+            wait_for(lambda: window not in app_windows(), 'document parent window closed')
+            time.sleep(1)
+            assert app.poll() is None and second in app_windows(), 'closing a Document killed the other window'
+            command('xdotool', 'windowactivate', '--sync', second)
+            command('xdotool', 'key', '--clearmodifiers', 'ctrl+shift+q')
+            assert app.wait(timeout=15) == 0, 'application quit failed'
             (OUTPUT / 'result.json').write_text(json.dumps(dict(checks=[
                 'Document API load', 'HTML render', 'inline script', 'HTML input', 'app shortcut from HTML',
                 'overlay hides/restores view', 'return to shelf destroys view', 'file chooser denied',
-                'WebRTC disabled', 'fetch/image/WebSocket blocked', 'external navigation/new windows denied', 'resize retains state'], requests=requests), indent=2))
+                'WebRTC disabled', 'fetch/image/WebSocket blocked', 'external navigation/new windows denied', 'resize retains state', 'process seccomp and mount isolation', 'display DPI placement',
+                'fixed new-window shortcut from HTML', 'parent close preserves second window', 'clean quit'],
+                scale=SCALE, dpi=DPI, sandbox_pids=sandbox_pids, requests=requests), indent=2))
             print('Linux Documents smoke passed')
         finally:
             if app and app.poll() is None:

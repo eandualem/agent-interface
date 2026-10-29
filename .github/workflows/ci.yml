@@ -4,6 +4,7 @@
 name: CI
 
 on:
+  workflow_dispatch:
   pull_request:
   push:
     branches: [develop, main]
@@ -32,7 +33,7 @@ jobs:
       matrix:
         os: [macos-15, ubuntu-24.04, ubuntu-24.04-arm]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1, MIT
         with:
@@ -51,7 +52,7 @@ jobs:
         run: >-
           sudo apt-get update && sudo apt-get install -y tmux pkg-config
           libfontconfig-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev
-          libx11-xcb-dev libwebkit2gtk-4.1-dev fonts-dejavu-core xvfb xfwm4 xdotool x11-utils imagemagick dbus-x11 tesseract-ocr
+          libx11-xcb-dev libwebkit2gtk-4.1-dev fonts-dejavu-core xvfb xfwm4 xdotool x11-utils x11-xserver-utils imagemagick dbus-x11 tesseract-ocr
           libegl1 libgl1-mesa-dri mesa-vulkan-drivers
 
       - name: Install tmux (macOS)
@@ -96,8 +97,9 @@ jobs:
         run: |
           xvfb-run -a cargo test -p agent-interface-app linux_terminal_font_has_uniform_ascii_cells --locked -- --ignored --nocapture
           xvfb-run -a -s '-screen 0 1440x900x24' dbus-run-session -- python3 scripts/test-linux-desktop.py
-          for scale in 100 150; do
-            DOCUMENT_TEST_SCALE=$scale xvfb-run -a -s '-screen 0 1440x900x24' dbus-run-session -- python3 scripts/test-linux-documents.py
+          for settings in '100 96' '150 96' '100 144' '100 192'; do
+            read -r scale dpi <<< "$settings"
+            DOCUMENT_TEST_SCALE=$scale DOCUMENT_TEST_DPI=$dpi xvfb-run -a -s '-screen 0 2560x1800x24' dbus-run-session -- python3 scripts/test-linux-documents.py
           done
 
       - name: Keep Linux graphical evidence

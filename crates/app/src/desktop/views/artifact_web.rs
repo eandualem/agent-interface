@@ -8,14 +8,14 @@ thread_local! {
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-struct NativeView(wry::WebView);
+struct NativeView(Option<wry::WebView>);
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 impl NativeView {
     fn new(view: wry::WebView) -> Self {
         #[cfg(target_os = "linux")]
         LIVE_VIEWS.with(|count| count.set(count.get() + 1));
-        Self(view)
+        Self(Some(view))
     }
 }
 
@@ -23,13 +23,29 @@ impl NativeView {
 impl std::ops::Deref for NativeView {
     type Target = wry::WebView;
     fn deref(&self) -> &Self::Target {
-        &self.0
+        self.0.as_ref().expect("view is present until teardown")
     }
 }
 
 #[cfg(target_os = "linux")]
 impl Drop for NativeView {
     fn drop(&mut self) {
+        use gtk::prelude::Cast;
+        // GPUI may already have destroyed the parent X window, which also
+        // destroys its children. Trap only teardown's X errors so Wry's final
+        // XDestroyWindow cannot turn that normal ordering into a fatal BadWindow.
+        let display = gtk::gdk::Display::default()
+            .and_then(|display| display.downcast::<gdkx11::X11Display>().ok());
+        if let Some(display) = &display {
+            display.error_trap_push();
+        }
+        drop(self.0.take());
+        if let Some(display) = display {
+            let error = display.error_trap_pop();
+            if error != 0 && error != 3 {
+                tracing::warn!(event = "document_teardown_x_error", code = error);
+            }
+        }
         LIVE_VIEWS.with(|count| count.set(count.get() - 1));
     }
 }
@@ -39,7 +55,7 @@ pub(super) struct Surface {
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     view: Option<NativeView>,
     bounds: Option<Bounds<Pixels>>,
-    /// The interface size the page was last zoomed to.
+    /// The page zoom, including any difference between GPUI and GTK display scale.
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     zoom: f32,
     theme: String,
@@ -101,30 +117,51 @@ impl Surface {
         {
             #[cfg(target_os = "macos")]
             use wry::WebViewBuilderExtMacos;
-            use wry::{
-                Rect, WebViewBuilder,
-                dpi::{LogicalPosition, LogicalSize},
-            };
+            use wry::{Rect, WebViewBuilder};
             // The child view sits outside GPUI, so it takes native
             // coordinates and zooms its page to the interface size.
-            let zoom = crate::desktop::zoom::factor();
+            #[cfg(target_os = "macos")]
+            let coordinate_scale = crate::desktop::zoom::factor();
+            #[cfg(target_os = "linux")]
+            let coordinate_scale = window.scale_factor();
             let bounds = Bounds::new(
-                gpui::point(bounds.origin.x * zoom, bounds.origin.y * zoom),
-                gpui::size(bounds.size.width * zoom, bounds.size.height * zoom),
+                gpui::point(
+                    bounds.origin.x * coordinate_scale,
+                    bounds.origin.y * coordinate_scale,
+                ),
+                gpui::size(
+                    bounds.size.width * coordinate_scale,
+                    bounds.size.height * coordinate_scale,
+                ),
             );
+            #[cfg(target_os = "macos")]
             let rect = Rect {
-                position: LogicalPosition::new(
+                position: wry::dpi::LogicalPosition::new(
                     f64::from(f32::from(bounds.origin.x)),
                     f64::from(f32::from(bounds.origin.y)),
                 )
                 .into(),
-                size: LogicalSize::new(
+                size: wry::dpi::LogicalSize::new(
                     f64::from(f32::from(bounds.size.width)),
                     f64::from(f32::from(bounds.size.height)),
                 )
                 .into(),
             };
+            #[cfg(target_os = "linux")]
+            let rect = Rect {
+                position: wry::dpi::PhysicalPosition::new(
+                    f32::from(bounds.origin.x).round() as i32,
+                    f32::from(bounds.origin.y).round() as i32,
+                )
+                .into(),
+                size: wry::dpi::PhysicalSize::new(
+                    f32::from(bounds.size.width).round().max(1.) as u32,
+                    f32::from(bounds.size.height).round().max(1.) as u32,
+                )
+                .into(),
+            };
             if let Some(view) = &self.view {
+                let zoom = page_zoom(window, view);
                 if self.bounds != Some(bounds) {
                     view.set_bounds(rect).map_err(|error| error.to_string())?;
                 }
@@ -132,6 +169,7 @@ impl Surface {
                     view.zoom(f64::from(zoom))
                         .map_err(|error| error.to_string())?;
                 }
+                self.zoom = zoom;
                 if self.theme != theme {
                     view.set_background_color(background())
                         .map_err(|error| error.to_string())?;
@@ -159,7 +197,9 @@ impl Surface {
                 let host = agent_interface_webview_host::XlibWindow::new(window)
                     .map_err(|error| error.to_string())?;
                 #[cfg(target_os = "linux")]
-                let window = &host;
+                let parent = &host;
+                #[cfg(target_os = "macos")]
+                let parent = window;
                 let builder = WebViewBuilder::new();
                 #[cfg(target_os = "macos")]
                 let builder =
@@ -183,19 +223,20 @@ impl Surface {
                     .with_initialization_script("document.addEventListener('pointerdown',()=>window.ipc.postMessage('focus'),true);")
                     .with_ipc_handler(move |request| { if request.body() == "focus" { on_focus(); } })
                     .with_initialization_script(theme)
-                    .build_as_child(window).map_err(|error| error.to_string())?;
+                    .build_as_child(parent).map_err(|error| error.to_string())?;
                 #[cfg(target_os = "linux")]
                 configure_linux(&view, on_key)?;
                 // Load authored code only after native networking/file permissions
                 // have been restricted, on both platforms.
                 view.load_url("artifact://document/index.html")
                     .map_err(|error| error.to_string())?;
+                let zoom = page_zoom(window, &view);
                 view.zoom(f64::from(zoom))
                     .map_err(|error| error.to_string())?;
+                self.zoom = zoom;
                 self.view = Some(NativeView::new(view));
             }
             self.bounds = Some(bounds);
-            self.zoom = zoom;
             self.theme = theme.into();
             Ok(())
         }
@@ -294,15 +335,21 @@ fn configure_linux(
     on_key: impl Fn(gpui::Keystroke) -> bool + 'static,
 ) -> Result<(), String> {
     use gtk::prelude::WidgetExt;
-    use webkit2gtk::{FileChooserRequestExt, SettingsExt, WebViewExt};
+    use webkit2gtk::{FileChooserRequestExt, SettingsExt, WebContextExt, WebViewExt};
     use wry::WebViewExtUnix;
     let native = view.webview();
+    let context = native.context().ok_or("WebKitGTK context is unavailable")?;
+    // The pinned Wry context enables this before constructing any WebView.
+    if !context.is_sandbox_enabled() {
+        return Err("WebKitGTK could not enable the document process sandbox".into());
+    }
     let settings = WebViewExt::settings(&native).ok_or("WebKitGTK settings are unavailable")?;
     // CSP does not cover WebRTC sockets. Disable them natively, before load_url.
     settings.set_enable_webrtc(false);
     if settings.enables_webrtc() {
         return Err("WebKitGTK could not disable document peer connections".into());
     }
+    settings.set_enable_fullscreen(false);
     settings.set_enable_dns_prefetching(false);
     settings.set_enable_hyperlink_auditing(false);
     settings.set_allow_file_access_from_file_urls(false);
@@ -338,7 +385,8 @@ fn configure_linux(
 fn linux_shortcut(event: &gtk::gdk::EventKey) -> Option<gpui::Keystroke> {
     use gtk::gdk::{Keymap, ModifierType as M, keys::Key};
     let state = event.state();
-    let keyval = Keymap::default()
+    let keyval = gtk::gdk::Display::default()
+        .and_then(|display| Keymap::for_display(&display))
         .and_then(|map| {
             map.translate_keyboard_state(
                 event.hardware_keycode().into(),
@@ -368,5 +416,24 @@ fn linux_shortcut(event: &gtk::gdk::EventKey) -> Option<gpui::Keystroke> {
         key,
         key_char: None,
     };
-    crate::desktop::shortcuts::command_for(&key).map(|_| key)
+    let fixed = ["cmd-q", "cmd-n", "cmd-o", "cmd-,"].iter().any(|chord| {
+        gpui::Keystroke::parse(crate::desktop::shortcuts::platform_key(chord))
+            .is_ok_and(|binding| binding.key == key.key && binding.modifiers == key.modifiers)
+    });
+    (fixed || crate::desktop::shortcuts::command_for(&key).is_some()).then_some(key)
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn page_zoom(window: &Window, view: &wry::WebView) -> f32 {
+    #[cfg(target_os = "linux")]
+    {
+        use gtk::prelude::WidgetExt;
+        use wry::WebViewExtUnix;
+        window.scale_factor() / view.webview().scale_factor().max(1) as f32
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = (window, view);
+        crate::desktop::zoom::factor()
+    }
 }

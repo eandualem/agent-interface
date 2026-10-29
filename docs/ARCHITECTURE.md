@@ -415,7 +415,7 @@ Discovery reads metadata off the UI thread every two seconds while visible;
 the catalog retains the newest 200 entries. HTML is read only on opening a
 document and is limited to 4 MiB, including inline assets.
 
-`desktop::views::artifact_web` is the system-webview boundary. On macOS it
+`desktop::views::artifact_web` is the system-webview boundary. On macOS and Linux it
 creates a Wry/WebKit child view only for an opened document, positions it in
 the pane's content rectangle, and updates its host theme stylesheet. Text,
 backgrounds and controls follow the active app theme; layout and media retain
@@ -424,16 +424,16 @@ hidden while native overlays or pane dragging need that space. Closing the
 document or hiding its pane releases the web view, so reopening starts a fresh
 document runtime. Native terminals, menus and report views do not use WebKit.
 WebKit's platform processes belong to the renderer; the app adds no daemon.
-Linux currently shows an explicit unsupported-renderer message: embedding
-WebKitGTK in GPUI's Wayland/X11 windows needs a separate integration.
+Linux uses WebKitGTK on X11, with XWayland on Wayland desktops and WSLg;
+the integration and event loop are described below.
 
 Artifacts use a private in-memory URL, an ephemeral browser session and a
 content policy that permits inline HTML/CSS/JavaScript, SVG, canvas and data
 assets but blocks external resources, network requests, frames and form
 submission. Navigation, downloads, new windows and permission requests are
 denied. WebRTC peer connections are disabled in native WebKit preferences before
-loading content, because CSP does not govern their sockets. This uses WebKit's
-private preference SPI, checked at runtime; if unavailable or ineffective, HTML
+loading content, because CSP does not govern their sockets. On macOS this uses WebKit's
+private preference SPI; Linux uses its public settings API. Both are checked at runtime; if unavailable or ineffective, HTML
 rendering fails closed. The supplied configuration explicitly keeps an ephemeral
 data store. The sole JavaScript bridge reports pointer focus to select the owning
 pane; it exposes no terminal commands, filesystem access or Backbone API.
@@ -445,10 +445,10 @@ visible documents still consume WebKit CPU and memory according to their code.
 The project is MIT-licensed. [`Cargo.toml`](../Cargo.toml) declares dependency
 versions, `Cargo.lock` records the resolved graph, and `deny.toml` checks licences,
 advisories and permitted sources.
-The audit runs separately for both architectures on macOS and Linux. Wry is
-reachable only in macOS graphs, so its unused GTK and Android dependencies are
-not part of any supported build. No advisory or licence exception is added for
-those dependencies.
+The audit runs separately for both architectures on macOS and Linux. Wry uses
+system WebKit on macOS and GTK/WebKitGTK on Linux; unused Android dependencies
+are not part of a supported build. The GTK compatibility patch and narrow
+build-time advisory exception are described below.
 
 - **GPUI (`gpui-pre` and platform packages):** native windowing and GPU drawing,
   pinned as one package family. Apache-2.0. The macOS 0.3.9 backend is
@@ -483,8 +483,9 @@ those dependencies.
   and roster, and the existing process integration. MIT OR Apache-2.0.
 - **`wry` 0.57.1:** system WebKit child views for HTML Documents and legacy
   artifacts on macOS and Linux, pinned exactly. MIT OR Apache-2.0.
-  It does not render terminals or supply a bundled browser engine.
-- **`gtk` 0.18.2 and `webkit2gtk` 2.0.2:** MIT-licensed Rust bindings, pinned
+  The local `native/wry` patch enables the Linux process sandbox before view
+  construction. It does not render terminals or supply a bundled browser engine.
+- **`gtk` 0.18.2, `gdkx11` 0.18.2 and `webkit2gtk` 2.0.2:** MIT-licensed Rust bindings, pinned
   exactly, for the Linux system WebKitGTK 4.1 runtime, native security settings
   and GTK event dispatch. Their MIT GLib 0.18.5 dependency uses the local
   `native/glib` backport of upstream gtk-rs-core#1343, fixing the mutable
@@ -707,15 +708,22 @@ Terminals and all navigation remain native GPUI rendering.
 GTK initializes on the main thread with the X11 backend. A foreground task
 services its events beside GPUI's loop, bounded to 64 iterations or 2 ms per
 turn. It wakes every 16 ms with live document views, otherwise every 250 ms.
-Native GTK key events forward configured application shortcuts to GPUI, while
+Native GTK key events forward configured application shortcuts and the fixed
+window, library, settings and quit shortcuts to GPUI, while
 ordinary typing and text editing stay in WebKit; authored IPC cannot invoke
 those shortcuts. The child follows pane bounds, interface zoom, theme and overlay visibility;
-closing or hiding a document destroys its ephemeral view.
+closing or hiding a document destroys its ephemeral view. Child placement uses
+physical pixels on Linux, and page zoom compensates for GPUI's fractional display
+scale versus GTK's integer scale. Teardown traps GDK X errors around Wry's destroy:
+closing the GPUI parent may already have destroyed its child XID. Expected
+BadWindow errors at destruction are harmless; other teardown errors are logged.
 
 Authored HTML loads only after native settings disable WebRTC (not governed
 by CSP), DNS prefetch, hyperlink auditing and scripted clipboard/file access.
 File chooser requests are cancelled. The shared content policy blocks network
 requests, subframes, objects and forms; navigation stays within the document,
 new windows and downloads are denied, and the only IPC message reports focus.
-The engine's process sandbox is not disabled. `LIBGL_ALWAYS_SOFTWARE=1` selects
+The local MIT/Apache-2.0 Wry patch enables the ephemeral WebKit context process
+sandbox before constructing any view; the app verifies
+that it is enabled before loading authored content. `LIBGL_ALWAYS_SOFTWARE=1` selects
 WebKitGTK's nonaccelerated drawing policy for headless/software environments.
