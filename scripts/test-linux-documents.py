@@ -220,9 +220,13 @@ try { new WebSocket('TARGET/socket'.replace('http:', 'ws:')); } catch (_) {}
             click('TYPEHERE')
             command('xdotool', 'type', '--clearmodifiers', 'INPUTPASSED')
             wait_for(lambda: find('INPUTPASSED'), 'HTML keyboard input')
-            # Without -f, xdotool reports a containing top-level instead of
-            # the actual focused child, masking embedded-view focus changes.
-            assert command('xdotool', 'getwindowfocus', '-f') != window, 'HTML did not take X input focus'
+            # X11 can deliver keys to an inferior under the pointer even when
+            # the parent is the focus window. Exercise the stronger case: an
+            # embedded GTK child explicitly owns focus before a native click.
+            document_xids = set(command('xdotool', 'search', '--onlyvisible', '--pid', str(app.pid)).splitlines()) - native_xids
+            assert document_xids, 'embedded GTK window not found'
+            command('xdotool', 'windowfocus', '--sync', sorted(document_xids)[0])
+            assert command('xdotool', 'getwindowfocus', '-f') != window, 'fixture did not focus the embedded child'
             # Click empty native sidebar space without hiding the document.
             command('xdotool', 'mousemove', '--window', window,
                     str(round(20 * display_scale)), str(round(400 * display_scale)), 'click', '1')

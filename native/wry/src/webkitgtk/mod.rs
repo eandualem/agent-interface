@@ -12,7 +12,7 @@ use gdkx11::{
   ffi::{GdkX11Display, gdk_x11_window_foreign_new_for_display},
 };
 #[cfg(feature = "x11")]
-use gtk::glib::{self, translate::FromGlibPtrFull};
+use gtk::glib::translate::FromGlibPtrFull;
 use gtk::{
   gdk::{self},
   gio::Cancellable,
@@ -81,10 +81,13 @@ struct X11Data {
 #[cfg(feature = "x11")]
 impl Drop for X11Data {
   fn drop(&mut self) {
-    unsafe { (self.xlib.XDestroyWindow)(self.x11_display as _, self.x11_window) };
     // Do not enqueue a window-manager close request: embedded views must
     // release their GTK owner even on desktops without a window manager.
     unsafe { self.gtk_window.destroy() };
+    // The non-child form borrows its container from the caller.
+    if self.is_child {
+      unsafe { (self.xlib.XDestroyWindow)(self.x11_display as _, self.x11_window) };
+    }
   }
 }
 
@@ -171,27 +174,26 @@ impl InnerWebView {
     let (gtk_window, vbox) = Self::create_gtk_window(raw, x11_window);
 
     let visible = attributes.visible;
+    let bounds = attributes.bounds;
+    // Own both resources before constructing WebKit, including its error path.
+    let x11 = X11Data {
+      is_child,
+      xlib,
+      x11_display: x11_display as _,
+      x11_window,
+      parent_window: parent,
+      gtk_window,
+    };
 
     Self::new_gtk(&vbox, attributes, pl_attrs).map(|mut w| {
-      // for some reason, if the webview starts as hidden,
-      // we will need about 3 calls to `webview.set_visible`
-      // with alternating value.
-      // calling gtk_window.show_all() then hiding it again
-      // seems to fix the issue.
-      gtk_window.show_all();
+      x11.gtk_window.show_all();
+      w.x11.replace(x11);
+      if let Some(bounds) = bounds {
+        let _ = w.set_bounds(bounds);
+      }
       if !visible {
         let _ = w.set_visible(false);
       }
-
-      w.x11.replace(X11Data {
-        is_child,
-        xlib,
-        x11_display: x11_display as _,
-        x11_window,
-        parent_window: parent,
-        gtk_window,
-      });
-
       w
     })
   }
@@ -237,11 +239,17 @@ impl InnerWebView {
     let gdk_window = unsafe { gdk_x11_window_foreign_new_for_display(raw, x11_window) };
     let gdk_window = unsafe { gdk::Window::from_glib_full(gdk_window) };
 
-    // Gtk.Window
+    // Keep the GdkWindow registered by GtkWindow::realize. Replacing it with
+    // a foreign window breaks GTK's widget/window ownership at unrealize.
     let window = gtk::Window::new(gtk::WindowType::Toplevel);
-    window.connect_realize(glib::clone!(@weak gdk_window as wd => move |w| w.set_window(wd)));
-    window.set_has_window(true);
+    window.set_decorated(false);
+    window.set_skip_taskbar_hint(true);
+    window.set_skip_pager_hint(true);
+    window.set_focus_on_map(false);
     window.realize();
+    if let Some(owned_window) = window.window() {
+      owned_window.reparent(&gdk_window, 0, 0);
+    }
 
     // Gtk.Box (vertical)
     let vbox = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -991,9 +999,22 @@ impl InnerWebView {
     #[cfg(feature = "x11")]
     if let Some(x11_data) = &self.x11 {
       let window = &x11_data.gtk_window;
-      window.move_(x, y);
+      if x11_data.is_child {
+        let (physical_x, physical_y) = bounds.position.to_physical::<i32>(scale_factor).into();
+        let (physical_width, physical_height) = bounds.size.to_physical::<u32>(scale_factor).into();
+        unsafe {
+          (x11_data.xlib.XMoveResizeWindow)(
+            x11_data.x11_display as _,
+            x11_data.x11_window,
+            physical_x,
+            physical_y,
+            physical_width.max(1),
+            physical_height.max(1),
+          );
+        }
+      }
       if let Some(window) = window.window() {
-        window.resize(width, height);
+        window.move_resize(0, 0, width.max(1), height.max(1));
       }
       window.size_allocate(&gtk::Allocation::new(0, 0, width, height));
     }

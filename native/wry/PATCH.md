@@ -6,7 +6,10 @@ licences retained; trailing whitespace in SECURITY.md is normalized. The patches
 - Enable WebKitGTK process sandboxing in `WebContextImpl::create_context`, before a WebView is constructed.
 - Retain the embedding X11 parent XID and focus it when returning to native controls,
   instead of focusing GTK's intermediary window.
-- Destroy the GTK owner synchronously rather than requesting a window-manager close.
+- Preserve GTK ownership of its realized GdkWindow and reparent it beneath the
+  X11 container instead of replacing it with an unregistered foreign window.
+  Destroy GTK synchronously before its owned container, including construction
+  failures; never destroy a borrowed non-child container.
 - Hold a weak WebView reference in its content manager's IPC handler, avoiding a
   reference cycle after a document is closed or its revision changes.
 
