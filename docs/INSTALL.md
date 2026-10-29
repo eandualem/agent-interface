@@ -196,6 +196,44 @@ appears, check
 [Microsoft's WSLg display troubleshooting](https://github.com/microsoft/wslg/wiki/Diagnosing-%22cannot-open-display%22-type-issues-with-WSLg)
 and the app's [diagnostic logging](GUIDE.md#find-work-and-change-appearance).
 
+## Connect Agent Backbone
+
+The agents list and agent views read from a running
+[Agent Backbone](https://github.com/eandualem/agent-backbone) on the same
+computer. The app sends Backbone's API key only over a private Unix socket,
+which Backbone added after its 0.3.0 release. Until a newer release is
+published, install Backbone from its repository. You need
+[uv](https://docs.astral.sh/uv/), Git, Python 3.11 or newer, and an agent CLI
+that is installed and signed in. This command also replaces an existing
+installation made with `uv tool install`:
+
+```sh
+uv tool install git+https://github.com/eandualem/agent-backbone
+```
+
+Then set it up and start its service with Backbone's
+[quick start](https://github.com/eandualem/agent-backbone#quick-start),
+skipping its install command.
+
+Enable the socket in Backbone's data directory, then restart its service so it
+binds the socket:
+
+```sh
+mkdir -p "$HOME/.local/share/agent-backbone/run"
+chmod 700 "$HOME/.local/share/agent-backbone/run"
+backbone config set backbone.socket_path "$HOME/.local/share/agent-backbone/run/backbone.sock"
+backbone service restart
+```
+
+If Agent Interface was already open before you first set up Backbone, quit and
+reopen it so it finds Backbone.
+
+The app reads the saved `backbone.socket_path` setting. To use another socket,
+set `BACKBONE_SOCKET_PATH` in the app's launch environment. The path must be
+absolute. The socket must be owned by your user with permissions 0600, in a
+directory owned by your user with permissions 0700. The app does not send
+credentials over TCP.
+
 ## Update or remove
 
 Quit the app and run the same install command again. The installer stages and
