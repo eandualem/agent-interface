@@ -1129,15 +1129,10 @@ pub fn choice_frame(id: impl Into<SharedString>, selected: bool) -> Stateful<Div
         .h(px(t.size.choice_row))
         .px(px(t.space.s10))
         .rounded(px(t.radius.row))
+        .relative()
         .cursor_pointer()
         .when(selected, |el| {
-            el.bg(c.selected).shadow(vec![BoxShadow {
-                color: c.focus.into(),
-                offset: point(px(0.0), px(0.0)),
-                blur_radius: px(0.0),
-                spread_radius: px(t.size.focus_ring),
-                inset: false,
-            }])
+            el.bg(c.selected).child(selection_ring(t.radius.row, 0.0))
         })
         .when(!selected, |el| el.hover(|el| el.bg(colors().hover)))
 }
@@ -1511,17 +1506,9 @@ pub fn shelf_card(
         .bg(c.panel)
         .border(px(t.size.hairline))
         .border_color(c.line)
+        .relative()
         .cursor_pointer()
         .hover(|el| el.bg(colors().hover))
-        .when(selected, |el| {
-            el.shadow(vec![BoxShadow {
-                color: c.focus.into(),
-                offset: point(px(0.0), px(0.0)),
-                blur_radius: px(0.0),
-                spread_radius: px(t.size.focus_ring),
-                inset: false,
-            }])
-        })
         .child(
             div()
                 .flex()
@@ -1567,6 +1554,9 @@ pub fn shelf_card(
             .child(div().flex_1())
             .child(key_hint(size)),
         )
+        .when(selected, |el| {
+            el.child(selection_ring(t.radius.popover, t.size.hairline))
+        })
 }
 
 // A plan: one card per agent on the list, its steps on a track and what
@@ -1762,21 +1752,23 @@ pub fn plan_card(id: impl Into<SharedString>, selected: bool) -> Stateful<Div> {
         .cursor_pointer()
         .relative()
         .hover(|el| el.bg(colors().hover))
-        .when(selected, |el| el.child(selection_ring(t.radius.popover)))
+        .when(selected, |el| {
+            el.child(selection_ring(t.radius.popover, t.size.hairline))
+        })
 }
 
-/// The ring around a selected card or node, drawn just outside its border
-/// as an outline: a shadow would show through a translucent fill.
-fn selection_ring(radius: f32) -> Div {
+/// The ring around a selected row, card or node, drawn as an outline over
+/// its `edge`-wide border: a shadow would show through a translucent fill,
+/// and anything outside its bounds is clipped by a scrolling list.
+fn selection_ring(radius: f32, edge: f32) -> Div {
     let (t, c) = (tokens(), colors());
-    let outset = t.size.focus_ring + t.size.hairline;
     div()
         .absolute()
-        .top(px(-outset))
-        .left(px(-outset))
-        .right(px(-outset))
-        .bottom(px(-outset))
-        .rounded(px(radius + outset))
+        .top(px(-edge))
+        .left(px(-edge))
+        .right(px(-edge))
+        .bottom(px(-edge))
+        .rounded(px(radius))
         .border(px(t.size.focus_ring))
         .border_color(c.focus)
 }
@@ -1870,10 +1862,9 @@ pub fn plan_node(
                 .child(note),
         );
     }
-    frame
-        .child(mark)
-        .child(words)
-        .when(selected, |el| el.child(selection_ring(t.radius.popover)))
+    frame.child(mark).child(words).when(selected, |el| {
+        el.child(selection_ring(t.radius.popover, t.size.hairline))
+    })
 }
 
 /// The arrow from one step of an opened plan's graph to the next: from
