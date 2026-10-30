@@ -280,14 +280,22 @@ impl Builder {
     fn link(&mut self, start: usize, url: String) {
         let links = &mut self.inline.links;
         links.retain(|(range, _)| range.start < start);
+        let url = url.trim().to_owned();
+        let web = url.split_once("://").is_some_and(|(scheme, _)| {
+            scheme.eq_ignore_ascii_case("https") || scheme.eq_ignore_ascii_case("http")
+        });
+        if !web {
+            if self.inline.text.len() == start {
+                self.inline.text.push_str(&url);
+            }
+            return;
+        }
         if self.inline.text.len() == start {
             // A link with no label reads as its site.
             shorten(&url, &mut self.inline.text, links);
             return;
         }
-        if !url.starts_with('#') {
-            links.push((start..self.inline.text.len(), url));
-        }
+        links.push((start..self.inline.text.len(), url));
     }
 
     fn finish(mut self) -> Inline {
@@ -612,6 +620,18 @@ mod tests {
                 rows: vec![vec![plain("1"), plain("2")]],
             }
         );
+    }
+
+    #[test]
+    fn explicit_links_only_open_web_destinations() {
+        let blocks = parse_authored(
+            "[file](file:///example) [shell](ssh://example) [anchor](#part) [](custom:open) [web](HTTPS://example.com)",
+        );
+        let Block::Paragraph(inline) = &blocks[0] else {
+            panic!()
+        };
+        assert_eq!(inline.text, "file shell anchor custom:open web");
+        assert_eq!(inline.links, [(30..33, "HTTPS://example.com".to_owned())]);
     }
 
     #[test]

@@ -26,7 +26,8 @@ SCALE = int(os.environ.get("ONBOARDING_TEST_SCALE", "100"))
 assert SCALE in (100, 150)
 OUTPUT = ROOT / "target/linux-desktop-smoke/onboarding" / str(SCALE)
 OUTPUT.mkdir(parents=True, exist_ok=True)
-PALETTE = tomllib.loads((ROOT / "crates/app/assets/design/tokens.toml").read_text())["color"]["dark"]
+TOKENS = tomllib.loads((ROOT / "crates/app/assets/design/tokens.toml").read_text())
+PALETTE = TOKENS["color"]["dark"]
 accent = tuple(bytes.fromhex(PALETTE["accent"][1:]))
 surface = tuple(bytes.fromhex(PALETTE["surface"][1:]))
 DISABLED_ACCENT = "#" + "".join(f"{round((a + s) / 2):02x}" for a, s in zip(accent, surface))
@@ -216,6 +217,21 @@ print(json.dumps(e));sys.exit(code)
                 (OUTPUT / f"{name}.txt").write_text(value)
                 return value
 
+            def refresh_tools():
+                # The refresh control is an icon at the right of the selected
+                # tool's note. Anchor its row to rendered text and its right
+                # inset to the same design tokens used by the native layout.
+                note = wait_for(lambda: next((w for w in words() if w["text"] == "Uses"), None),
+                                "selected tool note")
+                geometry = dict(line.split("=", 1) for line in
+                                command("xdotool", "getwindowgeometry", "--shell", window).splitlines())
+                inset = (TOKENS["space"]["s24"] + TOKENS["size"]["icon_button"] / 2) * SCALE / 100
+                command("xdotool", "mousemove", "--window", window,
+                        str(round(int(geometry["WIDTH"]) - inset)),
+                        str(int(note["top"]) + int(note["height"]) // 2))
+                time.sleep(0.2)
+                command("xdotool", "click", "1")
+
             def enter_first_agent():
                 click("Continue")
                 wait_for(lambda: "Copy" in text(), "Agent tools")
@@ -236,7 +252,7 @@ print(json.dumps(e));sys.exit(code)
             selected = capture("codex-selected")
             assert "Old OpenCode fixture" not in selected and "Plain shell" not in selected
             discoveries = len((root / "discovery.jsonl").read_text().splitlines())
-            click("again")
+            refresh_tools()
             wait_for(lambda: len((root / "discovery.jsonl").read_text().splitlines()) > discoveries, "discovery refresh")
             wait_for(lambda: "Start with Codex" in text(), "choice survives refresh")
             click("Start", last=True)
@@ -258,7 +274,7 @@ print(json.dumps(e));sys.exit(code)
             click("Claude")
             wait_for(lambda: "Start with Claude Code" in text(), "replacement tool")
             discoveries = len((root / "discovery.jsonl").read_text().splitlines())
-            click("again")
+            refresh_tools()
             wait_for(lambda: len((root / "discovery.jsonl").read_text().splitlines()) > discoveries, "replacement discovery refresh")
             wait_for(lambda: "Start with Claude Code" in text(), "non-default choice survives refresh")
             click("Start", last=True)

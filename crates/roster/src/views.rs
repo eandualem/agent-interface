@@ -195,13 +195,11 @@ fn usage_path(range: Range) -> String {
     format!("/api/usage?refresh=false&limit=1000&since={since}")
 }
 
-/// Each configured agent with its runtime and reported state, by name; empty
+/// Each configured agent with its runtime and reported state, by name; absent
 /// when the roster cannot be read. Blocks like [`read`], so call it on an I/O
 /// worker.
-pub fn members(data_dir: &Path) -> std::collections::BTreeMap<String, Member> {
-    let Some((url, key)) = configured(data_dir, None) else {
-        return Default::default();
-    };
+pub fn members(data_dir: &Path) -> Option<std::collections::BTreeMap<String, Member>> {
+    let (url, key) = configured(data_dir, None)?;
     let live = || true;
     let api = Api {
         url,
@@ -215,7 +213,7 @@ pub fn members(data_dir: &Path) -> std::collections::BTreeMap<String, Member> {
                 .map(|agent| (agent.name.clone(), agent))
                 .collect()
         })
-        .unwrap_or_default()
+        .ok()
 }
 
 /// Read one request from an enabled provider. Blocks for up to three seconds

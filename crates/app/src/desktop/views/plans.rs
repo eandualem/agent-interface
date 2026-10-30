@@ -156,7 +156,7 @@ impl Plans {
             }
             Ok((
                 page,
-                agent_interface_roster::views::members(&directory),
+                agent_interface_roster::views::members(&directory).ok_or(Error::Unavailable)?,
                 provider,
             ))
         });
