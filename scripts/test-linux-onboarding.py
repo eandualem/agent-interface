@@ -153,6 +153,8 @@ print(json.dumps(e));sys.exit(code)
                 command("xdotool", "windowactivate", "--sync", window)
                 command("xdotool", "windowsize", "--sync", window,
                         str(round(1200 * SCALE / 100)), str(round(850 * SCALE / 100)))
+                command("xdotool", "mousemove", "--window", window, "5", "5")
+                time.sleep(0.2)
 
             def words():
                 assert app.poll() is None, "application exited"
@@ -202,7 +204,11 @@ print(json.dumps(e));sys.exit(code)
                 word = wait_for(find, label)
                 command("xdotool", "mousemove", "--window", window,
                         str(int(word["left"]) + int(word["width"]) // 2),
-                        str(int(word["top"]) + int(word["height"]) // 2), "click", "1")
+                        str(int(word["top"]) + int(word["height"]) // 2))
+                # Let the native window process the pointer enter/motion before
+                # the press, including the first interaction after relaunch.
+                time.sleep(0.2)
+                command("xdotool", "click", "1")
 
             def capture(name):
                 value = text()
