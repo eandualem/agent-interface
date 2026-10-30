@@ -204,9 +204,8 @@ Views follow four rules:
 - **List, then document, in the same pane.** Choosing a skill or policy
   replaces the list with the reader (`views/reader.rs`): a `back_button` named
   after where it returns ("Skills", "Policies", "worker's brief"), the
-  document's place in that list, Rendered or Source, a summary `info_card` and
-  the text. Esc goes back; `[` and `]` move through the list; S shows the
-  source.
+  document's place in that list, **Copy Markdown**, a summary `info_card` and
+  the rendered text. Esc goes back; `[` and `]` move through the list.
 - **One agent's things live in the agent view.** Its Skills, Policies and
   Usage are sections of the Agent view. The team-wide Skills, Policies and
   Tags views never name agents in their rows; they say how a thing is

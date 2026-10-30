@@ -3,9 +3,7 @@
 //! Rows never name an agent; they say how a skill is delivered. Choosing a
 //! skill reads its SKILL.md in this pane.
 
-use agent_interface_roster::views::{
-    LocalSkill, PREVIEW_LIMIT, Place, Reason, Skill, SkillLibrary,
-};
+use agent_interface_roster::views::{LocalSkill, PREVIEW_LIMIT, Place, Skill, SkillLibrary};
 use gpui::{AnyElement, Context, Div, SharedString, div, prelude::*, px};
 
 use super::{Open, Target, ViewPane, home, line, mono, reader};
@@ -383,12 +381,9 @@ fn detail(
         (None, None) => facts,
     }
     .child(mono(folder.clone()).text_color(c.muted));
-    let mut card = ui::info_card()
+    let card = ui::info_card()
         .child(div().text_color(c.text_2).child(line(&description)))
         .child(facts);
-    if let Some(skill) = store {
-        card = card.child(check(pane, skill, library));
-    }
     reader::render(
         pane,
         header,
@@ -410,39 +405,6 @@ fn reaches(skill: &Skill, agents: usize) -> String {
         0 => "reaches no agent".into(),
         n => format!("reaches {n} agent{}", plural(n)),
     }
-}
-
-/// A store skill's "check an agent" line: type a name, read why it gets the
-/// skill or that it does not.
-fn check(pane: &ViewPane, skill: &Skill, library: &SkillLibrary) -> Div {
-    let (t, c) = (tokens(), colors());
-    let answer = if pane.check.is_empty() {
-        ui::text(div().text_color(c.muted), &t.text.status).child("check an agent")
-    } else {
-        let agent = library.agents.iter().find(|agent| agent.name == pane.check);
-        let reason = agent.and_then(|agent| Reason::of(&skill.tags, &agent.name, &agent.tags));
-        match (agent, reason) {
-            (None, _) => {
-                ui::text(div().text_color(c.muted), &t.text.status).child("no agent by that name")
-            }
-            (Some(_), Some(reason)) => ui::text(div().text_color(c.text_2), &t.text.status)
-                .child(format!("✓ gets it by {}", reason.label())),
-            (Some(_), None) => {
-                ui::text(div().text_color(c.muted), &t.text.status).child("does not get it")
-            }
-        }
-    };
-    div()
-        .flex()
-        .items_center()
-        .gap(px(t.space.s8))
-        .children(pane.check_field.clone().map(|field| {
-            ui::field_frame(false)
-                .w(px(t.size.tag_card_label + t.space.s18))
-                .h(px(t.size.chip + t.space.s4))
-                .child(div().flex_1().min_w_0().child(field))
-        }))
-        .child(answer)
 }
 
 /// The reader's text for an open skill.

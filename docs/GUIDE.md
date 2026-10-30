@@ -39,11 +39,14 @@ Double-click a pane header to expand it, then double-click again or press Escape
 to restore the layout. **Focus one pane** in tab options does the same. Open
 menus and dialogs handle Escape first. Scroll over a terminal to read its retained history. Shift-Page Up/Down moves a page;
 Shift-Home/End goes to the oldest output or the live screen. Typing or pasting
-returns to live output. Drag to select visible text; double-click selects a word
+returns to live output. Drag to select text; double-click selects a word
 and triple-click selects a row. Command-C copies it (Control-Shift-C on Linux).
-Selection keeps its displayed text while new output arrives. Escape, typing or
-a new click outside the selection resumes the updated view. Copies from recovered
-screens currently retain their displayed row breaks, including wrapped lines.
+A selection stays on its output while the pane scrolls or new output arrives.
+Drag past the top or bottom of a pane to scroll it while selecting, or scroll
+and Shift-click to extend the selection to another point. Escape, typing or a
+new click outside the selection clears it. Copies from recovered screens
+currently retain their displayed row breaks, including wrapped lines.
+Discarding old history, recovering the terminal or switching screen buffers clears the selection.
 For programs with mouse reporting enabled, hold Shift to select text locally.
 Ordinary clicks, drags, requested pointer motion and wheel gestures reach the
 program. Each drag stays with its original pane; only one held-button gesture is
@@ -57,8 +60,9 @@ Settings, chooses another folder containing `layouts.db`.
 
 Text in Skills, policies, agent briefs and report readers supports drag selection,
 double-click word selection, and Command-C to copy (Control-C on Linux).
-Command-A selects the document text (Control-A on Linux). Source text uses the
-same selection behavior. The Edit menu offers Copy and Select All; on macOS
+Command-A selects the document text (Control-A on Linux). **Copy Markdown** in
+a skill or policy copies the whole file when available; oversized skills offer
+**Copy Markdown preview** for the portion shown. The Edit menu offers Copy and Select All; on macOS
 these also work with selected text inside HTML Documents.
 
 ## Find work and change appearance
@@ -246,7 +250,7 @@ names share that row: click one to view it without switching other clients.
 The chosen window is remembered locally when switching workspace tabs; reopening
 the library starts from the source's current window again.
 The list follows tmux, checking every two seconds. Custom tmux
-prefix bindings, selection across history pages, terminal input methods
+prefix bindings, terminal input methods
 and key-release events are not yet wired into the product UI.
 
 ## Read reports and interactive artifacts

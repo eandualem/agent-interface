@@ -111,7 +111,7 @@ dependencies = [
 
 [[package]]
 name = "agent-interface-app"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "agent-interface-core",
  "agent-interface-roster",
@@ -129,6 +129,7 @@ dependencies = [
  "gpui-pre-platform",
  "gtk",
  "libc",
+ "pulldown-cmark",
  "raw-window-handle",
  "rusqlite",
  "serde",
@@ -149,7 +150,7 @@ dependencies = [
 
 [[package]]
 name = "agent-interface-bench"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "agent-interface-term",
  "agent-interface-test-support",
@@ -171,7 +172,7 @@ dependencies = [
 
 [[package]]
 name = "agent-interface-bench-rio"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "agent-interface-tmux",
  "alacritty_terminal",
@@ -181,7 +182,7 @@ dependencies = [
 
 [[package]]
 name = "agent-interface-core"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "caseless",
  "serde_json",
@@ -192,7 +193,7 @@ dependencies = [
 
 [[package]]
 name = "agent-interface-roster"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "http",
  "http-body-util",
@@ -214,7 +215,7 @@ dependencies = [
 
 [[package]]
 name = "agent-interface-store"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "agent-interface-core",
  "rusqlite",
@@ -227,7 +228,7 @@ dependencies = [
 
 [[package]]
 name = "agent-interface-term"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "libghostty-vt",
  "libghostty-vt-sys",
@@ -239,7 +240,7 @@ dependencies = [
 
 [[package]]
 name = "agent-interface-test-support"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "signal-hook",
  "tempfile",
@@ -247,7 +248,7 @@ dependencies = [
 
 [[package]]
 name = "agent-interface-tmux"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "agent-interface-test-support",
  "libc",
@@ -263,7 +264,7 @@ dependencies = [
 
 [[package]]
 name = "agent-interface-webview-host"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "glib",
  "raw-window-handle",
@@ -4946,6 +4947,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "pulldown-cmark"
+version = "0.13.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3db2be46835f013dd3f4fa7f5f7402c537787b54ebb6fe2b94bbdd7e2669bb7b"
+dependencies = [
+ "bitflags 2.13.2",
+ "memchr",
+ "unicase",
+]
+
+[[package]]
 name = "pulp"
 version = "0.22.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6698,6 +6710,12 @@ dependencies = [
  "tempfile",
  "windows-sys 0.61.2",
 ]
+
+[[package]]
+name = "unicase"
+version = "2.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "357cc3acc6a036009fd6c973ed009037c732d60d0b4f6c673e9041497482a28f"
 
 [[package]]
 name = "unicode-bidi"

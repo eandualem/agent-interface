@@ -119,7 +119,7 @@ group!(
         window_width: f32 = number, window_height: f32 = number,
         window_min_width: f32 = number, window_min_height: f32 = number,
         caret: f32 = number,
-        settings_width: f32 = number, settings_height: f32 = number,
+        settings_width: f32 = number, settings_height: f32 = number, setup_height: f32 = number,
         settings_nav: f32 = number, theme_card: f32 = number,
         empty_icon: f32 = number, empty_width: f32 = number,
         menu_heading: f32 = number, keycap: f32 = number, hairline: f32 = number,

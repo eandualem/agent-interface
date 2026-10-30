@@ -1,11 +1,12 @@
 //! First-agent selection with durable retries and explicit tool changes.
 //! The provider cancels the previous request before its choices are unlocked.
 
-use std::path::PathBuf;
+use std::{collections::HashMap, path::PathBuf};
 
 use futures::{StreamExt, channel::mpsc};
 use gpui::{
-    Context, Entity, EventEmitter, PathPromptOptions, Subscription, Window, div, prelude::*, px,
+    Context, Entity, EventEmitter, PathPromptOptions, SharedString, Subscription, Window, div,
+    prelude::*, px,
 };
 
 use super::{heading, setup};
@@ -18,9 +19,31 @@ use crate::desktop::{
 pub enum FirstEvent {
     RefreshTools,
     Pending,
+    /// The agent is ready, or running and waiting for the person in its
+    /// terminal; either way setup can move on and open that terminal.
     Ready(String),
     Existing,
     OpenTerminal(String),
+}
+
+/// The setup stages in the order the provider reports them.
+const STAGES: [(&str, &str); 5] = [
+    ("preflight", "Check your choices"),
+    ("hooks", "Prepare the selected tool"),
+    ("agent", "Create your agent"),
+    ("launch", "Open your agent"),
+    ("greeting", "Submit the introduction"),
+];
+
+const WAITING: &str = "Your agent is waiting for you. Approve its prompt in the terminal, then check again, or continue and it keeps waiting.";
+
+/// What the setup window's main button does on this step. It never sits
+/// disabled without saying what it waits for.
+pub enum Primary {
+    Waiting(SharedString),
+    Start(SharedString),
+    ChangeTool(&'static str),
+    Continue,
 }
 
 enum Update {
@@ -84,6 +107,7 @@ pub struct FirstAgent {
     result: Option<setup::Event>,
     error: Option<String>,
     progress: String,
+    steps: HashMap<String, String>,
     _fields: Vec<Subscription>,
 }
 
@@ -147,6 +171,7 @@ impl FirstAgent {
             result: None,
             error,
             progress: String::new(),
+            steps: HashMap::new(),
             _fields: fields,
         };
         if first.saved.is_none() {
@@ -316,7 +341,7 @@ impl FirstAgent {
         })
     }
 
-    fn start(&mut self, cx: &mut Context<Self>) {
+    pub fn start(&mut self, cx: &mut Context<Self>) {
         if self.busy {
             return;
         }
@@ -350,7 +375,8 @@ impl FirstAgent {
         cx.emit(FirstEvent::Pending);
         self.error = None;
         self.result = None;
-        self.progress = "Starting setup…".into();
+        self.steps.clear();
+        self.progress = "Setting up your agent…".into();
         let (sender, mut receiver) = mpsc::unbounded();
         let save_path = self.save_path.clone();
         cx.background_executor()
@@ -366,18 +392,16 @@ impl FirstAgent {
                 if this.update(cx, |first, cx| {
                     match update {
                         Update::Progress(event) if event.kind == "step" => {
-                            let label = match event.step.as_str() {
-                                "preflight" => "Checking your choices", "hooks" => "Preparing the selected tool",
-                                "agent" => "Creating your agent", "launch" => "Opening your agent",
-                                "greeting" => "Submitting the introduction", _ => "Preparing setup",
-                            };
-                            first.progress = format!("{label} · {}", event.status);
+                            first.steps.insert(event.step, event.status);
                         }
                         Update::Progress(_) => {},
                         Update::Finished(result) => {
                             first.busy = false;
                             match result {
                                 Ok(result) => {
+                                    for step in &result.completed_steps {
+                                        first.steps.insert(step.clone(), "completed".into());
+                                    }
                                     let expected = first.saved.as_ref().map(|saved| saved.request.agent.name.as_str());
                                     let named = result.data.get("agent_name").and_then(|name| name.as_str());
                                     if result.status == "completed" && result.code == "agent_ready" && named == expected
@@ -392,6 +416,9 @@ impl FirstAgent {
                                         first.error = Some(setup::UNKNOWN.into());
                                         cx.notify();
                                         return;
+                                    } else if waiting(&result, expected) {
+                                        first.progress = WAITING.into();
+                                        cx.emit(FirstEvent::Ready(expected.unwrap().to_owned()));
                                     } else {
                                         first.progress = result.message.clone();
                                     }
@@ -408,7 +435,7 @@ impl FirstAgent {
         cx.notify();
     }
 
-    fn edit_choices(&mut self, cx: &mut Context<Self>) {
+    pub fn edit_choices(&mut self, cx: &mut Context<Self>) {
         if self.busy || self.saved.is_none() || self.is_ready() {
             return;
         }
@@ -436,6 +463,7 @@ impl FirstAgent {
         let path_env = self.path_env.clone();
         self.busy = true;
         self.error = None;
+        self.steps.clear();
         self.progress = "Releasing the previous setup before changing tools…".into();
         cx.emit(FirstEvent::Pending);
         cx.spawn(async move |this, cx| {
@@ -487,216 +515,469 @@ impl FirstAgent {
             .as_ref()
             .is_some_and(|result| result.status == "completed" && result.code == "agent_ready")
     }
-}
 
-impl Render for FirstAgent {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (t, c) = (tokens(), colors());
-        let mut page = heading(
-            "Your first agent",
-            "Choose an agent tool and a coordinating agent to help you get started.",
-        )
-        .gap(px(t.space.s8))
-        .pb(px(t.space.s16));
-        if self.existing && self.saved.is_none() {
-            page = page.child(
-                ui::button("use-existing", "Use my existing agents", Button::Secondary)
-                    .on_click(cx.listener(|_, _, _, cx| cx.emit(FirstEvent::Existing))),
+    fn is_waiting(&self) -> bool {
+        self.result.as_ref().is_some_and(|result| {
+            waiting(
+                result,
+                self.saved
+                    .as_ref()
+                    .map(|saved| saved.request.agent.name.as_str()),
+            )
+        })
+    }
+
+    /// The main button for this step: start, retry or change tools while
+    /// setup needs that, and continue once the agent runs.
+    pub fn primary(&self) -> Primary {
+        let cancelling = self.saved.as_ref().is_some_and(|saved| saved.cancelling);
+        if self.busy {
+            return Primary::Waiting(
+                if cancelling {
+                    "Changing tool…"
+                } else {
+                    "Setting up…"
+                }
+                .into(),
             );
         }
-        if let Some(saved) = &self.saved {
-            page = page.child(div().py(px(t.space.s12)).child(format!(
-                "{} · {} · {}",
-                saved.request.agent.name,
-                saved.request.agent.runtime,
-                saved.request.agent.directory.display()
-            )));
-            page = page.child(div().text_color(c.muted).child(if saved.cancelling {
-                "A tool change is pending. Retry it to choose another tool; your name, folder and instructions will be kept."
-            } else {
-                "Resume this setup, or change agent tools. Your name, folder and instructions will be kept."
-            }));
-        } else {
-            page = page.child(div().pt(px(t.space.s12)).child("Name")).child(
-                div()
-                    .h(px(t.size.action))
-                    .bg(c.field)
-                    .child(self.name.clone()),
-            );
-            page = page.child(
-                div()
-                    .pt(px(t.space.s12))
-                    .child("Agent tool · uses its default model"),
-            );
-            let mut tools = div().flex().flex_wrap().gap(px(t.space.s8));
-            for runtime in self.tools.rows.iter().filter(|row| row.id != "shell") {
-                let id = runtime.id.clone();
-                let enabled = runtime.can_setup();
-                let label = format!(
-                    "{}{}",
-                    runtime.display_name,
-                    if !runtime.setup_supported {
-                        " · setup unavailable"
-                    } else if !runtime.available {
-                        " · unavailable"
-                    } else if !enabled {
-                        " · needs attention"
-                    } else {
-                        ""
-                    }
-                );
-                tools = tools.child(
-                    ui::button(
-                        format!("runtime-{id}"),
-                        label,
-                        if self.tools.selected.as_ref() == Some(&id) {
-                            Button::Primary
-                        } else {
-                            Button::Secondary
-                        },
-                    )
-                    .on_click(cx.listener(move |first, _, _, cx| {
+        if self.is_ready() || self.is_waiting() {
+            return Primary::Continue;
+        }
+        match (&self.saved, &self.result) {
+            (Some(_), _) if cancelling => Primary::ChangeTool("Retry changing tool"),
+            (Some(_), Some(result)) if result.retry != "same_request" => {
+                Primary::ChangeTool("Change agent tool")
+            }
+            (Some(_), Some(_)) => Primary::Start("Try again".into()),
+            (Some(_), None) => Primary::Start("Resume setup".into()),
+            (None, _) if self.discovering => Primary::Waiting("Checking agent tools…".into()),
+            (None, _) => match self.tools.current() {
+                Some(runtime) if runtime.can_setup() => {
+                    Primary::Start(format!("Start with {}", runtime.display_name).into())
+                }
+                Some(_) => Primary::Waiting("Choose a ready tool".into()),
+                None => Primary::Waiting("Choose an agent tool".into()),
+            },
+        }
+    }
+
+    /// The choices, all visible at once: the tool first, then the name,
+    /// folder and instructions.
+    fn form(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let (t, c) = (tokens(), colors());
+        let mut tools = div().grid().grid_cols(2).gap(px(t.space.s8));
+        for runtime in self.tools.rows.iter().filter(|row| row.id != "shell") {
+            let id = runtime.id.clone();
+            tools = tools.child(
+                tool_card(runtime, self.tools.selected.as_ref() == Some(&id)).on_click(
+                    cx.listener(move |first, _, _, cx| {
                         if !first.busy && first.saved.is_none() && !first.discovering {
                             first.tools.select(&id);
                             first.error = None;
                             first.progress.clear();
                             cx.notify();
                         }
-                    })),
-                );
-            }
-            page = page.child(tools);
-            if let Some(runtime) = self.tools.current() {
-                if !runtime.available {
-                    page = page.child(div().text_color(c.attention_text).child(format!(
-                        "Install {} from the Agent tools step, then check tools again, or choose another tool.",
-                        runtime.display_name
-                    )));
-                } else if !runtime.setup_supported {
-                    page = page.child(div().text_color(c.attention_text).child(format!(
-                        "{} does not support first-agent setup. Choose another tool, or use terminals for now.",
-                        runtime.display_name
-                    )));
-                } else if let Some(check) = &runtime.setup_compatibility
-                    && !check.compatible
-                {
-                    page = page.child(
-                        div()
-                            .text_color(c.attention_text)
-                            .child(format!("{}: {}", runtime.display_name, check.message)),
-                    );
-                    if let Some(path) = &check.path {
-                        page = page.child(div().text_color(c.muted).child(format!(
-                                "Detected: {path}{}",
+                    }),
+                ),
+            );
+        }
+        let (note, attention) = match self.tools.current() {
+            _ if self.discovering => ("Checking agent tools…".into(), false),
+            None => ("Pick the tool your agent runs in.".into(), false),
+            Some(runtime) if !runtime.available => (
+                format!(
+                    "Install {} from the Agent tools step, then check again, or pick another tool.",
+                    runtime.display_name
+                ),
+                true,
+            ),
+            Some(runtime) if !runtime.setup_supported => (
+                format!(
+                    "{} does not support first-agent setup. Pick another tool, or use terminals for now.",
+                    runtime.display_name
+                ),
+                true,
+            ),
+            Some(runtime) => match &runtime.setup_compatibility {
+                Some(check) if !check.compatible => (
+                    format!(
+                        "{}: {}{}",
+                        runtime.display_name,
+                        check.message,
+                        check
+                            .path
+                            .as_ref()
+                            .map(|path| format!(
+                                " Detected: {path}{}",
                                 check
                                     .version
                                     .as_ref()
                                     .map(|version| format!(" · {version}"))
                                     .unwrap_or_default()
-                            )));
-                    }
-                }
-            }
-            page = page.child(div().text_color(c.muted).child(if self.discovering {
-                "Checking agent tools…"
-            } else if self.tools.current().is_none() {
-                "Choose an agent tool above, then start your agent."
-            } else {
-                "Sign in inside your selected tool. Finding it here does not verify login."
-            }));
-            page = page.child(
-                ui::button("refresh-tools", "Check tools again", Button::Secondary)
-                    .on_click(cx.listener(|_, _, _, cx| cx.emit(FirstEvent::RefreshTools))),
-            );
-            let folder = self
-                .folder(cx)
-                .map(|p| p.display().to_string())
-                .unwrap_or_else(|| "Choose a folder".into());
-            page = page
-                .child(
-                    div()
-                        .pt(px(t.space.s12))
-                        .child("Folder · created if missing"),
-                )
-                .child(div().text_color(c.code).child(folder))
-                .child(
-                    ui::button("agent-folder", "Choose folder", Button::Secondary)
-                        .on_click(cx.listener(|first, _, _, cx| first.choose_folder(cx))),
-                );
-            page = page.child(div().pt(px(t.space.s12)).child("The coordinating brief learns your goals and proposes project agents for your approval. Starter skills and policies are included."))
-                .child(ui::button("agent-brief", if self.custom_brief { "Use coordinating brief" } else { "Write my own instructions" }, Button::Secondary).on_click(cx.listener(|first, _, _, cx| { if !first.busy && first.saved.is_none() { first.custom_brief = !first.custom_brief; cx.notify(); } })));
-            if self.custom_brief {
-                page = page.child(div().h(px(120.0)).bg(c.field).child(self.brief.clone()));
-            }
-            page = page.child(div().pt(px(t.space.s12)).text_color(c.muted).child("Start creates the agent and prepares the selected tool's integration, then submits an introduction. It uses your signed-in account; normal permissions still apply."));
-        }
-        if !self.progress.is_empty() {
-            page = page.child(div().py(px(t.space.s12)).child(self.progress.clone()));
-        }
-        if let Some(error) = &self.error {
-            page = page.child(div().text_color(c.attention_text).child(error.clone()));
-        }
-        if let Some(result) = &self.result
-            && result.data.get("agent_name").and_then(|name| name.as_str())
-                == self
-                    .saved
-                    .as_ref()
-                    .map(|saved| saved.request.agent.name.as_str())
-            && result
-                .data
-                .get("launch_id")
-                .and_then(|id| id.as_str())
-                .is_some()
-            && let Some(saved) = &self.saved
-        {
-            let name = saved.request.agent.name.clone();
-            page = page.child(
-                ui::button("open-agent", "Open agent terminal", Button::Secondary).on_click(
-                    cx.listener(move |_, _, _, cx| cx.emit(FirstEvent::OpenTerminal(name.clone()))),
+                            ))
+                            .unwrap_or_default()
+                    ),
+                    true,
                 ),
-            );
-        }
-        let cancelling = self.saved.as_ref().is_some_and(|saved| saved.cancelling);
-        if self.saved.is_some() && !self.busy && !self.is_ready() {
-            page = page.child(
-                ui::button(
-                    "edit-agent",
-                    if cancelling {
-                        "Retry changing tool"
-                    } else {
-                        "Change agent tool"
-                    },
-                    Button::Secondary,
+                _ => (
+                    format!(
+                        "Uses its default model. Sign in inside {} if you have not yet.",
+                        runtime.display_name
+                    ),
+                    false,
+                ),
+            },
+        };
+        let folder = self
+            .folder(cx)
+            .map(|path| home_relative(&path))
+            .unwrap_or_else(|| "Choose a folder".into());
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(t.space.s8))
+            .child(tools)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(t.space.s8))
+                    .child(
+                        ui::text(
+                            div().flex_1().min_w_0().text_color(if attention {
+                                c.attention_text
+                            } else {
+                                c.muted
+                            }),
+                            &t.text.status,
+                        )
+                        .child(note),
+                    )
+                    .child(
+                        ui::icon_button("refresh-tools", "refresh-cw")
+                            .on_click(cx.listener(|_, _, _, cx| cx.emit(FirstEvent::RefreshTools))),
+                    ),
+            )
+            .child(field_row(
+                "Name",
+                div()
+                    .flex_1()
+                    .h(px(t.size.action))
+                    .bg(c.field)
+                    .child(self.name.clone()),
+            ))
+            .child(field_row(
+                "Folder",
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .items_center()
+                    .gap(px(t.space.s8))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .text_color(c.code)
+                            .child(folder),
+                    )
+                    .child(
+                        ui::button("agent-folder", "Change", Button::Secondary)
+                            .on_click(cx.listener(|first, _, _, cx| first.choose_folder(cx))),
+                    ),
+            ))
+            .child(field_row(
+                "Instructions",
+                ui::segments()
+                    .child(
+                        ui::segment(
+                            "brief-coordinating",
+                            "Coordinating brief",
+                            !self.custom_brief,
+                        )
+                        .on_click(cx.listener(|first, _, _, cx| first.use_custom_brief(false, cx))),
+                    )
+                    .child(
+                        ui::segment("brief-own", "My own", self.custom_brief).on_click(
+                            cx.listener(|first, _, _, cx| first.use_custom_brief(true, cx)),
+                        ),
+                    ),
+            ))
+            .when(self.custom_brief, |form| {
+                form.child(
+                    div()
+                        .px(px(t.space.s8))
+                        .py(px(t.space.s6))
+                        .rounded(px(t.radius.row))
+                        .bg(c.field)
+                        .border(px(t.size.hairline))
+                        .border_color(c.line_strong)
+                        .child(self.brief.clone()),
                 )
-                .on_click(cx.listener(|first, _, _, cx| first.edit_choices(cx))),
-            );
+            })
+    }
+
+    fn use_custom_brief(&mut self, custom: bool, cx: &mut Context<Self>) {
+        if !self.busy && self.saved.is_none() {
+            self.custom_brief = custom;
+            cx.notify();
         }
-        let retry = self
-            .result
-            .as_ref()
-            .is_none_or(|result| result.retry == "same_request");
-        if retry && !cancelling {
-            let can_start = !self.busy
-                && (self.saved.is_some()
-                    || (!self.discovering && self.tools.start_runtime().is_some()));
-            let label = if self.busy {
-                "Setting up…".into()
-            } else if self.saved.is_some() {
-                "Resume saved setup".into()
-            } else if let Some(runtime) = self.tools.current() {
-                format!("Start with {}", runtime.display_name)
-            } else {
-                "Choose an agent tool".into()
+    }
+
+    /// After Start: the choices in one line, each stage, the outcome and
+    /// the one action that moves setup on.
+    fn status(&self, saved: &setup::Saved, cx: &mut Context<Self>) -> gpui::Div {
+        let (t, c) = (tokens(), colors());
+        let agent = &saved.request.agent;
+        let mut stages = div().flex().flex_col().gap(px(t.space.s2));
+        // A result that stops short marks its first unfinished stage.
+        let mut stopped = self.result.as_ref().is_some_and(|result| {
+            result.status != "completed" && !self.steps.values().any(|status| status == "failed")
+        }) && !self.busy;
+        for (step, label) in STAGES {
+            let mark = match self.steps.get(step).map(String::as_str) {
+                Some("completed" | "skipped") => ui::Step::Done,
+                Some("running") if self.busy => ui::Step::Now,
+                Some("failed") => ui::Step::Waits,
+                _ if stopped => {
+                    stopped = false;
+                    ui::Step::Waits
+                }
+                _ => ui::Step::Ahead,
             };
-            page = page.child(
-                ui::button("start-agent", label, Button::Primary)
-                    .when(!can_start, |button| button.opacity(0.5).cursor_default())
-                    .when(can_start, |button| {
-                        button.on_click(cx.listener(|first, _, _, cx| first.start(cx)))
-                    }),
+            stages = stages.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(t.space.s10))
+                    .h(px(t.size.action - t.space.s2))
+                    .text_color(if mark == ui::Step::Ahead {
+                        c.muted
+                    } else {
+                        c.text
+                    })
+                    .child(ui::step_dot(mark))
+                    .child(label),
             );
         }
-        page
+        let launched = self.result.as_ref().is_some_and(|result| {
+            result.data.get("agent_name").and_then(|name| name.as_str())
+                == Some(agent.name.as_str())
+                && result
+                    .data
+                    .get("launch_id")
+                    .and_then(|id| id.as_str())
+                    .is_some()
+        });
+        let waiting = self.is_waiting();
+        let changeable = !self.busy
+            && !self.is_ready()
+            && !waiting
+            && !matches!(self.primary(), Primary::ChangeTool(_));
+        let tool = self
+            .tools
+            .rows
+            .iter()
+            .find(|row| row.id == agent.runtime)
+            .map_or(agent.runtime.as_str(), |row| row.display_name.as_str());
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(t.space.s10))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(t.space.s8))
+                    .px(px(t.space.s12))
+                    .py(px(t.space.s6))
+                    .rounded(px(t.radius.slot))
+                    .bg(c.panel)
+                    .child(ui::icon("bot", t.size.icon, c.text_2))
+                    .child(div().text_color(c.text).child(agent.name.clone()))
+                    .child(div().text_color(c.muted).child(format!(
+                        "{tool} · {}",
+                        home_relative(&agent.directory)
+                    ))),
+            )
+            .child(stages)
+            .when(!self.progress.is_empty(), |panel| {
+                panel.child(div().text_color(c.text).child(self.progress.clone()))
+            })
+            .when(
+                !saved.cancelling && !self.busy && self.result.is_none() && self.progress.is_empty(),
+                |panel| {
+                    panel.child(div().text_color(c.muted).child(
+                        "This setup was saved. Resume it, or change the agent tool; your name, folder and instructions are kept.",
+                    ))
+                },
+            )
+            .when(saved.cancelling && !self.busy, |panel| {
+                panel.child(div().text_color(c.muted).child(
+                    "A tool change is pending. Retry it to choose another tool; your name, folder and instructions are kept.",
+                ))
+            })
+            .when(launched || changeable || waiting, |panel| {
+                let name = agent.name.clone();
+                panel.child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .gap(px(t.space.s8))
+                        .when(launched, |row| {
+                            row.child(
+                                ui::button("open-agent", "Open agent terminal", Button::Secondary)
+                                    .on_click(cx.listener(move |_, _, _, cx| {
+                                        cx.emit(FirstEvent::OpenTerminal(name.clone()))
+                                    })),
+                            )
+                        })
+                        .when(waiting, |row| {
+                            row.child(
+                                ui::button("check-agent", "Check again", Button::Secondary)
+                                    .on_click(cx.listener(|first, _, _, cx| first.start(cx))),
+                            )
+                        })
+                        .when(changeable, |row| {
+                            row.child(
+                                ui::button("edit-agent", "Change agent tool", Button::Secondary)
+                                    .on_click(cx.listener(|first, _, _, cx| first.edit_choices(cx))),
+                            )
+                        }),
+                )
+            })
+    }
+}
+
+/// Whether the agent launched and now waits for the person in its terminal,
+/// such as for a permission prompt.
+fn waiting(result: &setup::Event, expected: Option<&str>) -> bool {
+    result.status == "action_required"
+        && result.data.get("agent_name").and_then(|name| name.as_str()) == expected
+        && result.data.get("ready").and_then(|ready| ready.as_str()) == Some("waiting_for_human")
+        && result
+            .data
+            .get("launch_id")
+            .and_then(|id| id.as_str())
+            .is_some()
+}
+
+/// A path with the home directory shortened to `~`.
+fn home_relative(path: &std::path::Path) -> String {
+    std::env::var_os("HOME")
+        .and_then(|home| path.strip_prefix(home).ok())
+        .map(|rest| format!("~/{}", rest.display()))
+        .unwrap_or_else(|| path.display().to_string())
+}
+
+/// A tool to pick, on one line: a radio mark, its name and whether it can
+/// run setup.
+fn tool_card(runtime: &setup::Runtime, selected: bool) -> gpui::Stateful<gpui::Div> {
+    let (t, c) = (tokens(), colors());
+    let ready = runtime.can_setup();
+    let state = if !runtime.setup_supported {
+        "Setup unavailable"
+    } else if !runtime.available {
+        "Not installed"
+    } else if !ready {
+        "Needs attention"
+    } else {
+        "Ready"
+    };
+    div()
+        .id(SharedString::from(format!("runtime-{}", runtime.id)))
+        .relative()
+        .min_w_0()
+        .flex()
+        .items_center()
+        .gap(px(t.space.s8))
+        .h(px(t.size.choice_row))
+        .px(px(t.space.s10))
+        .rounded(px(t.radius.slot))
+        .border(px(t.size.hairline))
+        .cursor_pointer()
+        .when(selected, |card| {
+            card.bg(c.accent_soft)
+                .border_color(c.focus)
+                .child(ui::selection_ring(t.radius.slot, t.size.hairline))
+        })
+        .when(!selected, |card| {
+            card.bg(c.field)
+                .border_color(c.line_strong)
+                .hover(|card| card.bg(colors().hover))
+        })
+        .child(ui::icon(
+            if selected { "circle-check" } else { "circle" },
+            t.size.icon + 2.0,
+            if selected { c.accent_text } else { c.muted },
+        ))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .text_color(c.text)
+                .child(runtime.display_name.clone()),
+        )
+        .child(
+            ui::text(
+                div()
+                    .flex_shrink_0()
+                    .text_color(if ready { c.muted } else { c.attention_text }),
+                &t.text.meta,
+            )
+            .child(state),
+        )
+}
+
+/// A labelled row of the form: the label column, then its control.
+fn field_row(label: &'static str, control: impl IntoElement) -> gpui::Div {
+    let (t, c) = (tokens(), colors());
+    div()
+        .flex()
+        .items_center()
+        .gap(px(t.space.s12))
+        .min_h(px(t.size.action + t.space.s4))
+        .child(
+            div()
+                .w(px(t.size.fact_label - t.space.s14))
+                .flex_shrink_0()
+                .text_color(c.text_2)
+                .child(label),
+        )
+        .child(control)
+}
+
+impl Render for FirstAgent {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let (t, c) = (tokens(), colors());
+        let page = heading(
+            "Your first agent",
+            "It learns your goals and proposes project agents for you to approve.",
+        )
+        .gap(px(t.space.s8))
+        .pb(px(t.space.s16))
+        .when(self.existing && self.saved.is_none(), |page| {
+            page.child(
+                div().child(
+                    ui::button("use-existing", "Use my existing agents", Button::Secondary)
+                        .on_click(cx.listener(|_, _, _, cx| cx.emit(FirstEvent::Existing))),
+                ),
+            )
+        });
+        let page = match self.saved.clone() {
+            Some(saved) => page.child(self.status(&saved, cx)),
+            None => page.child(self.form(cx)),
+        };
+        page.when_some(self.error.clone(), |page, error| {
+            page.child(div().text_color(c.attention_text).child(error))
+        })
     }
 }
 
@@ -767,6 +1048,17 @@ mod tests {
         tools.replace(rows);
         assert_eq!(tools.current().unwrap().id, "codex");
         assert!(tools.start_runtime().is_none());
+    }
+
+    #[test]
+    fn an_agent_waiting_in_its_terminal_lets_setup_continue() {
+        let fixture = include_str!("fixtures/first-agent-action-required.jsonl");
+        let result: setup::Event = serde_json::from_str(fixture.lines().last().unwrap()).unwrap();
+        assert!(waiting(&result, Some("guide")));
+        assert!(!waiting(&result, Some("another-agent")));
+        let mut stopped = result.clone();
+        stopped.data["ready"] = "exited".into();
+        assert!(!waiting(&stopped, Some("guide")));
     }
 
     #[test]

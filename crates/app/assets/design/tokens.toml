@@ -232,6 +232,7 @@ window_min_height = 420.0
 caret = 1.0                 # text caret and composition underline
 settings_width = 680.0
 settings_height = 480.0
+setup_height = 540.0        # the setup window, tall enough for the agent step
 settings_nav = 180.0
 theme_card = 140.0
 empty_icon = 40.0           # tile above empty and error messages

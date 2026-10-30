@@ -34,6 +34,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 tracing-appender.workspace = true
 unicode-segmentation.workspace = true
+pulldown-cmark.workspace = true
 unicode-properties.workspace = true
 agent-interface-core = { path = "../core" }
 agent-interface-store = { path = "../store" }

@@ -22,7 +22,7 @@ pub(super) fn title(source: &Source) -> String {
             markdown::parse(text)
                 .into_iter()
                 .find_map(|block| match block {
-                    markdown::Block::Heading(_, text) => Some(text),
+                    markdown::Block::Heading(_, heading) => Some(heading.text),
                     _ => None,
                 })
         })
