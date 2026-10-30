@@ -300,6 +300,8 @@ boundaries. Copy uses the displayed text; selection resets when that text change
 Native Copy and Select All menu actions follow the focused field or reader.
 Native Markdown links open only HTTP and HTTPS destinations; other schemes and
 document anchors remain plain text.
+Inline highlights use a sorted boundary sweep with active counts, preserving
+nested formatting without rescanning every mark for each span.
 WebKit handles those selectors through the macOS responder chain, without a
 clipboard JavaScript bridge.
 

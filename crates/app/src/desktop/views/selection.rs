@@ -318,38 +318,30 @@ pub(super) fn linked<V: Selectable>(
     let index = view.selection().borrow_mut().register(text, links);
     let selected = view.selection().borrow().range(index);
     let c = colors();
-    let mut boundaries = vec![0, text.len(), selected.start, selected.end];
-    for range in marks
-        .iter()
-        .map(|(range, _)| range)
-        .chain(links.iter().map(|(range, _)| range))
-    {
-        boundaries.extend([range.start, range.end]);
-    }
-    boundaries.sort_unstable();
-    boundaries.dedup();
-    // Marks may nest, as bold inside a link; each span takes every mark over it.
-    let highlights = boundaries.windows(2).map(|span| {
-        let range = span[0]..span[1];
-        let mut style = HighlightStyle::default();
-        for (_, mark) in marks.iter().filter(|(mark, _)| mark.contains(&range.start)) {
-            mark.apply(&mut style);
-        }
-        if links.iter().any(|(link, _)| link.contains(&range.start)) {
-            style.color = Some(c.accent_text.into());
-        }
-        if selected.contains(&range.start) {
-            // Selected text keeps its own colour over a translucent accent.
-            style.background_color = Some(
-                gpui::Rgba {
-                    a: 0.35,
-                    ..c.accent
+    let highlights = highlight_spans(text.len(), marks, links, selected)
+        .into_iter()
+        .map(|span| {
+            let mut style = HighlightStyle::default();
+            for (mark, active) in MARKS.into_iter().zip(span.marks) {
+                if active {
+                    mark.apply(&mut style);
                 }
-                .into(),
-            );
-        }
-        (range, style)
-    });
+            }
+            if span.linked {
+                style.color = Some(c.accent_text.into());
+            }
+            if span.selected {
+                // Selected text keeps its own colour over a translucent accent.
+                style.background_color = Some(
+                    gpui::Rgba {
+                        a: 0.35,
+                        ..c.accent
+                    }
+                    .into(),
+                );
+            }
+            (span.range, style)
+        });
     let styled = StyledText::new(text.to_owned()).with_highlights(highlights);
     view.selection().borrow_mut().parts[index].layout = styled.layout().clone();
     let entity = cx.entity().downgrade();
@@ -385,6 +377,72 @@ pub(super) fn linked<V: Selectable>(
             .absolute()
             .size_full(),
         )
+}
+
+const MARKS: [Mark; 4] = [Mark::Code, Mark::Strong, Mark::Emphasis, Mark::Strike];
+
+struct HighlightSpan {
+    range: Range<usize>,
+    marks: [bool; 4],
+    linked: bool,
+    selected: bool,
+}
+
+/// Sweep each boundary once after sorting. Counts preserve nested marks of the
+/// same kind without rescanning all marks and links for every resulting span.
+fn highlight_spans(
+    len: usize,
+    marks: &[(Range<usize>, Mark)],
+    links: &[(Range<usize>, String)],
+    selected: Range<usize>,
+) -> Vec<HighlightSpan> {
+    let mut events = Vec::with_capacity(2 * (marks.len() + links.len() + 1));
+    let mut add = |range: &Range<usize>, kind: usize| {
+        if !range.is_empty() {
+            events.push((range.start, kind, true));
+            events.push((range.end, kind, false));
+        }
+    };
+    for (range, mark) in marks {
+        let kind = match mark {
+            Mark::Code => 0,
+            Mark::Strong => 1,
+            Mark::Emphasis => 2,
+            Mark::Strike => 3,
+        };
+        add(range, kind);
+    }
+    for (range, _) in links {
+        add(range, 4);
+    }
+    add(&selected, 5);
+    events.sort_unstable();
+    let mut active = [0usize; 6];
+    let mut at = 0;
+    let mut spans = Vec::with_capacity(events.len() + 1);
+    let mut emit = |range, active: &[usize; 6]| {
+        spans.push(HighlightSpan {
+            range,
+            marks: std::array::from_fn(|i| active[i] > 0),
+            linked: active[4] > 0,
+            selected: active[5] > 0,
+        });
+    };
+    for (position, kind, start) in events {
+        if position > at {
+            emit(at..position, &active);
+            at = position;
+        }
+        if start {
+            active[kind] += 1;
+        } else {
+            active[kind] -= 1;
+        }
+    }
+    if at < len {
+        emit(at..len, &active);
+    }
+    spans
 }
 
 /// Start a selection from a press anywhere in `element` that is not on text,
@@ -449,6 +507,69 @@ pub(super) fn events<V: Selectable>(cx: &Context<V>) -> impl IntoElement {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn highlight_sweep_preserves_nested_marks_links_and_selection() {
+        let spans = highlight_spans(
+            10,
+            &[
+                (0..8, Mark::Strong),
+                (2..4, Mark::Strong),
+                (3..6, Mark::Emphasis),
+            ],
+            &[(1..7, "https://example.com".into())],
+            4..5,
+        );
+        for byte in 0..10 {
+            let span = spans
+                .iter()
+                .find(|span| span.range.contains(&byte))
+                .unwrap();
+            assert_eq!(span.marks, [false, byte < 8, (3..6).contains(&byte), false]);
+            assert_eq!(span.linked, (1..7).contains(&byte));
+            assert_eq!(span.selected, byte == 4);
+        }
+        assert!(
+            spans
+                .windows(2)
+                .all(|pair| pair[0].range.end == pair[1].range.start)
+        );
+    }
+
+    #[test]
+    fn highlight_sweep_handles_adjacent_and_empty_ranges() {
+        let spans = highlight_spans(
+            5,
+            &[(0..2, Mark::Code), (2..4, Mark::Code), (1..1, Mark::Strong)],
+            &[],
+            0..0,
+        );
+        assert_eq!(
+            spans.iter().map(|s| s.range.clone()).collect::<Vec<_>>(),
+            [0..2, 2..4, 4..5]
+        );
+        assert!(
+            spans[..2]
+                .iter()
+                .all(|s| s.marks == [true, false, false, false])
+        );
+        assert_eq!(spans[2].marks, [false; 4]);
+        assert!(highlight_spans(0, &[], &[], 0..0).is_empty());
+    }
+
+    #[test]
+    fn highlight_sweep_handles_a_large_formatted_paragraph() {
+        // A 128 KiB Markdown paragraph of short inline-code runs fits within
+        // the supported skill preview. Its rendered text has this many spans.
+        let count = 32_768;
+        let marks: Vec<_> = (0..count).map(|i| (2 * i..2 * i + 1, Mark::Code)).collect();
+        let spans = highlight_spans(2 * count, &marks, &[], 0..0);
+        assert_eq!(spans.len(), 2 * count);
+        for (i, span) in spans.iter().enumerate() {
+            assert_eq!(span.range, i..i + 1);
+            assert_eq!(span.marks, [i % 2 == 0, false, false, false]);
+        }
+    }
 
     #[test]
     fn table_selection_follows_the_column_under_the_pointer() {
