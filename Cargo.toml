@@ -3,7 +3,7 @@
 # direction between them.
 [workspace]
 resolver = "3"
-exclude = ["native/gpui-macos"]
+exclude = ["native/gpui-macos", "native/glib", "native/wry"]
 members = [
     "crates/core",
     "crates/store",
@@ -11,6 +11,7 @@ members = [
     "crates/term",
     "crates/roster",
     "crates/app",
+    "crates/webview-host",
     "crates/test-support",
     "crates/bench",
     "crates/bench-rio",
@@ -89,4 +90,8 @@ missing_docs = "warn"
 
 # Native focus queries must reach the content-view accessibility adapter.
 [patch.crates-io]
+# GTK3 requires GLib 0.18; backport the upstream VariantStrIter soundness fix.
+glib = { path = "native/glib" }
+# Enable WebKitGTK process isolation before constructing any web view.
+wry = { path = "native/wry" }
 gpui-pre-macos = { path = "native/gpui-macos" }

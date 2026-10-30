@@ -381,7 +381,7 @@ if [ -n "$wsl_launcher" ]; then
     missing=
     for package in tmux git fonts-dejavu-core libfontconfig1 libfreetype6 libxcb1 libxkbcommon0 \
         libxkbcommon-x11-0 libwayland-client0 libvulkan1 libegl1 libgl1-mesa-dri \
-        mesa-vulkan-drivers xdg-desktop-portal xdg-desktop-portal-gtk; do
+        mesa-vulkan-drivers libwebkit2gtk-4.1-0 xwayland xdg-desktop-portal xdg-desktop-portal-gtk; do
         if [ "$(dpkg-query -W -f='${Status}' "$package" 2>/dev/null || true)" != 'install ok installed' ]; then
             missing="$missing $package"
         fi
@@ -399,6 +399,45 @@ if [ -n "$wsl_launcher" ]; then
 fi
 "$prepared/$executable" --version || fail 'The binary cannot run on this system. Check the documented runtime requirements.'
 resources=$prepared/$(dirname "$marker")
+# Use the distribution's root-owned Bubblewrap policy when its sandbox cannot
+# start. Never grant userns to writable app paths or replace an existing policy.
+configure_linux_sandbox() {
+    [ "$platform" = unknown-linux-gnu ] || return 0
+    [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null || true)" = 1 ] || return 0
+    [ -d /sys/kernel/security/apparmor ] || return 0
+    if timeout 5 /usr/bin/bwrap --ro-bind / / --proc /proc --dev /dev --unshare-all -- /bin/true >/dev/null 2>&1; then return 0; fi
+    sandbox_warning='Documents need Linux sandbox support; native terminals and other views remain available. See the Linux installation guide.'
+    sandbox_source=/usr/share/apparmor/extra-profiles/bwrap-userns-restrict
+    sandbox_profile=/etc/apparmor.d/bwrap-userns-restrict
+    if [ -e "$sandbox_profile" ] || [ -L "$sandbox_profile" ]; then
+        printf 'Agent Interface: Existing Bubblewrap policy preserved. %s\n' "$sandbox_warning" >&2
+        return 0
+    fi
+    printf '%s\n' 'Preparing distribution Bubblewrap sandbox support. sudo may ask for your Linux password.'
+    if ! sudo -v; then printf 'Agent Interface: %s\n' "$sandbox_warning" >&2; return 0; fi
+    if ! sudo test -r /sys/kernel/security/apparmor/profiles ||
+        sudo grep -Eq '^(bwrap|unpriv_bwrap) \(' /sys/kernel/security/apparmor/profiles; then
+        printf 'Agent Interface: Existing or unreadable sandbox policy preserved. %s\n' "$sandbox_warning" >&2
+        return 0
+    fi
+    if [ ! -f "$sandbox_source" ]; then
+        if ! command -v apt-get >/dev/null 2>&1 ||
+            ! run_step 'Refreshing sandbox package information' sudo apt-get update ||
+            ! run_step 'Installing distribution sandbox policy' sudo apt-get install -y apparmor-profiles; then
+            printf 'Agent Interface: %s\n' "$sandbox_warning" >&2
+            return 0
+        fi
+    fi
+    if [ ! -f "$sandbox_source" ] || [ ! -x /usr/sbin/apparmor_parser ] ||
+        ! run_step 'Loading distribution sandbox policy' sudo /usr/sbin/apparmor_parser -r "$sandbox_source"; then
+        printf 'Agent Interface: Could not load the distribution sandbox policy. %s\n' "$sandbox_warning" >&2
+        return 0
+    fi
+    if ! sudo install -m 644 -- "$sandbox_source" "$sandbox_profile"; then
+        printf 'Agent Interface: Sandbox policy is active but could not be saved for restart.\n' >&2
+    fi
+}
+configure_linux_sandbox
 if [ -f "$resources/setup_backbone.py" ]; then
     # Backbone publishes its own package. Install that release independently
     # of the app archive; uv supplies Python when a suitable runtime is absent.

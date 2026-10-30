@@ -25,14 +25,15 @@ brew install tmux
 ```
 
 On Linux, the desktop must provide system fonts, fontconfig, FreeType, XCB, xkbcommon,
-xkbcommon-x11, and a usable Vulkan or EGL/OpenGL driver. Wayland sessions also
-need the Wayland client library. **Open Library…** uses `xdg-desktop-portal` and
+xkbcommon-x11, and a usable Vulkan or EGL/OpenGL driver. HTML Documents need WebKitGTK 4.1. Wayland sessions also
+need the Wayland client library and XWayland; the app uses X11 for embedded
+Documents on both Wayland desktops and WSLg. **Open Library…** uses `xdg-desktop-portal` and
 a portal backend for your desktop, normally installed by the distribution.
 On Ubuntu 24.04, the basic runtime packages are:
 
 ```sh
 sudo apt install curl tmux fonts-dejavu-core libfontconfig1 libfreetype6 libxcb1 libxkbcommon0 \
-  libxkbcommon-x11-0 libwayland-client0 libvulkan1 libegl1 xdg-desktop-portal
+  libxkbcommon-x11-0 libwayland-client0 libvulkan1 libegl1 libwebkit2gtk-4.1-0 xwayland xdg-desktop-portal
 ```
 
 Keep your desktop's portal backend and GPU driver installed. A headless server
@@ -138,6 +139,22 @@ You can launch directly without changing `PATH`:
 Updates from the earlier `tmux-workspaces` installation preserve saved libraries
 and settings. The installer replaces its owned legacy app and launchers; the new
 command is `agent-interface`. Existing data directories remain readable in place.
+
+### Linux document sandbox
+
+Documents use WebKitGTK's process sandbox. If Ubuntu's namespace restrictions
+prevent Bubblewrap from starting, the installer offers sudo setup using the
+Ubuntu `apparmor-profiles` package's `bwrap-userns-restrict` policy. This policy
+attaches to the root-owned `/usr/bin/bwrap` helper and restricts capabilities in
+its children. The installer preserves existing policy files and loaded profiles;
+it does not grant permissions to user-writable app paths or change global sysctls.
+If setup is declined or unavailable, installation continues with native views;
+Documents explain that sandbox support needs configuration by an administrator.
+
+Containers must allow nested user, mount, PID and network namespaces for WebKitGTK.
+The app checks sandbox startup before opening Documents and reports an unavailable
+sandbox without disabling native terminals. Do not set
+`WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS`; Documents refuse that override.
 
 ## Windows 11 with WSL
 
@@ -270,6 +287,10 @@ rm -rf "$HOME/.local/lib/agent-interface" "$HOME/.local/lib/.agent-interface-dow
 rm -f "$HOME/.local/bin/agent-interface"
 rm -f "${XDG_DATA_HOME:-$HOME/.local/share}/applications/io.github.eandualem.agent-interface.desktop"
 ```
+
+The distribution Bubblewrap policy is shared system sandbox support, like the
+runtime libraries. Uninstalling this app does not remove it or change other apps'
+sandbox configuration.
 
 These commands leave your data and terminal sessions intact. See the
 [user guide](GUIDE.md) for library and settings locations.

@@ -77,6 +77,8 @@ actions!(
 /// Open the native workspace window and connect its saved, existing sessions.
 /// An absent directory uses the shared library's normal path lookup.
 pub fn run(directory: Option<PathBuf>) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    views::artifact_web::initialize_linux()?;
     let source = crate::sessions::source_socket(None).map_err(|e| e.to_string());
     let preferences = settings::load();
     preferences.apply();
@@ -95,6 +97,8 @@ pub fn run(directory: Option<PathBuf>) -> Result<(), String> {
                 cx.spawn(async |cx| cx.update(|cx| cx.quit())).detach();
                 return;
             }
+            #[cfg(target_os = "linux")]
+            views::artifact_web::pump_linux(cx);
             configure_menu(cx);
             cx.on_app_quit(move |_| {
                 // The synchronous observer runs before GPUI's short async quit
@@ -1293,6 +1297,18 @@ impl Browser {
         self.icon_picker = false;
     }
 
+    fn web_content_occluded(&self) -> bool {
+        self.workspace_menu
+            || self.icon_picker
+            || self.tab_menu.is_some()
+            || self.editing.is_some()
+            || self.chooser.is_some()
+            || self.jump.is_some()
+            || self.resize.is_some()
+            || self.sidebar_drag.is_some()
+            || self.pane_drag.as_ref().is_some_and(|drag| drag.dragging)
+    }
+
     fn set_symbol(&mut self, symbol: Option<&str>, cx: &mut Context<Self>) {
         self.close_menus();
         if self.saving || self.save_failed {
@@ -2124,7 +2140,11 @@ impl Render for Browser {
                             }
                         }
                         views::ViewEvent::Focus => {
-                            if let Some(layout) = &mut browser.layout {
+                            // Page IPC is asynchronous: a click notification can
+                            // arrive after a native overlay has taken focus.
+                            if !browser.web_content_occluded()
+                                && let Some(layout) = &mut browser.layout
+                            {
                                 layout.model_mut().choose_pane(&leaf);
                                 // GPUI also handles key equivalents forwarded by
                                 // child webviews. Leave any terminal's dispatch
@@ -2162,18 +2182,7 @@ impl Render for Browser {
             );
             // Native child views are above GPUI drawing. Hide them while a
             // popover or geometry gesture needs that space or its pointer input.
-            view.read(cx).occlude_web(
-                self.workspace_menu
-                    || self.icon_picker
-                    || self.tab_menu.is_some()
-                    || self.editing.is_some()
-                    || self.chooser.is_some()
-                    || self.jump.is_some()
-                    || self.resize.is_some()
-                    || self.sidebar_drag.is_some()
-                    || self.pane_drag.as_ref().is_some_and(|drag| drag.dragging),
-                cx,
-            );
+            view.read(cx).occlude_web(self.web_content_occluded(), cx);
         }
         let empty: Vec<String> = self
             .layout

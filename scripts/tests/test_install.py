@@ -34,7 +34,15 @@ class InstallTests(unittest.TestCase):
         self.env = dict(os.environ, HOME=str(self.home), PATH=str(self.tools) + os.pathsep + os.environ["PATH"])
         self.env.pop("XDG_DATA_HOME", None)
         self.env.pop("WSL_DISTRO_NAME", None)
-        self.installer = INSTALL
+        # Ordinary fixtures must never inspect or configure the host's sandbox
+        # policy. Sandbox cases opt into their own redirected paths below.
+        self.installer = self.root / "install.sh"
+        self.installer.write_text(INSTALL.read_text().replace(
+            "/proc/sys/kernel/apparmor_restrict_unprivileged_userns",
+            str(self.root / "no-host-userns-policy")))
+        self.command("sudo", "exit 99")
+        self.command("apt-get", "exit 99")
+        self.command("apparmor_parser", "exit 99")
         self.destination = self.home / ".local/lib/agent-interface"
         self.launcher = self.home / f".local/share/applications/{APP_ID}.desktop"
         self.link = self.home / ".local/bin/agent-interface"
@@ -81,7 +89,7 @@ class InstallTests(unittest.TestCase):
         self.system_apps = self.root / "system-applications"
         self.system_apps.mkdir()
         self.installer = self.root / "install.sh"
-        self.installer.write_text(INSTALL.read_text().replace(
+        self.installer.write_text(self.installer.read_text().replace(
             "/usr/share/applications", str(self.system_apps)))
         self.env.update(WSL_DISTRO_NAME="Ubuntu", DISPLAY=":0",
                         TEST_SYSTEM_ACTIONS=str(self.root / "system-actions"))
@@ -100,6 +108,72 @@ case "$1" in
 esac
 ''')
         return self.system_apps / f"{APP_ID}.desktop"
+
+    def sandbox_fixture(self):
+        policy = self.root / "apparmor"
+        policy.mkdir()
+        (policy / "profiles").write_text("")
+        restriction = self.root / "restrict-userns"
+        restriction.write_text("1\n")
+        source = self.root / "distribution-policy"
+        source.write_text("# inert distribution policy fixture\n")
+        parser = self.tools / "apparmor_parser"
+        self.command("apparmor_parser", 'exit "${TEST_PARSER_STATUS:-0}"')
+        self.command("timeout", "exit 1")
+        self.sandbox_profile = policy / "bwrap-userns-restrict"
+        self.installer = self.root / "install-sandbox.sh"
+        self.installer.write_text(INSTALL.read_text()
+            .replace("/proc/sys/kernel/apparmor_restrict_unprivileged_userns", str(restriction))
+            .replace("/sys/kernel/security/apparmor", str(policy))
+            .replace("/etc/apparmor.d", str(policy))
+            .replace("/usr/share/apparmor/extra-profiles/bwrap-userns-restrict", str(source))
+            .replace("/usr/sbin/apparmor_parser", str(parser)))
+        self.env["TEST_SYSTEM_ACTIONS"] = str(self.root / "sandbox-actions")
+        self.command("sudo", """
+printf '%s\\n' "$*" >> "$TEST_SYSTEM_ACTIONS"
+[ "$1" != -v ] || exit "${TEST_SUDO_STATUS:-0}"
+exec "$@"
+""")
+        return self.package()
+
+    def test_distribution_sandbox_policy_is_loaded(self):
+        self.install(self.sandbox_fixture())
+        self.assertEqual(self.sandbox_profile.read_text(), "# inert distribution policy fixture\n")
+        actions = Path(self.env["TEST_SYSTEM_ACTIONS"]).read_text()
+        self.assertIn("apparmor_parser -r", actions)
+        self.assertNotIn("sysctl", actions)
+
+    def test_sandbox_custom_policy_is_preserved(self):
+        archive = self.sandbox_fixture()
+        self.sandbox_profile.write_text("custom policy\n")
+        result = self.install(archive)
+        self.assertEqual(self.sandbox_profile.read_text(), "custom policy\n")
+        self.assertIn("Existing Bubblewrap policy preserved", result.stderr)
+        self.assertTrue(self.destination.exists())
+
+    def test_loaded_sandbox_policy_is_not_replaced(self):
+        archive = self.sandbox_fixture()
+        (self.sandbox_profile.parent / "profiles").write_text("bwrap (enforce)\n")
+        result = self.install(archive)
+        self.assertIn("Existing or unreadable sandbox policy preserved", result.stderr)
+        self.assertFalse(self.sandbox_profile.exists())
+        self.assertNotIn("apparmor_parser", Path(self.env["TEST_SYSTEM_ACTIONS"]).read_text())
+
+    def test_sandbox_setup_without_sudo_still_installs_native_app(self):
+        archive = self.sandbox_fixture()
+        self.env["TEST_SUDO_STATUS"] = "1"
+        result = self.install(archive)
+        self.assertIn("native terminals and other views remain available", result.stderr)
+        self.assertFalse(self.sandbox_profile.exists())
+        self.assertTrue(self.destination.exists())
+
+    def test_sandbox_parser_failure_does_not_persist_policy(self):
+        archive = self.sandbox_fixture()
+        self.env["TEST_PARSER_STATUS"] = "1"
+        result = self.install(archive)
+        self.assertIn("Could not load", result.stderr)
+        self.assertFalse(self.sandbox_profile.exists())
+        self.assertTrue(self.destination.exists())
 
     def test_wsl_installs_runtime_and_registers_start_menu_entry(self):
         shortcut = self.wsl()
