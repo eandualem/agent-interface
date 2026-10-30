@@ -457,14 +457,23 @@ if [ -f "$resources/setup_backbone.py" ]; then
     fi
     tools=$("$uv" tool dir) || fail 'Could not locate the Agent Backbone installation directory.'
     backbone_upgrade_held=false
+    backbone_fixed_setup=false
     if [ "$platform" = unknown-linux-gnu ]; then
         if [ -x "$tools/agent-backbone/bin/python" ]; then
             [ -f "$resources/upgrade_backbone.py" ] ||
                 fail 'This app archive cannot safely upgrade an existing Linux Backbone service. Keep current sessions running and use a release with upgrade preflight support.'
-            run_step 'Checking Linux upgrade safety' "$tools/agent-backbone/bin/python" -I -B "$resources/upgrade_backbone.py" \
-                --executable "$tools/agent-backbone/bin/backbone" --phase before ||
+            check_linux_upgrade() {
+                if "$tools/agent-backbone/bin/python" -I -B "$resources/upgrade_backbone.py" \
+                    --executable "$tools/agent-backbone/bin/backbone" --phase before; then
+                    backbone_upgrade_held=true
+                else
+                    preflight_status=$?
+                    [ "$preflight_status" -eq 3 ] || return "$preflight_status"
+                    backbone_fixed_setup=true
+                fi
+            }
+            run_step 'Checking Linux upgrade safety' check_linux_upgrade ||
                 fail 'Backbone package and service were preserved. Resolve the deferred upgrade through Backbone before retrying.'
-            backbone_upgrade_held=true
         elif [ -e "$tools/agent-backbone" ] || [ -L "$tools/agent-backbone" ] ||
              [ -e "${BACKBONE_DATA_DIR:-$HOME/.local/share/agent-backbone}" ] ||
              [ -L "${BACKBONE_DATA_DIR:-$HOME/.local/share/agent-backbone}" ] ||
@@ -488,8 +497,10 @@ if [ -f "$resources/setup_backbone.py" ]; then
             fail 'Interrupted Backbone setup needs attention. Its installed version was preserved.'
     fi
     if [ "$backbone_resumed" = false ]; then
-        run_step 'Installing Agent Backbone' "$uv" tool install --upgrade --prerelease disallow --python '>=3.11,<3.14' 'agent-backbone>=0.4.3' ||
-            fail 'Could not install a compatible published Agent Backbone release. The app was not replaced.'
+        if [ "$backbone_fixed_setup" = false ]; then
+            run_step 'Installing Agent Backbone' "$uv" tool install --upgrade --prerelease disallow --python '>=3.11,<3.14' 'agent-backbone>=0.4.3' ||
+                fail 'Could not install a compatible published Agent Backbone release. The app was not replaced.'
+        fi
         if [ "$backbone_upgrade_held" = true ]; then
             run_step 'Completing Linux package update' "$tools/agent-backbone/bin/python" -I -B "$resources/upgrade_backbone.py" \
                 --executable "$tools/agent-backbone/bin/backbone" --phase after ||

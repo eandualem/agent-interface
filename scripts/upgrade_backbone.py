@@ -127,7 +127,47 @@ def persist(path, record, released=False):
         os.close(fd)
 
 
+def first_setup_without_service(home, data, executable):
+    """Resume a fixed provider before installation side effects, without uv."""
+    if data.exists() or data.is_symlink() or not fixed_version(package_version("agent-backbone")):
+        return False
+    unit = home / ".config/systemd/user/agent-backbone.service"
+    if unit.exists() or unit.is_symlink():
+        return False
+    env = dict(os.environ, BACKBONE_DATA_DIR=str(data))
+    properties = setup.command("systemctl", ["--user", "show", "agent-backbone.service",
+                                            "--property=LoadState,ActiveState,MainPID"], env).decode().splitlines()
+    if sorted(properties) != ["ActiveState=inactive", "LoadState=not-found", "MainPID=0"]:
+        return False
+    root = home / ".local/state/agent-interface/backbone"
+    if root.exists() or root.is_symlink():
+        info = root.lstat()
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
+                or stat.S_IMODE(info.st_mode) != 0o700):
+            return False
+        identity = hashlib.sha256(os.fsencode(str(data))).hexdigest()
+        for suffix in (".result.json", ".upgrade.json"):
+            path = root / (identity + suffix)
+            if path.exists() or path.is_symlink():
+                return False  # Any prior outcome/hold needs coordinated recovery.
+        path = root / (identity + ".json")
+        if path.exists() or path.is_symlink():
+            record = setup.read_private(path)
+            request = record.get("request", {})
+            if (record.get("version") != package_version("agent-backbone")
+                    or record.get("executable") != str(executable)
+                    or request.get("data_dir") != str(data)
+                    or request.get("action") != "initialize"):
+                return False
+            # The setup helper validates the exact saved distribution identity
+            # and remaining request fields before it resumes this request.
+    return True
+
+
 def guard(home, data, executable, phase):
+    if phase == "before" and first_setup_without_service(home, data, executable):
+        print("No prior service or installation state: continue first setup with the installed fixed provider; skip package changes.")
+        return "first_setup"
     path, state = owned_state(home, data, executable)
     endpoint = Path(state["socket"])
     health, process = exchange(endpoint, "GET", "/health")
@@ -192,19 +232,24 @@ def guard(home, data, executable, phase):
           "Package update complete; this installer's reload hold released. Other holds and settings are unchanged.")
 
 
-if __name__ == "__main__":
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--executable", type=Path, required=True)
     parser.add_argument("--phase", choices=("before", "after", "verify"), required=True)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     try:
         home = Path(os.environ["HOME"])
         if not home.is_absolute() or not args.executable.is_absolute():
             raise ValueError("Installation paths must be absolute")
         data = Path(os.environ.get("BACKBONE_DATA_DIR") or home / ".local/share/agent-backbone").expanduser().resolve()
-        guard(home, data, args.executable, args.phase)
-    except (OSError, ValueError, KeyError, TypeError, IndexError):
+        if guard(home, data, args.executable, args.phase) == "first_setup":
+            raise SystemExit(3)
+    except Exception:
         # Never render credentials, server response bodies or provider exceptions.
         raise SystemExit("Agent Interface: " + (DEFERRED if args.phase == "before" else
                          "Upgrade coordination is incomplete; the saved operation was retained. Resolve through Backbone. "
                          "No service restart was attempted.")) from None
+
+
+if __name__ == "__main__":
+    main()

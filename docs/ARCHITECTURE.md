@@ -568,6 +568,11 @@ package mutation: earlier listeners may remain inherited by tmux children, and
 installing fixed code cannot repair them. Recovery requires completing affected
 work and explicitly coordinating session shutdown with Backbone; the app
 installer never kills sessions or invokes a manager restart to bypass this gate.
+The narrow first-setup exception requires an installed fixed provider, no data
+directory, no service file or loaded service, and no prior setup outcome or
+upgrade hold. It may resume an unchanged saved initialize request or start setup,
+but skips uv package mutation. Partial installations with prior side effects
+remain deferred until their recovery is coordinated.
 
 For a verified fixed launch, the guard persists an operation UUID and obtains
 Backbone's existing authenticated upgrade hold before uv runs. It uses provider

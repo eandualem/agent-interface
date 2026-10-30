@@ -1,6 +1,8 @@
 """Upgrade safety with inert endpoints; no real provider or tmux processes."""
 
 import importlib.util
+from importlib.metadata import PackageNotFoundError
+import hashlib
 import json
 from pathlib import Path
 import socket
@@ -12,6 +14,87 @@ from unittest.mock import patch
 SPEC = importlib.util.spec_from_file_location("upgrade_backbone", Path(__file__).parents[1] / "upgrade_backbone.py")
 upgrade = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(upgrade)
+
+
+class FirstSetupTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.home = Path(temporary.name)
+        self.data = self.home / ".local/share/agent-backbone"
+        self.executable = self.home / "bin/backbone"
+        self.root = self.home / ".local/state/agent-interface/backbone"
+        self.root.mkdir(parents=True, mode=0o700)
+        self.identity = hashlib.sha256(str(self.data).encode()).hexdigest()
+        for target, name, kwargs in (
+            (upgrade, "package_version", {"return_value": "0.4.3"}),
+            (upgrade.setup, "command", {"return_value": b"MainPID=0\nLoadState=not-found\nActiveState=inactive\n"}),
+        ):
+            mock = patch.object(target, name, **kwargs)
+            mock.start()
+            self.addCleanup(mock.stop)
+
+    def eligible(self):
+        return upgrade.first_setup_without_service(self.home, self.data, self.executable)
+
+    def test_no_service_can_continue_fixed_setup_without_upgrade(self):
+        self.assertTrue(self.eligible())
+        with patch.object(upgrade, "owned_state") as owned:
+            self.assertEqual(upgrade.guard(self.home, self.data, self.executable, "before"), "first_setup")
+            owned.assert_not_called()
+
+    def test_saved_request_before_side_effects_is_retained(self):
+        request = self.root / (self.identity + ".json")
+        record = {"version": "0.4.3", "executable": str(self.executable),
+                  "request": {"data_dir": str(self.data), "action": "initialize"}}
+        upgrade.setup.save_new(request, record)
+        before = request.read_bytes()
+        self.assertTrue(self.eligible())
+        self.assertEqual(request.read_bytes(), before)
+        for key, value in (("version", "0.4.2"), ("executable", "/different/backbone"),
+                           ("request", {"data_dir": str(self.data), "action": "first_agent"})):
+            with self.subTest(key=key):
+                request.write_text(json.dumps(dict(record, **{key: value})))
+                self.assertFalse(self.eligible())
+        request.write_bytes(before)
+        request.chmod(0o644)
+        with self.assertRaises(ValueError):
+            self.eligible()
+
+    def test_old_provider_or_unknown_manager_is_not_first_setup(self):
+        with patch.object(upgrade, "package_version", return_value="0.4.2"):
+            self.assertFalse(self.eligible())
+        for properties in (b"", b"MainPID=123\nLoadState=loaded\nActiveState=active\n"):
+            with patch.object(upgrade.setup, "command", return_value=properties):
+                self.assertFalse(self.eligible())
+
+    def test_any_prior_data_unit_outcome_or_hold_defers(self):
+        unit = self.home / ".config/systemd/user/agent-backbone.service"
+        for path in (self.data, unit, self.root / (self.identity + ".result.json"),
+                     self.root / (self.identity + ".upgrade.json")):
+            with self.subTest(path=path.name):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.touch()
+                self.assertFalse(self.eligible())
+                path.unlink()
+                path.symlink_to(self.home / "missing")
+                self.assertFalse(self.eligible())
+                path.unlink()
+
+    def test_cli_redacts_provider_errors_and_preserves_control_exits(self):
+        args = ["--executable", str(self.executable), "--phase", "before"]
+        for error in (ImportError("private detail"), PackageNotFoundError("private detail"), RuntimeError("private detail")):
+            with patch.object(upgrade, "guard", side_effect=error):
+                with self.assertRaises(SystemExit) as raised:
+                    upgrade.main(args)
+                self.assertEqual(str(raised.exception), "Agent Interface: " + upgrade.DEFERRED)
+        with patch.object(upgrade, "guard", return_value="first_setup"):
+            with self.assertRaises(SystemExit) as raised:
+                upgrade.main(args)
+            self.assertEqual(raised.exception.code, 3)
+        with patch.object(upgrade, "guard", side_effect=KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                upgrade.main(args)
 
 
 class UpgradeTests(unittest.TestCase):

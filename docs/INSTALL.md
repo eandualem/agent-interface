@@ -234,6 +234,9 @@ failures show Backbone's diagnostic and recovery guidance. When retry is allowed
 rerun the same installer: it retains the request and resumes pending steps using
 the same installed Backbone version. Linux safety preflight runs before this
 recovery and may defer an incomplete or unverified existing installation.
+If a fixed provider was installed but setup has not created data, a service,
+or a saved outcome, setup can continue using that exact installed provider
+without changing packages. Existing saved requests remain subject to identity checks.
 It refuses automatic recovery if that
 pending installation or its saved service/socket choices have changed.
 

@@ -759,6 +759,28 @@ esac
         self.assertIn("--phase before", log.read_text())
         self.assertNotIn("--phase after", log.read_text())
 
+    def test_fixed_first_setup_continues_without_package_mutation(self):
+        self.backbone_tools()
+        archive = self.package(extra={"agent-interface/setup_backbone.py": "fixture helper", "agent-interface/upgrade_backbone.py": "fixture guard"})
+        self.install(archive)
+        self.env["FIXTURE_PREFLIGHT"] = "3"
+        log = Path(self.env["FIXTURE_LOG"])
+        for resumed in ("0", "3"):
+            with self.subTest(resumed=resumed):
+                self.env["FIXTURE_RESUME"] = resumed
+                log.write_text("")
+                result = self.install(archive)
+                calls = log.read_text()
+                self.assertIn("--resume-pending", calls)
+                self.assertNotIn("tool install", calls)
+                self.assertNotIn("--phase after", calls)
+                self.assertNotIn("--phase verify", calls)
+                self.assertNotIn(": failed.", result.stderr)
+                if resumed == "0":
+                    self.assertIn("Starting and checking Agent Backbone: done.", result.stderr)
+                else:
+                    self.assertNotIn("Starting and checking Agent Backbone", result.stderr)
+
     def test_existing_linux_install_rejects_archive_without_guard(self):
         self.backbone_tools()
         self.install(self.package(extra={"agent-interface/setup_backbone.py": "fixture helper"}))
