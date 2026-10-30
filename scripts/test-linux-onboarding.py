@@ -10,6 +10,7 @@ import http.server
 import io
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import socketserver
@@ -17,6 +18,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
 BINARY = Path(os.environ.get("ONBOARDING_TEST_BINARY", str(ROOT / "target/debug/agent-interface"))).resolve()
@@ -24,6 +26,10 @@ SCALE = int(os.environ.get("ONBOARDING_TEST_SCALE", "100"))
 assert SCALE in (100, 150)
 OUTPUT = ROOT / "target/linux-desktop-smoke/onboarding" / str(SCALE)
 OUTPUT.mkdir(parents=True, exist_ok=True)
+PALETTE = tomllib.loads((ROOT / "crates/app/assets/design/tokens.toml").read_text())["color"]["dark"]
+accent = tuple(bytes.fromhex(PALETTE["accent"][1:]))
+surface = tuple(bytes.fromhex(PALETTE["surface"][1:]))
+DISABLED_ACCENT = "#" + "".join(f"{round((a + s) / 2):02x}" for a, s in zip(accent, surface))
 
 
 def wait_for(check, description):
@@ -47,7 +53,7 @@ with tempfile.TemporaryDirectory(prefix="onboarding-smoke-") as directory:
     (root / "tmux").mkdir(mode=0o700)
     settings = root / "config/agent-interface"
     settings.mkdir(parents=True)
-    (settings / "settings.toml").write_text(f'interface_size = {SCALE}\n[setup]\nintro_seen = true\ndone = false\n')
+    (settings / "settings.toml").write_text(f'theme = "dark"\ninterface_size = {SCALE}\n[setup]\nintro_seen = true\ndone = false\n')
     provider = root / "provider"
     provider.mkdir(mode=0o700)
     (provider / "backbone.db").touch()
@@ -153,14 +159,43 @@ print(json.dumps(e));sys.exit(code)
                 command("import", "-window", window, str(OUTPUT / "current.png"))
                 tsv = command("tesseract", str(OUTPUT / "current.png"), "stdout", "--psm", "11", "tsv")
                 (OUTPUT / "current.tsv").write_text(tsv)
-                return [w for w in csv.DictReader(io.StringIO(tsv), delimiter="\t") if (w.get("text") or "").strip()]
+                found = [w for w in csv.DictReader(io.StringIO(tsv), delimiter="\t") if (w.get("text") or "").strip()]
+                # Sparse-page OCR treats filled native buttons as illustrations.
+                # Locate their actual painted fills, then read an inset text crop
+                # as a single line. Coordinates still come from rendered pixels.
+                components = command("convert", str(OUTPUT / "current.png"), "-fuzz", "3%",
+                    "-fill", "white", "-opaque", PALETTE["accent"],
+                    "-opaque", DISABLED_ACCENT, "-fill", "black", "+opaque", "white",
+                    "-define", "connected-components:verbose=true", "-connected-components", "8", "null:")
+                for index, line in enumerate(components.splitlines()):
+                    match = re.match(r"\s*\d+: (\d+)x(\d+)\+(\d+)\+(\d+) .*srgb\(255,255,255\)", line)
+                    if not match:
+                        continue
+                    width, height, x, y = map(int, match.groups())
+                    if width < 40 or height < 20:
+                        continue
+                    inset = round(4 * SCALE / 100)
+                    crop = OUTPUT / f"button-{index}.png"
+                    command("convert", str(OUTPUT / "current.png"), "-crop",
+                        f"{width - 2 * inset}x{height - 2 * inset}+{x + inset}+{y + inset}",
+                        "+repage", "-resize", "300%", str(crop))
+                    button_tsv = command("tesseract", str(crop), "stdout", "--psm", "7", "tsv")
+                    for word in csv.DictReader(io.StringIO(button_tsv), delimiter="\t"):
+                        if not (word.get("text") or "").strip():
+                            continue
+                        for axis, origin in (("left", x + inset), ("top", y + inset)):
+                            word[axis] = str(origin + int(word[axis]) // 3)
+                        for dimension in ("width", "height"):
+                            word[dimension] = str(max(1, int(word[dimension]) // 3))
+                        found.append(word)
+                return found
 
             def text():
                 return " ".join(w["text"] for w in words())
 
             def click(label, last=False):
                 def find():
-                    found = [w for w in words() if w["text"].rstrip(".,:;") == label]
+                    found = [w for w in words() if w["text"].strip(".,:;‘’“”\"\'") == label]
                     found.sort(key=lambda w: (int(w["top"]), int(w["left"])))
                     return (found[-1] if last else found[0]) if found else None
                 word = wait_for(find, label)
