@@ -169,29 +169,9 @@ impl Plans {
 
     /// Open `author`'s plan; an agent without one stays on the list.
     fn open(&mut self, author: String, cx: &mut Context<Self>) {
-        let frame = &mut self.frame;
-        let has_plan = frame.page.as_ref().is_some_and(|page| {
-            page.items
-                .iter()
-                .any(|entry| entry.author_id == author && entry.record.is_some())
-        });
-        if !has_plan {
-            return;
+        if self.frame.open(author) {
+            cx.notify();
         }
-        // The step chosen on its card, else where the agent is.
-        let chosen = frame
-            .card_step
-            .take()
-            .filter(|(card, _)| *card == author)
-            .map(|(_, step)| step);
-        frame.selected = Some(author.clone());
-        frame.open = Some(author);
-        frame.step = chosen.or_else(|| {
-            let entry = frame.opened()?;
-            let plan = &entry.record.as_ref()?.plan;
-            At::of(plan, frame.state(&entry.agent_name)).step
-        });
-        cx.notify();
     }
 
     /// Show `step`'s detail under `author`'s card, or hide it when shown.
@@ -280,6 +260,32 @@ impl ConversationTarget {
 }
 
 impl Frame {
+    fn open(&mut self, author: String) -> bool {
+        let Some(entry) = self
+            .page
+            .as_ref()
+            .and_then(|page| page.items.iter().find(|entry| entry.author_id == author))
+        else {
+            return false;
+        };
+        let Some(record) = &entry.record else {
+            return false;
+        };
+        // A remembered card choice can disappear when its plan refreshes.
+        let chosen = self
+            .card_step
+            .take()
+            .filter(|(card, step)| {
+                *card == author && record.plan.items.iter().any(|item| &item.item_id == step)
+            })
+            .map(|(_, step)| step);
+        let step = chosen.or_else(|| At::of(&record.plan, self.state(&entry.agent_name)).step);
+        self.selected = Some(author.clone());
+        self.open = Some(author);
+        self.step = step;
+        true
+    }
+
     fn conversation(&self) -> Option<ConversationTarget> {
         let entry = self.opened()?;
         let record = entry.record.as_ref()?;
@@ -1171,6 +1177,45 @@ pub(super) fn body(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn opening_a_refreshed_plan_discards_a_removed_card_step() {
+        let page: PlansPage = serde_json::from_value(serde_json::json!({
+            "items": [{"author_id": "author", "agent_name": "builder", "record": {
+                "plan_id": "plan", "revision_id": "revision", "updated_at": "2026-10-28T10:00:00Z",
+                "plan": {"title": "Build", "items": [
+                    {"item_id": "old", "text": "Finished work", "section": "now", "status": "done"},
+                    {"item_id": "wait", "text": "Check the build", "section": "now", "status": "blocked"}
+                ]}
+            }}], "next_after_author_id": null
+        })).unwrap();
+        let mut frame = Frame {
+            page: Some(page),
+            provider: Some("unix:/tmp/provider.sock".into()),
+            card_step: Some(("author".into(), "old".into())),
+            ..Default::default()
+        };
+        assert!(frame.open("author".into()));
+        assert_eq!(frame.step.as_deref(), Some("old"));
+        // The user returns to the list and selects the same card step. A
+        // refreshed plan removes it before the card is opened again.
+        frame.open = None;
+        frame.card_step = Some(("author".into(), "old".into()));
+        frame.page.as_mut().unwrap().items[0]
+            .record
+            .as_mut()
+            .unwrap()
+            .plan
+            .items
+            .remove(0);
+        assert!(frame.open("author".into()));
+        assert_eq!(frame.step.as_deref(), Some("wait"));
+        assert_eq!(
+            frame.conversation().unwrap().anchor.item_id.as_deref(),
+            Some("wait")
+        );
+        assert!(frame.card_step.is_none());
+    }
 
     #[test]
     fn step_conversation_keeps_its_observed_revision_when_the_plan_changes() {
