@@ -253,6 +253,92 @@ def socket_healthy(path):
         return False
 
 
+def same_user_peer(client):
+    import socket
+    import struct
+    import sys
+
+    if hasattr(socket, "SO_PEERCRED"):
+        credentials = client.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("iII"))
+        return struct.unpack("iII", credentials)[1] == os.getuid()
+    if sys.platform == "darwin":
+        import ctypes
+
+        getpeereid = ctypes.CDLL(None, use_errno=True).getpeereid
+        getpeereid.argtypes = [ctypes.c_int, ctypes.POINTER(ctypes.c_uint), ctypes.POINTER(ctypes.c_uint)]
+        getpeereid.restype = ctypes.c_int
+        uid, gid = ctypes.c_uint(), ctypes.c_uint()
+        return getpeereid(client.fileno(), ctypes.byref(uid), ctypes.byref(gid)) == 0 and uid.value == os.getuid()
+    return False
+
+
+def socket_version(path):
+    """Read bounded public health from the installer-owned private endpoint."""
+    import socket
+
+    try:
+        directory, endpoint = path.parent.lstat(), path.lstat()
+        if (not stat.S_ISDIR(directory.st_mode) or directory.st_uid != os.getuid()
+                or stat.S_IMODE(directory.st_mode) != 0o700
+                or not stat.S_ISSOCK(endpoint.st_mode) or endpoint.st_uid != os.getuid()
+                or stat.S_IMODE(endpoint.st_mode) != 0o600):
+            return None
+        deadline = time.monotonic() + 3
+        with socket.socket(socket.AF_UNIX) as client:
+            client.settimeout(3)
+            client.connect(str(path))
+            if not same_user_peer(client):
+                return None
+            client.sendall(b"GET /health HTTP/1.0\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            response = b""
+            while len(response) <= 65536:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return None
+                client.settimeout(remaining)
+                part = client.recv(min(4096, 65537 - len(response)))
+                if not part:
+                    break
+                response += part
+            else:
+                return None
+        header, separator, body = response.partition(b"\r\n\r\n")
+        if not separator or header.split(b"\r\n", 1)[0] not in (b"HTTP/1.1 200 OK", b"HTTP/1.0 200 OK"):
+            return None
+        health = json.loads(body)
+        if isinstance(health, dict) and health.get("healthy") is True and isinstance(health.get("version"), str):
+            return health["version"]
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def wait_for_installed_service(executable, home, data_dir, state, version, env, timeout=120):
+    """Let Backbone's upgrade watcher reload; never restart an existing service."""
+    if not all(key in state for key in ("installation_identity", "service_identity", "socket")):
+        return  # An independently managed installation keeps its own lifecycle.
+
+    def unchanged():
+        return (installation_identity(data_dir) == state["installation_identity"]
+                and service_identity(home, data_dir, executable, env) == state["service_identity"]
+                and socket_setting(executable, env) == state["socket"])
+
+    try:
+        if not unchanged():
+            return  # Preserve subsequent operator changes to this installation.
+    except (OSError, ValueError):
+        return  # A removed/replaced service is now managed independently.
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if socket_version(Path(state["socket"])) == version:
+            if not unchanged():
+                raise ValueError("The Backbone installation changed while waiting for its update; it was preserved")
+            return
+        time.sleep(1)
+    raise ValueError("The installed Backbone update is not yet running. Its service was preserved; "
+                     "automatic reload may be disabled or held. Resolve this through Backbone, then rerun the installer")
+
+
 def finish_socket(executable, home, data_dir, record, state, outcome_path, env):
     if installation_identity(data_dir) != state["installation_identity"]:
         raise ValueError("The installation changed during setup; it was preserved")
@@ -336,7 +422,9 @@ def install(executable, home, data_dir, version, provider_identity, resume_only=
             if not (data_dir / ".env").is_file():
                 raise ValueError("The completed Backbone installation is incomplete; repair it through Backbone setup. Its saved request was retained")
             if not resume_only:
-                check_schema(executable, dict(os.environ, BACKBONE_DATA_DIR=str(data_dir)))
+                env = dict(os.environ, BACKBONE_DATA_DIR=str(data_dir))
+                check_schema(executable, env)
+                wait_for_installed_service(executable, home, data_dir, state, version, env)
             return "Existing Backbone configuration and service preserved.", False
         if state.get("status") in {"failed", "action_required"} and state.get("retry") == "none":
             raise initialization_error(state)

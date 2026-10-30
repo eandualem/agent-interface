@@ -60,7 +60,12 @@ pub fn set(percent: u32) {
 
 /// The platform for this machine, drawing at the interface size.
 pub fn platform() -> Rc<dyn Platform> {
-    Rc::new(Zoomed(gpui_platform::current_platform(false)))
+    #[cfg(target_os = "linux")]
+    let platform =
+        gpui_linux::linux_platform(gpui::WindowingModes::X11 | gpui::WindowingModes::HEADLESS);
+    #[cfg(not(target_os = "linux"))]
+    let platform = gpui_platform::current_platform(false);
+    Rc::new(Zoomed(platform))
 }
 
 fn shrink_point(at: Point<Pixels>) -> Point<Pixels> {

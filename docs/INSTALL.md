@@ -25,14 +25,15 @@ brew install tmux
 ```
 
 On Linux, the desktop must provide system fonts, fontconfig, FreeType, XCB, xkbcommon,
-xkbcommon-x11, and a usable Vulkan or EGL/OpenGL driver. Wayland sessions also
-need the Wayland client library. **Open Library…** uses `xdg-desktop-portal` and
+xkbcommon-x11, and a usable Vulkan or EGL/OpenGL driver. HTML Documents need WebKitGTK 4.1. Wayland sessions also
+need the Wayland client library and XWayland; the app uses X11 for embedded
+Documents on both Wayland desktops and WSLg. **Open Library…** uses `xdg-desktop-portal` and
 a portal backend for your desktop, normally installed by the distribution.
 On Ubuntu 24.04, the basic runtime packages are:
 
 ```sh
 sudo apt install curl tmux fonts-dejavu-core libfontconfig1 libfreetype6 libxcb1 libxkbcommon0 \
-  libxkbcommon-x11-0 libwayland-client0 libvulkan1 libegl1 xdg-desktop-portal
+  libxkbcommon-x11-0 libwayland-client0 libvulkan1 libegl1 libwebkit2gtk-4.1-0 xwayland xdg-desktop-portal
 ```
 
 Keep your desktop's portal backend and GPU driver installed. A headless server
@@ -59,6 +60,15 @@ The installer downloads the matching archive and checks its SHA-256 checksum
 before extracting or running it. You can also download and inspect `install.sh`
 first, then run it with `sh install.sh`. Checksums detect corrupt downloads;
 they rely on the same GitHub release as the archive.
+
+Downloads show a progress bar. Package installation and Backbone setup print
+elapsed-time updates every five seconds while running; these updates indicate
+that the step is still active, not a percentage of work completed.
+
+The installer uses Backbone's installed executables directly. An older terminal
+may still have a stale `PATH` even after its shell configuration is updated;
+this does not prevent app installation. Open a new terminal to load shell changes,
+or use the absolute command path printed by the installer.
 
 For a local build or a manually downloaded archive, download the archive and its
 matching `.tar.gz.sha256` file into the same folder. Keep the archive compressed.
@@ -129,6 +139,22 @@ You can launch directly without changing `PATH`:
 Updates from the earlier `tmux-workspaces` installation preserve saved libraries
 and settings. The installer replaces its owned legacy app and launchers; the new
 command is `agent-interface`. Existing data directories remain readable in place.
+
+### Linux document sandbox
+
+Documents use WebKitGTK's process sandbox. If Ubuntu's namespace restrictions
+prevent Bubblewrap from starting, the installer offers sudo setup using the
+Ubuntu `apparmor-profiles` package's `bwrap-userns-restrict` policy. This policy
+attaches to the root-owned `/usr/bin/bwrap` helper and restricts capabilities in
+its children. The installer preserves existing policy files and loaded profiles;
+it does not grant permissions to user-writable app paths or change global sysctls.
+If setup is declined or unavailable, installation continues with native views;
+Documents explain that sandbox support needs configuration by an administrator.
+
+Containers must allow nested user, mount, PID and network namespaces for WebKitGTK.
+The app checks sandbox startup before opening Documents and reports an unavailable
+sandbox without disabling native terminals. Do not set
+`WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS`; Documents refuse that override.
 
 ## Windows 11 with WSL
 
@@ -202,7 +228,7 @@ the private Unix socket used by the app. Open Agent Interface to continue
 onboarding; no separate Backbone installation command is needed. Agent tools
 still need to be installed and signed in before creating an agent.
 
-New installations and upgrades select Backbone 0.4.1 or newer. If a compatible published
+New installations and upgrades select Backbone 0.4.2 or newer. If a compatible published
 release is unavailable, installation stops before replacing the app. Setup
 failures show Backbone's diagnostic and recovery guidance. When retry is allowed,
 rerun the same installer: it retains the request and resumes pending steps using
@@ -216,6 +242,14 @@ The installer upgrades the `agent-backbone` tool itself to the latest compatible
 published package, including when it was installed from Git or a development
 source. There is no package opt-out; do not run this installer if you need to
 preserve that tool installation.
+
+For an unchanged installation originally created by this installer, an upgrade
+waits up to two minutes for Backbone's automatic reload to report the installed
+version as healthy on its private socket. It does not restart an existing
+service or change reload preferences. If automatic reload is disabled or held,
+the installer reports that the update is not yet running and retains the saved
+setup; resolve the service update through Backbone and rerun the installer.
+Independently managed installations retain their own service lifecycle.
 
 For an independently managed installation without a private socket, its operator
 can enable the connection through Backbone's configuration:
@@ -243,14 +277,28 @@ checks the replacement before updating its own installation. Existing layouts,
 settings, and tmux sessions are preserved. It refuses to overwrite an installation
 it does not recognize; move that installation yourself if you want to replace it.
 
+The installer retains one archive in a hidden download cache so interrupted
+installs and repeated attempts can reuse it. Include that cache when removing
+the installation.
+
 To remove the macOS app, quit it and move `~/Applications/Agent Interface.app` to
-the Trash. On Linux, quit it and remove these installation files:
+the Trash, then remove its download cache:
 
 ```sh
-rm -rf "$HOME/.local/lib/agent-interface"
+rm -rf "$HOME/Applications/.agent-interface-download"
+```
+
+On Linux, quit the app and remove these installation files:
+
+```sh
+rm -rf "$HOME/.local/lib/agent-interface" "$HOME/.local/lib/.agent-interface-download"
 rm -f "$HOME/.local/bin/agent-interface"
 rm -f "${XDG_DATA_HOME:-$HOME/.local/share}/applications/io.github.eandualem.agent-interface.desktop"
 ```
+
+The distribution Bubblewrap policy is shared system sandbox support, like the
+runtime libraries. Uninstalling this app does not remove it or change other apps'
+sandbox configuration.
 
 These commands leave your data and terminal sessions intact. See the
 [user guide](GUIDE.md) for library and settings locations.

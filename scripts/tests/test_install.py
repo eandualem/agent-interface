@@ -1,12 +1,19 @@
 """Exercise installer transactions with inert payloads in private homes."""
 
 import hashlib
+import http.server
 import io
+import json
+import shlex
+import shutil
+import socket
+import sys
 import os
 from pathlib import Path
 import subprocess
 import tarfile
 import tempfile
+import threading
 import unittest
 
 INSTALL = Path(__file__).resolve().parents[2] / "install.sh"
@@ -27,7 +34,15 @@ class InstallTests(unittest.TestCase):
         self.env = dict(os.environ, HOME=str(self.home), PATH=str(self.tools) + os.pathsep + os.environ["PATH"])
         self.env.pop("XDG_DATA_HOME", None)
         self.env.pop("WSL_DISTRO_NAME", None)
-        self.installer = INSTALL
+        # Ordinary fixtures must never inspect or configure the host's sandbox
+        # policy. Sandbox cases opt into their own redirected paths below.
+        self.installer = self.root / "install.sh"
+        self.installer.write_text(INSTALL.read_text().replace(
+            "/proc/sys/kernel/apparmor_restrict_unprivileged_userns",
+            str(self.root / "no-host-userns-policy")))
+        self.command("sudo", "exit 99")
+        self.command("apt-get", "exit 99")
+        self.command("apparmor_parser", "exit 99")
         self.destination = self.home / ".local/lib/agent-interface"
         self.launcher = self.home / f".local/share/applications/{APP_ID}.desktop"
         self.link = self.home / ".local/bin/agent-interface"
@@ -64,7 +79,7 @@ class InstallTests(unittest.TestCase):
 
     def install(self, archive, success=True):
         args = ["--archive", str(archive)] if archive else []
-        result = subprocess.run(["sh", str(self.installer), *args], env=self.env, capture_output=True, text=True)
+        result = subprocess.run(["sh", str(self.installer), *args], env=self.env, capture_output=True, text=True, timeout=60)
         self.assertEqual(result.returncode == 0, success, result.stdout + result.stderr)
         return result
 
@@ -74,7 +89,7 @@ class InstallTests(unittest.TestCase):
         self.system_apps = self.root / "system-applications"
         self.system_apps.mkdir()
         self.installer = self.root / "install.sh"
-        self.installer.write_text(INSTALL.read_text().replace(
+        self.installer.write_text(self.installer.read_text().replace(
             "/usr/share/applications", str(self.system_apps)))
         self.env.update(WSL_DISTRO_NAME="Ubuntu", DISPLAY=":0",
                         TEST_SYSTEM_ACTIONS=str(self.root / "system-actions"))
@@ -93,6 +108,72 @@ case "$1" in
 esac
 ''')
         return self.system_apps / f"{APP_ID}.desktop"
+
+    def sandbox_fixture(self):
+        policy = self.root / "apparmor"
+        policy.mkdir()
+        (policy / "profiles").write_text("")
+        restriction = self.root / "restrict-userns"
+        restriction.write_text("1\n")
+        source = self.root / "distribution-policy"
+        source.write_text("# inert distribution policy fixture\n")
+        parser = self.tools / "apparmor_parser"
+        self.command("apparmor_parser", 'exit "${TEST_PARSER_STATUS:-0}"')
+        self.command("timeout", "exit 1")
+        self.sandbox_profile = policy / "bwrap-userns-restrict"
+        self.installer = self.root / "install-sandbox.sh"
+        self.installer.write_text(INSTALL.read_text()
+            .replace("/proc/sys/kernel/apparmor_restrict_unprivileged_userns", str(restriction))
+            .replace("/sys/kernel/security/apparmor", str(policy))
+            .replace("/etc/apparmor.d", str(policy))
+            .replace("/usr/share/apparmor/extra-profiles/bwrap-userns-restrict", str(source))
+            .replace("/usr/sbin/apparmor_parser", str(parser)))
+        self.env["TEST_SYSTEM_ACTIONS"] = str(self.root / "sandbox-actions")
+        self.command("sudo", """
+printf '%s\\n' "$*" >> "$TEST_SYSTEM_ACTIONS"
+[ "$1" != -v ] || exit "${TEST_SUDO_STATUS:-0}"
+exec "$@"
+""")
+        return self.package()
+
+    def test_distribution_sandbox_policy_is_loaded(self):
+        self.install(self.sandbox_fixture())
+        self.assertEqual(self.sandbox_profile.read_text(), "# inert distribution policy fixture\n")
+        actions = Path(self.env["TEST_SYSTEM_ACTIONS"]).read_text()
+        self.assertIn("apparmor_parser -r", actions)
+        self.assertNotIn("sysctl", actions)
+
+    def test_sandbox_custom_policy_is_preserved(self):
+        archive = self.sandbox_fixture()
+        self.sandbox_profile.write_text("custom policy\n")
+        result = self.install(archive)
+        self.assertEqual(self.sandbox_profile.read_text(), "custom policy\n")
+        self.assertIn("Existing Bubblewrap policy preserved", result.stderr)
+        self.assertTrue(self.destination.exists())
+
+    def test_loaded_sandbox_policy_is_not_replaced(self):
+        archive = self.sandbox_fixture()
+        (self.sandbox_profile.parent / "profiles").write_text("bwrap (enforce)\n")
+        result = self.install(archive)
+        self.assertIn("Existing or unreadable sandbox policy preserved", result.stderr)
+        self.assertFalse(self.sandbox_profile.exists())
+        self.assertNotIn("apparmor_parser", Path(self.env["TEST_SYSTEM_ACTIONS"]).read_text())
+
+    def test_sandbox_setup_without_sudo_still_installs_native_app(self):
+        archive = self.sandbox_fixture()
+        self.env["TEST_SUDO_STATUS"] = "1"
+        result = self.install(archive)
+        self.assertIn("native terminals and other views remain available", result.stderr)
+        self.assertFalse(self.sandbox_profile.exists())
+        self.assertTrue(self.destination.exists())
+
+    def test_sandbox_parser_failure_does_not_persist_policy(self):
+        archive = self.sandbox_fixture()
+        self.env["TEST_PARSER_STATUS"] = "1"
+        result = self.install(archive)
+        self.assertIn("Could not load", result.stderr)
+        self.assertFalse(self.sandbox_profile.exists())
+        self.assertTrue(self.destination.exists())
 
     def test_wsl_installs_runtime_and_registers_start_menu_entry(self):
         shortcut = self.wsl()
@@ -130,6 +211,7 @@ esac
         self.env.update(TEST_ARCHIVE=str(archive), TEST_PREFIX=prefix,
                         TEST_DOWNLOADS=str(self.root / "downloads"), TEST_MISSING_STATUS=missing_status)
         self.command("curl", '''
+printf '%s\\n' "$*" >> "$TEST_DOWNLOADS.args"
 url= output= write_status=false
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -139,6 +221,7 @@ while [ "$#" -gt 0 ]; do
         *) shift;;
     esac
 done
+case "$url" in */releases/latest) printf 'https://github.com/eandualem/agent-interface/releases/tag/vfixture'; exit 0;; esac
 name=${url##*/}
 printf '%s\\n' "$name" >> "$TEST_DOWNLOADS"
 case "$name" in
@@ -158,9 +241,11 @@ if [ "$write_status" = true ]; then printf 200; fi
         self.assertTrue((self.destination / "agent-interface.png").is_file())
         self.assertIn("StartupWMClass=io.github.eandualem.tmux-workspaces\n", self.launcher.read_text())
         self.assertEqual((self.root / "downloads").read_text().splitlines(), [
-            "agent-interface-x86_64-unknown-linux-gnu.tar.gz",
-            "tmux-workspaces-x86_64-unknown-linux-gnu.tar.gz",
-            "tmux-workspaces-x86_64-unknown-linux-gnu.tar.gz.sha256"])
+            "agent-interface-x86_64-unknown-linux-gnu.tar.gz.sha256",
+            "tmux-workspaces-x86_64-unknown-linux-gnu.tar.gz.sha256",
+            "tmux-workspaces-x86_64-unknown-linux-gnu.tar.gz"])
+        requests = (self.root / "downloads.args").read_text().splitlines()
+        self.assertIn("--progress-bar", requests[3])
         archive = self.package("0.1.1")
         self.mock_download(archive, prefix="agent-interface")
         self.install(None)
@@ -183,7 +268,7 @@ if [ "$write_status" = true ]; then printf 200; fi
         self.mock_download(self.package("0.1.0", legacy=True), missing_status="500")
         self.install(None, success=False)
         self.assertEqual(subprocess.check_output([self.link, "--version"], text=True).strip(), "agent-interface 0.1.1")
-        self.assertEqual((self.root / "downloads").read_text().splitlines(), ["agent-interface-x86_64-unknown-linux-gnu.tar.gz"])
+        self.assertEqual((self.root / "downloads").read_text().splitlines(), ["agent-interface-x86_64-unknown-linux-gnu.tar.gz.sha256"])
 
     def test_legacy_download_checksum_failure_preserves_installation(self):
         self.install(self.package("0.1.1"))
@@ -191,8 +276,214 @@ if [ "$write_status" = true ]; then printf 200; fi
         with archive.open("ab") as stream:
             stream.write(b"corrupt")
         self.mock_download(archive)
+        self.command("sleep", 'case "$1" in 2|4|8|16) exit 0;; *) exec /bin/sleep "$@";; esac')
         self.install(None, success=False)
         self.assertEqual(subprocess.check_output([self.link, "--version"], text=True).strip(), "agent-interface 0.1.1")
+
+    def unreliable_download(self, archive, outcomes):
+        self.env.update(TEST_ARCHIVE=str(archive), TEST_OUTCOMES=','.join(outcomes),
+                        TEST_TRANSFERS=str(self.root / "transfers"))
+        self.command("sleep", 'case "$1" in 2|4|8|16) exit 0;; *) exec /bin/sleep "$@";; esac')
+        stub = self.root / "download.py"
+        stub.write_text('''import json, os, sys
+from pathlib import Path
+args = sys.argv[1:]
+output = Path(args[args.index('-o') + 1])
+url = next(arg for arg in args if arg.startswith('https://'))
+archive = Path(os.environ['TEST_ARCHIVE'])
+if url.endswith('/releases/latest'):
+    print('https://github.com/eandualem/agent-interface/releases/tag/vfixture', end='')
+    sys.exit(0)
+assert '/releases/download/vfixture/' in url
+if url.endswith('.sha256'):
+    output.write_bytes(Path(str(archive) + '.sha256').read_bytes())
+    print('200', end='')
+    sys.exit(0)
+assert '--continue-at' in args and args[args.index('--continue-at') + 1] == '-'
+assert '--max-time' not in args
+assert args[args.index('--speed-limit') + 1] == '1'
+assert args[args.index('--speed-time') + 1] == '60'
+log = Path(os.environ['TEST_TRANSFERS'])
+records = json.loads(log.read_text()) if log.exists() else []
+offset = output.stat().st_size if output.exists() else 0
+records.append(offset)
+log.write_text(json.dumps(records))
+plan = os.environ['TEST_OUTCOMES'].split(',')
+outcome = plan[min(len(records) - 1, len(plan) - 1)]
+if outcome in ('33', '416', '503', '404'):
+    print(outcome if outcome != '33' else '200', end='')
+    sys.exit(33 if outcome == '33' else 0 if outcome == '416' else 22)
+data = archive.read_bytes()
+if outcome == 'corrupt':
+    output.write_bytes(b'bad archive')
+else:
+    end = len(data) if outcome == 'ok' else min(len(data) - 1, offset + 17)
+    with output.open('ab') as stream:
+        stream.write(data[offset:end])
+print('206' if offset else '200', end='')
+sys.exit(0 if outcome in ('ok', 'corrupt') else int(outcome))
+''')
+        self.command("curl", f"exec {shlex.quote(sys.executable)} {shlex.quote(str(stub))} \"$@\"")
+
+    def real_curl_resume(self, reject_range=False):
+        archive = self.package()
+        body = archive.read_bytes()
+        checksum = Path(str(archive) + '.sha256').read_bytes()
+        offsets = []
+        heads = []
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_HEAD(self):
+                heads.append(self.path)
+                if self.path == '/releases/latest':
+                    self.send_response(302)
+                    self.send_header('Location', '/releases/tag/vfixture')
+                elif self.path == '/releases/tag/vfixture':
+                    self.send_response(200)
+                else:
+                    self.send_response(404)
+                self.send_header('Content-Length', '0')
+                self.end_headers()
+
+            def do_GET(self):
+                if not self.path.startswith('/releases/download/vfixture/'):
+                    self.send_error(404)
+                    return
+                if self.path.endswith('.sha256'):
+                    self.send_response(200)
+                    self.send_header('Content-Length', str(len(checksum)))
+                    self.end_headers()
+                    self.wfile.write(checksum)
+                    return
+                offset = int(self.headers.get('Range', 'bytes=0-')[6:-1])
+                offsets.append(offset)
+                if reject_range and len(offsets) == 2:
+                    self.send_response(416)
+                    self.send_header('Content-Range', f'bytes */{len(body)}')
+                    self.send_header('Content-Length', '0')
+                    self.end_headers()
+                    return
+                self.send_response(206 if offset else 200)
+                self.send_header('Content-Length', str(len(body) - offset))
+                if offset:
+                    self.send_header('Content-Range', f'bytes {offset}-{len(body) - 1}/{len(body)}')
+                self.end_headers()
+                if len(offsets) == 1:
+                    self.wfile.write(body[:37])
+                    self.wfile.flush()
+                    self.connection.shutdown(socket.SHUT_RDWR)
+                    self.connection.close()
+                else:
+                    self.wfile.write(body[offset:])
+
+        server = http.server.HTTPServer(('127.0.0.1', 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        real_curl = shutil.which('curl')
+        self.assertIsNotNone(real_curl)
+        proxy = self.root / 'curl-proxy.py'
+        # Only this fixture routes GitHub requests through its local HTTP
+        # server. Real curl resolves HEAD redirects and transfers the archive;
+        # translate its effective local URL back for production's origin check.
+        local = f'http://127.0.0.1:{server.server_port}'
+        repository = 'https://github.com/eandualem/agent-interface'
+        proxy.write_text('import subprocess, sys\n' +
+                         f'local, repository = {local!r}, {repository!r}\n' +
+                         'args = [arg.replace("=https", "=http").replace(repository, local) for arg in sys.argv[1:]]\n' +
+                         f'result = subprocess.run([{real_curl!r}, "--noproxy", "*", *args], stdout=subprocess.PIPE)\n' +
+                         'sys.stdout.buffer.write(result.stdout.replace(local.encode(), repository.encode()))\n' +
+                         'sys.exit(result.returncode)\n')
+        self.command('curl', f'exec {shlex.quote(sys.executable)} {shlex.quote(str(proxy))} "$@"')
+        try:
+            result = self.install(None)
+            if reject_range:
+                self.assertIn('Server could not resume', result.stderr)
+            self.assertEqual(heads, ['/releases/latest', '/releases/tag/vfixture'])
+            self.assertEqual(offsets, [0, 37, 0] if reject_range else [0, 37])
+            self.assertEqual((self.destination.parent / '.agent-interface-download/archive.part').read_bytes(), body)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_real_curl_resumes_a_truncated_http_response(self):
+        self.real_curl_resume()
+
+    def test_real_curl_range_rejection_starts_fresh(self):
+        self.real_curl_resume(reject_range=True)
+
+    def test_download_resumes_after_reset_and_stall(self):
+        self.unreliable_download(self.package(), ['56', '28', 'ok'])
+        result = self.install(None)
+        self.assertEqual(json.loads((self.root / 'transfers').read_text()), [0, 17, 34])
+        self.assertIn('attempt 3/5; 34 bytes saved', result.stderr)
+        self.assertTrue(self.link.exists())
+
+    def test_download_exhaustion_retains_bytes_for_next_installer_run(self):
+        self.wsl()
+        self.unreliable_download(self.package(), ['56'] * 5 + ['ok'])
+        result = self.install(None, success=False)
+        self.assertIn('rerun the installer to resume', result.stderr)
+        self.assertFalse((self.root / 'system-actions').exists())
+        self.assertFalse(self.destination.exists())
+        self.install(None)
+        self.assertEqual(json.loads((self.root / 'transfers').read_text()), [0, 17, 34, 51, 68, 85])
+        self.assertIn('-v', (self.root / 'system-actions').read_text())
+        # A verified archive is also reused if a later installation step failed.
+        self.install(None)
+        self.assertEqual(len(json.loads((self.root / 'transfers').read_text())), 6)
+
+    def test_changed_release_does_not_resume_old_bytes(self):
+        self.unreliable_download(self.package('0.0.0'), ['56'] * 5 + ['ok'])
+        self.install(None, success=False)
+        self.package('0.0.1')
+        self.install(None)
+        self.assertEqual(json.loads((self.root / 'transfers').read_text())[-1], 0)
+        self.assertEqual(subprocess.check_output([self.link], text=True).strip(), 'agent-interface 0.0.1')
+
+    def test_download_recovers_when_server_rejects_range(self):
+        for rejection in ('33', '416'):
+            with self.subTest(rejection=rejection):
+                archive = self.package('0.0.' + rejection)
+                (self.root / 'transfers').unlink(missing_ok=True)
+                self.unreliable_download(archive, ['56', rejection, 'ok'])
+                self.install(None)
+                self.assertEqual(json.loads((self.root / 'transfers').read_text()), [0, 17, 0])
+
+    def test_download_retries_server_error_and_corrupt_success(self):
+        self.unreliable_download(self.package(), ['503', 'corrupt', 'ok'])
+        self.install(None)
+        self.assertEqual(json.loads((self.root / 'transfers').read_text()), [0, 0, 0])
+
+    def test_download_missing_asset_does_not_loop_or_claim_network_failure(self):
+        self.unreliable_download(self.package(), ['404'])
+        result = self.install(None, success=False)
+        self.assertIn('HTTP 404', result.stderr)
+        self.assertEqual(json.loads((self.root / 'transfers').read_text()), [0])
+        self.assertFalse(self.destination.exists())
+
+    def test_release_resolution_requires_a_tag_in_the_same_repository(self):
+        self.command('curl', "printf 'https://example.invalid/releases/tag/vfixture'")
+        result = self.install(None, success=False)
+        self.assertIn('did not resolve to a release tag', result.stderr)
+        self.assertFalse((self.destination.parent / '.agent-interface-download').exists())
+
+    def test_download_cache_rejects_symlink(self):
+        archive = self.package()
+        self.unreliable_download(archive, ['ok'])
+        parent = self.destination.parent
+        parent.mkdir(parents=True)
+        cache = parent / '.agent-interface-download'
+        cache.mkdir()
+        outside = self.root / 'unrelated'
+        outside.write_text('preserve')
+        (cache / 'archive.part').symlink_to(outside)
+        self.install(None, success=False)
+        self.assertEqual(outside.read_text(), 'preserve')
+        self.assertFalse((self.root / 'transfers').exists())
 
     def test_transitional_link_is_restored_after_update_failure(self):
         self.install(self.package("0.1.0", legacy=True))
@@ -332,23 +623,33 @@ if [ "$write_status" = true ]; then printf 200; fi
 
     def backbone_tools(self):
         self.env.update(FIXTURE_TOOLS=str(self.root / "uv tools"),
+                        FIXTURE_BIN=str(self.home / ".local/bin"),
                         FIXTURE_LOG=str(self.root / "provider.log"),
                         FIXTURE_PYTHON=str(self.tools / "provider-python"))
         self.command("provider-python", '''
 printf '%s\\n' "$*" >> "$FIXTURE_LOG"
 case "$*" in *--resume-pending*) exit "${FIXTURE_RESUME:-0}";; esac
+case ":$PATH:" in *":$FIXTURE_BIN:"*) :;; *) exit 89;; esac
+if [ "${FIXTURE_SETUP_DELAY:-0}" != 0 ]; then sleep "$FIXTURE_SETUP_DELAY"; fi
 exit "${FIXTURE_SETUP_FAIL:-0}"
 ''')
         self.command("uv", '''
 printf '%s\\n' "$*" >> "$FIXTURE_LOG"
 case "$1 $2" in
-    "tool dir") printf '%s\\n' "$FIXTURE_TOOLS";;
+    "tool dir")
+        if [ "${3:-}" = --bin ]; then printf '%s\\n' "$FIXTURE_BIN";
+        else printf '%s\\n' "$FIXTURE_TOOLS"; fi;;
     "tool install")
         [ "${FIXTURE_INSTALL_FAIL:-0}" = 0 ] || exit 1
         mkdir -p "$FIXTURE_TOOLS/agent-backbone/bin"
         cp "$FIXTURE_PYTHON" "$FIXTURE_TOOLS/agent-backbone/bin/python"
         chmod 755 "$FIXTURE_TOOLS/agent-backbone/bin/python";;
-    "tool update-shell") :;;
+    "tool update-shell")
+        if [ "${FIXTURE_SHELL_FAIL:-0}" != 0 ]; then
+            echo 'error: PATH is stale but the Bash configuration files are already up-to-date' >&2
+            exit 1
+        fi
+        echo 'Restart your shell to apply changes' >&2;;
     *) exit 1;;
 esac
 ''')
@@ -356,17 +657,54 @@ esac
     def test_latest_provider_install_and_pending_resume_order(self):
         self.backbone_tools()
         archive = self.package("0.2.0", extra={"agent-interface/setup_backbone.py": "fixture helper"})
-        self.install(archive)
+        first = self.install(archive)
+        self.assertIn('Backbone command: "' + self.env["FIXTURE_BIN"] + '/backbone"', first.stdout)
+        self.assertIn("Restart your shell to apply changes", first.stderr)
         log = Path(self.env["FIXTURE_LOG"])
         lines = log.read_text().splitlines()
-        self.assertIn("tool install --upgrade --prerelease disallow --python >=3.11,<3.14 agent-backbone>=0.4.1", lines)
+        self.assertIn("tool install --upgrade --prerelease disallow --python >=3.11,<3.14 agent-backbone>=0.4.2", lines)
         self.assertTrue(lines[-1].startswith("-I -B "))
         self.env["FIXTURE_RESUME"] = "3"
         log.write_text("")
-        self.install(archive)
+        result = self.install(archive)
         lines = log.read_text().splitlines()
         self.assertTrue(any("--resume-pending" in line for line in lines))
         self.assertFalse(any(line.startswith("tool install") for line in lines))
+        self.assertNotIn(": failed.", result.stderr)
+
+    def test_stale_shell_path_does_not_block_app_or_provider_setup(self):
+        self.backbone_tools()
+        self.env["FIXTURE_SHELL_FAIL"] = "1"
+        result = self.install(self.package(extra={"agent-interface/setup_backbone.py": "fixture helper"}))
+        self.assertTrue(self.link.is_symlink())
+        self.assertIn('Backbone command: "' + self.env["FIXTURE_BIN"] + '/backbone"', result.stdout)
+        self.assertIn("Shell setup notice (app installation will continue)", result.stderr)
+        self.assertIn("Bash configuration files are already up-to-date", result.stderr)
+        self.assertIn("Starting and checking Agent Backbone: done.", result.stderr)
+
+    def test_provider_install_path_with_equals_is_executed(self):
+        self.backbone_tools()
+        self.env["FIXTURE_TOOLS"] = str(self.root / "uv=tools")
+        self.install(self.package(extra={"agent-interface/setup_backbone.py": "fixture helper"}))
+        self.assertTrue(self.link.is_symlink())
+
+    def test_quiet_setup_reports_elapsed_time_and_cleans_up_progress(self):
+        self.backbone_tools()
+        self.env["FIXTURE_SETUP_DELAY"] = "6"
+        result = self.install(self.package(extra={"agent-interface/setup_backbone.py": "fixture helper"}))
+        self.assertIn("Starting and checking Agent Backbone: still running (5s elapsed)", result.stderr)
+        self.assertIn("Starting and checking Agent Backbone: done.", result.stderr)
+        # install() has a bounded timeout: an orphan heartbeat would otherwise
+        # retain its capture pipe indefinitely. It must emit no later updates.
+        self.assertTrue(result.stderr.rstrip().endswith("Starting and checking Agent Backbone: done."))
+
+    def test_setup_failure_reports_failed_step_and_preserves_old_app(self):
+        self.install(self.package("0.1.1"))
+        self.backbone_tools()
+        self.env.update(FIXTURE_SHELL_FAIL="1", FIXTURE_SETUP_FAIL="1")
+        result = self.install(self.package(extra={"agent-interface/setup_backbone.py": "fixture helper"}), success=False)
+        self.assertIn("Starting and checking Agent Backbone: failed.", result.stderr)
+        self.assertIn("0.1.1", subprocess.check_output([self.link, "--version"], text=True))
 
     def test_provider_failure_keeps_previous_app(self):
         self.install(self.package("0.1.1"))

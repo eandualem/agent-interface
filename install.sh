@@ -6,6 +6,40 @@ set -eu
 main() {
 
 fail() { printf 'Agent Interface: %s\n' "$*" >&2; exit 1; }
+progress_pid=
+stop_progress() {
+    if [ -n "$progress_pid" ]; then
+        kill "$progress_pid" 2>/dev/null || true
+        wait "$progress_pid" 2>/dev/null || true
+        progress_pid=
+    fi
+}
+run_step() {
+    step_title=$1
+    shift
+    printf '%s...\n' "$step_title" >&2
+    (
+        tick=
+        trap '[ -z "$tick" ] || { kill "$tick" 2>/dev/null || :; wait "$tick" 2>/dev/null || :; }; exit 0' HUP INT TERM
+        elapsed=0
+        while :; do
+            sleep 5 &
+            tick=$!
+            wait "$tick" || exit 0
+            elapsed=$((elapsed + 5))
+            printf '  %s: still running (%ss elapsed)\n' "$step_title" "$elapsed" >&2
+        done
+    ) &
+    progress_pid=$!
+    if "$@"; then step_status=0; else step_status=$?; fi
+    stop_progress
+    if [ "$step_status" -eq 0 ]; then
+        printf '%s: done.\n' "$step_title" >&2
+    else
+        printf '%s: failed.\n' "$step_title" >&2
+    fi
+    return "$step_status"
+}
 usage() {
     printf '%s\n' 'Usage: sh install.sh [--archive PATH]' \
         'Installs the latest published build, or a local archive with its .sha256 file.' \
@@ -124,6 +158,7 @@ cleanup() {
     status=$?
     trap - EXIT HUP INT TERM
     set +e
+    stop_progress
     rollback_ok=true
     if [ "$status" -ne 0 ]; then
         if [ "$new_wsl_launcher" = true ]; then
@@ -198,26 +233,6 @@ if [ -n "$wsl_launcher" ]; then
     command -v apt-get >/dev/null 2>&1 && command -v dpkg-query >/dev/null 2>&1 ||
         fail 'Automatic WSL setup requires Ubuntu 24.04 or newer.'
     command -v sudo >/dev/null 2>&1 || fail 'WSL setup requires sudo for runtime packages and the Windows launcher.'
-    printf '%s\n' 'Preparing WSL runtime packages and Windows Start menu entry. sudo may ask for your Linux password.'
-    sudo -v || fail 'Could not authorize WSL runtime and launcher installation.'
-    missing=
-    for package in tmux git fonts-dejavu-core libfontconfig1 libfreetype6 libxcb1 libxkbcommon0 \
-        libxkbcommon-x11-0 libwayland-client0 libvulkan1 libegl1 libgl1-mesa-dri \
-        mesa-vulkan-drivers xdg-desktop-portal xdg-desktop-portal-gtk; do
-        if [ "$(dpkg-query -W -f='${Status}' "$package" 2>/dev/null || true)" != 'install ok installed' ]; then
-            missing="$missing $package"
-        fi
-    done
-    if [ -n "$missing" ]; then
-        sudo apt-get update || fail 'Could not refresh Ubuntu package information.'
-        # The list contains only the fixed package names above.
-        # shellcheck disable=SC2086
-        sudo apt-get install -y $missing || fail 'Could not install the WSL runtime packages.'
-    fi
-    if [ -f "$wsl_launcher" ]; then
-        wsl_launcher_backup=$staging/previous-wsl-launcher
-        cp "$wsl_launcher" "$wsl_launcher_backup"
-    fi
 fi
 if [ -n "$archive" ]; then
     [ -f "$archive" ] && [ -f "$archive.sha256" ] || fail 'The archive and its adjacent .sha256 file are required.'
@@ -225,25 +240,98 @@ if [ -n "$archive" ]; then
     cp "$archive.sha256" "$staging/checksum"
 else
     command -v curl >/dev/null 2>&1 || fail 'Install curl and retry.'
-    base=https://github.com/eandualem/agent-interface/releases/latest/download
+    repository=https://github.com/eandualem/agent-interface
+    printf 'Finding the latest release...\n'
+    release=$(curl --fail --head --location --silent --show-error --proto '=https' --tlsv1.2 \
+        --connect-timeout 15 --max-time 60 --retry 4 --retry-delay 2 --retry-connrefused \
+        --write-out '%{url_effective}' "$repository/releases/latest" -o /dev/null) ||
+        fail 'Could not find the latest release. Check your connection and retry.'
+    case $release in
+        "$repository/releases/tag/"?*) base=$repository/releases/download/${release#"$repository/releases/tag/"} ;;
+        *) fail 'The latest release did not resolve to a release tag.' ;;
+    esac
     name=agent-interface-$target.tar.gz
-    printf 'Downloading %s\n' "$name"
-    if status=$(curl --fail --location --silent --show-error --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 600 \
-        --write-out '%{http_code}' "$base/$name" -o "$staging/download.tar.gz"); then
+    # Fetch the small checksum first so a cached partial belongs to exactly
+    # these bytes, even if the latest release changes between installer runs.
+    printf 'Checking the release checksum...\n'
+    fetch_checksum() {
+        curl --fail --location --silent --show-error --proto '=https' --tlsv1.2 \
+            --connect-timeout 15 --max-time 60 --retry 4 --retry-delay 2 --retry-connrefused \
+            --write-out '%{http_code}' "$base/$name.sha256" -o "$staging/checksum"
+    }
+    if status=$(fetch_checksum); then
         :
     elif [ "$status" = 404 ]; then
-        # The latest release can still predate the archive rename while main
-        # contains the next installer. Only a missing asset permits fallback.
         name=tmux-workspaces-$target.tar.gz
-        printf 'Checking earlier release archive %s\n' "$name"
-        curl --fail --location --silent --show-error --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 600 \
-            "$base/$name" -o "$staging/download.tar.gz" || fail 'Download failed. Check that a release exists for this platform.'
+        status=$(fetch_checksum) || fail 'Could not fetch the release checksum. Check your connection and retry.'
     else
-        fail 'Download failed. Check that a release exists for this platform.'
+        fail 'Could not fetch the release checksum. Check your connection and retry.'
     fi
-    curl --fail --location --silent --show-error --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 60 \
-        "$base/$name.sha256" -o "$staging/checksum"
+    expected=$(awk 'NR == 1 {print $1}' "$staging/checksum")
+    [ ${#expected} -eq 64 ] || fail 'Invalid SHA-256 checksum.'
+    case $expected in *[!0-9a-f]*) fail 'Invalid SHA-256 checksum.';; esac
+    # The existing install lock also serializes this private, persistent cache.
+    cache=$parent/.agent-interface-download
+    [ ! -L "$cache" ] || fail 'Refusing a symlink download cache.'
+    (umask 077; mkdir -p "$cache")
+    chmod 700 "$cache"
+    for file in "$cache/checksum" "$cache/archive.part"; do
+        [ ! -L "$file" ] && { [ ! -e "$file" ] || [ -f "$file" ]; } ||
+            fail 'Refusing a non-regular download cache file.'
+    done
+    if [ "$(cat "$cache/checksum" 2>/dev/null || true)" != "$expected" ]; then
+        rm -f "$cache/archive.part"
+        printf '%s\n' "$expected" > "$cache/checksum"
+    fi
+    download=$cache/archive.part
+    download_matches() {
+        [ -f "$download" ] || return 1
+        if command -v sha256sum >/dev/null 2>&1; then
+            digest=$(sha256sum "$download" | awk '{print $1}')
+        else
+            digest=$(shasum -a 256 "$download" | awk '{print $1}')
+        fi
+        [ "$digest" = "$expected" ]
+    }
+    attempt=1
+    delay=2
+    while ! download_matches; do
+        bytes=0
+        if [ -f "$download" ]; then bytes=$(wc -c < "$download" | tr -d ' '); fi
+        printf 'Downloading %s (attempt %s/5; %s bytes saved)...\n' "$name" "$attempt" "$bytes" >&2
+        # Each new curl process resumes the bytes from the last attempt. A
+        # slow but active transfer has no total deadline; only stalls time out.
+        if status=$(curl --fail --location --progress-bar --show-error --proto '=https' --tlsv1.2 \
+            --connect-timeout 15 --speed-limit 1 --speed-time 60 --continue-at - \
+            --write-out '%{http_code}' "$base/$name" -o "$download"); then
+            transfer_status=0
+        else
+            transfer_status=$?
+        fi
+        download_matches && break
+        if [ "$transfer_status" -eq 33 ] || [ "$status" = 416 ]; then
+            # curl may report success for 416, assuming the local file is
+            # complete. We already checked its hash, so restart if it differs.
+            printf '%s\n' 'Server could not resume this file; retrying from the beginning.' >&2
+            rm -f "$download"
+        elif [ "$transfer_status" -eq 0 ]; then
+            printf '%s\n' 'Checksum mismatch; retrying with a fresh archive.' >&2
+            rm -f "$download"
+        else
+            case $transfer_status:$status in
+                22:408|22:429|22:5??|5:*|6:*|7:*|16:*|18:*|28:*|35:*|52:*|55:*|56:*|92:*) ;;
+                *) fail "Download failed (curl $transfer_status, HTTP $status); rerun the installer to resume any saved bytes in $cache." ;;
+            esac
+        fi
+        [ "$attempt" -lt 5 ] || fail "Download could not finish after 5 attempts; rerun the installer to resume any saved bytes in $cache."
+        printf 'Retrying in %ss; downloaded bytes are kept unless the server cannot resume or verification fails.\n' "$delay" >&2
+        sleep "$delay"
+        attempt=$((attempt + 1))
+        delay=$((delay * 2))
+    done
+    cp "$download" "$staging/download.tar.gz"
 fi
+printf '%s\n' 'Verifying and unpacking the app...'
 expected=$(awk 'NR == 1 {print $1}' "$staging/checksum")
 [ ${#expected} -eq 64 ] || fail 'Invalid SHA-256 checksum.'
 case $expected in *[!0-9a-f]*) fail 'Invalid SHA-256 checksum.';; esac
@@ -287,15 +375,76 @@ esac
 if [ "$platform" = apple-darwin ]; then
     codesign --verify --strict "$prepared" || fail 'App signature verification failed.'
 fi
+if [ -n "$wsl_launcher" ]; then
+    printf '%s\n' 'Preparing WSL runtime packages and Windows Start menu entry. sudo may ask for your Linux password.'
+    sudo -v || fail 'Could not authorize WSL runtime and launcher installation.'
+    missing=
+    for package in tmux git fonts-dejavu-core libfontconfig1 libfreetype6 libxcb1 libxkbcommon0 \
+        libxkbcommon-x11-0 libwayland-client0 libvulkan1 libegl1 libgl1-mesa-dri \
+        mesa-vulkan-drivers libwebkit2gtk-4.1-0 xwayland xdg-desktop-portal xdg-desktop-portal-gtk; do
+        if [ "$(dpkg-query -W -f='${Status}' "$package" 2>/dev/null || true)" != 'install ok installed' ]; then
+            missing="$missing $package"
+        fi
+    done
+    if [ -n "$missing" ]; then
+        run_step 'Refreshing Ubuntu package information' sudo apt-get update || fail 'Could not refresh Ubuntu package information.'
+        # The list contains only the fixed package names above.
+        # shellcheck disable=SC2086
+        run_step 'Installing WSL runtime packages' sudo apt-get install -y $missing || fail 'Could not install the WSL runtime packages.'
+    fi
+    if [ -f "$wsl_launcher" ]; then
+        wsl_launcher_backup=$staging/previous-wsl-launcher
+        cp "$wsl_launcher" "$wsl_launcher_backup"
+    fi
+fi
 "$prepared/$executable" --version || fail 'The binary cannot run on this system. Check the documented runtime requirements.'
 resources=$prepared/$(dirname "$marker")
+# Use the distribution's root-owned Bubblewrap policy when its sandbox cannot
+# start. Never grant userns to writable app paths or replace an existing policy.
+configure_linux_sandbox() {
+    [ "$platform" = unknown-linux-gnu ] || return 0
+    [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null || true)" = 1 ] || return 0
+    [ -d /sys/kernel/security/apparmor ] || return 0
+    if timeout 5 /usr/bin/bwrap --ro-bind / / --proc /proc --dev /dev --unshare-all -- /bin/true >/dev/null 2>&1; then return 0; fi
+    sandbox_warning='Documents need Linux sandbox support; native terminals and other views remain available. See the Linux installation guide.'
+    sandbox_source=/usr/share/apparmor/extra-profiles/bwrap-userns-restrict
+    sandbox_profile=/etc/apparmor.d/bwrap-userns-restrict
+    if [ -e "$sandbox_profile" ] || [ -L "$sandbox_profile" ]; then
+        printf 'Agent Interface: Existing Bubblewrap policy preserved. %s\n' "$sandbox_warning" >&2
+        return 0
+    fi
+    printf '%s\n' 'Preparing distribution Bubblewrap sandbox support. sudo may ask for your Linux password.'
+    if ! sudo -v; then printf 'Agent Interface: %s\n' "$sandbox_warning" >&2; return 0; fi
+    if ! sudo test -r /sys/kernel/security/apparmor/profiles ||
+        sudo grep -Eq '^(bwrap|unpriv_bwrap) \(' /sys/kernel/security/apparmor/profiles; then
+        printf 'Agent Interface: Existing or unreadable sandbox policy preserved. %s\n' "$sandbox_warning" >&2
+        return 0
+    fi
+    if [ ! -f "$sandbox_source" ]; then
+        if ! command -v apt-get >/dev/null 2>&1 ||
+            ! run_step 'Refreshing sandbox package information' sudo apt-get update ||
+            ! run_step 'Installing distribution sandbox policy' sudo apt-get install -y apparmor-profiles; then
+            printf 'Agent Interface: %s\n' "$sandbox_warning" >&2
+            return 0
+        fi
+    fi
+    if [ ! -f "$sandbox_source" ] || [ ! -x /usr/sbin/apparmor_parser ] ||
+        ! run_step 'Loading distribution sandbox policy' sudo /usr/sbin/apparmor_parser -r "$sandbox_source"; then
+        printf 'Agent Interface: Could not load the distribution sandbox policy. %s\n' "$sandbox_warning" >&2
+        return 0
+    fi
+    if ! sudo install -m 644 -- "$sandbox_source" "$sandbox_profile"; then
+        printf 'Agent Interface: Sandbox policy is active but could not be saved for restart.\n' >&2
+    fi
+}
+configure_linux_sandbox
 if [ -f "$resources/setup_backbone.py" ]; then
     # Backbone publishes its own package. Install that release independently
     # of the app archive; uv supplies Python when a suitable runtime is absent.
     uv=$(command -v uv || true)
     if [ -z "$uv" ] && [ -x "$HOME/.local/bin/uv" ]; then uv=$HOME/.local/bin/uv; fi
     if [ -z "$uv" ]; then
-        curl --fail --location --silent --show-error --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 60 \
+        curl --fail --location --silent --show-error --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 60 --retry 4 --retry-delay 2 --retry-connrefused \
             https://astral.sh/uv/0.13.6/install.sh -o "$staging/uv-install.sh" || fail 'Could not download the Python installer.'
         if command -v sha256sum >/dev/null 2>&1; then
             uv_hash=$(sha256sum "$staging/uv-install.sh" | awk '{print $1}')
@@ -303,34 +452,55 @@ if [ -f "$resources/setup_backbone.py" ]; then
             uv_hash=$(shasum -a 256 "$staging/uv-install.sh" | awk '{print $1}')
         fi
         [ "$uv_hash" = f7a56e7afaec49a3bcbc3ac3cdbe917e7c6ce30e0d815308a12e531aa5ef23b7 ] || fail 'Python installer checksum mismatch.'
-        UV_INSTALL_DIR="$HOME/.local/bin" sh "$staging/uv-install.sh" || fail 'Could not install uv.'
+        run_step 'Installing Python tools' env UV_INSTALL_DIR="$HOME/.local/bin" sh "$staging/uv-install.sh" || fail 'Could not install uv.'
         uv=$HOME/.local/bin/uv
     fi
     tools=$("$uv" tool dir) || fail 'Could not locate the Agent Backbone installation directory.'
     backbone_resumed=false
-    if [ -x "$tools/agent-backbone/bin/python" ]; then
+    resume_backbone() {
         if "$tools/agent-backbone/bin/python" -I -B "$resources/setup_backbone.py" \
             --executable "$tools/agent-backbone/bin/backbone" --resume-pending; then
             :
         else
             resume_status=$?
-            [ "$resume_status" -eq 3 ] || fail 'Interrupted Backbone setup needs attention. Its installed version was preserved.'
+            [ "$resume_status" -eq 3 ] || return "$resume_status"
             backbone_resumed=true
         fi
+    }
+    if [ -x "$tools/agent-backbone/bin/python" ]; then
+        run_step 'Checking saved Backbone setup' resume_backbone ||
+            fail 'Interrupted Backbone setup needs attention. Its installed version was preserved.'
     fi
     if [ "$backbone_resumed" = false ]; then
-        "$uv" tool install --upgrade --prerelease disallow --python '>=3.11,<3.14' 'agent-backbone>=0.4.1' ||
+        run_step 'Installing Agent Backbone' "$uv" tool install --upgrade --prerelease disallow --python '>=3.11,<3.14' 'agent-backbone>=0.4.2' ||
             fail 'Could not install a compatible published Agent Backbone release. The app was not replaced.'
-        "$uv" tool update-shell || fail 'Could not make Agent Backbone available to new terminals.'
+        tool_bin=$("$uv" tool dir --bin) || fail 'Could not locate Agent Backbone commands.'
+        # Shell integration is optional: uv can return nonzero when startup
+        # files are already correct but this terminal still has its old PATH.
+        # App setup uses absolute executables regardless of shell configuration.
+        if ! "$uv" tool update-shell > "$staging/shell-setup.log" 2>&1; then
+            printf '%s\n' 'Shell setup notice (app installation will continue):' >&2
+        fi
+        cat "$staging/shell-setup.log" >&2
+        printf 'Backbone command: "%s/backbone"\n' "$tool_bin"
+        PATH="$tool_bin:$PATH"
+        export PATH
         tools=$("$uv" tool dir) || fail 'Could not locate the installed Agent Backbone.'
-        PATH="$tools/agent-backbone/bin:$(dirname "$uv"):$PATH" \
-        "$tools/agent-backbone/bin/python" -I -B "$resources/setup_backbone.py" \
-            --executable "$tools/agent-backbone/bin/backbone" ||
+        run_backbone_setup() (
+            PATH="$tools/agent-backbone/bin:$(dirname "$uv"):$PATH"
+            export PATH
+            # Execute the path directly: env treats paths containing '=' as
+            # additional assignments rather than the program to run.
+            exec "$tools/agent-backbone/bin/python" -I -B "$resources/setup_backbone.py" \
+                --executable "$tools/agent-backbone/bin/backbone"
+        )
+        run_step 'Starting and checking Agent Backbone' run_backbone_setup ||
             fail 'Agent Backbone setup did not finish. The app was not replaced; rerun this installer to resume.'
     else
         printf '%s\n' 'Resumed Agent Backbone setup with its saved version. A later install can check for an upgrade.'
     fi
 fi
+printf '%s\n' 'Installing the app and its launcher...'
 if [ "$platform" = unknown-linux-gnu ]; then
     mkdir -p "$data/applications" "$HOME/.local/bin"
     # Stage beside the launcher so replacement stays atomic with a separate XDG volume.

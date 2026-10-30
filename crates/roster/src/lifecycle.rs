@@ -147,12 +147,14 @@ mod tests {
             let (mut socket, _) = listener.accept().unwrap();
             let (header, sent) = request(&mut socket);
             assert!(header.starts_with("POST /api/agents/worker/start "));
-            write!(
-                socket,
+            // A refusal lets the client close as soon as it reads the status.
+            // Coalesce the small response instead of write!'s separate writes,
+            // which can race that close between the headers and body.
+            let response = format!(
                 "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                 body.len()
-            )
-            .unwrap();
+            );
+            socket.write_all(response.as_bytes()).unwrap();
             drop(socket);
             // Nothing is retried.
             listener.set_nonblocking(true).unwrap();

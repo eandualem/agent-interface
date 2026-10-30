@@ -2,8 +2,8 @@
 
 Agent Interface is a native desktop client for tmux. The app owns the window
 and saved arrangement; tmux owns sessions and their processes. Terminals are
-drawn with GPUI, using Ghostty's terminal core to interpret output. There is no
-web view and no app daemon.
+drawn with GPUI, using Ghostty's terminal core to interpret output. Terminals never use a web view. HTML Documents use an isolated system
+webview; the app runs no daemon.
 
 ## Processes and connections
 
@@ -39,6 +39,7 @@ another client's selected window.
 | `tmux` | Server discovery and validation, control-mode protocol, pane capture, recovery and input commands |
 | `term` | Terminal engine ownership, input encoding and owned display snapshots |
 | `roster` | Agent Backbone roster and pane-view reads, plus explicit user feedback through bounded local requests |
+| `webview-host` | Borrowed XCB-to-Xlib window-handle adaptation for Linux document embedding; no application state or process ownership |
 | `app` | Native windows, input routing, storage and terminal workers, and integration between the other crates |
 
 `app` connects the product crates. `store` also depends on `core`; the other
@@ -193,10 +194,13 @@ global window positions are unavailable, so app-calculated position limits canno
 safely place it. macOS and X11 instead bound resizing
 against the display, respecting the platform resize anchor.
 
-The first-agent step calls the selected engine's `runtimes --json`, then submits
+The first-agent step calls the selected engine's `runtimes --json --check-setup`
+(falling back to `runtimes --json` when an older CLI rejects the option), then submits
 `setup --file REQUEST --jsonl` only after an explicit Start action. It offers the
 `orchestrator-v1` brief or custom instructions, a name and a folder. Discovery
-reports installed tools, never verified login; permission and login prompts stay
+reports installed tools and opt-in setup compatibility, never verified login;
+incompatible tools show their diagnostic and selected executable rather than
+remaining selectable. Permission and login prompts stay
 in the actual agent terminal. First-agent selection also requires an explicit
 `setup_supported: true`; older providers and unsupported tools remain unavailable
 for this setup path. Start also requests an initial greeting, which may
@@ -206,8 +210,19 @@ The app saves the exact request, launcher and effective login-shell PATH in a
 private `onboarding-agent-<installation-digest>.json` beside settings before
 executing it. The resolved provider directory scopes each saved operation.
 Recovery loads that record even when fresh tool discovery cannot find an engine. An interrupted
-attempt reuses that request ID; only a confirmed preflight failure permits editing
-choices. Saving and archiving serialize through a sibling file lock. The engine
+attempt reuses that request ID. Change agent tool first durably records cancellation
+intent, then submits the same fields and ID with `action=cancel_first_agent`.
+Cancellation uses the active or discovered engine and refreshed PATH when
+available, falling back to the saved executable and PATH. Normal setup replay
+always uses the saved launcher and PATH.
+Only a matching `request_cancelled` completion with `can_start_new_request=true`
+retires the local request and unlocks the form. The name, folder and brief survive;
+tool discovery and the login-shell PATH refresh before a new request is created.
+After interruption, cancellation intent resumes cancellation rather than starting
+the previous tool. The provider refuses cancellation after setup effects begin;
+the app retains the original record on refusal or an uncertain result. Saving,
+execution, cancellation and archiving serialize through a sibling file lock, and
+each worker checks that its request is still current before invoking the engine. The engine
 owns durable operation receipts and mutation deduplication. Requests are capped at
 32 KiB; stdout uses positional reads with a 1 MiB total limit, 64 KiB lines,
 1,024 events and a five-minute deadline. Request identity, sequence, final state
@@ -400,7 +415,7 @@ Discovery reads metadata off the UI thread every two seconds while visible;
 the catalog retains the newest 200 entries. HTML is read only on opening a
 document and is limited to 4 MiB, including inline assets.
 
-`desktop::views::artifact_web` is the system-webview boundary. On macOS it
+`desktop::views::artifact_web` is the system-webview boundary. On macOS and Linux it
 creates a Wry/WebKit child view only for an opened document, positions it in
 the pane's content rectangle, and updates its host theme stylesheet. Text,
 backgrounds and controls follow the active app theme; layout and media retain
@@ -409,16 +424,16 @@ hidden while native overlays or pane dragging need that space. Closing the
 document or hiding its pane releases the web view, so reopening starts a fresh
 document runtime. Native terminals, menus and report views do not use WebKit.
 WebKit's platform processes belong to the renderer; the app adds no daemon.
-Linux currently shows an explicit unsupported-renderer message: embedding
-WebKitGTK in GPUI's Wayland/X11 windows needs a separate integration.
+Linux uses WebKitGTK on X11, with XWayland on Wayland desktops and WSLg;
+the integration and event loop are described below.
 
 Artifacts use a private in-memory URL, an ephemeral browser session and a
 content policy that permits inline HTML/CSS/JavaScript, SVG, canvas and data
 assets but blocks external resources, network requests, frames and form
 submission. Navigation, downloads, new windows and permission requests are
 denied. WebRTC peer connections are disabled in native WebKit preferences before
-loading content, because CSP does not govern their sockets. This uses WebKit's
-private preference SPI, checked at runtime; if unavailable or ineffective, HTML
+loading content, because CSP does not govern their sockets. On macOS this uses WebKit's
+private preference SPI; Linux uses its public settings API. Both are checked at runtime; if unavailable or ineffective, HTML
 rendering fails closed. The supplied configuration explicitly keeps an ephemeral
 data store. The sole JavaScript bridge reports pointer focus to select the owning
 pane; it exposes no terminal commands, filesystem access or Backbone API.
@@ -430,10 +445,10 @@ visible documents still consume WebKit CPU and memory according to their code.
 The project is MIT-licensed. [`Cargo.toml`](../Cargo.toml) declares dependency
 versions, `Cargo.lock` records the resolved graph, and `deny.toml` checks licences,
 advisories and permitted sources.
-The audit runs separately for both architectures on macOS and Linux. Wry is
-reachable only in macOS graphs, so its unused GTK and Android dependencies are
-not part of any supported build. No advisory or licence exception is added for
-those dependencies.
+The audit runs separately for both architectures on macOS and Linux. Wry uses
+system WebKit on macOS and GTK/WebKitGTK on Linux; unused Android dependencies
+are not part of a supported build. The GTK compatibility patch and narrow
+build-time advisory exception are described below.
 
 - **GPUI (`gpui-pre` and platform packages):** native windowing and GPU drawing,
   pinned as one package family. Apache-2.0. The macOS 0.3.9 backend is
@@ -466,9 +481,24 @@ those dependencies.
   bound values; serialization writes the initial database through an open file handle.
 - **`libc`:** Unix constants for nonblocking configuration reads in the app
   and roster, and the existing process integration. MIT OR Apache-2.0.
-- **`wry` 0.57.1:** macOS system WebKit child views for experimental HTML
-  artifacts, pinned exactly and enabled only on macOS. MIT OR Apache-2.0.
-  It does not render terminals or supply a bundled browser engine.
+- **`wry` 0.57.1:** system WebKit child views for HTML Documents and legacy
+  artifacts on macOS and Linux, pinned exactly. MIT OR Apache-2.0.
+  The local `native/wry` patch enables the Linux process sandbox before view
+  construction. It does not render terminals or supply a bundled browser engine.
+- **`gtk` 0.18.2, `gdkx11` 0.18.2 and `webkit2gtk` 2.0.2:** MIT-licensed Rust bindings, pinned
+  exactly, for the Linux system WebKitGTK 4.1 runtime, native security settings
+  and GTK event dispatch. Their MIT GLib 0.18.5 dependency uses the local
+  `native/glib` backport of upstream gtk-rs-core#1343, fixing the mutable
+  output-pointer bug in `VariantStrIter` (RUSTSEC-2024-0429); an optimized Linux
+  regression test exercises both iteration directions. GTK and WebKitGTK remain dynamically linked system
+  libraries, installed and updated through the distribution's package manager.
+- **`target-lexicon` 0.12.16:** Apache-2.0 WITH LLVM-exception; build-time
+  target detection through GTK's `system-deps`. GTK's build-time
+  `proc-macro-error` 1.0.4 is unmaintained (RUSTSEC-2024-0370), with no vulnerability
+  in that advisory; the narrowly documented audit exception remains until the
+  GTK3 binding graph can be replaced.
+- **`gpui-pre-linux` 0.3.9:** existing Apache-2.0 platform implementation,
+  now selected explicitly for the X11 host needed by embedded WebKitGTK.
 - **Hyper 1.12.0, hyper-util 0.1.21, http-body-util 0.1.5 and Tokio 1.53.3:**
   MIT HTTP/runtime dependencies, pinned exactly, for HTTP over a connected
   Unix socket after the peer identity check.
@@ -523,7 +553,7 @@ binary linked to the system desktop libraries. Neither package includes a
 Python runtime, build toolchain, tmux server or application daemon.
 
 The archive includes `setup_backbone.py`, a standard-library installer helper.
-`install.sh` installs the latest stable published `agent-backbone>=0.4.1` with
+`install.sh` installs the latest stable published `agent-backbone>=0.4.2` with
 uv, independently of the app archive. Backbone (MIT) owns its package, dependency
 testing and publication. uv (MIT OR Apache-2.0) installs the Python environment;
 when uv is absent, its 0.13.6 installer is version- and SHA-256-pinned. No Backbone
@@ -539,8 +569,35 @@ socket writes are reconciled against the intended value; conflicting choices
 are preserved. Existing installations and completed setup keep their settings
 and services. The final socket probe sends only an unauthenticated health request;
 the app's native transport performs peer verification before sending credentials.
+For an unchanged, installer-owned completed setup, upgrades also observe the
+installed version becoming healthy on the private socket for up to 120 seconds.
+This read-only check validates directory/socket ownership and modes plus the
+peer UID, and rechecks the saved installation, unit and socket choices before
+accepting readiness. It lets Backbone's automatic upgrade watcher reload without
+restarting the service or changing a disabled/held reload preference. Independently
+managed or subsequently changed installations keep their own lifecycle.
 Provider installation/setup finishes before replacing the app; provider state
 is retained if a later app replacement fails.
+
+Shell command integration through `uv tool update-shell` is best-effort. Its
+nonzero status can mean startup files already contain the executable directory
+but the current terminal has not loaded them. The installer adds the tool binary
+directory to its own PATH and runs provider setup by absolute path, so this
+optional integration cannot abort an otherwise usable app installation. Actual
+provider installation and setup failures remain fatal. Archive transfers use
+curl's progress bar; quiet package/setup commands emit elapsed-time updates from
+a shell helper that is stopped and reaped when the command finishes. No extra
+progress library is required. Each run resolves the latest release to a fixed tag
+before fetching its checksum and archive, so retries cannot switch releases.
+Downloads resume from a private cache beside the
+installation, protected by the installer lock and keyed by the published SHA-256
+checksum. Five attempts with exponential backoff tolerate interrupted connections;
+a 60-second stalled-transfer timeout replaces a total download deadline. A later
+installer run reuses partial or verified bytes for the same checksum. A changed
+checksum invalidates the cache, and range rejection or checksum failure starts a
+fresh transfer. Verification still precedes extraction and execution. WSL runtime
+installation and its sudo prompt occur after the archive is verified, so a long
+download does not consume the authorization window.
 
 The shell installer verifies the archive checksum and target, stages a
 per-user replacement, and preserves the data directories. Linux desktop and
@@ -644,3 +701,55 @@ visibly. The first integration does not claim full Excel formula compatibility,
 Google account integration, macros, network formulas, charts, pivots or live keystroke
 coediting. The provider isolates calculation in a bounded worker; macOS resident
 memory monitoring can overshoot between samples and is not a hard allocation sandbox.
+
+### Linux HTML document host
+
+Linux uses WebKitGTK 4.1 inside the same native window. GPUI exposes an XCB
+window; `webview-host` borrows that window identity as an Xlib handle for Wry.
+The adapter changes only the representation of the XID and retains the source
+handle's lifetime. It does not create a second connection or own the window.
+The application selects X11 on Linux; Wayland desktops and Windows WSLg use
+XWayland. A Wayland session without XWayland cannot host these child views.
+Terminals and all navigation remain native GPUI rendering.
+
+GTK initializes on the main thread with the X11 backend. A foreground task
+services its events beside GPUI's loop, bounded to 64 iterations or 2 ms per
+turn. It wakes every 16 ms with live document views, otherwise every 250 ms.
+Native GTK key events forward configured application shortcuts and the fixed
+window, library, settings and quit shortcuts to GPUI, while
+ordinary typing and text editing stay in WebKit; authored IPC cannot invoke
+those shortcuts. The child follows pane bounds, interface zoom, theme and overlay visibility;
+closing or hiding a document destroys its ephemeral view. Child placement uses
+physical pixels on Linux, and page zoom compensates for GPUI's fractional display
+scale versus GTK's integer scale. Teardown and queued GTK event dispatch trap
+GDK X errors: closing the GPUI parent can destroy its child XID before a queued
+property update runs. Expected BadWindow errors are logged at debug level; other
+X errors are warnings. The trap is scoped to the document bridge, so a late child
+update cannot terminate other native windows.
+Native document clicks focus the GTK child so moving the pointer does not redirect
+subsequent typing. Late page focus notifications are ignored while native overlays
+or geometry gestures occlude the page, preserving the active native input field.
+Native interface clicks restore X input focus to the original GPUI parent, not GTK's
+intermediary window. GTK retains its registered GdkWindow, reparented beneath the
+X11 container; replacing that window with a foreign one breaks GTK teardown.
+The Wry patch destroys the GTK owner before the owned container synchronously,
+including without a window manager, and uses a weak view reference in the IPC handler so
+closing a document or switching revisions does not retain its ephemeral context.
+
+Authored HTML loads only after native settings disable WebRTC (not governed
+by CSP), DNS prefetch, hyperlink auditing and scripted clipboard/file access.
+File chooser requests are cancelled. The shared content policy blocks network
+requests, subframes, objects and forms; navigation stays within the document,
+new windows and downloads are denied, and the only IPC message reports focus.
+The local MIT/Apache-2.0 Wry patch enables the ephemeral WebKit context process
+sandbox before constructing any view; the app verifies
+that it is enabled before loading authored content. A bounded bubblewrap probe
+runs before any web view; denied namespace creation disables Documents with an
+explicit error while native views remain usable. Renderer load/process failures
+also reach the native error view. The unsafe WebKit sandbox environment override
+is refused. On restricted Ubuntu hosts the installer can enable the distribution's
+`bwrap-userns-restrict` policy for the root-owned helper, preserving existing
+policy and without changing global sysctls or granting userns to writable app
+paths. Its child profile restricts capabilities. This optional system setup
+requires sudo; refusal or failure does not block installing native views. `LIBGL_ALWAYS_SOFTWARE=1` selects
+WebKitGTK's nonaccelerated drawing policy for headless/software environments.

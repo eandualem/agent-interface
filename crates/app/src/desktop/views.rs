@@ -35,7 +35,7 @@ use crate::roster::ViewSource;
 
 mod activity;
 mod agent;
-mod artifact_web;
+pub(super) mod artifact_web;
 mod artifacts;
 mod clock;
 mod conversation;

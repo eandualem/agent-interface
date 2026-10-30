@@ -21,7 +21,11 @@ pub const TOOLS: &[(&str, &str, &str)] = &[
         "Claude Code",
         "curl -fsSL https://claude.ai/install.sh | bash",
     ),
-    ("codex", "Codex", "npm install -g @openai/codex"),
+    (
+        "codex",
+        "Codex",
+        "curl -fsSL https://chatgpt.com/codex/install.sh | sh",
+    ),
     ("gemini", "Gemini CLI", "npm install -g @google/gemini-cli"),
     (
         "opencode",

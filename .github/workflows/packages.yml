@@ -42,7 +42,7 @@ jobs:
         run: >-
           sudo apt-get update && sudo apt-get install -y pkg-config binutils
           libfontconfig-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev
-          libx11-xcb-dev desktop-file-utils
+          libx11-xcb-dev libwebkit2gtk-4.1-dev desktop-file-utils
       - name: Installer tests
         run: python3 -B -m unittest discover -s scripts/tests -v
       - name: Package optimized native app
