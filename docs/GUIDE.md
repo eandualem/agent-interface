@@ -59,8 +59,8 @@ Settings, chooses another folder containing `layouts.db`.
 
 Text in Skills, policies, agent briefs and report readers supports drag selection,
 double-click word selection, and Command-C to copy (Control-C on Linux).
-Command-A selects the document text (Control-A on Linux). Source text uses the
-same selection behavior. The Edit menu offers Copy and Select All; on macOS
+Command-A selects the document text (Control-A on Linux). **Copy Markdown** in
+a skill or policy copies the whole file. The Edit menu offers Copy and Select All; on macOS
 these also work with selected text inside HTML Documents.
 
 ## Find work and change appearance

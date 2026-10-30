@@ -81,8 +81,6 @@ pub(super) enum ViewEvent {
     ShowAgent(String),
     /// Open this view in a new pane beside this one.
     OpenBeside(View),
-    /// A field in the view gave up focus; return it to the window's keys.
-    ReturnFocus,
     /// An embedded document received a pointer press; select its owning pane.
     Focus,
 }
@@ -165,14 +163,11 @@ pub(super) struct ViewPane {
     section: AgentSection,
     query: String,
     search: Option<Entity<NameField>>,
-    /// The agent named in a skill's "check an agent" field.
-    check: String,
-    check_field: Option<Entity<NameField>>,
     /// What is open in place of the list, found by its file so a refresh
     /// never swaps it for another.
     open: Option<Open>,
-    /// Whether the reader shows the document's source.
-    raw: bool,
+    /// Whether the reader's Markdown was just copied.
+    copied: bool,
     /// The tag whose agents the tags view lists in place of its cards.
     carriers_of: Option<String>,
     selection: RefCell<selection::Selection>,
@@ -255,10 +250,8 @@ impl ViewPane {
             section: view.section.unwrap_or_default(),
             query: String::new(),
             search: None,
-            check: String::new(),
-            check_field: None,
             open: None,
-            raw: false,
+            copied: false,
             carriers_of: None,
             selection: RefCell::default(),
             reports: reports::State::default(),
@@ -294,23 +287,6 @@ impl ViewPane {
                     }
                 }));
             pane.search = Some(field);
-        }
-        if matches!(pane.view.kind, ViewKind::Skills | ViewKind::Agent) {
-            let field = cx.new(|cx| NameField::filter(window, cx));
-            pane._search
-                .push(cx.subscribe(&field, |pane, _, event, cx| match event {
-                    NameEvent::Changed(name) => {
-                        pane.check = name.trim().to_owned();
-                        cx.notify();
-                    }
-                    // Esc in the field goes back, as it does anywhere in the reader.
-                    NameEvent::Cancel => {
-                        pane.close(cx);
-                        cx.emit(ViewEvent::ReturnFocus);
-                    }
-                    NameEvent::Save => {}
-                }));
-            pane.check_field = Some(field);
         }
         let Some(directory) = backbone else {
             pane.error = Some("Agent Backbone is not set up on this computer.");
@@ -626,10 +602,6 @@ impl ViewPane {
         }
         match key.key.as_str() {
             "escape" => self.close(cx),
-            "s" => {
-                self.raw = !self.raw;
-                cx.notify();
-            }
             "[" => self.step(-1, cx),
             "]" => self.step(1, cx),
             _ => return false,

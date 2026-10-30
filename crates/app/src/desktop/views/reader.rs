@@ -1,11 +1,12 @@
 //! The reader every view opens a skill or a policy in: the list is replaced
 //! by the document, with a back button saying where it returns to, the
-//! document's place in that list, Rendered or Source, a summary card and the
-//! text. Esc, `[` `]` and S do the same from the keyboard.
+//! document's place in that list, a button that copies its Markdown, a
+//! summary card and the rendered text. Esc and `[` `]` do the same from the
+//! keyboard.
 
-use gpui::{AnyElement, Context, Div, SharedString, div, prelude::*, px};
+use gpui::{AnyElement, Context, Div, div, prelude::*, px};
 
-use super::{ViewPane, markdown, mono, selection};
+use super::{ViewPane, markdown, mono};
 use crate::desktop::{
     components as ui,
     design::{colors, tokens},
@@ -40,20 +41,43 @@ pub(super) fn render(
     cx: &mut Context<ViewPane>,
 ) -> AnyElement {
     let (t, c) = (tokens(), colors());
-    let mut display = ui::segments();
-    for (raw, label) in [(false, "Rendered"), (true, "Source")] {
-        display = display.child(
-            ui::segment(
-                SharedString::from(format!("reader-display-{label}")),
-                label,
-                pane.raw == raw,
-            )
-            .on_click(cx.listener(move |pane, _, _, cx| {
-                pane.raw = raw;
-                cx.notify();
-            })),
-        );
-    }
+    // The document's Markdown, whole, for pasting elsewhere. The files are
+    // Backbone's, so the reader only reads them.
+    let source = match page.text {
+        Text::Ready { text, .. } => Some(text.to_owned()),
+        _ => None,
+    };
+    let copy = source.map(|source| {
+        ui::button(
+            "reader-copy",
+            if pane.copied {
+                "Copied"
+            } else {
+                "Copy Markdown"
+            },
+            ui::Button::Secondary,
+        )
+        .child(ui::icon(
+            if pane.copied { "check" } else { "copy" },
+            t.size.icon,
+            c.muted,
+        ))
+        .on_click(cx.listener(move |pane, _, _, cx| {
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string(source.clone()));
+            pane.copied = true;
+            cx.notify();
+            cx.spawn(async |pane, cx| {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(1500))
+                    .await;
+                let _ = pane.update(cx, |pane, cx| {
+                    pane.copied = false;
+                    cx.notify();
+                });
+            })
+            .detach();
+        }))
+    });
     let step = |id: &'static str, icon: &'static str, by: isize, cx: &mut Context<ViewPane>| {
         ui::icon_button(id, icon).on_click(cx.listener(move |pane, _, _, cx| pane.step(by, cx)))
     };
@@ -86,7 +110,7 @@ pub(super) fn render(
             ),
         )
         .child(step("reader-next", "chevron-down", 1, cx))
-        .child(display);
+        .children(copy);
     let content: AnyElement = match page.text {
         Text::Loading => ui::text(div().text_color(c.muted), &t.text.body)
             .child("Reading…")
@@ -98,15 +122,7 @@ pub(super) fn render(
             .flex()
             .flex_col()
             .gap(px(t.space.s12))
-            .child(if pane.raw {
-                ui::text(
-                    div().font_family(t.font.mono.clone()).text_color(c.text_2),
-                    &t.text.status,
-                )
-                .child(selection::text(pane, text, &[], cx))
-            } else {
-                markdown::render(&markdown::parse(text), pane, cx)
-            })
+            .child(markdown::render(&markdown::parse(text), pane, cx))
             .when(cut, |el| {
                 el.child(
                     ui::text(div().text_color(c.muted), &t.text.meta)
@@ -127,7 +143,7 @@ pub(super) fn render(
         .py(px(t.space.s20))
         .child(page.card)
         .child(content);
-    let mut hints = vec![("esc", "back"), ("[ ]", "previous, next"), ("S", "source")];
+    let mut hints = vec![("esc", "back"), ("[ ]", "previous, next")];
     if pane.conversation.is_some() {
         hints.push(("C", "conversation"));
     }
