@@ -1273,6 +1273,23 @@ pub fn fact(label: impl Into<SharedString>, value: impl IntoElement) -> Div {
 // Authored records from Agent Backbone: the rows that list them and the
 // pieces their readers are made of.
 
+/// Where an agent stopped: a still accent ring around a square, the working
+/// mark without its turning arc.
+pub fn stopped_symbol() -> Div {
+    let (t, c) = (tokens(), colors());
+    let size = t.size.agent_symbol;
+    div()
+        .flex_shrink_0()
+        .size(px(size))
+        .rounded_full()
+        .border(px(t.size.minimap_stroke * 1.5))
+        .border_color(c.accent)
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(div().size(px(size / 3.0)).rounded(px(1.0)).bg(c.accent))
+}
+
 /// A finished record's mark: an `ok` ring with a check. Other report states
 /// use [`agent_symbol`].
 pub fn done_symbol() -> Div {
@@ -1568,6 +1585,8 @@ pub enum Step {
     Done,
     /// Being worked on now.
     Now,
+    /// Where the agent stopped: the step it was on while it is not working.
+    Stopped,
     /// Waiting on someone or something.
     Waits,
     /// Still to come.
@@ -1575,7 +1594,8 @@ pub enum Step {
 }
 
 /// A step's mark: a check in `ok` once done, the turning arc while now, a
-/// faint ring ahead, and "!" on the attention fill while it waits.
+/// still accent ring with a square where the agent stopped, a faint ring
+/// ahead, and "!" on the attention fill while it waits.
 pub fn step_dot(step: Step) -> Div {
     let (t, c) = (tokens(), colors());
     let size = t.size.plan_dot;
@@ -1595,6 +1615,9 @@ pub fn step_dot(step: Step) -> Div {
     match step {
         Step::Done => ring(frame, c.ok).child(icon("step-check", size * 2.0 / 3.0, c.ok)),
         Step::Now => ring(frame, c.accent_soft).child(turning_arc(size)),
+        Step::Stopped => {
+            ring(frame, c.accent).child(div().size(px(size / 3.0)).rounded(px(1.0)).bg(c.accent))
+        }
         Step::Ahead => ring(frame, c.faint),
         Step::Waits => frame.bg(c.attention).child(
             text(
@@ -1622,9 +1645,10 @@ fn turning_arc(size: f32) -> Div {
 }
 
 /// One step on a plan card's track: its mark and name, done in `muted`, now
-/// on the accent tint, ahead in `text_2`, waiting in a dashed attention
-/// outline. A long name ends in an ellipsis rather than wrapping the track.
-pub fn plan_step(label: impl Into<SharedString>, step: Step) -> Div {
+/// on the accent tint, stopped in `accent_text`, ahead in `text_2`, waiting
+/// in a dashed attention outline, and ringed while selected. A long name ends
+/// in an ellipsis rather than wrapping the track.
+pub fn plan_step(label: impl Into<SharedString>, step: Step, selected: bool) -> Div {
     let (t, c) = (tokens(), colors());
     let pill = text(
         div()
@@ -1637,7 +1661,9 @@ pub fn plan_step(label: impl Into<SharedString>, step: Step) -> Div {
             .pr(px(t.space.s8 + 1.0))
             .rounded(px(t.size.plan_step / 2.0))
             .border(px(t.size.hairline))
-            .border_color(gpui::transparent_black()),
+            .border_color(gpui::transparent_black())
+            .relative()
+            .cursor_pointer(),
         &t.text.status,
     );
     let pill = match step {
@@ -1646,20 +1672,28 @@ pub fn plan_step(label: impl Into<SharedString>, step: Step) -> Div {
             .bg(c.accent_soft)
             .text_color(c.accent_text)
             .font_weight(t.text.row_selected.weight()),
+        Step::Stopped => pill
+            .border_color(c.accent)
+            .text_color(c.accent_text)
+            .font_weight(t.text.row_selected.weight()),
         Step::Ahead => pill.text_color(c.text_2),
         Step::Waits => pill
             .border_dashed()
             .border_color(c.attention)
             .text_color(c.attention_text),
     };
-    pill.child(step_dot(step)).child(
-        div()
-            .min_w_0()
-            .overflow_hidden()
-            .whitespace_nowrap()
-            .text_ellipsis()
-            .child(label.into()),
-    )
+    pill.child(step_dot(step))
+        .child(
+            div()
+                .min_w_0()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .child(label.into()),
+        )
+        .when(selected, |el| {
+            el.child(selection_ring(t.size.plan_step / 2.0, t.size.hairline))
+        })
 }
 
 /// The line from one step on a track to the next: `muted` once the step
@@ -1815,6 +1849,15 @@ pub fn plan_node(
                 .border_color(c.accent)
                 .text_color(c.text),
             agent_symbol(AgentState::Working),
+            c.accent_text,
+        ),
+        Step::Stopped => (
+            frame
+                .bg(c.surface)
+                .border(px(t.size.minimap_stroke * 1.5))
+                .border_color(c.accent)
+                .text_color(c.text),
+            stopped_symbol(),
             c.accent_text,
         ),
         Step::Ahead => (

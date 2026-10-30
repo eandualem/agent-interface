@@ -1,13 +1,15 @@
 //! Each agent's current plan in Reports & updates: one card per agent with
 //! its steps on a track and what they wait on, and an opened plan drawn as
-//! a graph with the selected step beside it. Plans are the agents' declared
-//! intent; this view only reads them.
+//! a graph with the selected step's detail under it. Plans are the agents'
+//! declared intent; whether an agent is working comes from its reported
+//! state, not the plan. This view only reads them.
 
 use std::{cell::Cell, collections::BTreeMap, path::PathBuf, rc::Rc, time::Duration};
 
 use agent_interface_roster::{
     conversations,
     plans::{self, Entry, Error, Item, PlansPage},
+    views::Member,
 };
 use gpui::{AnyElement, Context, Entity, SharedString, Task, Window, div, prelude::*, px};
 
@@ -42,8 +44,8 @@ struct Frame {
     provider: Option<String>,
     /// Drafts and unresolved deliveries keep their observed plans accessible.
     held: bool,
-    /// The CLI each agent runs in, from the same read.
-    runtimes: BTreeMap<String, String>,
+    /// Each agent's runtime and reported state, by name, from the same read.
+    members: BTreeMap<String, Member>,
     /// Why the latest read failed, shown beside the plans last read.
     error: Option<Error>,
     /// The card the keyboard is on, by author.
@@ -51,6 +53,8 @@ struct Frame {
     /// The opened plan, by author, and the step selected in it.
     open: Option<String>,
     step: Option<String>,
+    /// The step whose detail shows under its card, by author and step.
+    card_step: Option<(String, String)>,
 }
 
 impl Plans {
@@ -113,7 +117,7 @@ impl Plans {
     fn receive(
         &mut self,
         number: u64,
-        read: Result<(PlansPage, BTreeMap<String, String>, String), Error>,
+        read: Result<(PlansPage, BTreeMap<String, Member>, String), Error>,
         cx: &mut Context<Self>,
     ) {
         if number == self.asked {
@@ -124,10 +128,10 @@ impl Plans {
         }
         self.applied = number;
         match read {
-            Ok((page, runtimes, provider)) => {
+            Ok((page, members, provider)) => {
                 self.frame.provider = Some(provider);
                 self.frame.page = Some(page);
-                self.frame.runtimes = runtimes;
+                self.frame.members = members;
                 self.frame.error = None;
             }
             Err(error) => self.frame.error = Some(error),
@@ -152,7 +156,7 @@ impl Plans {
             }
             Ok((
                 page,
-                agent_interface_roster::views::runtimes(&directory),
+                agent_interface_roster::views::members(&directory),
                 provider,
             ))
         });
@@ -174,13 +178,28 @@ impl Plans {
         if !has_plan {
             return;
         }
+        // The step chosen on its card, else where the agent is.
+        let chosen = frame
+            .card_step
+            .take()
+            .filter(|(card, _)| *card == author)
+            .map(|(_, step)| step);
         frame.selected = Some(author.clone());
         frame.open = Some(author);
-        frame.step = frame
-            .opened()
-            .and_then(|entry| entry.record.as_ref())
-            .and_then(|record| record.plan.current())
-            .map(|item| item.item_id.clone());
+        frame.step = chosen.or_else(|| {
+            let entry = frame.opened()?;
+            let plan = &entry.record.as_ref()?.plan;
+            At::of(plan, frame.state(&entry.agent_name)).step
+        });
+        cx.notify();
+    }
+
+    /// Show `step`'s detail under `author`'s card, or hide it when shown.
+    fn choose_card_step(&mut self, author: String, step: String, cx: &mut Context<Self>) {
+        let frame = &mut self.frame;
+        let chosen = (author.clone(), step);
+        frame.card_step = (frame.card_step.as_ref() != Some(&chosen)).then_some(chosen);
+        frame.selected = Some(author);
         cx.notify();
     }
 
@@ -298,10 +317,22 @@ impl Frame {
             })
             .unwrap_or_default();
         entries.sort_by_key(|entry| match &entry.record {
-            Some(record) => (u8::from(!record.plan.blocked()), record.age_seconds),
+            Some(record) => {
+                let waiting = record.plan.blocked() || self.state(&entry.agent_name).needs_you();
+                (u8::from(!waiting), record.age_seconds)
+            }
             None => (2, u64::MAX),
         });
         entries
+    }
+
+    /// `agent`'s reported state; one the roster does not list is unknown.
+    fn state(&self, agent: &str) -> ui::AgentState {
+        self.members
+            .get(agent)
+            .map_or(ui::AgentState::Unknown, |member| {
+                ui::AgentState::from_report(&member.state)
+            })
     }
 
     fn opened(&self) -> Option<&Entry> {
@@ -355,37 +386,83 @@ pub(super) fn key(
     })
 }
 
+/// Where an agent is in its plan: the step it works on while its reported
+/// state says it is working, else the step it stopped at, the first waiting
+/// one before any other. An agent whose state is unknown is not working.
+struct At {
+    step: Option<String>,
+    working: bool,
+}
+
+impl At {
+    fn of(plan: &plans::Plan, state: ui::AgentState) -> Self {
+        let working = state.working();
+        let step = if working {
+            plan.current()
+        } else {
+            plan.items
+                .iter()
+                .find(|item| item.blocked())
+                .or_else(|| plan.current())
+        };
+        Self {
+            step: step.map(|item| item.item_id.clone()),
+            working,
+        }
+    }
+
+    fn is(&self, item: &Item) -> bool {
+        self.step.as_deref() == Some(item.item_id.as_str())
+    }
+
+    /// Where the agent stopped, while it is not working.
+    fn stopped_at(&self, item: &Item) -> bool {
+        !self.working && self.is(item)
+    }
+}
+
 /// A step's place in its plan, as [`ui::plan_step`] and [`ui::plan_node`]
-/// show it.
-fn step(item: &Item, current: Option<&str>) -> ui::Step {
+/// show it: only a working agent's step turns.
+fn step(item: &Item, at: &At) -> ui::Step {
     if item.done() {
         ui::Step::Done
     } else if item.blocked() {
         ui::Step::Waits
-    } else if Some(item.item_id.as_str()) == current {
+    } else if at.is(item) && at.working {
         ui::Step::Now
+    } else if at.is(item) {
+        ui::Step::Stopped
     } else {
         ui::Step::Ahead
     }
 }
 
-/// The plan's state as the agent's mark: waiting, finished or working.
-fn mark(plan: &plans::Plan) -> gpui::Div {
-    if plan.blocked() {
-        ui::agent_symbol(ui::AgentState::NeedsYou)
-    } else if plan.items.iter().all(Item::done) {
+/// The agent's mark from its reported state; an agent at rest with every
+/// step done shows the plan finished.
+fn mark(plan: &plans::Plan, state: ui::AgentState) -> gpui::Div {
+    let resting = !state.working() && !state.needs_you();
+    if resting && plan.items.iter().all(Item::done) {
         ui::done_symbol()
     } else {
-        ui::agent_symbol(ui::AgentState::Working)
+        ui::agent_symbol(state)
     }
 }
 
 fn runtime(plans: &Frame, agent: &str) -> Option<gpui::Div> {
     plans
-        .runtimes
+        .members
         .get(agent)
-        .filter(|runtime| !runtime.is_empty())
-        .map(|runtime| ui::badge(runtime.clone()))
+        .filter(|member| !member.runtime.is_empty())
+        .map(|member| ui::badge(member.runtime.clone()))
+}
+
+/// The first non-empty line of an agent's words, such as who or what a
+/// step waits on.
+fn first_line(text: &str) -> Option<SharedString> {
+    text.lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(|line| super::line(line).into())
 }
 
 /// A reference's target as a reader recognises it: an identifier by its
@@ -404,8 +481,8 @@ fn updated(age_seconds: u64) -> String {
 }
 
 /// One agent's card: its mark, name and runtime, the plan's title, the steps
-/// on a track and what they wait on.
-fn card(plans: &Frame, entry: &Entry, cx: &mut Context<ViewPane>) -> AnyElement {
+/// on a track, the chosen step's detail and what the steps wait on.
+fn card(pane: &ViewPane, plans: &Frame, entry: &Entry, cx: &mut Context<ViewPane>) -> AnyElement {
     let (t, c) = (tokens(), colors());
     let author = entry.author_id.clone();
     let selected = plans.selected.as_deref() == Some(author.as_str());
@@ -425,7 +502,13 @@ fn card(plans: &Frame, entry: &Entry, cx: &mut Context<ViewPane>) -> AnyElement 
             .into_any_element();
     };
     let plan = &record.plan;
-    let current = plan.current().map(|item| item.item_id.clone());
+    let state = plans.state(&entry.agent_name);
+    let at = At::of(plan, state);
+    let chosen = plans
+        .card_step
+        .as_ref()
+        .filter(|(card, _)| *card == author)
+        .and_then(|(_, step)| plan.items.iter().find(|item| &item.item_id == step));
     let mut track = div()
         .flex()
         .items_center()
@@ -436,22 +519,34 @@ fn card(plans: &Frame, entry: &Entry, cx: &mut Context<ViewPane>) -> AnyElement 
         if index > 0 {
             track = track.child(ui::plan_link(plan.items[index - 1].done()));
         }
-        track = track.child(ui::plan_step(
-            super::line(&item.text),
-            step(item, current.as_deref()),
-        ));
+        let picked = chosen.is_some_and(|chosen| chosen.item_id == item.item_id);
+        let (author, step_id) = (author.clone(), item.item_id.clone());
+        track = track.child(
+            ui::plan_step(super::line(&item.text), step(item, &at), picked)
+                .id(SharedString::from(format!("plan-{author}-step-{step_id}")))
+                .on_click(cx.listener(move |pane, _, _, cx| {
+                    // The step's detail, not the plan.
+                    cx.stop_propagation();
+                    if let Some(plans) = &pane.plans {
+                        plans.update(cx, |plans, cx| {
+                            plans.choose_card_step(author.clone(), step_id.clone(), cx)
+                        });
+                    }
+                })),
+        );
     }
-    let waiting: Vec<&Item> = plan.items.iter().filter(|item| item.blocked()).collect();
-    let waits = if waiting.is_empty() {
-        ui::text(div().text_color(c.muted), &t.text.meta)
-            .child("Nothing waiting · every step can continue")
-    } else {
-        let mut tags = div().flex().flex_wrap().gap(px(t.space.s6));
-        for item in waiting {
-            tags = tags.child(ui::waits_tag("Waits", None, super::line(&item.text), false));
-        }
-        tags
-    };
+    let waits = waits(plans, entry, plan, &at);
+    let detail = chosen.map(|item| {
+        div()
+            .id(SharedString::from(format!("plan-{author}-detail")))
+            .pt(px(t.space.s10))
+            .border_t(px(t.size.hairline))
+            .border_color(c.line)
+            .cursor_default()
+            // Selecting its words does not open the plan.
+            .on_click(|_, _, cx| cx.stop_propagation())
+            .child(detail(pane, plans, entry, item, &at, cx))
+    });
     ui::plan_card(id, selected)
         .child(
             div()
@@ -459,7 +554,7 @@ fn card(plans: &Frame, entry: &Entry, cx: &mut Context<ViewPane>) -> AnyElement 
                 .items_center()
                 .gap(px(t.space.s8))
                 .w_full()
-                .child(mark(plan))
+                .child(mark(plan, state))
                 .child(ui::text(name.text_color(c.text), &t.text.body))
                 .children(runtime(plans, &entry.agent_name))
                 .child(div().flex_1())
@@ -480,6 +575,7 @@ fn card(plans: &Frame, entry: &Entry, cx: &mut Context<ViewPane>) -> AnyElement 
                 .child(super::line(&plan.title)),
         )
         .child(track)
+        .children(detail)
         .child(waits)
         .on_click(cx.listener(move |pane, _, _, cx| {
             if let Some(plans) = &pane.plans {
@@ -527,7 +623,7 @@ fn list(pane: &ViewPane, plans: &Frame, cx: &mut Context<ViewPane>) -> AnyElemen
                     .pb_0(),
                 );
             for entry in plans.entries(pane.reports.agent.as_deref()) {
-                column = column.child(card(plans, entry, cx));
+                column = column.child(card(pane, plans, entry, cx));
             }
             column.into_any_element()
         }
@@ -559,22 +655,65 @@ fn list(pane: &ViewPane, plans: &Frame, cx: &mut Context<ViewPane>) -> AnyElemen
         .into_any_element()
 }
 
-/// What a node says above its step's name, by its place in the plan.
-fn key_label(step: ui::Step, first_ahead: bool) -> &'static str {
+/// What a node says above its step's name, by its place in the plan and
+/// whether the agent stopped there.
+fn key_label(step: ui::Step, first_ahead: bool, stopped: bool) -> &'static str {
     match step {
         ui::Step::Done => "DONE",
         ui::Step::Now => "NOW",
+        ui::Step::Stopped => "STOPPED HERE",
+        ui::Step::Waits if stopped => "STOPPED · WAITS",
         ui::Step::Waits => "WAITS",
         ui::Step::Ahead if first_ahead => "NEXT",
         ui::Step::Ahead => "THEN",
     }
 }
 
+/// What the steps wait on, under a card's track: the agent itself when its
+/// state needs someone, then each blocked step with the agent's first words
+/// about it, who or what it waits on.
+fn waits(plans: &Frame, entry: &Entry, plan: &plans::Plan, at: &At) -> gpui::Div {
+    let (t, c) = (tokens(), colors());
+    let state = plans.state(&entry.agent_name);
+    let mut tags = Vec::new();
+    if state.needs_you() {
+        let reason = plans
+            .members
+            .get(&entry.agent_name)
+            .and_then(|member| member.reason.as_deref())
+            .and_then(first_line);
+        let held = plan
+            .items
+            .iter()
+            .find(|item| at.is(item))
+            .map_or_else(|| super::line(&plan.title), |item| super::line(&item.text));
+        let you = state == ui::AgentState::NeedsYou;
+        tags.push(ui::waits_tag(
+            if you { "You" } else { "Blocked" },
+            reason,
+            held,
+            you,
+        ));
+    }
+    for item in plan.items.iter().filter(|item| item.blocked()) {
+        tags.push(ui::waits_tag(
+            "Waits",
+            first_line(&item.detail),
+            super::line(&item.text),
+            false,
+        ));
+    }
+    if tags.is_empty() {
+        return ui::text(div().text_color(c.muted), &t.text.meta)
+            .child("Nothing waiting · every step can continue");
+    }
+    div().flex().flex_wrap().gap(px(t.space.s6)).children(tags)
+}
+
 /// The opened plan's steps as a graph: one node per step in order, joined
 /// by arrows, `muted` after a finished step and `faint` ahead.
-fn graph(plans: &Frame, plan: &plans::Plan, cx: &mut Context<ViewPane>) -> gpui::Div {
+fn graph(plans: &Frame, plan: &plans::Plan, at: &At, cx: &mut Context<ViewPane>) -> gpui::Div {
     let (t, c) = (tokens(), colors());
-    let current = plan.current().map(|item| item.item_id.clone());
     let pitch = t.size.plan_column;
     let width = t.size.plan_node_width;
     let height = t.size.plan_node_height;
@@ -587,7 +726,7 @@ fn graph(plans: &Frame, plan: &plans::Plan, cx: &mut Context<ViewPane>) -> gpui:
     let mut seen_ahead = false;
     for (index, item) in plan.items.iter().enumerate() {
         let x = pitch * index as f32;
-        let place = step(item, current.as_deref());
+        let place = step(item, at);
         let first_ahead = place == ui::Step::Ahead && !seen_ahead;
         seen_ahead |= place == ui::Step::Ahead;
         if index > 0 {
@@ -599,14 +738,18 @@ fn graph(plans: &Frame, plan: &plans::Plan, cx: &mut Context<ViewPane>) -> gpui:
                 if done { c.muted } else { c.faint },
             ));
         }
-        let note = (item.section == "later" && place == ui::Step::Ahead)
-            .then(|| SharedString::from("later"));
+        // A waiting step names what it waits on.
+        let note = match place {
+            ui::Step::Waits => first_line(&item.detail),
+            ui::Step::Ahead if item.section == "later" => Some("later".into()),
+            _ => None,
+        };
         let id = item.item_id.clone();
         canvas = canvas.child(
             ui::plan_node(
                 SharedString::from(format!("plan-step-{}", item.item_id)),
                 place,
-                key_label(place, first_ahead),
+                key_label(place, first_ahead, at.stopped_at(item)),
                 super::line(&item.text),
                 note,
                 plans.step.as_deref() == Some(item.item_id.as_str()),
@@ -671,92 +814,151 @@ fn legend() -> gpui::Div {
             .border_color(c.line_strong),
         "can continue",
     ))
-    .child(div().flex_1())
-    .child("Select a step to see why and what it points to.")
 }
 
-/// The selected step beside the graph: where it stands, its name, the
-/// agent's words about it and what it points to.
+/// Where a step stands, as its detail and the conversation beside it say.
+fn place_label(item: &Item, at: &At) -> (&'static str, gpui::Rgba) {
+    let c = colors();
+    match step(item, at) {
+        ui::Step::Waits if at.stopped_at(item) => ("STOPPED HERE · WAITS", c.attention_text),
+        ui::Step::Waits => ("WAITS", c.attention_text),
+        ui::Step::Now => ("NOW", c.accent_text),
+        ui::Step::Stopped => ("STOPPED HERE", c.accent_text),
+        ui::Step::Done => ("DONE", c.ok),
+        ui::Step::Ahead => ("AHEAD", c.muted),
+    }
+}
+
+/// A step's detail: where it stands, its name, the agent's words about it,
+/// why the agent waits when it stopped there, and what it points to.
+fn detail(
+    pane: &ViewPane,
+    plans: &Frame,
+    entry: &Entry,
+    item: &Item,
+    at: &At,
+    cx: &mut Context<ViewPane>,
+) -> gpui::Div {
+    let (t, c) = (tokens(), colors());
+    let (label, color) = place_label(item, at);
+    let mut column = div()
+        .flex()
+        .flex_col()
+        .gap(px(t.space.s8))
+        .child(ui::text(div().text_color(color), &t.text.label).child(label))
+        .child(
+            ui::text(div().text_color(c.text), &t.text.card_title).child(selection::text(
+                pane,
+                &super::line(&item.text),
+                &[],
+                cx,
+            )),
+        );
+    if item.detail.trim().is_empty() {
+        column = column.child(
+            ui::text(div().text_color(c.muted), &t.text.body).child(format!(
+                "{} gave no detail for this step.",
+                entry.agent_name
+            )),
+        );
+    } else {
+        column = column.child(
+            ui::text(div().text_color(c.text_2), &t.text.body)
+                .line_height(px(t.text.body.size * 1.45))
+                .child(selection::text(pane, item.detail.trim(), &[], cx)),
+        );
+    }
+    let fact = |label: &'static str, value: AnyElement| {
+        div()
+            .flex()
+            .items_start()
+            .gap(px(t.space.s8))
+            .child(
+                div()
+                    .w(px(t.size.fact_label / 2.0 + t.space.s8))
+                    .flex_shrink_0()
+                    .text_color(c.muted)
+                    .child(label),
+            )
+            .child(div().min_w_0().child(value))
+    };
+    let mut facts = ui::text(div().flex().flex_col().gap(px(t.space.s6)), &t.text.status);
+    let state = plans.state(&entry.agent_name);
+    if at.stopped_at(item) && state.needs_you() {
+        let reason = plans
+            .members
+            .get(&entry.agent_name)
+            .and_then(|member| member.reason.as_deref())
+            .map(str::trim)
+            .filter(|reason| !reason.is_empty())
+            .map_or_else(
+                || state.word().to_owned(),
+                |reason| format!("{} · {reason}", state.word()),
+            );
+        facts = facts.child(fact(
+            "Agent",
+            div()
+                .text_color(c.attention_text)
+                .child(selection::text(pane, &super::line(&reason), &[], cx))
+                .into_any_element(),
+        ));
+    }
+    facts = facts
+        .child(fact(
+            "Status",
+            div()
+                .text_color(c.text_2)
+                .child(item.status.replace('_', " "))
+                .into_any_element(),
+        ))
+        .child(fact(
+            "Section",
+            div()
+                .text_color(c.text_2)
+                .child(item.section.clone())
+                .into_any_element(),
+        ));
+    for reference in &item.references {
+        facts = facts.child(fact(
+            "Evidence",
+            ui::anchor(format!("{} · {}", reference.kind, short(&reference.target)))
+                .into_any_element(),
+        ));
+    }
+    column.child(facts)
+}
+
+/// The conversation beside an opened plan, headed by the step it is about.
 fn step_panel(
     pane: &ViewPane,
     plans: &Frame,
     plan: &plans::Plan,
+    at: &At,
     window: &mut Window,
     cx: &mut Context<ViewPane>,
 ) -> AnyElement {
     let (t, c) = (tokens(), colors());
-    let current = plan.current().map(|item| item.item_id.clone());
     let chosen = plans
         .step
         .as_ref()
         .and_then(|id| plan.items.iter().find(|item| &item.item_id == id));
     let mut context = div()
-        .id("plan-step-context")
-        .min_h_0()
-        .max_h(gpui::relative(0.35))
-        .overflow_y_scroll()
         .flex()
         .flex_col()
-        .gap(px(t.space.s8))
+        .gap(px(t.space.s4))
         .px(px(t.space.s14))
         .py(px(t.space.s12))
         .border_b(px(t.size.hairline))
         .border_color(c.line);
     if let Some(item) = chosen {
-        let place = step(item, current.as_deref());
-        let (label, color) = match place {
-            ui::Step::Waits => ("WAITS · SELECTED", c.attention_text),
-            ui::Step::Now => ("NOW · SELECTED", c.accent_text),
-            ui::Step::Done => ("DONE · SELECTED", c.ok),
-            ui::Step::Ahead => ("AHEAD · SELECTED", c.muted),
-        };
+        let (label, color) = place_label(item, at);
         context = context
             .child(ui::text(div().text_color(color), &t.text.label).child(label))
             .child(
-                ui::text(div().text_color(c.text), &t.text.empty_title).child(selection::text(
-                    pane,
-                    &super::line(&item.text),
-                    &[],
-                    cx,
-                )),
+                ui::text(div().text_color(c.text), &t.text.body)
+                    .font_weight(t.text.workspace.weight())
+                    .child(super::line(&item.text)),
             );
-        if !item.detail.trim().is_empty() {
-            context = context.child(
-                ui::text(div().text_color(c.text_2), &t.text.body)
-                    .line_height(px(t.text.body.size * 1.45))
-                    .child(selection::text(pane, item.detail.trim(), &[], cx)),
-            );
-        }
-        let fact = |label: &'static str, value: AnyElement| {
-            div()
-                .flex()
-                .items_center()
-                .gap(px(t.space.s8))
-                .child(
-                    div()
-                        .w(px(t.size.fact_label / 2.0 + t.space.s8))
-                        .flex_shrink_0()
-                        .text_color(c.muted)
-                        .child(label),
-                )
-                .child(div().min_w_0().child(value))
-        };
-        let mut facts = ui::text(div().flex().flex_col().gap(px(t.space.s6)), &t.text.status)
-            .child(fact(
-                "Section",
-                div()
-                    .text_color(c.text_2)
-                    .child(item.section.clone())
-                    .into_any_element(),
-            ));
-        for reference in &item.references {
-            facts = facts.child(fact(
-                "Evidence",
-                ui::anchor(format!("{} · {}", reference.kind, short(&reference.target)))
-                    .into_any_element(),
-            ));
-        }
-        context = context.child(facts);
     }
     match &pane.conversation {
         Some(conversation) => conversation.update(cx, |conversation, cx| {
@@ -766,8 +968,8 @@ fn step_panel(
     }
 }
 
-/// An opened plan: its agent, title and summary, the steps as a graph and
-/// the selected step beside it.
+/// An opened plan: its agent, title and summary, the steps as a graph with
+/// the selected step's detail under it, and the conversation beside them.
 fn opened(
     pane: &ViewPane,
     plans: &Frame,
@@ -778,6 +980,8 @@ fn opened(
     let (t, c) = (tokens(), colors());
     let record = entry.record.as_ref().expect("an opened plan has a record");
     let plan = &record.plan;
+    let state = plans.state(&entry.agent_name);
+    let at = At::of(plan, state);
     let done = plan.items.iter().filter(|item| item.done()).count();
     let waiting = plan.items.iter().filter(|item| item.blocked()).count();
     let ahead = plan
@@ -785,7 +989,7 @@ fn opened(
         .iter()
         .filter(|item| !item.done() && !item.blocked() && !item.in_progress())
         .count();
-    let now = plan.current().filter(|item| !item.blocked());
+    let now = plan.items.iter().find(|item| at.is(item));
     let strong = |value: String, color| {
         div()
             .font_weight(t.text.workspace.weight())
@@ -806,13 +1010,18 @@ fn opened(
     )
     .child(figure(strong(done.to_string(), c.ok), "done"));
     if let Some(now) = now {
+        let (said, color) = match (at.working, now.blocked()) {
+            (true, _) => ("Now:", c.accent_text),
+            (false, false) => ("Stopped at:", c.accent_text),
+            (false, true) => ("Stopped at:", c.attention_text),
+        };
         summary = summary.child(
             div()
                 .flex()
                 .min_w_0()
                 .gap(px(t.space.s4))
-                .child("Now:")
-                .child(strong(super::line(&now.text), c.accent_text).text_ellipsis()),
+                .child(said)
+                .child(strong(super::line(&now.text), color).text_ellipsis()),
         );
     }
     summary = summary.child(figure(strong(ahead.to_string(), c.text_2), "ahead"));
@@ -830,7 +1039,7 @@ fn opened(
             .text_color(c.muted),
         &t.text.meta,
     )
-    .child(mark(plan))
+    .child(mark(plan, state))
     .child(ui::text(
         super::mono(entry.agent_name.clone()).text_color(c.text),
         &t.text.body,
@@ -876,9 +1085,26 @@ fn opened(
                         .mt(px(t.space.s24 + 2.0))
                         .overflow_x_scroll()
                         .flex_shrink_0()
-                        .child(graph(plans, plan, cx)),
+                        .child(graph(plans, plan, &at, cx)),
                 )
-                .child(legend()),
+                .child(legend())
+                .children(
+                    plans
+                        .step
+                        .as_ref()
+                        .and_then(|id| plan.items.iter().find(|item| &item.item_id == id))
+                        .map(|item| {
+                            div()
+                                .mt(px(t.space.s18))
+                                .px(px(t.space.s14))
+                                .py(px(t.space.s12))
+                                .rounded(px(t.radius.popover))
+                                .bg(c.panel)
+                                .border(px(t.size.hairline))
+                                .border_color(c.line)
+                                .child(detail(pane, plans, entry, item, &at, cx))
+                        }),
+                ),
         )
         .child(ui::view_footer(
             &[("←→", "move between steps"), ("esc", "back")],
@@ -911,7 +1137,7 @@ fn opened(
             .min_h_0()
             .flex()
             .child(main)
-            .child(step_panel(pane, plans, plan, window, cx)),
+            .child(step_panel(pane, plans, plan, &at, window, cx)),
     )
 }
 
@@ -980,5 +1206,35 @@ mod tests {
         assert_ne!(observed.key(), refreshed.key());
         frame.open = None;
         assert!(frame.conversation().is_none());
+    }
+
+    #[test]
+    fn only_a_working_agent_turns_and_a_stopped_one_shows_where() {
+        let plan: plans::Plan = serde_json::from_value(serde_json::json!({
+            "title": "Ship", "items": [
+                {"item_id": "a", "text": "Implement", "section": "now", "status": "done"},
+                {"item_id": "b", "text": "Review", "section": "now", "status": "in_progress"},
+                {"item_id": "c", "text": "Check with you", "section": "next", "status": "blocked"}
+            ]
+        }))
+        .unwrap();
+        let places = |state| {
+            let at = At::of(&plan, state);
+            plan.items
+                .iter()
+                .map(|item| step(item, &at))
+                .collect::<Vec<_>>()
+        };
+        use ui::Step::*;
+        assert_eq!(places(ui::AgentState::Working), [Done, Now, Waits]);
+        // Stopped: at the step that waits, and nothing turns.
+        assert_eq!(places(ui::AgentState::Idle), [Done, Ahead, Waits]);
+        let at = At::of(&plan, ui::AgentState::Unknown);
+        assert!(at.stopped_at(&plan.items[2]));
+        let mut free = plan.clone();
+        free.items[2].status = "pending".into();
+        let at = At::of(&free, ui::AgentState::Idle);
+        let free: Vec<_> = free.items.iter().map(|item| step(item, &at)).collect();
+        assert_eq!(free, [Done, Stopped, Ahead]);
     }
 }

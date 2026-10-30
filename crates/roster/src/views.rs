@@ -195,9 +195,10 @@ fn usage_path(range: Range) -> String {
     format!("/api/usage?refresh=false&limit=1000&since={since}")
 }
 
-/// The CLI each configured agent runs in, by name; empty when the roster
-/// cannot be read. Blocks like [`read`], so call it on an I/O worker.
-pub fn runtimes(data_dir: &Path) -> std::collections::BTreeMap<String, String> {
+/// Each configured agent with its runtime and reported state, by name; empty
+/// when the roster cannot be read. Blocks like [`read`], so call it on an I/O
+/// worker.
+pub fn members(data_dir: &Path) -> std::collections::BTreeMap<String, Member> {
     let Some((url, key)) = configured(data_dir, None) else {
         return Default::default();
     };
@@ -211,7 +212,7 @@ pub fn runtimes(data_dir: &Path) -> std::collections::BTreeMap<String, String> {
         .map(|agents| {
             agents
                 .into_iter()
-                .map(|agent| (agent.name, agent.runtime))
+                .map(|agent| (agent.name.clone(), agent))
                 .collect()
         })
         .unwrap_or_default()
