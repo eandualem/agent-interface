@@ -256,7 +256,10 @@ print(json.dumps(e));sys.exit(code)
             wait_for(lambda: len((root / "discovery.jsonl").read_text().splitlines()) > discoveries, "discovery refresh")
             wait_for(lambda: "Start with Codex" in text(), "choice survives refresh")
             click("Start", last=True)
-            wait_for(lambda: "Codex fixture needs sign-in" in text(), "Codex-only failure")
+            # Sparse OCR can split the hyphenated suffix at the smaller native
+            # text size. The unique message prefix identifies the failure;
+            # the recorded protocol request below verifies the selected tool.
+            wait_for(lambda: "Codex fixture needs" in text(), "Codex-only failure")
             first = requests()[0]
             assert first["agent"]["runtime"] == "codex" and first["hooks"] == ["codex"]
             capture("codex-failed")
