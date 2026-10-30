@@ -371,11 +371,12 @@ pub(super) fn render_in(
         div()
             .flex()
             .flex_col()
+            .cursor_text()
             .text_color(look.color)
             .line_height(gpui::relative(look.line_height)),
         look.style,
     );
-    document.child(column(blocks, look.gap, pane, cx))
+    selection::area(document, cx).child(column(blocks, look.gap, pane, cx))
 }
 
 /// `blocks` one under another, `gap` apart.

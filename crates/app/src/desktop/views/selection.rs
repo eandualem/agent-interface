@@ -139,7 +139,17 @@ impl Selection {
         if !shift || self.anchor.is_none() {
             self.anchor = Some(position);
         }
-        if clicks == 2 {
+        if clicks >= 3 {
+            // A triple click selects the whole paragraph, item or cell.
+            self.anchor = Some(Position {
+                byte: 0,
+                ..position
+            });
+            self.cursor = Some(Position {
+                byte: self.parts[position.part].text.len(),
+                ..position
+            });
+        } else if clicks == 2 {
             let text = &self.parts[position.part].text;
             if let Some((start, word)) = text
                 .split_word_bound_indices()
@@ -158,14 +168,35 @@ impl Selection {
         self.dragging = true;
     }
 
+    /// Press at `point` beside the text, such as between paragraphs or on a
+    /// list marker: as on the nearest text.
+    fn press_near(&mut self, point: Point<Pixels>, shift: bool, clicks: usize) -> bool {
+        let Some(index) = self.nearest(point) else {
+            return false;
+        };
+        self.press(self.hit(index, point), shift, clicks);
+        true
+    }
+
     fn motion(&mut self, point: Point<Pixels>) -> bool {
         if !self.dragging {
             return false;
         }
-        // Choose the nearest rendered block, so dragging can cross paragraphs,
-        // headings and code blocks without losing the original anchor.
-        let index = self
-            .parts
+        let Some(index) = self.nearest(point) else {
+            return false;
+        };
+        let cursor = self.hit(index, point);
+        if self.cursor == Some(cursor) {
+            return false;
+        }
+        self.cursor = Some(cursor);
+        true
+    }
+
+    /// The nearest rendered block, so dragging can cross paragraphs, headings
+    /// and code blocks without losing the original anchor.
+    fn nearest(&self, point: Point<Pixels>) -> Option<usize> {
+        self.parts
             .iter()
             .enumerate()
             .filter_map(|(index, part)| {
@@ -180,14 +211,7 @@ impl Selection {
                 Some((index, distance))
             })
             .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
-            .map(|(index, _)| index);
-        let Some(index) = index else { return false };
-        let cursor = self.hit(index, point);
-        if self.cursor == Some(cursor) {
-            return false;
-        }
-        self.cursor = Some(cursor);
-        true
+            .map(|(index, _)| index)
     }
 
     pub fn key(&mut self, key: &gpui::Keystroke, cx: &mut Context<ViewPane>) -> bool {
@@ -287,8 +311,14 @@ pub(super) fn linked(
             style.color = Some(c.accent_text.into());
         }
         if selected.contains(&range.start) {
-            style.color = Some(c.on_accent.into());
-            style.background_color = Some(c.accent.into());
+            // Selected text keeps its own colour over a translucent accent.
+            style.background_color = Some(
+                gpui::Rgba {
+                    a: 0.35,
+                    ..c.accent
+                }
+                .into(),
+            );
         }
         (range, style)
     });
@@ -327,6 +357,24 @@ pub(super) fn linked(
             .absolute()
             .size_full(),
         )
+}
+
+/// Start a selection from a press anywhere in `element` that is not on text,
+/// such as the space between paragraphs or a list marker.
+pub(super) fn area(element: gpui::Div, cx: &mut Context<ViewPane>) -> gpui::Div {
+    element.on_mouse_down(
+        gpui::MouseButton::Left,
+        cx.listener(|pane, event: &gpui::MouseDownEvent, _, cx| {
+            let pressed = pane.selection.borrow_mut().press_near(
+                event.position,
+                event.modifiers.shift,
+                event.click_count,
+            );
+            if pressed {
+                cx.notify();
+            }
+        }),
+    )
 }
 
 /// Keep drag selection and release working beyond the initial text block.
@@ -415,7 +463,7 @@ mod tests {
     }
 
     #[test]
-    fn double_click_selects_a_word_and_shift_click_extends_it() {
+    fn double_click_selects_a_word_shift_click_extends_and_triple_click_takes_the_block() {
         let mut selection = Selection::default();
         selection.register("Read café here", &[]);
         selection.press(Position { part: 0, byte: 6 }, false, 2);
@@ -429,6 +477,8 @@ mod tests {
             1,
         );
         assert_eq!(selection.selected_text(), "café here");
+        selection.press(Position { part: 0, byte: 6 }, false, 3);
+        assert_eq!(selection.selected_text(), "Read café here");
     }
 
     #[test]
