@@ -31,11 +31,16 @@ use gpui::{
     Subscription, Task, Window, div, prelude::*, px,
 };
 
-use super::{clock::Local, reports};
+use super::{
+    clock::Local,
+    markdown, reports,
+    selection::{self, Selectable, Selection},
+};
 use crate::desktop::{
     components as ui,
     design::{colors, tokens},
     name::{NameEvent, NameField},
+    settings,
 };
 
 /// What became of one message.
@@ -89,6 +94,12 @@ pub(super) enum ConversationEvent {
 
 impl EventEmitter<ConversationEvent> for Conversation {}
 
+impl Selectable for Conversation {
+    fn selection(&self) -> &RefCell<Selection> {
+        &self.selection
+    }
+}
+
 pub(super) struct Conversation {
     /// The record messages are about and where to send them; `None` when the
     /// owning view delivers them itself.
@@ -128,6 +139,13 @@ pub(super) struct Conversation {
     read_error: Option<stored::Error>,
     /// Whether the pane holding it is visible.
     visible: Rc<Cell<bool>>,
+    /// Where the open panel was last laid out, and its right edge while the
+    /// person drags its left edge to resize it.
+    bounds: Rc<Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
+    resizing: Option<gpui::Pixels>,
+    /// Text selected in the thread, and the focus that copies it.
+    selection: RefCell<Selection>,
+    thread_focus: FocusHandle,
     _poll: Option<Task<()>>,
     _input: Subscription,
 }
@@ -552,6 +570,10 @@ impl Conversation {
             stale: false,
             read_error: None,
             visible: Rc::new(Cell::new(true)),
+            bounds: Rc::new(Cell::new(None)),
+            resizing: None,
+            selection: RefCell::default(),
+            thread_focus: cx.focus_handle(),
             _poll: None,
             _input: input,
         }
@@ -1190,6 +1212,82 @@ fn subject(item: &ReportItem) -> &'static str {
 }
 
 impl Conversation {
+    /// The open panel's left edge, which drags to resize it, and a canvas
+    /// that records where the panel is and follows the drag. The width is
+    /// shared by every conversation and saved when the drag ends.
+    fn resize_handle(&self, cx: &mut Context<Self>) -> [AnyElement; 2] {
+        let t = tokens();
+        let bounds = Rc::clone(&self.bounds);
+        let entity = cx.entity().downgrade();
+        let handle = div()
+            .id("conversation-resize")
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .left(px(-t.space.s2))
+            .w(px(t.space.s4))
+            .cursor(gpui::CursorStyle::ResizeLeftRight)
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|conversation, _: &gpui::MouseDownEvent, _, cx| {
+                    conversation.resizing = conversation.bounds.get().map(|bounds| bounds.right());
+                    cx.stop_propagation();
+                }),
+            );
+        let tracker = gpui::canvas(
+            move |area, _, _| bounds.set(Some(area)),
+            move |_, (), window, _| {
+                let moved = entity.clone();
+                window.on_mouse_event(move |event: &gpui::MouseMoveEvent, phase, window, cx| {
+                    if phase != gpui::DispatchPhase::Capture {
+                        return;
+                    }
+                    let _ = moved.update(cx, |conversation, cx| {
+                        let Some(right) = conversation.resizing else {
+                            return;
+                        };
+                        if !event.dragging() {
+                            conversation.finish_resize();
+                            return;
+                        }
+                        let widest = window.viewport_size().width * 0.75;
+                        let width = (right - event.position.x).min(widest);
+                        settings::set_conversation_width(f32::from(width).round().max(0.0) as u32);
+                        cx.stop_propagation();
+                        window.refresh();
+                    });
+                });
+                let released = entity.clone();
+                window.on_mouse_event(move |event: &gpui::MouseUpEvent, phase, _, cx| {
+                    if phase == gpui::DispatchPhase::Capture
+                        && event.button == gpui::MouseButton::Left
+                    {
+                        let _ = released.update(cx, |conversation, _| {
+                            if conversation.resizing.is_some() {
+                                conversation.finish_resize();
+                            }
+                        });
+                    }
+                });
+            },
+        )
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full();
+        [handle.into_any_element(), tracker.into_any_element()]
+    }
+
+    /// Keep the dragged width for later sessions.
+    fn finish_resize(&mut self) {
+        self.resizing = None;
+        settings::save_in_background(settings::Settings::current(), |result| {
+            if let Err(error) = result {
+                tracing::warn!(%error, "Conversation width not saved");
+            }
+        });
+    }
+
     fn rail(&self, cx: &mut Context<Self>) -> AnyElement {
         ui::conversation_rail(
             div().id("conversation-open").on_click(
@@ -1349,7 +1447,7 @@ impl Conversation {
                     } else {
                         meta.child(format!("{who} · {time}"))
                     };
-                    ui::message(from_you, failed, meta, text.clone()).into_any_element()
+                    ui::message(from_you, failed, meta, self.body(text, cx)).into_any_element()
                 }
                 Body::Revision { revision } => {
                     let changed: Vec<&str> = revision
@@ -1382,6 +1480,18 @@ impl Conversation {
             });
         }
         out
+    }
+
+    /// A message's text as Markdown, selectable like a reader's.
+    fn body(&self, text: &str, cx: &mut Context<Self>) -> gpui::Div {
+        let (t, c) = (tokens(), colors());
+        let look = markdown::Look {
+            style: &t.text.row,
+            color: c.text,
+            line_height: 1.45,
+            gap: t.space.s6,
+        };
+        markdown::render_in(&markdown::parse_authored(text), &look, self, cx).min_w_0()
     }
 
     fn mark(&self) -> Option<gpui::Div> {
@@ -1434,6 +1544,23 @@ impl Conversation {
         }
         let mut thread = div()
             .id("conversation-thread")
+            .track_focus(&self.thread_focus)
+            // A press in the thread takes focus from the composer, so the
+            // copy and select-all keys act on the thread's text.
+            .capture_any_mouse_down(cx.listener(|conversation, _, window, cx| {
+                window.focus(&conversation.thread_focus, cx);
+            }))
+            .on_action(
+                cx.listener(|conversation, _: &crate::desktop::Copy, _, cx| {
+                    conversation.selection.borrow().copy(cx);
+                }),
+            )
+            .on_action(
+                cx.listener(|conversation, _: &crate::desktop::SelectAll, _, cx| {
+                    conversation.selection.borrow_mut().select_all();
+                    cx.notify();
+                }),
+            )
             .track_scroll(&self.scroll)
             .flex_1()
             .min_h_0()
@@ -1501,7 +1628,7 @@ impl Conversation {
                 true,
                 matches!(message.delivery, Delivery::NotSent(_)),
                 meta,
-                message.text.clone(),
+                self.body(&message.text, cx),
             ));
         }
         let scroll = self.scroll.clone();
@@ -1514,6 +1641,7 @@ impl Conversation {
             .flex()
             .flex_col()
             .child(thread)
+            .child(selection::events(cx))
             .child(
                 gpui::canvas(
                     |_, _, _| (),
@@ -1619,7 +1747,15 @@ impl Conversation {
             ))
             .children(context)
             .children(self.chooser(cx))
-            .child(self.thread(cx))
+            .child(loop {
+                // As in a reader: a block that changed after earlier ones
+                // were drawn clears the selection, so draw them again.
+                self.selection.borrow_mut().begin();
+                let thread = self.thread(cx);
+                if !self.selection.borrow_mut().finish() {
+                    break thread;
+                }
+            })
             .child(ui::composer(
                 div()
                     .relative()
@@ -1646,6 +1782,8 @@ impl Conversation {
                 ui::send_button("conversation-send", can_send)
                     .on_click(cx.listener(|conversation, _, _, cx| conversation.send(cx))),
             ))
+            // Last, so the edge is above the thread where they overlap.
+            .children(self.resize_handle(cx))
             .into_any_element()
     }
 }

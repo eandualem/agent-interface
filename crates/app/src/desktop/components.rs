@@ -2192,12 +2192,19 @@ pub fn conversation_rail(button: Stateful<Div>, mark: Option<Div>, unread: bool)
         .children(mark)
 }
 
-/// The frame of an open conversation, `conversation_width` wide.
+/// The frame of an open conversation: the width it was dragged to, else a
+/// share of the reader, never narrower than `conversation_width`.
 pub fn conversation_panel() -> Div {
     let (t, c) = (tokens(), colors());
     div()
+        .relative()
         .flex_shrink_0()
-        .w(px(t.size.conversation_width))
+        .map(|panel| match super::settings::conversation_width() {
+            Some(width) => panel.w(px(width as f32)),
+            None => panel.w(gpui::relative(0.38)),
+        })
+        .min_w(px(t.size.conversation_width))
+        .max_w(gpui::relative(0.75))
         .h_full()
         .min_h_0()
         .flex()

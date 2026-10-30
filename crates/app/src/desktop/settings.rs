@@ -18,6 +18,12 @@ fn sidebar_widths() -> std::ops::RangeInclusive<u32> {
 }
 /// The dragged panel width, or zero for the default of 22 terminal cells.
 static SIDEBAR_WIDTH: AtomicU32 = AtomicU32::new(0);
+/// Conversation panel widths the settings accept, from the design's minimum.
+fn conversation_widths() -> std::ops::RangeInclusive<u32> {
+    super::design::tokens().size.conversation_width as u32..=4000
+}
+/// The dragged conversation width, or zero for a share of the reader.
+static CONVERSATION_WIDTH: AtomicU32 = AtomicU32::new(0);
 
 /// Whether panes show their header.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -67,6 +73,8 @@ pub struct Settings {
     pub shortcuts: super::shortcuts::Bindings,
     /// The navigation panel's width in pixels, when it was dragged.
     pub sidebar_width: Option<u32>,
+    /// The conversation panel's width in pixels, when it was dragged.
+    pub conversation_width: Option<u32>,
     pub pane_headers: PaneHeaders,
     /// The first-run introduction has played.
     pub intro_seen: bool,
@@ -83,6 +91,7 @@ impl Default for Settings {
             interface_size: 100,
             shortcuts: super::shortcuts::Bindings::default(),
             sidebar_width: None,
+            conversation_width: None,
             pane_headers: PaneHeaders::Always,
             intro_seen: false,
             setup_done: false,
@@ -127,6 +136,14 @@ impl Settings {
         {
             settings.sidebar_width = Some(width);
         }
+        if let Some(width) = table
+            .get("conversation_width")
+            .and_then(toml::Value::as_integer)
+            && let Ok(width) = u32::try_from(width)
+            && conversation_widths().contains(&width)
+        {
+            settings.conversation_width = Some(width);
+        }
         if let Some(mode) = table.get("pane_headers").and_then(toml::Value::as_str)
             && let Some((mode, ..)) = PaneHeaders::ALL.iter().find(|(_, name, _)| *name == mode)
         {
@@ -166,6 +183,9 @@ impl Settings {
         if let Some(width) = self.sidebar_width {
             text.push_str(&format!("sidebar_width = {width}\n"));
         }
+        if let Some(width) = self.conversation_width {
+            text.push_str(&format!("conversation_width = {width}\n"));
+        }
         if self.intro_seen || self.setup_done {
             text.push_str(&format!(
                 "\n[setup]\nintro_seen = {}\ndone = {}\n",
@@ -191,6 +211,7 @@ impl Settings {
         super::zoom::set(self.interface_size);
         super::shortcuts::set(self.shortcuts.clone());
         SIDEBAR_WIDTH.store(self.sidebar_width.unwrap_or(0), Ordering::Relaxed);
+        CONVERSATION_WIDTH.store(self.conversation_width.unwrap_or(0), Ordering::Relaxed);
         INTRO_SEEN.store(self.intro_seen, Ordering::Relaxed);
         SETUP_DONE.store(self.setup_done, Ordering::Relaxed);
     }
@@ -204,6 +225,7 @@ impl Settings {
             interface_size: (super::zoom::factor() * 100.0).round() as u32,
             shortcuts: super::shortcuts::current(),
             sidebar_width: sidebar_width(),
+            conversation_width: conversation_width(),
             pane_headers: pane_headers(),
             intro_seen: INTRO_SEEN.load(Ordering::Relaxed),
             setup_done: SETUP_DONE.load(Ordering::Relaxed),
@@ -220,6 +242,19 @@ pub fn sidebar_width() -> Option<u32> {
 pub fn set_sidebar_width(width: u32) {
     SIDEBAR_WIDTH.store(
         width.clamp(*sidebar_widths().start(), *sidebar_widths().end()),
+        Ordering::Relaxed,
+    );
+}
+
+/// The dragged conversation panel width in pixels, if any.
+pub fn conversation_width() -> Option<u32> {
+    Some(CONVERSATION_WIDTH.load(Ordering::Relaxed)).filter(|width| *width > 0)
+}
+
+/// Use a dragged conversation width now, without saving it.
+pub fn set_conversation_width(width: u32) {
+    CONVERSATION_WIDTH.store(
+        width.clamp(*conversation_widths().start(), *conversation_widths().end()),
         Ordering::Relaxed,
     );
 }
@@ -508,6 +543,7 @@ mod tests {
             interface_size: 150,
             shortcuts,
             sidebar_width: Some(260),
+            conversation_width: Some(640),
             pane_headers: PaneHeaders::Hover,
             intro_seen: true,
             setup_done: false,
@@ -524,7 +560,7 @@ mod tests {
         assert_eq!(Settings::current(), Settings::default());
         assert_eq!(Settings::parse("not toml ["), Settings::default());
         let odd = Settings::parse(
-            "theme = \"sepia\"\nfont_size = 99\ninterface_size = 130\nsidebar_width = 9000\nother = 1\n",
+            "theme = \"sepia\"\nfont_size = 99\ninterface_size = 130\nsidebar_width = 9000\nconversation_width = 10\nother = 1\n",
         );
         assert_eq!(odd, Settings::default());
         let directory = tempfile::tempdir().unwrap();

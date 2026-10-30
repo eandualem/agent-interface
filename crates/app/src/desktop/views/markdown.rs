@@ -10,7 +10,7 @@ use gpui::{
 };
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 
-use super::{ViewPane, selection};
+use super::selection::{self, Selectable};
 
 use crate::desktop::{
     components as ui,
@@ -344,12 +344,12 @@ fn shorten(mut text: &str, plain: &mut String, links: &mut Links) {
     plain.push_str(text);
 }
 
-fn styled(inline: &Inline, pane: &ViewPane, cx: &mut Context<ViewPane>) -> impl IntoElement {
+fn styled<V: Selectable>(inline: &Inline, pane: &V, cx: &mut Context<V>) -> impl IntoElement {
     selection::linked(pane, &inline.text, &inline.marks, &inline.links, cx)
 }
 
 /// Draw the blocks as a document.
-pub(super) fn render(blocks: &[Block], pane: &ViewPane, cx: &mut Context<ViewPane>) -> gpui::Div {
+pub(super) fn render<V: Selectable>(blocks: &[Block], pane: &V, cx: &mut Context<V>) -> gpui::Div {
     let (t, c) = (tokens(), colors());
     let look = Look {
         style: &t.text.doc_body,
@@ -361,11 +361,11 @@ pub(super) fn render(blocks: &[Block], pane: &ViewPane, cx: &mut Context<ViewPan
 }
 
 /// Draw the blocks with `look`.
-pub(super) fn render_in(
+pub(super) fn render_in<V: Selectable>(
     blocks: &[Block],
     look: &Look,
-    pane: &ViewPane,
-    cx: &mut Context<ViewPane>,
+    pane: &V,
+    cx: &mut Context<V>,
 ) -> gpui::Div {
     let document = ui::text(
         div()
@@ -380,7 +380,7 @@ pub(super) fn render_in(
 }
 
 /// `blocks` one under another, `gap` apart.
-fn column(blocks: &[Block], gap: f32, pane: &ViewPane, cx: &mut Context<ViewPane>) -> gpui::Div {
+fn column<V: Selectable>(blocks: &[Block], gap: f32, pane: &V, cx: &mut Context<V>) -> gpui::Div {
     let (t, c) = (tokens(), colors());
     let mut out = div().flex().flex_col().gap(px(gap)).min_w_0();
     for (at, block) in blocks.iter().enumerate() {
@@ -460,7 +460,7 @@ fn column(blocks: &[Block], gap: f32, pane: &ViewPane, cx: &mut Context<ViewPane
                 .bg(c.line)
                 .into_any_element(),
             Block::Table { head, rows } => {
-                let row = |cells: &[Inline], header: bool, cx: &mut Context<ViewPane>| {
+                let row = |cells: &[Inline], header: bool, cx: &mut Context<V>| {
                     let mut line = div()
                         .flex()
                         .border_t(px(t.size.hairline))

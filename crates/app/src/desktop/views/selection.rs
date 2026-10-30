@@ -1,6 +1,6 @@
 //! Shared native selection for rendered documents and their source text.
 
-use std::ops::Range;
+use std::{cell::RefCell, ops::Range};
 
 use gpui::{
     Bounds, ClipboardItem, Context, HighlightStyle, Pixels, Point, StyledText, TextLayout, canvas,
@@ -10,6 +10,17 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use super::{ViewPane, markdown::Mark};
 use crate::desktop::design::colors;
+
+/// A view whose rendered text can be selected and copied.
+pub(super) trait Selectable: 'static {
+    fn selection(&self) -> &RefCell<Selection>;
+}
+
+impl Selectable for ViewPane {
+    fn selection(&self) -> &RefCell<Selection> {
+        &self.selection
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct Position {
@@ -214,7 +225,7 @@ impl Selection {
             .map(|(index, _)| index)
     }
 
-    pub fn key(&mut self, key: &gpui::Keystroke, cx: &mut Context<ViewPane>) -> bool {
+    pub fn key<V: 'static>(&mut self, key: &gpui::Keystroke, cx: &mut Context<V>) -> bool {
         let mods = key.modifiers;
         let command = if cfg!(target_os = "macos") {
             mods.platform && !mods.control
@@ -226,23 +237,33 @@ impl Selection {
         }
         match key.key.as_str() {
             "a" => {
-                self.anchor = Some(Position { part: 0, byte: 0 });
-                let last = self.parts.len() - 1;
-                self.cursor = Some(Position {
-                    part: last,
-                    byte: self.parts[last].text.len(),
-                });
+                self.select_all();
                 cx.notify();
             }
-            "c" => {
-                let text = self.selected_text();
-                if !text.is_empty() {
-                    cx.write_to_clipboard(ClipboardItem::new_string(text));
-                }
-            }
+            "c" => self.copy(cx),
             _ => return false,
         }
         true
+    }
+
+    /// Select every block shown.
+    pub fn select_all(&mut self) {
+        let Some(last) = self.parts.len().checked_sub(1) else {
+            return;
+        };
+        self.anchor = Some(Position { part: 0, byte: 0 });
+        self.cursor = Some(Position {
+            part: last,
+            byte: self.parts[last].text.len(),
+        });
+    }
+
+    /// Put the selected text on the clipboard, if any is selected.
+    pub fn copy(&self, cx: &mut gpui::App) {
+        let text = self.selected_text();
+        if !text.is_empty() {
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+        }
     }
 }
 
@@ -269,26 +290,26 @@ fn copied(part: &Part, range: Range<usize>) -> String {
 
 /// One block with the existing typography and its inline styles. The caller
 /// supplies its outer styles; selection adds no field chrome or editing.
-pub(super) fn text(
-    pane: &ViewPane,
+pub(super) fn text<V: Selectable>(
+    view: &V,
     text: &str,
     marks: &[(Range<usize>, Mark)],
-    cx: &mut Context<ViewPane>,
+    cx: &mut Context<V>,
 ) -> gpui::Stateful<gpui::Div> {
-    linked(pane, text, marks, &[], cx)
+    linked(view, text, marks, &[], cx)
 }
 
 /// [`text`] with links: each label in `links` is drawn in the accent and
 /// opens its address when clicked.
-pub(super) fn linked(
-    pane: &ViewPane,
+pub(super) fn linked<V: Selectable>(
+    view: &V,
     text: &str,
     marks: &[(Range<usize>, Mark)],
     links: &[(Range<usize>, String)],
-    cx: &mut Context<ViewPane>,
+    cx: &mut Context<V>,
 ) -> gpui::Stateful<gpui::Div> {
-    let index = pane.selection.borrow_mut().register(text, links);
-    let selected = pane.selection.borrow().range(index);
+    let index = view.selection().borrow_mut().register(text, links);
+    let selected = view.selection().borrow().range(index);
     let c = colors();
     let mut boundaries = vec![0, text.len(), selected.start, selected.end];
     for range in marks
@@ -323,7 +344,7 @@ pub(super) fn linked(
         (range, style)
     });
     let styled = StyledText::new(text.to_owned()).with_highlights(highlights);
-    pane.selection.borrow_mut().parts[index].layout = styled.layout().clone();
+    view.selection().borrow_mut().parts[index].layout = styled.layout().clone();
     let entity = cx.entity().downgrade();
     div()
         .id(("selectable-text", index))
@@ -331,8 +352,8 @@ pub(super) fn linked(
         .cursor_text()
         .on_mouse_down(
             gpui::MouseButton::Left,
-            cx.listener(move |pane, event: &gpui::MouseDownEvent, _, cx| {
-                let mut selection = pane.selection.borrow_mut();
+            cx.listener(move |view: &mut V, event: &gpui::MouseDownEvent, _, cx| {
+                let mut selection = view.selection().borrow_mut();
                 let at = selection.hit(index, event.position);
                 selection.pressed_link = (event.click_count == 1 && !event.modifiers.shift)
                     .then(|| selection.link_at(at))
@@ -347,8 +368,8 @@ pub(super) fn linked(
             canvas(
                 |_, _, _| (),
                 move |bounds, (), _, cx| {
-                    let _ = entity.update(cx, |pane, _| {
-                        if let Some(part) = pane.selection.borrow_mut().parts.get_mut(index) {
+                    let _ = entity.update(cx, |view, _| {
+                        if let Some(part) = view.selection().borrow_mut().parts.get_mut(index) {
                             part.bounds = Some(bounds);
                         }
                     });
@@ -361,11 +382,11 @@ pub(super) fn linked(
 
 /// Start a selection from a press anywhere in `element` that is not on text,
 /// such as the space between paragraphs or a list marker.
-pub(super) fn area(element: gpui::Div, cx: &mut Context<ViewPane>) -> gpui::Div {
+pub(super) fn area<V: Selectable>(element: gpui::Div, cx: &mut Context<V>) -> gpui::Div {
     element.on_mouse_down(
         gpui::MouseButton::Left,
-        cx.listener(|pane, event: &gpui::MouseDownEvent, _, cx| {
-            let pressed = pane.selection.borrow_mut().press_near(
+        cx.listener(|view: &mut V, event: &gpui::MouseDownEvent, _, cx| {
+            let pressed = view.selection().borrow_mut().press_near(
                 event.position,
                 event.modifiers.shift,
                 event.click_count,
@@ -378,7 +399,7 @@ pub(super) fn area(element: gpui::Div, cx: &mut Context<ViewPane>) -> gpui::Div 
 }
 
 /// Keep drag selection and release working beyond the initial text block.
-pub(super) fn events(cx: &Context<ViewPane>) -> impl IntoElement {
+pub(super) fn events<V: Selectable>(cx: &Context<V>) -> impl IntoElement {
     let entity = cx.entity().downgrade();
     canvas(
         |_, _, _| (),
@@ -386,8 +407,8 @@ pub(super) fn events(cx: &Context<ViewPane>) -> impl IntoElement {
             let moving = entity.clone();
             window.on_mouse_event(move |event: &gpui::MouseMoveEvent, phase, _, cx| {
                 if phase == gpui::DispatchPhase::Capture {
-                    let _ = moving.update(cx, |pane, cx| {
-                        let mut selection = pane.selection.borrow_mut();
+                    let _ = moving.update(cx, |view, cx| {
+                        let mut selection = view.selection().borrow_mut();
                         if !event.dragging() {
                             selection.dragging = false;
                         } else if selection.motion(event.position) {
@@ -400,8 +421,8 @@ pub(super) fn events(cx: &Context<ViewPane>) -> impl IntoElement {
             window.on_mouse_event(move |event: &gpui::MouseUpEvent, phase, _, cx| {
                 if phase == gpui::DispatchPhase::Capture && event.button == gpui::MouseButton::Left
                 {
-                    let _ = released.update(cx, |pane, cx| {
-                        let mut selection = pane.selection.borrow_mut();
+                    let _ = released.update(cx, |view, cx| {
+                        let mut selection = view.selection().borrow_mut();
                         selection.dragging = false;
                         // A press on a link that selected nothing opens it.
                         if let Some(url) = selection.pressed_link.take()
