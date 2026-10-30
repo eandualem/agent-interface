@@ -223,13 +223,13 @@ print(json.dumps(e));sys.exit(code)
 
             launch()
             enter_first_agent()
-            wait_for(lambda: "Choose an agent tool above" in text(), "explicit selection")
+            wait_for(lambda: "Choose an agent tool" in text(), "explicit selection")
             initial = capture("unselected")
             assert "Old OpenCode fixture" not in initial and "Plain shell" not in initial
             assert not requests()
             click("OpenCode")
             wait_for(lambda: "Old OpenCode fixture" in text(), "selected tool diagnosis")
-            click("Start", last=True)  # The incompatible choice must not submit anything.
+            click("Choose", last=True)  # The incompatible choice must not submit anything.
             assert not requests()
             click("Codex")
             wait_for(lambda: "Start with Codex" in text(), "Codex choice")
@@ -250,7 +250,7 @@ print(json.dumps(e));sys.exit(code)
             enter_first_agent()
             wait_for(lambda: "Change agent tool" in text(), "saved request recovery after relaunch")
             click("Change")
-            wait_for(lambda: "Choose an agent tool above" in text(), "cancelled request unlocks choice")
+            wait_for(lambda: "Choose an agent tool" in text(), "cancelled request unlocks choice")
             cancelled = requests()[1]
             assert cancelled["action"] == "cancel_first_agent"
             assert cancelled["request_id"] == first["request_id"]

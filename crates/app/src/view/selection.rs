@@ -285,5 +285,14 @@ mod tests {
         terminal.write(b"\x1b[?1049hother screen");
         terminal.read_screen(&mut screen).unwrap();
         assert!(!selection.valid_for(&screen));
+
+        let mut terminal = Terminal::new(20, 3, 1).unwrap();
+        terminal.read_screen(&mut screen).unwrap();
+        let selection = Selection::new(PaneId(1), &screen, 0, 0, 3);
+        let mut replacement = Terminal::new(20, 3, 1).unwrap();
+        replacement.invalidate_history_after(&terminal);
+        replacement.write(b"recovered history");
+        replacement.read_screen(&mut screen).unwrap();
+        assert!(!selection.valid_for(&screen));
     }
 }

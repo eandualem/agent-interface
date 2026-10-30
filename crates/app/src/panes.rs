@@ -1354,6 +1354,9 @@ fn apply(
                             let mut restored = LivePane::restored(rebuilt.snapshot, scrollback)?;
                             restored
                                 .terminal
+                                .invalidate_history_after(&terminal.terminal);
+                            restored
+                                .terminal
                                 .inherit_pointer_gestures(&terminal.terminal);
                             *terminal = restored;
                             // A snapshot can observe an option-only resize before

@@ -41,17 +41,20 @@ pub(super) fn render(
     cx: &mut Context<ViewPane>,
 ) -> AnyElement {
     let (t, c) = (tokens(), colors());
-    // The document's Markdown, whole, for pasting elsewhere. The files are
-    // Backbone's, so the reader only reads them.
+    // Copy exactly what was read, clearly labelling a bounded preview.
     let source = match page.text {
-        Text::Ready { text, .. } => Some(text.to_owned()),
+        Text::Ready { text, cut } => Some((text.to_owned(), cut)),
         _ => None,
     };
-    let copy = source.map(|source| {
+    let copy = source.map(|(source, cut)| {
         ui::button(
             "reader-copy",
-            if pane.copied {
+            if pane.copied && cut {
+                "Preview copied"
+            } else if pane.copied {
                 "Copied"
+            } else if cut {
+                "Copy Markdown preview"
             } else {
                 "Copy Markdown"
             },

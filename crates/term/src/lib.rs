@@ -296,6 +296,15 @@ impl Terminal {
         Ok(())
     }
 
+    /// Marks this terminal as replacing `previous`, whose history positions
+    /// must not be reused even when the dimensions are unchanged.
+    pub fn invalidate_history_after(&mut self, previous: &Self) {
+        self.history_epoch = self
+            .history_epoch
+            .max(previous.history_epoch)
+            .wrapping_add(1);
+    }
+
     /// Returns the underline colour and hyperlink of the cell at `row` and
     /// `col` of the screen, counted from zero at the top left.
     ///

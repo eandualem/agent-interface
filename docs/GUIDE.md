@@ -46,7 +46,7 @@ Drag past the top or bottom of a pane to scroll it while selecting, or scroll
 and Shift-click to extend the selection to another point. Escape, typing or a
 new click outside the selection clears it. Copies from recovered screens
 currently retain their displayed row breaks, including wrapped lines.
-Discarding old history or switching terminal screen buffers clears the selection.
+Discarding old history, recovering the terminal or switching screen buffers clears the selection.
 For programs with mouse reporting enabled, hold Shift to select text locally.
 Ordinary clicks, drags, requested pointer motion and wheel gestures reach the
 program. Each drag stays with its original pane; only one held-button gesture is
@@ -61,7 +61,8 @@ Settings, chooses another folder containing `layouts.db`.
 Text in Skills, policies, agent briefs and report readers supports drag selection,
 double-click word selection, and Command-C to copy (Control-C on Linux).
 Command-A selects the document text (Control-A on Linux). **Copy Markdown** in
-a skill or policy copies the whole file. The Edit menu offers Copy and Select All; on macOS
+a skill or policy copies the whole file when available; oversized skills offer
+**Copy Markdown preview** for the portion shown. The Edit menu offers Copy and Select All; on macOS
 these also work with selected text inside HTML Documents.
 
 ## Find work and change appearance
