@@ -28,6 +28,44 @@ enum Update {
     Finished(Result<setup::Event, &'static str>),
 }
 
+/// Discovery describes tools; only an explicit user choice selects one.
+#[derive(Default)]
+struct ToolChoice {
+    rows: Vec<setup::Runtime>,
+    selected: Option<String>,
+}
+
+impl ToolChoice {
+    fn replace(&mut self, rows: Vec<setup::Runtime>) {
+        self.rows = rows;
+        if self.current().is_none() {
+            self.selected = None;
+        }
+    }
+
+    fn select(&mut self, id: &str) {
+        if self
+            .rows
+            .iter()
+            .any(|row| row.id == id && row.id != "shell")
+        {
+            self.selected = Some(id.into());
+        }
+    }
+
+    fn current(&self) -> Option<&setup::Runtime> {
+        self.rows
+            .iter()
+            .find(|row| Some(&row.id) == self.selected.as_ref() && row.id != "shell")
+    }
+
+    fn start_runtime(&self) -> Option<&str> {
+        self.current()
+            .filter(|row| row.can_setup())
+            .map(|row| row.id.as_str())
+    }
+}
+
 pub struct FirstAgent {
     executable: PathBuf,
     path_env: String,
@@ -38,8 +76,7 @@ pub struct FirstAgent {
     brief: Entity<NameField>,
     custom_brief: bool,
     directory: Option<PathBuf>,
-    runtimes: Vec<setup::Runtime>,
-    selected: Option<String>,
+    tools: ToolChoice,
     discovering: bool,
     discovery_generation: u64,
     busy: bool,
@@ -102,8 +139,7 @@ impl FirstAgent {
             brief,
             custom_brief: false,
             directory: None,
-            runtimes: Vec::new(),
-            selected: None,
+            tools: ToolChoice::default(),
             discovering: false,
             discovery_generation: 0,
             busy: false,
@@ -149,8 +185,7 @@ impl FirstAgent {
         }
         self.existing =
             matches!(probe.backbone, super::probe::Backbone::Running { agents } if agents > 0);
-        self.runtimes.clear();
-        self.selected = None;
+        self.tools.rows.clear();
         self.discovery_generation += 1;
         self.discovering = false;
         self.discover(cx);
@@ -183,11 +218,7 @@ impl FirstAgent {
                 match result {
                     Ok(rows) => {
                         first.error = None;
-                        first.selected = rows
-                            .iter()
-                            .find(|row| row.can_setup())
-                            .map(|row| row.id.clone());
-                        first.runtimes = rows;
+                        first.tools.replace(rows);
                     }
                     Err(error) => first.error = Some(error.into()),
                 }
@@ -244,13 +275,8 @@ impl FirstAgent {
             );
         }
         let runtime = self
-            .selected
-            .as_ref()
-            .filter(|id| {
-                self.runtimes
-                    .iter()
-                    .any(|row| row.id == **id && row.can_setup())
-            })
+            .tools
+            .start_runtime()
             .ok_or("Choose an installed agent tool.")?;
         let directory = self
             .folder(cx)
@@ -276,12 +302,12 @@ impl FirstAgent {
                 request_id: uuid::Uuid::new_v4().to_string(),
                 action: "first_agent".into(),
                 data_dir: self.data_dir.clone(),
-                hooks: vec![runtime.clone()],
+                hooks: vec![runtime.into()],
                 agent: setup::Agent {
                     name: name.into(),
                     directory,
                     create_directory: true,
-                    runtime: runtime.clone(),
+                    runtime: runtime.into(),
                     model: None,
                     brief,
                 },
@@ -437,8 +463,7 @@ impl FirstAgent {
                         });
                         first.saved = None;
                         first.result = None;
-                        first.runtimes.clear();
-                        first.selected = None;
+                        first.tools = ToolChoice::default();
                         cx.emit(FirstEvent::RefreshTools);
                     }
                     Ok(result) => {
@@ -504,7 +529,7 @@ impl Render for FirstAgent {
                     .child("Agent tool · uses its default model"),
             );
             let mut tools = div().flex().flex_wrap().gap(px(t.space.s8));
-            for runtime in self.runtimes.iter().filter(|row| row.id != "shell") {
+            for runtime in self.tools.rows.iter().filter(|row| row.id != "shell") {
                 let id = runtime.id.clone();
                 let enabled = runtime.can_setup();
                 let label = format!(
@@ -524,25 +549,36 @@ impl Render for FirstAgent {
                     ui::button(
                         format!("runtime-{id}"),
                         label,
-                        if self.selected.as_ref() == Some(&id) {
+                        if self.tools.selected.as_ref() == Some(&id) {
                             Button::Primary
                         } else {
                             Button::Secondary
                         },
                     )
                     .on_click(cx.listener(move |first, _, _, cx| {
-                        if enabled && !first.busy && first.saved.is_none() {
-                            first.selected = Some(id.clone());
+                        if !first.busy && first.saved.is_none() && !first.discovering {
+                            first.tools.select(&id);
+                            first.error = None;
+                            first.progress.clear();
                             cx.notify();
                         }
                     })),
                 );
             }
             page = page.child(tools);
-            for runtime in &self.runtimes {
-                if let Some(check) = &runtime.setup_compatibility
+            if let Some(runtime) = self.tools.current() {
+                if !runtime.available {
+                    page = page.child(div().text_color(c.attention_text).child(format!(
+                        "Install {} from the Agent tools step, then check tools again, or choose another tool.",
+                        runtime.display_name
+                    )));
+                } else if !runtime.setup_supported {
+                    page = page.child(div().text_color(c.attention_text).child(format!(
+                        "{} does not support first-agent setup. Choose another tool, or use terminals for now.",
+                        runtime.display_name
+                    )));
+                } else if let Some(check) = &runtime.setup_compatibility
                     && !check.compatible
-                    && runtime.available
                 {
                     page = page.child(
                         div()
@@ -563,6 +599,8 @@ impl Render for FirstAgent {
             }
             page = page.child(div().text_color(c.muted).child(if self.discovering {
                 "Checking agent tools…"
+            } else if self.tools.current().is_none() {
+                "Choose an agent tool above, then start your agent."
             } else {
                 "Sign in inside your selected tool. Finding it here does not verify login."
             }));
@@ -638,21 +676,111 @@ impl Render for FirstAgent {
             .as_ref()
             .is_none_or(|result| result.retry == "same_request");
         if retry && !cancelling {
+            let can_start = !self.busy
+                && (self.saved.is_some()
+                    || (!self.discovering && self.tools.start_runtime().is_some()));
+            let label = if self.busy {
+                "Setting up…".into()
+            } else if self.saved.is_some() {
+                "Resume saved setup".into()
+            } else if let Some(runtime) = self.tools.current() {
+                format!("Start with {}", runtime.display_name)
+            } else {
+                "Choose an agent tool".into()
+            };
             page = page.child(
-                ui::button(
-                    "start-agent",
-                    if self.busy {
-                        "Setting up…"
-                    } else if self.saved.is_some() {
-                        "Resume saved setup"
-                    } else {
-                        "Start my agent"
-                    },
-                    Button::Primary,
-                )
-                .on_click(cx.listener(|first, _, _, cx| first.start(cx))),
+                ui::button("start-agent", label, Button::Primary)
+                    .when(!can_start, |button| button.opacity(0.5).cursor_default())
+                    .when(can_start, |button| {
+                        button.on_click(cx.listener(|first, _, _, cx| first.start(cx)))
+                    }),
             );
         }
         page
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn catalog() -> Vec<setup::Runtime> {
+        serde_json::from_value(serde_json::json!([
+            {"id":"codex","display_name":"Codex","available":true,
+             "setup_supported":true,"models":[],"authentication":"unknown"},
+            {"id":"opencode","display_name":"OpenCode","available":true,
+             "setup_supported":true,"models":[],"authentication":"unknown",
+             "setup_compatibility":{"compatible":false,"message":"Update OpenCode.",
+                 "path":"/fixture/opencode","version":"1.19.5"}},
+            {"id":"shell","display_name":"Plain shell","available":true,
+             "setup_supported":false,"models":[],"authentication":"unknown",
+             "setup_compatibility":{"compatible":false,"message":"Setup unavailable."}}
+        ]))
+        .unwrap()
+    }
+
+    #[test]
+    fn discovery_does_not_choose_a_tool_for_the_user() {
+        let mut tools = ToolChoice::default();
+        tools.replace(catalog());
+        assert!(tools.current().is_none());
+        assert!(tools.start_runtime().is_none());
+    }
+
+    #[test]
+    fn switching_from_incompatible_opencode_to_codex_changes_the_entire_choice() {
+        let mut tools = ToolChoice::default();
+        tools.replace(catalog());
+        tools.select("opencode");
+        assert_eq!(
+            tools
+                .current()
+                .unwrap()
+                .setup_compatibility
+                .as_ref()
+                .unwrap()
+                .message,
+            "Update OpenCode."
+        );
+        assert!(tools.start_runtime().is_none());
+        tools.select("codex");
+        assert_eq!(tools.current().unwrap().display_name, "Codex");
+        assert!(tools.current().unwrap().setup_compatibility.is_none());
+        assert_eq!(tools.start_runtime(), Some("codex"));
+        tools.select("opencode");
+        assert!(tools.start_runtime().is_none());
+    }
+
+    #[test]
+    fn refresh_keeps_explicit_choice_even_when_it_needs_attention() {
+        let mut tools = ToolChoice::default();
+        tools.replace(catalog());
+        tools.select("codex");
+        tools.rows.clear(); // The asynchronous refresh must not allow a stale start.
+        assert!(tools.start_runtime().is_none());
+        let mut rows = catalog();
+        rows.reverse();
+        tools.replace(rows);
+        assert_eq!(tools.start_runtime(), Some("codex"));
+        let mut rows = catalog();
+        rows[0].available = false;
+        tools.replace(rows);
+        assert_eq!(tools.current().unwrap().id, "codex");
+        assert!(tools.start_runtime().is_none());
+    }
+
+    #[test]
+    fn removed_tools_do_not_silently_select_a_replacement() {
+        let mut tools = ToolChoice::default();
+        tools.replace(catalog());
+        tools.select("codex");
+        let mut rows = catalog();
+        rows.retain(|row| row.id != "codex");
+        tools.replace(rows);
+        assert!(tools.current().is_none());
+        tools.select("shell");
+        assert!(tools.current().is_none());
+        tools.select("missing");
+        assert!(tools.current().is_none());
     }
 }

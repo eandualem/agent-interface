@@ -199,8 +199,11 @@ The first-agent step calls the selected engine's `runtimes --json --check-setup`
 `setup --file REQUEST --jsonl` only after an explicit Start action. It offers the
 `orchestrator-v1` brief or custom instructions, a name and a folder. Discovery
 reports installed tools and opt-in setup compatibility, never verified login;
-incompatible tools show their diagnostic and selected executable rather than
-remaining selectable. Permission and login prompts stay
+discovery never chooses a tool automatically. Refresh preserves an explicit choice
+when the tool remains in the catalog. Selecting any listed agent tool shows only
+its own diagnostic and executable; an incompatible choice cannot start setup.
+The same selected row controls the diagnostic, Start label and submitted runtime
+and hooks, so another installed tool cannot block it. Permission and login prompts stay
 in the actual agent terminal. First-agent selection also requires an explicit
 `setup_supported: true`; older providers and unsupported tools remain unavailable
 for this setup path. Start also requests an initial greeting, which may
