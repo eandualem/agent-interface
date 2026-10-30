@@ -228,7 +228,7 @@ the private Unix socket used by the app. Open Agent Interface to continue
 onboarding; no separate Backbone installation command is needed. Agent tools
 still need to be installed and signed in before creating an agent.
 
-New installations and upgrades select Backbone 0.4.1 or newer. If a compatible published
+New installations and upgrades select Backbone 0.4.2 or newer. If a compatible published
 release is unavailable, installation stops before replacing the app. Setup
 failures show Backbone's diagnostic and recovery guidance. When retry is allowed,
 rerun the same installer: it retains the request and resumes pending steps using
@@ -242,6 +242,14 @@ The installer upgrades the `agent-backbone` tool itself to the latest compatible
 published package, including when it was installed from Git or a development
 source. There is no package opt-out; do not run this installer if you need to
 preserve that tool installation.
+
+For an unchanged installation originally created by this installer, an upgrade
+waits up to two minutes for Backbone's automatic reload to report the installed
+version as healthy on its private socket. It does not restart an existing
+service or change reload preferences. If automatic reload is disabled or held,
+the installer reports that the update is not yet running and retains the saved
+setup; resolve the service update through Backbone and rerun the installer.
+Independently managed installations retain their own service lifecycle.
 
 For an independently managed installation without a private socket, its operator
 can enable the connection through Backbone's configuration:

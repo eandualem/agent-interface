@@ -75,6 +75,46 @@ class SetupTests(unittest.TestCase):
         self.assertEqual([call[0] for call in self.calls], ["initialize"])
         self.assertEqual(self.setting, "")
 
+    def test_upgrade_waits_for_reload_without_replaying_or_restarting(self):
+        self.install()
+        root = self.home / ".local/state/agent-interface/backbone"
+        saved = {path: path.read_bytes() for path in root.glob("*.json")}
+        before = list(self.calls)
+        with patch.object(setup, "socket_version", side_effect=["0.4.1", None, "0.4.2"]) as health, \
+                patch.object(setup.time, "sleep"):
+            self.install("0.4.2")
+        self.assertEqual(health.call_count, 3)
+        self.assertEqual(self.calls, before)
+        self.assertEqual(saved, {path: path.read_bytes() for path in root.glob("*.json")})
+
+    def test_upgrade_deadline_and_resume_preserve_saved_installation(self):
+        import json
+
+        self.install()
+        root = self.home / ".local/state/agent-interface/backbone"
+        outcome = next(root.glob("*.result.json"))
+        saved = outcome.read_bytes()
+        state = json.loads(saved)["result"]
+        before = list(self.calls)
+        with self.assertRaisesRegex(ValueError, "automatic reload may be disabled or held"):
+            setup.wait_for_installed_service(self.executable, self.home, self.data, state, "0.4.2", {}, timeout=0)
+        with patch.object(setup, "socket_version") as health:
+            self.install("0.4.2", resume=True)
+            health.assert_not_called()
+        self.assertEqual(self.calls, before)
+        self.assertEqual(outcome.read_bytes(), saved)
+
+    def test_upgrade_preserves_replaced_service_management(self):
+        self.install()
+        before = list(self.calls)
+        for error in (FileNotFoundError("removed unit"), ValueError("different executable")):
+            with self.subTest(error=type(error).__name__), \
+                    patch.object(setup, "service_identity", side_effect=error), \
+                    patch.object(setup, "socket_version") as health:
+                self.install("0.4.2")
+                health.assert_not_called()
+        self.assertEqual(self.calls, before)
+
     def test_lost_config_reply_resumes_without_rewriting_and_before_upgrade(self):
         self.fail_after_config = True
         with self.assertRaisesRegex(ValueError, "lost reply"):
@@ -147,6 +187,56 @@ class SchemaTests(unittest.TestCase):
 
 
 class ServiceIdentityTests(unittest.TestCase):
+    def test_version_probe_requires_private_healthy_bounded_json(self):
+        import socket
+        import threading
+
+        responses = [
+            (b'HTTP/1.1 200 OK\r\n\r\n{"healthy":true,"version":"0.4.2"}', "0.4.2"),
+            (b'HTTP/1.1 200 OK\r\n\r\n{"healthy":false,"version":"0.4.2"}', None),
+            (b'HTTP/1.1 503 Unavailable\r\n\r\n{"healthy":true,"version":"0.4.2"}', None),
+            (b'HTTP/1.1 200 OK\r\n\r\n[]', None),
+            (b'HTTP/1.1 200 OK\r\n\r\n' + b' ' * 65537, None),
+        ]
+        with tempfile.TemporaryDirectory(prefix="ai-version-") as temporary:
+            directory = Path(temporary)
+            directory.chmod(0o700)
+            path = directory / "health.sock"
+            with socket.socket(socket.AF_UNIX) as server:
+                server.bind(str(path))
+                path.chmod(0o600)
+                server.listen(1)
+                server.settimeout(5)
+                requests = []
+                for response, expected in responses:
+                    def answer(response=response):
+                        with server.accept()[0] as client:
+                            requests.append(client.recv(4096))
+                            try:
+                                client.sendall(response)
+                            except BrokenPipeError:
+                                pass  # An oversized response can be rejected early.
+
+                    worker = threading.Thread(target=answer)
+                    worker.start()
+                    self.assertEqual(setup.socket_version(path), expected)
+                    worker.join(timeout=5)
+                    self.assertFalse(worker.is_alive())
+                self.assertEqual(requests, [b"GET /health HTTP/1.0\r\nHost: localhost\r\nConnection: close\r\n\r\n"] * len(responses))
+                def rejected_peer():
+                    with server.accept()[0] as client:
+                        requests.append(client.recv(4096))
+
+                worker = threading.Thread(target=rejected_peer)
+                worker.start()
+                with patch.object(setup, "same_user_peer", return_value=False):
+                    self.assertIsNone(setup.socket_version(path))
+                worker.join(timeout=5)
+                self.assertFalse(worker.is_alive())
+                self.assertEqual(requests[-1], b"")
+                path.chmod(0o666)
+                self.assertIsNone(setup.socket_version(path))
+
     def test_definition_and_loaded_service_must_belong_to_same_installation(self):
         import plistlib
 

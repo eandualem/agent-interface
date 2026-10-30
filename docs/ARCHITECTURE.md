@@ -553,7 +553,7 @@ binary linked to the system desktop libraries. Neither package includes a
 Python runtime, build toolchain, tmux server or application daemon.
 
 The archive includes `setup_backbone.py`, a standard-library installer helper.
-`install.sh` installs the latest stable published `agent-backbone>=0.4.1` with
+`install.sh` installs the latest stable published `agent-backbone>=0.4.2` with
 uv, independently of the app archive. Backbone (MIT) owns its package, dependency
 testing and publication. uv (MIT OR Apache-2.0) installs the Python environment;
 when uv is absent, its 0.13.6 installer is version- and SHA-256-pinned. No Backbone
@@ -569,6 +569,13 @@ socket writes are reconciled against the intended value; conflicting choices
 are preserved. Existing installations and completed setup keep their settings
 and services. The final socket probe sends only an unauthenticated health request;
 the app's native transport performs peer verification before sending credentials.
+For an unchanged, installer-owned completed setup, upgrades also observe the
+installed version becoming healthy on the private socket for up to 120 seconds.
+This read-only check validates directory/socket ownership and modes plus the
+peer UID, and rechecks the saved installation, unit and socket choices before
+accepting readiness. It lets Backbone's automatic upgrade watcher reload without
+restarting the service or changing a disabled/held reload preference. Independently
+managed or subsequently changed installations keep their own lifecycle.
 Provider installation/setup finishes before replacing the app; provider state
 is retained if a later app replacement fails.
 
