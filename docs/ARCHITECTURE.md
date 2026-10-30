@@ -527,7 +527,9 @@ build-time advisory exception are described below.
   screenshot-drop staging. Each is MIT OR Apache-2.0.
 - **`pulldown-cmark` 0.13.6:** MIT-licensed CommonMark parser, pinned exactly
   with default features off, behind the one Markdown reader that skills,
-  policies, reports and answers use (`views/markdown.rs`). It adds tables,
+  policies, reports, answers and conversation messages use (`views/markdown.rs`).
+  Authored messages treat a leading `---` as a rule rather than front matter.
+  It adds tables,
   strikethrough and task lists; the app draws the parsed blocks natively.
   Its transitive `unicase` 2.10.0 dependency (MIT OR Apache-2.0) supplies
   case-insensitive matching for Markdown reference labels.

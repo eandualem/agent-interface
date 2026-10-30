@@ -979,7 +979,7 @@ fn opened(
     let ahead = plan
         .items
         .iter()
-        .filter(|item| !item.done() && !item.blocked() && !item.in_progress())
+        .filter(|item| step(item, &at) == ui::Step::Ahead)
         .count();
     let now = plan.items.iter().find(|item| at.is(item));
     let strong = |value: String, color| {
