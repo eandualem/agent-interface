@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import time
 import tomllib
@@ -136,3 +137,12 @@ with tempfile.TemporaryDirectory(prefix="agent-interface-desktop-") as directory
         wm.wait(timeout=15)
         wm_log.close()
         app_log.close()
+
+# Keep all native-window regressions behind the same CI entrypoint and artifact
+# directory. A fresh desktop gives the enlarged onboarding case enough space.
+for scale in (100, 150):
+    subprocess.run([
+        "xvfb-run", "-a", "-s", "-screen 0 2560x1800x24",
+        "dbus-run-session", "--", sys.executable,
+        str(ROOT / "scripts/test-linux-onboarding.py"),
+    ], env=dict(os.environ, ONBOARDING_TEST_SCALE=str(scale)), check=True)
