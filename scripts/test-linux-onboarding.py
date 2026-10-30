@@ -152,7 +152,8 @@ print(json.dumps(e));sys.exit(code)
                 assert app.poll() is None, "application exited"
                 command("import", "-window", window, str(OUTPUT / "current.png"))
                 tsv = command("tesseract", str(OUTPUT / "current.png"), "stdout", "--psm", "11", "tsv")
-                return [w for w in csv.DictReader(io.StringIO(tsv), delimiter="\t") if w.get("text", "").strip()]
+                (OUTPUT / "current.tsv").write_text(tsv)
+                return [w for w in csv.DictReader(io.StringIO(tsv), delimiter="\t") if (w.get("text") or "").strip()]
 
             def text():
                 return " ".join(w["text"] for w in words())
