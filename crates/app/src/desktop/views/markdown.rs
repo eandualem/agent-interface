@@ -8,7 +8,7 @@ use std::ops::Range;
 use gpui::{
     Context, FontStyle, FontWeight, HighlightStyle, StrikethroughStyle, div, prelude::*, px,
 };
-use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd, TextMergeStream};
 
 use super::selection::{self, Selectable};
 
@@ -111,7 +111,9 @@ fn parse_with(text: &str, front_matter: bool) -> Vec<Block> {
     }
     let options =
         Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
-    blocks(&mut Parser::new_ext(body, options))
+    // Unmatched Markdown delimiters can split a bare URL across adjacent text
+    // events. Detect its address only after those fragments are joined.
+    blocks(&mut TextMergeStream::new(Parser::new_ext(body, options)))
 }
 
 /// The blocks until the end of the enclosing container.
@@ -632,6 +634,19 @@ mod tests {
         };
         assert_eq!(inline.text, "file shell anchor custom:open web");
         assert_eq!(inline.links, [(30..33, "HTTPS://example.com".to_owned())]);
+    }
+
+    #[test]
+    fn bare_url_keeps_delimiters_split_across_text_events() {
+        let blocks = parse_authored("See https://example.com/~alice");
+        let Block::Paragraph(inline) = &blocks[0] else {
+            panic!()
+        };
+        assert_eq!(inline.text, "See example.com ↗");
+        assert_eq!(
+            inline.links,
+            [(4..19, "https://example.com/~alice".to_owned())]
+        );
     }
 
     #[test]
