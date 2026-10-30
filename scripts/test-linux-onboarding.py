@@ -165,7 +165,8 @@ print(json.dumps(e));sys.exit(code)
                 # as a single line. Coordinates still come from rendered pixels.
                 components = command("convert", str(OUTPUT / "current.png"), "-fuzz", "3%",
                     "-fill", "white", "-opaque", PALETTE["accent"],
-                    "-opaque", DISABLED_ACCENT, "-fill", "black", "+opaque", "white",
+                    "-opaque", DISABLED_ACCENT, "-fuzz", "0%", "-opaque", PALETTE["field"],
+                    "-fill", "black", "+opaque", "white",
                     "-define", "connected-components:verbose=true", "-connected-components", "8", "null:")
                 for index, line in enumerate(components.splitlines()):
                     match = re.match(r"\s*\d+: (\d+)x(\d+)\+(\d+)\+(\d+) .*srgb\(255,255,255\)", line)
@@ -222,7 +223,7 @@ print(json.dumps(e));sys.exit(code)
             assert not requests()
             click("OpenCode")
             wait_for(lambda: "Old OpenCode fixture" in text(), "selected tool diagnosis")
-            click("Start")  # The incompatible choice must not submit anything.
+            click("Start", last=True)  # The incompatible choice must not submit anything.
             assert not requests()
             click("Codex")
             wait_for(lambda: "Start with Codex" in text(), "Codex choice")
@@ -232,7 +233,7 @@ print(json.dumps(e));sys.exit(code)
             click("again")
             wait_for(lambda: len((root / "discovery.jsonl").read_text().splitlines()) > discoveries, "discovery refresh")
             wait_for(lambda: "Start with Codex" in text(), "choice survives refresh")
-            click("Start")
+            click("Start", last=True)
             wait_for(lambda: "Codex fixture needs sign-in" in text(), "Codex-only failure")
             first = requests()[0]
             assert first["agent"]["runtime"] == "codex" and first["hooks"] == ["codex"]
@@ -250,7 +251,11 @@ print(json.dumps(e));sys.exit(code)
             assert cancelled["agent"] == first["agent"]
             click("Claude")
             wait_for(lambda: "Start with Claude Code" in text(), "replacement tool")
-            click("Start")
+            discoveries = len((root / "discovery.jsonl").read_text().splitlines())
+            click("again")
+            wait_for(lambda: len((root / "discovery.jsonl").read_text().splitlines()) > discoveries, "replacement discovery refresh")
+            wait_for(lambda: "Start with Claude Code" in text(), "non-default choice survives refresh")
+            click("Start", last=True)
             wait_for(lambda: "Your agent is ready" in text(), "replacement success")
             final = requests()[2]
             assert len(requests()) == 3
