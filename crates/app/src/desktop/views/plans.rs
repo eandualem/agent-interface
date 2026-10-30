@@ -628,25 +628,11 @@ fn list(pane: &ViewPane, plans: &Frame, cx: &mut Context<ViewPane>) -> AnyElemen
             column.into_any_element()
         }
     };
-    // A failed refresh says so above the plans last read.
-    let stale = plans
-        .page
-        .is_some()
-        .then_some(plans.error)
-        .flatten()
-        .map(|error| {
-            ui::notice(
-                "unplug",
-                format!("{} These are the plans last read.", error.message()),
-                None,
-            )
-        });
     div()
         .flex_1()
         .min_h_0()
         .flex()
         .flex_col()
-        .children(stale)
         .child(body)
         .child(ui::view_footer(
             &[("↑↓", "move"), ("↵", "open plan")],
@@ -1153,6 +1139,19 @@ pub(super) fn body(
         Some(entry) => opened(pane, &frame, &entry, window, cx),
         None => reports::section_frame(pane, list(pane, &frame, cx), cx),
     };
+    // A failed refresh says so above the plans last read.
+    let stale = frame
+        .page
+        .is_some()
+        .then_some(frame.error)
+        .flatten()
+        .map(|error| {
+            ui::notice(
+                "unplug",
+                format!("{} These are the plans last read.", error.message()),
+                None,
+            )
+        });
     div()
         .flex()
         .flex_col()
@@ -1164,6 +1163,7 @@ pub(super) fn body(
                 None,
             ))
         })
+        .children(stale)
         .child(div().flex_1().min_h_0().child(body))
         .into_any_element()
 }

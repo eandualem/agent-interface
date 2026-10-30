@@ -298,7 +298,8 @@ Native document readers share selection state across styled text blocks and sour
 text. GPUI text layouts map pointer positions to UTF-8 offsets, snapped to grapheme
 boundaries. Copy uses the displayed text; selection resets when that text changes.
 Native Copy and Select All menu actions follow the focused field or reader.
-Native Markdown links open only HTTP and HTTPS destinations; other schemes and
+Native Markdown copying preserves authored link labels and restores abbreviated
+bare addresses to their full URLs. Native links open only HTTP and HTTPS destinations; other schemes and
 document anchors remain plain text.
 Inline highlights use a sorted boundary sweep with active counts, preserving
 nested formatting without rescanning every mark for each span.
@@ -714,7 +715,8 @@ the Current plans section is open. It is read-only: it publishes, approves and
 changes nothing. A missing endpoint is reported as unsupported, and a failed
 reread keeps the plans last read. Each refresh also reads the agents' runtimes
 and working states; failure of either read preserves the last complete snapshot
-and shows the read-error notice. The section draws through the pane, like the record readers, so
+and shows the read-error notice in both the list and opened plan.
+The section draws through the pane, like the record readers, so
 an opened plan's text can be selected and copied. Its selected step uses the shared
 conversation panel, addressed by the plan author's stable identity. Drafts are
 kept by provider, author, observed revision and step; changing steps or refreshing

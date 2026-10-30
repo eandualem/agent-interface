@@ -8,7 +8,7 @@ use std::ops::Range;
 use gpui::{
     Context, FontStyle, FontWeight, HighlightStyle, StrikethroughStyle, div, prelude::*, px,
 };
-use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd, TextMergeStream};
+use pulldown_cmark::{Event, LinkType, Options, Parser, Tag, TagEnd, TextMergeStream};
 
 use super::selection::{self, Selectable};
 
@@ -57,8 +57,16 @@ impl Mark {
     }
 }
 
-/// A link as it reads in a sentence, and its address.
-type Links = Vec<(Range<usize>, String)>;
+/// A displayed link and whether its text abbreviates the destination.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct Link {
+    pub range: Range<usize>,
+    pub url: String,
+    /// Restore shortened addresses on copy; preserve authored labels.
+    pub copy_url: bool,
+}
+
+type Links = Vec<Link>;
 
 // Bound the tree used by parsing, native rendering and recursive destruction.
 const MAX_NESTING: usize = 32;
@@ -239,11 +247,16 @@ fn inline_end(end: TagEnd) -> bool {
     )
 }
 
+struct OpenLink {
+    url: String,
+    autolink: bool,
+}
+
 #[derive(Default)]
 struct Builder {
     inline: Inline,
     /// Marks and links not yet closed, with where each began.
-    open: Vec<(usize, Option<Mark>, Option<String>)>,
+    open: Vec<(usize, Option<Mark>, Option<OpenLink>)>,
 }
 
 impl Builder {
@@ -251,7 +264,17 @@ impl Builder {
     fn event(&mut self, event: Event) -> bool {
         let text = &mut self.inline.text;
         match event {
-            Event::Text(part) => shorten(&part, text, &mut self.inline.links),
+            Event::Text(part) => {
+                if self
+                    .open
+                    .iter()
+                    .any(|(_, _, link)| link.as_ref().is_some_and(|link| !link.autolink))
+                {
+                    text.push_str(&part);
+                } else {
+                    shorten(&part, text, &mut self.inline.links);
+                }
+            }
             Event::Code(code) => {
                 let start = text.len();
                 text.push_str(&code);
@@ -275,8 +298,29 @@ impl Builder {
                     Tag::Strong => self.open.push((start, Some(Mark::Strong), None)),
                     Tag::Emphasis => self.open.push((start, Some(Mark::Emphasis), None)),
                     Tag::Strikethrough => self.open.push((start, Some(Mark::Strike), None)),
-                    Tag::Link { dest_url, .. } | Tag::Image { dest_url, .. } => {
-                        self.open.push((start, None, Some(dest_url.into_string())));
+                    Tag::Link {
+                        dest_url,
+                        link_type,
+                        ..
+                    } => {
+                        self.open.push((
+                            start,
+                            None,
+                            Some(OpenLink {
+                                url: dest_url.into_string(),
+                                autolink: link_type == LinkType::Autolink,
+                            }),
+                        ));
+                    }
+                    Tag::Image { dest_url, .. } => {
+                        self.open.push((
+                            start,
+                            None,
+                            Some(OpenLink {
+                                url: dest_url.into_string(),
+                                autolink: false,
+                            }),
+                        ));
                     }
                     _ => self.open.push((start, None, None)),
                 }
@@ -288,8 +332,8 @@ impl Builder {
                 if let Some(mark) = mark {
                     self.inline.marks.push((start..text.len(), mark));
                 }
-                if let Some(url) = url {
-                    self.link(start, url);
+                if let Some(OpenLink { url, autolink }) = url {
+                    self.link(start, url, autolink);
                 }
             }
             Event::End(_) => return false,
@@ -300,11 +344,11 @@ impl Builder {
 
     /// Mark `start..` as a link to `url`. A label that is the address itself,
     /// already shortened to its site, keeps that link.
-    fn link(&mut self, start: usize, url: String) {
+    fn link(&mut self, start: usize, url: String, autolink: bool) {
         let links = &mut self.inline.links;
         // Links arrive in display order. Only auto-links within this label can
         // need replacement; previously completed links must not be rescanned.
-        while links.last().is_some_and(|(range, _)| range.start >= start) {
+        while links.last().is_some_and(|link| link.range.start >= start) {
             links.pop();
         }
         let url = url.trim().to_owned();
@@ -322,7 +366,11 @@ impl Builder {
             shorten(&url, &mut self.inline.text, links);
             return;
         }
-        links.push((start..self.inline.text.len(), url));
+        links.push(Link {
+            range: start..self.inline.text.len(),
+            url,
+            copy_url: autolink,
+        });
     }
 
     fn finish(mut self) -> Inline {
@@ -386,7 +434,11 @@ fn shorten(mut text: &str, plain: &mut String, links: &mut Links) {
             let start = plain.len();
             plain.push_str(site);
             plain.push_str(" ↗");
-            links.push((start..plain.len(), url.to_owned()));
+            links.push(Link {
+                range: start..plain.len(),
+                url: url.to_owned(),
+                copy_url: true,
+            });
         }
         text = &rest[url.len()..];
     }
@@ -585,16 +637,28 @@ mod tests {
     }
 
     #[test]
-    fn explicit_links_replace_only_auto_links_inside_their_own_label() {
+    fn explicit_links_preserve_their_authored_label() {
         let blocks = parse_authored("[first](https://first) [https://a https://b](https://target)");
         let Block::Paragraph(inline) = &blocks[0] else {
             panic!()
         };
+        assert_eq!(inline.text, "first https://a https://b");
         assert_eq!(inline.links.len(), 2);
-        assert_eq!(inline.links[0], (0..5, "https://first".into()));
+        assert_eq!(
+            inline.links[0],
+            Link {
+                range: 0..5,
+                url: "https://first".into(),
+                copy_url: false
+            }
+        );
         assert_eq!(
             inline.links[1],
-            (6..inline.text.len(), "https://target".into())
+            Link {
+                range: 6..inline.text.len(),
+                url: "https://target".into(),
+                copy_url: false
+            }
         );
     }
 
@@ -613,7 +677,7 @@ mod tests {
             } else {
                 "https://a"
             };
-            assert!(inline.links.iter().all(|(_, url)| url == destination));
+            assert!(inline.links.iter().all(|link| link.url == destination));
         }
     }
 
@@ -623,7 +687,7 @@ mod tests {
         let mut links = Vec::new();
         shorten("httpx httphotos httphttp://a tail", &mut text, &mut links);
         assert_eq!(text, "httpx httphotos httpa ↗ tail");
-        assert_eq!(links[0].1, "http://a");
+        assert_eq!(links[0].url, "http://a");
         let source = format!("https://example.com/[{}", "]".repeat(100_000));
         assert_eq!(address(&source), "https://example.com/[]");
     }
@@ -695,7 +759,14 @@ mod tests {
                 (29..34, Mark::Strike),
             ]
         );
-        assert_eq!(first.links, [(40..49, "https://x.com/g".to_owned())]);
+        assert_eq!(
+            first.links,
+            [Link {
+                range: 40..49,
+                url: "https://x.com/g".to_owned(),
+                copy_url: false
+            }]
+        );
         assert!(matches!(&items[0][1], Block::List { items, .. } if items.len() == 1));
         assert_eq!(
             blocks[1],
@@ -719,7 +790,14 @@ mod tests {
             panic!()
         };
         assert_eq!(inline.text, "file shell anchor custom:open web");
-        assert_eq!(inline.links, [(30..33, "HTTPS://example.com".to_owned())]);
+        assert_eq!(
+            inline.links,
+            [Link {
+                range: 30..33,
+                url: "HTTPS://example.com".to_owned(),
+                copy_url: false
+            }]
+        );
     }
 
     #[test]
@@ -731,7 +809,11 @@ mod tests {
         assert_eq!(inline.text, "See example.com ↗");
         assert_eq!(
             inline.links,
-            [(4..19, "https://example.com/~alice".to_owned())]
+            [Link {
+                range: 4..19,
+                url: "https://example.com/~alice".to_owned(),
+                copy_url: true
+            }]
         );
     }
 
@@ -751,8 +833,16 @@ mod tests {
         assert_eq!(
             inline.links,
             [
-                (4..19, "https://www.example.com/a/b?c=1".to_owned()),
-                (41..50, "https://z.org/q".to_owned())
+                Link {
+                    range: 4..19,
+                    url: "https://www.example.com/a/b?c=1".to_owned(),
+                    copy_url: true
+                },
+                Link {
+                    range: 41..50,
+                    url: "https://z.org/q".to_owned(),
+                    copy_url: true
+                }
             ]
         );
         assert_eq!(

@@ -8,7 +8,10 @@ use gpui::{
 };
 use unicode_segmentation::UnicodeSegmentation;
 
-use super::{ViewPane, markdown::Mark};
+use super::{
+    ViewPane,
+    markdown::{Link, Mark},
+};
 use crate::desktop::design::colors;
 
 /// A view whose rendered text can be selected and copied.
@@ -30,9 +33,8 @@ struct Position {
 
 struct Part {
     text: String,
-    /// Links shown as short labels: each label's range and its address,
-    /// which a copy gives back in place of the label.
-    links: Vec<(Range<usize>, String)>,
+    /// All clickable labels; only links marked `copy_url` expand on copy.
+    links: Vec<Link>,
     layout: TextLayout,
     bounds: Option<Bounds<Pixels>>,
 }
@@ -71,7 +73,7 @@ impl Selection {
         self.dragging = false;
     }
 
-    fn register(&mut self, text: &str, links: &[(Range<usize>, String)]) -> usize {
+    fn register(&mut self, text: &str, links: &[Link]) -> usize {
         let index = self.next;
         self.next += 1;
         if self.parts.get(index).is_none_or(|part| part.text != text) {
@@ -122,8 +124,8 @@ impl Selection {
         self.parts[position.part]
             .links
             .iter()
-            .find(|(range, _)| range.contains(&position.byte))
-            .map(|(_, url)| url.clone())
+            .find(|link| link.range.contains(&position.byte))
+            .map(|link| link.url.clone())
     }
 
     /// TextLayout reports UTF-8 byte offsets. Snap to a whole grapheme before
@@ -274,12 +276,19 @@ impl Selection {
     }
 }
 
-/// The text of `range` in `part`, with each link label it touches given
-/// back as the link's address.
+/// The selected text, expanding abbreviated addresses and retaining authored labels.
 fn copied(part: &Part, range: Range<usize>) -> String {
     let mut text = String::new();
     let mut at = range.start;
-    for (label, url) in &part.links {
+    for Link {
+        range: label,
+        url,
+        copy_url,
+    } in &part.links
+    {
+        if !copy_url {
+            continue;
+        }
         if label.end <= range.start || label.start >= range.end {
             continue;
         }
@@ -312,7 +321,7 @@ pub(super) fn linked<V: Selectable>(
     view: &V,
     text: &str,
     marks: &[(Range<usize>, Mark)],
-    links: &[(Range<usize>, String)],
+    links: &[Link],
     cx: &mut Context<V>,
 ) -> gpui::Stateful<gpui::Div> {
     let index = view.selection().borrow_mut().register(text, links);
@@ -393,7 +402,7 @@ struct HighlightSpan {
 fn highlight_spans(
     len: usize,
     marks: &[(Range<usize>, Mark)],
-    links: &[(Range<usize>, String)],
+    links: &[Link],
     selected: Range<usize>,
 ) -> Vec<HighlightSpan> {
     let mut events = Vec::with_capacity(2 * (marks.len() + links.len() + 1));
@@ -412,7 +421,7 @@ fn highlight_spans(
         };
         add(range, kind);
     }
-    for (range, _) in links {
+    for Link { range, .. } in links {
         add(range, 4);
     }
     add(&selected, 5);
@@ -517,7 +526,11 @@ mod tests {
                 (2..4, Mark::Strong),
                 (3..6, Mark::Emphasis),
             ],
-            &[(1..7, "https://example.com".into())],
+            &[Link {
+                range: 1..7,
+                url: "https://example.com".into(),
+                copy_url: false,
+            }],
             4..5,
         );
         for byte in 0..10 {
@@ -607,11 +620,46 @@ mod tests {
     }
 
     #[test]
+    fn authored_link_labels_copy_as_text_and_remain_clickable() {
+        use super::super::markdown::{Block, parse_authored};
+        let blocks = parse_authored("see [the guide](https://x.com/g), then https://x.com/a");
+        let Block::Paragraph(inline) = &blocks[0] else {
+            panic!()
+        };
+        let mut selection = Selection::default();
+        selection.register(&inline.text, &inline.links);
+        selection.select_all();
+        assert_eq!(
+            selection.selected_text(),
+            "see the guide, then https://x.com/a"
+        );
+        selection.anchor = Some(Position { part: 0, byte: 8 });
+        selection.cursor = Some(Position { part: 0, byte: 13 });
+        assert_eq!(selection.selected_text(), "guide");
+        assert_eq!(
+            selection.link_at(Position { part: 0, byte: 8 }).as_deref(),
+            Some("https://x.com/g")
+        );
+        assert!(
+            highlight_spans(inline.text.len(), &[], &inline.links, 0..0)
+                .iter()
+                .any(|span| span.range.contains(&8) && span.linked)
+        );
+    }
+
+    #[test]
     fn a_copied_link_label_gives_back_its_address() {
         let mut selection = Selection::default();
         let text = "See x.com ↗ now";
         let label = 4.."See x.com ↗".len();
-        selection.register(text, &[(label, "https://x.com/a".into())]);
+        selection.register(
+            text,
+            &[Link {
+                range: label,
+                url: "https://x.com/a".into(),
+                copy_url: true,
+            }],
+        );
         selection.anchor = Some(Position { part: 0, byte: 0 });
         selection.cursor = Some(Position {
             part: 0,
