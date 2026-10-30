@@ -21,7 +21,7 @@ mod screen;
 
 use libghostty_vt::build_info;
 use libghostty_vt::render::{CellIterator, RenderState, RowIterator};
-use libghostty_vt::screen::{CellContentTag, CellWide};
+use libghostty_vt::screen::{CellContentTag, CellWide, Screen as EngineScreen, TrackedGridRef};
 use libghostty_vt::style::{self as engine_style, StyleColor};
 use libghostty_vt::terminal::{
     Mode, Options, Point, PointCoordinate, ScrollViewport, Terminal as Engine,
@@ -59,6 +59,10 @@ pub struct Terminal {
     last_mouse_motion: Vec<u8>,
     mouse_button: Option<input::Button>,
     rename: rename::Rename,
+    /// The oldest retained row: losing it invalidates history row numbers.
+    history_start: TrackedGridRef,
+    history_screen: EngineScreen,
+    history_epoch: u64,
 }
 
 impl Terminal {
@@ -82,6 +86,9 @@ impl Terminal {
         engine
             .set_mode(Mode::GRAPHEME_CLUSTER, true)
             .map_err(Error)?;
+        let history_start = engine
+            .track_grid_ref(Point::Screen(PointCoordinate { x: 0, y: 0 }))
+            .map_err(Error)?;
         Ok(Self {
             engine,
             render: RenderState::new().map_err(Error)?,
@@ -94,6 +101,9 @@ impl Terminal {
             last_mouse_motion: Vec::new(),
             mouse_button: None,
             rename: rename::Rename::default(),
+            history_start,
+            history_screen: EngineScreen::Primary,
+            history_epoch: 0,
         })
     }
 
@@ -150,6 +160,7 @@ impl Terminal {
     /// This updates the engine's render state, then copies every cell, so the
     /// result does not depend on what earlier reads copied.
     pub fn read_screen(&mut self, screen: &mut Screen) -> Result<(), Error> {
+        self.refresh_history_epoch()?;
         let bar = self.engine.scrollbar().map_err(Error)?;
         let scrolled = bar.offset < bar.total.saturating_sub(bar.len);
         let mouse_input = self.engine.is_mouse_tracking().map_err(Error)? && !scrolled;
@@ -160,6 +171,7 @@ impl Terminal {
         );
         screen.mouse_input = mouse_input;
         screen.top = bar.offset as usize;
+        screen.history_epoch = self.history_epoch;
         let mut rows = self.rows.update(&snapshot).map_err(Error)?;
         let mut row_number = 0;
         while let Some(row) = rows.next() {
@@ -267,6 +279,20 @@ impl Terminal {
             None => ScrollViewport::Bottom,
         });
         screen.top = rows.start;
+        screen.history_epoch = self.history_epoch;
+        Ok(())
+    }
+
+    fn refresh_history_epoch(&mut self) -> Result<(), Error> {
+        let active = self.engine.active_screen().map_err(Error)?;
+        if active != self.history_screen || !self.history_start.has_value() {
+            self.history_start = self
+                .engine
+                .track_grid_ref(Point::Screen(PointCoordinate { x: 0, y: 0 }))
+                .map_err(Error)?;
+            self.history_screen = active;
+            self.history_epoch = self.history_epoch.wrapping_add(1);
+        }
         Ok(())
     }
 

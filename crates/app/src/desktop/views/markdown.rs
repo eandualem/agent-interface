@@ -97,12 +97,21 @@ pub(super) fn parse_authored(text: &str) -> Vec<Block> {
 }
 
 fn parse_with(text: &str, front_matter: bool) -> Vec<Block> {
-    let mut options =
-        Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
-    if front_matter {
-        options |= Options::ENABLE_YAML_STYLE_METADATA_BLOCKS;
+    let mut body = text;
+    if front_matter && text.lines().next().is_some_and(|line| line.trim() == "---") {
+        let mut lines = text.split_inclusive('\n');
+        let mut end = lines.next().map_or(0, str::len);
+        for line in lines {
+            end += line.len();
+            if line.trim() == "---" {
+                body = &text[end..];
+                break;
+            }
+        }
     }
-    blocks(&mut Parser::new_ext(text, options))
+    let options =
+        Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
+    blocks(&mut Parser::new_ext(body, options))
 }
 
 /// The blocks until the end of the enclosing container.
@@ -135,7 +144,7 @@ fn blocks<'a>(events: &mut impl Iterator<Item = Event<'a>>) -> Vec<Block> {
                 Block::List { start, items }
             }
             Event::Start(Tag::Table(_)) => table(events),
-            Event::Start(Tag::MetadataBlock(_) | Tag::HtmlBlock) => {
+            Event::Start(Tag::HtmlBlock) => {
                 let mut html = String::new();
                 for event in events.by_ref() {
                     match event {
@@ -144,7 +153,7 @@ fn blocks<'a>(events: &mut impl Iterator<Item = Event<'a>>) -> Vec<Block> {
                         _ => {}
                     }
                 }
-                // Front matter and comments are not part of the reading.
+                // Comments are not part of the reading.
                 let html = html.trim();
                 if html.is_empty() || html.starts_with("<!--") || !html.starts_with('<') {
                     continue;
@@ -521,6 +530,15 @@ mod tests {
                 Block::Paragraph(plain("After")),
             ]
         );
+    }
+
+    #[test]
+    fn document_rules_only_strip_metadata_at_the_beginning() {
+        let body = "# Guide\n\n---\nImportant warning\n\n---\nAfter";
+        let expected = parse_authored(body);
+        assert_eq!(parse(body), expected);
+        assert_eq!(parse(&format!("---\nname: guide\n---\n{body}")), expected);
+        assert_eq!(parse("---\nUnclosed"), parse_authored("---\nUnclosed"));
     }
 
     #[test]

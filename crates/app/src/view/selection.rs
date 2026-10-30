@@ -20,6 +20,7 @@ pub(super) struct Selection {
     pub pane: PaneId,
     pub dragging: bool,
     cols: usize,
+    history_epoch: u64,
     anchor: Range<usize>,
     head: Range<usize>,
     unit: Unit,
@@ -36,6 +37,7 @@ impl Selection {
             pane,
             dragging: true,
             cols: usize::from(screen.cols()),
+            history_epoch: screen.history_epoch(),
             anchor: 0..0,
             head: 0..0,
             unit,
@@ -73,9 +75,13 @@ impl Selection {
     /// Whether `screen` shows every row of the selection.
     pub fn shown_by(&self, screen: &Screen) -> bool {
         let rows = self.rows();
-        usize::from(screen.cols()) == self.cols
+        self.valid_for(screen)
             && rows.start >= screen.top()
             && rows.end <= screen.top() + usize::from(screen.rows())
+    }
+
+    pub fn valid_for(&self, screen: &Screen) -> bool {
+        usize::from(screen.cols()) == self.cols && screen.history_epoch() == self.history_epoch
     }
 
     /// The selected cells; a wide character `screen` shows is taken whole.
@@ -250,5 +256,34 @@ mod tests {
         let mut history = Screen::default();
         terminal.read_rows(selection.rows(), &mut history).unwrap();
         assert_eq!(selection.text(&history), "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8");
+    }
+
+    #[test]
+    fn selection_rejects_rows_reused_after_history_loss_or_screen_switch() {
+        let mut terminal = Terminal::new(20, 3, 1).unwrap();
+        terminal.write(b"selected\r\nnext");
+        let mut screen = Screen::default();
+        terminal.read_screen(&mut screen).unwrap();
+        let selection = Selection::new(PaneId(1), &screen, 0, 0, 3);
+        terminal.write(b"\r\nmore");
+        terminal.read_screen(&mut screen).unwrap();
+        assert!(selection.valid_for(&screen));
+        for _ in 0..100 {
+            terminal.write("replacement\r\n".repeat(100).as_bytes());
+            terminal.read_screen(&mut screen).unwrap();
+            if !selection.valid_for(&screen) {
+                break;
+            }
+        }
+        assert!(!selection.valid_for(&screen));
+        let mut history = Screen::default();
+        terminal.read_rows(selection.rows(), &mut history).unwrap();
+        assert!(!selection.shown_by(&history));
+        assert!(selection.text(&history).is_empty());
+
+        let selection = Selection::new(PaneId(1), &screen, 0, 0, 3);
+        terminal.write(b"\x1b[?1049hother screen");
+        terminal.read_screen(&mut screen).unwrap();
+        assert!(!selection.valid_for(&screen));
     }
 }

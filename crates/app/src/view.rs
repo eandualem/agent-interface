@@ -407,7 +407,14 @@ impl TerminalView {
         let replaced: Vec<Screen> = update
             .screens
             .into_iter()
-            .filter_map(|(pane, screen)| grid.screens.insert(pane, screen))
+            .filter_map(|(pane, screen)| {
+                if grid.selection.as_ref().is_some_and(|selection| {
+                    selection.pane == pane && !selection.valid_for(&screen)
+                }) {
+                    grid.selection = None;
+                }
+                grid.screens.insert(pane, screen)
+            })
             .collect();
         self.panes().recycle(replaced);
     }

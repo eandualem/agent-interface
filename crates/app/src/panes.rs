@@ -1889,6 +1889,18 @@ mod tests {
     #[test]
     fn programs_asking_for_the_background_get_the_reported_colour() {
         let server = TmuxServer::start().unwrap();
+        let reports_colors = server
+            .run(&["list-commands"])
+            .unwrap()
+            .lines()
+            .find(|line| line.starts_with("refresh-client "))
+            .is_some_and(|line| line.contains("-r "));
+        let expected = if reports_colors {
+            "f7f7/f4f4/eeee"
+        } else {
+            // tmux 3.3/3.4 rejects reports and retains its default answer.
+            "0000/0000/0000"
+        };
         let layout = layout(&server);
         let pane = layout.panes[0].id;
         let client = server
@@ -1913,13 +1925,13 @@ mod tests {
                 "-k",
                 "-t",
                 TmuxServer::SESSION,
-                r"stty -echo -icanon min 0 time 2; i=0; while [ $i -lt 50 ]; do
+                &format!(r"stty -echo -icanon min 0 time 2; i=0; while [ $i -lt 50 ]; do
                     printf '\033]11;?\033\\'; r=$(dd bs=64 count=1 2>/dev/null | tr -d '\033\\')
-                    case $r in *f7f7*) printf 'BG %s' $r; exec sleep 60;; esac; i=$((i+1)); done
-                  printf NONE; exec sleep 60",
+                    case $r in *{expected}*) printf 'BG %s' $r; exec sleep 60;; esac; i=$((i+1)); done
+                  printf NONE; exec sleep 60"),
             ])
             .unwrap();
-        wait_for_row(&panes, &woken, pane, "BG ]11;rgb:f7f7/f4f4/eeee");
+        wait_for_row(&panes, &woken, pane, &format!("BG ]11;rgb:{expected}"));
     }
 
     #[test]

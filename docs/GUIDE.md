@@ -46,6 +46,7 @@ Drag past the top or bottom of a pane to scroll it while selecting, or scroll
 and Shift-click to extend the selection to another point. Escape, typing or a
 new click outside the selection clears it. Copies from recovered screens
 currently retain their displayed row breaks, including wrapped lines.
+Discarding old history or switching terminal screen buffers clears the selection.
 For programs with mouse reporting enabled, hold Shift to select text locally.
 Ordinary clicks, drags, requested pointer motion and wheel gestures reach the
 program. Each drag stays with its original pane; only one held-button gesture is

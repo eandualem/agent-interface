@@ -212,14 +212,21 @@ impl Selection {
             .enumerate()
             .filter_map(|(index, part)| {
                 let bounds = part.bounds?;
-                let distance = if point.y < bounds.top() {
+                let dy = if point.y < bounds.top() {
                     bounds.top() - point.y
                 } else if point.y > bounds.bottom() {
                     point.y - bounds.bottom()
                 } else {
                     gpui::px(0.)
                 };
-                Some((index, distance))
+                let dx = if point.x < bounds.left() {
+                    bounds.left() - point.x
+                } else if point.x > bounds.right() {
+                    point.x - bounds.right()
+                } else {
+                    gpui::px(0.)
+                };
+                Some((index, f32::from(dx).powi(2) + f32::from(dy).powi(2)))
             })
             .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
             .map(|(index, _)| index)
@@ -442,6 +449,22 @@ pub(super) fn events<V: Selectable>(cx: &Context<V>) -> impl IntoElement {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn table_selection_follows_the_column_under_the_pointer() {
+        use gpui::{point, px, size};
+        let mut selection = Selection::default();
+        for (column, text) in ["First", "Second", "Third"].into_iter().enumerate() {
+            let index = selection.register(text, &[]);
+            selection.parts[index].bounds = Some(Bounds::new(
+                point(px(column as f32 * 100.), px(0.)),
+                size(px(90.), px(20.)),
+            ));
+        }
+        assert_eq!(selection.nearest(point(px(140.), px(10.))), Some(1));
+        assert_eq!(selection.nearest(point(px(240.), px(10.))), Some(2));
+        assert_eq!(selection.nearest(point(px(198.), px(10.))), Some(2));
+    }
 
     #[test]
     fn selection_copies_across_blocks_in_both_directions_and_resets_on_new_text() {

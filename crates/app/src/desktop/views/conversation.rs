@@ -1550,6 +1550,17 @@ impl Conversation {
             .capture_any_mouse_down(cx.listener(|conversation, _, window, cx| {
                 window.focus(&conversation.thread_focus, cx);
             }))
+            .on_key_down(
+                cx.listener(|conversation, event: &gpui::KeyDownEvent, _, cx| {
+                    if conversation
+                        .selection
+                        .borrow_mut()
+                        .key(&event.keystroke, cx)
+                    {
+                        cx.stop_propagation();
+                    }
+                }),
+            )
             .on_action(
                 cx.listener(|conversation, _: &crate::desktop::Copy, _, cx| {
                     conversation.selection.borrow().copy(cx);
