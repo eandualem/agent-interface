@@ -43,7 +43,7 @@ run_step() {
 usage() {
     printf '%s\n' 'Usage: sh install.sh [--archive PATH]' \
         'Installs the latest published build, or a local archive with its .sha256 file.' \
-        'Quit the app before updating. Layouts and running tmux sessions are preserved.'
+        'Quit the app before updating. Layouts are preserved; unsafe Linux service upgrades are deferred.'
 }
 archive=
 case $# in
@@ -456,6 +456,31 @@ if [ -f "$resources/setup_backbone.py" ]; then
         uv=$HOME/.local/bin/uv
     fi
     tools=$("$uv" tool dir) || fail 'Could not locate the Agent Backbone installation directory.'
+    backbone_upgrade_held=false
+    backbone_fixed_setup=false
+    if [ "$platform" = unknown-linux-gnu ]; then
+        if [ -x "$tools/agent-backbone/bin/python" ]; then
+            [ -f "$resources/upgrade_backbone.py" ] ||
+                fail 'This app archive cannot safely upgrade an existing Linux Backbone service. Keep current sessions running and use a release with upgrade preflight support.'
+            check_linux_upgrade() {
+                if "$tools/agent-backbone/bin/python" -I -B "$resources/upgrade_backbone.py" \
+                    --executable "$tools/agent-backbone/bin/backbone" --phase before; then
+                    backbone_upgrade_held=true
+                else
+                    preflight_status=$?
+                    [ "$preflight_status" -eq 3 ] || return "$preflight_status"
+                    backbone_fixed_setup=true
+                fi
+            }
+            run_step 'Checking Linux upgrade safety' check_linux_upgrade ||
+                fail 'Backbone package and service were preserved. Resolve the deferred upgrade through Backbone before retrying.'
+        elif [ -e "$tools/agent-backbone" ] || [ -L "$tools/agent-backbone" ] ||
+             [ -e "${BACKBONE_DATA_DIR:-$HOME/.local/share/agent-backbone}" ] ||
+             [ -L "${BACKBONE_DATA_DIR:-$HOME/.local/share/agent-backbone}" ] ||
+             [ -e "$HOME/.config/systemd/user/agent-backbone.service" ]; then
+            fail 'An existing Linux Backbone installation could not be verified. No provider package was changed; resolve its ownership and recovery through Backbone.'
+        fi
+    fi
     backbone_resumed=false
     resume_backbone() {
         if "$tools/agent-backbone/bin/python" -I -B "$resources/setup_backbone.py" \
@@ -472,8 +497,15 @@ if [ -f "$resources/setup_backbone.py" ]; then
             fail 'Interrupted Backbone setup needs attention. Its installed version was preserved.'
     fi
     if [ "$backbone_resumed" = false ]; then
-        run_step 'Installing Agent Backbone' "$uv" tool install --upgrade --prerelease disallow --python '>=3.11,<3.14' 'agent-backbone>=0.4.2' ||
-            fail 'Could not install a compatible published Agent Backbone release. The app was not replaced.'
+        if [ "$backbone_fixed_setup" = false ]; then
+            run_step 'Installing Agent Backbone' "$uv" tool install --upgrade --prerelease disallow --python '>=3.11,<3.14' 'agent-backbone>=0.4.3' ||
+                fail 'Could not install a compatible published Agent Backbone release. The app was not replaced.'
+        fi
+        if [ "$backbone_upgrade_held" = true ]; then
+            run_step 'Completing Linux package update' "$tools/agent-backbone/bin/python" -I -B "$resources/upgrade_backbone.py" \
+                --executable "$tools/agent-backbone/bin/backbone" --phase after ||
+                fail 'Backbone upgrade coordination is incomplete; its saved operation was retained. Resolve through Backbone; do not restart active sessions automatically.'
+        fi
         tool_bin=$("$uv" tool dir --bin) || fail 'Could not locate Agent Backbone commands.'
         # Shell integration is optional: uv can return nonzero when startup
         # files are already correct but this terminal still has its old PATH.
@@ -496,6 +528,11 @@ if [ -f "$resources/setup_backbone.py" ]; then
         )
         run_step 'Starting and checking Agent Backbone' run_backbone_setup ||
             fail 'Agent Backbone setup did not finish. The app was not replaced; rerun this installer to resume.'
+        if [ "$backbone_upgrade_held" = true ]; then
+            run_step 'Verifying Linux upgraded service' "$tools/agent-backbone/bin/python" -I -B "$resources/upgrade_backbone.py" \
+                --executable "$tools/agent-backbone/bin/backbone" --phase verify ||
+                fail 'The updated Backbone service could not be verified. Its saved upgrade record was retained; resolve through Backbone before retrying.'
+        fi
     else
         printf '%s\n' 'Resumed Agent Backbone setup with its saved version. A later install can check for an upgrade.'
     fi

@@ -553,21 +553,49 @@ binary linked to the system desktop libraries. Neither package includes a
 Python runtime, build toolchain, tmux server or application daemon.
 
 The archive includes `setup_backbone.py`, a standard-library installer helper.
-`install.sh` installs the latest stable published `agent-backbone>=0.4.2` with
+`install.sh` installs the latest stable published `agent-backbone>=0.4.3` with
 uv, independently of the app archive. Backbone (MIT) owns its package, dependency
 testing and publication. uv (MIT OR Apache-2.0) installs the Python environment;
 when uv is absent, its 0.13.6 installer is version- and SHA-256-pinned. No Backbone
 source checkout or portable payload is composed into Interface's packages.
 
-The helper uses Backbone's versioned setup command and retains its exact request
+Linux archives also include `upgrade_backbone.py`. Before changing an existing
+Linux provider package, this guard requires a completed installer-owned setup,
+unchanged installation and service identities, and a healthy private endpoint
+whose **running** version is at least 0.4.3. An installed CLI version alone is
+insufficient. Affected 0.4.0–0.4.2 or unknown running services are deferred without
+package mutation: earlier listeners may remain inherited by tmux children, and
+installing fixed code cannot repair them. Recovery requires completing affected
+work and explicitly coordinating session shutdown with Backbone; the app
+installer never kills sessions or invokes a manager restart to bypass this gate.
+The narrow first-setup exception requires an installed fixed provider, no data
+directory, no service file or loaded service, and no prior setup outcome or
+upgrade hold. It may resume an unchanged saved initialize request or start setup,
+but skips uv package mutation. Partial installations with prior side effects
+remain deferred until their recovery is coordinated.
+
+For a verified fixed launch, the guard persists an operation UUID and obtains
+Backbone's existing authenticated upgrade hold before uv runs. It uses provider
+read-only operator credential loading, a private same-user Unix endpoint, and
+checks kernel PID/start time plus the daemon's start timestamp and version.
+After a successful package update it rechecks ownership and process identity,
+validates the setup protocol, and releases only its own hold. Failed or ambiguous
+updates retain the operation record and hold for coordinated recovery. Foreign
+holds and disabled automatic reload settings remain in force. The final health
+wait still requires the expected newly installed version. Successful automatic
+same-process re-exec is the supported path; service-manager restarts and daemon
+failure are not claimed to preserve service-owned tmux processes.
+
+The setup helper uses Backbone's versioned setup command and retains its exact request
 and progress in a private per-user state directory. Pending setup is resumed
-before any package upgrade, with the provider version, distribution metadata and
+before any package upgrade (after Linux safety preflight), with the provider version, distribution metadata and
 launcher checked against the saved installation. For a fresh installation only,
 it enables the private socket and restarts the service after checking the saved
 installation identity, service definition and loaded service owner. Interrupted
 socket writes are reconciled against the intended value; conflicting choices
 are preserved. Existing installations and completed setup keep their settings
-and services. The final socket probe sends only an unauthenticated health request;
+and service definitions. This is not a running-session survival guarantee.
+The final socket probe sends only an unauthenticated health request;
 the app's native transport performs peer verification before sending credentials.
 For an unchanged, installer-owned completed setup, upgrades also observe the
 installed version becoming healthy on the private socket for up to 120 seconds.
