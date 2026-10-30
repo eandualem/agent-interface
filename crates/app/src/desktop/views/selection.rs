@@ -8,7 +8,7 @@ use gpui::{
 };
 use unicode_segmentation::UnicodeSegmentation;
 
-use super::ViewPane;
+use super::{ViewPane, markdown::Mark};
 use crate::desktop::design::colors;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -243,15 +243,15 @@ fn copied(part: &Part, range: Range<usize>) -> String {
     text
 }
 
-/// One block with the existing typography and inline-code styling. The caller
+/// One block with the existing typography and its inline styles. The caller
 /// supplies its outer styles; selection adds no field chrome or editing.
 pub(super) fn text(
     pane: &ViewPane,
     text: &str,
-    code: &[Range<usize>],
+    marks: &[(Range<usize>, Mark)],
     cx: &mut Context<ViewPane>,
 ) -> gpui::Stateful<gpui::Div> {
-    linked(pane, text, code, &[], cx)
+    linked(pane, text, marks, &[], cx)
 }
 
 /// [`text`] with links: each label in `links` is drawn in the accent and
@@ -259,7 +259,7 @@ pub(super) fn text(
 pub(super) fn linked(
     pane: &ViewPane,
     text: &str,
-    code: &[Range<usize>],
+    marks: &[(Range<usize>, Mark)],
     links: &[(Range<usize>, String)],
     cx: &mut Context<ViewPane>,
 ) -> gpui::Stateful<gpui::Div> {
@@ -267,39 +267,29 @@ pub(super) fn linked(
     let selected = pane.selection.borrow().range(index);
     let c = colors();
     let mut boundaries = vec![0, text.len(), selected.start, selected.end];
-    for range in code.iter().chain(links.iter().map(|(range, _)| range)) {
+    for range in marks
+        .iter()
+        .map(|(range, _)| range)
+        .chain(links.iter().map(|(range, _)| range))
+    {
         boundaries.extend([range.start, range.end]);
     }
     boundaries.sort_unstable();
     boundaries.dedup();
-    // Inline ranges arrive in display order and never overlap. Advance once
-    // across them instead of rescanning the document for every boundary.
-    let mut code = code.iter().peekable();
+    // Marks may nest, as bold inside a link; each span takes every mark over it.
     let highlights = boundaries.windows(2).map(|span| {
         let range = span[0]..span[1];
-        while code.peek().is_some_and(|code| code.end <= range.start) {
-            code.next();
+        let mut style = HighlightStyle::default();
+        for (_, mark) in marks.iter().filter(|(mark, _)| mark.contains(&range.start)) {
+            mark.apply(&mut style);
         }
-        let style = if selected.contains(&range.start) {
-            HighlightStyle {
-                color: Some(c.on_accent.into()),
-                background_color: Some(c.accent.into()),
-                ..Default::default()
-            }
-        } else if links.iter().any(|(link, _)| link.contains(&range.start)) {
-            HighlightStyle {
-                color: Some(c.accent_text.into()),
-                ..Default::default()
-            }
-        } else if code.peek().is_some_and(|code| code.contains(&range.start)) {
-            HighlightStyle {
-                color: Some(c.code.into()),
-                background_color: Some(c.selected.into()),
-                ..Default::default()
-            }
-        } else {
-            HighlightStyle::default()
-        };
+        if links.iter().any(|(link, _)| link.contains(&range.start)) {
+            style.color = Some(c.accent_text.into());
+        }
+        if selected.contains(&range.start) {
+            style.color = Some(c.on_accent.into());
+            style.background_color = Some(c.accent.into());
+        }
         (range, style)
     });
     let styled = StyledText::new(text.to_owned()).with_highlights(highlights);

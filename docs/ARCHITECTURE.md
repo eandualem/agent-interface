@@ -517,6 +517,10 @@ build-time advisory exception are described below.
   dependencies also used by artifact metadata, publication IDs and atomic
   staging. The macOS adapter also uses `tempfile` 3.27.0 (exact pin) for private
   screenshot-drop staging. Each is MIT OR Apache-2.0.
+- **`pulldown-cmark` 0.13.6:** MIT-licensed CommonMark parser, pinned exactly
+  with default features off, behind the one Markdown reader that skills,
+  policies, reports and answers use (`views/markdown.rs`). It adds tables,
+  strikethrough and task lists; the app draws the parsed blocks natively.
 - **`alacritty_terminal` and `rio-vt`:** development-only comparison engines.
   Apache-2.0 and MIT respectively.
 - **`tracing` 0.1.44:** MIT-licensed structured diagnostic events in app, tmux

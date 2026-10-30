@@ -64,6 +64,9 @@ serde = "=1.0.229"
 toml = "=0.8.23"
 serde_json = { version = "=1.0.154", features = ["raw_value", "arbitrary_precision"] }
 unicode-segmentation = "=1.13.3"
+# CommonMark parsing for the document readers (MIT). Exact: its event types
+# change between minor versions.
+pulldown-cmark = { version = "=0.13.6", default-features = false }
 rustix = { version = "=1.1.5", features = ["fs"] }
 unicode-properties = { version = "=0.1.4", default-features = false, features = ["general-category"] }
 # Full Unicode case folding for attachment filters.
