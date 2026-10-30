@@ -657,7 +657,9 @@ impl Render for Onboarding {
                         view.first_agent = Some(name.clone());
                     }
                     first::FirstEvent::Existing => {
-                        view.first_ready = true;
+                        // Choosing existing agents skips creation. Returning to
+                        // this form must still allow starting a new agent.
+                        view.first_ready = false;
                         view.first_agent = None;
                         view.stage = Stage::Step(3);
                     }
@@ -757,7 +759,8 @@ impl Render for Onboarding {
                         )
                         .on_click(cx.listener(|view, _, _, cx| {
                             view.first_agent = None;
-                            view.first_ready = true;
+                            // Skipping advances navigation without declaring an
+                            // unfinished agent ready; Back must still offer Start.
                             view.stage = Stage::Step(3);
                             cx.notify();
                         })),

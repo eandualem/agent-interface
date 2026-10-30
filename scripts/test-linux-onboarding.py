@@ -243,6 +243,13 @@ print(json.dumps(e));sys.exit(code)
             initial = capture("unselected")
             assert "Old OpenCode fixture" not in initial and "Plain shell" not in initial
             assert not requests()
+            click("terminals")
+            wait_for(lambda: "Open Agent Interface" in text(), "Shortcuts after skipping setup")
+            capture("skipped-setup")
+            click("Back")
+            wait_for(lambda: "Choose an agent tool" in text(), "agent choice after returning from skip")
+            capture("returned-from-skip")
+            assert not requests()
             click("OpenCode")
             wait_for(lambda: "Old OpenCode fixture" in text(), "selected tool diagnosis")
             click("Choose", last=True)  # The incompatible choice must not submit anything.
@@ -294,7 +301,8 @@ print(json.dumps(e));sys.exit(code)
             capture("shortcuts")
             (OUTPUT / "requests.json").write_text(json.dumps(requests(), indent=2) + "\n")
             (OUTPUT / "result.json").write_text(json.dumps(dict(scale=SCALE, passed=True,
-                checks=["explicit choice", "selected diagnosis only", "incompatible start blocked",
+                checks=["explicit choice", "start after skipping and returning",
+                        "selected diagnosis only", "incompatible start blocked",
                         "refresh preserves choice", "Codex request excludes OpenCode",
                         "failure survives relaunch", "cancellation before replacement",
                         "new runtime and request ID", "choices preserved", "continue after success"]), indent=2) + "\n")
