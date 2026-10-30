@@ -72,7 +72,7 @@ pub fn show(intro: bool, cx: &mut App) -> Result<(), String> {
         window_decorations: cfg!(target_os = "linux").then_some(gpui::WindowDecorations::Client),
         window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
             None,
-            size(px(t.size.settings_width), px(t.size.settings_height)),
+            size(px(t.size.settings_width), px(t.size.setup_height)),
             cx,
         ))),
         is_resizable: true,
@@ -198,7 +198,7 @@ impl Onboarding {
                                         window.resize(
                                             size(
                                                 px(tokens().size.settings_width),
-                                                px(tokens().size.settings_height),
+                                                px(tokens().size.setup_height),
                                             )
                                             .min(&display.visible_bounds().size),
                                         );
@@ -219,7 +219,7 @@ impl Onboarding {
                                 window.resize(
                                     size(
                                         px(tokens().size.settings_width),
-                                        px(tokens().size.settings_height),
+                                        px(tokens().size.setup_height),
                                     )
                                     .min(&available),
                                 );
@@ -659,6 +659,7 @@ impl Render for Onboarding {
                     first::FirstEvent::Existing => {
                         view.first_ready = true;
                         view.first_agent = None;
+                        view.stage = Stage::Step(3);
                     }
                     first::FirstEvent::OpenTerminal(name) => {
                         view.open_error = show_agent(name.clone(), cx).err();
@@ -695,7 +696,15 @@ impl Render for Onboarding {
             )
         });
         let last = index + 1 == STEPS.len();
-        let can_continue = index != 2 || self.first_ready;
+        // On the agent step the main button starts or repairs setup until the
+        // agent runs, and always names what it is waiting for.
+        let primary = match (index, &self.first) {
+            (2, _) if self.first_ready => first::Primary::Continue,
+            (2, Some(first)) => first.read(cx).primary(),
+            (2, None) if self.probe.is_none() => first::Primary::Waiting("Checking…".into()),
+            (2, None) => first::Primary::Waiting("Waiting for the setup engine".into()),
+            _ => first::Primary::Continue,
+        };
         let footer = div()
             .flex()
             .flex_wrap()
@@ -734,6 +743,7 @@ impl Render for Onboarding {
             .child(div().flex_1())
             .when(
                 index == 2
+                    && !self.first_ready
                     && self
                         .first
                         .as_ref()
@@ -754,8 +764,8 @@ impl Render for Onboarding {
                     )
                 },
             )
-            .child(
-                ui::button(
+            .child(match primary {
+                first::Primary::Continue => ui::button(
                     "continue",
                     if last {
                         "Open Agent Interface"
@@ -764,11 +774,7 @@ impl Render for Onboarding {
                     },
                     Button::Primary,
                 )
-                .opacity(if can_continue { 1.0 } else { 0.45 })
                 .on_click(cx.listener(move |view, _, window, cx| {
-                    if !can_continue {
-                        return;
-                    }
                     if last {
                         view.finish(window, cx);
                     } else {
@@ -777,7 +783,22 @@ impl Render for Onboarding {
                         cx.notify();
                     }
                 })),
-            );
+                first::Primary::Waiting(label) => ui::button("continue", label, Button::Primary)
+                    .opacity(0.45)
+                    .cursor_default(),
+                first::Primary::Start(label) => ui::button("continue", label, Button::Primary)
+                    .on_click(cx.listener(|view, _, _, cx| {
+                        if let Some(first) = &view.first {
+                            first.update(cx, |first, cx| first.start(cx));
+                        }
+                    })),
+                first::Primary::ChangeTool(label) => ui::button("continue", label, Button::Primary)
+                    .on_click(cx.listener(|view, _, _, cx| {
+                        if let Some(first) = &view.first {
+                            first.update(cx, |first, cx| first.edit_choices(cx));
+                        }
+                    })),
+            });
         let body = root
             .child(
                 div().flex().flex_1().min_h_0().child(self.rail()).child(

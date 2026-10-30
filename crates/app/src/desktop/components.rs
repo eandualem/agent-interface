@@ -1760,7 +1760,7 @@ pub fn plan_card(id: impl Into<SharedString>, selected: bool) -> Stateful<Div> {
 /// The ring around a selected row, card or node, drawn as an outline over
 /// its `edge`-wide border: a shadow would show through a translucent fill,
 /// and anything outside its bounds is clipped by a scrolling list.
-fn selection_ring(radius: f32, edge: f32) -> Div {
+pub fn selection_ring(radius: f32, edge: f32) -> Div {
     let (t, c) = (tokens(), colors());
     div()
         .absolute()
