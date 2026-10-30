@@ -32,6 +32,9 @@ class InstallTests(unittest.TestCase):
         self.command("uname", 'case "$1" in -s) echo Linux;; -m) echo x86_64;; esac')
         self.command("getconf", "echo glibc 2.39")
         self.env = dict(os.environ, HOME=str(self.home), PATH=str(self.tools) + os.pathsep + os.environ["PATH"])
+        for name in list(self.env):
+            if name.startswith("BACKBONE_"):
+                self.env.pop(name)
         self.env.pop("XDG_DATA_HOME", None)
         self.env.pop("WSL_DISTRO_NAME", None)
         # Ordinary fixtures must never inspect or configure the host's sandbox
@@ -628,6 +631,7 @@ sys.exit(0 if outcome in ('ok', 'corrupt') else int(outcome))
                         FIXTURE_PYTHON=str(self.tools / "provider-python"))
         self.command("provider-python", '''
 printf '%s\\n' "$*" >> "$FIXTURE_LOG"
+case "$*" in *'--phase before'*) exit "${FIXTURE_PREFLIGHT:-0}";; *'--phase after'*) exit "${FIXTURE_RELEASE:-0}";; *'--phase verify'*) exit "${FIXTURE_VERIFY:-0}";; esac
 case "$*" in *--resume-pending*) exit "${FIXTURE_RESUME:-0}";; esac
 case ":$PATH:" in *":$FIXTURE_BIN:"*) :;; *) exit 89;; esac
 if [ "${FIXTURE_SETUP_DELAY:-0}" != 0 ]; then sleep "$FIXTURE_SETUP_DELAY"; fi
@@ -656,13 +660,13 @@ esac
 
     def test_latest_provider_install_and_pending_resume_order(self):
         self.backbone_tools()
-        archive = self.package("0.2.0", extra={"agent-interface/setup_backbone.py": "fixture helper"})
+        archive = self.package("0.2.0", extra={"agent-interface/setup_backbone.py": "fixture helper", "agent-interface/upgrade_backbone.py": "fixture guard"})
         first = self.install(archive)
         self.assertIn('Backbone command: "' + self.env["FIXTURE_BIN"] + '/backbone"', first.stdout)
         self.assertIn("Restart your shell to apply changes", first.stderr)
         log = Path(self.env["FIXTURE_LOG"])
         lines = log.read_text().splitlines()
-        self.assertIn("tool install --upgrade --prerelease disallow --python >=3.11,<3.14 agent-backbone>=0.4.2", lines)
+        self.assertIn("tool install --upgrade --prerelease disallow --python >=3.11,<3.14 agent-backbone>=0.4.3", lines)
         self.assertTrue(lines[-1].startswith("-I -B "))
         self.env["FIXTURE_RESUME"] = "3"
         log.write_text("")
@@ -675,7 +679,7 @@ esac
     def test_stale_shell_path_does_not_block_app_or_provider_setup(self):
         self.backbone_tools()
         self.env["FIXTURE_SHELL_FAIL"] = "1"
-        result = self.install(self.package(extra={"agent-interface/setup_backbone.py": "fixture helper"}))
+        result = self.install(self.package(extra={"agent-interface/setup_backbone.py": "fixture helper", "agent-interface/upgrade_backbone.py": "fixture guard"}))
         self.assertTrue(self.link.is_symlink())
         self.assertIn('Backbone command: "' + self.env["FIXTURE_BIN"] + '/backbone"', result.stdout)
         self.assertIn("Shell setup notice (app installation will continue)", result.stderr)
@@ -685,13 +689,13 @@ esac
     def test_provider_install_path_with_equals_is_executed(self):
         self.backbone_tools()
         self.env["FIXTURE_TOOLS"] = str(self.root / "uv=tools")
-        self.install(self.package(extra={"agent-interface/setup_backbone.py": "fixture helper"}))
+        self.install(self.package(extra={"agent-interface/setup_backbone.py": "fixture helper", "agent-interface/upgrade_backbone.py": "fixture guard"}))
         self.assertTrue(self.link.is_symlink())
 
     def test_quiet_setup_reports_elapsed_time_and_cleans_up_progress(self):
         self.backbone_tools()
         self.env["FIXTURE_SETUP_DELAY"] = "6"
-        result = self.install(self.package(extra={"agent-interface/setup_backbone.py": "fixture helper"}))
+        result = self.install(self.package(extra={"agent-interface/setup_backbone.py": "fixture helper", "agent-interface/upgrade_backbone.py": "fixture guard"}))
         self.assertIn("Starting and checking Agent Backbone: still running (5s elapsed)", result.stderr)
         self.assertIn("Starting and checking Agent Backbone: done.", result.stderr)
         # install() has a bounded timeout: an orphan heartbeat would otherwise
@@ -702,14 +706,14 @@ esac
         self.install(self.package("0.1.1"))
         self.backbone_tools()
         self.env.update(FIXTURE_SHELL_FAIL="1", FIXTURE_SETUP_FAIL="1")
-        result = self.install(self.package(extra={"agent-interface/setup_backbone.py": "fixture helper"}), success=False)
+        result = self.install(self.package(extra={"agent-interface/setup_backbone.py": "fixture helper", "agent-interface/upgrade_backbone.py": "fixture guard"}), success=False)
         self.assertIn("Starting and checking Agent Backbone: failed.", result.stderr)
         self.assertIn("0.1.1", subprocess.check_output([self.link, "--version"], text=True))
 
     def test_provider_failure_keeps_previous_app(self):
         self.install(self.package("0.1.1"))
         self.backbone_tools()
-        archive = self.package("0.2.0", extra={"agent-interface/setup_backbone.py": "fixture helper"})
+        archive = self.package("0.2.0", extra={"agent-interface/setup_backbone.py": "fixture helper", "agent-interface/upgrade_backbone.py": "fixture guard"})
         self.env["FIXTURE_INSTALL_FAIL"] = "1"
         self.install(archive, success=False)
         self.assertIn("0.1.1", subprocess.check_output([self.link, "--version"], text=True))
@@ -720,6 +724,55 @@ esac
         self.env["FIXTURE_RESUME"] = "1"
         Path(self.env["FIXTURE_LOG"]).write_text("")
         self.install(archive, success=False)
+        self.assertNotIn("tool install", Path(self.env["FIXTURE_LOG"]).read_text())
+
+    def test_unsafe_linux_upgrade_stops_before_resume_or_uv_mutation(self):
+        self.backbone_tools()
+        archive = self.package("0.2.2", extra={"agent-interface/setup_backbone.py": "fixture helper", "agent-interface/upgrade_backbone.py": "fixture guard"})
+        self.install(archive)
+        log = Path(self.env["FIXTURE_LOG"])
+        log.write_text("")
+        self.env["FIXTURE_PREFLIGHT"] = "1"
+        result = self.install(archive, success=False)
+        calls = log.read_text()
+        self.assertIn("--phase before", calls)
+        self.assertNotIn("--resume-pending", calls)
+        self.assertNotIn("tool install", calls)
+        self.assertNotIn("--phase after", calls)
+        self.assertIn("package and service were preserved", result.stderr)
+        self.assertIn("0.2.2", subprocess.check_output([self.link, "--version"], text=True))
+
+    def test_fixed_upgrade_holds_before_uv_and_releases_before_readiness(self):
+        self.backbone_tools()
+        archive = self.package(extra={"agent-interface/setup_backbone.py": "fixture helper", "agent-interface/upgrade_backbone.py": "fixture guard"})
+        self.install(archive)
+        log = Path(self.env["FIXTURE_LOG"])
+        log.write_text("")
+        self.install(archive)
+        calls = log.read_text()
+        self.assertLess(calls.index("--phase before"), calls.index("tool install"))
+        self.assertLess(calls.index("tool install"), calls.index("--phase after"))
+        self.assertLess(calls.index("--phase after"), calls.index("tool update-shell"))
+        log.write_text("")
+        self.env["FIXTURE_INSTALL_FAIL"] = "1"
+        self.install(archive, success=False)
+        self.assertIn("--phase before", log.read_text())
+        self.assertNotIn("--phase after", log.read_text())
+
+    def test_existing_linux_install_rejects_archive_without_guard(self):
+        self.backbone_tools()
+        self.install(self.package(extra={"agent-interface/setup_backbone.py": "fixture helper"}))
+        log = Path(self.env["FIXTURE_LOG"])
+        log.write_text("")
+        result = self.install(self.package(extra={"agent-interface/setup_backbone.py": "fixture helper"}), success=False)
+        self.assertIn("cannot safely upgrade", result.stderr)
+        self.assertNotIn("tool install", log.read_text())
+
+    def test_unknown_existing_linux_data_defers_before_provider_install(self):
+        self.backbone_tools()
+        (self.home / ".local/share/agent-backbone").mkdir(parents=True)
+        result = self.install(self.package(extra={"agent-interface/setup_backbone.py": "fixture helper"}), success=False)
+        self.assertIn("could not be verified", result.stderr)
         self.assertNotIn("tool install", Path(self.env["FIXTURE_LOG"]).read_text())
 
 

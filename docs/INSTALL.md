@@ -228,17 +228,30 @@ the private Unix socket used by the app. Open Agent Interface to continue
 onboarding; no separate Backbone installation command is needed. Agent tools
 still need to be installed and signed in before creating an agent.
 
-New installations and upgrades select Backbone 0.4.2 or newer. If a compatible published
+New installations and permitted upgrades select Backbone 0.4.3 or newer. If a compatible published
 release is unavailable, installation stops before replacing the app. Setup
 failures show Backbone's diagnostic and recovery guidance. When retry is allowed,
 rerun the same installer: it retains the request and resumes pending steps using
-the same installed Backbone version, including 0.4.0 for a saved, compatible
-setup. That recovery can finish the app installation with the saved version;
-run the installer again afterward to upgrade Backbone. It refuses automatic recovery if that
+the same installed Backbone version. Linux safety preflight runs before this
+recovery and may defer an incomplete or unverified existing installation.
+It refuses automatic recovery if that
 pending installation or its saved service/socket choices have changed.
 
 An existing Backbone installation keeps its configuration and service choices.
-The installer upgrades the `agent-backbone` tool itself to the latest compatible
+On Linux, the installer first requires a verified, installer-owned service
+already running Backbone 0.4.3 or newer. Running versions 0.4.0–0.4.2 may have
+passed network listeners to tmux children: upgrading or restarting the daemon
+can end active sessions. Installing fixed code alone does not repair existing
+children. If the running version or ownership cannot be verified, installation
+is deferred before changing Backbone packages. Continue existing work, then
+coordinate completion of affected sessions and recovery through Backbone.
+Do not use a blanket service restart as an upgrade workaround.
+
+For a verified fixed launch, the installer holds automatic reloading while
+updating the package and releases only its own hold after validation. An
+interrupted package update retains that hold for coordinated recovery. It does
+not clear other holds or enable disabled automatic reload.
+Where preflight permits, the installer upgrades the `agent-backbone` tool to the latest compatible
 published package, including when it was installed from Git or a development
 source. There is no package opt-out; do not run this installer if you need to
 preserve that tool installation.
@@ -272,9 +285,13 @@ credentials over TCP.
 
 ## Update or remove
 
-Quit the app and run the same install command again. The installer stages and
-checks the replacement before updating its own installation. Existing layouts,
-settings, and tmux sessions are preserved. It refuses to overwrite an installation
+For a verified fixed Backbone launch, quit the app and run the same install
+command again. Existing Linux services running Backbone 0.4.0–0.4.2 need the
+coordinated recovery described above before updating. The installer stages and
+checks the replacement before updating its own installation. Existing layouts
+and settings are preserved; preserving a service definition is not a guarantee
+that running sessions survive a daemon failure or manager restart.
+It refuses to overwrite an installation
 it does not recognize; move that installation yourself if you want to replace it.
 
 The installer retains one archive in a hidden download cache so interrupted
