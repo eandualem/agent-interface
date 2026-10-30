@@ -243,6 +243,7 @@ impl TerminalView {
         let cell = cell_size(cx.text_system(), &appearance);
         let batch_ascii = is_monospaced(cx.text_system(), &appearance);
         let font = terminal_font(&appearance.font_family);
+        panes.set_colors(appearance.foreground, appearance.background);
         Self {
             panes: Some(panes),
             grid: Rc::new(RefCell::new(Grid {
@@ -288,6 +289,12 @@ impl TerminalView {
             && grid.appearance.palette == appearance.palette;
         if unchanged {
             return;
+        }
+        if grid.appearance.foreground != appearance.foreground
+            || grid.appearance.background != appearance.background
+        {
+            self.panes()
+                .set_colors(appearance.foreground, appearance.background);
         }
         if !same_font {
             let cell = cell_size(cx.text_system(), appearance);
