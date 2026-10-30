@@ -60,6 +60,9 @@ impl Mark {
 /// A link as it reads in a sentence, and its address.
 type Links = Vec<(Range<usize>, String)>;
 
+// Bound the tree used by parsing, native rendering and recursive destruction.
+const MAX_NESTING: usize = 32;
+
 /// A run of text with its inline styles and links.
 #[derive(Debug, Default, PartialEq)]
 pub(super) struct Inline {
@@ -111,9 +114,27 @@ fn parse_with(text: &str, front_matter: bool) -> Vec<Block> {
     }
     let options =
         Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
+    let mut depth = 0;
+    let mut too_deep = false;
+    let events = Parser::new_ext(body, options).take_while(|event| {
+        match event {
+            Event::Start(_) => depth += 1,
+            Event::End(_) => depth -= 1,
+            _ => {}
+        }
+        too_deep = depth > MAX_NESTING;
+        !too_deep
+    });
     // Unmatched Markdown delimiters can split a bare URL across adjacent text
     // events. Detect its address only after those fragments are joined.
-    blocks(&mut TextMergeStream::new(Parser::new_ext(body, options)))
+    let parsed = blocks(&mut TextMergeStream::new(events));
+    if too_deep {
+        // Keep all source text readable and copyable without constructing a
+        // deeply nested native element tree, including for partially read blocks.
+        vec![Block::Code(body.to_owned())]
+    } else {
+        parsed
+    }
 }
 
 /// The blocks until the end of the enclosing container.
@@ -281,7 +302,11 @@ impl Builder {
     /// already shortened to its site, keeps that link.
     fn link(&mut self, start: usize, url: String) {
         let links = &mut self.inline.links;
-        links.retain(|(range, _)| range.start < start);
+        // Links arrive in display order. Only auto-links within this label can
+        // need replacement; previously completed links must not be rescanned.
+        while links.last().is_some_and(|(range, _)| range.start >= start) {
+            links.pop();
+        }
         let url = url.trim().to_owned();
         let web = url.split_once("://").is_some_and(|(scheme, _)| {
             scheme.eq_ignore_ascii_case("https") || scheme.eq_ignore_ascii_case("http")
@@ -315,33 +340,38 @@ fn address(text: &str) -> &str {
         .find(|ch: char| ch.is_whitespace() || ch == '<' || ch == '>')
         .unwrap_or(text.len());
     let mut url = &text[..end];
+    let balance = |open, close| {
+        url.bytes().fold(0isize, |count, byte| {
+            count + isize::from(byte == open) - isize::from(byte == close)
+        })
+    };
+    let mut round = balance(b'(', b')');
+    let mut square = balance(b'[', b']');
     loop {
-        let trimmed = url.trim_end_matches(['.', ',', ';', ':', '!', '?', '\'', '"']);
-        let unopened = [('(', ')'), ('[', ']')].iter().any(|&(open, close)| {
-            trimmed.ends_with(close)
-                && trimmed.matches(open).count() < trimmed.matches(close).count()
-        });
-        let next = if unopened {
-            &trimmed[..trimmed.len() - 1]
+        url = url.trim_end_matches(['.', ',', ';', ':', '!', '?', '\'', '"']);
+        if url.ends_with(')') && round < 0 {
+            round += 1;
+        } else if url.ends_with(']') && square < 0 {
+            square += 1;
         } else {
-            trimmed
-        };
-        if next.len() == url.len() {
             return url;
         }
-        url = next;
+        url = &url[..url.len() - 1];
     }
 }
 
 /// Append `text` to `plain`, each address in it as its site.
 fn shorten(mut text: &str, plain: &mut String, links: &mut Links) {
-    while let Some(at) = ["https://", "http://"]
-        .iter()
-        .filter_map(|scheme| text.find(scheme))
-        .min()
-    {
-        plain.push_str(&text[..at]);
+    // Search the common prefix once. Searching the entire remaining suffix for
+    // each scheme separately is quadratic when many URLs use only one scheme.
+    while let Some(at) = text.find("http") {
         let rest = &text[at..];
+        if !rest.starts_with("https://") && !rest.starts_with("http://") {
+            plain.push_str(&text[..at + 4]);
+            text = &text[at + 4..];
+            continue;
+        }
+        plain.push_str(&text[..at]);
         let url = address(rest);
         let site = url
             .split_once("://")
@@ -540,6 +570,62 @@ mod tests {
                 Block::Paragraph(plain("After")),
             ]
         );
+    }
+
+    #[test]
+    fn extreme_nesting_falls_back_to_complete_source_text() {
+        let source = format!("{}x", "> ".repeat(100_000));
+        assert!(source.len() < 256 * 1024);
+        assert_eq!(parse_authored(&source), [Block::Code(source)]);
+        // Normal nesting still renders as Markdown, not the fallback.
+        assert!(matches!(
+            parse_authored("> > **nested**").first(),
+            Some(Block::Quote(_))
+        ));
+    }
+
+    #[test]
+    fn explicit_links_replace_only_auto_links_inside_their_own_label() {
+        let blocks = parse_authored("[first](https://first) [https://a https://b](https://target)");
+        let Block::Paragraph(inline) = &blocks[0] else {
+            panic!()
+        };
+        assert_eq!(inline.links.len(), 2);
+        assert_eq!(inline.links[0], (0..5, "https://first".into()));
+        assert_eq!(
+            inline.links[1],
+            (6..inline.text.len(), "https://target".into())
+        );
+    }
+
+    #[test]
+    fn large_link_paragraphs_keep_every_destination() {
+        for item in ["[x](https://a) ", "https://a ", "http://a "] {
+            let source = item.repeat(16_000);
+            assert!(source.len() < 256 * 1024);
+            let blocks = parse_authored(&source);
+            let Block::Paragraph(inline) = &blocks[0] else {
+                panic!()
+            };
+            assert_eq!(inline.links.len(), 16_000);
+            let destination = if item.starts_with("http://") {
+                "http://a"
+            } else {
+                "https://a"
+            };
+            assert!(inline.links.iter().all(|(_, url)| url == destination));
+        }
+    }
+
+    #[test]
+    fn url_scanning_preserves_prefix_text_and_trims_long_unbalanced_suffixes() {
+        let mut text = String::new();
+        let mut links = Vec::new();
+        shorten("httpx httphotos httphttp://a tail", &mut text, &mut links);
+        assert_eq!(text, "httpx httphotos httpa ↗ tail");
+        assert_eq!(links[0].1, "http://a");
+        let source = format!("https://example.com/[{}", "]".repeat(100_000));
+        assert_eq!(address(&source), "https://example.com/[]");
     }
 
     #[test]

@@ -302,6 +302,9 @@ Native Markdown links open only HTTP and HTTPS destinations; other schemes and
 document anchors remain plain text.
 Inline highlights use a sorted boundary sweep with active counts, preserving
 nested formatting without rescanning every mark for each span.
+Markdown nesting beyond 32 containers falls back to the complete source text,
+bounding parsing, element-tree rendering and destruction. URL recognition scans
+forward and closes each link by replacing only entries within its own label.
 WebKit handles those selectors through the macOS responder chain, without a
 clipboard JavaScript bridge.
 
