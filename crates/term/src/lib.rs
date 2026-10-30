@@ -23,7 +23,9 @@ use libghostty_vt::build_info;
 use libghostty_vt::render::{CellIterator, RenderState, RowIterator};
 use libghostty_vt::screen::{CellContentTag, CellWide};
 use libghostty_vt::style::{self as engine_style, StyleColor};
-use libghostty_vt::terminal::{Mode, Options, Point, PointCoordinate, Terminal as Engine};
+use libghostty_vt::terminal::{
+    Mode, Options, Point, PointCoordinate, ScrollViewport, Terminal as Engine,
+};
 
 pub use screen::{Attributes, Cell, Color, Cursor, Screen, Style, Underline, Width};
 
@@ -148,14 +150,16 @@ impl Terminal {
     /// This updates the engine's render state, then copies every cell, so the
     /// result does not depend on what earlier reads copied.
     pub fn read_screen(&mut self, screen: &mut Screen) -> Result<(), Error> {
-        let mouse_input =
-            self.engine.is_mouse_tracking().map_err(Error)? && self.scrolled_row()?.is_none();
+        let bar = self.engine.scrollbar().map_err(Error)?;
+        let scrolled = bar.offset < bar.total.saturating_sub(bar.len);
+        let mouse_input = self.engine.is_mouse_tracking().map_err(Error)? && !scrolled;
         let snapshot = self.render.update(&self.engine).map_err(Error)?;
         screen.clear(
             snapshot.cols().map_err(Error)?,
             snapshot.rows().map_err(Error)?,
         );
         screen.mouse_input = mouse_input;
+        screen.top = bar.offset as usize;
         let mut rows = self.rows.update(&snapshot).map_err(Error)?;
         let mut row_number = 0;
         while let Some(row) = rows.next() {
@@ -219,6 +223,50 @@ impl Terminal {
         };
         screen.set_cursor(cursor);
         screen.cursor_in_viewport = position.is_some();
+        Ok(())
+    }
+
+    /// Copies the history rows `rows` into `screen`, which then holds those
+    /// rows and no cursor. Rows beyond retained history are left out. The
+    /// displayed view is unchanged.
+    pub fn read_rows(
+        &mut self,
+        rows: std::ops::Range<usize>,
+        screen: &mut Screen,
+    ) -> Result<(), Error> {
+        let scrolled = self.scrolled_row()?;
+        let total = self.engine.scrollbar().map_err(Error)?.total as usize;
+        let end = rows.end.min(total).min(rows.start + usize::from(u16::MAX));
+        screen.clear(0, 0);
+        let mut view = Screen::default();
+        let mut row = rows.start;
+        while row < end {
+            self.engine.scroll_viewport(ScrollViewport::Row(row));
+            self.read_screen(&mut view)?;
+            if row == rows.start {
+                screen.clear(view.cols(), (end - rows.start) as u16);
+            }
+            // The engine clamps a row past the end of history.
+            let shown = view.top()..view.top() + usize::from(view.rows());
+            if !shown.contains(&row) {
+                break;
+            }
+            for at in row..shown.end.min(end) {
+                let line = (at - view.top()) as u16;
+                for col in 0..view.cols() {
+                    if let Some((text, cell)) = view.cell(line, col) {
+                        screen.push(text, cell.width, cell.style);
+                    }
+                }
+                screen.set_row_wrapped((at - rows.start) as u16, view.row_wrapped(line));
+            }
+            row = shown.end.min(end);
+        }
+        self.engine.scroll_viewport(match scrolled {
+            Some(row) => ScrollViewport::Row(row),
+            None => ScrollViewport::Bottom,
+        });
+        screen.top = rows.start;
         Ok(())
     }
 
@@ -466,6 +514,28 @@ mod tests {
             visible: true,
         });
         assert_eq!(screen, expected);
+    }
+
+    #[test]
+    fn history_rows_keep_their_numbers_and_read_without_moving_the_view() {
+        let mut terminal = Terminal::new(4, 3, 100).unwrap();
+        let lines: Vec<String> = (0..10).map(|n| format!("l{n}")).collect();
+        terminal.write(lines.join("\r\n").as_bytes());
+        let mut screen = Screen::default();
+        terminal.read_screen(&mut screen).unwrap();
+        assert_eq!(screen.top(), 7);
+        let mut rows = Screen::default();
+        terminal.read_rows(2..5, &mut rows).unwrap();
+        assert_eq!((rows.top(), rows.rows()), (2, 3));
+        assert_eq!(rows.cell(0, 1).unwrap().0, "2");
+        assert_eq!(rows.cell(2, 1).unwrap().0, "4");
+        terminal.read_screen(&mut screen).unwrap();
+        assert_eq!(screen.top(), 7);
+        terminal.restore_scrolled_row(1);
+        terminal.read_rows(5..20, &mut rows).unwrap();
+        assert_eq!(rows.rows(), 5);
+        terminal.read_screen(&mut screen).unwrap();
+        assert_eq!(screen.top(), 1);
     }
 
     #[test]

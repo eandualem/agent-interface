@@ -102,6 +102,7 @@ enum Event {
     Layout(layout::Change),
     Geometry,
     Encode(InputRequest),
+    Read(ReadRequest),
 }
 
 impl Event {
@@ -112,6 +113,7 @@ impl Event {
             Self::Layout(change) => change.panes.len() * std::mem::size_of::<PaneLayout>(),
             Self::Geometry => 0,
             Self::Encode(request) => request.input.size() + std::mem::size_of::<InputRequest>(),
+            Self::Read(_) => 0,
         }
     }
 }
@@ -123,6 +125,13 @@ struct InputRequest {
     // An encoding timeout does not remove this request from the worker queue.
     // Keep its input charged until both the caller and worker release it.
     _reservation: Option<Arc<crate::view::InputReservation>>,
+}
+
+/// History rows of a pane, read in order with its output.
+struct ReadRequest {
+    pane: PaneId,
+    rows: std::ops::Range<usize>,
+    reply: mpsc::Sender<Result<Screen, String>>,
 }
 
 #[derive(Clone, Copy)]
@@ -691,6 +700,25 @@ impl Panes {
         self.send_input(pane, &bytes)
     }
 
+    /// Reads `rows` of `pane`'s history, numbered as [`Screen::top`] numbers
+    /// them, after the output already received. Call off the UI thread.
+    pub fn read_rows(&self, pane: PaneId, rows: std::ops::Range<usize>) -> io::Result<Screen> {
+        let (reply, read) = mpsc::channel();
+        {
+            let mut state = self.shared.lock();
+            if state.closed || state.cancelled || state.finished || state.failure.is_some() {
+                return Err(io::Error::other("Terminal connection is unavailable"));
+            }
+            state
+                .queue
+                .push_back(Event::Read(ReadRequest { pane, rows, reply }));
+        }
+        self.shared.changed.notify_all();
+        read.recv_timeout(crate::seed::TIMEOUT)
+            .map_err(|error| io::Error::other(format!("Waiting for terminal rows: {error}")))?
+            .map_err(io::Error::other)
+    }
+
     /// Declares this client's size, as an ordinary tmux client in a terminal
     /// of `cols` by `rows` would. tmux then sizes the session's windows by its
     /// `window-size` option, counting this client from now on.
@@ -1220,6 +1248,18 @@ fn apply(
     let terminals = &mut window.terminals;
     match event {
         Event::Encode(request) => window.inputs.push(request),
+        Event::Read(request) => {
+            let mut screen = Screen::default();
+            let result = match terminals.iter_mut().find(|(id, _)| *id == request.pane) {
+                Some((_, terminal)) => terminal
+                    .terminal
+                    .read_rows(request.rows, &mut screen)
+                    .map(|()| screen)
+                    .map_err(|error| error.to_string()),
+                None => Err("The pane is no longer visible".into()),
+            };
+            let _ = request.reply.send(result);
+        }
         Event::Layout(change) => {
             if change.window == window.layout.window {
                 window.change_layout(change, scrollback)?;

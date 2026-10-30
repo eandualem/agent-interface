@@ -111,6 +111,10 @@ pub struct TerminalView {
     program_press: Option<(PaneId, Button, Pointer)>,
     pointer_subscriptions: Vec<gpui::Subscription>,
     wheel_gesture: WheelGesture,
+    /// Where a selection is being dragged, and whether the pane is scrolling
+    /// because the drag is past its top or bottom.
+    drag: Option<gpui::Point<Pixels>>,
+    autoscrolling: bool,
 }
 
 pub(crate) struct Disconnected(pub Option<String>);
@@ -273,6 +277,8 @@ impl TerminalView {
             program_press: None,
             pointer_subscriptions: Vec::new(),
             wheel_gesture: WheelGesture::default(),
+            drag: None,
+            autoscrolling: false,
         }
     }
 
@@ -492,16 +498,48 @@ impl TerminalView {
         }
     }
 
+    /// Copy the selection. Rows out of view are read from the pane's history.
     fn copy(&self, cx: &mut Context<Self>) {
-        if let Some(selection) = self
-            .grid
-            .borrow()
+        let grid = self.grid.borrow();
+        let Some(selection) = grid
             .selection
             .as_ref()
             .filter(|selection| !selection.is_empty())
+        else {
+            return;
+        };
+        if let Some(screen) = grid
+            .screens
+            .get(&selection.pane)
+            .filter(|screen| selection.shown_by(screen))
         {
-            cx.write_to_clipboard(gpui::ClipboardItem::new_string(selection.text()));
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string(selection.text(screen)));
+            return;
         }
+        let Some(panes) = self.panes.clone() else {
+            return;
+        };
+        let selection = selection.clone();
+        let read = cx.background_executor().spawn(async move {
+            let rows = panes.read_rows(selection.pane, selection.rows())?;
+            Ok::<_, std::io::Error>(selection.shown_by(&rows).then(|| selection.text(&rows)))
+        });
+        cx.spawn(async move |view, cx| {
+            let result = read.await;
+            let _ = view.update(cx, |view, cx| match result {
+                Ok(Some(text)) => cx.write_to_clipboard(gpui::ClipboardItem::new_string(text)),
+                Ok(None) => {
+                    view.input_rejection = Some("Not copied: the selected output is no longer in the pane's history. Click the terminal to dismiss.".into());
+                    cx.notify();
+                }
+                Err(error) => {
+                    view.input_rejection =
+                        Some(format!("Not copied: {error}. Click the terminal to dismiss."));
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
     }
 
     fn send_input(&mut self, input: PaneId, operation: Input, cx: &mut Context<Self>) -> bool {
@@ -512,13 +550,17 @@ impl TerminalView {
             cx.notify();
             return false;
         }
+        // Scrolling keeps the selection: it follows its rows.
+        let scroll = matches!(operation, Input::Scroll(_));
         // Both keyboard pastes and drops use the same ordered, bounded queue.
         if self.input_queue.try_send((input, operation)).is_err() {
             self.input_rejection = Some("Input was not sent: terminal queue is busy or disconnected. Click the terminal to dismiss.".into());
             cx.notify();
             false
         } else {
-            self.clear_selection(cx);
+            if !scroll {
+                self.clear_selection(cx);
+            }
             true
         }
     }
@@ -574,23 +616,62 @@ impl TerminalView {
     ) {
         self.mouse_move(event, window, cx);
         let mut grid = self.grid.borrow_mut();
-        let Some(selection) = grid
+        let Some(pane) = grid
             .selection
             .as_ref()
             .filter(|selection| selection.dragging)
+            .map(|selection| selection.pane)
         else {
             return;
         };
         if !event.dragging() {
             return;
         }
-        let pane = selection.pane;
-        if let Some((row, col)) =
-            selection_point(&grid, pane, event.position, selection.uses_boundaries())
-        {
-            grid.selection.as_mut().unwrap().extend(row, col);
+        self.drag = Some(event.position);
+        if grid.drag_selection_to(event.position) {
             cx.notify();
         }
+        let overflow = grid.overflow(pane, event.position);
+        drop(grid);
+        if overflow != 0 && !self.autoscrolling {
+            self.autoscrolling = true;
+            cx.spawn(async move |view, cx| {
+                while view
+                    .update(cx, |view, cx| view.autoscroll(cx))
+                    .unwrap_or(false)
+                {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(50))
+                        .await;
+                }
+            })
+            .detach();
+        }
+    }
+
+    /// While a selection is dragged past its pane's top or bottom, scroll the
+    /// pane toward the pointer and extend the selection to the edge. Returns
+    /// whether to continue.
+    fn autoscroll(&mut self, cx: &mut Context<Self>) -> bool {
+        let mut grid = self.grid.borrow_mut();
+        let target = self.drag.zip(
+            grid.selection
+                .as_ref()
+                .filter(|selection| selection.dragging)
+                .map(|selection| selection.pane),
+        );
+        let rows = target.map_or(0, |(position, pane)| grid.overflow(pane, position));
+        let Some((position, pane)) = target.filter(|_| rows != 0) else {
+            self.autoscrolling = false;
+            return false;
+        };
+        grid.drag_selection_to(position);
+        drop(grid);
+        let _ = self
+            .input_queue
+            .try_send((pane, Input::Scroll(Scroll::Lines(rows))));
+        cx.notify();
+        true
     }
 
     fn selection_up(
@@ -600,23 +681,16 @@ impl TerminalView {
         cx: &mut Context<Self>,
     ) {
         self.mouse_up(event, window);
+        self.drag = None;
         let mut grid = self.grid.borrow_mut();
-        let position = grid
+        if grid
             .selection
             .as_ref()
-            .filter(|selection| selection.dragging)
-            .and_then(|selection| {
-                selection_point(
-                    &grid,
-                    selection.pane,
-                    event.position,
-                    selection.uses_boundaries(),
-                )
-            });
+            .is_some_and(|selection| selection.dragging)
+        {
+            grid.drag_selection_to(event.position);
+        }
         if let Some(selection) = &mut grid.selection {
-            if let Some((row, col)) = position {
-                selection.extend(row, col);
-            }
             selection.dragging = false;
         }
         if grid.selection.as_ref().is_some_and(Selection::is_empty) {
@@ -890,8 +964,13 @@ impl Render for TerminalView {
                     }
                     gpui::ScrollDelta::Lines(delta) => delta.y,
                 };
+                // Scrolling history keeps the selection on its rows; a wheel
+                // the program receives may redraw them.
+                let local = pointer.shift || !grid.screens[&pane].mouse_input();
                 drop(grid);
-                view.clear_selection(cx);
+                if !local {
+                    view.clear_selection(cx);
+                }
                 let previous = view
                     .wheel
                     .filter(|(id, _)| *id == pane)
@@ -941,18 +1020,26 @@ impl Render for TerminalView {
                     view.input = hit.filter(|_| !view.panes().is_finished());
                     if let Some(pane) = hit {
                         let (row, cell) = selection_point(&grid, pane, event.position, false).unwrap();
-                        let keep = event.click_count == 1 && grid.selection.as_ref().is_some_and(|selection| selection.pane == pane && selection.contains(row, cell));
-                        if grid.screens[&pane].mouse_input() && !event.modifiers.shift && !keep {
+                        let screen = &grid.screens[&pane];
+                        let current = grid.selection.as_ref().filter(|selection| selection.pane == pane && !selection.is_empty());
+                        // Shift-click extends the selection, also after scrolling.
+                        let extend = event.modifiers.shift && event.click_count == 1 && current.is_some();
+                        let keep = event.click_count == 1 && current.is_some_and(|selection| selection.contains(screen, row, cell));
+                        if extend {
+                            grid.selection.as_mut().unwrap().dragging = true;
+                            grid.drag_selection_to(event.position);
+                        } else if grid.screens[&pane].mouse_input() && !event.modifiers.shift && !keep {
                             grid.selection = None;
                             program_pointer = pointer_at(&grid, pane, event.position, window.scale_factor(), event.modifiers);
                         } else if keep {
                             grid.selection.as_mut().unwrap().dragging = false;
                         } else {
                             let (row, col) = selection_point(&grid, pane, event.position, event.click_count < 2).unwrap();
+                            let screen = &grid.screens[&pane];
                             let selection = grid.selection.as_ref()
                                 .filter(|selection| event.click_count >= 2 && selection.pane == pane && !selection.is_empty())
-                                .map(|selection| selection.reselect(row, col, event.click_count))
-                                .unwrap_or_else(|| Selection::new(pane, grid.screens[&pane].clone(), row, col, event.click_count));
+                                .map(|selection| selection.reselect(screen, row, col, event.click_count))
+                                .unwrap_or_else(|| Selection::new(pane, screen, row, col, event.click_count));
                             grid.selection = Some(selection);
                         }
                         view.input_rejection = None;
@@ -1234,6 +1321,46 @@ fn selection_column(x: f32, cols: u16, boundary: bool) -> u16 {
 }
 
 impl Grid {
+    /// Extend the selection to `position`, clamped to its pane.
+    fn drag_selection_to(&mut self, position: gpui::Point<Pixels>) -> bool {
+        let Some((pane, boundary)) = self
+            .selection
+            .as_ref()
+            .map(|selection| (selection.pane, selection.uses_boundaries()))
+        else {
+            return false;
+        };
+        let Some((row, col)) = selection_point(self, pane, position, boundary) else {
+            return false;
+        };
+        let (Some(screen), Some(selection)) = (self.screens.get(&pane), self.selection.as_mut())
+        else {
+            return false;
+        };
+        selection.extend(screen, row, col);
+        true
+    }
+
+    /// Rows to scroll `pane` while a drag is past its top (negative) or its
+    /// bottom: more the further the pointer is, up to a few rows a step.
+    fn overflow(&self, pane: PaneId, position: gpui::Point<Pixels>) -> isize {
+        let (Some(bounds), Some(pane)) = (
+            self.bounds,
+            self.layout.iter().find(|layout| layout.id == pane),
+        ) else {
+            return 0;
+        };
+        let y = f32::from(position.y - bounds.origin.y) / f32::from(self.cell.height).max(1.0)
+            - f32::from(pane.top);
+        if y < 0.0 {
+            -((-y).ceil().min(5.0) as isize)
+        } else if y >= f32::from(pane.rows) {
+            ((y - f32::from(pane.rows)).floor() + 1.0).min(5.0) as isize
+        } else {
+            0
+        }
+    }
+
     /// The whole cells of the unscaled font that fit in `bounds`.
     fn cells_in(&self, bounds: Bounds<Pixels>) -> (u16, u16) {
         let count = |length: Pixels, cell: Pixels| {
@@ -1282,10 +1409,7 @@ impl Grid {
                 .selection
                 .as_ref()
                 .filter(|selection| selection.pane == pane.id && !selection.is_empty());
-            let Some(screen) = selection
-                .map(|selection| &selection.screen)
-                .or_else(|| self.screens.get(&pane.id))
-            else {
+            let Some(screen) = self.screens.get(&pane.id) else {
                 continue;
             };
             let origin = bounds.origin
@@ -1295,7 +1419,7 @@ impl Grid {
                 );
             for row in 0..screen.rows() {
                 let y = origin.y + self.cell.height * f32::from(row);
-                let selected = selection.map_or(0..0, |selection| selection.row_range(row));
+                let selected = selection.map_or(0..0, |selection| selection.row_range(screen, row));
                 self.paint_backgrounds(screen, row, origin.x, y, selected.clone(), window);
                 self.paint_text(screen, row, origin.x, y, selected, window, cx);
             }
