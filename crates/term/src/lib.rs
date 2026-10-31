@@ -250,20 +250,38 @@ impl Terminal {
         let total = self.engine.scrollbar().map_err(Error)?.total as usize;
         let end = rows.end.min(total).min(rows.start + usize::from(u16::MAX));
         screen.clear(0, 0);
+        let copied = self.copy_history_rows(rows.start..end, screen);
+        self.engine.scroll_viewport(match scrolled {
+            Some(row) => ScrollViewport::Row(row),
+            None => ScrollViewport::Bottom,
+        });
+        copied?;
+        screen.top = rows.start;
+        screen.history_epoch = self.history_epoch;
+        Ok(())
+    }
+
+    /// Reads temporary viewports; the caller restores the displayed viewport
+    /// before propagating a read error.
+    fn copy_history_rows(
+        &mut self,
+        rows: std::ops::Range<usize>,
+        screen: &mut Screen,
+    ) -> Result<(), Error> {
         let mut view = Screen::default();
         let mut row = rows.start;
-        while row < end {
+        while row < rows.end {
             self.engine.scroll_viewport(ScrollViewport::Row(row));
             self.read_screen(&mut view)?;
             if row == rows.start {
-                screen.clear(view.cols(), (end - rows.start) as u16);
+                screen.clear(view.cols(), (rows.end - rows.start) as u16);
             }
             // The engine clamps a row past the end of history.
             let shown = view.top()..view.top() + usize::from(view.rows());
             if !shown.contains(&row) {
                 break;
             }
-            for at in row..shown.end.min(end) {
+            for at in row..shown.end.min(rows.end) {
                 let line = (at - view.top()) as u16;
                 for col in 0..view.cols() {
                     if let Some((text, cell)) = view.cell(line, col) {
@@ -272,14 +290,8 @@ impl Terminal {
                 }
                 screen.set_row_wrapped((at - rows.start) as u16, view.row_wrapped(line));
             }
-            row = shown.end.min(end);
+            row = shown.end.min(rows.end);
         }
-        self.engine.scroll_viewport(match scrolled {
-            Some(row) => ScrollViewport::Row(row),
-            None => ScrollViewport::Bottom,
-        });
-        screen.top = rows.start;
-        screen.history_epoch = self.history_epoch;
         Ok(())
     }
 
