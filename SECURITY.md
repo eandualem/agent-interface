@@ -61,11 +61,11 @@ archive against the commit its release tag points to (replace `vX.Y.Z` with
 the release you downloaded):
 
 ```sh
-commit=$(gh api repos/eandualem/agent-interface/commits/vX.Y.Z --jq .sha)
+commit=$(gh api repos/eandualem/agent-interface/commits/vX.Y.Z --jq .sha) &&
 gh attestation verify agent-interface-aarch64-apple-darwin.tar.gz \
   --repo eandualem/agent-interface \
   --signer-workflow eandualem/agent-interface/.github/workflows/packages.yml \
-  --source-digest "$commit"
+  --source-digest "${commit:?release commit not found}"
 ```
 
 Checking the commit matters: it rejects an archive the same workflow built
