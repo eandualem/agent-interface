@@ -110,19 +110,23 @@ Security reviews so far:
   saved layouts and file paths, Backbone data, and installation. It found no
   problem in command construction, quoting, storage, credentials or the
   installer. It confirmed that an unfinished control sequence could hold
-  unbounded memory, now fixed with the 1 MiB limit. One candidate remains open
-  below.
+  unbounded memory, now fixed with the 1 MiB limit. It also confirmed a
+  second problem, still open below.
 
 Not done yet: there is no fuzz testing and no third-party audit.
 
 ## Open security work
 
 - **Captured text that imitates tmux's reply marker.** When the app reads a
-  pane's existing content, tmux marks the end of its reply with a line such as
-  `%end`. A program that prints a line matching the exact marker for that
-  request could make the app treat the capture as failed and show an error
-  instead of the pane. It cannot run commands or read data. This candidate is
-  being checked in
+  pane's existing content, tmux sends that text unchanged and marks the end of
+  its reply with a line such as `%end`. A program that prints a line matching
+  the exact marker for that request ends the reply early. The app then reads
+  the rest of the captured text as messages from tmux. That text could draw
+  forged output in another pane of the same window, change the displayed
+  layout, or disconnect the window. It cannot type into panes, run commands of
+  its choosing or read data. Matching the marker means guessing the exact
+  second and tmux's server-wide command number for that request. A fix that
+  keeps captured text out of tmux's reply stream is being worked on in
   [#88](https://github.com/eandualem/agent-interface/issues/88).
 
 This page is updated when a review finishes or a security fix is released.
