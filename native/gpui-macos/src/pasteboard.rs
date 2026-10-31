@@ -117,15 +117,22 @@ impl Pasteboard {
         receiving: bool,
     ) -> Option<(ExternalPaths, Option<tempfile::TempDir>)> {
         if let Some(paths) = self.read_paths() {
-            if receiving && paths.0.len() == 1 && is_temporary_image(&paths.0[0]) {
-                // A screenshot URL can grant this receiving app access without
-                // granting an already-running terminal process the same access.
-                // Receive its bytes while the drop is active, not during hover.
-                let image = self.drag_image().or_else(|| {
-                    stage_drag_image_file(&paths.0[0])
-                        .inspect_err(|error| log::warn!("Could not receive dragged image: {error}"))
-                        .ok()
-                })?;
+            if receiving && paths.0.iter().any(|path| is_image_file(path)) {
+                // AppKit may grant the receiving app access to Downloads or a
+                // screenshot without granting the already-running CLI access.
+                // Receive every image while the explicit drop grant is active.
+                let image = stage_drag_image_files(&paths)
+                    .or_else(|error| {
+                        // Screenshot drags can expose image data even when the
+                        // promised file URL has already become unavailable.
+                        if paths.0.len() == 1 {
+                            self.drag_image().ok_or(error)
+                        } else {
+                            Err(error)
+                        }
+                    })
+                    .inspect_err(|error| log::warn!("Could not receive dragged images: {error}"))
+                    .ok()?;
                 return Some((image.0, Some(image.1)));
             }
             return Some((paths, None));
@@ -423,15 +430,32 @@ fn stage_drag_image(bytes: &[u8]) -> anyhow::Result<(ExternalPaths, tempfile::Te
     Ok((ExternalPaths([path].into_iter().collect()), directory))
 }
 
-fn is_temporary_image(path: &std::path::Path) -> bool {
+fn is_image_file(path: &std::path::Path) -> bool {
     matches!(
         image::ImageFormat::from_path(path),
         Ok(image::ImageFormat::Png | image::ImageFormat::Tiff | image::ImageFormat::Jpeg)
-    ) && path
-        .canonicalize()
-        .ok()
-        .zip(std::env::temp_dir().canonicalize().ok())
-        .is_some_and(|(path, temporary)| path.starts_with(temporary))
+    )
+}
+
+/// Keep mixed drops ordered, staging images without altering ordinary paths.
+fn stage_drag_image_files(paths: &ExternalPaths) -> anyhow::Result<(ExternalPaths, tempfile::TempDir)> {
+    anyhow::ensure!(paths.0.len() <= 64, "too many dropped files");
+    let directory = tempfile::Builder::new().prefix("agent-interface-drop-").tempdir()?;
+    let mut result = Vec::with_capacity(paths.0.len());
+    let mut total = 0;
+    for (index, source) in paths.0.iter().enumerate() {
+        if !is_image_file(source) {
+            result.push(source.clone());
+            continue;
+        }
+        total += std::fs::metadata(source)?.len();
+        anyhow::ensure!(total <= 64 * 1024 * 1024, "dropped images are too large");
+        let (staged, _temporary) = stage_drag_image_file(source)?;
+        let path = directory.path().join(format!("Image-{}.png", index + 1));
+        std::fs::rename(&staged.0[0], &path)?;
+        result.push(path);
+    }
+    Ok((ExternalPaths(result.into()), directory))
 }
 
 fn stage_drag_image_file(
@@ -524,6 +548,31 @@ mod tests {
         assert_eq!(image::image_dimensions(&received.0[0]).unwrap(), (3, 2));
         drop(directory);
         assert!(!received.0[0].exists());
+    }
+
+    #[test]
+    fn image_drops_from_any_folder_are_received_in_order_with_other_files() {
+        let source = tempfile::tempdir().unwrap();
+        let downloads = source.path().join("Downloads");
+        let screenshots = source.path().join("Screenshots");
+        std::fs::create_dir(&downloads).unwrap();
+        std::fs::create_dir(&screenshots).unwrap();
+        let first = downloads.join("photo with spaces.jpeg");
+        let second = screenshots.join("photo.png");
+        image::DynamicImage::new_rgb8(2, 3).save(&first).unwrap();
+        image::DynamicImage::new_rgb8(4, 5).save(&second).unwrap();
+        let ordinary = source.path().join("notes.txt");
+        let paths = ExternalPaths(vec![first.clone(), ordinary.clone(), second.clone()].into());
+        let (received, directory) = stage_drag_image_files(&paths).unwrap();
+        assert_ne!(received.0[0], first);
+        assert_eq!(received.0[1], ordinary);
+        assert_ne!(received.0[2], second);
+        drop(source);
+        assert_eq!(image::image_dimensions(&received.0[0]).unwrap(), (2, 3));
+        assert_eq!(image::image_dimensions(&received.0[2]).unwrap(), (4, 5));
+        drop(directory);
+        assert!(!received.0[0].exists());
+        assert!(!received.0[2].exists());
     }
 
     unsafe fn simulate_external_file_copy(pasteboard: &Pasteboard, paths: &[&str]) {

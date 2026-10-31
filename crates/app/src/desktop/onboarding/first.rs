@@ -335,6 +335,11 @@ impl FirstAgent {
                     runtime: runtime.into(),
                     model: None,
                     brief,
+                    terminal_defaults: self
+                        .tools
+                        .current()
+                        .filter(|runtime| runtime.terminal_defaults_supported)
+                        .map(|_| crate::desktop::terminal::defaults()),
                 },
                 start_greeting: true,
             },

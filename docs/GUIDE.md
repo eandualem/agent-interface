@@ -97,6 +97,9 @@ changes apply to every window at once and are saved in
 **Interface size** (75% to 200%) scales the whole window, terminals included,
 on top of the display's own scale. Use it when a screen draws the app too
 small or too large, such as a 4K display under WSL.
+Some terminal programs choose their own colours when they start. If their colours
+remain from the previous theme, finish the current work and restart that program
+when convenient; changing the app theme does not restart running sessions.
 In **Settings → Shortcuts**, commands are grouped by Workspace, Tab and Pane,
 with separate Navigation, Terminal and Application groups. Click **Change**
 beside a shortcut and press the new keys. Changes apply and save immediately;

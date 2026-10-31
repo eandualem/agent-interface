@@ -309,13 +309,26 @@ forward and closes each link by replacing only entries within its own label.
 WebKit handles those selectors through the macOS responder chain, without a
 clipboard JavaScript bridge.
 
+For new agent launches, the app captures its foreground and background and sends
+`terminal_defaults` only when the saved runtime advertises support through
+Backbone's runtime catalog. First-agent setup saves these values with the request;
+retries keep the original colours, and legacy requests still omit the field.
+Backbone seeds the new pane before executing the CLI. This closes the interval
+before Interface attaches, including on tmux versions without control-client
+colour reporting. Attached clients continue reporting their current defaults.
+A CLI that caches colours at startup may need a user-requested restart to adapt
+to a later appearance change; Interface does not restart it or reinterpret its
+explicit RGB output.
+
 File pastes and drops share the terminal's bounded input queue. Copied file paths
 take precedence over Finder display names and are quoted for terminal input.
 The macOS adapter accepts file URLs and raw PNG, TIFF and JPEG drags. Raw images
 are checked against those formats before constructing a decoder and staged as
-PNG in a private temporary directory. A single temporary image URL
-is also received as PNG at drop time, because access granted to the app need not
-extend to an already-running terminal process. Staged files are deleted on
+PNG in a private temporary directory. Image file URLs from any folder are also
+received as PNG at drop time, because access granted to the app need not extend
+to an already-running terminal process. Mixed drops preserve file order and
+ordinary paths. Drops are bounded to 64 files and 64 MiB of encoded images; each
+decoder has dimension and allocation limits and applies EXIF orientation. Staged files are deleted on
 cancellation and retained after an accepted drop for the receiving program to
 read. This is invoked only by a user drag, with no screenshot monitoring.
 
@@ -672,9 +685,12 @@ marker and home directory, is checked before replacement, and participates in
 launcher rollback. An ordinary Linux desktop keeps its per-user XDG launcher.
 
 Linux windows request client decorations and draw a matching right-side caption
-with minimize, maximize/restore and close controls, plus resize edges. If the X11
-window manager requires server decorations, the native frame supplies its controls
-and the app omits its caption. macOS retains the native traffic lights. Linux uses
+with minimize, maximize/restore and close controls, plus invisible resize edges.
+The app sets Motif decoration hints on its own X11 windows through pinned
+`x11rb` 0.13.2 (MIT OR Apache-2.0), so an opaque caption also works without
+a compositor or GTK shadow extensions, including the WSLg X11 host. Theme
+variant hints follow the selected appearance. A failed X11 connection retains
+GPUI’s decoration fallback; window-manager ownership and functions are unchanged. macOS retains the native traffic lights. Linux uses
 DejaVu Sans Mono (the documented runtime font) for terminal cells, avoiding a
 proportional fallback for the macOS-only Menlo family. Graphical Ubuntu CI checks
 ASCII font metrics and exercises the actual window controls on a private X11

@@ -2575,7 +2575,7 @@ impl Render for Browser {
                 .absolute()
                 .size_full(),
             );
-        window_controls::frame(body, "Agent Interface", window)
+        window_controls::frame(body, "Agent Interface", window, cx)
     }
 }
 

@@ -4,6 +4,7 @@
 Run with dbus-run-session and xvfb-run. All library, home and tmux state is
 private to this test; no session from the invoking desktop is used.
 """
+import argparse
 import json
 import os
 from pathlib import Path
@@ -15,7 +16,13 @@ import time
 import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
-OUTPUT = ROOT / "target/linux-desktop-smoke"
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument("--no-compositor", action="store_true", help="Exercise opaque captions without compositing support")
+parser.add_argument("--light", action="store_true", help="Exercise the light caption palette")
+args = parser.parse_args()
+OUTPUT = ROOT / ("target/linux-desktop-no-compositor" if args.no_compositor else "target/linux-desktop-smoke")
+if args.light:
+    OUTPUT = OUTPUT.with_name(OUTPUT.name + "-light")
 OUTPUT.mkdir(parents=True, exist_ok=True)
 
 
@@ -37,6 +44,10 @@ with tempfile.TemporaryDirectory(prefix="agent-interface-desktop-") as directory
                XDG_DATA_HOME=str(root / "data"), XDG_STATE_HOME=str(root / "state"),
                TMUX_TMPDIR=str(root / "tmux"), LIBGL_ALWAYS_SOFTWARE="1")
     (root / "tmux").mkdir(mode=0o700)
+    settings = root / "config/agent-interface"
+    settings.mkdir(parents=True)
+    theme = "light" if args.light else "dark"
+    (settings / "settings.toml").write_text(f'theme = "{theme}"\n')
     library = root / "library"
     library.mkdir()
 
@@ -49,7 +60,7 @@ with tempfile.TemporaryDirectory(prefix="agent-interface-desktop-") as directory
 
     wm_log = (OUTPUT / "window-manager.log").open("w")
     app_log = (OUTPUT / "app.log").open("w")
-    wm = subprocess.Popen(["xfwm4", "--compositor=on", "--sm-client-disable"], env=env,
+    wm = subprocess.Popen(["xfwm4", "--compositor=off" if args.no_compositor else "--compositor=on", "--sm-client-disable"], env=env,
                           stdout=wm_log, stderr=subprocess.STDOUT)
     app = None
     server_created = False
@@ -95,6 +106,9 @@ with tempfile.TemporaryDirectory(prefix="agent-interface-desktop-") as directory
                     "mousedown", "1", "sleep", "0.1", "mouseup", "1", "sleep", "0.1",
                     "mousedown", "1", "sleep", "0.1", "mouseup", "1")
 
+        hints = command("xprop", "-id", window, "-f", "_MOTIF_WM_HINTS", "32c", "_MOTIF_WM_HINTS")
+        assert "decorations: 0x0" in hints or "2, 0, 0, 0, 0" in hints, hints
+        assert f'"{theme}"' in command("xprop", "-id", window, "_GTK_THEME_VARIANT")
         initial = geometry()
         command("import", "-window", window, str(OUTPUT / "window.png"))
         click_button(1.5)
@@ -140,7 +154,7 @@ with tempfile.TemporaryDirectory(prefix="agent-interface-desktop-") as directory
 
 # Keep all native-window regressions behind the same CI entrypoint and artifact
 # directory. A fresh desktop gives the enlarged onboarding case enough space.
-for scale in (100, 150):
+for scale in (() if args.no_compositor or args.light else (100, 150)):
     subprocess.run([
         "xvfb-run", "-a", "-s", "-screen 0 2560x1800x24",
         "dbus-run-session", "--", sys.executable,

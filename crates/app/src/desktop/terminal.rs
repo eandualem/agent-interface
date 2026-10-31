@@ -198,8 +198,11 @@ impl LiveTerminal {
         self.launching = true;
         self.launch_result = None;
         let target = agent.clone();
+        let defaults = defaults();
         let work = cx.background_executor().spawn(async move {
-            agent_interface_roster::lifecycle::start(&target.0, &target.1, resume)
+            agent_interface_roster::lifecycle::start_with_defaults(
+                &target.0, &target.1, resume, defaults,
+            )
         });
         cx.spawn(async move |this, cx| {
             let result = work.await;
@@ -599,6 +602,18 @@ impl Render for LiveTerminal {
                 })
             })
     }
+}
+
+/// Capture the palette when a launch is requested, before the worker starts.
+pub(super) fn defaults() -> agent_interface_roster::lifecycle::TerminalDefaults {
+    let terminal = design::terminal();
+    let rgb = |color: gpui::Rgba| {
+        [color.r, color.g, color.b].map(|channel| (channel * 255.0).round() as u8)
+    };
+    agent_interface_roster::lifecycle::TerminalDefaults::new(
+        rgb(terminal.text),
+        rgb(terminal.background),
+    )
 }
 
 /// The terminal font and colours from the current settings and design tokens.

@@ -146,6 +146,7 @@ dependencies = [
  "uzers",
  "webkit2gtk",
  "wry",
+ "x11rb",
 ]
 
 [[package]]

@@ -2,9 +2,42 @@
 
 use std::{path::Path, time::Duration};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{configuration::configured, transport, valid_agent};
+
+/// Default colours supplied before a new CLI can query its terminal.
+/// Kept in saved setup requests so retries use exactly the original palette.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalDefaults {
+    #[serde(deserialize_with = "hex_color")]
+    foreground: String,
+    #[serde(deserialize_with = "hex_color")]
+    background: String,
+}
+
+impl TerminalDefaults {
+    /// Construct validated RGB colours; no terminal escape data is accepted.
+    pub fn new(foreground: [u8; 3], background: [u8; 3]) -> Self {
+        let hex = |[r, g, b]: [u8; 3]| format!("#{r:02x}{g:02x}{b:02x}");
+        Self {
+            foreground: hex(foreground),
+            background: hex(background),
+        }
+    }
+}
+
+fn hex_color<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
+    let value = String::deserialize(deserializer)?;
+    if value.len() == 7
+        && value.starts_with('#')
+        && value.as_bytes()[1..].iter().all(u8::is_ascii_hexdigit)
+    {
+        Ok(value)
+    } else {
+        Err(serde::de::Error::custom("Expected an RGB colour (#RRGGBB)"))
+    }
+}
 
 /// One request's result. An ambiguous reply must never cause automatic resubmission.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -38,10 +71,30 @@ pub fn start(data_dir: &Path, name: &str, resume: bool) -> Outcome {
     let Some((url, key)) = configured(data_dir, None) else {
         return Outcome::Refused("Backbone is unavailable. No launch was requested.".into());
     };
-    start_at(&url, &key, name, resume)
+    start_at(&url, &key, name, resume, None)
 }
 
-fn start_at(url: &str, key: &str, name: &str, resume: bool) -> Outcome {
+/// Start with the current appearance when the saved runtime advertises support.
+/// Older or unavailable capability endpoints retain the legacy launch request.
+pub fn start_with_defaults(
+    data_dir: &Path,
+    name: &str,
+    resume: bool,
+    defaults: TerminalDefaults,
+) -> Outcome {
+    let Some((url, key)) = configured(data_dir, None) else {
+        return Outcome::Refused("Backbone is unavailable. No launch was requested.".into());
+    };
+    start_at(&url, &key, name, resume, Some(defaults))
+}
+
+fn start_at(
+    url: &str,
+    key: &str,
+    name: &str,
+    resume: bool,
+    defaults: Option<TerminalDefaults>,
+) -> Outcome {
     let refused = |message: &str| Outcome::Refused(message.into());
     if !valid_agent(name) || name.len() > 200 {
         return refused("This session is not a registered Backbone agent.");
@@ -50,7 +103,10 @@ fn start_at(url: &str, key: &str, name: &str, resume: bool) -> Outcome {
     let Some(socket) = url.strip_prefix("unix:").filter(|_| !key.is_empty()) else {
         return refused("Starting agents requires Backbone's authenticated local connection.");
     };
-    let body = serde_json::json!({ "resume": resume, "wait": false });
+    let mut body = serde_json::json!({ "resume": resume, "wait": false });
+    if let Some(defaults) = defaults.filter(|_| supports_defaults(url, key, name)) {
+        body["terminal_defaults"] = serde_json::to_value(defaults).expect("terminal colours JSON");
+    }
     let reply = transport::post_local(
         socket,
         &format!("/api/agents/{name}/start"),
@@ -105,6 +161,39 @@ fn start_at(url: &str, key: &str, name: &str, resume: bool) -> Outcome {
     }
 }
 
+fn supports_defaults(url: &str, key: &str, name: &str) -> bool {
+    #[derive(Deserialize)]
+    struct Runtime {
+        id: String,
+        #[serde(default)]
+        terminal_defaults_supported: bool,
+    }
+    #[derive(Deserialize)]
+    struct Agent {
+        runtime: String,
+    }
+    let read = |path: &str| transport::get(url, path, key, 1024 * 1024);
+    let Some(catalog) =
+        read("/api/runtimes").and_then(|bytes| serde_json::from_slice::<Vec<Runtime>>(&bytes).ok())
+    else {
+        return false;
+    };
+    if !catalog
+        .iter()
+        .any(|runtime| runtime.terminal_defaults_supported)
+    {
+        return false;
+    }
+    let Some(agent) = read(&format!("/api/agents/{name}/inspect"))
+        .and_then(|bytes| serde_json::from_slice::<Agent>(&bytes).ok())
+    else {
+        return false;
+    };
+    catalog
+        .iter()
+        .any(|runtime| runtime.id == agent.runtime && runtime.terminal_defaults_supported)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -136,7 +225,14 @@ mod tests {
             .unwrap_or(0);
         let mut body = vec![0; length];
         socket.read_exact(&mut body).unwrap();
-        (header, serde_json::from_slice(&body).unwrap())
+        (
+            header,
+            if body.is_empty() {
+                serde_json::Value::Null
+            } else {
+                serde_json::from_slice(&body).unwrap()
+            },
+        )
     }
 
     /// Serve one start request with `status` and `body`, and return what was sent.
@@ -164,8 +260,88 @@ mod tests {
             );
             sent
         });
-        let outcome = start_at(&url, "fixture-token", "worker", resume);
+        let outcome = start_at(&url, "fixture-token", "worker", resume, None);
         (outcome, server.join().unwrap())
+    }
+
+    #[test]
+    fn defaults_are_sent_only_for_the_saved_runtime_capability() {
+        for (catalog, runtime, expected) in [
+            (
+                r#"[{"id":"codex","terminal_defaults_supported":true}]"#,
+                Some("codex"),
+                true,
+            ),
+            (
+                r#"[{"id":"codex","terminal_defaults_supported":true}]"#,
+                Some("shell"),
+                false,
+            ),
+            (r#"[{"id":"codex"}]"#, None, false),
+            (
+                r#"{"schema_version":2,"items":[{"id":"codex","terminal_defaults_supported":true}]}"#,
+                None,
+                false,
+            ),
+            ("not a catalog", None, false),
+        ] {
+            let (_directory, listener, url) = crate::transport::tests::local_listener();
+            let server = thread::spawn(move || {
+                let mut replies = vec![("GET /api/runtimes ".to_owned(), catalog.to_owned())];
+                if let Some(runtime) = runtime {
+                    replies.push((
+                        "GET /api/agents/worker/inspect ".into(),
+                        serde_json::json!({"runtime":runtime}).to_string(),
+                    ));
+                }
+                replies.push(("POST /api/agents/worker/start ".into(), r#"{"ok":true,"session":"worker","already_existed":false,"ready":"not_waited"}"#.into()));
+                let mut sent = serde_json::Value::Null;
+                for (path, body) in replies {
+                    let (mut socket, _) = listener.accept().unwrap();
+                    let (header, value) = request(&mut socket);
+                    assert!(header.starts_with(&path), "{header}");
+                    assert!(
+                        header
+                            .to_lowercase()
+                            .contains("authorization: bearer fixture-token")
+                    );
+                    socket
+                        .write_all(crate::transport::tests::ok(&body).as_bytes())
+                        .unwrap();
+                    sent = value;
+                }
+                sent
+            });
+            let defaults = TerminalDefaults::new([255; 3], [24, 25, 29]);
+            assert!(matches!(
+                start_at(
+                    &url,
+                    "fixture-token",
+                    "worker",
+                    true,
+                    Some(defaults.clone())
+                ),
+                Outcome::Accepted(_)
+            ));
+            let sent = server.join().unwrap();
+            assert_eq!(sent["resume"], true);
+            if expected {
+                assert_eq!(
+                    sent["terminal_defaults"],
+                    serde_json::to_value(defaults).unwrap()
+                );
+            } else {
+                assert!(sent.get("terminal_defaults").is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn saved_colours_reject_terminal_control_data() {
+        for color in ["red", "#fff", "#000000\u{1b}", "#00zz00", "éffffff"] {
+            let input = serde_json::json!({"foreground":color,"background":"#000000"});
+            assert!(serde_json::from_value::<TerminalDefaults>(input).is_err());
+        }
     }
 
     #[test]
