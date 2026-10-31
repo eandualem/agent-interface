@@ -30,7 +30,7 @@ What the app does protect:
 
 | Boundary | Protection |
 | --- | --- |
-| Terminal output | What a program prints is treated as untrusted. It cannot read or set your clipboard, open links or run commands in the app. An unfinished control sequence is discarded after 1 MiB, the same limit tmux uses, so it cannot make the app hold ever more memory. |
+| Terminal output | What a program prints is treated as untrusted. It cannot read or set your clipboard, open links or run commands in the app. An unfinished operating system command (OSC) that the terminal stores as it arrives, such as a clipboard request, is discarded once it reaches 1 MiB, the same input limit tmux uses, so it cannot make the app hold ever more memory. |
 | Paste and dropped files | Pasted text is sent only to the pane you chose, with bracketed paste when the shell enabled it. If the app cannot tell whether bracketed paste is on, multiline paste is refused. A single paste is limited to 4 MiB. |
 | tmux | Commands address panes and windows by their numeric IDs, and shell arguments are quoted. Ordinary shells run on a tmux server whose socket sits in a private directory owned by you. |
 | Agent Backbone | Requests that carry your Backbone credential go only over a Unix socket owned by you (mode 0600, in a 0700 directory). Before sending anything, the app checks that the process on the other end runs as your user, and Backbone checks the same of the app. There is no fallback to a network connection for these requests. This keeps other accounts out; it does not separate programs running as you. |
@@ -81,7 +81,7 @@ Every change goes through the same checks before it reaches a release:
 - **Continuous integration** on macOS and Linux runs formatting, strict lint
   checks with warnings treated as errors, and the full test suite. The suite
   includes regression tests for protections above, such as refusing multiline
-  paste without bracketed paste and the limit on unfinished control sequences.
+  paste without bracketed paste and the 1 MiB limit on stored OSC sequences.
 - **Dependency audit:** [`cargo deny`](https://github.com/EmbarkStudios/cargo-deny)
   checks every Rust dependency against the RustSec advisory database, and
   checks licences and download sources. Any known vulnerability fails the
@@ -109,8 +109,8 @@ Security reviews so far:
   review of tmux command construction, terminal output, clipboard and links,
   saved layouts and file paths, Backbone data, and installation. It found no
   problem in command construction, quoting, storage, credentials or the
-  installer. It confirmed that an unfinished control sequence could hold
-  unbounded memory, now fixed with the 1 MiB limit. It also confirmed a
+  installer. It confirmed that an unfinished OSC sequence the terminal stores
+  could hold unbounded memory, now fixed with the 1 MiB limit. It also confirmed a
   second problem, still open below.
 
 Not done yet: there is no fuzz testing and no third-party audit.
