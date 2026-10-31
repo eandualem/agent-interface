@@ -497,17 +497,11 @@ impl Conversation {
                 .insert(actor.name.clone(), (id, role.into()));
             conversation.candidates.push(actor.name.clone());
         }
-        conversation.recipient = if conversation.candidates.len() == 1 {
-            conversation.candidates.first().cloned()
-        } else if item.sender.id.as_deref() == Some(focus) {
-            conversation
-                .candidates
-                .iter()
-                .find(|name| **name == item.sender.name)
-                .cloned()
-        } else {
-            None
-        };
+        conversation.recipient = interaction_recipient(
+            &conversation.candidates,
+            &conversation.interaction_roles,
+            focus,
+        );
         conversation.plan_anchor = Some(stored::Anchor {
             revision_id: Some(item.id.clone()),
             label: conversation.anchor.clone(),
@@ -1710,6 +1704,9 @@ impl Conversation {
             let agent = self.agent();
             let note = if let (Some(error), false) = (self.read_error, self.stored_live()) {
                 error.message().to_owned()
+            } else if self.needs_recipient() && self.recipient.is_none() {
+                "Choose an agent above to enable Send. Your draft stays here while you choose."
+                    .to_owned()
             } else if self.stored_live() {
                 if self
                     .stored
@@ -1732,7 +1729,11 @@ impl Conversation {
                 .min_h_0()
                 .child(ui::empty_state(
                     ui::empty_tile("message-square", c.selected, c.text_2),
-                    format!("Talk to {agent} here"),
+                    if self.needs_recipient() && self.recipient.is_none() {
+                        "Choose who to ask".to_owned()
+                    } else {
+                        format!("Talk to {agent} here")
+                    },
                     note,
                 ))
                 .into_any_element();
@@ -2009,9 +2010,55 @@ impl Conversation {
     }
 }
 
+/// Start with the agent whose interactions the owner opened, regardless of
+/// message direction. Only eligible recorded participants may receive a question.
+fn interaction_recipient(
+    candidates: &[String],
+    roles: &HashMap<String, (String, String)>,
+    focus: &str,
+) -> Option<String> {
+    candidates
+        .iter()
+        .find(|name| roles.get(*name).is_some_and(|(id, _)| id == focus))
+        .or_else(|| (candidates.len() == 1).then(|| &candidates[0]))
+        .cloned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn interaction_recipient_follows_focused_identity_in_either_direction() {
+        let candidates = vec!["sender renamed".into(), "receiver renamed".into()];
+        let roles = HashMap::from([
+            (
+                "sender renamed".into(),
+                ("sender-id".into(), "sent it".into()),
+            ),
+            (
+                "receiver renamed".into(),
+                ("receiver-id".into(), "received it".into()),
+            ),
+        ]);
+        assert_eq!(
+            interaction_recipient(&candidates, &roles, "sender-id"),
+            Some("sender renamed".into())
+        );
+        assert_eq!(
+            interaction_recipient(&candidates, &roles, "receiver-id"),
+            Some("receiver renamed".into())
+        );
+        assert_eq!(
+            interaction_recipient(&candidates, &roles, "unavailable-id"),
+            None
+        );
+        assert_eq!(
+            interaction_recipient(&candidates[..1], &roles, "unavailable-id"),
+            Some("sender renamed".into())
+        );
+        assert_eq!(interaction_recipient(&[], &roles, "receiver-id"), None);
+    }
 
     #[test]
     fn failed_read_receipts_wait_for_the_poll_interval_despite_repaints() {

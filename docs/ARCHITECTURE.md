@@ -770,8 +770,11 @@ before the thread is opened. Its width participates in the responsive layout.
 The reader keeps direction, participants and navigation in one header, with the
 timestamp beneath; delivery evidence and technical attempts have separate sections,
 and the primary Ask action also opens the same retained discussion. Eligible
-recipients come from the recorded participants, and a retry retains the chosen registration ID. A changed connection cannot
-silently redirect it. These discussions never fall back to unanchored feedback,
+recipients come from the recorded participants. The focused agent is selected by
+default for both sent and received messages when eligible; the owner can switch
+the recipient before sending. With no eligible focused agent, a sole participant
+is selected, otherwise an explicit choice is required. A retry retains the chosen
+registration ID. A changed connection cannot silently redirect it. These discussions never fall back to unanchored feedback,
 edit the original, or infer an explanation for its send. No additional process,
 web renderer or third-party dependency is introduced.
 
