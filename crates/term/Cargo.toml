@@ -17,6 +17,9 @@ libghostty-vt-sys.workspace = true
 memchr.workspace = true
 thiserror.workspace = true
 
+[dev-dependencies]
+libc.workspace = true
+
 [build-dependencies]
 sha2.workspace = true
 serde_json.workspace = true

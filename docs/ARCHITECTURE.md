@@ -504,7 +504,8 @@ build-time advisory exception are described below.
   MIT. Its bundled SQLite uses SQLite's public-domain dedication. Runtime limits
   bound values; serialization writes the initial database through an open file handle.
 - **`libc`:** Unix constants for nonblocking configuration reads in the app
-  and roster, and the existing process integration. MIT OR Apache-2.0.
+  and roster, the existing process integration, and resident-memory readings in
+  the terminal tests. MIT OR Apache-2.0.
 - **`wry` 0.57.1:** system WebKit child views for HTML Documents and legacy
   artifacts on macOS and Linux, pinned exactly. MIT OR Apache-2.0.
   The local `native/wry` patch enables the Linux process sandbox before view
@@ -560,8 +561,10 @@ build-time advisory exception are described below.
   so it adds no package to the graph.
 
 The native terminal source is prepared from a pinned Ghostty commit plus
-[`native/ghostty.patch`](../native/ghostty.patch). The preparation script checks
-the source and patch digests and reuses immutable prepared directories. See
+[`native/ghostty.patch`](../native/ghostty.patch). Among its changes, the patch
+discards an operating system command (OSC) longer than 1 MiB, tmux's default
+input limit, so a sequence that never ends holds bounded memory. The preparation
+script checks the source and patch digests and reuses immutable prepared directories. See
 [the native build instructions](../CONTRIBUTING.md#the-terminal-engines-native-build)
 for Zig, build modes, CPU targets and offline builds.
 
