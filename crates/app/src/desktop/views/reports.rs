@@ -783,14 +783,25 @@ fn controls(pane: &ViewPane, agents: &[String], cx: &mut Context<ViewPane>) -> g
     let mut sections = ui::segments();
     for (index, (name, make)) in SECTIONS.into_iter().enumerate() {
         if index == 1 && pane.backbone.is_some() {
-            sections = sections.child(
-                ui::segment(
-                    "reports-Current plans",
-                    "Current plans",
-                    pane.shown == Shown::Plans,
+            sections = sections
+                .child(
+                    ui::segment(
+                        "reports-Current plans",
+                        "Current plans",
+                        pane.shown == Shown::Plans,
+                    )
+                    .on_click(cx.listener(|pane, _, _, cx| pane.show_plans(cx))),
                 )
-                .on_click(cx.listener(|pane, _, _, cx| pane.show_plans(cx))),
-            );
+                .child(
+                    ui::segment(
+                        "reports-Interactions",
+                        "Interactions",
+                        pane.shown == Shown::Interactions,
+                    )
+                    .on_click(
+                        cx.listener(|pane, _, window, cx| pane.show_interactions(window, cx)),
+                    ),
+                );
         }
         let query = make();
         sections = sections.child(

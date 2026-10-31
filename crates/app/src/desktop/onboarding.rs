@@ -624,7 +624,7 @@ impl Render for Onboarding {
             let body = root
                 .child(div().flex_1().min_h_0().child(self.scene()))
                 .child(self.scale_controls(cx));
-            return super::window_controls::frame(body, "Welcome", window);
+            return super::window_controls::frame(body, "Welcome", window, cx);
         };
         if index == 2
             && self.first.is_none()
@@ -825,7 +825,7 @@ impl Render for Onboarding {
                 ),
             )
             .child(self.scale_controls(cx));
-        super::window_controls::frame(body, "Welcome", window)
+        super::window_controls::frame(body, "Welcome", window, cx)
     }
 }
 

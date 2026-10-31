@@ -309,13 +309,26 @@ forward and closes each link by replacing only entries within its own label.
 WebKit handles those selectors through the macOS responder chain, without a
 clipboard JavaScript bridge.
 
+For new agent launches, the app captures its foreground and background and sends
+`terminal_defaults` only when the saved runtime advertises support through
+Backbone's runtime catalog. First-agent setup saves these values with the request;
+retries keep the original colours, and legacy requests still omit the field.
+Backbone seeds the new pane before executing the CLI. This closes the interval
+before Interface attaches, including on tmux versions without control-client
+colour reporting. Attached clients continue reporting their current defaults.
+A CLI that caches colours at startup may need a user-requested restart to adapt
+to a later appearance change; Interface does not restart it or reinterpret its
+explicit RGB output.
+
 File pastes and drops share the terminal's bounded input queue. Copied file paths
 take precedence over Finder display names and are quoted for terminal input.
 The macOS adapter accepts file URLs and raw PNG, TIFF and JPEG drags. Raw images
 are checked against those formats before constructing a decoder and staged as
-PNG in a private temporary directory. A single temporary image URL
-is also received as PNG at drop time, because access granted to the app need not
-extend to an already-running terminal process. Staged files are deleted on
+PNG in a private temporary directory. Image file URLs from any folder are also
+received as PNG at drop time, because access granted to the app need not extend
+to an already-running terminal process. Mixed drops preserve file order and
+ordinary paths. Drops are bounded to 64 files and 64 MiB of encoded images; each
+decoder has dimension and allocation limits and applies EXIF orientation. Staged files are deleted on
 cancellation and retained after an accepted drop for the receiving program to
 read. This is invoked only by a user drag, with no screenshot monitoring.
 
@@ -672,9 +685,12 @@ marker and home directory, is checked before replacement, and participates in
 launcher rollback. An ordinary Linux desktop keeps its per-user XDG launcher.
 
 Linux windows request client decorations and draw a matching right-side caption
-with minimize, maximize/restore and close controls, plus resize edges. If the X11
-window manager requires server decorations, the native frame supplies its controls
-and the app omits its caption. macOS retains the native traffic lights. Linux uses
+with minimize, maximize/restore and close controls, plus invisible resize edges.
+The app sets Motif decoration hints on its own X11 windows through pinned
+`x11rb` 0.13.2 (MIT OR Apache-2.0), so an opaque caption also works without
+a compositor or GTK shadow extensions, including the WSLg X11 host. Theme
+variant hints follow the selected appearance. A failed X11 connection retains
+GPUI’s decoration fallback; window-manager ownership and functions are unchanged. macOS retains the native traffic lights. Linux uses
 DejaVu Sans Mono (the documented runtime font) for terminal cells, avoiding a
 proportional fallback for the macOS-only Menlo family. Graphical Ubuntu CI checks
 ASCII font metrics and exercises the actual window controls on a private X11
@@ -726,6 +742,57 @@ a plan cannot retarget them. Messages and retries retain that revision and item
 anchor. Plan refresh pauses while a draft or unresolved delivery exists, keeping
 its step reachable until the person finishes it. The panel requires stored conversation support and never falls back to
 unanchored feedback for plans.
+
+`roster::interactions` reads the versioned interaction summary, logical-message
+history, standalone originals and paged delivery evidence over the authenticated
+private socket. It never claims the inbox or scrapes terminal transcripts. Reads
+are bounded by response size, nesting, page count and record count; malformed
+timestamps, missing full bodies and unrelated conversation recipients are rejected.
+Summary and history share the provider's snapshot token. Stable registration IDs
+identify participants, including retired registrations; an unknown sender remains
+unknown. A reverse relation keeps its recorded source ID. Full-body retention is
+separate from the start of retained history.
+
+`desktop::views::interactions` owns the visible window, filters, selected original,
+peer-navigation stack and discussions. Reads run on a worker every 20 seconds
+while visible; numbered requests prevent an older selection's read from replacing
+newer state. New logical messages wait behind an explicit insertion control.
+Selection and discussion survive filtering and changes to the time window; a
+missing or failed reread leaves retained data visible. `ledger` builds fixed-height
+rows and `layout` maps their shared time edges to the rail. Long gaps are
+compressed, labels hold time still, and same-second messages keep separate marks.
+Only rows near the viewport become native elements. Explicitly anchored
+conversation entries group into contiguous runs, so an intervening unrelated
+message never produces a backwards time span. Counts remain logical messages,
+not delivery attempts or collapsed groups.
+
+Consecutive exchanges with the same recorded counterparty collapse from two
+messages, including both directions, when adjacent messages are at most fifteen
+minutes apart. A different counterparty or an anchored discussion ends the run;
+unknown actors are never grouped by a guessed identity. Expanding a group shows
+its individual messages and preserves the original selected message.
+
+State spans have a separate snapshot and stable registration identity. They are
+sampled evidence: gaps and conflicting overlaps stay unknown. Message coverage
+comes from finite provider-verified capture intervals, independently of state
+coverage. Quiet rows require the complete unfiltered message population and
+subtract every overlapping logical-message lifecycle, including pending spans.
+A failed state refresh retains earlier observations with a stale notice.
+
+The original is selectable plain text. Follow-up questions use the existing
+stored conversation component with kind `interaction`, pinned to the provider
+and immutable message ID. A collapsed discussion rail is visible from the first supported selection,
+before the thread is opened. Its width participates in the responsive layout.
+The reader keeps direction, participants and navigation in one header, with the
+timestamp beneath; delivery evidence and technical attempts have separate sections,
+and the primary Ask action also opens the same retained discussion. Eligible
+recipients come from the recorded participants. The focused agent is selected by
+default for both sent and received messages when eligible; the owner can switch
+the recipient before sending. With no eligible focused agent, a sole participant
+is selected, otherwise an explicit choice is required. A retry retains the chosen
+registration ID. A changed connection cannot silently redirect it. These discussions never fall back to unanchored feedback,
+edit the original, or infer an explanation for its send. No additional process,
+web renderer or third-party dependency is introduced.
 
 Sheets shows the same `desktop::views::conversation::Conversation` entity as the
 record readers, beside the grid, with its native text field, draft preservation,

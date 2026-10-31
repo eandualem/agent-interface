@@ -612,7 +612,9 @@ impl Browser {
                 .and_then(|layout| layout.model().pane())
                 .and_then(|pane| self.views.get(&pane.id))
                 .is_some_and(|(view, _)| {
-                    view.update(cx, |view, cx| view.key(&edit_key(key).keystroke, cx))
+                    view.update(cx, |view, cx| {
+                        view.key(&edit_key(key).keystroke, window, cx)
+                    })
                 });
         if !handled {
             cx.propagate();
@@ -2500,7 +2502,7 @@ impl Render for Browser {
                             .and_then(|layout| layout.model().pane())
                             .map(|leaf| leaf.id.clone())
                         && let Some((view, _)) = browser.views.get(&pane)
-                        && view.update(cx, |view, cx| view.key(key, cx))
+                        && view.update(cx, |view, cx| view.key(key, window, cx))
                     {
                         cx.stop_propagation();
                         return;
@@ -2573,7 +2575,7 @@ impl Render for Browser {
                 .absolute()
                 .size_full(),
             );
-        window_controls::frame(body, "Agent Interface", window)
+        window_controls::frame(body, "Agent Interface", window, cx)
     }
 }
 

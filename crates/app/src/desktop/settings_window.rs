@@ -991,6 +991,6 @@ impl Render for SettingsWindow {
                     )
                 }),
         );
-        super::window_controls::frame(body, "Settings", window)
+        super::window_controls::frame(body, "Settings", window, cx)
     }
 }

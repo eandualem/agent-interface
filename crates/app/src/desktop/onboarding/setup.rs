@@ -39,6 +39,8 @@ pub struct Runtime {
     pub available: bool,
     #[serde(default)]
     pub setup_supported: bool,
+    #[serde(default)]
+    pub terminal_defaults_supported: bool,
     pub models: Vec<String>,
     pub authentication: String,
     #[serde(default)]
@@ -92,6 +94,8 @@ pub struct Agent {
     pub runtime: String,
     pub model: Option<String>,
     pub brief: Brief,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_defaults: Option<agent_interface_roster::lifecycle::TerminalDefaults>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -844,6 +848,34 @@ mod tests {
 
     fn request() -> Request {
         serde_json::from_str(include_str!("fixtures/first-agent-request.json")).unwrap()
+    }
+
+    #[test]
+    fn terminal_colours_are_frozen_in_saved_requests_and_absent_in_legacy_requests() {
+        let original: Value =
+            serde_json::from_str(include_str!("fixtures/first-agent-request.json")).unwrap();
+        assert_eq!(serde_json::to_value(request()).unwrap(), original);
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("saved.json");
+        let mut saved = Saved {
+            cancelling: false,
+            path_env: "/usr/bin:/bin".into(),
+            executable: root.path().join("engine"),
+            request: request(),
+        };
+        saved.request.agent.terminal_defaults = Some(
+            agent_interface_roster::lifecycle::TerminalDefaults::new([255; 3], [24, 25, 29]),
+        );
+        saved.create(&path).unwrap();
+        let loaded = Saved::load(&path).unwrap().unwrap();
+        assert_eq!(
+            serde_json::to_value(&loaded).unwrap(),
+            serde_json::to_value(&saved).unwrap()
+        );
+        saved.request.agent.terminal_defaults = Some(
+            agent_interface_roster::lifecycle::TerminalDefaults::new([47, 48, 51], [248, 247, 244]),
+        );
+        assert!(saved.verify_current(&path).is_err());
     }
 
     fn fake_engine(root: &Path, body: &str) -> std::path::PathBuf {

@@ -285,6 +285,41 @@ fn response_item(record: Record<Response>) -> ReportItem {
     }
 }
 
+/// Read an explicitly linked progress report without searching a rolling feed.
+pub(super) fn read_report(api: &Api<'_>, id: u64) -> Result<ReportPage, &'static str> {
+    let body = api.get(&format!("/api/reports/{id}"))?;
+    document(&body)?;
+    let record: Record<Progress> = serde_json::from_slice(&body).map_err(|_| UNREADABLE)?;
+    let text = record.content.report;
+    let mut sections = vec![
+        ("Goal", text.goal),
+        ("Progress", text.progress),
+        ("Blocker", text.blockers),
+        ("Next", text.next),
+    ];
+    if let Some(note) = text.note {
+        sections.push(("Note", note));
+    }
+    Ok(ReportPage {
+        items: vec![ReportItem {
+            id: record.id,
+            registered: record.agent_name.is_some(),
+            author: record.agent_name.unwrap_or(record.author_name),
+            author_id: record.author_id,
+            provider_url: String::new(),
+            created_at: record.created_at,
+            conversation_id: record.conversation_id,
+            content: ReportContent::Progress {
+                status: text.status,
+                sections,
+            },
+        }],
+        next: None,
+        agents: Vec::new(),
+        runtimes: BTreeMap::new(),
+    })
+}
+
 fn decode_response(body: &[u8]) -> Result<ReportPage, &'static str> {
     document(body)?;
     let record = serde_json::from_slice(body).map_err(|_| UNREADABLE)?;
