@@ -36,7 +36,8 @@ pub fn prefix() -> String {
 
 /// Reads the buffers named `names` on the server at `socket`, in order, then
 /// deletes them, by `deadline`. A name with no buffer reads as `None`: tmux
-/// creates none for an empty capture.
+/// creates none for an empty capture. After an error, some may be left for
+/// the caller to [`delete`].
 pub fn take(
     socket: &Path,
     names: &[String],
@@ -49,14 +50,8 @@ pub fn take(
             contents.push(None);
             continue;
         };
-        match left(deadline).and_then(|timeout| read(socket, name, size, timeout)) {
-            Ok(content) => contents.push(Some(content)),
-            Err(error) => {
-                // Delete the rest, and this one if it is left.
-                let _ = delete(socket, names);
-                return Err(error);
-            }
-        }
+        let timeout = left(deadline)?;
+        contents.push(Some(read(socket, name, size, timeout)?));
     }
     Ok(contents)
 }

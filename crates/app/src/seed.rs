@@ -28,6 +28,9 @@ pub(crate) struct Seed<I = ChildStdin, O = ChildStdout> {
 }
 
 /// Capture buffers a line may have created, deleted on drop unless taken.
+/// The deletion runs on its own thread: it runs tmux, which can take
+/// seconds, and whoever drops this may hold a lock that the interface or
+/// input waits on.
 #[derive(Default)]
 pub(crate) struct Leftover {
     socket: PathBuf,
@@ -53,9 +56,16 @@ impl Leftover {
 
 impl Drop for Leftover {
     fn drop(&mut self) {
-        if !self.names.is_empty() {
-            let _ = buffers::delete(&self.socket, &self.names);
+        if self.names.is_empty() {
+            return;
         }
+        let socket = std::mem::take(&mut self.socket);
+        let names = std::mem::take(&mut self.names);
+        let _ = thread::Builder::new()
+            .name("capture buffer cleanup".into())
+            .spawn(move || {
+                let _ = buffers::delete(&socket, &names);
+            });
     }
 }
 
@@ -517,6 +527,40 @@ mod tests {
                 .unwrap(),
             "mine\n"
         );
+    }
+
+    #[test]
+    fn dropping_leftover_buffers_never_waits_for_tmux() {
+        // A socket that accepts and never answers holds a tmux client for
+        // the whole command timeout.
+        let directory = tempfile::Builder::new().tempdir_in("/tmp").unwrap();
+        let silent = directory.path().join("silent");
+        let _listener = std::os::unix::net::UnixListener::bind(&silent).unwrap();
+        let started = Instant::now();
+        drop(Leftover::new(
+            &silent,
+            vec!["agent-interface-test-0".into()],
+        ));
+        assert!(started.elapsed() < Duration::from_millis(500));
+
+        // The deletion still happens, after the drop.
+        let server = agent_interface_test_support::TmuxServer::start().unwrap();
+        let socket = server
+            .run(&["display-message", "-p", "#{socket_path}"])
+            .unwrap();
+        let name = format!("{}0", buffers::prefix());
+        server.run(&["set-buffer", "-b", &name, "left"]).unwrap();
+        server.run(&["set-buffer", "-b", "mine", "keep"]).unwrap();
+        drop(Leftover::new(Path::new(socket.trim()), vec![name]));
+        let deadline = Instant::now() + TIMEOUT;
+        while server
+            .run(&["list-buffers", "-F", "#{buffer_name}"])
+            .unwrap()
+            != "mine\n"
+        {
+            assert!(Instant::now() < deadline, "the leftover buffer stayed");
+            thread::sleep(Duration::from_millis(10));
+        }
     }
 
     #[test]
