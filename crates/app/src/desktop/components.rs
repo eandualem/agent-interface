@@ -1129,15 +1129,10 @@ pub fn choice_frame(id: impl Into<SharedString>, selected: bool) -> Stateful<Div
         .h(px(t.size.choice_row))
         .px(px(t.space.s10))
         .rounded(px(t.radius.row))
+        .relative()
         .cursor_pointer()
         .when(selected, |el| {
-            el.bg(c.selected).shadow(vec![BoxShadow {
-                color: c.focus.into(),
-                offset: point(px(0.0), px(0.0)),
-                blur_radius: px(0.0),
-                spread_radius: px(t.size.focus_ring),
-                inset: false,
-            }])
+            el.bg(c.selected).child(selection_ring(t.radius.row, 0.0))
         })
         .when(!selected, |el| el.hover(|el| el.bg(colors().hover)))
 }
@@ -1277,6 +1272,23 @@ pub fn fact(label: impl Into<SharedString>, value: impl IntoElement) -> Div {
 //
 // Authored records from Agent Backbone: the rows that list them and the
 // pieces their readers are made of.
+
+/// Where an agent stopped: a still accent ring around a square, the working
+/// mark without its turning arc.
+pub fn stopped_symbol() -> Div {
+    let (t, c) = (tokens(), colors());
+    let size = t.size.agent_symbol;
+    div()
+        .flex_shrink_0()
+        .size(px(size))
+        .rounded_full()
+        .border(px(t.size.minimap_stroke * 1.5))
+        .border_color(c.accent)
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(div().size(px(size / 3.0)).rounded(px(1.0)).bg(c.accent))
+}
 
 /// A finished record's mark: an `ok` ring with a check. Other report states
 /// use [`agent_symbol`].
@@ -1511,17 +1523,9 @@ pub fn shelf_card(
         .bg(c.panel)
         .border(px(t.size.hairline))
         .border_color(c.line)
+        .relative()
         .cursor_pointer()
         .hover(|el| el.bg(colors().hover))
-        .when(selected, |el| {
-            el.shadow(vec![BoxShadow {
-                color: c.focus.into(),
-                offset: point(px(0.0), px(0.0)),
-                blur_radius: px(0.0),
-                spread_radius: px(t.size.focus_ring),
-                inset: false,
-            }])
-        })
         .child(
             div()
                 .flex()
@@ -1567,6 +1571,9 @@ pub fn shelf_card(
             .child(div().flex_1())
             .child(key_hint(size)),
         )
+        .when(selected, |el| {
+            el.child(selection_ring(t.radius.popover, t.size.hairline))
+        })
 }
 
 // A plan: one card per agent on the list, its steps on a track and what
@@ -1578,6 +1585,8 @@ pub enum Step {
     Done,
     /// Being worked on now.
     Now,
+    /// Where the agent stopped: the step it was on while it is not working.
+    Stopped,
     /// Waiting on someone or something.
     Waits,
     /// Still to come.
@@ -1585,7 +1594,8 @@ pub enum Step {
 }
 
 /// A step's mark: a check in `ok` once done, the turning arc while now, a
-/// faint ring ahead, and "!" on the attention fill while it waits.
+/// still accent ring with a square where the agent stopped, a faint ring
+/// ahead, and "!" on the attention fill while it waits.
 pub fn step_dot(step: Step) -> Div {
     let (t, c) = (tokens(), colors());
     let size = t.size.plan_dot;
@@ -1605,6 +1615,9 @@ pub fn step_dot(step: Step) -> Div {
     match step {
         Step::Done => ring(frame, c.ok).child(icon("step-check", size * 2.0 / 3.0, c.ok)),
         Step::Now => ring(frame, c.accent_soft).child(turning_arc(size)),
+        Step::Stopped => {
+            ring(frame, c.accent).child(div().size(px(size / 3.0)).rounded(px(1.0)).bg(c.accent))
+        }
         Step::Ahead => ring(frame, c.faint),
         Step::Waits => frame.bg(c.attention).child(
             text(
@@ -1632,9 +1645,10 @@ fn turning_arc(size: f32) -> Div {
 }
 
 /// One step on a plan card's track: its mark and name, done in `muted`, now
-/// on the accent tint, ahead in `text_2`, waiting in a dashed attention
-/// outline. A long name ends in an ellipsis rather than wrapping the track.
-pub fn plan_step(label: impl Into<SharedString>, step: Step) -> Div {
+/// on the accent tint, stopped in `accent_text`, ahead in `text_2`, waiting
+/// in a dashed attention outline, and ringed while selected. A long name ends
+/// in an ellipsis rather than wrapping the track.
+pub fn plan_step(label: impl Into<SharedString>, step: Step, selected: bool) -> Div {
     let (t, c) = (tokens(), colors());
     let pill = text(
         div()
@@ -1647,7 +1661,9 @@ pub fn plan_step(label: impl Into<SharedString>, step: Step) -> Div {
             .pr(px(t.space.s8 + 1.0))
             .rounded(px(t.size.plan_step / 2.0))
             .border(px(t.size.hairline))
-            .border_color(gpui::transparent_black()),
+            .border_color(gpui::transparent_black())
+            .relative()
+            .cursor_pointer(),
         &t.text.status,
     );
     let pill = match step {
@@ -1656,20 +1672,28 @@ pub fn plan_step(label: impl Into<SharedString>, step: Step) -> Div {
             .bg(c.accent_soft)
             .text_color(c.accent_text)
             .font_weight(t.text.row_selected.weight()),
+        Step::Stopped => pill
+            .border_color(c.accent)
+            .text_color(c.accent_text)
+            .font_weight(t.text.row_selected.weight()),
         Step::Ahead => pill.text_color(c.text_2),
         Step::Waits => pill
             .border_dashed()
             .border_color(c.attention)
             .text_color(c.attention_text),
     };
-    pill.child(step_dot(step)).child(
-        div()
-            .min_w_0()
-            .overflow_hidden()
-            .whitespace_nowrap()
-            .text_ellipsis()
-            .child(label.into()),
-    )
+    pill.child(step_dot(step))
+        .child(
+            div()
+                .min_w_0()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .child(label.into()),
+        )
+        .when(selected, |el| {
+            el.child(selection_ring(t.size.plan_step / 2.0, t.size.hairline))
+        })
 }
 
 /// The line from one step on a track to the next: `muted` once the step
@@ -1762,21 +1786,23 @@ pub fn plan_card(id: impl Into<SharedString>, selected: bool) -> Stateful<Div> {
         .cursor_pointer()
         .relative()
         .hover(|el| el.bg(colors().hover))
-        .when(selected, |el| el.child(selection_ring(t.radius.popover)))
+        .when(selected, |el| {
+            el.child(selection_ring(t.radius.popover, t.size.hairline))
+        })
 }
 
-/// The ring around a selected card or node, drawn just outside its border
-/// as an outline: a shadow would show through a translucent fill.
-fn selection_ring(radius: f32) -> Div {
+/// The ring around a selected row, card or node, drawn as an outline over
+/// its `edge`-wide border: a shadow would show through a translucent fill,
+/// and anything outside its bounds is clipped by a scrolling list.
+pub fn selection_ring(radius: f32, edge: f32) -> Div {
     let (t, c) = (tokens(), colors());
-    let outset = t.size.focus_ring + t.size.hairline;
     div()
         .absolute()
-        .top(px(-outset))
-        .left(px(-outset))
-        .right(px(-outset))
-        .bottom(px(-outset))
-        .rounded(px(radius + outset))
+        .top(px(-edge))
+        .left(px(-edge))
+        .right(px(-edge))
+        .bottom(px(-edge))
+        .rounded(px(radius))
         .border(px(t.size.focus_ring))
         .border_color(c.focus)
 }
@@ -1825,6 +1851,15 @@ pub fn plan_node(
             agent_symbol(AgentState::Working),
             c.accent_text,
         ),
+        Step::Stopped => (
+            frame
+                .bg(c.surface)
+                .border(px(t.size.minimap_stroke * 1.5))
+                .border_color(c.accent)
+                .text_color(c.text),
+            stopped_symbol(),
+            c.accent_text,
+        ),
         Step::Ahead => (
             frame
                 .bg(c.surface)
@@ -1870,10 +1905,9 @@ pub fn plan_node(
                 .child(note),
         );
     }
-    frame
-        .child(mark)
-        .child(words)
-        .when(selected, |el| el.child(selection_ring(t.radius.popover)))
+    frame.child(mark).child(words).when(selected, |el| {
+        el.child(selection_ring(t.radius.popover, t.size.hairline))
+    })
 }
 
 /// The arrow from one step of an opened plan's graph to the next: from
@@ -2201,12 +2235,19 @@ pub fn conversation_rail(button: Stateful<Div>, mark: Option<Div>, unread: bool)
         .children(mark)
 }
 
-/// The frame of an open conversation, `conversation_width` wide.
+/// The frame of an open conversation: the width it was dragged to, else a
+/// share of the reader, never narrower than `conversation_width`.
 pub fn conversation_panel() -> Div {
     let (t, c) = (tokens(), colors());
     div()
+        .relative()
         .flex_shrink_0()
-        .w(px(t.size.conversation_width))
+        .map(|panel| match super::settings::conversation_width() {
+            Some(width) => panel.w(px(width as f32)),
+            None => panel.w(gpui::relative(0.38)),
+        })
+        .min_w(px(t.size.conversation_width))
+        .max_w(gpui::relative(0.75))
         .h_full()
         .min_h_0()
         .flex()

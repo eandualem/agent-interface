@@ -1,6 +1,6 @@
 //! Shared native selection for rendered documents and their source text.
 
-use std::ops::Range;
+use std::{cell::RefCell, ops::Range};
 
 use gpui::{
     Bounds, ClipboardItem, Context, HighlightStyle, Pixels, Point, StyledText, TextLayout, canvas,
@@ -8,8 +8,22 @@ use gpui::{
 };
 use unicode_segmentation::UnicodeSegmentation;
 
-use super::ViewPane;
+use super::{
+    ViewPane,
+    markdown::{Link, Mark},
+};
 use crate::desktop::design::colors;
+
+/// A view whose rendered text can be selected and copied.
+pub(super) trait Selectable: 'static {
+    fn selection(&self) -> &RefCell<Selection>;
+}
+
+impl Selectable for ViewPane {
+    fn selection(&self) -> &RefCell<Selection> {
+        &self.selection
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct Position {
@@ -19,9 +33,8 @@ struct Position {
 
 struct Part {
     text: String,
-    /// Links shown as short labels: each label's range and its address,
-    /// which a copy gives back in place of the label.
-    links: Vec<(Range<usize>, String)>,
+    /// All clickable labels; only links marked `copy_url` expand on copy.
+    links: Vec<Link>,
     layout: TextLayout,
     bounds: Option<Bounds<Pixels>>,
 }
@@ -60,7 +73,7 @@ impl Selection {
         self.dragging = false;
     }
 
-    fn register(&mut self, text: &str, links: &[(Range<usize>, String)]) -> usize {
+    fn register(&mut self, text: &str, links: &[Link]) -> usize {
         let index = self.next;
         self.next += 1;
         if self.parts.get(index).is_none_or(|part| part.text != text) {
@@ -111,8 +124,8 @@ impl Selection {
         self.parts[position.part]
             .links
             .iter()
-            .find(|(range, _)| range.contains(&position.byte))
-            .map(|(_, url)| url.clone())
+            .find(|link| link.range.contains(&position.byte))
+            .map(|link| link.url.clone())
     }
 
     /// TextLayout reports UTF-8 byte offsets. Snap to a whole grapheme before
@@ -139,7 +152,17 @@ impl Selection {
         if !shift || self.anchor.is_none() {
             self.anchor = Some(position);
         }
-        if clicks == 2 {
+        if clicks >= 3 {
+            // A triple click selects the whole paragraph, item or cell.
+            self.anchor = Some(Position {
+                byte: 0,
+                ..position
+            });
+            self.cursor = Some(Position {
+                byte: self.parts[position.part].text.len(),
+                ..position
+            });
+        } else if clicks == 2 {
             let text = &self.parts[position.part].text;
             if let Some((start, word)) = text
                 .split_word_bound_indices()
@@ -158,30 +181,23 @@ impl Selection {
         self.dragging = true;
     }
 
+    /// Press at `point` beside the text, such as between paragraphs or on a
+    /// list marker: as on the nearest text.
+    fn press_near(&mut self, point: Point<Pixels>, shift: bool, clicks: usize) -> bool {
+        let Some(index) = self.nearest(point) else {
+            return false;
+        };
+        self.press(self.hit(index, point), shift, clicks);
+        true
+    }
+
     fn motion(&mut self, point: Point<Pixels>) -> bool {
         if !self.dragging {
             return false;
         }
-        // Choose the nearest rendered block, so dragging can cross paragraphs,
-        // headings and code blocks without losing the original anchor.
-        let index = self
-            .parts
-            .iter()
-            .enumerate()
-            .filter_map(|(index, part)| {
-                let bounds = part.bounds?;
-                let distance = if point.y < bounds.top() {
-                    bounds.top() - point.y
-                } else if point.y > bounds.bottom() {
-                    point.y - bounds.bottom()
-                } else {
-                    gpui::px(0.)
-                };
-                Some((index, distance))
-            })
-            .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
-            .map(|(index, _)| index);
-        let Some(index) = index else { return false };
+        let Some(index) = self.nearest(point) else {
+            return false;
+        };
         let cursor = self.hit(index, point);
         if self.cursor == Some(cursor) {
             return false;
@@ -190,7 +206,35 @@ impl Selection {
         true
     }
 
-    pub fn key(&mut self, key: &gpui::Keystroke, cx: &mut Context<ViewPane>) -> bool {
+    /// The nearest rendered block, so dragging can cross paragraphs, headings
+    /// and code blocks without losing the original anchor.
+    fn nearest(&self, point: Point<Pixels>) -> Option<usize> {
+        self.parts
+            .iter()
+            .enumerate()
+            .filter_map(|(index, part)| {
+                let bounds = part.bounds?;
+                let dy = if point.y < bounds.top() {
+                    bounds.top() - point.y
+                } else if point.y > bounds.bottom() {
+                    point.y - bounds.bottom()
+                } else {
+                    gpui::px(0.)
+                };
+                let dx = if point.x < bounds.left() {
+                    bounds.left() - point.x
+                } else if point.x > bounds.right() {
+                    point.x - bounds.right()
+                } else {
+                    gpui::px(0.)
+                };
+                Some((index, f32::from(dx).powi(2) + f32::from(dy).powi(2)))
+            })
+            .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
+            .map(|(index, _)| index)
+    }
+
+    pub fn key<V: 'static>(&mut self, key: &gpui::Keystroke, cx: &mut Context<V>) -> bool {
         let mods = key.modifiers;
         let command = if cfg!(target_os = "macos") {
             mods.platform && !mods.control
@@ -202,32 +246,49 @@ impl Selection {
         }
         match key.key.as_str() {
             "a" => {
-                self.anchor = Some(Position { part: 0, byte: 0 });
-                let last = self.parts.len() - 1;
-                self.cursor = Some(Position {
-                    part: last,
-                    byte: self.parts[last].text.len(),
-                });
+                self.select_all();
                 cx.notify();
             }
-            "c" => {
-                let text = self.selected_text();
-                if !text.is_empty() {
-                    cx.write_to_clipboard(ClipboardItem::new_string(text));
-                }
-            }
+            "c" => self.copy(cx),
             _ => return false,
         }
         true
     }
+
+    /// Select every block shown.
+    pub fn select_all(&mut self) {
+        let Some(last) = self.parts.len().checked_sub(1) else {
+            return;
+        };
+        self.anchor = Some(Position { part: 0, byte: 0 });
+        self.cursor = Some(Position {
+            part: last,
+            byte: self.parts[last].text.len(),
+        });
+    }
+
+    /// Put the selected text on the clipboard, if any is selected.
+    pub fn copy(&self, cx: &mut gpui::App) {
+        let text = self.selected_text();
+        if !text.is_empty() {
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+        }
+    }
 }
 
-/// The text of `range` in `part`, with each link label it touches given
-/// back as the link's address.
+/// The selected text, expanding abbreviated addresses and retaining authored labels.
 fn copied(part: &Part, range: Range<usize>) -> String {
     let mut text = String::new();
     let mut at = range.start;
-    for (label, url) in &part.links {
+    for Link {
+        range: label,
+        url,
+        copy_url,
+    } in &part.links
+    {
+        if !copy_url {
+            continue;
+        }
         if label.end <= range.start || label.start >= range.end {
             continue;
         }
@@ -243,67 +304,55 @@ fn copied(part: &Part, range: Range<usize>) -> String {
     text
 }
 
-/// One block with the existing typography and inline-code styling. The caller
+/// One block with the existing typography and its inline styles. The caller
 /// supplies its outer styles; selection adds no field chrome or editing.
-pub(super) fn text(
-    pane: &ViewPane,
+pub(super) fn text<V: Selectable>(
+    view: &V,
     text: &str,
-    code: &[Range<usize>],
-    cx: &mut Context<ViewPane>,
+    marks: &[(Range<usize>, Mark)],
+    cx: &mut Context<V>,
 ) -> gpui::Stateful<gpui::Div> {
-    linked(pane, text, code, &[], cx)
+    linked(view, text, marks, &[], cx)
 }
 
 /// [`text`] with links: each label in `links` is drawn in the accent and
 /// opens its address when clicked.
-pub(super) fn linked(
-    pane: &ViewPane,
+pub(super) fn linked<V: Selectable>(
+    view: &V,
     text: &str,
-    code: &[Range<usize>],
-    links: &[(Range<usize>, String)],
-    cx: &mut Context<ViewPane>,
+    marks: &[(Range<usize>, Mark)],
+    links: &[Link],
+    cx: &mut Context<V>,
 ) -> gpui::Stateful<gpui::Div> {
-    let index = pane.selection.borrow_mut().register(text, links);
-    let selected = pane.selection.borrow().range(index);
+    let index = view.selection().borrow_mut().register(text, links);
+    let selected = view.selection().borrow().range(index);
     let c = colors();
-    let mut boundaries = vec![0, text.len(), selected.start, selected.end];
-    for range in code.iter().chain(links.iter().map(|(range, _)| range)) {
-        boundaries.extend([range.start, range.end]);
-    }
-    boundaries.sort_unstable();
-    boundaries.dedup();
-    // Inline ranges arrive in display order and never overlap. Advance once
-    // across them instead of rescanning the document for every boundary.
-    let mut code = code.iter().peekable();
-    let highlights = boundaries.windows(2).map(|span| {
-        let range = span[0]..span[1];
-        while code.peek().is_some_and(|code| code.end <= range.start) {
-            code.next();
-        }
-        let style = if selected.contains(&range.start) {
-            HighlightStyle {
-                color: Some(c.on_accent.into()),
-                background_color: Some(c.accent.into()),
-                ..Default::default()
+    let highlights = highlight_spans(text.len(), marks, links, selected)
+        .into_iter()
+        .map(|span| {
+            let mut style = HighlightStyle::default();
+            for (mark, active) in MARKS.into_iter().zip(span.marks) {
+                if active {
+                    mark.apply(&mut style);
+                }
             }
-        } else if links.iter().any(|(link, _)| link.contains(&range.start)) {
-            HighlightStyle {
-                color: Some(c.accent_text.into()),
-                ..Default::default()
+            if span.linked {
+                style.color = Some(c.accent_text.into());
             }
-        } else if code.peek().is_some_and(|code| code.contains(&range.start)) {
-            HighlightStyle {
-                color: Some(c.code.into()),
-                background_color: Some(c.selected.into()),
-                ..Default::default()
+            if span.selected {
+                // Selected text keeps its own colour over a translucent accent.
+                style.background_color = Some(
+                    gpui::Rgba {
+                        a: 0.35,
+                        ..c.accent
+                    }
+                    .into(),
+                );
             }
-        } else {
-            HighlightStyle::default()
-        };
-        (range, style)
-    });
+            (span.range, style)
+        });
     let styled = StyledText::new(text.to_owned()).with_highlights(highlights);
-    pane.selection.borrow_mut().parts[index].layout = styled.layout().clone();
+    view.selection().borrow_mut().parts[index].layout = styled.layout().clone();
     let entity = cx.entity().downgrade();
     div()
         .id(("selectable-text", index))
@@ -311,8 +360,8 @@ pub(super) fn linked(
         .cursor_text()
         .on_mouse_down(
             gpui::MouseButton::Left,
-            cx.listener(move |pane, event: &gpui::MouseDownEvent, _, cx| {
-                let mut selection = pane.selection.borrow_mut();
+            cx.listener(move |view: &mut V, event: &gpui::MouseDownEvent, _, cx| {
+                let mut selection = view.selection().borrow_mut();
                 let at = selection.hit(index, event.position);
                 selection.pressed_link = (event.click_count == 1 && !event.modifiers.shift)
                     .then(|| selection.link_at(at))
@@ -327,8 +376,8 @@ pub(super) fn linked(
             canvas(
                 |_, _, _| (),
                 move |bounds, (), _, cx| {
-                    let _ = entity.update(cx, |pane, _| {
-                        if let Some(part) = pane.selection.borrow_mut().parts.get_mut(index) {
+                    let _ = entity.update(cx, |view, _| {
+                        if let Some(part) = view.selection().borrow_mut().parts.get_mut(index) {
                             part.bounds = Some(bounds);
                         }
                     });
@@ -339,8 +388,92 @@ pub(super) fn linked(
         )
 }
 
+const MARKS: [Mark; 4] = [Mark::Code, Mark::Strong, Mark::Emphasis, Mark::Strike];
+
+struct HighlightSpan {
+    range: Range<usize>,
+    marks: [bool; 4],
+    linked: bool,
+    selected: bool,
+}
+
+/// Sweep each boundary once after sorting. Counts preserve nested marks of the
+/// same kind without rescanning all marks and links for every resulting span.
+fn highlight_spans(
+    len: usize,
+    marks: &[(Range<usize>, Mark)],
+    links: &[Link],
+    selected: Range<usize>,
+) -> Vec<HighlightSpan> {
+    let mut events = Vec::with_capacity(2 * (marks.len() + links.len() + 1));
+    let mut add = |range: &Range<usize>, kind: usize| {
+        if !range.is_empty() {
+            events.push((range.start, kind, true));
+            events.push((range.end, kind, false));
+        }
+    };
+    for (range, mark) in marks {
+        let kind = match mark {
+            Mark::Code => 0,
+            Mark::Strong => 1,
+            Mark::Emphasis => 2,
+            Mark::Strike => 3,
+        };
+        add(range, kind);
+    }
+    for Link { range, .. } in links {
+        add(range, 4);
+    }
+    add(&selected, 5);
+    events.sort_unstable();
+    let mut active = [0usize; 6];
+    let mut at = 0;
+    let mut spans = Vec::with_capacity(events.len() + 1);
+    let mut emit = |range, active: &[usize; 6]| {
+        spans.push(HighlightSpan {
+            range,
+            marks: std::array::from_fn(|i| active[i] > 0),
+            linked: active[4] > 0,
+            selected: active[5] > 0,
+        });
+    };
+    for (position, kind, start) in events {
+        if position > at {
+            emit(at..position, &active);
+            at = position;
+        }
+        if start {
+            active[kind] += 1;
+        } else {
+            active[kind] -= 1;
+        }
+    }
+    if at < len {
+        emit(at..len, &active);
+    }
+    spans
+}
+
+/// Start a selection from a press anywhere in `element` that is not on text,
+/// such as the space between paragraphs or a list marker.
+pub(super) fn area<V: Selectable>(element: gpui::Div, cx: &mut Context<V>) -> gpui::Div {
+    element.on_mouse_down(
+        gpui::MouseButton::Left,
+        cx.listener(|view: &mut V, event: &gpui::MouseDownEvent, _, cx| {
+            let pressed = view.selection().borrow_mut().press_near(
+                event.position,
+                event.modifiers.shift,
+                event.click_count,
+            );
+            if pressed {
+                cx.notify();
+            }
+        }),
+    )
+}
+
 /// Keep drag selection and release working beyond the initial text block.
-pub(super) fn events(cx: &Context<ViewPane>) -> impl IntoElement {
+pub(super) fn events<V: Selectable>(cx: &Context<V>) -> impl IntoElement {
     let entity = cx.entity().downgrade();
     canvas(
         |_, _, _| (),
@@ -348,8 +481,8 @@ pub(super) fn events(cx: &Context<ViewPane>) -> impl IntoElement {
             let moving = entity.clone();
             window.on_mouse_event(move |event: &gpui::MouseMoveEvent, phase, _, cx| {
                 if phase == gpui::DispatchPhase::Capture {
-                    let _ = moving.update(cx, |pane, cx| {
-                        let mut selection = pane.selection.borrow_mut();
+                    let _ = moving.update(cx, |view, cx| {
+                        let mut selection = view.selection().borrow_mut();
                         if !event.dragging() {
                             selection.dragging = false;
                         } else if selection.motion(event.position) {
@@ -362,8 +495,8 @@ pub(super) fn events(cx: &Context<ViewPane>) -> impl IntoElement {
             window.on_mouse_event(move |event: &gpui::MouseUpEvent, phase, _, cx| {
                 if phase == gpui::DispatchPhase::Capture && event.button == gpui::MouseButton::Left
                 {
-                    let _ = released.update(cx, |pane, cx| {
-                        let mut selection = pane.selection.borrow_mut();
+                    let _ = released.update(cx, |view, cx| {
+                        let mut selection = view.selection().borrow_mut();
                         selection.dragging = false;
                         // A press on a link that selected nothing opens it.
                         if let Some(url) = selection.pressed_link.take()
@@ -385,6 +518,89 @@ mod tests {
     use super::*;
 
     #[test]
+    fn highlight_sweep_preserves_nested_marks_links_and_selection() {
+        let spans = highlight_spans(
+            10,
+            &[
+                (0..8, Mark::Strong),
+                (2..4, Mark::Strong),
+                (3..6, Mark::Emphasis),
+            ],
+            &[Link {
+                range: 1..7,
+                url: "https://example.com".into(),
+                copy_url: false,
+            }],
+            4..5,
+        );
+        for byte in 0..10 {
+            let span = spans
+                .iter()
+                .find(|span| span.range.contains(&byte))
+                .unwrap();
+            assert_eq!(span.marks, [false, byte < 8, (3..6).contains(&byte), false]);
+            assert_eq!(span.linked, (1..7).contains(&byte));
+            assert_eq!(span.selected, byte == 4);
+        }
+        assert!(
+            spans
+                .windows(2)
+                .all(|pair| pair[0].range.end == pair[1].range.start)
+        );
+    }
+
+    #[test]
+    fn highlight_sweep_handles_adjacent_and_empty_ranges() {
+        let spans = highlight_spans(
+            5,
+            &[(0..2, Mark::Code), (2..4, Mark::Code), (1..1, Mark::Strong)],
+            &[],
+            0..0,
+        );
+        assert_eq!(
+            spans.iter().map(|s| s.range.clone()).collect::<Vec<_>>(),
+            [0..2, 2..4, 4..5]
+        );
+        assert!(
+            spans[..2]
+                .iter()
+                .all(|s| s.marks == [true, false, false, false])
+        );
+        assert_eq!(spans[2].marks, [false; 4]);
+        assert!(highlight_spans(0, &[], &[], 0..0).is_empty());
+    }
+
+    #[test]
+    fn highlight_sweep_handles_a_large_formatted_paragraph() {
+        // A 128 KiB Markdown paragraph of short inline-code runs fits within
+        // the supported skill preview. Its rendered text has this many spans.
+        let count = 32_768;
+        let marks: Vec<_> = (0..count).map(|i| (2 * i..2 * i + 1, Mark::Code)).collect();
+        let spans = highlight_spans(2 * count, &marks, &[], 0..0);
+        assert_eq!(spans.len(), 2 * count);
+        for (i, span) in spans.iter().enumerate() {
+            assert_eq!(span.range, i..i + 1);
+            assert_eq!(span.marks, [i % 2 == 0, false, false, false]);
+        }
+    }
+
+    #[test]
+    fn table_selection_follows_the_column_under_the_pointer() {
+        use gpui::{point, px, size};
+        let mut selection = Selection::default();
+        for (column, text) in ["First", "Second", "Third"].into_iter().enumerate() {
+            let index = selection.register(text, &[]);
+            selection.parts[index].bounds = Some(Bounds::new(
+                point(px(column as f32 * 100.), px(0.)),
+                size(px(90.), px(20.)),
+            ));
+        }
+        assert_eq!(selection.nearest(point(px(140.), px(10.))), Some(1));
+        assert_eq!(selection.nearest(point(px(240.), px(10.))), Some(2));
+        assert_eq!(selection.nearest(point(px(198.), px(10.))), Some(2));
+    }
+
+    #[test]
     fn selection_copies_across_blocks_in_both_directions_and_resets_on_new_text() {
         let mut selection = Selection::default();
         selection.register("First café", &[]);
@@ -404,11 +620,46 @@ mod tests {
     }
 
     #[test]
+    fn authored_link_labels_copy_as_text_and_remain_clickable() {
+        use super::super::markdown::{Block, parse_authored};
+        let blocks = parse_authored("see [the guide](https://x.com/g), then https://x.com/a");
+        let Block::Paragraph(inline) = &blocks[0] else {
+            panic!()
+        };
+        let mut selection = Selection::default();
+        selection.register(&inline.text, &inline.links);
+        selection.select_all();
+        assert_eq!(
+            selection.selected_text(),
+            "see the guide, then https://x.com/a"
+        );
+        selection.anchor = Some(Position { part: 0, byte: 8 });
+        selection.cursor = Some(Position { part: 0, byte: 13 });
+        assert_eq!(selection.selected_text(), "guide");
+        assert_eq!(
+            selection.link_at(Position { part: 0, byte: 8 }).as_deref(),
+            Some("https://x.com/g")
+        );
+        assert!(
+            highlight_spans(inline.text.len(), &[], &inline.links, 0..0)
+                .iter()
+                .any(|span| span.range.contains(&8) && span.linked)
+        );
+    }
+
+    #[test]
     fn a_copied_link_label_gives_back_its_address() {
         let mut selection = Selection::default();
         let text = "See x.com ↗ now";
         let label = 4.."See x.com ↗".len();
-        selection.register(text, &[(label, "https://x.com/a".into())]);
+        selection.register(
+            text,
+            &[Link {
+                range: label,
+                url: "https://x.com/a".into(),
+                copy_url: true,
+            }],
+        );
         selection.anchor = Some(Position { part: 0, byte: 0 });
         selection.cursor = Some(Position {
             part: 0,
@@ -425,7 +676,7 @@ mod tests {
     }
 
     #[test]
-    fn double_click_selects_a_word_and_shift_click_extends_it() {
+    fn double_click_selects_a_word_shift_click_extends_and_triple_click_takes_the_block() {
         let mut selection = Selection::default();
         selection.register("Read café here", &[]);
         selection.press(Position { part: 0, byte: 6 }, false, 2);
@@ -439,6 +690,8 @@ mod tests {
             1,
         );
         assert_eq!(selection.selected_text(), "café here");
+        selection.press(Position { part: 0, byte: 6 }, false, 3);
+        assert_eq!(selection.selected_text(), "Read café here");
     }
 
     #[test]

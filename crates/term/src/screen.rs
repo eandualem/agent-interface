@@ -27,6 +27,10 @@ pub struct Screen {
     pub(crate) cursor_in_viewport: bool,
     wrapped: Vec<bool>,
     pub(crate) mouse_input: bool,
+    /// The history row shown in the first row, counted from the oldest
+    /// retained row.
+    pub(crate) top: usize,
+    pub(crate) history_epoch: u64,
 }
 
 /// One cell of a [`Screen`]. Its text is read through [`Screen::cell`].
@@ -164,6 +168,19 @@ impl Screen {
         self.cursor_in_viewport
     }
 
+    /// The history row shown in the first row, counted from the oldest
+    /// retained row. A row keeps its number as output arrives, so a
+    /// selection can follow it while the screen scrolls.
+    pub fn top(&self) -> usize {
+        self.top
+    }
+
+    /// Changes when retained row numbers are invalidated by history loss or
+    /// switching screen buffers.
+    pub fn history_epoch(&self) -> u64 {
+        self.history_epoch
+    }
+
     /// Whether the displayed live program owns unmodified mouse clicks.
     pub fn mouse_input(&self) -> bool {
         self.mouse_input
@@ -199,6 +216,7 @@ impl Screen {
         self.text.clear();
         self.clear_cursor();
         self.mouse_input = false;
+        self.top = 0;
         self.wrapped.clear();
         self.wrapped.resize(usize::from(rows), false);
     }

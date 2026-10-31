@@ -26,7 +26,8 @@ SCALE = int(os.environ.get("ONBOARDING_TEST_SCALE", "100"))
 assert SCALE in (100, 150)
 OUTPUT = ROOT / "target/linux-desktop-smoke/onboarding" / str(SCALE)
 OUTPUT.mkdir(parents=True, exist_ok=True)
-PALETTE = tomllib.loads((ROOT / "crates/app/assets/design/tokens.toml").read_text())["color"]["dark"]
+TOKENS = tomllib.loads((ROOT / "crates/app/assets/design/tokens.toml").read_text())
+PALETTE = TOKENS["color"]["dark"]
 accent = tuple(bytes.fromhex(PALETTE["accent"][1:]))
 surface = tuple(bytes.fromhex(PALETTE["surface"][1:]))
 DISABLED_ACCENT = "#" + "".join(f"{round((a + s) / 2):02x}" for a, s in zip(accent, surface))
@@ -216,6 +217,21 @@ print(json.dumps(e));sys.exit(code)
                 (OUTPUT / f"{name}.txt").write_text(value)
                 return value
 
+            def refresh_tools():
+                # The refresh control is an icon at the right of the selected
+                # tool's note. Anchor its row to rendered text and its right
+                # inset to the same design tokens used by the native layout.
+                note = wait_for(lambda: next((w for w in words() if w["text"] == "Uses"), None),
+                                "selected tool note")
+                geometry = dict(line.split("=", 1) for line in
+                                command("xdotool", "getwindowgeometry", "--shell", window).splitlines())
+                inset = (TOKENS["space"]["s24"] + TOKENS["size"]["icon_button"] / 2) * SCALE / 100
+                command("xdotool", "mousemove", "--window", window,
+                        str(round(int(geometry["WIDTH"]) - inset)),
+                        str(int(note["top"]) + int(note["height"]) // 2))
+                time.sleep(0.2)
+                command("xdotool", "click", "1")
+
             def enter_first_agent():
                 click("Continue")
                 wait_for(lambda: "Copy" in text(), "Agent tools")
@@ -223,24 +239,34 @@ print(json.dumps(e));sys.exit(code)
 
             launch()
             enter_first_agent()
-            wait_for(lambda: "Choose an agent tool above" in text(), "explicit selection")
+            wait_for(lambda: "Choose an agent tool" in text(), "explicit selection")
             initial = capture("unselected")
             assert "Old OpenCode fixture" not in initial and "Plain shell" not in initial
             assert not requests()
+            click("terminals")
+            wait_for(lambda: "Open Agent Interface" in text(), "Shortcuts after skipping setup")
+            capture("skipped-setup")
+            click("Back")
+            wait_for(lambda: "Choose an agent tool" in text(), "agent choice after returning from skip")
+            capture("returned-from-skip")
+            assert not requests()
             click("OpenCode")
             wait_for(lambda: "Old OpenCode fixture" in text(), "selected tool diagnosis")
-            click("Start", last=True)  # The incompatible choice must not submit anything.
+            click("Choose", last=True)  # The incompatible choice must not submit anything.
             assert not requests()
             click("Codex")
             wait_for(lambda: "Start with Codex" in text(), "Codex choice")
             selected = capture("codex-selected")
             assert "Old OpenCode fixture" not in selected and "Plain shell" not in selected
             discoveries = len((root / "discovery.jsonl").read_text().splitlines())
-            click("again")
+            refresh_tools()
             wait_for(lambda: len((root / "discovery.jsonl").read_text().splitlines()) > discoveries, "discovery refresh")
             wait_for(lambda: "Start with Codex" in text(), "choice survives refresh")
             click("Start", last=True)
-            wait_for(lambda: "Codex fixture needs sign-in" in text(), "Codex-only failure")
+            # Sparse OCR can split the hyphenated suffix at the smaller native
+            # text size. The unique message prefix identifies the failure;
+            # the recorded protocol request below verifies the selected tool.
+            wait_for(lambda: "Codex fixture needs" in text(), "Codex-only failure")
             first = requests()[0]
             assert first["agent"]["runtime"] == "codex" and first["hooks"] == ["codex"]
             capture("codex-failed")
@@ -250,7 +276,7 @@ print(json.dumps(e));sys.exit(code)
             enter_first_agent()
             wait_for(lambda: "Change agent tool" in text(), "saved request recovery after relaunch")
             click("Change")
-            wait_for(lambda: "Choose an agent tool above" in text(), "cancelled request unlocks choice")
+            wait_for(lambda: "Choose an agent tool" in text(), "cancelled request unlocks choice")
             cancelled = requests()[1]
             assert cancelled["action"] == "cancel_first_agent"
             assert cancelled["request_id"] == first["request_id"]
@@ -258,7 +284,7 @@ print(json.dumps(e));sys.exit(code)
             click("Claude")
             wait_for(lambda: "Start with Claude Code" in text(), "replacement tool")
             discoveries = len((root / "discovery.jsonl").read_text().splitlines())
-            click("again")
+            refresh_tools()
             wait_for(lambda: len((root / "discovery.jsonl").read_text().splitlines()) > discoveries, "replacement discovery refresh")
             wait_for(lambda: "Start with Claude Code" in text(), "non-default choice survives refresh")
             click("Start", last=True)
@@ -275,7 +301,8 @@ print(json.dumps(e));sys.exit(code)
             capture("shortcuts")
             (OUTPUT / "requests.json").write_text(json.dumps(requests(), indent=2) + "\n")
             (OUTPUT / "result.json").write_text(json.dumps(dict(scale=SCALE, passed=True,
-                checks=["explicit choice", "selected diagnosis only", "incompatible start blocked",
+                checks=["explicit choice", "start after skipping and returning",
+                        "selected diagnosis only", "incompatible start blocked",
                         "refresh preserves choice", "Codex request excludes OpenCode",
                         "failure survives relaunch", "cancellation before replacement",
                         "new runtime and request ID", "choices preserved", "continue after success"]), indent=2) + "\n")

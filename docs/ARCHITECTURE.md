@@ -298,6 +298,14 @@ Native document readers share selection state across styled text blocks and sour
 text. GPUI text layouts map pointer positions to UTF-8 offsets, snapped to grapheme
 boundaries. Copy uses the displayed text; selection resets when that text changes.
 Native Copy and Select All menu actions follow the focused field or reader.
+Native Markdown copying preserves authored link labels and restores abbreviated
+bare addresses to their full URLs. Native links open only HTTP and HTTPS destinations; other schemes and
+document anchors remain plain text.
+Inline highlights use a sorted boundary sweep with active counts, preserving
+nested formatting without rescanning every mark for each span.
+Markdown nesting beyond 32 containers falls back to the complete source text,
+bounding parsing, element-tree rendering and destruction. URL recognition scans
+forward and closes each link by replacing only entries within its own label.
 WebKit handles those selectors through the macOS responder chain, without a
 clipboard JavaScript bridge.
 
@@ -517,6 +525,14 @@ build-time advisory exception are described below.
   dependencies also used by artifact metadata, publication IDs and atomic
   staging. The macOS adapter also uses `tempfile` 3.27.0 (exact pin) for private
   screenshot-drop staging. Each is MIT OR Apache-2.0.
+- **`pulldown-cmark` 0.13.6:** MIT-licensed CommonMark parser, pinned exactly
+  with default features off, behind the one Markdown reader that skills,
+  policies, reports, answers and conversation messages use (`views/markdown.rs`).
+  Authored messages treat a leading `---` as a rule rather than front matter.
+  It adds tables,
+  strikethrough and task lists; the app draws the parsed blocks natively.
+  Its transitive `unicase` 2.10.0 dependency (MIT OR Apache-2.0) supplies
+  case-insensitive matching for Markdown reference labels.
 - **`alacritty_terminal` and `rio-vt`:** development-only comparison engines.
   Apache-2.0 and MIT respectively.
 - **`tracing` 0.1.44:** MIT-licensed structured diagnostic events in app, tmux
@@ -699,8 +715,10 @@ No spreadsheet widget or formula engine is added.
 authenticated local transport as Sheets, on a worker, every 20 seconds while
 the Current plans section is open. It is read-only: it publishes, approves and
 changes nothing. A missing endpoint is reported as unsupported, and a failed
-reread keeps the plans last read. Each read also takes the agents' runtimes for
-their badges. The section draws through the pane, like the record readers, so
+reread keeps the plans last read. Each refresh also reads the agents' runtimes
+and working states; failure of either read preserves the last complete snapshot
+and shows the read-error notice in both the list and opened plan.
+The section draws through the pane, like the record readers, so
 an opened plan's text can be selected and copied. Its selected step uses the shared
 conversation panel, addressed by the plan author's stable identity. Drafts are
 kept by provider, author, observed revision and step; changing steps or refreshing

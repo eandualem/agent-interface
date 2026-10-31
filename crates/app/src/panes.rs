@@ -21,6 +21,7 @@ use agent_interface_term::{Screen, Terminal, input::Input};
 use agent_interface_tmux::control::{Decoder, Message, PaneId};
 use agent_interface_tmux::recovery::{Recovery, Reply, Snapshot, Step};
 use agent_interface_tmux::{command, layout};
+use gpui::Rgba;
 
 /// The most pane output the reader queues for the worker before it stops
 /// reading, so a slow worker holds back tmux instead of growing a queue.
@@ -88,7 +89,12 @@ struct State {
     gone: Vec<PaneId>,
     /// Last size queued for this client, retained when its view is hidden.
     declared_size: Option<(u16, u16)>,
+    /// The default text and background colours tmux reports to each pane.
+    colors: Option<Colors>,
 }
+
+/// Default text and background colours, as 8-bit RGB.
+type Colors = ([u8; 3], [u8; 3]);
 
 enum Event {
     Output(PaneId, Vec<u8>),
@@ -96,6 +102,7 @@ enum Event {
     Layout(layout::Change),
     Geometry,
     Encode(InputRequest),
+    Read(ReadRequest),
 }
 
 impl Event {
@@ -106,6 +113,7 @@ impl Event {
             Self::Layout(change) => change.panes.len() * std::mem::size_of::<PaneLayout>(),
             Self::Geometry => 0,
             Self::Encode(request) => request.input.size() + std::mem::size_of::<InputRequest>(),
+            Self::Read(_) => 0,
         }
     }
 }
@@ -119,6 +127,13 @@ struct InputRequest {
     _reservation: Option<Arc<crate::view::InputReservation>>,
 }
 
+/// History rows of a pane, read in order with its output.
+struct ReadRequest {
+    pane: PaneId,
+    rows: std::ops::Range<usize>,
+    reply: mpsc::Sender<Result<Screen, String>>,
+}
+
 #[derive(Clone, Copy)]
 enum ReplyOwner {
     Input(PaneId),
@@ -126,6 +141,7 @@ enum ReplyOwner {
     GeometrySubscription,
     SourceSubscription,
     Size,
+    Colors,
 }
 
 struct Control {
@@ -271,6 +287,8 @@ struct WindowState {
     settle_at: Option<Instant>,
     generation: u64,
     inputs: Vec<InputRequest>,
+    /// The colours last reported, and the panes they were reported to.
+    reported: Option<(Colors, Vec<PaneId>)>,
 }
 
 impl WindowState {
@@ -330,6 +348,31 @@ impl WindowState {
             }
             false
         });
+    }
+
+    /// The commands that report `colors` to each visible pane that has not
+    /// had them yet. tmux answers a program's colour query (OSC 10 and 11)
+    /// with them; a control client otherwise leaves the answer black.
+    fn unreported_colors(&mut self, colors: Colors) -> Vec<String> {
+        let (current, reported) = self.reported.get_or_insert_with(|| (colors, Vec::new()));
+        if *current != colors {
+            *current = colors;
+            reported.clear();
+        }
+        let mut lines = Vec::new();
+        for pane in &self.layout.panes {
+            if reported.contains(&pane.id) {
+                continue;
+            }
+            reported.push(pane.id);
+            for (code, [r, g, b]) in [(10, colors.0), (11, colors.1)] {
+                lines.push(format!(
+                    "refresh-client -r \"%{}:\\033]{code};rgb:{r:02x}{r:02x}/{g:02x}{g:02x}/{b:02x}{b:02x}\\033\\\\\"\n",
+                    pane.id.0
+                ));
+            }
+        }
+        lines
     }
 
     fn ready(&self) -> bool {
@@ -657,6 +700,25 @@ impl Panes {
         self.send_input(pane, &bytes)
     }
 
+    /// Reads `rows` of `pane`'s history, numbered as [`Screen::top`] numbers
+    /// them, after the output already received. Call off the UI thread.
+    pub fn read_rows(&self, pane: PaneId, rows: std::ops::Range<usize>) -> io::Result<Screen> {
+        let (reply, read) = mpsc::channel();
+        {
+            let mut state = self.shared.lock();
+            if state.closed || state.cancelled || state.finished || state.failure.is_some() {
+                return Err(io::Error::other("Terminal connection is unavailable"));
+            }
+            state
+                .queue
+                .push_back(Event::Read(ReadRequest { pane, rows, reply }));
+        }
+        self.shared.changed.notify_all();
+        read.recv_timeout(crate::seed::TIMEOUT)
+            .map_err(|error| io::Error::other(format!("Waiting for terminal rows: {error}")))?
+            .map_err(io::Error::other)
+    }
+
     /// Declares this client's size, as an ordinary tmux client in a terminal
     /// of `cols` by `rows` would. tmux then sizes the session's windows by its
     /// `window-size` option, counting this client from now on.
@@ -672,6 +734,17 @@ impl Panes {
         )?;
         state.declared_size = Some(size);
         Ok(())
+    }
+
+    /// Reports `foreground` and `background` to every pane, now and as panes
+    /// appear, as the default colours a program asking its terminal gets.
+    pub fn set_colors(&self, foreground: Rgba, background: Rgba) {
+        let rgb = |color: Rgba| {
+            [color.r, color.g, color.b]
+                .map(|channel| (channel.clamp(0.0, 1.0) * 255.0).round() as u8)
+        };
+        self.shared.lock().colors = Some((rgb(foreground), rgb(background)));
+        self.shared.changed.notify_all();
     }
 
     /// Keep the client connected without contributing to tmux window sizing.
@@ -944,6 +1017,7 @@ fn work(
         settle_at: None,
         generation: 0,
         inputs: Vec::new(),
+        reported: None,
     };
     let _ = ready.send(Ok(()));
     let mut recovering: Option<(Recovery, Instant, u64)> = None;
@@ -958,6 +1032,17 @@ fn work(
             drop(state);
             window.encode_ready_inputs(&mut changed);
             state = shared.lock();
+        }
+        if let Some(colors) = state.colors {
+            let lines = window.unreported_colors(colors);
+            if !lines.is_empty() {
+                drop(state);
+                for line in lines {
+                    // A failed write is reported by the writer.
+                    let _ = control.send(&line, ReplyOwner::Colors);
+                }
+                state = shared.lock();
+            }
         }
         if capture_unavailable && state.closed && state.queue.is_empty() && !window.ready() {
             // The new geometry cannot be verified without another capture.
@@ -1163,6 +1248,18 @@ fn apply(
     let terminals = &mut window.terminals;
     match event {
         Event::Encode(request) => window.inputs.push(request),
+        Event::Read(request) => {
+            let mut screen = Screen::default();
+            let result = match terminals.iter_mut().find(|(id, _)| *id == request.pane) {
+                Some((_, terminal)) => terminal
+                    .terminal
+                    .read_rows(request.rows, &mut screen)
+                    .map(|()| screen)
+                    .map_err(|error| error.to_string()),
+                None => Err("The pane is no longer visible".into()),
+            };
+            let _ = request.reply.send(result);
+        }
         Event::Layout(change) => {
             if change.window == window.layout.window {
                 window.change_layout(change, scrollback)?;
@@ -1223,7 +1320,9 @@ fn apply(
                     }
                 }
                 // A rejected size leaves the window as it was; the view scales.
-                Some(ReplyOwner::Size) => {
+                // tmux before 3.5 rejects colour reports; programs then see
+                // its default answer.
+                Some(ReplyOwner::Size | ReplyOwner::Colors) => {
                     pending.pop_front();
                 }
                 Some(ReplyOwner::Recovery) => {
@@ -1253,6 +1352,9 @@ fn apply(
                                 .scrolled_row()
                                 .map_err(|e| e.to_string())?;
                             let mut restored = LivePane::restored(rebuilt.snapshot, scrollback)?;
+                            restored
+                                .terminal
+                                .invalidate_history_after(&terminal.terminal);
                             restored
                                 .terminal
                                 .inherit_pointer_gestures(&terminal.terminal);
@@ -1389,6 +1491,7 @@ mod tests {
             settle_at: None,
             generation: 0,
             inputs: vec![],
+            reported: None,
         };
         let mut spare = vec![];
         let screens = window.copy_screens([PaneId(1)], &mut spare).unwrap();
@@ -1784,6 +1887,54 @@ mod tests {
         // No later layout change may be needed to discover the added pane.
         wait_for_row(&panes, &woken, added, "NEW");
         assert_eq!(panes.failure(), None);
+    }
+
+    #[test]
+    fn programs_asking_for_the_background_get_the_reported_colour() {
+        let server = TmuxServer::start().unwrap();
+        let reports_colors = server
+            .run(&["list-commands"])
+            .unwrap()
+            .lines()
+            .find(|line| line.starts_with("refresh-client "))
+            .is_some_and(|line| line.contains("-r "));
+        let expected = if reports_colors {
+            "f7f7/f4f4/eeee"
+        } else {
+            // tmux 3.3/3.4 rejects reports and retains its default answer.
+            "0000/0000/0000"
+        };
+        let layout = layout(&server);
+        let pane = layout.panes[0].id;
+        let client = server
+            .control(&[
+                "attach-session",
+                "-f",
+                "no-output,ignore-size,new-layouts",
+                "-t",
+                TmuxServer::SESSION,
+            ])
+            .unwrap();
+        let (wake, woken) = mpsc::channel();
+        let panes = Panes::start(client, &layout, 100, move || {
+            let _ = wake.send(());
+        })
+        .unwrap();
+        panes.set_colors(gpui::rgb(0x111111), gpui::rgb(0xf7f4ee));
+        // Ask until the report has reached tmux, which otherwise answers black.
+        server
+            .run(&[
+                "respawn-pane",
+                "-k",
+                "-t",
+                TmuxServer::SESSION,
+                &format!(r"stty -echo -icanon min 0 time 2; i=0; while [ $i -lt 50 ]; do
+                    printf '\033]11;?\033\\'; r=$(dd bs=64 count=1 2>/dev/null | tr -d '\033\\')
+                    case $r in *{expected}*) printf 'BG %s' $r; exec sleep 60;; esac; i=$((i+1)); done
+                  printf NONE; exec sleep 60"),
+            ])
+            .unwrap();
+        wait_for_row(&panes, &woken, pane, &format!("BG ]11;rgb:{expected}"));
     }
 
     #[test]

@@ -2,6 +2,7 @@
 
 use std::ops::Range;
 
+use gpui::accesskit::{Node, Role, TextDirection, TextPosition, TextSelection};
 use gpui::{
     Bounds, ClipboardItem, Context, ElementInputHandler, EntityInputHandler, EventEmitter,
     FocusHandle, MouseButton, Pixels, Point, ShapedLine, Subscription, TextRun, UTF16Selection,
@@ -38,6 +39,22 @@ impl Text {
 
     fn bytes(&self, range: Range<usize>) -> Range<usize> {
         from_utf16(&self.value, range.start)..from_utf16(&self.value, range.end)
+    }
+
+    /// The text as one accessible run, with the selection's anchor and caret
+    /// as character indices into it, so dictation finds an editable field.
+    fn accessible_run(&self) -> (Node, usize, usize) {
+        let mut run = Node::new(Role::TextRun);
+        run.set_value(self.value.clone());
+        run.set_character_lengths(
+            self.value
+                .chars()
+                .map(|ch| ch.len_utf8() as u8)
+                .collect::<Vec<_>>(),
+        );
+        run.set_text_direction(TextDirection::LeftToRight);
+        let index = |byte: usize| self.value[..byte].chars().count();
+        (run, index(self.anchor), index(self.cursor))
     }
 
     fn replace(&mut self, range: Option<Range<usize>>, text: &str, marked: bool) -> Range<usize> {
@@ -664,6 +681,42 @@ impl Render for NameField {
                     .border_color(super::design::colors().accent)
             })
             .id("name-field")
+            // An editable text role with its value and caret, as the terminal
+            // has, so dictation tools recognise the field and paste into it.
+            .role(if feedback {
+                Role::MultilineTextInput
+            } else {
+                Role::TextInput
+            })
+            .aria_label(if feedback {
+                "Message"
+            } else if search {
+                "Filter"
+            } else {
+                "Name"
+            })
+            .a11y_synthetic_children({
+                let (run, anchor, caret) = self.text.accessible_run();
+                let read_only = self.read_only;
+                move |builder| {
+                    let id = builder.synthetic_node_id(0);
+                    builder.push_child(id, run);
+                    let parent = builder.parent_node();
+                    if read_only {
+                        parent.set_read_only();
+                    }
+                    parent.set_text_selection(TextSelection {
+                        anchor: TextPosition {
+                            node: id,
+                            character_index: anchor,
+                        },
+                        focus: TextPosition {
+                            node: id,
+                            character_index: caret,
+                        },
+                    });
+                }
+            })
             .on_click(cx.listener(|_, _, _, cx| cx.stop_propagation()))
             .track_focus(&self.focus)
             .cursor_text()
@@ -747,6 +800,20 @@ mod tests {
             text.value.chars().count(),
             agent_interface_roster::feedback::TEXT_LIMIT
         );
+    }
+
+    #[test]
+    fn the_accessible_run_reports_the_selection_in_characters() {
+        let text = Text {
+            value: "a😀\nb".into(),
+            anchor: 1,
+            cursor: 6,
+            ..Text::default()
+        };
+        let (run, anchor, caret) = text.accessible_run();
+        assert_eq!(run.value(), Some("a😀\nb"));
+        assert_eq!(run.character_lengths(), &[1, 4, 1, 1]);
+        assert_eq!((anchor, caret), (1, 3));
     }
 
     #[test]

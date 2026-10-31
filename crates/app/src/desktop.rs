@@ -2134,11 +2134,6 @@ impl Render for Browser {
                         views::ViewEvent::OpenBeside(view) => {
                             browser.open_beside(&leaf, view.clone(), window, cx)
                         }
-                        views::ViewEvent::ReturnFocus => {
-                            if let Some(focus) = &browser.navigation {
-                                window.focus(focus, cx);
-                            }
-                        }
                         views::ViewEvent::Focus => {
                             // Page IPC is asynchronous: a click notification can
                             // arrive after a native overlay has taken focus.
