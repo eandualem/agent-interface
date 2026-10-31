@@ -11,9 +11,10 @@ Please report security problems privately. Open the repository's **Security**
 tab and choose **Report a vulnerability**. Do not open a public issue.
 
 Include the version (**About Agent Interface**, or `BUILD.json` in the
-package), your platform, and the steps or input that show the problem. We
-aim to reply within a week. A confirmed problem is fixed in a new release,
-and the advisory credits you unless you ask us not to.
+package), your platform, and the steps or input that show the problem. The
+maintainer is notified of each report, and it is handled in its private
+advisory thread. A confirmed problem is fixed in a new release, and the
+advisory credits you unless you ask us not to.
 
 Only the latest release receives security fixes.
 
