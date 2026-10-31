@@ -1,3 +1,3 @@
 # Prepared by scripts/prepare-native.py; the path changes with native inputs.
 [env]
-GHOSTTY_SOURCE_DIR = { value = ".native/ghostty-a887df42c56f6de86c0fe6da9c4eeca37931e083-1de2cf74a96782440d85b9b7799ea6c1b355a0c598e70f0c6130d72cff59ee0c", relative = true }
+GHOSTTY_SOURCE_DIR = { value = ".native/ghostty-a887df42c56f6de86c0fe6da9c4eeca37931e083-f0d616a92f91560ee09350c9493e115a147b67c085dbf7471ff0e895a6039d23", relative = true }
