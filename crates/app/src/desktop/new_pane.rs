@@ -113,7 +113,7 @@ struct SectionChoice {
     section: Section,
 }
 
-const SECTIONS: [SectionChoice; 6] = [
+const SECTIONS: [SectionChoice; 7] = [
     SectionChoice {
         glyph: "!",
         label: "Waiting on you",
@@ -127,6 +127,13 @@ const SECTIONS: [SectionChoice; 6] = [
         description: "What each agent is doing now: done, now, next, and what it waits on",
         scope: "one per agent",
         section: Section::Plans,
+    },
+    SectionChoice {
+        glyph: "⇄",
+        label: "Interactions",
+        description: "Recorded messages between agents and you, with delivery history",
+        scope: "one agent at a time",
+        section: Section::Interactions,
     },
     SectionChoice {
         glyph: "◷",

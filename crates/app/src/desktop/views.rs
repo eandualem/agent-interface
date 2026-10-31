@@ -40,6 +40,7 @@ mod artifacts;
 mod clock;
 mod conversation;
 mod documents;
+mod interactions;
 mod markdown;
 mod plans;
 mod policies;
@@ -117,6 +118,7 @@ pub(super) enum Shown {
     /// A record feed: waiting on you, updates, answers or documents.
     Records,
     Plans,
+    Interactions,
     Sheets,
 }
 
@@ -125,6 +127,7 @@ pub(super) enum Shown {
 pub(super) enum Section {
     Waiting,
     Plans,
+    Interactions,
     Updates,
     Responses,
     Documents,
@@ -183,6 +186,7 @@ pub(super) struct ViewPane {
     artifacts: Option<Entity<artifacts::ArtifactPane>>,
     sheets: Option<Entity<sheets::Sheets>>,
     plans: Option<Entity<plans::Plans>>,
+    interactions: Option<Entity<interactions::Interactions>>,
     /// The Reports & updates section shown when it is not a record feed.
     pub(super) shown: Shown,
     _updates: Option<Task<()>>,
@@ -194,7 +198,7 @@ impl EventEmitter<ViewEvent> for ViewPane {}
 impl ViewPane {
     /// Keep drafts, threads and in-flight delivery while this saved pane is hidden.
     pub fn has_conversations(&self) -> bool {
-        !self.conversations.is_empty() || self.sheets.is_some()
+        !self.conversations.is_empty() || self.sheets.is_some() || self.interactions.is_some()
     }
 
     /// Native child views must repaint when an overlay stops occluding them.
@@ -263,6 +267,7 @@ impl ViewPane {
             artifacts: None,
             sheets: None,
             plans: None,
+            interactions: None,
             shown: Shown::Records,
             _updates: None,
             _search: Vec::new(),
@@ -387,6 +392,7 @@ impl ViewPane {
     ) {
         let query = match section {
             Section::Plans => return self.show_plans(cx),
+            Section::Interactions => return self.show_interactions(window, cx),
             Section::Sheets => return self.show_sheets(window, cx),
             Section::Waiting => views::ReportQuery::Latest(None),
             Section::Updates => views::ReportQuery::Recent(None),
@@ -399,6 +405,7 @@ impl ViewPane {
     /// Show a record feed from its first page.
     fn show_records(&mut self, query: views::ReportQuery, cx: &mut Context<Self>) {
         self.plans_shown(false, cx);
+        self.interactions_shown(false, cx);
         self.shown = Shown::Records;
         self.reports.open = None;
         self.reports.query = query;
@@ -414,6 +421,7 @@ impl ViewPane {
     }
 
     fn show_plans(&mut self, cx: &mut Context<Self>) {
+        self.interactions_shown(false, cx);
         let Some(directory) = self.backbone.clone() else {
             return;
         };
@@ -433,6 +441,7 @@ impl ViewPane {
     }
 
     fn show_sheets(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.interactions_shown(false, cx);
         let Some(directory) = self.backbone.clone() else {
             return;
         };
@@ -446,6 +455,111 @@ impl ViewPane {
             self.sheets = Some(sheets);
         }
         self.shown = Shown::Sheets;
+        cx.notify();
+    }
+
+    fn interactions_shown(&self, shown: bool, cx: &mut Context<Self>) {
+        if let Some(view) = &self.interactions {
+            view.update(cx, |view, cx| view.set_shown(shown, cx));
+        }
+    }
+
+    fn show_interactions(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(directory) = self.backbone.clone() else {
+            return;
+        };
+        self.documents.surface.borrow_mut().clear();
+        self.plans_shown(false, cx);
+        if self.interactions.is_none() {
+            let visible = self.visible.clone();
+            let view = cx.new(|cx| interactions::Interactions::new(directory, visible, window, cx));
+            self._search.push(cx.observe(&view, |_, _, cx| cx.notify()));
+            self._search
+                .push(cx.subscribe(&view, |pane, _, event, cx| match event {
+                    interactions::Event::Activity => {
+                        cx.emit(ViewEvent::OpenBeside(View::of(ViewKind::Activity)))
+                    }
+                    interactions::Event::Report {
+                        id,
+                        response,
+                        request,
+                        provider,
+                        anchor,
+                    } => {
+                        let Some(directory) = pane.backbone.clone() else {
+                            return;
+                        };
+                        let id = *id;
+                        let response = *response;
+                        let request = *request;
+                        let provider = provider.clone();
+                        let expected = provider.clone();
+                        let anchor = anchor.clone();
+                        let worker = cx.background_executor().spawn(async move {
+                            if agent_interface_roster::conversations::provider(&directory)
+                                .as_deref()
+                                != Some(&expected)
+                            {
+                                return Err("Backbone connection changed.");
+                            }
+                            let result = views::read(
+                                &directory,
+                                None,
+                                &if response {
+                                    Request::Response(id)
+                                } else {
+                                    Request::Report(id)
+                                },
+                                &|| true,
+                            );
+                            if agent_interface_roster::conversations::provider(&directory)
+                                .as_deref()
+                                != Some(&expected)
+                            {
+                                return Err("Backbone connection changed.");
+                            }
+                            result
+                        });
+                        cx.spawn(async move |this, cx| {
+                            let result = worker.await;
+                            let _ = this.update(cx, |pane, cx| {
+                                if pane.shown != Shown::Interactions
+                                    || !pane.interactions.as_ref().is_some_and(|view| {
+                                        view.read(cx).is_selected(&provider, &anchor, request)
+                                    })
+                                {
+                                    return;
+                                }
+                                let link_error = result.as_ref().err().copied();
+                                if let Ok(Data::Reports(page)) = result
+                                    && let Some(item) = page.items.first()
+                                {
+                                    pane.show_records(
+                                        if response {
+                                            views::ReportQuery::Responses(None)
+                                        } else {
+                                            views::ReportQuery::Recent(None)
+                                        },
+                                        cx,
+                                    );
+                                    pane.reports.open = Some(item.clone());
+                                    pane.data = Some(Data::Reports(page));
+                                    cx.notify();
+                                } else if let Some(error) = link_error
+                                    && let Some(view) = &pane.interactions
+                                {
+                                    view.update(cx, |view, cx| view.link_failed(error, cx));
+                                }
+                            });
+                        })
+                        .detach();
+                    }
+                }));
+            self.interactions = Some(view);
+        } else {
+            self.interactions_shown(true, cx);
+        }
+        self.shown = Shown::Interactions;
         cx.notify();
     }
 
@@ -555,7 +669,19 @@ impl ViewPane {
 
     /// Keys a view understands while its pane is selected. Returns whether
     /// `key` was one of them.
-    pub fn key(&mut self, key: &gpui::Keystroke, cx: &mut Context<Self>) -> bool {
+    pub fn key(
+        &mut self,
+        key: &gpui::Keystroke,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if let Some(view) = self
+            .interactions
+            .clone()
+            .filter(|_| self.shown == Shown::Interactions)
+        {
+            return view.update(cx, |view, cx| view.key(key, window, cx));
+        }
         if self.selection.borrow_mut().key(key, cx) {
             return true;
         }
@@ -632,6 +758,21 @@ impl Render for ViewPane {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if let Some(artifacts) = &self.artifacts {
             return div().size_full().child(artifacts.clone());
+        }
+        if let Some(view) = self
+            .interactions
+            .clone()
+            .filter(|_| self.shown == Shown::Interactions)
+        {
+            if let Some(conversation) = self.conversation.take() {
+                conversation.update(cx, |c, cx| c.set_active(false, cx));
+            }
+            let frame = if view.read(cx).is_open() {
+                reports::plain_frame(None, view)
+            } else {
+                reports::section_frame(self, view, cx)
+            };
+            return div().size_full().bg(colors().surface).child(frame);
         }
         let sheets = self.sheets.clone().filter(|_| self.shown == Shown::Sheets);
         let plans = self.plans.clone().filter(|_| self.shown == Shown::Plans);

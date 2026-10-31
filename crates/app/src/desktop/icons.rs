@@ -16,6 +16,15 @@ macro_rules! icons {
 }
 
 icons!(
+    "locate-fixed",
+    "link-2-off",
+    "clock",
+    "info",
+    "circle-help",
+    "arrow-up",
+    "arrow-left-right",
+    "arrow-down-left",
+    "arrow-up-right",
     "chevron-down",
     "chevron-up",
     "hash",

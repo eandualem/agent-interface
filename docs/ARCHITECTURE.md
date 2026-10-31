@@ -727,6 +727,44 @@ anchor. Plan refresh pauses while a draft or unresolved delivery exists, keeping
 its step reachable until the person finishes it. The panel requires stored conversation support and never falls back to
 unanchored feedback for plans.
 
+`roster::interactions` reads the versioned interaction summary, logical-message
+history, standalone originals and paged delivery evidence over the authenticated
+private socket. It never claims the inbox or scrapes terminal transcripts. Reads
+are bounded by response size, nesting, page count and record count; malformed
+timestamps, missing full bodies and unrelated conversation recipients are rejected.
+Summary and history share the provider's snapshot token. Stable registration IDs
+identify participants, including retired registrations; an unknown sender remains
+unknown. A reverse relation keeps its recorded source ID. Full-body retention is
+separate from the start of retained history.
+
+`desktop::views::interactions` owns the visible window, filters, selected original,
+peer-navigation stack and discussions. Reads run on a worker every 20 seconds
+while visible; numbered requests prevent an older selection's read from replacing
+newer state. New logical messages wait behind an explicit insertion control.
+Selection and discussion survive filtering and changes to the time window; a
+missing or failed reread leaves retained data visible. `ledger` builds fixed-height
+rows and `layout` maps their shared time edges to the rail. Long gaps are
+compressed, labels hold time still, and same-second messages keep separate marks.
+Only rows near the viewport become native elements. Explicitly anchored
+conversation entries group into contiguous runs, so an intervening unrelated
+message never produces a backwards time span. Counts remain logical messages,
+not delivery attempts or collapsed groups.
+
+State spans have a separate snapshot and stable registration identity. They are
+sampled evidence: gaps and conflicting overlaps stay unknown. Message coverage
+comes from finite provider-verified capture intervals, independently of state
+coverage. Quiet rows require the complete unfiltered message population and
+subtract every overlapping logical-message lifecycle, including pending spans.
+A failed state refresh retains earlier observations with a stale notice.
+
+The original is selectable plain text. Follow-up questions use the existing
+stored conversation component with kind `interaction`, pinned to the provider
+and immutable message ID. Eligible recipients come from the recorded participants,
+and a retry retains the chosen registration ID. A changed connection cannot
+silently redirect it. These discussions never fall back to unanchored feedback,
+edit the original, or infer an explanation for its send. No additional process,
+web renderer or third-party dependency is introduced.
+
 Sheets shows the same `desktop::views::conversation::Conversation` entity as the
 record readers, beside the grid, with its native text field, draft preservation,
 focus restoration, delivery states and thread. A record's conversation sends

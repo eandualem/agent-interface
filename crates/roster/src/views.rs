@@ -69,6 +69,8 @@ pub enum Request {
     Reports(ReportQuery, Option<String>),
     /// Refresh an open answer independently of its former list page.
     Response(u64),
+    /// One progress report explicitly linked from recorded history.
+    Report(u64),
     /// One explicitly requested durable HTML revision. Never polled.
     Document(u64),
     /// Every skill an agent can load, team-wide.
@@ -239,6 +241,7 @@ pub fn read(
         }
         Request::Document(id) => Ok(Data::Document(documents::read(&api, *id)?)),
         Request::Response(id) => Ok(Data::Reports(reports::read_response(&api, *id)?)),
+        Request::Report(id) => Ok(Data::Reports(reports::read_report(&api, *id)?)),
         Request::Activity => {
             // History is an addition: when it cannot be read, the timeline
             // still shows deliveries and states now, and says why.
