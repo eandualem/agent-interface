@@ -319,6 +319,15 @@ pub fn interaction_action(
     interaction_button(super::action(id, icon, label.clone()), label)
 }
 
+/// The reader's primary discussion action, using the shared button treatment.
+pub fn interaction_primary_button(
+    id: impl Into<SharedString>,
+    label: impl Into<SharedString>,
+) -> Stateful<Div> {
+    let label = label.into();
+    interaction_button(super::button(id, label.clone(), Button::Primary), label)
+}
+
 /// A pictorial control still has a spoken name and visible focus ring.
 pub fn interaction_icon_button(
     id: impl Into<SharedString>,

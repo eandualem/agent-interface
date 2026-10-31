@@ -750,6 +750,12 @@ conversation entries group into contiguous runs, so an intervening unrelated
 message never produces a backwards time span. Counts remain logical messages,
 not delivery attempts or collapsed groups.
 
+Consecutive exchanges with the same recorded counterparty collapse from two
+messages, including both directions, when adjacent messages are at most fifteen
+minutes apart. A different counterparty or an anchored discussion ends the run;
+unknown actors are never grouped by a guessed identity. Expanding a group shows
+its individual messages and preserves the original selected message.
+
 State spans have a separate snapshot and stable registration identity. They are
 sampled evidence: gaps and conflicting overlaps stay unknown. Message coverage
 comes from finite provider-verified capture intervals, independently of state
@@ -759,8 +765,12 @@ A failed state refresh retains earlier observations with a stale notice.
 
 The original is selectable plain text. Follow-up questions use the existing
 stored conversation component with kind `interaction`, pinned to the provider
-and immutable message ID. Eligible recipients come from the recorded participants,
-and a retry retains the chosen registration ID. A changed connection cannot
+and immutable message ID. A collapsed discussion rail is visible from the first supported selection,
+before the thread is opened. Its width participates in the responsive layout.
+The reader keeps direction, participants and navigation in one header, with the
+timestamp beneath; delivery evidence and technical attempts have separate sections,
+and the primary Ask action also opens the same retained discussion. Eligible
+recipients come from the recorded participants, and a retry retains the chosen registration ID. A changed connection cannot
 silently redirect it. These discussions never fall back to unanchored feedback,
 edit the original, or infer an explanation for its send. No additional process,
 web renderer or third-party dependency is introduced.

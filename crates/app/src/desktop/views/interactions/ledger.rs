@@ -110,10 +110,13 @@ pub(super) fn build(
                 && ordered[end].conversation.is_none()
                 && ordered[end].peer == first.peer
                 && ordered[end - 1].at - ordered[end].at <= 900.
+                && ordered[end - 1].at - ordered[end].at < window.preset.quiet_threshold()
             {
                 end += 1;
             }
-            if end - cursor >= 6 {
+            // A consecutive exchange is useful even when it contains only
+            // two messages. Direction does not split the same counterparty.
+            if end - cursor >= 2 {
                 let members: Vec<_> = ordered[cursor..end]
                     .iter()
                     .map(|event| event.index)
@@ -459,6 +462,66 @@ mod tests {
         {
             assert!(matches!(line.time, Time::Point(_)));
         }
+    }
+
+    #[test]
+    fn consecutive_pairs_group_without_absorbing_other_peers_or_discussions() {
+        let events = [
+            event(0, 99_900., "peer", None),
+            event(1, 99_840., "peer", None),
+            event(2, 99_780., "other", None),
+            event(3, 99_720., "peer", None),
+            event(4, 99_660., "peer", Some("discussion")),
+            event(5, 99_600., "peer", None),
+            event(6, 99_540., "peer", None),
+        ];
+        let rail = build(&events, window(), None, &[], &HashSet::new());
+        let groups: Vec<_> = rail
+            .lines
+            .iter()
+            .filter_map(|line| match &line.value {
+                Row::Burst { members, .. } => Some(members.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(groups, vec![vec![0, 1], vec![5, 6]]);
+        assert!(
+            rail.lines
+                .iter()
+                .any(|line| matches!(line.value, Row::Message(3)))
+        );
+        assert!(
+            rail.lines
+                .windows(2)
+                .all(|pair| pair[0].oldest == pair[1].newest)
+        );
+    }
+
+    #[test]
+    fn a_quiet_interval_keeps_consecutive_messages_separate_on_the_rail() {
+        let events = [
+            event(0, 99_900., "peer", None),
+            event(1, 99_000., "peer", None),
+        ];
+        let rail = build(
+            &events,
+            TimeWindow::new(Preset::Hour, 100_000.),
+            None,
+            &[(96_400., 100_000.)],
+            &HashSet::new(),
+        );
+        assert!(
+            !rail
+                .lines
+                .iter()
+                .any(|line| matches!(line.value, Row::Burst { .. }))
+        );
+        assert!(
+            rail.lines
+                .iter()
+                .any(|line| matches!(line.value, Row::Quiet { .. }))
+        );
+        assert!(rail.lines.iter().all(|line| line.newest >= line.oldest));
     }
 
     #[test]
