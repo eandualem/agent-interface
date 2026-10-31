@@ -446,7 +446,7 @@ fn step(item: &Item, at: &At) -> ui::Step {
 /// The agent's mark from its reported state; an agent at rest with every
 /// step done shows the plan finished.
 fn mark(plan: &plans::Plan, state: ui::AgentState) -> gpui::Div {
-    let resting = !state.working() && !state.needs_you();
+    let resting = state == ui::AgentState::Idle;
     if resting && plan.items.iter().all(Item::done) {
         ui::done_symbol()
     } else {
