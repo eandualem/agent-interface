@@ -238,7 +238,7 @@ The rail scrolls with the rows and uses their geometry. A message mark sits at
 its row centre; collapsed runs contain each actual message mark and a bracket.
 Labels hold time still. Gaps use `6 × √minutes`, capped at 160 px, with a threshold
 of 2, 5 or 10 minutes for the hour, seven-hour/custom and day windows. Busy stretches
-of at least six contiguous messages with one counterparty, at most 15 minutes
+of at least two contiguous messages with one counterparty, at most 15 minutes
 apart, expand inline. Explicit conversation entries form contiguous runs around
 their recorded anchor; interleaved messages remain separate chronological rows.
 

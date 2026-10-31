@@ -121,19 +121,20 @@ impl Pasteboard {
                 // AppKit may grant the receiving app access to Downloads or a
                 // screenshot without granting the already-running CLI access.
                 // Receive every image while the explicit drop grant is active.
-                let image = stage_drag_image_files(&paths)
-                    .or_else(|error| {
-                        // Screenshot drags can expose image data even when the
-                        // promised file URL has already become unavailable.
-                        if paths.0.len() == 1 {
-                            self.drag_image().ok_or(error)
-                        } else {
-                            Err(error)
-                        }
-                    })
-                    .inspect_err(|error| log::warn!("Could not receive dragged images: {error}"))
-                    .ok()?;
-                return Some((image.0, Some(image.1)));
+                let image = stage_drag_image_files(&paths).or_else(|error| {
+                    // Screenshot drags can expose image data even when the
+                    // promised file URL has already become unavailable.
+                    if paths.0.len() == 1 {
+                        self.drag_image().ok_or(error)
+                    } else {
+                        Err(error)
+                    }
+                });
+                match image {
+                    Ok(image) => return Some((image.0, Some(image.1))),
+                    // Keep the drop usable: pass the original paths through.
+                    Err(error) => log::warn!("Could not receive dragged images: {error}"),
+                }
             }
             return Some((paths, None));
         }
@@ -573,6 +574,25 @@ mod tests {
         drop(directory);
         assert!(!received.0[0].exists());
         assert!(!received.0[2].exists());
+    }
+
+    #[test]
+    fn drop_with_an_unreadable_image_keeps_the_original_paths() {
+        let source = tempfile::tempdir().unwrap();
+        let broken = source.path().join("broken.png");
+        let ordinary = source.path().join("notes.txt");
+        std::fs::write(&broken, b"not an image").unwrap();
+        std::fs::write(&ordinary, b"notes").unwrap();
+        let pasteboard = Pasteboard::unique();
+        unsafe {
+            simulate_external_file_copy(
+                &pasteboard,
+                &[broken.to_str().unwrap(), ordinary.to_str().unwrap()],
+            )
+        };
+        let (received, directory) = pasteboard.read_drag(true).unwrap();
+        assert_eq!(received.0.as_slice(), [broken, ordinary]);
+        assert!(directory.is_none());
     }
 
     unsafe fn simulate_external_file_copy(pasteboard: &Pasteboard, paths: &[&str]) {
