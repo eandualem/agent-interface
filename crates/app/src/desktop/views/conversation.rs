@@ -1277,9 +1277,18 @@ impl Conversation {
             }
             _ if self.record.is_some() => self.deliver(index, cx),
             _ if self.plan_anchor.is_some() => {
-                self.messages[index].delivery = Delivery::NotSent(
-                    "Backbone could not open this plan conversation. Nothing was sent.".into(),
-                );
+                let what = if self
+                    .stored
+                    .as_ref()
+                    .is_some_and(|s| s.kind == Kind::Interaction)
+                {
+                    "message discussion"
+                } else {
+                    "plan conversation"
+                };
+                self.messages[index].delivery = Delivery::NotSent(format!(
+                    "Backbone could not open this {what}. Nothing was sent."
+                ));
                 cx.notify();
             }
             _ => {

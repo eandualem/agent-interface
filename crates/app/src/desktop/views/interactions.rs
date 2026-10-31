@@ -143,6 +143,8 @@ impl Interactions {
         cx: &mut Context<Self>,
     ) -> Self {
         let period = TimeWindow::new(Preset::SevenHours, now() as f64);
+        // Building the hidden range fields must not take keyboard focus.
+        let previous = window.focused(cx);
         let custom_start = cx.new(|cx| {
             NameField::new(
                 &super::clock::Local::at(period.start)
@@ -161,6 +163,10 @@ impl Interactions {
                 cx,
             )
         });
+        match previous {
+            Some(previous) => window.focus(&previous, cx),
+            None => window.blur(cx),
+        }
         let poll = cx.spawn(async move |this, cx| {
             loop {
                 if this
@@ -467,9 +473,7 @@ impl Interactions {
     }
 
     fn go_back(&mut self, cx: &mut Context<Self>) {
-        if self.width.get() < crate::desktop::design::tokens().size.interaction_split
-            && self.selected.is_some()
-        {
+        if self.narrow_reader(cx) && self.selected.is_some() {
             self.detail_generation += 1;
             self.detail_dirty = None;
             self.detail_error = None;

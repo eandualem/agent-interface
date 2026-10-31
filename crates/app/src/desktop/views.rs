@@ -544,7 +544,8 @@ impl ViewPane {
                                     );
                                     pane.reports.open = Some(item.clone());
                                     pane.data = Some(Data::Reports(page));
-                                    cx.notify();
+                                    // Follow the opened record so its updates are kept.
+                                    pane.refetch(false, cx);
                                 } else if let Some(error) = link_error
                                     && let Some(view) = &pane.interactions
                                 {
