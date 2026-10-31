@@ -504,7 +504,7 @@ build-time advisory exception are described below.
   MIT. Its bundled SQLite uses SQLite's public-domain dedication. Runtime limits
   bound values; serialization writes the initial database through an open file handle.
 - **`libc`:** Unix constants for nonblocking configuration reads in the app
-  and roster, the existing process integration, and peak-memory readings in
+  and roster, the existing process integration, and resident-memory readings in
   the terminal tests. MIT OR Apache-2.0.
 - **`wry` 0.57.1:** system WebKit child views for HTML Documents and legacy
   artifacts on macOS and Linux, pinned exactly. MIT OR Apache-2.0.

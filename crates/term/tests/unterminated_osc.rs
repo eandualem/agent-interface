@@ -3,30 +3,48 @@
 
 use agent_interface_term::{Screen, Terminal};
 
-/// Returns the most memory this process has held resident, in bytes.
-fn peak_resident() -> u64 {
-    // SAFETY: getrusage only writes the zeroed struct it is given.
-    let mut usage = unsafe { std::mem::zeroed::<libc::rusage>() };
-    assert_eq!(unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) }, 0);
-    let peak = u64::try_from(usage.ru_maxrss).unwrap();
-    // macOS reports bytes; Linux reports kibibytes.
-    if cfg!(target_os = "macos") {
-        peak
-    } else {
-        peak * 1024
+/// Returns the memory this process holds resident now, in bytes. A peak
+/// reading would not do: on Linux it carries over from the process that
+/// launched the test.
+fn resident() -> u64 {
+    #[cfg(target_os = "macos")]
+    {
+        // SAFETY: proc_pidinfo only writes the zeroed struct it is given.
+        let mut info = unsafe { std::mem::zeroed::<libc::proc_taskinfo>() };
+        let size = libc::c_int::try_from(std::mem::size_of_val(&info)).unwrap();
+        let written = unsafe {
+            libc::proc_pidinfo(
+                libc::getpid(),
+                libc::PROC_PIDTASKINFO,
+                0,
+                std::ptr::from_mut(&mut info).cast(),
+                size,
+            )
+        };
+        assert_eq!(written, size);
+        info.pti_resident_size
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let statm = std::fs::read_to_string("/proc/self/statm").unwrap();
+        let pages: u64 = statm.split_whitespace().nth(1).unwrap().parse().unwrap();
+        // SAFETY: sysconf has no preconditions.
+        let page = u64::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) }).unwrap();
+        pages * page
     }
 }
 
 #[test]
 fn an_unterminated_clipboard_sequence_holds_bounded_memory() {
     let mut terminal = Terminal::new(10, 2, 0).unwrap();
-    let before = peak_resident();
+    let before = resident();
     terminal.write(b"\x1b]52;c;");
     let chunk = [b'A'; 64 * 1024];
     for _ in 0..1024 {
         terminal.write(&chunk);
     }
-    let growth = peak_resident().saturating_sub(before);
+    // The sequence is still open, so anything it captured is still held.
+    let growth = resident().saturating_sub(before);
     assert!(
         growth < 16 << 20,
         "64 MiB of one unterminated sequence grew memory by {growth} bytes"

@@ -57,13 +57,19 @@ What the app does protect:
 Release archives built by GitHub Actions carry a signed build provenance
 attestation. It records which workflow, commit and repository produced the
 archive. With the [GitHub CLI](https://cli.github.com) installed, check an
-archive with:
+archive against the commit its release tag points to (replace `vX.Y.Z` with
+the release you downloaded):
 
 ```sh
+commit=$(gh api repos/eandualem/agent-interface/commits/vX.Y.Z --jq .sha)
 gh attestation verify agent-interface-aarch64-apple-darwin.tar.gz \
   --repo eandualem/agent-interface \
-  --signer-workflow eandualem/agent-interface/.github/workflows/packages.yml
+  --signer-workflow eandualem/agent-interface/.github/workflows/packages.yml \
+  --source-digest "$commit"
 ```
+
+Checking the commit matters: it rejects an archive the same workflow built
+from any other branch or commit.
 
 Archives from releases before attestations were added (0.2.6 and earlier)
 have checksums only.
