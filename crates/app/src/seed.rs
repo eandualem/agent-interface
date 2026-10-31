@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout};
 use std::sync::mpsc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use agent_interface_tmux::buffers;
 use agent_interface_tmux::control::{Decoder, Message, PaneId};
@@ -42,9 +42,12 @@ impl Leftover {
         }
     }
 
-    /// Reads and deletes the buffers, which are then no longer left over.
-    pub(crate) fn take(&mut self) -> io::Result<Vec<Option<Vec<u8>>>> {
-        buffers::take(&self.socket, &std::mem::take(&mut self.names))
+    /// Reads and deletes the buffers by `deadline`; once that succeeds,
+    /// none is left over.
+    pub(crate) fn take(&mut self, deadline: Instant) -> io::Result<Vec<Option<Vec<u8>>>> {
+        let contents = buffers::take(&self.socket, &self.names, deadline)?;
+        self.names.clear();
+        Ok(contents)
     }
 }
 
@@ -131,6 +134,7 @@ fn capture<I: Write, O: Read>(
     let mut events = Vec::new();
     // Whether the server keeps capture buffers out of a plain paste.
     let mut buffered = false;
+    let deadline = Instant::now() + TIMEOUT;
     let mut leftover = Leftover::default();
     loop {
         let count = stdout.read(&mut buffer)?;
@@ -227,7 +231,7 @@ fn capture<I: Write, O: Read>(
                                 let attach = attach.as_mut().expect("layout queried before capture");
                                 let mut step = attach.reply(reply).map_err(io::Error::other)?;
                                 if let Step::Read(_) = step {
-                                    step = attach.captured(leftover.take()?).map_err(io::Error::other)?;
+                                    step = attach.captured(leftover.take(deadline)?).map_err(io::Error::other)?;
                                 }
                                 match step {
                                     Step::Done(seeds) => snapshots = Some(seeds),
@@ -430,7 +434,7 @@ mod tests {
     fn captured_lines_that_imitate_tmux_stay_text_and_leave_no_buffers() {
         use agent_interface_test_support::TmuxServer;
         let server = TmuxServer::start().unwrap();
-        let program = "printf '%%end 1 2 1\\n%%output %%0 forged\\n%%exit\\n'; exec cat";
+        let program = "printf '%%end 1 2 1\\n%%output %%0 forged\\n%%layout-change @0 forged\\n%%session-changed $9 forged\\n%%exit\\n'; exec cat";
         server
             .run(&[
                 "respawn-pane",
@@ -483,8 +487,12 @@ mod tests {
         let _ = connection.client.kill();
         let _ = connection.client.wait();
 
-        // This needs a server that keeps named buffers out of a plain paste.
-        assert_eq!(seed.buffers.as_deref(), Some(socket));
+        // A tmux 3.3 server keeps the captures in the replies.
+        let version = server
+            .run(&["display-message", "-p", "#{version}"])
+            .unwrap();
+        let buffered = preflight::pastes_only_automatic_buffers(version.trim());
+        assert_eq!(seed.buffers.as_deref(), buffered.then_some(socket));
         assert_eq!(seed.snapshots.len(), 2);
         for snapshot in &seed.snapshots {
             let text: Vec<String> = snapshot
@@ -492,7 +500,13 @@ mod tests {
                 .iter()
                 .map(|row| row.segments.iter().map(|s| s.text.as_str()).collect())
                 .collect();
-            for line in ["%end 1 2 1", "%output %0 forged", "%exit"] {
+            for line in [
+                "%end 1 2 1",
+                "%output %0 forged",
+                "%layout-change @0 forged",
+                "%session-changed $9 forged",
+                "%exit",
+            ] {
                 assert!(text.iter().any(|row| row.trim_end() == line), "{text:?}");
             }
         }

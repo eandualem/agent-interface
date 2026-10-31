@@ -13,9 +13,9 @@ use std::io;
 use std::path::Path;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-/// How long each tmux command here may take.
+/// The longest any one tmux command here may take.
 const TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Room for tmux's error messages on top of the buffers' size.
@@ -35,17 +35,21 @@ pub fn prefix() -> String {
 }
 
 /// Reads the buffers named `names` on the server at `socket`, in order, then
-/// deletes them. A name with no buffer reads as `None`: tmux creates none
-/// for an empty capture.
-pub fn take(socket: &Path, names: &[String]) -> io::Result<Vec<Option<Vec<u8>>>> {
-    let sizes = sizes(socket, names)?;
+/// deletes them, by `deadline`. A name with no buffer reads as `None`: tmux
+/// creates none for an empty capture.
+pub fn take(
+    socket: &Path,
+    names: &[String],
+    deadline: Instant,
+) -> io::Result<Vec<Option<Vec<u8>>>> {
+    let sizes = sizes(socket, names, left(deadline)?)?;
     let mut contents = Vec::with_capacity(names.len());
     for (name, size) in names.iter().zip(&sizes) {
         let Some(size) = *size else {
             contents.push(None);
             continue;
         };
-        match read(socket, name, size) {
+        match left(deadline).and_then(|timeout| read(socket, name, size, timeout)) {
             Ok(content) => contents.push(Some(content)),
             Err(error) => {
                 // Delete the rest, and this one if it is left.
@@ -59,7 +63,7 @@ pub fn take(socket: &Path, names: &[String]) -> io::Result<Vec<Option<Vec<u8>>>>
 
 /// Reads the buffer `name` of `size` bytes and deletes it. tmux writes one
 /// buffer to standard output per command, and its exact bytes.
-fn read(socket: &Path, name: &str, size: usize) -> io::Result<Vec<u8>> {
+fn read(socket: &Path, name: &str, size: usize, timeout: Duration) -> io::Result<Vec<u8>> {
     let mut command = crate::connection::command(socket)?;
     command.args([
         "save-buffer",
@@ -74,7 +78,7 @@ fn read(socket: &Path, name: &str, size: usize) -> io::Result<Vec<u8>> {
     let limit = size
         .checked_add(STDERR_LIMIT)
         .ok_or_else(|| io::Error::other("capture buffer too large"))?;
-    let output = crate::discovery::capture_limited(command, TIMEOUT, limit)?;
+    let output = crate::discovery::capture_limited(command, timeout, limit)?;
     if output.status.success() && output.stdout.len() == size {
         Ok(output.stdout)
     } else {
@@ -85,7 +89,7 @@ fn read(socket: &Path, name: &str, size: usize) -> io::Result<Vec<u8>> {
 /// Deletes those of the buffers named `names` that exist on the server at
 /// `socket`, after a line that created them failed.
 pub fn delete(socket: &Path, names: &[String]) -> io::Result<()> {
-    let sizes = sizes(socket, names)?;
+    let sizes = sizes(socket, names, TIMEOUT)?;
     let mut present = names.iter().zip(&sizes).filter(|(_, size)| size.is_some());
     let Some((first, _)) = present.next() else {
         return Ok(());
@@ -105,10 +109,10 @@ pub fn delete(socket: &Path, names: &[String]) -> io::Result<()> {
 
 /// Returns the size of each buffer named in `names`, or `None` for a name
 /// with no buffer.
-fn sizes(socket: &Path, names: &[String]) -> io::Result<Vec<Option<usize>>> {
+fn sizes(socket: &Path, names: &[String], timeout: Duration) -> io::Result<Vec<Option<usize>>> {
     let mut command = crate::connection::command(socket)?;
     command.args(["list-buffers", "-F", "#{buffer_size} #{buffer_name}"]);
-    let output = crate::discovery::capture(command, TIMEOUT)?;
+    let output = crate::discovery::capture(command, timeout)?;
     if !output.status.success() {
         return Err(io::Error::other("capture buffers could not be listed"));
     }
@@ -130,6 +134,18 @@ fn sizes(socket: &Path, names: &[String]) -> io::Result<Vec<Option<usize>>> {
         }
     }
     Ok(sizes)
+}
+
+/// The time left before `deadline` for one command, at most [`TIMEOUT`].
+fn left(deadline: Instant) -> io::Result<Duration> {
+    let left = deadline.saturating_duration_since(Instant::now());
+    if left.is_zero() {
+        return Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "reading capture buffers timed out",
+        ));
+    }
+    Ok(left.min(TIMEOUT))
 }
 
 #[cfg(test)]
@@ -184,7 +200,7 @@ mod tests {
         let other = format!("{}0", self::prefix());
         server.run(&["set-buffer", "-b", &other, "theirs"]).unwrap();
 
-        let contents = take(&socket, &names).unwrap();
+        let contents = take(&socket, &names, Instant::now() + TIMEOUT).unwrap();
 
         assert_eq!(
             contents,
@@ -201,7 +217,15 @@ mod tests {
         let socket = socket(&server);
         let prefix = prefix();
         let names: Vec<String> = (0..2).map(|k| format!("{prefix}{k}")).collect();
-        assert_eq!(take(&socket, &names).unwrap(), vec![None, None]);
+        assert_eq!(
+            take(&socket, &names, Instant::now() + TIMEOUT).unwrap(),
+            vec![None, None]
+        );
+        server
+            .run(&["set-buffer", "-b", &names[0], "late"])
+            .unwrap();
+        let error = take(&socket, &names, Instant::now()).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
 
         server
             .run(&["set-buffer", "-b", &names[1], "left"])

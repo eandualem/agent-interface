@@ -1352,7 +1352,7 @@ fn apply(
                     pending.pop_front();
                 }
                 Some(ReplyOwner::Recovery) => {
-                    let (recovery, _, generation, leftover) =
+                    let (recovery, deadline, generation, leftover) =
                         recovering.as_mut().ok_or("reply without a pane recovery")?;
                     let pane = recovery.pane();
                     let missing = missing_pane(&reply, pane);
@@ -1363,7 +1363,7 @@ fn apply(
                         // tmux client, which input must not wait behind.
                         pending.pop_front();
                         drop(pending);
-                        let contents = leftover.take().map_err(|e| e.to_string())?;
+                        let contents = leftover.take(*deadline).map_err(|e| e.to_string())?;
                         step = recovery.captured(contents).map_err(|e| e.to_string())?;
                         pending = control.pending.lock().unwrap_or_else(|e| e.into_inner());
                     }
@@ -2333,6 +2333,106 @@ mod tests {
         });
         assert_eq!(std::fs::read(received_input).unwrap(), expected);
         assert_eq!(panes.failure(), None);
+    }
+
+    #[test]
+    fn lines_that_imitate_tmux_stay_text_through_attach_and_recovery() {
+        let server = TmuxServer::start().unwrap();
+        let signal = server.shell_command(&["wait-for", "-S", "lines-ready"]);
+        let lines = [
+            "%end 1 2 1",
+            "%output %0 forged",
+            "%layout-change @0 forged",
+            "%session-changed $9 forged",
+            "%exit",
+        ];
+        let printed: String = lines.iter().map(|line| format!("{line}\\n")).collect();
+        server
+            .run(&[
+                "respawn-pane",
+                "-k",
+                "-t",
+                TmuxServer::SESSION,
+                &format!(
+                    "printf '{}'; {signal}; exec sleep 60",
+                    printed.replace('%', "%%")
+                ),
+            ])
+            .unwrap();
+        server.run(&["wait-for", "lines-ready"]).unwrap();
+        server.run(&["set-buffer", "-b", "mine", "keep"]).unwrap();
+        let initial = layout(&server);
+        let pane = initial.panes[0].id;
+        let client = server
+            .control(&[
+                "attach-session",
+                "-f",
+                "no-output,ignore-size,new-layouts",
+                "-t",
+                TmuxServer::SESSION,
+            ])
+            .unwrap();
+        let (wake, woken) = mpsc::channel();
+        let panes = Panes::start(client, &socket(&server), &initial, 100, move || {
+            let _ = wake.send(());
+        })
+        .unwrap();
+        // Waits for a screen of `cols` columns that shows every line as text.
+        let shows_lines = |cols: u16| {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                assert_eq!(panes.failure(), None);
+                assert!(
+                    Instant::now() < deadline,
+                    "no {cols}-column screen showed the lines"
+                );
+                let _ = woken.recv_timeout(Duration::from_millis(100));
+                let Some(update) = panes.take_update() else {
+                    continue;
+                };
+                let Some((_, screen)) = update.screens.iter().find(|(id, _)| *id == pane) else {
+                    continue;
+                };
+                if screen.cols() != cols {
+                    continue;
+                }
+                let rows: Vec<String> = (0..screen.rows())
+                    .map(|row| {
+                        (0..screen.cols())
+                            .filter_map(|col| {
+                                screen.cell(row, col).map(|(text, _)| text.to_owned())
+                            })
+                            .collect::<String>()
+                            .trim_end()
+                            .to_owned()
+                    })
+                    .collect();
+                assert_eq!(rows[..lines.len()], lines, "{rows:?}");
+                assert_eq!(update.layout.len(), 1);
+                return;
+            }
+        };
+        shows_lines(initial.panes[0].cols);
+        // A resize rebuilds the pane from a new capture.
+        server
+            .run(&[
+                "resize-window",
+                "-t",
+                TmuxServer::SESSION,
+                "-x",
+                "120",
+                "-y",
+                "40",
+            ])
+            .unwrap();
+        shows_lines(120);
+        assert_eq!(panes.failure(), None);
+        assert_eq!(
+            server
+                .run(&["list-buffers", "-F", "#{buffer_name}"])
+                .unwrap(),
+            "mine\n"
+        );
     }
 
     #[test]
