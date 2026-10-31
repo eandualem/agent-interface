@@ -28,6 +28,8 @@ pub enum Kind {
     Skill,
     /// A policy.
     Policy,
+    /// One immutable recorded interaction.
+    Interaction,
 }
 
 /// One entry, in the order Backbone stored it.
@@ -203,6 +205,7 @@ impl Kind {
             Self::Plan => "plan",
             Self::Skill => "skill",
             Self::Policy => "policy",
+            Self::Interaction => "interaction",
         }
     }
 }

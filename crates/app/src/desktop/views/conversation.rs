@@ -128,6 +128,8 @@ pub(super) struct Conversation {
     /// they may choose from besides the conversation's participants.
     recipient: Option<String>,
     candidates: Vec<String>,
+    /// Message participants: captured registration ID and their role.
+    interaction_roles: HashMap<String, (String, String)>,
     /// The team's names as last read, for a skill's or policy's chooser,
     /// and whether to read them again.
     team: Vec<String>,
@@ -330,6 +332,13 @@ enum Redelivery {
 const OPEN_POLL: Duration = Duration::from_secs(5);
 const CLOSED_POLL: Duration = Duration::from_secs(25);
 
+/// A recorded artifact link, already bound to the provider which supplied it.
+pub(super) struct ReferenceTarget {
+    pub provider: String,
+    pub kind: Kind,
+    pub id: String,
+}
+
 impl Conversation {
     /// The conversation about an authored record, sent to its author.
     pub fn new(
@@ -391,6 +400,119 @@ impl Conversation {
             kind: Kind::Plan,
             source: None,
             id: target.author.clone(),
+            supported: None,
+            page: None,
+            fetched: Vec::new(),
+            earlier: Vec::new(),
+            earlier_cursor: None,
+            divider: None,
+            reading: false,
+            read_at: None,
+            marking: None,
+            mark_at: None,
+            redelivery: HashMap::new(),
+            turn: 0,
+        });
+        conversation.start_polling(cx);
+        conversation
+    }
+
+    /// Open the discussion named by an explicit recorded link. There is no
+    /// guessed source path, responsible agent or one-way feedback fallback.
+    pub fn about_reference(
+        target: ReferenceTarget,
+        directory: PathBuf,
+        visible: Rc<Cell<bool>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let about = match target.kind {
+            Kind::Document => "about this document",
+            Kind::Sheet => "about this sheet",
+            Kind::Response => "about this answer",
+            Kind::Report => "about this report",
+            Kind::Plan => "about this plan",
+            Kind::Skill => "about this skill",
+            Kind::Policy => "about this policy",
+            Kind::Interaction => "about this message",
+        };
+        let mut conversation = Self::create(about, window, cx);
+        conversation.visible = visible;
+        conversation.open = true;
+        conversation.anchor = Some(format!("{} {}", target.kind.name(), target.id));
+        conversation.stored = Some(Stored {
+            directory,
+            provider: target.provider,
+            kind: target.kind,
+            source: None,
+            id: target.id,
+            supported: None,
+            page: None,
+            fetched: vec![],
+            earlier: vec![],
+            earlier_cursor: None,
+            divider: None,
+            reading: false,
+            read_at: None,
+            marking: None,
+            mark_at: None,
+            redelivery: HashMap::new(),
+            turn: 0,
+        });
+        conversation.start_polling(cx);
+        conversation
+    }
+
+    /// Discussion stays anchored to the original message, independently of the ledger window.
+    #[allow(clippy::too_many_arguments)]
+    pub fn about_interaction(
+        item: &agent_interface_roster::interactions::Interaction,
+        focus: &str,
+        provider: String,
+        directory: PathBuf,
+        visible: Rc<Cell<bool>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut conversation = Self::create("about this message", window, cx);
+        conversation.visible = visible;
+        conversation.open = true;
+        conversation.anchor = Some(format!("{} → {}", item.sender.name, item.recipient.name));
+        for actor in &item.conversation.recipients {
+            if actor.kind != "agent" || actor.retired {
+                continue;
+            }
+            let Some(id) = actor.id.clone() else {
+                continue;
+            };
+            let role = if actor.id == item.sender.id {
+                "sent it"
+            } else if item.status.delivered {
+                "received it"
+            } else {
+                "was sent it"
+            };
+            conversation
+                .interaction_roles
+                .insert(actor.name.clone(), (id, role.into()));
+            conversation.candidates.push(actor.name.clone());
+        }
+        conversation.recipient = interaction_recipient(
+            &conversation.candidates,
+            &conversation.interaction_roles,
+            focus,
+        );
+        conversation.plan_anchor = Some(stored::Anchor {
+            revision_id: Some(item.id.clone()),
+            label: conversation.anchor.clone(),
+            ..Default::default()
+        });
+        conversation.stored = Some(Stored {
+            directory,
+            provider,
+            kind: Kind::Interaction,
+            source: None,
+            id: item.id.clone(),
             supported: None,
             page: None,
             fetched: Vec::new(),
@@ -494,6 +616,13 @@ impl Conversation {
     /// Nobody answers unless the person names someone: Backbone names no
     /// maintainer, or the one it names has retired.
     fn needs_recipient(&self) -> bool {
+        if self
+            .stored
+            .as_ref()
+            .is_some_and(|s| s.kind == Kind::Interaction)
+        {
+            return true;
+        }
         self.stored
             .as_ref()
             .and_then(|stored| stored.page.as_ref())
@@ -505,6 +634,13 @@ impl Conversation {
     /// Whom the person may ask: the conversation's participants, then the
     /// candidates the view offered, each once.
     fn askable(&self) -> Vec<String> {
+        if self
+            .stored
+            .as_ref()
+            .is_some_and(|s| s.kind == Kind::Interaction)
+        {
+            return self.candidates.clone();
+        }
         let mut names: Vec<String> = self
             .stored
             .as_ref()
@@ -565,6 +701,7 @@ impl Conversation {
             active: false,
             recipient: None,
             candidates: Vec::new(),
+            interaction_roles: HashMap::new(),
             team: Vec::new(),
             team_read: false,
             stale: false,
@@ -923,7 +1060,11 @@ impl Conversation {
         let message = &mut self.messages[index];
         // A retry reuses the request, so it keeps the first recipient too.
         if message.via != Some(Via::Stored) {
-            message.recipient = chosen;
+            message.recipient = chosen.map(|name| {
+                self.interaction_roles
+                    .get(&name)
+                    .map_or(name.clone(), |(id, _)| id.clone())
+            });
         }
         let recipient = message.recipient.clone();
         message.via = Some(Via::Stored);
@@ -1018,6 +1159,24 @@ impl Conversation {
         }
     }
 
+    /// Whether the expanded discussion currently occupies its panel width.
+    pub fn panel_is_open(&self) -> bool {
+        self.open
+    }
+
+    /// Reopen a retained discussion without replacing its draft or anchor.
+    pub fn open_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.open {
+            self.toggle(window, cx);
+        }
+    }
+
+    /// Reader shortcuts must not consume typing or navigation in this thread.
+    pub fn has_focus(&self, window: &Window, cx: &App) -> bool {
+        self.thread_focus.contains_focused(window, cx)
+            || self.field.read(cx).focus.is_focused(window)
+    }
+
     /// Open or close the panel from a key, which has no window to focus with.
     pub fn request_toggle(&mut self, cx: &mut Context<Self>) {
         self.toggle_requested = true;
@@ -1065,7 +1224,10 @@ impl Conversation {
         let field = self.field.read(cx);
         // A skill or policy sends only once Backbone has its conversation.
         let ready = self.stored.as_ref().is_none_or(|stored| {
-            (stored.source.is_none() && stored.kind != Kind::Plan) || stored.live()
+            (self.record.is_some()
+                && stored.source.is_none()
+                && !matches!(stored.kind, Kind::Plan | Kind::Interaction))
+                || stored.live()
         });
         ready
             && !self.blocked
@@ -1115,9 +1277,18 @@ impl Conversation {
             }
             _ if self.record.is_some() => self.deliver(index, cx),
             _ if self.plan_anchor.is_some() => {
-                self.messages[index].delivery = Delivery::NotSent(
-                    "Backbone could not open this plan conversation. Nothing was sent.".into(),
-                );
+                let what = if self
+                    .stored
+                    .as_ref()
+                    .is_some_and(|s| s.kind == Kind::Interaction)
+                {
+                    "message discussion"
+                } else {
+                    "plan conversation"
+                };
+                self.messages[index].delivery = Delivery::NotSent(format!(
+                    "Backbone could not open this {what}. Nothing was sent."
+                ));
                 cx.notify();
             }
             _ => {
@@ -1311,6 +1482,8 @@ impl Conversation {
         // Bounded so a large team never pushes the composer out of the pane.
         let mut row = div()
             .id("conversation-chooser")
+            .role(gpui::accesskit::Role::RadioGroup)
+            .aria_label("Who to ask")
             .flex_shrink_0()
             .max_h(px(t.size.chooser_height))
             .overflow_y_scroll()
@@ -1326,9 +1499,25 @@ impl Conversation {
             row = row.child(
                 ui::chip(
                     SharedString::from(format!("conversation-ask-{name}")),
-                    SharedString::from(name.clone()),
+                    SharedString::from(
+                        self.interaction_roles
+                            .get(&name)
+                            .map_or(name.clone(), |(_, role)| format!("{name} · {role}")),
+                    ),
                     chosen,
                 )
+                .role(gpui::accesskit::Role::RadioButton)
+                .aria_selected(chosen)
+                .aria_label(
+                    self.interaction_roles
+                        .get(&name)
+                        .map_or(name.clone(), |(_, role)| format!("{name} · {role}")),
+                )
+                .focusable()
+                .focus_visible(|el| {
+                    el.border(px(t.size.focus_ring))
+                        .border_color(colors().focus)
+                })
                 .on_click(cx.listener(move |conversation, _, _, cx| {
                     conversation.recipient = Some(name.clone());
                     cx.notify();
@@ -1478,6 +1667,16 @@ impl Conversation {
                     .into_any_element()
                 }
             });
+            if stored.kind == Kind::Interaction
+                && matches!(&entry.author, Author::Agent { .. })
+                && matches!(&entry.body, Body::Message { .. })
+                && !entries[..at].iter().any(|entry| {
+                    matches!(&entry.author, Author::Agent { .. })
+                        && matches!(&entry.body, Body::Message { .. })
+                })
+            {
+                out.push(ui::interaction_after_note().into_any_element());
+            }
         }
         out
     }
@@ -1514,10 +1713,23 @@ impl Conversation {
             let agent = self.agent();
             let note = if let (Some(error), false) = (self.read_error, self.stored_live()) {
                 error.message().to_owned()
+            } else if self.needs_recipient() && self.recipient.is_none() {
+                "Choose an agent above to enable Send. Your draft stays here while you choose."
+                    .to_owned()
             } else if self.stored_live() {
-                format!(
-                    "Your messages, {agent}'s replies and the changes it publishes stay together beside this {kind}."
-                )
+                if self
+                    .stored
+                    .as_ref()
+                    .is_some_and(|stored| stored.kind == Kind::Interaction)
+                {
+                    format!(
+                        "Your questions and {agent}’s replies stay beside the original message. The original does not change."
+                    )
+                } else {
+                    format!(
+                        "Your messages, {agent}'s replies and the changes it publishes stay together beside this {kind}."
+                    )
+                }
             } else {
                 format!("Messages you send here go to {agent} with a reference to this {kind}.")
             };
@@ -1526,7 +1738,11 @@ impl Conversation {
                 .min_h_0()
                 .child(ui::empty_state(
                     ui::empty_tile("message-square", c.selected, c.text_2),
-                    format!("Talk to {agent} here"),
+                    if self.needs_recipient() && self.recipient.is_none() {
+                        "Choose who to ask".to_owned()
+                    } else {
+                        format!("Talk to {agent} here")
+                    },
                     note,
                 ))
                 .into_any_element();
@@ -1780,7 +1996,11 @@ impl Conversation {
                                 .top_0()
                                 .left_0()
                                 .text_color(colors().faint)
-                                .child(format!("Message {} {}…", self.agent(), self.about)),
+                                .child(if self.needs_recipient() && self.recipient.is_none() {
+                                    "Choose a recipient above…".to_owned()
+                                } else {
+                                    format!("Message {} {}…", self.agent(), self.about)
+                                }),
                         )
                     }),
                 self.anchor.clone().map(|label| {
@@ -1799,9 +2019,55 @@ impl Conversation {
     }
 }
 
+/// Start with the agent whose interactions the owner opened, regardless of
+/// message direction. Only eligible recorded participants may receive a question.
+fn interaction_recipient(
+    candidates: &[String],
+    roles: &HashMap<String, (String, String)>,
+    focus: &str,
+) -> Option<String> {
+    candidates
+        .iter()
+        .find(|name| roles.get(*name).is_some_and(|(id, _)| id == focus))
+        .or_else(|| (candidates.len() == 1).then(|| &candidates[0]))
+        .cloned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn interaction_recipient_follows_focused_identity_in_either_direction() {
+        let candidates = vec!["sender renamed".into(), "receiver renamed".into()];
+        let roles = HashMap::from([
+            (
+                "sender renamed".into(),
+                ("sender-id".into(), "sent it".into()),
+            ),
+            (
+                "receiver renamed".into(),
+                ("receiver-id".into(), "received it".into()),
+            ),
+        ]);
+        assert_eq!(
+            interaction_recipient(&candidates, &roles, "sender-id"),
+            Some("sender renamed".into())
+        );
+        assert_eq!(
+            interaction_recipient(&candidates, &roles, "receiver-id"),
+            Some("receiver renamed".into())
+        );
+        assert_eq!(
+            interaction_recipient(&candidates, &roles, "unavailable-id"),
+            None
+        );
+        assert_eq!(
+            interaction_recipient(&candidates[..1], &roles, "unavailable-id"),
+            Some("sender renamed".into())
+        );
+        assert_eq!(interaction_recipient(&[], &roles, "receiver-id"), None);
+    }
 
     #[test]
     fn failed_read_receipts_wait_for_the_poll_interval_despite_repaints() {

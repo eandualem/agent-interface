@@ -43,6 +43,8 @@ agent-interface-term = { path = "../term" }
 agent-interface-tmux = { path = "../tmux" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+# Set decoration hints only on our own X11 windows (MIT OR Apache-2.0).
+x11rb = "=0.13.2"
 # WebKitGTK embedding and its main loop (MIT).
 wry = { version = "=0.57.1", default-features = false, features = ["os-webview", "x11"] }
 gtk = "=0.18.2"

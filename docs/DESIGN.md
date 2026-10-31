@@ -189,7 +189,7 @@ All in `components.rs`; each takes its look from the tokens.
 A pane can show a view instead of a terminal.
 An empty pane shows the new-pane chooser (`desktop/new_pane.rs`): Open
 terminal, **Reports & updates** and **Skills, usage, team…**, a filter, Backbone
-agents then other tmux sessions, the six Reports & updates sections and the
+agents then other tmux sessions, the seven Reports & updates sections and the
 views list. Tab and Shift-Tab move between the lists; a chosen section opens
 once and is not saved with the pane. Each view lives in `desktop/views/` and
 follows its design board with its own header (`view_header`), controls, list
@@ -224,6 +224,46 @@ attention (`waiting_for_human`, `blocked`), active (`busy`, `starting`), idle
 (`idle`, `running`) and unknown. Labels preserve the difference between
 blocked and waiting, and between starting and working. The active arc rotates;
 other indicators stay still.
+
+## Recorded interactions
+
+Interactions sits beside Current plans under Reports & updates. The agent list
+shows logical sent/received counts, failed handoffs and retained activity. Its
+native ledger groups one agent's messages by local hour. A shaped direction mark,
+written arrow and actor name communicate direction without relying on colour;
+“You” uses the interface font while agent names use mono. The original has its
+own selectable frame, separate from a later conversation.
+
+The rail scrolls with the rows and uses their geometry. A message mark sits at
+its row centre; collapsed runs contain each actual message mark and a bracket.
+Labels hold time still. Gaps use `6 × √minutes`, capped at 160 px, with a threshold
+of 2, 5 or 10 minutes for the hour, seven-hour/custom and day windows. Busy stretches
+of at least two contiguous messages with one counterparty, at most 15 minutes
+apart, expand inline. Explicit conversation entries form contiguous runs around
+their recorded anchor; interleaved messages remain separate chronological rows.
+
+State is observed context. Working, idle, blocked, offline and missing coverage
+have distinct shapes; missing evidence never becomes idle. Quiet rows require
+complete message coverage and no active message filter. Neither a quiet stretch
+nor a state after a message is evidence of a cause or outcome.
+
+From 1100 px of pane width the reader can sit beside the ledger, provided the
+remaining width fits its rail, metadata columns and a readable preview. An open
+or resized discussion may leave too little room; then the reader replaces the
+list with a way back. Closing or shrinking the discussion restores the split
+when it fits, retaining the selection and scroll position. Time-window and counterparty controls use the
+shared popover and segment components. New activity waits for an explicit click,
+and the selected original stays open when filters hide its row. Peer pivots retain
+the window and a stack of prior selections. Discussion reuses the native
+conversation panel, including retained drafts, explicit recipient roles and
+stable message anchors. Loading, unsupported, empty and stale states are distinct.
+
+Sizes live in the `interaction_*` tokens. Drawing primitives are in
+`desktop/components/interactions.rs`; timeline geometry, row construction and
+reader composition are separate modules under `desktop/views/interactions/`.
+No view-specific colours or new font families are added. Native accessibility
+exposes rows as named buttons with selected state, the rail as an image description,
+and the window, direction and recipient controls as radio groups.
 
 ## Interaction patterns
 

@@ -14,6 +14,9 @@ use super::{
     icons,
 };
 
+mod interactions;
+pub use interactions::*;
+
 /// Apply a type style.
 pub fn text<E: Styled>(element: E, style: &TextStyle) -> E {
     element.text_size(style.size()).font_weight(style.weight())
@@ -2233,6 +2236,14 @@ pub fn conversation_rail(button: Stateful<Div>, mark: Option<Div>, unread: bool)
                 }),
         )
         .children(mark)
+}
+
+/// Resolve the shared panel's width for responsive sibling layout.
+pub fn conversation_panel_width(available: f32) -> f32 {
+    super::settings::conversation_width()
+        .map_or(available * 0.38, |width| width as f32)
+        .max(tokens().size.conversation_width)
+        .min(available * 0.75)
 }
 
 /// The frame of an open conversation: the width it was dragged to, else a

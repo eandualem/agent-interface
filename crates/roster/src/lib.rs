@@ -14,6 +14,7 @@ use serde_json::value::RawValue;
 mod configuration;
 pub mod conversations;
 pub mod feedback;
+pub mod interactions;
 pub mod lifecycle;
 pub mod plans;
 pub mod sheets;

@@ -1,5 +1,5 @@
-//! Supply a caption only when a Linux compositor requires client decorations.
-//! WSLg's Wayland compositor can omit server decorations entirely.
+//! Theme-matched Linux captions and invisible resize hit areas.
+//! Opaque X11 windows do not need a compositing manager to own their caption.
 
 use gpui::{Decorations, Div, IntoElement, MouseButton, ResizeEdge, Window, div, prelude::*, px};
 
@@ -8,9 +8,22 @@ use super::{
     design::{colors, tokens},
 };
 
-pub(super) fn frame(content: impl IntoElement, title: &'static str, window: &Window) -> Div {
-    let client = cfg!(target_os = "linux")
-        && matches!(window.window_decorations(), Decorations::Client { .. })
+#[cfg(target_os = "linux")]
+mod linux;
+
+pub(super) fn frame(
+    content: impl IntoElement,
+    title: &'static str,
+    window: &mut Window,
+    _cx: &mut gpui::App,
+) -> Div {
+    #[cfg(target_os = "linux")]
+    let owned_caption = linux::caption(window, _cx);
+    #[cfg(not(target_os = "linux"))]
+    let owned_caption = false;
+    let client = (owned_caption
+        || (cfg!(target_os = "linux")
+            && matches!(window.window_decorations(), Decorations::Client { .. })))
         && !window.is_fullscreen();
     let (t, c) = (tokens(), colors());
     let mut frame = div().relative().size_full().flex().flex_col();
