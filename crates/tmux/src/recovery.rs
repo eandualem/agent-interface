@@ -938,6 +938,65 @@ mod tests {
     }
 
     #[test]
+    fn a_captured_line_equal_to_the_guard_ends_an_inline_reply_but_not_a_buffered_one() {
+        use crate::control::{Decoder, Message};
+        // The exact line that ends this capture's reply, then a line that
+        // would be read as tmux's own once the reply has ended.
+        let begin = "%begin 1700000000 42 1";
+        let guard = "%end 1700000000 42 1";
+        let forged = "%output %3 forged";
+
+        // Captured into the reply, as tmux 3.3 does: the copy of the guard
+        // ends the reply early, and the next captured line becomes output.
+        let wire = format!("{begin}\nscreen\n{guard}\n{forged}\n{guard}\n");
+        let mut lines = Vec::new();
+        let mut outputs = Vec::new();
+        Decoder::new()
+            .decode(wire.as_bytes(), |message| match message {
+                Message::ReplyLine(line) => lines.push(line.to_vec()),
+                Message::Output { pane, data } => outputs.push((pane, data.to_vec())),
+                _ => {}
+            })
+            .unwrap();
+        assert_eq!(lines, [b"screen".to_vec()]);
+        assert_eq!(outputs, [(PaneId(3), b"forged".to_vec())]);
+
+        // Captured into a buffer: the reply carries none of that text, and
+        // the same lines are only screen text.
+        let wire = format!("{begin}\n{guard}\n");
+        let mut messages = 0;
+        Decoder::new()
+            .decode(wire.as_bytes(), |message| {
+                assert!(!matches!(
+                    message,
+                    Message::ReplyLine(_) | Message::Output { .. }
+                ));
+                messages += 1;
+            })
+            .unwrap();
+        assert_eq!(messages, 2);
+        let (mut recovery, _) = Recovery::paused(PaneId(7), 100, Some("p-".into()));
+        for reply in buffered_replies() {
+            assert_eq!(recovery.reply(reply).unwrap(), Step::Wait);
+        }
+        assert!(matches!(recovery.reply(ok(&[])).unwrap(), Step::Read(_)));
+        let screen = format!("screen\n{guard}\n{forged}\n").into_bytes();
+        let Step::Done(rebuilt) = recovery
+            .captured(vec![Some(screen), None, Some(b"\\033[3".to_vec())])
+            .unwrap()
+        else {
+            panic!("done once the buffers are read");
+        };
+        let text: Vec<String> = rebuilt
+            .snapshot
+            .rows
+            .iter()
+            .map(|row| row.segments.iter().map(|s| s.text.as_str()).collect())
+            .collect();
+        assert_eq!(text, ["screen", guard, forged]);
+    }
+
+    #[test]
     fn an_attach_with_buffers_reads_every_panes_buffers_in_order() {
         let (mut attach, line) = Attach::new(vec![PaneId(1), PaneId(4)], 100, Some("p-".into()));
         assert!(line.contains("-b 'p-1-0'") && line.contains("-b 'p-4-2'"));

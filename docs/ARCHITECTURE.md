@@ -87,8 +87,10 @@ take the rest of the capture for messages from tmux. On a tmux 3.4 or newer
 server, the capture line therefore writes each capture into a named buffer
 instead of its reply, with a name unique to that line and process. After the
 line's replies, a separate tmux client on the same socket reads each buffer
-by its listed size and deletes it. A rebuild that does not finish deletes the
-buffers its line named; no other buffer is read or deleted. tmux 3.3 pastes
+by its listed size and deletes it. A rebuild that does not finish tries to
+delete the buffers its line named, on a separate thread; this is best effort,
+and a process exit or a failing tmux can leave them. No other buffer is read
+or deleted. tmux 3.3 pastes
 the newest buffer even when it is named, so a paste in that moment could pick
 up a capture; with a 3.3 server the captures stay in the replies.
 
