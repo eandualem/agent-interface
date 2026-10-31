@@ -1,13 +1,16 @@
 //! Initial snapshots on a fresh no-output control connection.
 
 use std::io::{self, Read, Write};
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout};
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
+use agent_interface_tmux::buffers;
 use agent_interface_tmux::control::{Decoder, Message, PaneId};
 use agent_interface_tmux::layout;
+use agent_interface_tmux::preflight;
 use agent_interface_tmux::recovery::{self, Attach, Reply, Snapshot, Step};
 
 pub(crate) const TIMEOUT: Duration = Duration::from_secs(10);
@@ -19,6 +22,38 @@ pub(crate) struct Seed<I = ChildStdin, O = ChildStdout> {
     pub snapshots: Vec<Snapshot>,
     pub layout: layout::Change,
     pub events: Vec<Event>,
+    /// The server's socket when it keeps named buffers out of a plain
+    /// paste, so recovery can capture into buffers.
+    pub buffers: Option<PathBuf>,
+}
+
+/// Capture buffers a line may have created, deleted on drop unless taken.
+#[derive(Default)]
+pub(crate) struct Leftover {
+    socket: PathBuf,
+    names: Vec<String>,
+}
+
+impl Leftover {
+    pub(crate) fn new(socket: &Path, names: Vec<String>) -> Self {
+        Self {
+            socket: socket.to_owned(),
+            names,
+        }
+    }
+
+    /// Reads and deletes the buffers, which are then no longer left over.
+    pub(crate) fn take(&mut self) -> io::Result<Vec<Option<Vec<u8>>>> {
+        buffers::take(&self.socket, &std::mem::take(&mut self.names))
+    }
+}
+
+impl Drop for Leftover {
+    fn drop(&mut self) {
+        if !self.names.is_empty() {
+            let _ = buffers::delete(&self.socket, &self.names);
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -33,10 +68,12 @@ pub(crate) enum Event {
 /// A deadline bounds startup even if the control client stops replying.
 pub(crate) fn attach(
     client: &mut Child,
+    socket: &Path,
     window: u32,
     session: Option<u32>,
     scrollback: usize,
 ) -> io::Result<Seed> {
+    let socket = socket.to_owned();
     let stdin = client
         .stdin
         .take()
@@ -49,7 +86,7 @@ pub(crate) fn attach(
     let reader = thread::Builder::new()
         .name("pane snapshot".into())
         .spawn(move || {
-            let _ = send.send(capture(stdin, stdout, window, session, scrollback));
+            let _ = send.send(capture(stdin, stdout, &socket, window, session, scrollback));
         })?;
     let result = receive
         .recv_timeout(TIMEOUT)
@@ -72,6 +109,7 @@ pub(crate) fn attach(
 fn capture<I: Write, O: Read>(
     mut stdin: I,
     mut stdout: O,
+    socket: &Path,
     window: u32,
     session: Option<u32>,
     scrollback: usize,
@@ -91,6 +129,9 @@ fn capture<I: Write, O: Read>(
     let mut preliminary = 5;
     let mut snapshots = None;
     let mut events = Vec::new();
+    // Whether the server keeps capture buffers out of a plain paste.
+    let mut buffered = false;
+    let mut leftover = Leftover::default();
     loop {
         let count = stdout.read(&mut buffer)?;
         if count == 0 {
@@ -145,7 +186,8 @@ fn capture<I: Write, O: Read>(
                                             return Err(io::Error::other("invalid tmux server version reply"));
                                         };
                                         let version = std::str::from_utf8(line).map_err(|_| io::Error::other("invalid tmux server version reply"))?;
-                                        agent_interface_tmux::preflight::check_server_version(version)?;
+                                        preflight::check_server_version(version)?;
+                                        buffered = preflight::pastes_only_automatic_buffers(version);
                                         Some(format!(
                                             "display-message -p -t '{target}' '#{{window_id}} #{{window_layout}} #{{window_visible_layout}} #{{window_raw_flags}}'\n"
                                         ))
@@ -161,10 +203,12 @@ fn capture<I: Write, O: Read>(
                                             return Err(io::Error::other("initial window layout target changed"));
                                         }
                                         let panes = current.panes.iter().map(|p| p.id).collect();
+                                        let prefix = buffered.then(buffers::prefix);
                                         let (capture, commands) = match session {
-                                            Some(session) => Attach::in_session(panes, session, window, scrollback),
-                                            None => Attach::new(panes, scrollback),
+                                            Some(session) => Attach::in_session(panes, session, window, scrollback, prefix),
+                                            None => Attach::new(panes, scrollback, prefix),
                                         };
+                                        leftover = Leftover::new(socket, capture.buffers());
                                         attach = Some(capture);
                                         layout = Some(current);
                                         // This query supersedes layout notifications that
@@ -180,10 +224,15 @@ fn capture<I: Write, O: Read>(
                                     stdin.flush()?;
                                 }
                             } else if snapshots.is_none() {
-                                match attach.as_mut().expect("layout queried before capture").reply(reply).map_err(io::Error::other)? {
+                                let attach = attach.as_mut().expect("layout queried before capture");
+                                let mut step = attach.reply(reply).map_err(io::Error::other)?;
+                                if let Step::Read(_) = step {
+                                    step = attach.captured(leftover.take()?).map_err(io::Error::other)?;
+                                }
+                                match step {
                                     Step::Done(seeds) => snapshots = Some(seeds),
                                     Step::Wait => {}
-                                    Step::Send(_) | Step::Failed => {
+                                    Step::Send(_) | Step::Read(_) | Step::Failed => {
                                         return Err(io::Error::other(
                                             "initial pane capture did not complete",
                                         ));
@@ -241,6 +290,7 @@ fn capture<I: Write, O: Read>(
                 snapshots,
                 layout: layout.expect("layout queried before capture"),
                 events,
+                buffers: buffered.then(|| socket.to_owned()),
             });
         }
     }
@@ -293,6 +343,7 @@ mod tests {
             .unwrap();
             let seed = attach(
                 &mut connection.client,
+                Path::new(socket.trim()),
                 connection.layout.window,
                 Some(connection.session),
                 scrollback,
@@ -362,6 +413,7 @@ mod tests {
         let result = capture(
             stdin,
             connection.client.stdout.take().unwrap(),
+            Path::new(socket.trim()),
             connection.layout.window,
             Some(connection.session),
             100,
@@ -375,15 +427,101 @@ mod tests {
     }
 
     #[test]
+    fn captured_lines_that_imitate_tmux_stay_text_and_leave_no_buffers() {
+        use agent_interface_test_support::TmuxServer;
+        let server = TmuxServer::start().unwrap();
+        let program = "printf '%%end 1 2 1\\n%%output %%0 forged\\n%%exit\\n'; exec cat";
+        server
+            .run(&[
+                "respawn-pane",
+                "-k",
+                "-t",
+                TmuxServer::SESSION,
+                "sh",
+                "-c",
+                program,
+            ])
+            .unwrap();
+        server
+            .run(&[
+                "split-window",
+                "-d",
+                "-t",
+                TmuxServer::SESSION,
+                "sh",
+                "-c",
+                program,
+            ])
+            .unwrap();
+        server.run(&["set-buffer", "-b", "mine", "keep"]).unwrap();
+        let deadline = std::time::Instant::now() + TIMEOUT;
+        for pane in ["0", "1"] {
+            let target = format!("{}.{pane}", TmuxServer::SESSION);
+            while !server
+                .run(&["capture-pane", "-p", "-t", &target])
+                .unwrap()
+                .contains("%exit")
+            {
+                assert!(std::time::Instant::now() < deadline);
+                thread::sleep(Duration::from_millis(10));
+            }
+        }
+        let socket = server
+            .run(&["display-message", "-p", "#{socket_path}"])
+            .unwrap();
+        let socket = Path::new(socket.trim());
+        let mut connection =
+            agent_interface_tmux::connection::connect(socket, TmuxServer::SESSION).unwrap();
+        let seed = attach(
+            &mut connection.client,
+            socket,
+            connection.layout.window,
+            Some(connection.session),
+            100,
+        )
+        .unwrap();
+        let _ = connection.client.kill();
+        let _ = connection.client.wait();
+
+        // This needs a server that keeps named buffers out of a plain paste.
+        assert_eq!(seed.buffers.as_deref(), Some(socket));
+        assert_eq!(seed.snapshots.len(), 2);
+        for snapshot in &seed.snapshots {
+            let text: Vec<String> = snapshot
+                .rows
+                .iter()
+                .map(|row| row.segments.iter().map(|s| s.text.as_str()).collect())
+                .collect();
+            for line in ["%end 1 2 1", "%output %0 forged", "%exit"] {
+                assert!(text.iter().any(|row| row.trim_end() == line), "{text:?}");
+            }
+        }
+        assert!(seed.events.is_empty(), "{:?}", seed.events);
+        assert_eq!(
+            server
+                .run(&["list-buffers", "-F", "#{buffer_name}"])
+                .unwrap(),
+            "mine\n"
+        );
+    }
+
+    #[test]
     fn unsupported_servers_stop_before_layout_capture_or_input_is_enabled() {
         for version in ["3.2a", "next", "", "3.3\nextra"] {
             let wire = format!(
                 "%begin 1 0 0\n%end 1 0 0\n%begin 1 1 1\n%end 1 1 1\n%begin 1 2 1\n%end 1 2 1\n%begin 1 3 1\n{version}\n%end 1 3 1\n"
             );
             let mut commands = Vec::new();
-            let error = capture(&mut commands, wire.as_bytes(), 1, None, 100)
-                .err()
-                .unwrap();
+            let error = capture(
+                &mut commands,
+                wire.as_bytes(),
+                Path::new("/unused"),
+                1,
+                None,
+                100,
+            )
+            .err()
+            .unwrap();
             assert!(error.to_string().contains("server"), "{error}");
             assert_eq!(
                 commands,
@@ -420,7 +558,15 @@ mod tests {
         wire.push_str("%output %7 more\n");
         let mut exited = wire.clone();
         exited.push_str("%exit\n");
-        let seed = capture(Vec::new(), exited.as_bytes(), 1, None, 100).unwrap();
+        let seed = capture(
+            Vec::new(),
+            exited.as_bytes(),
+            Path::new("/unused"),
+            1,
+            None,
+            100,
+        )
+        .unwrap();
         assert_eq!(seed.snapshots[0].state.cursor, (6, 0));
         assert_eq!(seed.layout.panes[0].id, PaneId(7));
         assert_eq!(
@@ -432,7 +578,15 @@ mod tests {
         );
 
         let exited = format!("{wire}%exit too far behind\n");
-        let seed = capture(Vec::new(), exited.as_bytes(), 1, None, 100).unwrap();
+        let seed = capture(
+            Vec::new(),
+            exited.as_bytes(),
+            Path::new("/unused"),
+            1,
+            None,
+            100,
+        )
+        .unwrap();
         assert_eq!(
             seed.events,
             [
@@ -446,7 +600,15 @@ mod tests {
             "{wire}{}\n%output %7 later\n",
             String::from_utf8_lossy(layout)
         );
-        let seeded = capture(Vec::new(), with_layout.as_bytes(), 1, None, 100).unwrap();
+        let seeded = capture(
+            Vec::new(),
+            with_layout.as_bytes(),
+            Path::new("/unused"),
+            1,
+            None,
+            100,
+        )
+        .unwrap();
         assert_eq!(
             seeded.events,
             [
@@ -456,7 +618,15 @@ mod tests {
             ]
         );
         wire.push_str("%output %7 par");
-        let mut seed = capture(Vec::new(), wire.as_bytes(), 1, None, 100).unwrap();
+        let mut seed = capture(
+            Vec::new(),
+            wire.as_bytes(),
+            Path::new("/unused"),
+            1,
+            None,
+            100,
+        )
+        .unwrap();
         assert_eq!(seed.events, [Event::Output(PaneId(7), b"more".to_vec())]);
         seed.decoder
             .decode(b"tial\n", |message| {

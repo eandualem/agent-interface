@@ -346,7 +346,7 @@ pub(crate) fn tmux_binary_on(path: &std::ffi::OsStr) -> io::Result<std::path::Pa
         })
 }
 
-fn command(socket: &Path) -> io::Result<Command> {
+pub(crate) fn command(socket: &Path) -> io::Result<Command> {
     let binary = tmux_binary()?;
     let mut command = Command::new(binary);
     command

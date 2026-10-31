@@ -109,7 +109,7 @@ impl Candidate {
                 return Err("output did not settle during margin cursor recovery".to_owned());
             }
             let from = connection.mark();
-            let (recovery, pause) = Recovery::start(self.pane, SCROLLBACK);
+            let (recovery, pause) = Recovery::start(self.pane, SCROLLBACK, None);
             connection.send(&pause)?;
             let (rebuilt, next) = recover(connection, from, from, recovery, deadline)?
                 .ok_or("margin cursor recovery failed")?;
@@ -194,6 +194,7 @@ pub fn recover(
                         }
                         return Ok(Some((rebuilt, index)));
                     }
+                    Step::Read(_) => unreachable!("the benchmark captures into replies"),
                     Step::Failed => return Ok(None),
                 }
             }
@@ -223,6 +224,7 @@ pub fn attach(
                 Step::Send(line) => connection.send(&line)?,
                 Step::Wait => {}
                 Step::Done(snapshots) => return Ok(Some((snapshots, index))),
+                Step::Read(_) => unreachable!("the benchmark captures into replies"),
                 Step::Failed => return Ok(None),
             },
             Event::Notification(_) => {}

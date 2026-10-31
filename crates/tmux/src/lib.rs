@@ -7,6 +7,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod buffers;
 pub mod capture;
 pub mod command;
 pub mod control;

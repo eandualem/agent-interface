@@ -69,12 +69,23 @@ pub fn check_server_version(version: &str) -> io::Result<()> {
     }
 }
 
-// Python: tmux (?:next-)?(\d+)\.(\d+)(?:[a-zA-Z][\w.-]*|[-+][\w.-]+)?
+/// Returns whether a server reporting `version` keeps named buffers, such as
+/// the ones recovery captures into, out of a `paste-buffer` that names none.
+/// tmux 3.4 is the first release that pastes only automatic buffers then.
+pub fn pastes_only_automatic_buffers(version: &str) -> bool {
+    at_least(&format!("tmux {version}"), 3, 4) == Some(true)
+}
+
 fn supported(report: &str) -> Option<bool> {
+    at_least(report, 3, 3)
+}
+
+// Python: tmux (?:next-)?(\d+)\.(\d+)(?:[a-zA-Z][\w.-]*|[-+][\w.-]+)?
+fn at_least(report: &str, floor_major: u32, floor_minor: u32) -> Option<bool> {
     let version = report.strip_prefix("tmux ")?;
     let version = version.strip_prefix("next-").unwrap_or(version);
-    let (major, rest) = number(version)?;
-    let (minor, suffix) = number(rest.strip_prefix('.')?)?;
+    let (major, rest) = number(version, floor_major)?;
+    let (minor, suffix) = number(rest.strip_prefix('.')?, floor_minor)?;
     if let Some(first) = suffix.chars().next() {
         let rest = &suffix[first.len_utf8()..];
         if !(first.is_ascii_alphabetic() || matches!(first, '-' | '+') && !rest.is_empty())
@@ -92,8 +103,8 @@ fn supported(report: &str) -> Option<bool> {
     Some(major > Ordering::Equal || major == Ordering::Equal && minor != Ordering::Less)
 }
 
-// Compare with three without imposing a machine-integer limit on the report.
-fn number(text: &str) -> Option<(Ordering, &str)> {
+// Compare with `floor` without imposing a machine-integer limit on the report.
+fn number(text: &str, floor: u32) -> Option<(Ordering, &str)> {
     let mut value = 0;
     let mut end = 0;
     for (index, ch) in text.char_indices() {
@@ -109,10 +120,10 @@ fn number(text: &str) -> Option<(Ordering, &str)> {
             start -= 1;
         }
         let digit = (ch as u32 - start) % 10;
-        value = (value * 10 + digit).min(4);
+        value = (value * 10 + digit).min(floor + 1);
         end = index + ch.len_utf8();
     }
-    (end > 0).then(|| (value.cmp(&3), &text[end..]))
+    (end > 0).then(|| (value.cmp(&floor), &text[end..]))
 }
 
 #[cfg(test)]
@@ -144,6 +155,25 @@ mod tests {
             ("tmux 3.3 trailing", None),
         ] {
             assert_eq!(supported(version), expected, "{version}");
+        }
+    }
+
+    #[test]
+    fn only_servers_from_3_4_keep_named_buffers_out_of_paste() {
+        for (version, expected) in [
+            ("3.3", false),
+            ("3.3a", false),
+            ("3.4", true),
+            ("next-3.4", true),
+            ("3.7c", true),
+            ("4.0", true),
+            ("next", false),
+        ] {
+            assert_eq!(
+                pastes_only_automatic_buffers(version),
+                expected,
+                "{version}"
+            );
         }
     }
 

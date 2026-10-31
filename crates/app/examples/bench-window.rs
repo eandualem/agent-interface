@@ -100,9 +100,18 @@ fn run() -> Result<(), String> {
         ])
         .map_err(|e| e.to_string())?;
     let (wake, woken) = futures::channel::mpsc::unbounded();
-    let panes = Panes::start(client, &layout, options.scrollback, move || {
-        let _ = wake.unbounded_send(());
-    })
+    let socket = server
+        .run(&["display-message", "-p", "#{socket_path}"])
+        .map_err(|e| e.to_string())?;
+    let panes = Panes::start(
+        client,
+        socket.trim().as_ref(),
+        &layout,
+        options.scrollback,
+        move || {
+            let _ = wake.unbounded_send(());
+        },
+    )
     .map_err(|e| e.to_string())?;
     let panes = Arc::new(panes);
     let origin = options.origin;
