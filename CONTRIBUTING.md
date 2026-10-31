@@ -199,6 +199,10 @@ not a desktop compatibility test: check launch, keyboard input, terminal output,
 the library chooser on the intended desktop before publishing that target.
 The packaged `BUILD.json` must identify clean, reviewed source. Audit the
 unpacked binary and notices, and retain the archive checksum with the release.
+Publish the exact archives and checksums downloaded from that workflow run,
+once its **attest** job has finished. Do not publish a separately built
+archive, such as a local `dist/` build: it has no provenance attestation, and
+its digest differs, so `gh attestation verify` rejects it.
 
 Installer regression checks use inert payloads and temporary home directories:
 

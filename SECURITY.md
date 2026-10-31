@@ -70,7 +70,7 @@ gh attestation verify agent-interface-aarch64-apple-darwin.tar.gz \
 ```
 
 Checking the commit matters: it rejects an archive the same workflow built
-from any other branch or commit.
+from any other commit.
 
 Archives from releases before attestations were added (0.2.6 and earlier)
 have checksums only.
