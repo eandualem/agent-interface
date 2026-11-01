@@ -538,12 +538,9 @@ if [ -f "$resources/setup_backbone.py" ]; then
     fi
     # Finish recovery with its original provider before enforcing this release's
     # minimum. Never change packages under a saved, unfinished setup request.
-    "$tools/agent-backbone/bin/python" -I -B -c '
-import re
-from importlib.metadata import version
-value = version("agent-backbone")
-raise SystemExit(0 if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", value) and tuple(map(int, value.split("."))) >= (0, 4, 5) else 1)
-' || fail 'Agent Interface requires Backbone 0.4.5 or newer. Saved setup was preserved; after recovery completes, rerun the installer to upgrade Backbone. The app was not replaced.'
+    "$tools/agent-backbone/bin/python" -I -B "$resources/setup_backbone.py" \
+        --executable "$tools/agent-backbone/bin/backbone" --check-minimum ||
+        fail 'Agent Interface requires Backbone 0.4.5 or newer. Saved setup was preserved; after recovery completes, rerun the installer to upgrade Backbone. The app was not replaced.'
 fi
 printf '%s\n' 'Installing the app and its launcher...'
 if [ "$platform" = unknown-linux-gnu ]; then

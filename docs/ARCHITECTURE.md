@@ -87,7 +87,9 @@ take the rest of the capture for messages from tmux. The app requires tmux 3.4
 or newer and writes each capture into a named buffer
 instead of its reply, with a name unique to that line and process. After the
 line's replies, a separate tmux client on the same socket reads each buffer
-by its listed size and deletes it. A rebuild that does not finish tries to
+by its listed size using `show-buffer` and deletes it. This unattached client
+receives exact bytes without invoking the user's `after-save-buffer` hook.
+A rebuild that does not finish tries to
 delete the buffers its line named, on a separate thread; this is best effort,
 and a process exit or a failing tmux can leave them. No other buffer is read
 or deleted. Version checks cover both the executable and the connected server
@@ -615,6 +617,9 @@ source checkout or portable payload is composed into Interface's packages.
 After setup or recovery, the installer verifies this package minimum before
 replacing the app. Recovery keeps its original provider; if that provider is
 older, app installation stops until a subsequent permitted upgrade.
+The helpers compare normalized stable Python package versions, including
+post-releases, without assuming a version-parser dependency in Backbone's
+environment. Pre-release and development versions do not satisfy either gate.
 
 Linux archives also include `upgrade_backbone.py`. Before changing an existing
 Linux provider package, this guard requires a completed installer-owned setup,

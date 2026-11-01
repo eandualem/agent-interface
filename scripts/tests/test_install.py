@@ -633,7 +633,7 @@ sys.exit(0 if outcome in ('ok', 'corrupt') else int(outcome))
 printf '%s\\n' "$*" >> "$FIXTURE_LOG"
 case "$*" in *'--phase before'*) exit "${FIXTURE_PREFLIGHT:-0}";; *'--phase after'*) exit "${FIXTURE_RELEASE:-0}";; *'--phase verify'*) exit "${FIXTURE_VERIFY:-0}";; esac
 case "$*" in *--resume-pending*) exit "${FIXTURE_RESUME:-0}";; esac
-case "$*" in *'importlib.metadata import version'*) exit "${FIXTURE_VERSION_FAIL:-0}";; esac
+case "$*" in *--check-minimum*) exit "${FIXTURE_VERSION_FAIL:-0}";; esac
 case ":$PATH:" in *":$FIXTURE_BIN:"*) :;; *) exit 89;; esac
 if [ "${FIXTURE_SETUP_DELAY:-0}" != 0 ]; then sleep "$FIXTURE_SETUP_DELAY"; fi
 exit "${FIXTURE_SETUP_FAIL:-0}"
@@ -668,7 +668,7 @@ esac
         log = Path(self.env["FIXTURE_LOG"])
         lines = log.read_text().splitlines()
         self.assertIn("tool install --upgrade --prerelease disallow --python >=3.11,<3.14 agent-backbone>=0.4.5", lines)
-        self.assertTrue(any(line.startswith("-I -B -c") for line in lines))
+        self.assertTrue(any("--check-minimum" in line for line in lines))
         self.env["FIXTURE_RESUME"] = "3"
         log.write_text("")
         result = self.install(archive)

@@ -10,6 +10,20 @@ setup = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(setup)
 
 
+class VersionTests(unittest.TestCase):
+    def test_stable_metadata_and_numeric_release_order(self):
+        for value in ("0.4.5", "0.4.5.post1", "0.4.5.0", "0.4.10", "0.5",
+                      "0.4.5+local.1", "1!0.1", "0!0.4.5"):
+            with self.subTest(value=value):
+                self.assertTrue(setup.stable_version_at_least(value, (0, 4, 5)))
+        for value in ("0.4.4.post99", "0.4", "0.4.5rc1", "0.4.5.dev1",
+                      "0.5rc1", "0.4.5.post1.dev1", "unknown", "0.4.5junk", None):
+            with self.subTest(value=value):
+                self.assertFalse(setup.stable_version_at_least(value, (0, 4, 5)))
+        self.assertTrue(setup.stable_version_at_least("0.4.3.post1", (0, 4, 3)))
+        self.assertFalse(setup.stable_version_at_least("0.4.2.post9", (0, 4, 3)))
+
+
 class SetupTests(unittest.TestCase):
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
