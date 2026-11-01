@@ -81,6 +81,22 @@ per-segment copies of long targets. Initial snapshots are released after restora
 output only for panes in its selected window. Recovery uses the state tmux
 can report; it cannot reconstruct every historical parser or input mode.
 
+tmux writes a capture's text into the control connection unchanged, so a
+captured line could match the line that ends tmux's reply and make the reader
+take the rest of the capture for messages from tmux. The app requires tmux 3.4
+or newer and writes each capture into a named buffer
+instead of its reply, with a name unique to that line and process. After the
+line's replies, a separate tmux client on the same socket reads each buffer
+by its listed size using `show-buffer` and deletes it. This unattached client
+receives exact bytes without invoking the user's `after-save-buffer` hook.
+A rebuild that does not finish tries to
+delete the buffers its line named, on a separate thread; this is best effort,
+and a process exit or a failing tmux can leave them. No other buffer is read
+or deleted. Version checks cover both the executable and the connected server
+before capture or input is enabled. tmux 3.4 is the minimum because it excludes
+named buffers from an ordinary paste; older servers are rejected rather than
+falling back to captures in the reply stream.
+
 The UI handles application shortcuts first. Other keys and paste operations
 are encoded for the destination pane's reported input modes and sent as literal
 bytes to that exact pane. Navigation does not redirect queued input to another
@@ -121,11 +137,12 @@ UI thread.
 
 `app::diagnostics` owns the desktop process's `tracing` subscriber. Product
 libraries emit structured events without choosing a destination or initializing
-global logging. The saved `logging` preference selects Warnings (the default),
-Debug or Trace and reloads the filter immediately. Neither development builds
+global logging. The saved `logging` preference selects Off, Warnings (the default),
+Debug or Trace and reloads the filter immediately. Off disables new events; queued
+records may drain, and existing files are not erased. The writer defers filesystem
+initialization on an Off launch until logging is enabled and a record arrives. Neither development builds
 nor `RUST_LOG` enables verbose output. Only the explicitly instrumented app,
-tmux and roster targets are admitted, so dependency HTTP logs cannot expose
-request bodies or credentials. Events cover lifecycle boundaries and operation
+tmux and roster targets are admitted; dependency HTTP logging is not enabled. Events cover lifecycle boundaries and operation
 timings; terminal byte parsing, painting and input carry no per-character logs.
 
 The JSON formatter feeds a lossy 1,024-record background queue. Queue saturation
@@ -135,9 +152,13 @@ than 16 KiB and uses a private owned directory and regular files. A separate
 advisory lock serializes rotation across desktop processes; lock contention is
 reported as a failed write, rather than blocking producers. The worker guard
 drains queued records during normal shutdown. Forced termination may lose queued
-records. Logs contain stable pane IDs, process/session IDs, classifications and
-timings, never terminal bytes, input, feedback prose, HTTP payloads or credentials.
-Failure logging leaves existing lifecycle decisions and errors unchanged.
+records. Instrumentation records pane/process/session IDs, classifications and
+timings rather than terminal bytes, input or HTTP payloads. Error context and
+identifiers may still be sensitive; this is not a universal secret-scrubbing
+boundary. Users explicitly select detailed logging and manage its local retention.
+Off does not disable functional storage (layouts, settings and resumable setup
+state), tmux history, or user-visible operation errors. Failure logging leaves
+existing lifecycle decisions and errors unchanged.
 
 ## Saving and shared libraries
 
@@ -504,7 +525,8 @@ build-time advisory exception are described below.
   MIT. Its bundled SQLite uses SQLite's public-domain dedication. Runtime limits
   bound values; serialization writes the initial database through an open file handle.
 - **`libc`:** Unix constants for nonblocking configuration reads in the app
-  and roster, and the existing process integration. MIT OR Apache-2.0.
+  and roster, the existing process integration, and resident-memory readings in
+  the terminal tests. MIT OR Apache-2.0.
 - **`wry` 0.57.1:** system WebKit child views for HTML Documents and legacy
   artifacts on macOS and Linux, pinned exactly. MIT OR Apache-2.0.
   The local `native/wry` patch enables the Linux process sandbox before view
@@ -560,8 +582,10 @@ build-time advisory exception are described below.
   so it adds no package to the graph.
 
 The native terminal source is prepared from a pinned Ghostty commit plus
-[`native/ghostty.patch`](../native/ghostty.patch). The preparation script checks
-the source and patch digests and reuses immutable prepared directories. See
+[`native/ghostty.patch`](../native/ghostty.patch). Among its changes, the patch
+discards an operating system command (OSC) longer than 1 MiB, tmux's default
+input limit, so a sequence that never ends holds bounded memory. The preparation
+script checks the source and patch digests and reuses immutable prepared directories. See
 [the native build instructions](../CONTRIBUTING.md#the-terminal-engines-native-build)
 for Zig, build modes, CPU targets and offline builds.
 
@@ -585,11 +609,19 @@ binary linked to the system desktop libraries. Neither package includes a
 Python runtime, build toolchain, tmux server or application daemon.
 
 The archive includes `setup_backbone.py`, a standard-library installer helper.
-`install.sh` installs the latest stable published `agent-backbone>=0.4.3` with
+`install.sh` installs the latest stable published `agent-backbone>=0.4.5` with
 uv, independently of the app archive. Backbone (MIT) owns its package, dependency
 testing and publication. uv (MIT OR Apache-2.0) installs the Python environment;
 when uv is absent, its 0.13.6 installer is version- and SHA-256-pinned. No Backbone
 source checkout or portable payload is composed into Interface's packages.
+After setup or recovery, the installer verifies this package minimum before
+replacing the app. Recovery keeps its original provider; if that provider is
+older, app installation stops until a subsequent permitted upgrade.
+The helpers compare stable Python package versions, including post-releases
+and permitted spelling variations in metadata, without assuming a version-parser
+dependency in Backbone's environment. Pre-release and development versions do
+not satisfy either gate.
+The installer's check does not require a new helper command in older archives.
 
 Linux archives also include `upgrade_backbone.py`. Before changing an existing
 Linux provider package, this guard requires a completed installer-owned setup,

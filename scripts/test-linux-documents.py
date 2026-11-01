@@ -72,7 +72,7 @@ body { font: 24px sans-serif; padding: 24px; } button,input {font:inherit;margin
 button,input { border: 0; padding: 8px; }
 </style></head><body><h1>DOCUMENTREADY</h1><p id="result">WAITING</p>
 <button id="action" onclick="if(this.textContent==='CLICKPASSED')setTimeout(()=>window.ipc.postMessage('focus'),500);this.textContent='CLICKPASSED'">INTERACT</button>
-<input aria-label="Input" placeholder="TYPEHERE" oninput="document.getElementById('typed').textContent=this.value"><input id="file" type="file" hidden>
+<input aria-label="Input" placeholder="TYPEHERE" onfocus="document.getElementById('typed').textContent='FOCUSED'" oninput="document.getElementById('typed').textContent=this.value"><input id="file" type="file" hidden>
 <button onclick="document.getElementById('file').click();this.textContent='FILEBLOCKED'">FILETEST</button>
 <p id="typed">INPUTWAITING</p>
 <p><a href="TARGET/navigation">NAVTEST</a> <button onclick="window.open('TARGET/popup');this.textContent='POPUPBLOCKED'">POPUPTEST</button></p>
@@ -226,6 +226,9 @@ try { new WebSocket('TARGET/socket'.replace('http:', 'ws:')); } catch (_) {}
             click('INTERACT')
             wait_for(lambda: find('CLICKPASSED'), 'JavaScript button')
             click('TYPEHERE')
+            # Typing before WebKit has focused the field sends the keys
+            # elsewhere, so wait for the field to report focus first.
+            wait_for(lambda: find('FOCUSED'), 'HTML input focus')
             command('xdotool', 'type', '--clearmodifiers', 'INPUTPASSED')
             wait_for(lambda: find('INPUTPASSED'), 'HTML keyboard input')
             # Moving the pointer must not send subsequent typing back to the

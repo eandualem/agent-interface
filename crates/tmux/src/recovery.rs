@@ -157,12 +157,17 @@ pub struct Recovery {
     scrollback: usize,
     /// The pane's output after the boundary.
     held: Option<Vec<u8>>,
+    /// With a buffer-name prefix, the line captures into buffers rather than
+    /// into its replies.
+    buffers: Option<String>,
 }
 
 #[derive(Debug)]
 enum Waiting {
     Pause,
     Line,
+    /// The captures are in buffers the caller reads.
+    Buffers,
     /// The rebuild is done; no more replies belong to it.
     Nothing,
 }
@@ -174,6 +179,9 @@ pub enum Step<T> {
     Send(String),
     /// Wait for more replies.
     Wait,
+    /// Read and delete these capture buffers with [`crate::buffers::take`],
+    /// in order, and hand their contents to the rebuild's `captured`.
+    Read(Vec<String>),
     /// The rebuild is ready.
     Done(T),
     /// A command failed, for example because the pane exited. The replies
@@ -192,7 +200,9 @@ pub struct Rebuilt {
 
 impl Recovery {
     /// Starts rebuilding `pane`, returning the command line that pauses it.
-    pub fn start(pane: PaneId, scrollback: usize) -> (Self, String) {
+    /// With `buffers`, a prefix from [`crate::buffers::prefix`], the pane is
+    /// captured into buffers with names that start with it.
+    pub fn start(pane: PaneId, scrollback: usize, buffers: Option<String>) -> (Self, String) {
         let scrollback = scrollback.min(i32::MAX as usize);
         let recovery = Self {
             pane,
@@ -200,6 +210,7 @@ impl Recovery {
             replies: Vec::new(),
             scrollback,
             held: None,
+            buffers,
         };
         (
             recovery,
@@ -210,19 +221,33 @@ impl Recovery {
     /// Starts rebuilding `pane` after tmux paused it itself (`pause-after`),
     /// returning the line to send. All of the pane's output after the
     /// `%pause` notification belongs after the rebuilt state.
-    pub fn paused(pane: PaneId, scrollback: usize) -> (Self, String) {
+    pub fn paused(pane: PaneId, scrollback: usize, buffers: Option<String>) -> (Self, String) {
         let scrollback = scrollback.min(i32::MAX as usize);
+        let command = line(
+            &[pane],
+            &continue_command(pane),
+            None,
+            scrollback,
+            buffers.as_deref(),
+        );
         let recovery = Self {
             pane,
             waiting: Waiting::Line,
             replies: Vec::new(),
             scrollback,
             held: Some(Vec::new()),
+            buffers,
         };
-        (
-            recovery,
-            line(&[pane], &continue_command(pane), None, scrollback),
-        )
+        (recovery, command)
+    }
+
+    /// The names of the buffers this rebuild captures into, to delete with
+    /// [`crate::buffers::delete`] if it does not finish.
+    pub fn buffers(&self) -> Vec<String> {
+        self.buffers
+            .as_deref()
+            .map(|prefix| buffer_names(prefix, &[self.pane]))
+            .unwrap_or_default()
     }
 
     /// The pane being rebuilt.
@@ -240,7 +265,7 @@ impl Recovery {
 
     /// Takes the reply to the next command this recovery sent.
     pub fn reply(&mut self, reply: Reply) -> Result<Step<Rebuilt>, Error> {
-        if matches!(self.waiting, Waiting::Nothing) {
+        if matches!(self.waiting, Waiting::Nothing | Waiting::Buffers) {
             return Err(Error::UnexpectedReply);
         }
         if !reply.ok {
@@ -248,7 +273,7 @@ impl Recovery {
             return Ok(Step::Failed);
         }
         match self.waiting {
-            Waiting::Nothing => Err(Error::UnexpectedReply),
+            Waiting::Nothing | Waiting::Buffers => Err(Error::UnexpectedReply),
             Waiting::Pause => {
                 self.waiting = Waiting::Line;
                 self.held = Some(Vec::new());
@@ -257,6 +282,7 @@ impl Recovery {
                     &continue_command(self.pane),
                     None,
                     self.scrollback,
+                    self.buffers.as_deref(),
                 )))
             }
             Waiting::Line => {
@@ -264,18 +290,35 @@ impl Recovery {
                 if self.replies.len() < replies_per_pane() + 1 {
                     return Ok(Step::Wait);
                 }
-                self.waiting = Waiting::Nothing;
-                let snapshot = snapshot(
-                    self.pane,
-                    &self.replies[..replies_per_pane()],
-                    self.scrollback,
-                )?;
-                Ok(Step::Done(Rebuilt {
-                    snapshot,
-                    output: self.held.take().unwrap_or_default(),
-                }))
+                if self.buffers.is_some() {
+                    self.waiting = Waiting::Buffers;
+                    return Ok(Step::Read(self.buffers()));
+                }
+                self.finish()
             }
         }
+    }
+
+    /// Takes the contents of the buffers that [`Step::Read`] named, in order.
+    pub fn captured(&mut self, contents: Vec<Option<Vec<u8>>>) -> Result<Step<Rebuilt>, Error> {
+        if !matches!(self.waiting, Waiting::Buffers) {
+            return Err(Error::UnexpectedReply);
+        }
+        fill(&mut self.replies, contents)?;
+        self.finish()
+    }
+
+    fn finish(&mut self) -> Result<Step<Rebuilt>, Error> {
+        self.waiting = Waiting::Nothing;
+        let snapshot = snapshot(
+            self.pane,
+            &self.replies[..replies_per_pane()],
+            self.scrollback,
+        )?;
+        Ok(Step::Done(Rebuilt {
+            snapshot,
+            output: self.held.take().unwrap_or_default(),
+        }))
     }
 }
 
@@ -293,12 +336,15 @@ pub struct Attach {
     panes: Vec<PaneId>,
     scrollback: usize,
     replies: Vec<Reply>,
+    /// As for [`Recovery`]: with a prefix, the captures are in buffers.
+    buffers: Option<String>,
 }
 
 impl Attach {
-    /// Starts rebuilding `panes`, returning the line to send.
-    pub fn new(panes: Vec<PaneId>, scrollback: usize) -> (Self, String) {
-        Self::start(panes, None, scrollback)
+    /// Starts rebuilding `panes`, returning the line to send. `buffers` is as
+    /// for [`Recovery::start`].
+    pub fn new(panes: Vec<PaneId>, scrollback: usize, buffers: Option<String>) -> (Self, String) {
+        Self::start(panes, None, scrollback, buffers)
     }
 
     /// Rebuilds only panes still in the expected source session and window.
@@ -307,19 +353,41 @@ impl Attach {
         session: u32,
         window: u32,
         scrollback: usize,
+        buffers: Option<String>,
     ) -> (Self, String) {
-        Self::start(panes, Some((session, window)), scrollback)
+        Self::start(panes, Some((session, window)), scrollback, buffers)
     }
 
-    fn start(panes: Vec<PaneId>, source: Option<(u32, u32)>, scrollback: usize) -> (Self, String) {
+    fn start(
+        panes: Vec<PaneId>,
+        source: Option<(u32, u32)>,
+        scrollback: usize,
+        buffers: Option<String>,
+    ) -> (Self, String) {
         let scrollback = scrollback.min(i32::MAX as usize);
-        let command = line(&panes, "refresh-client -f '!no-output'", source, scrollback);
+        let command = line(
+            &panes,
+            "refresh-client -f '!no-output'",
+            source,
+            scrollback,
+            buffers.as_deref(),
+        );
         let attach = Self {
             panes,
             scrollback,
             replies: Vec::new(),
+            buffers,
         };
         (attach, command)
+    }
+
+    /// The names of the buffers this rebuild captures into, to delete with
+    /// [`crate::buffers::delete`] if it does not finish.
+    pub fn buffers(&self) -> Vec<String> {
+        self.buffers
+            .as_deref()
+            .map(|prefix| buffer_names(prefix, &self.panes))
+            .unwrap_or_default()
     }
 
     /// Takes the reply to the next command of the line.
@@ -335,6 +403,26 @@ impl Attach {
         if self.replies.len() < expected {
             return Ok(Step::Wait);
         }
+        if self.buffers.is_some() {
+            return Ok(Step::Read(self.buffers()));
+        }
+        self.finish()
+    }
+
+    /// Takes the contents of the buffers that [`Step::Read`] named, in order.
+    pub fn captured(
+        &mut self,
+        contents: Vec<Option<Vec<u8>>>,
+    ) -> Result<Step<Vec<Snapshot>>, Error> {
+        if self.buffers.is_none() || self.replies.len() != self.panes.len() * replies_per_pane() + 1
+        {
+            return Err(Error::UnexpectedReply);
+        }
+        fill(&mut self.replies, contents)?;
+        self.finish()
+    }
+
+    fn finish(&self) -> Result<Step<Vec<Snapshot>>, Error> {
         self.panes
             .iter()
             .zip(self.replies.chunks(replies_per_pane()))
@@ -425,25 +513,42 @@ fn continue_command(pane: PaneId) -> String {
 /// Returns one line that reads every pane's state and then runs `last`.
 /// None of its commands waits, so tmux reads no pane output while it runs
 /// them.
-fn line(panes: &[PaneId], last: &str, source: Option<(u32, u32)>, scrollback: usize) -> String {
+///
+/// With `buffers`, each capture goes into a buffer named by [`buffer_names`]
+/// instead of its reply. tmux writes a capture's text into the control
+/// connection unchanged, so a line of it could match the line that ends the
+/// reply; a buffer keeps that text off the connection.
+fn line(
+    panes: &[PaneId],
+    last: &str,
+    source: Option<(u32, u32)>,
+    scrollback: usize,
+    buffers: Option<&str>,
+) -> String {
     let mut commands = Vec::new();
     for &pane in panes {
         let target = source.map_or_else(
             || target(pane),
             |(session, window)| format!("${session}:@{window}.%{}", pane.0),
         );
+        let to = |capture: usize| match buffers {
+            Some(prefix) => format!("-b '{}'", buffer_name(prefix, pane, capture)),
+            None => "-p".to_owned(),
+        };
         // The screen with only the history the local terminal retains, then the primary screen
         // saved while the alternate screen is on (empty otherwise).
         commands.push(format!(
-            "capture-pane -p -e -N -C -S -{scrollback} -E - -t '{target}'"
+            "capture-pane {} -e -N -C -S -{scrollback} -E - -t '{target}'",
+            to(0)
         ));
         commands.push(format!(
-            "capture-pane -p -e -N -C -a -q -S -{scrollback} -E - -t '{target}'"
+            "capture-pane {} -e -N -C -a -q -S -{scrollback} -E - -t '{target}'",
+            to(1)
         ));
         for format in FORMATS {
             commands.push(format!("display-message -p -t '{target}' '#{{{format}}}'"));
         }
-        commands.push(format!("capture-pane -p -P -C -t '{target}'"));
+        commands.push(format!("capture-pane {} -P -C -t '{target}'", to(2)));
     }
     commands.push(last.to_owned());
     let mut line = commands.join(" ; ");
@@ -483,6 +588,45 @@ fn snapshot(pane: PaneId, replies: &[Reply], scrollback: usize) -> Result<Snapsh
 
 fn lines(reply: &Reply) -> impl Iterator<Item = &[u8]> {
     reply.lines.iter().map(Vec::as_slice)
+}
+
+/// The positions, within one pane's replies, of its three captures, in the
+/// order [`line`] sends them.
+const fn captures() -> [usize; 3] {
+    [0, 1, 2 + FORMATS.len()]
+}
+
+fn buffer_name(prefix: &str, pane: PaneId, capture: usize) -> String {
+    format!("{prefix}{}-{capture}", pane.0)
+}
+
+/// The buffers a line with `prefix` captures `panes` into, in order.
+fn buffer_names(prefix: &str, panes: &[PaneId]) -> Vec<String> {
+    panes
+        .iter()
+        .flat_map(|&pane| (0..3).map(move |capture| buffer_name(prefix, pane, capture)))
+        .collect()
+}
+
+/// Puts the buffers' contents where the captures' replies would have them:
+/// as `-p` prints a capture, the buffer without one final line end, split
+/// into lines. tmux makes no buffer for an empty capture, which `-p` prints
+/// as one empty line.
+fn fill(replies: &mut [Reply], contents: Vec<Option<Vec<u8>>>) -> Result<(), Error> {
+    let panes = replies.len() / replies_per_pane();
+    if contents.len() != panes * 3 {
+        return Err(Error::UnexpectedReply);
+    }
+    for (index, content) in contents.into_iter().enumerate() {
+        let content = content.unwrap_or_default();
+        let text = content.strip_suffix(b"\n").unwrap_or(&content);
+        let reply = &mut replies[index / 3 * replies_per_pane() + captures()[index % 3]];
+        reply.lines = text
+            .split(|&byte| byte == b'\n')
+            .map(<[u8]>::to_vec)
+            .collect();
+    }
+    Ok(())
 }
 
 /// Reads the values of [`FORMATS`], in order.
@@ -642,7 +786,7 @@ mod tests {
 
     #[test]
     fn a_recovery_pauses_then_captures_and_continues_in_one_line() {
-        let (mut recovery, pause) = Recovery::start(PaneId(7), 100);
+        let (mut recovery, pause) = Recovery::start(PaneId(7), 100, None);
         assert_eq!(pause, "refresh-client -A '%7:pause'\n");
         // Output before the pause's reply is in the capture.
         recovery.output(b"before");
@@ -695,7 +839,7 @@ mod tests {
 
     #[test]
     fn after_tmux_pauses_a_pane_its_output_from_then_on_is_held() {
-        let (mut recovery, line) = Recovery::paused(PaneId(2), 100);
+        let (mut recovery, line) = Recovery::paused(PaneId(2), 100, None);
         assert!(line.ends_with("refresh-client -A '%2:continue'\n"));
         recovery.output(b"held");
         for reply in replies(&values()) {
@@ -713,16 +857,16 @@ mod tests {
             ok: false,
             lines: vec![b"can't find pane: %7".to_vec()],
         };
-        let (mut recovery, _) = Recovery::start(PaneId(7), 100);
+        let (mut recovery, _) = Recovery::start(PaneId(7), 100, None);
         assert_eq!(recovery.reply(failed.clone()).unwrap(), Step::Failed);
-        let (mut recovery, _) = Recovery::paused(PaneId(7), 100);
+        let (mut recovery, _) = Recovery::paused(PaneId(7), 100, None);
         assert_eq!(recovery.reply(ok(&[])).unwrap(), Step::Wait);
         assert_eq!(recovery.reply(failed).unwrap(), Step::Failed);
     }
 
     #[test]
     fn an_attach_reads_every_pane_then_turns_output_on() {
-        let (mut attach, line) = Attach::new(vec![PaneId(1), PaneId(4)], 100);
+        let (mut attach, line) = Attach::new(vec![PaneId(1), PaneId(4)], 100, None);
         assert!(line.contains("-t '%1'") && line.contains("-t '%4'"));
         assert!(line.ends_with(" ; refresh-client -f '!no-output'\n"));
         let mut replies = replies(&values());
@@ -736,9 +880,149 @@ mod tests {
         let panes: Vec<_> = snapshots.iter().map(|snapshot| snapshot.pane).collect();
         assert_eq!(panes, [PaneId(1), PaneId(4)]);
         assert_eq!(attach.reply(ok(&[])), Err(Error::UnexpectedReply));
-        let (mut attach, _) = Attach::new(vec![PaneId(1)], 100);
+        let (mut attach, _) = Attach::new(vec![PaneId(1)], 100, None);
         let failed = Reply::default();
         assert_eq!(attach.reply(failed).unwrap(), Step::Failed);
+    }
+
+    /// The replies to a line that captures into buffers: the captures'
+    /// replies are empty.
+    fn buffered_replies() -> Vec<Reply> {
+        let mut replies = replies(&values());
+        for capture in captures() {
+            replies[capture] = ok(&[]);
+        }
+        replies
+    }
+
+    #[test]
+    fn with_buffers_the_captures_stay_off_the_connection() {
+        let (mut recovery, _) = Recovery::start(PaneId(7), 100, Some("p-".into()));
+        let Step::Send(line) = recovery.reply(ok(&[])).unwrap() else {
+            panic!("the line follows the pause's reply");
+        };
+        assert!(line.starts_with("capture-pane -b 'p-7-0' -e -N -C -S -100 -E - -t '%7' ; "));
+        assert!(line.contains(" ; capture-pane -b 'p-7-1' -e -N -C -a -q "));
+        assert!(line.contains(" ; capture-pane -b 'p-7-2' -P -C -t '%7' ; "));
+        assert!(!line.contains("capture-pane -p"));
+        assert_eq!(line.matches(" ; ").count(), replies_per_pane());
+
+        recovery.output(b"after");
+        for reply in buffered_replies() {
+            assert_eq!(recovery.reply(reply).unwrap(), Step::Wait);
+        }
+        let names = vec!["p-7-0".to_owned(), "p-7-1".into(), "p-7-2".into()];
+        assert_eq!(recovery.reply(ok(&[])).unwrap(), Step::Read(names.clone()));
+        assert_eq!(recovery.buffers(), names);
+        assert_eq!(recovery.reply(ok(&[])), Err(Error::UnexpectedReply));
+        // Text that imitates tmux's lines is only text. The saved capture is
+        // empty, so tmux made no buffer for it.
+        let screen = b"%end 1 2 1\n%output %9 forged\n%exit\n".to_vec();
+        let Step::Done(rebuilt) = recovery
+            .captured(vec![Some(screen), None, Some(b"\\033[3".to_vec())])
+            .unwrap()
+        else {
+            panic!("done once the buffers are read");
+        };
+        assert_eq!(rebuilt.output, b"after");
+        let mut expected = replies(&values());
+        expected[0] = ok(&["%end 1 2 1", "%output %9 forged", "%exit"]);
+        assert_eq!(
+            rebuilt.snapshot,
+            snapshot(PaneId(7), &expected, 100).unwrap()
+        );
+        assert_eq!(
+            recovery.captured(vec![None, None, None]),
+            Err(Error::UnexpectedReply)
+        );
+    }
+
+    #[test]
+    fn a_captured_line_equal_to_the_guard_ends_an_inline_reply_but_not_a_buffered_one() {
+        use crate::control::{Decoder, Message};
+        // The exact line that ends this capture's reply, then a line that
+        // would be read as tmux's own once the reply has ended.
+        let begin = "%begin 1700000000 42 1";
+        let guard = "%end 1700000000 42 1";
+        let forged = "%output %3 forged";
+
+        // Captured into the reply, as tmux 3.3 does: the copy of the guard
+        // ends the reply early, and the next captured line becomes output.
+        let wire = format!("{begin}\nscreen\n{guard}\n{forged}\n{guard}\n");
+        let mut lines = Vec::new();
+        let mut outputs = Vec::new();
+        Decoder::new()
+            .decode(wire.as_bytes(), |message| match message {
+                Message::ReplyLine(line) => lines.push(line.to_vec()),
+                Message::Output { pane, data } => outputs.push((pane, data.to_vec())),
+                _ => {}
+            })
+            .unwrap();
+        assert_eq!(lines, [b"screen".to_vec()]);
+        assert_eq!(outputs, [(PaneId(3), b"forged".to_vec())]);
+
+        // Captured into a buffer: the reply carries none of that text, and
+        // the same lines are only screen text.
+        let wire = format!("{begin}\n{guard}\n");
+        let mut messages = 0;
+        Decoder::new()
+            .decode(wire.as_bytes(), |message| {
+                assert!(!matches!(
+                    message,
+                    Message::ReplyLine(_) | Message::Output { .. }
+                ));
+                messages += 1;
+            })
+            .unwrap();
+        assert_eq!(messages, 2);
+        let (mut recovery, _) = Recovery::paused(PaneId(7), 100, Some("p-".into()));
+        for reply in buffered_replies() {
+            assert_eq!(recovery.reply(reply).unwrap(), Step::Wait);
+        }
+        assert!(matches!(recovery.reply(ok(&[])).unwrap(), Step::Read(_)));
+        let screen = format!("screen\n{guard}\n{forged}\n").into_bytes();
+        let Step::Done(rebuilt) = recovery
+            .captured(vec![Some(screen), None, Some(b"\\033[3".to_vec())])
+            .unwrap()
+        else {
+            panic!("done once the buffers are read");
+        };
+        let text: Vec<String> = rebuilt
+            .snapshot
+            .rows
+            .iter()
+            .map(|row| row.segments.iter().map(|s| s.text.as_str()).collect())
+            .collect();
+        assert_eq!(text, ["screen", guard, forged]);
+    }
+
+    #[test]
+    fn an_attach_with_buffers_reads_every_panes_buffers_in_order() {
+        let (mut attach, line) = Attach::new(vec![PaneId(1), PaneId(4)], 100, Some("p-".into()));
+        assert!(line.contains("-b 'p-1-0'") && line.contains("-b 'p-4-2'"));
+        let mut replies = buffered_replies();
+        replies.extend(buffered_replies());
+        for reply in replies {
+            assert_eq!(attach.reply(reply).unwrap(), Step::Wait);
+        }
+        let Step::Read(names) = attach.reply(ok(&[])).unwrap() else {
+            panic!("the buffers come next");
+        };
+        assert_eq!(names, attach.buffers());
+        assert_eq!(names[..4], ["p-1-0", "p-1-1", "p-1-2", "p-4-0"]);
+        assert_eq!(attach.captured(vec![None; 5]), Err(Error::UnexpectedReply));
+        let contents = [b"one\n".to_vec(), b"two\n".to_vec()]
+            .into_iter()
+            .flat_map(|screen| [Some(screen), None, Some(b"\\033[3".to_vec())])
+            .collect();
+        let Step::Done(snapshots) = attach.captured(contents).unwrap() else {
+            panic!("done");
+        };
+        let text = |snapshot: &Snapshot| snapshot.rows[0].segments[0].text.clone();
+        assert_eq!(
+            snapshots.iter().map(text).collect::<Vec<_>>(),
+            ["one", "two"]
+        );
     }
 
     #[test]

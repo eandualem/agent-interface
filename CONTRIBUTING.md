@@ -29,7 +29,7 @@ You need:
   fetches Ghostty at a pinned commit, and Zig then fetches Ghostty's own
   dependencies. To build without a network, see
   [Building offline](#building-offline).
-- **tmux 3.3 or newer** in `PATH` to use the app's terminal sessions and run
+- **tmux 3.4 or newer** in `PATH` to use the app's terminal sessions and run
   tests that start tmux. An empty workspace can open without starting tmux.
 - **On Linux, the libraries the UI framework builds against**, for its
   Wayland and X11 backends. On Debian and Ubuntu:
@@ -199,6 +199,10 @@ not a desktop compatibility test: check launch, keyboard input, terminal output,
 the library chooser on the intended desktop before publishing that target.
 The packaged `BUILD.json` must identify clean, reviewed source. Audit the
 unpacked binary and notices, and retain the archive checksum with the release.
+Publish the exact archives and checksums downloaded from that workflow run,
+once its **attest** job has finished. Do not publish a separately built
+archive, such as a local `dist/` build: it has no provenance attestation, and
+its digest differs, so `gh attestation verify` rejects it.
 
 Installer regression checks use inert payloads and temporary home directories:
 

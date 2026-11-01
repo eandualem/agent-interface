@@ -126,6 +126,7 @@ fn connect_selected(
     let (wake, updates) = mpsc::unbounded();
     let panes = Panes::start_in_session(
         connection.client,
+        &socket,
         &connection.layout,
         connection.session,
         10_000,
@@ -952,8 +953,15 @@ mod tests {
         assert!(panes.send_input(ready.input, b"must-not-send").is_err());
         drop(ready);
         assert!(
-            Panes::start_in_session(moved.client, &moved.layout, moved.session, 100, || {})
-                .is_err()
+            Panes::start_in_session(
+                moved.client,
+                std::path::Path::new(socket.trim()),
+                &moved.layout,
+                moved.session,
+                100,
+                || {}
+            )
+            .is_err()
         );
         assert!(connect_selected(target, Some(selected), false).is_err());
         assert_eq!(current(), original);

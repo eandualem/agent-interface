@@ -4,12 +4,12 @@ use std::{cmp::Ordering, env, io, path::Path, process::Command, time::Duration};
 
 use unicode_properties::{GeneralCategory, GeneralCategoryGroup, UnicodeGeneralCategory};
 
-const MISSING: &str = "tmux not found; tmux 3.3 or newer is required. Install it on this host.";
+const MISSING: &str = "tmux not found; tmux 3.4 or newer is required. Install it on this host.";
 const CANNOT_RUN: &str =
-    "Cannot run tmux -V; tmux 3.3 or newer is required. Check the tmux executable in PATH.";
-const UNKNOWN: &str = "Cannot verify tmux version; tmux 3.3 or newer is required. Install a numbered build and check tmux -V.";
+    "Cannot run tmux -V; tmux 3.4 or newer is required. Check the tmux executable in PATH.";
+const UNKNOWN: &str = "Cannot verify tmux version; tmux 3.4 or newer is required. Install a numbered build and check tmux -V.";
 
-/// Find tmux on PATH and verify its numbered version is at least 3.3.
+/// Find tmux on PATH and verify its numbered version is at least 3.4.
 ///
 /// Runs only `tmux -V`, which contacts no server, with a five-second deadline
 /// and bounded stdout/stderr capture. Patch and numbered development suffixes
@@ -35,6 +35,12 @@ pub fn check_tmux() -> io::Result<String> {
             !path.is_dir() && rustix::fs::access(path, rustix::fs::Access::EXEC_OK).is_ok()
         })
         .ok_or_else(|| io::Error::other(MISSING))?;
+    check_executable(&binary)
+}
+
+/// Verify the executable selected by the connection layer, including its
+/// platform-specific fallback locations, without contacting a server.
+pub(crate) fn check_executable(binary: &Path) -> io::Result<String> {
     let mut command = Command::new(binary);
     command.arg("-V").env_remove("TMUX").env_remove("TMUX_PANE");
     let output = super::discovery::capture(command, Duration::from_secs(5))
@@ -48,7 +54,7 @@ pub fn check_tmux() -> io::Result<String> {
     match supported(version) {
         Some(true) => Ok(version.to_owned()),
         Some(false) => Err(io::Error::other(format!(
-            "{version} detected; tmux 3.3 or newer is required. Upgrade tmux."
+            "{version} detected; tmux 3.4 or newer is required. Upgrade tmux."
         ))),
         None => Err(io::Error::other(UNKNOWN)),
     }
@@ -61,20 +67,24 @@ pub fn check_server_version(version: &str) -> io::Result<()> {
     match supported(&format!("tmux {version}")) {
         Some(true) => Ok(()),
         Some(false) => Err(io::Error::other(format!(
-            "tmux server {version} detected; tmux 3.3 or newer is required. Upgrade the server."
+            "tmux server {version} detected; tmux 3.4 or newer is required. Upgrade the server."
         ))),
         None => Err(io::Error::other(
-            "Cannot verify tmux server version; tmux 3.3 or newer is required. Use a numbered server build.",
+            "Cannot verify tmux server version; tmux 3.4 or newer is required. Use a numbered server build.",
         )),
     }
 }
 
-// Python: tmux (?:next-)?(\d+)\.(\d+)(?:[a-zA-Z][\w.-]*|[-+][\w.-]+)?
 fn supported(report: &str) -> Option<bool> {
+    at_least(report, 3, 4)
+}
+
+// Python: tmux (?:next-)?(\d+)\.(\d+)(?:[a-zA-Z][\w.-]*|[-+][\w.-]+)?
+fn at_least(report: &str, floor_major: u32, floor_minor: u32) -> Option<bool> {
     let version = report.strip_prefix("tmux ")?;
     let version = version.strip_prefix("next-").unwrap_or(version);
-    let (major, rest) = number(version)?;
-    let (minor, suffix) = number(rest.strip_prefix('.')?)?;
+    let (major, rest) = number(version, floor_major)?;
+    let (minor, suffix) = number(rest.strip_prefix('.')?, floor_minor)?;
     if let Some(first) = suffix.chars().next() {
         let rest = &suffix[first.len_utf8()..];
         if !(first.is_ascii_alphabetic() || matches!(first, '-' | '+') && !rest.is_empty())
@@ -92,8 +102,8 @@ fn supported(report: &str) -> Option<bool> {
     Some(major > Ordering::Equal || major == Ordering::Equal && minor != Ordering::Less)
 }
 
-// Compare with three without imposing a machine-integer limit on the report.
-fn number(text: &str) -> Option<(Ordering, &str)> {
+// Compare with `floor` without imposing a machine-integer limit on the report.
+fn number(text: &str, floor: u32) -> Option<(Ordering, &str)> {
     let mut value = 0;
     let mut end = 0;
     for (index, ch) in text.char_indices() {
@@ -109,10 +119,10 @@ fn number(text: &str) -> Option<(Ordering, &str)> {
             start -= 1;
         }
         let digit = (ch as u32 - start) % 10;
-        value = (value * 10 + digit).min(4);
+        value = (value * 10 + digit).min(floor + 1);
         end = index + ch.len_utf8();
     }
-    (end > 0).then(|| (value.cmp(&3), &text[end..]))
+    (end > 0).then(|| (value.cmp(&floor), &text[end..]))
 }
 
 #[cfg(test)]
@@ -123,18 +133,20 @@ mod tests {
     #[test]
     fn version_floor_accepts_patch_and_numbered_development_builds() {
         for (version, expected) in [
-            ("tmux 3.3", Some(true)),
-            ("tmux 3.3a", Some(true)),
+            ("tmux 3.3", Some(false)),
+            ("tmux 3.4", Some(true)),
+            ("tmux 3.3a", Some(false)),
+            ("tmux 3.4a", Some(true)),
             ("tmux 3.8-rc1", Some(true)),
             ("tmux next-3.9", Some(true)),
             ("tmux 4.0+local", Some(true)),
-            ("tmux 03.003", Some(true)),
+            ("tmux 03.004", Some(true)),
             ("tmux 3.2a", Some(false)),
             ("tmux next-2.99", Some(false)),
             ("tmux 99999999999999999999999.0", Some(true)),
-            ("tmux ٣.٣", Some(true)),
+            ("tmux ٣.٤", Some(true)),
             ("tmux 𝟛.𝟚", Some(false)),
-            ("tmux 3.3aβ", Some(true)),
+            ("tmux 3.4aβ", Some(true)),
             ("tmux next", None),
             ("tmux 3", None),
             ("tmux 3.3+", None),
@@ -232,7 +244,7 @@ printf ' tmux 3.7c\n'
             "valid" => assert_eq!(result.unwrap(), "tmux 3.7c"),
             "old" => assert_eq!(
                 result.unwrap_err().to_string(),
-                "tmux 3.2a detected; tmux 3.3 or newer is required. Upgrade tmux."
+                "tmux 3.2a detected; tmux 3.4 or newer is required. Upgrade tmux."
             ),
             "missing" | "nonexec" => assert_eq!(result.unwrap_err().to_string(), MISSING),
             "broken" | "timeout" => assert_eq!(result.unwrap_err().to_string(), CANNOT_RUN),

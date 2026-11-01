@@ -334,9 +334,9 @@ impl SettingsWindow {
             .child(Self::section([
                 Self::label("DIAGNOSTIC LOGGING").into_any_element(),
                 levels.into_any_element(),
-                Self::note("Warnings is the quiet default. Debug records lifecycle events; Trace adds operation timings. Changes apply now and on future launches.").into_any_element(),
+                Self::note("Off disables diagnostic records. Warnings is the quiet default. Debug records lifecycle events; Trace adds operation timings. Changes apply now and on future launches.").into_any_element(),
                 Self::value(logs).into_any_element(),
-                Self::note("Local logs use at most 16 MiB. Terminal contents, typed commands and credentials are excluded. Nothing is uploaded.").into_any_element(),
+                Self::note("Local logs use at most 16 MiB. Detailed logs can reveal identifiers and error context; review before sharing. Nothing is uploaded. Off keeps existing files and functional app data.").into_any_element(),
             ]))
             .when_some(crate::diagnostics::problem(), |el, error| {
                 el.child(Self::note(error).text_color(colors().attention_text))

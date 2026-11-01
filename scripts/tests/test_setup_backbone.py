@@ -1,6 +1,7 @@
 """Installer recovery with a fake provider; never start a user service."""
 import importlib.util
 from pathlib import Path
+import re
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -8,6 +9,43 @@ from unittest.mock import patch
 SPEC = importlib.util.spec_from_file_location("setup_backbone", Path(__file__).parents[1] / "setup_backbone.py")
 setup = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(setup)
+
+STABLE_VERSIONS = (
+    "0.4.5", "0.4.5.post1", "0.4.5.0", "0.4.10", "0.5",
+    "0.4.5+local.1", "1!0.1", "0!0.4.5", "0.4.5+ubuntu-1",
+    "0.4.5+ubuntu_1", "0.4.5+Ubuntu-1_build.2", "0.4.5+dev.1",
+    "0.4.5-1", "0.4.5rev2", "0.4.5_r_3", "0.4.5.post",
+    "0.4.5-post-2", " v00!00.04.005-1+Ubuntu_1-x \n",
+)
+REJECTED_VERSIONS = (
+    "0.4.4.post99", "0.4", "0.4.5rc1", "0.4.5.dev1", "0.5rc1",
+    "0.4.5.post1.dev1", "0.4.5-1.dev2", "0.4.5rc1+ubuntu-1",
+    "unknown", "0.4.5junk", "0.4.5+", "0.4.5+ubuntu--1",
+    "0.4.5+ubuntu_", "0.4.5+_ubuntu", "0.4.5+ubuntu/1", "0.4.5-",
+)
+
+
+class VersionTests(unittest.TestCase):
+    def test_installer_checks_versions_without_new_archive_helper_arguments(self):
+        installer = (Path(__file__).parents[2] / "install.sh").read_text()
+        source = re.search(r"(?s)-c '(\nfrom importlib.metadata import version.*?)\n'", installer)[1]
+        for value in STABLE_VERSIONS + REJECTED_VERSIONS:
+            accepted = value in STABLE_VERSIONS
+            with self.subTest(value=value), patch("importlib.metadata.version", return_value=value):
+                with self.assertRaises(SystemExit) as result:
+                    exec(source, {})
+                self.assertEqual(result.exception.code, 0 if accepted else 1)
+
+    def test_stable_metadata_and_numeric_release_order(self):
+        for value in STABLE_VERSIONS:
+            with self.subTest(value=value):
+                self.assertTrue(setup.stable_version_at_least(value, (0, 4, 5)))
+        for value in REJECTED_VERSIONS + (None,):
+            with self.subTest(value=value):
+                self.assertFalse(setup.stable_version_at_least(value, (0, 4, 5)))
+        self.assertTrue(setup.stable_version_at_least("0.4.3.post1", (0, 4, 3)))
+        self.assertTrue(setup.stable_version_at_least("0.4.3+ubuntu-1", (0, 4, 3)))
+        self.assertFalse(setup.stable_version_at_least("0.4.2.post9", (0, 4, 3)))
 
 
 class SetupTests(unittest.TestCase):

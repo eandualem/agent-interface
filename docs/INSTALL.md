@@ -2,7 +2,7 @@
 
 You do not need to install Rust, Zig, or Python yourself. The installer installs
 Agent Interface and the latest compatible published Agent Backbone, using uv to
-supply Python when needed. Terminal sessions require **tmux 3.3 or newer**.
+supply Python when needed. Terminal sessions require **tmux 3.4 or newer**.
 
 The executable, archives and new installation/data paths use `agent-interface`.
 The desktop app is named **Agent Interface**. Existing libraries and preferences
@@ -40,7 +40,12 @@ Keep your desktop's portal backend and GPU driver installed. A headless server
 needs a graphical session to use the app. Each Linux package includes
 `ELF-REQUIREMENTS.txt` with the binary's actual library and symbol requirements.
 
-Run `tmux -V` and confirm it reports 3.3 or newer.
+Use the [latest stable tmux release](https://github.com/tmux/tmux/releases/latest).
+Run `tmux -V` and confirm it reports at least 3.4, the minimum required for
+capture buffers that do not interfere with ordinary paste. An already-running
+server must also be 3.4 or newer; upgrading the executable alone does not upgrade
+existing servers. Finish or save work in old sessions before restarting them.
+The app rejects an older server without terminating its sessions.
 
 ## Install a package
 
@@ -228,7 +233,7 @@ the private Unix socket used by the app. Open Agent Interface to continue
 onboarding; no separate Backbone installation command is needed. Agent tools
 still need to be installed and signed in before creating an agent.
 
-New installations and permitted upgrades select Backbone 0.4.3 or newer. If a compatible published
+New installations and permitted upgrades select Backbone 0.4.5 or newer. If a compatible published
 release is unavailable, installation stops before replacing the app. Setup
 failures show Backbone's diagnostic and recovery guidance. When retry is allowed,
 rerun the same installer: it retains the request and resumes pending steps using
@@ -237,6 +242,9 @@ recovery and may defer an incomplete or unverified existing installation.
 If a fixed provider was installed but setup has not created data, a service,
 or a saved outcome, setup can continue using that exact installed provider
 without changing packages. Existing saved requests remain subject to identity checks.
+Recovery with an older provider may finish, but the app is not replaced until
+Backbone meets the 0.4.5 minimum. Once recovery completes, rerun the installer
+to upgrade Backbone before installing the app.
 It refuses automatic recovery if that
 pending installation or its saved service/socket choices have changed.
 

@@ -1,10 +1,11 @@
 {
   "commit": "a887df42c56f6de86c0fe6da9c4eeca37931e083",
-  "patch_sha256": "1de2cf74a96782440d85b9b7799ea6c1b355a0c598e70f0c6130d72cff59ee0c",
+  "patch_sha256": "f0d616a92f91560ee09350c9493e115a147b67c085dbf7471ff0e895a6039d23",
   "files": {
     "src/terminal/PageList.zig": "e99d1826c40f363c1f68466a8a282afc8a3b722b16e550a3af8598865d3e79c8",
     "src/terminal/Screen.zig": "9cee3da72a2153c7dc3b98cb0d480cad03be25615b9b24f740eecb34e91e47d0",
     "src/terminal/Terminal.zig": "cd5e17c17ba842f72e66d531c7df297f71055e5fd653b4c6b140d81b6600dcfc",
+    "src/terminal/osc.zig": "5d220b5820457a5f96d1701f416c294a829776a6c382ed173aaacbd6fb9777ac",
     "src/terminal/stream.zig": "03b20243e75f48f162779abe6605ec5d4291a8b8134e4ac0b0c765e4f21172ad",
     "src/terminal/stream_terminal.zig": "17fc806933c43fb1b38404c4e8f62f9d39b79b6cee23ad59c04a0dd3e6c378ab"
   }

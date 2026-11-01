@@ -1,7 +1,7 @@
 # Use Agent Interface
 
 Start with the [installation guide](INSTALL.md), which covers source builds
-and native packages. Terminal sessions require tmux 3.3 or newer. Agent views
+and native packages. Terminal sessions require tmux 3.4 or newer. Agent views
 connect to a running Agent Backbone.
 
 If no library exists, the first launch creates one empty workspace. Add a tab
@@ -110,24 +110,35 @@ upgrade, your saved shortcut wins; the new command shows **Not assigned** until
 you choose keys for it.
 
 To investigate a problem, open **Settings → General → Diagnostic logging**.
-**Warnings** is the quiet default. **Debug** records startup, terminal lifecycle,
+**Off** disables optional diagnostic records. **Warnings** is the quiet default. **Debug** records startup, terminal lifecycle,
 layout and settings saves, and provider availability. **Trace** adds timings and
 outcomes for individual connection and refresh operations. The selection applies
 immediately and is saved for later launches, including opening the app normally
 from the desktop. Development builds also default to Warnings; verbosity is
 always an explicit choice. You can set `logging = "debug"` or `logging = "trace"`
-in `settings.toml` before launching; `logging = "warn"` restores the default.
+in `settings.toml` before launching; `logging = "warn"` restores the default and
+`logging = "off"` disables diagnostics. An Off launch creates no log files.
+Switching Off stops new records; records already queued may finish writing.
+Existing files remain until you delete them.
 
 Logs stay on this computer: `~/Library/Logs/Agent Interface` on macOS, or
 `$XDG_STATE_HOME/agent-interface/logs` on Linux (default
 `~/.local/state/agent-interface/logs`). Settings shows the actual location.
 `events.jsonl` holds the newest newline-delimited JSON records; numbered files
-hold older records. Four files of at most 4 MiB each bound disk use. Copy these
-files when reporting a problem, along with what happened and when. Nothing is
-uploaded automatically. Logs contain diagnostic identities, event names, status
-codes and timings, not terminal contents, typed commands, feedback text or
-credentials. Settings reports unavailable logging, failed writes and dropped
-records. A forced process termination can lose queued records.
+hold older records. Four files of at most 4 MiB each bound disk use. Reports do
+not require logs. You may choose to share selected diagnostics privately when
+they help explain a problem, after checking them for private information.
+Nothing is uploaded automatically. Events are designed to record identities,
+status and timings rather than terminal contents or request bodies. Debug and
+Trace can reveal identifiers, paths, error context and workflow information;
+enable them only when that local retention is acceptable. Inspect files before
+sharing and delete them when no longer needed. There is no universal secret
+scrubber. Settings reports unavailable logging, failed writes and dropped records.
+A forced process termination can lose queued records.
+
+Off does not remove saved layouts/settings, setup requests and resumable progress,
+tmux terminal history, or data retained by Backbone and agent harnesses. Those
+are functional data with their own lifecycles. Operation errors remain visible.
 
 
 **Close Pane** (Command-W on macOS, Ctrl+Shift+W on Linux) removes only the focused
