@@ -622,7 +622,7 @@ else
     printf 'Or run: "%s/.local/bin/agent-interface"\n' "$HOME"
 fi
 if ! command -v tmux >/dev/null 2>&1 && [ ! -x /opt/homebrew/bin/tmux ] && [ ! -x /usr/local/bin/tmux ]; then
-    printf '%s\n' 'Install tmux 3.3 or newer before opening terminal panes (see the installation guide).'
+    printf '%s\n' 'Install tmux 3.4 or newer before opening terminal panes (see the installation guide).'
 fi
 
 }

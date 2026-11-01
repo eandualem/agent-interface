@@ -59,7 +59,7 @@ flowchart LR
 
 ## Install
 
-You need macOS or Linux and tmux 3.3 or newer (`brew install tmux` on macOS).
+You need macOS or Linux and tmux 3.4 or newer (`brew install tmux` on macOS).
 On Linux, install the [runtime libraries](docs/INSTALL.md#runtime-prerequisites) first.
 
 **1. Install Agent Interface and Agent Backbone.** The installer downloads the

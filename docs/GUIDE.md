@@ -1,7 +1,7 @@
 # Use Agent Interface
 
 Start with the [installation guide](INSTALL.md), which covers source builds
-and native packages. Terminal sessions require tmux 3.3 or newer. Agent views
+and native packages. Terminal sessions require tmux 3.4 or newer. Agent views
 connect to a running Agent Backbone.
 
 If no library exists, the first launch creates one empty workspace. Add a tab

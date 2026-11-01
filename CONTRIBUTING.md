@@ -29,7 +29,7 @@ You need:
   fetches Ghostty at a pinned commit, and Zig then fetches Ghostty's own
   dependencies. To build without a network, see
   [Building offline](#building-offline).
-- **tmux 3.3 or newer** in `PATH` to use the app's terminal sessions and run
+- **tmux 3.4 or newer** in `PATH` to use the app's terminal sessions and run
   tests that start tmux. An empty workspace can open without starting tmux.
 - **On Linux, the libraries the UI framework builds against**, for its
   Wayland and X11 backends. On Debian and Ubuntu:

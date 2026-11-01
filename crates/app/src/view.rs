@@ -1703,7 +1703,20 @@ mod tests {
                 session,
             ])
             .unwrap();
-        let panes = Arc::new(Panes::start(client, &layout, 100, || {}).unwrap());
+        let panes = Arc::new(
+            Panes::start(
+                client,
+                server
+                    .run(&["display-message", "-p", "#{socket_path}"])
+                    .unwrap()
+                    .trim()
+                    .as_ref(),
+                &layout,
+                100,
+                || {},
+            )
+            .unwrap(),
+        );
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
             if panes.take_update().is_some_and(|update| {

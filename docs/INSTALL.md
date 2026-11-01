@@ -2,7 +2,7 @@
 
 You do not need to install Rust, Zig, or Python yourself. The installer installs
 Agent Interface and the latest compatible published Agent Backbone, using uv to
-supply Python when needed. Terminal sessions require **tmux 3.3 or newer**.
+supply Python when needed. Terminal sessions require **tmux 3.4 or newer**.
 
 The executable, archives and new installation/data paths use `agent-interface`.
 The desktop app is named **Agent Interface**. Existing libraries and preferences
@@ -40,7 +40,12 @@ Keep your desktop's portal backend and GPU driver installed. A headless server
 needs a graphical session to use the app. Each Linux package includes
 `ELF-REQUIREMENTS.txt` with the binary's actual library and symbol requirements.
 
-Run `tmux -V` and confirm it reports 3.3 or newer.
+Use the [latest stable tmux release](https://github.com/tmux/tmux/releases/latest).
+Run `tmux -V` and confirm it reports at least 3.4, the minimum required for
+capture buffers that do not interfere with ordinary paste. An already-running
+server must also be 3.4 or newer; upgrading the executable alone does not upgrade
+existing servers. Finish or save work in old sessions before restarting them.
+The app rejects an older server without terminating its sessions.
 
 ## Install a package
 

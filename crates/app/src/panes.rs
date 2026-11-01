@@ -12,6 +12,7 @@
 
 use std::collections::VecDeque;
 use std::io::{self, Read, Write};
+use std::path::Path;
 use std::process::Child;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, mpsc};
 use std::thread::{self, JoinHandle};
@@ -20,6 +21,8 @@ use std::time::{Duration, Instant};
 use agent_interface_term::{Screen, Terminal, input::Input};
 use agent_interface_tmux::control::{Decoder, Message, PaneId};
 use agent_interface_tmux::recovery::{Recovery, Reply, Snapshot, Step};
+
+use crate::seed::Leftover;
 use agent_interface_tmux::{command, layout};
 use gpui::Rgba;
 
@@ -416,50 +419,55 @@ impl Panes {
     /// Starts keeping the panes in `layout` up to date from `client`, a
     /// control-mode client (`tmux -C`) with piped standard input and output,
     /// freshly attached with `-f no-output,ignore-size,new-layouts`. Its initial reply
-    /// must not have been read. Requires a numbered server version >=3.3,
+    /// must not have been read. Requires a numbered server version >=3.4,
     /// refreshes visible membership on that connection,
     /// then captures existing contents before enabling
     /// live output; startup is bounded by a ten-second capture deadline.
-    /// Each pane keeps about `scrollback` lines of history.
+    /// Each pane keeps about `scrollback` lines of history. `socket` is the
+    /// server's socket, where a separate tmux client reads capture buffers.
     ///
     /// `wake` is called on the worker thread whenever an update is ready, and
     /// once more when the worker has finished.
     pub fn start(
         client: Child,
+        socket: &Path,
         layout: &layout::Change,
         scrollback: usize,
         wake: impl Fn() + Send + 'static,
     ) -> io::Result<Self> {
-        Self::start_checked(client, layout, None, scrollback, wake)
+        Self::start_checked(client, socket, layout, None, scrollback, wake)
     }
 
     /// Starts a product connection whose selected window must still belong to
     /// the verified source session when capture begins on that client.
     pub fn start_in_session(
         client: Child,
+        socket: &Path,
         layout: &layout::Change,
         session: u32,
         scrollback: usize,
         wake: impl Fn() + Send + 'static,
     ) -> io::Result<Self> {
-        Self::start_checked(client, layout, Some(session), scrollback, wake)
+        Self::start_checked(client, socket, layout, Some(session), scrollback, wake)
     }
 
     fn start_checked(
         mut client: Child,
+        socket: &Path,
         layout: &layout::Change,
         session: Option<u32>,
         scrollback: usize,
         wake: impl Fn() + Send + 'static,
     ) -> io::Result<Self> {
-        let seed = match crate::seed::attach(&mut client, layout.window, session, scrollback) {
-            Ok(seed) => seed,
-            Err(error) => {
-                let _ = client.kill();
-                let _ = client.wait();
-                return Err(error);
-            }
-        };
+        let seed =
+            match crate::seed::attach(&mut client, socket, layout.window, session, scrollback) {
+                Ok(seed) => seed,
+                Err(error) => {
+                    let _ = client.kill();
+                    let _ = client.wait();
+                    return Err(error);
+                }
+            };
         let crate::seed::Seed {
             stdin,
             stdout,
@@ -467,6 +475,7 @@ impl Panes {
             snapshots,
             events,
             layout,
+            buffers,
         } = seed;
         let prefix = format!("%layout-change @{} ", layout.window);
         let mut queue = VecDeque::new();
@@ -583,7 +592,14 @@ impl Panes {
             let control = Arc::clone(&panes.control);
             move || {
                 work(
-                    &shared, &control, &layout, snapshots, scrollback, &wake, ready,
+                    &shared,
+                    &control,
+                    &layout,
+                    snapshots,
+                    scrollback,
+                    Some(&buffers),
+                    &wake,
+                    ready,
                 )
             }
         })?);
@@ -977,12 +993,16 @@ fn read(
 
 /// Applies queued output to each pane's terminal and publishes updates, until
 /// the client has exited and the queue is empty.
+/// The worker. With `buffers`, the server's socket, recovery captures into
+/// buffers read there.
+#[allow(clippy::too_many_arguments)]
 fn work(
     shared: &Shared,
     control: &Control,
     layout: &layout::Change,
     mut snapshots: Vec<Snapshot>,
     scrollback: usize,
+    buffers: Option<&Path>,
     wake: &dyn Fn(),
     ready: mpsc::Sender<Result<(), String>>,
 ) {
@@ -1020,7 +1040,7 @@ fn work(
         reported: None,
     };
     let _ = ready.send(Ok(()));
-    let mut recovering: Option<(Recovery, Instant, u64)> = None;
+    let mut recovering: Option<(Recovery, Instant, u64, Leftover)> = None;
     let mut capture_unavailable = false;
     let mut changed: Vec<PaneId> = layout.panes.iter().map(|pane| pane.id).collect();
     let mut state = shared.lock();
@@ -1067,7 +1087,11 @@ fn work(
                         .any(|visible| visible.id == *pane)
             })
         {
-            let (recovery, line) = Recovery::start(*pane, scrollback);
+            let prefix = buffers.map(|_| agent_interface_tmux::buffers::prefix());
+            let (recovery, line) = Recovery::start(*pane, scrollback, prefix);
+            let leftover = buffers.map_or_else(Leftover::default, |socket| {
+                Leftover::new(socket, recovery.buffers())
+            });
             let deadline = *terminal
                 .recovery_deadline
                 .get_or_insert_with(|| Instant::now() + crate::seed::TIMEOUT);
@@ -1082,13 +1106,13 @@ fn work(
                     break;
                 }
             } else {
-                recovering = Some((recovery, deadline, window.generation));
+                recovering = Some((recovery, deadline, window.generation, leftover));
             }
         }
         if !state.closed
             && recovering
                 .as_ref()
-                .is_some_and(|(_, deadline, _)| Instant::now() >= *deadline)
+                .is_some_and(|(_, deadline, _, _)| Instant::now() >= *deadline)
         {
             state.failure = Some("timed out recovering the pane".into());
             break;
@@ -1199,7 +1223,9 @@ fn work(
             }
             window.terminals.retain(|(id, _)| {
                 window.layout.panes.iter().any(|p| p.id == *id)
-                    || recovering.as_ref().is_some_and(|(r, _, _)| r.pane() == *id)
+                    || recovering
+                        .as_ref()
+                        .is_some_and(|(r, _, _, _)| r.pane() == *id)
             });
         } else if state.cancelled || (state.closed && changed.is_empty() && recovering.is_none()) {
             // Once the client has exited, the last changes still wait for the
@@ -1208,7 +1234,7 @@ fn work(
             drop(state);
             wake();
             return;
-        } else if let Some((_, deadline, _)) = &recovering {
+        } else if let Some((_, deadline, _, _)) = &recovering {
             if state.closed {
                 state
                     .transport_failure
@@ -1240,7 +1266,7 @@ fn work(
 fn apply(
     event: Event,
     window: &mut WindowState,
-    recovering: &mut Option<(Recovery, Instant, u64)>,
+    recovering: &mut Option<(Recovery, Instant, u64, Leftover)>,
     control: &Control,
     scrollback: usize,
     changed: &mut Vec<PaneId>,
@@ -1271,7 +1297,7 @@ fn apply(
             *changed = window.layout.panes.iter().map(|pane| pane.id).collect();
         }
         Event::Output(pane, bytes) => {
-            if let Some((recovery, _, _)) = recovering.as_mut()
+            if let Some((recovery, _, _, _)) = recovering.as_mut()
                 && recovery.pane() == pane
             {
                 recovery.output(&bytes);
@@ -1326,11 +1352,22 @@ fn apply(
                     pending.pop_front();
                 }
                 Some(ReplyOwner::Recovery) => {
-                    let (recovery, _, generation) =
+                    let (recovery, deadline, generation, leftover) =
                         recovering.as_mut().ok_or("reply without a pane recovery")?;
                     let pane = recovery.pane();
                     let missing = missing_pane(&reply, pane);
-                    match recovery.reply(reply).map_err(|e| e.to_string())? {
+                    let mut step = recovery.reply(reply).map_err(|e| e.to_string())?;
+                    let read = matches!(step, Step::Read(_));
+                    if read {
+                        // The line is done. Reading its buffers runs another
+                        // tmux client, which input must not wait behind.
+                        pending.pop_front();
+                        drop(pending);
+                        let contents = leftover.take(*deadline).map_err(|e| e.to_string())?;
+                        step = recovery.captured(contents).map_err(|e| e.to_string())?;
+                        pending = control.pending.lock().unwrap_or_else(|e| e.into_inner());
+                    }
+                    match step {
                         Step::Wait => {}
                         Step::Send(line) => {
                             pending.pop_front();
@@ -1338,8 +1375,11 @@ fn apply(
                                 .send(&line, ReplyOwner::Recovery)
                                 .map_err(|e| e.to_string())?;
                         }
+                        Step::Read(_) => return Err("pane recovery read its buffers twice".into()),
                         Step::Done(rebuilt) => {
-                            pending.pop_front();
+                            if !read {
+                                pending.pop_front();
+                            }
                             let pane = rebuilt.snapshot.pane;
                             let (_, terminal) = terminals
                                 .iter_mut()
@@ -1516,7 +1556,7 @@ mod tests {
             ])
             .unwrap();
         let pid = client.id();
-        let panes = Arc::new(Panes::start(client, &layout, 100, || {}).unwrap());
+        let panes = Arc::new(Panes::start(client, &socket(&server), &layout, 100, || {}).unwrap());
         assert!(
             std::process::Command::new("kill")
                 .args(["-STOP", &pid.to_string()])
@@ -1559,7 +1599,7 @@ mod tests {
                 TmuxServer::SESSION,
             ])
             .unwrap();
-        let mut panes = Panes::start(client, &layout, 100, || {}).unwrap();
+        let mut panes = Panes::start(client, &socket(&server), &layout, 100, || {}).unwrap();
         // Hold the command before acknowledgement, independent of the OS
         // pipe capacity or the server resuming a stopped control client.
         let (commands, _pending) = mpsc::channel();
@@ -1766,7 +1806,8 @@ mod tests {
                 TmuxServer::SESSION,
             ])
             .unwrap();
-        let seed = crate::seed::attach(&mut client, layout.window, None, 100).unwrap();
+        let seed =
+            crate::seed::attach(&mut client, &socket(&server), layout.window, None, 100).unwrap();
         let snapshots = seed.snapshots.clone();
         let mut margin_snapshot = snapshots[0].clone();
         margin_snapshot.state.cursor.0 = margin_snapshot.state.width;
@@ -1825,7 +1866,9 @@ mod tests {
                     shared.changed.notify_all();
                 });
             }
-            work(&shared, &control, &layout, snapshots, 100, &wake, ready);
+            work(
+                &shared, &control, &layout, snapshots, 100, None, &wake, ready,
+            );
         });
         let seen = seen.lock().unwrap();
         let (_, screen) = seen
@@ -1880,7 +1923,7 @@ mod tests {
             ])
             .unwrap();
         let (wake, woken) = mpsc::channel();
-        let panes = Panes::start(client, &initial, 100, move || {
+        let panes = Panes::start(client, &socket(&server), &initial, 100, move || {
             let _ = wake.send(());
         })
         .unwrap();
@@ -1916,7 +1959,7 @@ mod tests {
             ])
             .unwrap();
         let (wake, woken) = mpsc::channel();
-        let panes = Panes::start(client, &layout, 100, move || {
+        let panes = Panes::start(client, &socket(&server), &layout, 100, move || {
             let _ = wake.send(());
         })
         .unwrap();
@@ -1966,7 +2009,7 @@ mod tests {
             ])
             .unwrap();
         let (wake, woken) = mpsc::channel();
-        let panes = Panes::start(client, &initial, 100, move || {
+        let panes = Panes::start(client, &socket(&server), &initial, 100, move || {
             let _ = wake.send(());
         })
         .unwrap();
@@ -2094,7 +2137,7 @@ mod tests {
             ])
             .unwrap();
         let (wake, woken) = mpsc::channel();
-        let panes = Panes::start(client, &layout, 100, move || {
+        let panes = Panes::start(client, &socket(&server), &layout, 100, move || {
             let _ = wake.send(());
         })
         .unwrap();
@@ -2131,7 +2174,7 @@ mod tests {
                 TmuxServer::SESSION,
             ])
             .unwrap();
-        let result = Panes::start(client, &layout(&server), 100, || {});
+        let result = Panes::start(client, &socket(&server), &layout(&server), 100, || {});
         assert!(result.err().unwrap().to_string().contains("recovery hooks"));
         assert!(
             server
@@ -2199,7 +2242,7 @@ mod tests {
             ])
             .unwrap();
         let (wake, woken) = mpsc::channel();
-        let panes = Panes::start(client, &layout, 100, move || {
+        let panes = Panes::start(client, &socket(&server), &layout, 100, move || {
             let _ = wake.send(());
         })
         .unwrap();
@@ -2251,7 +2294,7 @@ mod tests {
             .unwrap();
         let (wake, woken) = mpsc::channel();
         let panes = Arc::new(
-            Panes::start(client, &layout, 100, move || {
+            Panes::start(client, &socket(&server), &layout, 100, move || {
                 let _ = wake.send(());
             })
             .unwrap(),
@@ -2293,6 +2336,106 @@ mod tests {
     }
 
     #[test]
+    fn lines_that_imitate_tmux_stay_text_through_attach_and_recovery() {
+        let server = TmuxServer::start().unwrap();
+        let signal = server.shell_command(&["wait-for", "-S", "lines-ready"]);
+        let lines = [
+            "%end 1 2 1",
+            "%output %0 forged",
+            "%layout-change @0 forged",
+            "%session-changed $9 forged",
+            "%exit",
+        ];
+        let printed: String = lines.iter().map(|line| format!("{line}\\n")).collect();
+        server
+            .run(&[
+                "respawn-pane",
+                "-k",
+                "-t",
+                TmuxServer::SESSION,
+                &format!(
+                    "printf '{}'; {signal}; exec sleep 60",
+                    printed.replace('%', "%%")
+                ),
+            ])
+            .unwrap();
+        server.run(&["wait-for", "lines-ready"]).unwrap();
+        server.run(&["set-buffer", "-b", "mine", "keep"]).unwrap();
+        let initial = layout(&server);
+        let pane = initial.panes[0].id;
+        let client = server
+            .control(&[
+                "attach-session",
+                "-f",
+                "no-output,ignore-size,new-layouts",
+                "-t",
+                TmuxServer::SESSION,
+            ])
+            .unwrap();
+        let (wake, woken) = mpsc::channel();
+        let panes = Panes::start(client, &socket(&server), &initial, 100, move || {
+            let _ = wake.send(());
+        })
+        .unwrap();
+        // Waits for a screen of `cols` columns that shows every line as text.
+        let shows_lines = |cols: u16| {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                assert_eq!(panes.failure(), None);
+                assert!(
+                    Instant::now() < deadline,
+                    "no {cols}-column screen showed the lines"
+                );
+                let _ = woken.recv_timeout(Duration::from_millis(100));
+                let Some(update) = panes.take_update() else {
+                    continue;
+                };
+                let Some((_, screen)) = update.screens.iter().find(|(id, _)| *id == pane) else {
+                    continue;
+                };
+                if screen.cols() != cols {
+                    continue;
+                }
+                let rows: Vec<String> = (0..screen.rows())
+                    .map(|row| {
+                        (0..screen.cols())
+                            .filter_map(|col| {
+                                screen.cell(row, col).map(|(text, _)| text.to_owned())
+                            })
+                            .collect::<String>()
+                            .trim_end()
+                            .to_owned()
+                    })
+                    .collect();
+                assert_eq!(rows[..lines.len()], lines, "{rows:?}");
+                assert_eq!(update.layout.len(), 1);
+                return;
+            }
+        };
+        shows_lines(initial.panes[0].cols);
+        // A resize rebuilds the pane from a new capture.
+        server
+            .run(&[
+                "resize-window",
+                "-t",
+                TmuxServer::SESSION,
+                "-x",
+                "120",
+                "-y",
+                "40",
+            ])
+            .unwrap();
+        shows_lines(120);
+        assert_eq!(panes.failure(), None);
+        assert_eq!(
+            server
+                .run(&["list-buffers", "-F", "#{buffer_name}"])
+                .unwrap(),
+            "mine\n"
+        );
+    }
+
+    #[test]
     fn a_stalled_recovery_reports_its_deadline() {
         let server = TmuxServer::start().unwrap();
         let session = TmuxServer::SESSION;
@@ -2311,7 +2454,7 @@ mod tests {
             ])
             .unwrap();
         let (wake, woken) = mpsc::channel();
-        let panes = Panes::start(client, &layout, 100, move || {
+        let panes = Panes::start(client, &socket(&server), &layout, 100, move || {
             let _ = wake.send(());
         })
         .unwrap();
@@ -2370,7 +2513,7 @@ mod tests {
             ])
             .unwrap();
         let (wake, woken) = mpsc::channel();
-        let panes = Panes::start(client, &layout, 100, move || {
+        let panes = Panes::start(client, &socket(&server), &layout, 100, move || {
             let _ = wake.send(());
         })
         .unwrap();
@@ -2450,7 +2593,7 @@ mod tests {
             ])
             .unwrap();
         let (wake, woken) = mpsc::channel();
-        let panes = Panes::start(client, &layout, 100, move || {
+        let panes = Panes::start(client, &socket(&server), &layout, 100, move || {
             let _ = wake.send(());
         })
         .unwrap();
@@ -2558,7 +2701,7 @@ mod tests {
             ])
             .unwrap();
         let (wake, woken) = mpsc::channel();
-        let panes = Panes::start(client, &layout, 100, move || {
+        let panes = Panes::start(client, &socket(&server), &layout, 100, move || {
             let _ = wake.send(());
         })
         .unwrap();
@@ -2651,7 +2794,7 @@ mod tests {
             ])
             .unwrap();
         let (wake, woken) = mpsc::channel();
-        let panes = Panes::start(client, &layout, 100, move || {
+        let panes = Panes::start(client, &socket(&server), &layout, 100, move || {
             let _ = wake.send(());
         })
         .unwrap();
@@ -2681,6 +2824,14 @@ mod tests {
     }
 
     /// Returns the visible panes of the server's session.
+    fn socket(server: &TmuxServer) -> std::path::PathBuf {
+        server
+            .run(&["display-message", "-p", "#{socket_path}"])
+            .unwrap()
+            .trim()
+            .into()
+    }
+
     fn layout(server: &TmuxServer) -> layout::Change {
         let fields = server
             .run(&[
@@ -2754,7 +2905,7 @@ mod tests {
             ])
             .unwrap();
         let (wake, woken) = mpsc::channel();
-        let panes = Panes::start(client, &layout, 100, move || {
+        let panes = Panes::start(client, &socket(&server), &layout, 100, move || {
             let _ = wake.send(());
         })
         .unwrap();
@@ -2813,7 +2964,7 @@ mod tests {
             ])
             .unwrap();
         let (wake, woken) = mpsc::channel();
-        let panes = Panes::start(client, &layout, 100, move || {
+        let panes = Panes::start(client, &socket(&server), &layout, 100, move || {
             let _ = wake.send(());
         })
         .unwrap();
@@ -2924,7 +3075,7 @@ mod tests {
             ])
             .unwrap();
         let (wake, woken) = mpsc::channel();
-        let panes = Panes::start(client, &layout, 100, move || {
+        let panes = Panes::start(client, &socket(&server), &layout, 100, move || {
             let _ = wake.send(());
         })
         .unwrap();

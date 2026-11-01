@@ -81,6 +81,20 @@ per-segment copies of long targets. Initial snapshots are released after restora
 output only for panes in its selected window. Recovery uses the state tmux
 can report; it cannot reconstruct every historical parser or input mode.
 
+tmux writes a capture's text into the control connection unchanged, so a
+captured line could match the line that ends tmux's reply and make the reader
+take the rest of the capture for messages from tmux. The app requires tmux 3.4
+or newer and writes each capture into a named buffer
+instead of its reply, with a name unique to that line and process. After the
+line's replies, a separate tmux client on the same socket reads each buffer
+by its listed size and deletes it. A rebuild that does not finish tries to
+delete the buffers its line named, on a separate thread; this is best effort,
+and a process exit or a failing tmux can leave them. No other buffer is read
+or deleted. Version checks cover both the executable and the connected server
+before capture or input is enabled. tmux 3.4 is the minimum because it excludes
+named buffers from an ordinary paste; older servers are rejected rather than
+falling back to captures in the reply stream.
+
 The UI handles application shortcuts first. Other keys and paste operations
 are encoded for the destination pane's reported input modes and sent as literal
 bytes to that exact pane. Navigation does not redirect queued input to another
