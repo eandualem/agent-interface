@@ -13,7 +13,7 @@ which one needs you, and read their reports and documents beside the work.
 [![CI](https://github.com/eandualem/agent-interface/actions/workflows/ci.yml/badge.svg?branch=develop)](https://github.com/eandualem/agent-interface/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-[Website](https://agentinterface.dev) · [Install](#install) · [User guide](docs/GUIDE.md) · [Architecture](docs/ARCHITECTURE.md) · [Contribute](CONTRIBUTING.md)
+[Website](https://agentinterface.dev) · [Install](#install) · [User guide](docs/GUIDE.md) · [Architecture](docs/ARCHITECTURE.md) · [Security](SECURITY.md) · [Contribute](CONTRIBUTING.md)
 
 </div>
 
@@ -95,6 +95,7 @@ The [user guide](docs/GUIDE.md) covers every view, shortcut and setting.
 - [User guide](docs/GUIDE.md): workspaces, sessions, agent views, reports, shortcuts and libraries.
 - [Installation](docs/INSTALL.md): packages, prerequisites, Backbone connection, updates and removal.
 - [Architecture](docs/ARCHITECTURE.md): processes, crate boundaries, data flow and dependencies.
+- [Security](SECURITY.md): the security model, how the app is tested, open security work and how to report a vulnerability.
 - [Design](docs/DESIGN.md): appearance, components and design tokens.
 - [Benchmarks](docs/BENCHMARKING.md): repeatable measurements on isolated tmux servers.
 - [Contributing](CONTRIBUTING.md): building from source, tests and pull requests.

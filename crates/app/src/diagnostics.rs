@@ -22,6 +22,8 @@ use tracing_subscriber::{Registry, filter::Targets, layer::SubscriberExt, reload
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Level {
+    /// Disable optional diagnostic records.
+    Off,
     /// Warnings and errors only.
     #[default]
     Warnings,
@@ -33,7 +35,8 @@ pub enum Level {
 
 impl Level {
     /// Settings labels and stable configuration values.
-    pub const ALL: [(Self, &'static str, &'static str); 3] = [
+    pub const ALL: [(Self, &'static str, &'static str); 4] = [
+        (Self::Off, "off", "Off"),
         (Self::Warnings, "warn", "Warnings"),
         (Self::Debug, "debug", "Debug"),
         (Self::Trace, "trace", "Trace"),
@@ -46,6 +49,7 @@ impl Level {
 
     fn filter(self) -> Targets {
         let level = match self {
+            Self::Off => LevelFilter::OFF,
             Self::Warnings => LevelFilter::WARN,
             Self::Debug => LevelFilter::DEBUG,
             Self::Trace => LevelFilter::TRACE,
@@ -59,7 +63,7 @@ impl Level {
     }
 }
 
-static LEVEL: AtomicU8 = AtomicU8::new(0);
+static LEVEL: AtomicU8 = AtomicU8::new(Level::Warnings as u8);
 static RUNTIME: OnceLock<Runtime> = OnceLock::new();
 static START_ERROR: Mutex<Option<String>> = Mutex::new(None);
 
@@ -108,7 +112,11 @@ pub fn start(level: Level) -> Option<Guard> {
 fn initialize(level: Level) -> io::Result<Guard> {
     let directory = directory().ok_or_else(|| io::Error::other("no log directory"))?;
     let health = Arc::new(Health::default());
-    let writer = RotatingWriter::new(directory.clone(), Arc::clone(&health))?;
+    let writer = if level == Level::Off {
+        RotatingWriter::deferred(directory.clone(), Arc::clone(&health))
+    } else {
+        RotatingWriter::new(directory.clone(), Arc::clone(&health))?
+    };
     let (writer, worker) = tracing_appender::non_blocking::NonBlockingBuilder::default()
         .buffered_lines_limit(1024)
         .lossy(true)
@@ -169,11 +177,10 @@ pub fn set_level(level: Level) {
 
 /// Currently selected verbosity, including before initialization.
 pub fn level() -> Level {
-    match LEVEL.load(Ordering::Relaxed) {
-        1 => Level::Debug,
-        2 => Level::Trace,
-        _ => Level::Warnings,
-    }
+    Level::ALL
+        .get(LEVEL.load(Ordering::Relaxed) as usize)
+        .map(|(level, ..)| *level)
+        .unwrap_or_default()
 }
 
 /// Native log location, displayed in Settings. No directory is created here.
@@ -201,6 +208,9 @@ pub fn directory() -> Option<PathBuf> {
 
 /// Logging failures and dropped records are never silently reported as success.
 pub fn problem() -> Option<String> {
+    if level() == Level::Off {
+        return None;
+    }
     if let Some(error) = START_ERROR
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -236,14 +246,31 @@ struct RotatingWriter {
     directory: PathBuf,
     health: Arc<Health>,
     file_bytes: u64,
+    initialized: bool,
 }
 
 impl RotatingWriter {
     fn new(directory: PathBuf, health: Arc<Health>) -> io::Result<Self> {
+        let mut writer = Self::deferred(directory, health);
+        writer.prepare()?;
+        Ok(writer)
+    }
+
+    fn deferred(directory: PathBuf, health: Arc<Health>) -> Self {
+        Self {
+            directory,
+            health,
+            file_bytes: FILE_BYTES,
+            initialized: false,
+        }
+    }
+
+    fn prepare(&mut self) -> io::Result<()> {
+        let directory = &self.directory;
         std::fs::DirBuilder::new()
             .recursive(true)
             .mode(0o700)
-            .create(&directory)?;
+            .create(directory)?;
         let metadata = directory.symlink_metadata()?;
         if !metadata.is_dir()
             || metadata.uid() != uzers::get_current_uid()
@@ -255,16 +282,16 @@ impl RotatingWriter {
         }
         private_file(&directory.join("writer.lock"))?;
         private_file(&directory.join("events.jsonl"))?;
-        Ok(Self {
-            directory,
-            health,
-            file_bytes: FILE_BYTES,
-        })
+        self.initialized = true;
+        Ok(())
     }
 
-    fn write_record(&self, bytes: &[u8]) -> io::Result<()> {
+    fn write_record(&mut self, bytes: &[u8]) -> io::Result<()> {
         if bytes.len() > RECORD_BYTES || bytes.len() as u64 > self.file_bytes {
             return Err(io::Error::other("diagnostic record exceeds size limit"));
+        }
+        if !self.initialized {
+            self.prepare()?;
         }
         let lock = private_file(&self.directory.join("writer.lock"))?;
         lock.try_lock().map_err(io::Error::other)?;
@@ -386,6 +413,10 @@ mod tests {
             handle.reload(Level::Trace.filter()).unwrap();
             tracing::trace!(event = "expected_trace", "trace");
             tracing::error!(target: "http_client", "fixture-private-payload");
+            handle.reload(Level::Off.filter()).unwrap();
+            tracing::error!(event = "hidden_off", "hidden");
+            handle.reload(Level::Trace.filter()).unwrap();
+            tracing::trace!(event = "reenabled_trace", "trace");
         });
         drop(guard);
         let text = std::fs::read_to_string(root.path().join("logs/events.jsonl")).unwrap();
@@ -399,11 +430,38 @@ mod tests {
             "{:?}",
             health.last_error.lock().unwrap()
         );
-        assert_eq!(events.len(), 3, "{text}");
+        assert_eq!(events.len(), 4, "{text}");
         assert_eq!(events[0]["fields"]["event"], "expected_warning");
         assert_eq!(events[1]["fields"]["event"], "expected_debug");
         assert_eq!(events[2]["fields"]["event"], "expected_trace");
+        assert_eq!(events[3]["fields"]["event"], "reenabled_trace");
         assert!(!text.contains("private-payload"));
+    }
+
+    #[test]
+    fn off_leaves_no_log_files_and_can_be_enabled_later() {
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("logs");
+        for enable in [false, true] {
+            let writer = RotatingWriter::deferred(directory.clone(), Arc::default());
+            let (writer, guard) = tracing_appender::non_blocking(writer);
+            let (filter, handle) = reload::Layer::new(Level::Off.filter());
+            let subscriber = Registry::default()
+                .with(filter)
+                .with(tracing_subscriber::fmt::layer().json().with_writer(writer));
+            tracing::subscriber::with_default(subscriber, || {
+                tracing::error!(event = "hidden_off", "hidden");
+                if enable {
+                    handle.reload(Level::Debug.filter()).unwrap();
+                    tracing::debug!(event = "enabled_debug", "debug");
+                }
+            });
+            drop(guard);
+            assert_eq!(directory.exists(), enable);
+        }
+        let text = std::fs::read_to_string(directory.join("events.jsonl")).unwrap();
+        assert!(text.contains("enabled_debug"));
+        assert!(!text.contains("hidden_off"));
     }
 
     #[test]

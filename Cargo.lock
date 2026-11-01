@@ -231,6 +231,7 @@ dependencies = [
 name = "agent-interface-term"
 version = "0.2.6"
 dependencies = [
+ "libc",
  "libghostty-vt",
  "libghostty-vt-sys",
  "memchr",

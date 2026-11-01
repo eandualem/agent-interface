@@ -316,6 +316,35 @@ index 0892012..e95a26c 100644
 +        }
 +    }
 +}
+diff --git a/src/terminal/osc.zig b/src/terminal/osc.zig
+index 26ce126..48c9529 100644
+--- a/src/terminal/osc.zig
++++ b/src/terminal/osc.zig
+@@ -297,6 +297,11 @@ pub const Parser = struct {
+     /// Maximum size of a "normal" OSC.
+     pub const MAX_BUF = 2048;
+ 
++    /// Maximum size of an OSC captured with the allocator, the same as
++    /// tmux's default input buffer limit. A longer OSC is discarded, as
++    /// tmux discards it, so a sequence that never ends holds bounded memory.
++    pub const MAX_ALLOC = 1024 * 1024;
++
+     /// Optional allocator used to accept data longer than MAX_BUF.
+     /// This only applies to some commands (e.g. OSC 52) that can
+     /// reasonably exceed MAX_BUF.
+@@ -551,6 +556,12 @@ pub const Parser = struct {
+         // If a writer has been initialized, we just accumulate the rest of the
+         // OSC sequence in the writer's buffer and skip the state machine.
+         if (self.capture) |*cap| {
++            if (cap.trailing().len >= MAX_ALLOC) {
++                cap.deinit();
++                self.capture = null;
++                self.state = .invalid;
++                return;
++            }
+             cap.writer.writeByte(c) catch |err| switch (err) {
+                 // We have overflowed our buffer or had some other error, set the
+                 // state to invalid so that we discard any further input.
 diff --git a/src/terminal/stream.zig b/src/terminal/stream.zig
 index efb06ec..a13ad55 100644
 --- a/src/terminal/stream.zig
