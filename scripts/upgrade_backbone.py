@@ -8,7 +8,6 @@ from importlib.metadata import version as package_version
 import json
 import os
 from pathlib import Path
-import re
 import socket
 import stat
 import struct
@@ -28,7 +27,7 @@ DEFERRED = ("Backbone upgrade deferred before changing packages. Existing Linux 
 
 
 def fixed_version(value):
-    return isinstance(value, str) and re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", value) is not None and tuple(map(int, value.split("."))) >= (0, 4, 3)
+    return setup.stable_version_at_least(value, (0, 4, 3))
 
 
 def peer_process(client):

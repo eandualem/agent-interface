@@ -233,7 +233,7 @@ the private Unix socket used by the app. Open Agent Interface to continue
 onboarding; no separate Backbone installation command is needed. Agent tools
 still need to be installed and signed in before creating an agent.
 
-New installations and permitted upgrades select Backbone 0.4.3 or newer. If a compatible published
+New installations and permitted upgrades select Backbone 0.4.5 or newer. If a compatible published
 release is unavailable, installation stops before replacing the app. Setup
 failures show Backbone's diagnostic and recovery guidance. When retry is allowed,
 rerun the same installer: it retains the request and resumes pending steps using
@@ -242,6 +242,9 @@ recovery and may defer an incomplete or unverified existing installation.
 If a fixed provider was installed but setup has not created data, a service,
 or a saved outcome, setup can continue using that exact installed provider
 without changing packages. Existing saved requests remain subject to identity checks.
+Recovery with an older provider may finish, but the app is not replaced until
+Backbone meets the 0.4.5 minimum. Once recovery completes, rerun the installer
+to upgrade Backbone before installing the app.
 It refuses automatic recovery if that
 pending installation or its saved service/socket choices have changed.
 

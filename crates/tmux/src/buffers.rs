@@ -60,16 +60,10 @@ pub fn take(
 /// buffer to standard output per command, and its exact bytes.
 fn read(socket: &Path, name: &str, size: usize, timeout: Duration) -> io::Result<Vec<u8>> {
     let mut command = crate::connection::command(socket)?;
-    command.args([
-        "save-buffer",
-        "-b",
-        name,
-        "-",
-        ";",
-        "delete-buffer",
-        "-b",
-        name,
-    ]);
+    // An unattached, non-control client receives exact bytes from show-buffer.
+    // Unlike save-buffer, it does not invoke the user's after-save-buffer hook,
+    // which may run external commands or block this private capture read.
+    command.args(["show-buffer", "-b", name, ";", "delete-buffer", "-b", name]);
     let limit = size
         .checked_add(STDERR_LIMIT)
         .ok_or_else(|| io::Error::other("capture buffer too large"))?;
@@ -204,6 +198,38 @@ mod tests {
         let mut expected = vec!["buffer0".to_owned(), "mine".to_owned(), other];
         expected.sort();
         assert_eq!(buffers(&server), expected);
+    }
+
+    #[test]
+    fn capture_read_does_not_run_the_users_save_buffer_hook() {
+        let server = TmuxServer::start().unwrap();
+        let socket = socket(&server);
+        let name = format!("{}0", prefix());
+        let text = "%end 1 2 1\n\u{1b}[31mred\n";
+        server.run(&["set-buffer", "-b", &name, text]).unwrap();
+        server
+            .run(&[
+                "set-hook",
+                "-g",
+                "after-save-buffer",
+                "set-buffer -b hook-fired saved",
+            ])
+            .unwrap();
+        assert_eq!(
+            take(&socket, &[name], Instant::now() + TIMEOUT).unwrap(),
+            vec![Some(text.as_bytes().to_vec())]
+        );
+        assert!(buffers(&server).is_empty());
+        // The app neither changes the user's hook nor consumes their buffers.
+        server.run(&["set-buffer", "-b", "mine", "keep"]).unwrap();
+        assert_eq!(
+            server.run(&["save-buffer", "-b", "mine", "-"]).unwrap(),
+            "keep"
+        );
+        assert_eq!(
+            buffers(&server),
+            vec!["hook-fired".to_owned(), "mine".to_owned()]
+        );
     }
 
     #[test]

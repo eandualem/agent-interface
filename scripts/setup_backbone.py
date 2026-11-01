@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import stat
 import subprocess
 import tempfile
@@ -19,6 +20,26 @@ import uuid
 
 OUTPUT_LIMIT = 1024 * 1024
 REQUEST_LIMIT = 32 * 1024
+
+
+def stable_version_at_least(value, minimum):
+    """Compare normalized stable PEP 440 metadata with a final-release floor.
+
+    Accept epochs, numeric release segments, post-releases and local labels.
+    Pre/dev releases and unknown strings are never safe upgrade evidence.
+    This needs no incidental dependency from the provider's environment.
+    """
+    match = re.fullmatch(
+        r"(?:(?P<epoch>[0-9]+)!)?(?P<release>[0-9]+(?:\.[0-9]+)*)"
+        r"(?:\.post[0-9]+)?(?:\+[a-z0-9]+(?:\.[a-z0-9]+)*)?",
+        value, re.IGNORECASE,
+    ) if isinstance(value, str) else None
+    if match is None:
+        return False
+    release = tuple(map(int, match["release"].split(".")))
+    width = max(len(release), len(minimum))
+    return (int(match["epoch"] or 0), release + (0,) * (width - len(release))) >= (
+        0, minimum + (0,) * (width - len(minimum)))
 
 
 def save_new(path, value):

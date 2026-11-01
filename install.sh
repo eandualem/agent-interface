@@ -498,7 +498,7 @@ if [ -f "$resources/setup_backbone.py" ]; then
     fi
     if [ "$backbone_resumed" = false ]; then
         if [ "$backbone_fixed_setup" = false ]; then
-            run_step 'Installing Agent Backbone' "$uv" tool install --upgrade --prerelease disallow --python '>=3.11,<3.14' 'agent-backbone>=0.4.3' ||
+            run_step 'Installing Agent Backbone' "$uv" tool install --upgrade --prerelease disallow --python '>=3.11,<3.14' 'agent-backbone>=0.4.5' ||
                 fail 'Could not install a compatible published Agent Backbone release. The app was not replaced.'
         fi
         if [ "$backbone_upgrade_held" = true ]; then
@@ -536,6 +536,21 @@ if [ -f "$resources/setup_backbone.py" ]; then
     else
         printf '%s\n' 'Resumed Agent Backbone setup with its saved version. A later install can check for an upgrade.'
     fi
+    # Finish recovery with its original provider before enforcing this release's
+    # minimum. Never change packages under a saved, unfinished setup request.
+    # Keep this check independent of the archived setup helper: the current
+    # installer also handles older archives that lack newer helper arguments.
+    "$tools/agent-backbone/bin/python" -I -B -c '
+from importlib.metadata import version
+import re
+value = version("agent-backbone")
+match = re.fullmatch(r"(?:(?P<epoch>[0-9]+)!)?(?P<release>[0-9]+(?:\.[0-9]+)*)(?:\.post[0-9]+)?(?:\+[a-z0-9]+(?:\.[a-z0-9]+)*)?", value, re.IGNORECASE)
+if match is None:
+    raise SystemExit(1)
+release = tuple(map(int, match["release"].split(".")))
+raise SystemExit(0 if (int(match["epoch"] or 0), release + (0,) * max(0, 3 - len(release))) >= (0, (0, 4, 5)) else 1)
+' ||
+        fail 'Agent Interface requires Backbone 0.4.5 or newer. Saved setup was preserved; after recovery completes, rerun the installer to upgrade Backbone. The app was not replaced.'
 fi
 printf '%s\n' 'Installing the app and its launcher...'
 if [ "$platform" = unknown-linux-gnu ]; then
