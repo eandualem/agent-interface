@@ -1,57 +1,87 @@
 # Security
 
-Agent Interface shows your tmux sessions, types into them and reads your
-[Agent Backbone](https://github.com/eandualem/agent-backbone) service. This
-page explains what the app protects, what it does not, how it is tested, and
-which security work is still open.
+Agent Interface is a desktop client for your tmux sessions and
+[Agent Backbone](https://github.com/eandualem/agent-backbone). It runs under
+your account. This page describes its responsibilities, reporting process,
+and known limits.
 
 ## Report a vulnerability
 
-Please report security problems privately. Open the repository's **Security**
-tab and choose **Report a vulnerability**. Do not open a public issue.
+Report suspected security defects privately through the repository's
+**Security → Report a vulnerability** form. Use a public issue for ordinary
+bugs that do not expose sensitive information.
 
-Include the version (**About Agent Interface**, or `BUILD.json` in the
-package), your platform, and the steps or input that show the problem. The
-maintainer is notified of each report, and it is handled in its private
-advisory thread. A confirmed problem is fixed in a new release, and the
-advisory credits you unless you ask us not to.
+Include the app version (**About Agent Interface**, or `BUILD.json`), operating
+system, tmux version, relevant configuration, and a minimal reproduction.
+Describe what you expected, what happened, and the concrete impact on the
+product: for example, incorrect terminal output, unintended input routing,
+access to another account's data, or an added capability exceeding its intended
+access. Use a supported setup and remove private data from examples. If you
+cannot safely reproduce a suspected defect, report the evidence and uncertainty;
+a complete exploit is not required.
 
+Agent actions that their CLI harness already permits are not by themselves an
+Interface defect. Reports of defects in Interface's own handling or capabilities
+are still welcome, including when an agent or terminal output triggers them.
+Reports are handled in their private advisory thread. Confirmed security fixes
+are included in a subsequent release, with credit unless you request otherwise.
 Only the latest release receives security fixes.
 
-## Security model at a glance
+## Responsibilities and boundaries
 
-**The app runs as you, on your computer.** It opens no network port and runs
-no background service of its own. Any program running under your user account
-can already read your files and use your tmux sessions, so the app does not
-try to defend against your own account. Agents keep the permissions and
-sandbox of the tool that runs them (Claude Code, Codex, OpenCode and so on);
-Agent Interface does not widen or narrow them.
+**Your agents are your tools.** Their execution permissions, approval prompts
+and sandboxing belong to the CLI harness that runs them, such as Codex, Claude
+Code or OpenCode. Configure those controls in the harness. Interface does not
+provide a general containment boundary for an agent running under your account.
+Other programs with the same account permissions can access your files and tmux
+sessions directly.
 
-What the app does protect:
+**Interface owns the behavior it adds.** It must render terminal data faithfully,
+route input to the selected pane, keep terminal data separate from control
+messages, and apply the intended identity and access checks to its Backbone and
+document capabilities. It opens no network listener and runs no daemon of its own.
 
-| Boundary | Protection |
+| Capability | Current behavior |
 | --- | --- |
-| Terminal output | What a program prints is treated as untrusted. It cannot read or set your clipboard, open links or run commands in the app. An unfinished operating system command (OSC) that the terminal stores as it arrives, such as a clipboard request, is discarded once it reaches 1 MiB, the same input limit tmux uses, so it cannot make the app hold ever more memory. |
-| Paste and dropped files | Pasted text is sent only to the pane you chose, with bracketed paste when the shell enabled it. If the app cannot tell whether bracketed paste is on, multiline paste is refused. A single paste is limited to 4 MiB. |
-| tmux | Commands address panes and windows by their numeric IDs, and shell arguments are quoted. Ordinary shells run on a tmux server whose socket sits in a private directory owned by you. |
-| Agent Backbone | Requests that carry your Backbone credential go only over a Unix socket owned by you (mode 0600, in a 0700 directory). Before sending anything, the app checks that the process on the other end runs as your user, and Backbone checks the same of the app. There is no fallback to a network connection for these requests. This keeps other accounts out; it does not separate programs running as you. |
-| HTML documents | Documents open in a system web view with no network access, no navigation, no downloads, no new windows and no file chooser. WebRTC is disabled. On Linux, scripts cannot use the clipboard and WebKit's process sandbox must be active. If any of these settings cannot be applied, the document does not open. |
-| Links | Only links in the app's own report and document views open, and only `http` and `https` addresses, when you click them. |
-| Logs | Logs record timings and outcomes, never terminal content, typed input, request bodies or credentials. |
-| Setup | First-run setup shows the official install commands for agent tools. It never runs them for you. |
+| Terminal output | Printed bytes are parsed as terminal data. Output does not automatically open links, run commands in the app, or access the clipboard. An allocated operating system command (OSC) sequence is discarded at 1 MiB, matching tmux's default input limit, so an unfinished sequence cannot keep growing the parser's memory. This is terminal robustness, not an agent execution policy. |
+| Paste and dropped files | Text goes to the selected pane, with bracketed paste when enabled. Multiline paste is refused when that mode cannot be verified; a single paste is limited to 4 MiB. These safeguards help prevent unintended input. |
+| tmux | Commands target numeric pane and window IDs, with quoted shell arguments. Ordinary shells use a tmux socket in a private directory owned by your account. |
+| Agent Backbone | Credential-bearing requests use a Unix socket owned by your account, with a 0600 socket in a 0700 directory. Both ends check peer identity. There is no network fallback for these requests. This distinguishes accounts, not programs running as the same account. |
+| HTML documents | The document view has no network access, navigation, downloads, new windows or file chooser. WebRTC is disabled. On Linux, clipboard access is disabled and WebKit's process sandbox must be active. The view refuses to open if these settings cannot be applied. These restrictions belong to the embedded document capability, not to your terminal sessions. |
+| Links | Clicking an app-provided report or document link can open an `http` or `https` URL in your browser. |
+| Setup | First-run setup displays official installation commands for agent tools; it does not execute those installation commands. |
 
-## What it does not protect against
+## Optional diagnostics and functional data
 
-- **Other programs running as you.** They can read the app's data, your
-  Backbone credential and your tmux sessions directly.
-- **What your agents do.** An agent can do whatever its own tool allows.
-  Review each tool's permission and sandbox settings.
-- **A compromised release.** The installer checks each download against the
-  SHA-256 checksum published with it, which catches corrupt downloads. Both
-  files come from the same GitHub release, so checksums alone do not prove who
-  built them. See [Verify a download](#verify-a-download).
-- **macOS Gatekeeper review.** The macOS app is ad-hoc signed and not
-  notarized by Apple.
+In **Settings → General → Diagnostic logging**, **Off** disables diagnostic
+records. **Warnings** is the quiet default; **Debug** explicitly enables lifecycle
+detail, and **Trace** adds operation timings. The choice is saved and applies
+without restarting. An Off launch creates no diagnostic log files. Switching Off
+stops new records; records already queued may finish writing, and existing files
+remain until you delete them.
+
+Diagnostics are local, bounded to four 4 MiB files, and never uploaded
+automatically. Instrumentation is designed around event metadata rather than
+terminal contents, typed commands or request bodies. Detailed records can still
+reveal identifiers, local paths, error context or workflow information. Choose
+Debug or Trace only when that local retention is acceptable, inspect files before
+sharing, and delete them when no longer needed. No AI or regular-expression
+filter can guarantee that arbitrary diagnostic text is free of secrets; the app
+does not promise universal secret scrubbing. See the
+[logging guide](docs/GUIDE.md#find-work-and-change-appearance) for file locations.
+
+Off controls optional diagnostics, not the data needed to perform the work:
+saved layouts and settings, setup requests and resumable progress, terminal
+history held by tmux, and data retained by Backbone or your agent harness remain
+subject to their own lifecycle. User-visible operation errors also remain
+available when diagnostics are off.
+
+## Distribution limits
+
+The installer checks downloads against their published SHA-256 checksums. Both
+come from the same GitHub release, so checksums detect corruption but do not by
+themselves establish who built an archive. Build provenance verification is
+described below. The macOS app is ad-hoc signed and is not notarized by Apple.
 
 ## Verify a download
 

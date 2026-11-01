@@ -121,11 +121,12 @@ UI thread.
 
 `app::diagnostics` owns the desktop process's `tracing` subscriber. Product
 libraries emit structured events without choosing a destination or initializing
-global logging. The saved `logging` preference selects Warnings (the default),
-Debug or Trace and reloads the filter immediately. Neither development builds
+global logging. The saved `logging` preference selects Off, Warnings (the default),
+Debug or Trace and reloads the filter immediately. Off disables new events; queued
+records may drain, and existing files are not erased. The writer defers filesystem
+initialization on an Off launch until logging is enabled and a record arrives. Neither development builds
 nor `RUST_LOG` enables verbose output. Only the explicitly instrumented app,
-tmux and roster targets are admitted, so dependency HTTP logs cannot expose
-request bodies or credentials. Events cover lifecycle boundaries and operation
+tmux and roster targets are admitted; dependency HTTP logging is not enabled. Events cover lifecycle boundaries and operation
 timings; terminal byte parsing, painting and input carry no per-character logs.
 
 The JSON formatter feeds a lossy 1,024-record background queue. Queue saturation
@@ -135,9 +136,13 @@ than 16 KiB and uses a private owned directory and regular files. A separate
 advisory lock serializes rotation across desktop processes; lock contention is
 reported as a failed write, rather than blocking producers. The worker guard
 drains queued records during normal shutdown. Forced termination may lose queued
-records. Logs contain stable pane IDs, process/session IDs, classifications and
-timings, never terminal bytes, input, feedback prose, HTTP payloads or credentials.
-Failure logging leaves existing lifecycle decisions and errors unchanged.
+records. Instrumentation records pane/process/session IDs, classifications and
+timings rather than terminal bytes, input or HTTP payloads. Error context and
+identifiers may still be sensitive; this is not a universal secret-scrubbing
+boundary. Users explicitly select detailed logging and manage its local retention.
+Off does not disable functional storage (layouts, settings and resumable setup
+state), tmux history, or user-visible operation errors. Failure logging leaves
+existing lifecycle decisions and errors unchanged.
 
 ## Saving and shared libraries
 
