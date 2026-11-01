@@ -4,12 +4,12 @@ use std::{cmp::Ordering, env, io, path::Path, process::Command, time::Duration};
 
 use unicode_properties::{GeneralCategory, GeneralCategoryGroup, UnicodeGeneralCategory};
 
-const MISSING: &str = "tmux not found; tmux 3.3 or newer is required. Install it on this host.";
+const MISSING: &str = "tmux not found; tmux 3.4 or newer is required. Install it on this host.";
 const CANNOT_RUN: &str =
-    "Cannot run tmux -V; tmux 3.3 or newer is required. Check the tmux executable in PATH.";
-const UNKNOWN: &str = "Cannot verify tmux version; tmux 3.3 or newer is required. Install a numbered build and check tmux -V.";
+    "Cannot run tmux -V; tmux 3.4 or newer is required. Check the tmux executable in PATH.";
+const UNKNOWN: &str = "Cannot verify tmux version; tmux 3.4 or newer is required. Install a numbered build and check tmux -V.";
 
-/// Find tmux on PATH and verify its numbered version is at least 3.3.
+/// Find tmux on PATH and verify its numbered version is at least 3.4.
 ///
 /// Runs only `tmux -V`, which contacts no server, with a five-second deadline
 /// and bounded stdout/stderr capture. Patch and numbered development suffixes
@@ -48,7 +48,7 @@ pub fn check_tmux() -> io::Result<String> {
     match supported(version) {
         Some(true) => Ok(version.to_owned()),
         Some(false) => Err(io::Error::other(format!(
-            "{version} detected; tmux 3.3 or newer is required. Upgrade tmux."
+            "{version} detected; tmux 3.4 or newer is required. Upgrade tmux."
         ))),
         None => Err(io::Error::other(UNKNOWN)),
     }
@@ -61,23 +61,16 @@ pub fn check_server_version(version: &str) -> io::Result<()> {
     match supported(&format!("tmux {version}")) {
         Some(true) => Ok(()),
         Some(false) => Err(io::Error::other(format!(
-            "tmux server {version} detected; tmux 3.3 or newer is required. Upgrade the server."
+            "tmux server {version} detected; tmux 3.4 or newer is required. Upgrade the server."
         ))),
         None => Err(io::Error::other(
-            "Cannot verify tmux server version; tmux 3.3 or newer is required. Use a numbered server build.",
+            "Cannot verify tmux server version; tmux 3.4 or newer is required. Use a numbered server build.",
         )),
     }
 }
 
-/// Returns whether a server reporting `version` keeps named buffers, such as
-/// the ones recovery captures into, out of a `paste-buffer` that names none.
-/// tmux 3.4 is the first release that pastes only automatic buffers then.
-pub fn pastes_only_automatic_buffers(version: &str) -> bool {
-    at_least(&format!("tmux {version}"), 3, 4) == Some(true)
-}
-
 fn supported(report: &str) -> Option<bool> {
-    at_least(report, 3, 3)
+    at_least(report, 3, 4)
 }
 
 // Python: tmux (?:next-)?(\d+)\.(\d+)(?:[a-zA-Z][\w.-]*|[-+][\w.-]+)?
@@ -134,18 +127,20 @@ mod tests {
     #[test]
     fn version_floor_accepts_patch_and_numbered_development_builds() {
         for (version, expected) in [
-            ("tmux 3.3", Some(true)),
-            ("tmux 3.3a", Some(true)),
+            ("tmux 3.3", Some(false)),
+            ("tmux 3.4", Some(true)),
+            ("tmux 3.3a", Some(false)),
+            ("tmux 3.4a", Some(true)),
             ("tmux 3.8-rc1", Some(true)),
             ("tmux next-3.9", Some(true)),
             ("tmux 4.0+local", Some(true)),
-            ("tmux 03.003", Some(true)),
+            ("tmux 03.004", Some(true)),
             ("tmux 3.2a", Some(false)),
             ("tmux next-2.99", Some(false)),
             ("tmux 99999999999999999999999.0", Some(true)),
-            ("tmux ٣.٣", Some(true)),
+            ("tmux ٣.٤", Some(true)),
             ("tmux 𝟛.𝟚", Some(false)),
-            ("tmux 3.3aβ", Some(true)),
+            ("tmux 3.4aβ", Some(true)),
             ("tmux next", None),
             ("tmux 3", None),
             ("tmux 3.3+", None),
@@ -155,25 +150,6 @@ mod tests {
             ("tmux 3.3 trailing", None),
         ] {
             assert_eq!(supported(version), expected, "{version}");
-        }
-    }
-
-    #[test]
-    fn only_servers_from_3_4_keep_named_buffers_out_of_paste() {
-        for (version, expected) in [
-            ("3.3", false),
-            ("3.3a", false),
-            ("3.4", true),
-            ("next-3.4", true),
-            ("3.7c", true),
-            ("4.0", true),
-            ("next", false),
-        ] {
-            assert_eq!(
-                pastes_only_automatic_buffers(version),
-                expected,
-                "{version}"
-            );
         }
     }
 
@@ -262,7 +238,7 @@ printf ' tmux 3.7c\n'
             "valid" => assert_eq!(result.unwrap(), "tmux 3.7c"),
             "old" => assert_eq!(
                 result.unwrap_err().to_string(),
-                "tmux 3.2a detected; tmux 3.3 or newer is required. Upgrade tmux."
+                "tmux 3.2a detected; tmux 3.4 or newer is required. Upgrade tmux."
             ),
             "missing" | "nonexec" => assert_eq!(result.unwrap_err().to_string(), MISSING),
             "broken" | "timeout" => assert_eq!(result.unwrap_err().to_string(), CANNOT_RUN),
