@@ -633,6 +633,7 @@ sys.exit(0 if outcome in ('ok', 'corrupt') else int(outcome))
 printf '%s\\n' "$*" >> "$FIXTURE_LOG"
 case "$*" in *'--phase before'*) exit "${FIXTURE_PREFLIGHT:-0}";; *'--phase after'*) exit "${FIXTURE_RELEASE:-0}";; *'--phase verify'*) exit "${FIXTURE_VERIFY:-0}";; esac
 case "$*" in *--resume-pending*) exit "${FIXTURE_RESUME:-0}";; esac
+case "$*" in *'importlib.metadata import version'*) exit "${FIXTURE_VERSION_FAIL:-0}";; esac
 case ":$PATH:" in *":$FIXTURE_BIN:"*) :;; *) exit 89;; esac
 if [ "${FIXTURE_SETUP_DELAY:-0}" != 0 ]; then sleep "$FIXTURE_SETUP_DELAY"; fi
 exit "${FIXTURE_SETUP_FAIL:-0}"
@@ -666,8 +667,8 @@ esac
         self.assertIn("Restart your shell to apply changes", first.stderr)
         log = Path(self.env["FIXTURE_LOG"])
         lines = log.read_text().splitlines()
-        self.assertIn("tool install --upgrade --prerelease disallow --python >=3.11,<3.14 agent-backbone>=0.4.3", lines)
-        self.assertTrue(lines[-1].startswith("-I -B "))
+        self.assertIn("tool install --upgrade --prerelease disallow --python >=3.11,<3.14 agent-backbone>=0.4.5", lines)
+        self.assertTrue(any(line.startswith("-I -B -c") for line in lines))
         self.env["FIXTURE_RESUME"] = "3"
         log.write_text("")
         result = self.install(archive)
@@ -675,6 +676,23 @@ esac
         self.assertTrue(any("--resume-pending" in line for line in lines))
         self.assertFalse(any(line.startswith("tool install") for line in lines))
         self.assertNotIn(": failed.", result.stderr)
+
+    def test_recovered_old_provider_keeps_previous_app_until_upgrade(self):
+        self.install(self.package("0.1.1"))
+        self.backbone_tools()
+        archive = self.package(extra={"agent-interface/setup_backbone.py": "fixture helper", "agent-interface/upgrade_backbone.py": "fixture guard"})
+        self.env["FIXTURE_SETUP_FAIL"] = "1"
+        self.install(archive, success=False)
+        self.env.update(FIXTURE_SETUP_FAIL="0", FIXTURE_RESUME="3", FIXTURE_VERSION_FAIL="1")
+        log = Path(self.env["FIXTURE_LOG"])
+        log.write_text("")
+        result = self.install(archive, success=False)
+        self.assertIn("requires Backbone 0.4.5 or newer", result.stderr)
+        self.assertNotIn("tool install", log.read_text())
+        self.assertIn("0.1.1", subprocess.check_output([self.link, "--version"], text=True))
+        self.env.update(FIXTURE_RESUME="0", FIXTURE_VERSION_FAIL="0")
+        self.install(archive)
+        self.assertIn("tool install", log.read_text())
 
     def test_stale_shell_path_does_not_block_app_or_provider_setup(self):
         self.backbone_tools()
