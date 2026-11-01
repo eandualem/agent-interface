@@ -620,6 +620,7 @@ older, app installation stops until a subsequent permitted upgrade.
 The helpers compare normalized stable Python package versions, including
 post-releases, without assuming a version-parser dependency in Backbone's
 environment. Pre-release and development versions do not satisfy either gate.
+The installer's check does not require a new helper command in older archives.
 
 Linux archives also include `upgrade_backbone.py`. Before changing an existing
 Linux provider package, this guard requires a completed installer-owned setup,

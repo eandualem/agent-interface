@@ -1,6 +1,7 @@
 """Installer recovery with a fake provider; never start a user service."""
 import importlib.util
 from pathlib import Path
+import re
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -11,6 +12,19 @@ SPEC.loader.exec_module(setup)
 
 
 class VersionTests(unittest.TestCase):
+    def test_installer_checks_versions_without_new_archive_helper_arguments(self):
+        installer = (Path(__file__).parents[2] / "install.sh").read_text()
+        source = re.search(r"(?s)-c '(\nfrom importlib.metadata import version.*?)\n'", installer)[1]
+        for value, accepted in (("0.4.5", True), ("0.4.5.post1", True),
+                                ("0.4.5.0", True), ("1!0.1", True),
+                                ("0.4.5+local.1", True), ("0.4.4.post99", False),
+                                ("0.4", False), ("0.5rc1", False),
+                                ("0.4.5.post1.dev1", False), ("unknown", False)):
+            with self.subTest(value=value), patch("importlib.metadata.version", return_value=value):
+                with self.assertRaises(SystemExit) as result:
+                    exec(source, {})
+                self.assertEqual(result.exception.code, 0 if accepted else 1)
+
     def test_stable_metadata_and_numeric_release_order(self):
         for value in ("0.4.5", "0.4.5.post1", "0.4.5.0", "0.4.10", "0.5",
                       "0.4.5+local.1", "1!0.1", "0!0.4.5"):
