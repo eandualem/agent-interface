@@ -544,7 +544,7 @@ if [ -f "$resources/setup_backbone.py" ]; then
 from importlib.metadata import version
 import re
 value = version("agent-backbone")
-match = re.fullmatch(r"(?:(?P<epoch>[0-9]+)!)?(?P<release>[0-9]+(?:\.[0-9]+)*)(?:\.post[0-9]+)?(?:\+[a-z0-9]+(?:\.[a-z0-9]+)*)?", value, re.IGNORECASE)
+match = re.fullmatch(r"v?(?:(?P<epoch>[0-9]+)!)?(?P<release>[0-9]+(?:\.[0-9]+)*)(?:(?:[-_.]?(?:post|rev|r)[-_.]?[0-9]*)|(?:-[0-9]+))?(?:\+[a-z0-9]+(?:[-_.][a-z0-9]+)*)?", value.strip(), re.IGNORECASE)
 if match is None:
     raise SystemExit(1)
 release = tuple(map(int, match["release"].split(".")))

@@ -132,7 +132,10 @@ print(json.dumps(e));sys.exit(code)
     threading.Thread(target=server.serve_forever, daemon=True).start()
 
     def command(*args, check=True):
-        return subprocess.run(args, env=env, text=True, capture_output=True,
+        # OCR's OpenMP workers contend on constrained runners. Keep this limit
+        # local to OCR; the app and window manager retain their environment.
+        command_env = {**env, "OMP_THREAD_LIMIT": "1"} if args[0] == "tesseract" else env
+        return subprocess.run(args, env=command_env, text=True, capture_output=True,
                               timeout=15, check=check).stdout.strip()
 
     def requests():
