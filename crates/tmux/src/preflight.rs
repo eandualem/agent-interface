@@ -35,6 +35,12 @@ pub fn check_tmux() -> io::Result<String> {
             !path.is_dir() && rustix::fs::access(path, rustix::fs::Access::EXEC_OK).is_ok()
         })
         .ok_or_else(|| io::Error::other(MISSING))?;
+    check_executable(&binary)
+}
+
+/// Verify the executable selected by the connection layer, including its
+/// platform-specific fallback locations, without contacting a server.
+pub(crate) fn check_executable(binary: &Path) -> io::Result<String> {
     let mut command = Command::new(binary);
     command.arg("-V").env_remove("TMUX").env_remove("TMUX_PANE");
     let output = super::discovery::capture(command, Duration::from_secs(5))

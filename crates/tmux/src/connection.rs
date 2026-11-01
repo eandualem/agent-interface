@@ -38,7 +38,8 @@ pub struct Connection {
 /// Connect to an exact existing session on an explicit socket. This uses `-E`
 /// to preserve the session environment and `ignore-size`, so the session keeps
 /// its geometry until the caller declares a size. It never creates a helper, session, window or pane.
-/// Call on a worker: each discovery query is bounded to three seconds.
+/// Call on a worker: executable verification takes at most five seconds and
+/// each discovery query is bounded to three seconds.
 pub fn connect(socket: &Path, session: &str) -> io::Result<Connection> {
     connect_selected(socket, session, None, false)
 }
@@ -102,6 +103,7 @@ fn connect_selected(
             "invalid session address",
         ));
     }
+    crate::preflight::check_executable(&tmux_binary()?)?;
     // tmux can read an ID-shaped name such as `$0` as an ID even after `=`.
     // Resolve the literal name by listing first, then target its numeric ID.
     let resolved = crate::discovery::read_attachment_policy(socket, session)
@@ -381,6 +383,59 @@ pub(crate) fn command(socket: &Path) -> io::Result<Command> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_old_executable_cannot_attach_to_a_supported_server() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let server = agent_interface_test_support::TmuxServer::start().unwrap();
+        let socket = server
+            .run(&["display-message", "-p", "#{socket_path}"])
+            .unwrap();
+        let version = server
+            .run(&["display-message", "-p", "#{version}"])
+            .unwrap();
+        crate::preflight::check_server_version(version.trim()).unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        symlink(tmux_binary().unwrap(), directory.path().join("real-tmux")).unwrap();
+        let executable = directory.path().join("tmux");
+        std::fs::write(&executable, "#!/bin/sh\nif [ \"$1\" = -V ]; then printf 'tmux 3.3\\n'; else exec \"${0%/*}/real-tmux\" \"$@\"; fi\n").unwrap();
+        std::fs::set_permissions(executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let status = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "connection::tests::old_executable_fixture_child",
+                "--nocapture",
+            ])
+            .env("PATH", directory.path())
+            .env("TMUX_OLD_EXECUTABLE_SOCKET", socket.trim())
+            .status()
+            .unwrap();
+        assert!(status.success());
+        assert!(server.run(&["has-session"]).is_ok());
+    }
+
+    #[test]
+    fn old_executable_fixture_child() {
+        let Some(socket) = std::env::var_os("TMUX_OLD_EXECUTABLE_SOCKET") else {
+            return;
+        };
+        match connect(
+            Path::new(&socket),
+            agent_interface_test_support::TmuxServer::SESSION,
+        ) {
+            Err(error) => assert!(
+                error
+                    .to_string()
+                    .contains("tmux 3.3 detected; tmux 3.4 or newer"),
+                "{error}"
+            ),
+            Ok(mut connection) => {
+                let _ = connection.client.kill();
+                let _ = connection.client.wait();
+                panic!("an unsupported executable attached to the server");
+            }
+        }
+    }
 
     #[test]
     fn an_id_shaped_session_name_connects_to_that_session_only() {
