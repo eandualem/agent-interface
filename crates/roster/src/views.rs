@@ -16,6 +16,7 @@ use serde_json::value::RawValue;
 
 use crate::{configuration::configured, transport, valid_agent, within_depth};
 
+pub mod bound;
 pub mod content;
 mod documents;
 mod library;
@@ -259,6 +260,10 @@ pub fn read(
 ) -> Result<Data, &'static str> {
     let (url, key) = configured(data_dir, url).ok_or(UNAVAILABLE)?;
     let api = Api::new(url, key, live);
+    read_using(&api, request)
+}
+
+fn read_using(api: &Api<'_>, request: &Request) -> Result<Data, &'static str> {
     let data: Result<Data, &'static str> = match request {
         Request::Team => Ok(Data::Team(Team::decode(
             &api.get("/api/agents")?,
@@ -266,15 +271,15 @@ pub fn read(
         )?)),
         Request::Usage(range) => Ok(Data::Usage(Usage::decode(&api.get(&usage_path(*range))?)?)),
         Request::Reports(query, agent) => {
-            Ok(Data::Reports(reports::read(&api, query, agent.as_deref())?))
+            Ok(Data::Reports(reports::read(api, query, agent.as_deref())?))
         }
-        Request::Document(id) => Ok(Data::Document(documents::read(&api, *id)?)),
-        Request::Response(id) => Ok(Data::Reports(reports::read_response(&api, *id)?)),
-        Request::Report(id) => Ok(Data::Reports(reports::read_report(&api, *id)?)),
+        Request::Document(id) => Ok(Data::Document(documents::read(api, *id)?)),
+        Request::Response(id) => Ok(Data::Reports(reports::read_response(api, *id)?)),
+        Request::Report(id) => Ok(Data::Reports(reports::read_report(api, *id)?)),
         Request::Activity => {
             // History is an addition: when it cannot be read, the timeline
             // still shows deliveries and states now, and says why.
-            let changes = history(&api, now().saturating_sub(3_600 + HISTORY_LOOKBACK));
+            let changes = history(api, now().saturating_sub(3_600 + HISTORY_LOOKBACK));
             if !api.live() {
                 return Err(UNAVAILABLE);
             }
@@ -285,14 +290,12 @@ pub fn read(
                 changes,
             )?))
         }
-        Request::Skills => Ok(Data::Skills(Box::new(SkillLibrary::read(&api)?))),
+        Request::Skills => Ok(Data::Skills(Box::new(SkillLibrary::read(api)?))),
         Request::Policies => {
-            let agents = library::agents(&api)?;
-            Ok(Data::Policies(Box::new(PolicyLibrary::read(
-                &api, &agents,
-            )?)))
+            let agents = library::agents(api)?;
+            Ok(Data::Policies(Box::new(PolicyLibrary::read(api, &agents)?)))
         }
-        Request::Tags => Ok(Data::Tags(Box::new(TagLibrary::read(&api)?))),
+        Request::Tags => Ok(Data::Tags(Box::new(TagLibrary::read(api)?))),
         Request::Agent(name, part) => {
             if !valid_agent(name) {
                 return Err(UNREADABLE);
@@ -312,7 +315,7 @@ pub fn read(
                             .and_then(|body| Loadout::decode(&body)),
                     );
                 }
-                Part::Policies => agent.brief = Some(instructions(&api, name)),
+                Part::Policies => agent.brief = Some(instructions(api, name)),
                 Part::Usage(range) => {
                     agent.usage = Some(
                         api.get(&usage_path(*range))

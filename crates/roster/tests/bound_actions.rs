@@ -18,6 +18,7 @@ use std::{
 
 struct Step {
     path: &'static str,
+    prefix: bool,
     request: Option<Value>,
     reply: Option<(u16, Value)>,
     delay: Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>,
@@ -28,6 +29,7 @@ impl Step {
     fn get(path: &'static str, reply: Value) -> Self {
         Self {
             path,
+            prefix: false,
             request: None,
             reply: Some((200, reply)),
             delay: None,
@@ -98,10 +100,18 @@ fn provider(label: &str, steps: Vec<Step>) -> (tempfile::TempDir, Connection, Jo
             } else {
                 "get"
             };
-            assert!(
-                headers.starts_with(&format!("{method} {} http/1.1\r\n", step.path)),
-                "{headers}"
-            );
+            if step.prefix {
+                assert!(
+                    headers.starts_with(&format!("{method} {}", step.path)),
+                    "{headers}"
+                );
+                assert!(headers.lines().next().unwrap().ends_with(" http/1.1"));
+            } else {
+                assert!(
+                    headers.starts_with(&format!("{method} {} http/1.1\r\n", step.path)),
+                    "{headers}"
+                );
+            }
             for (header, value) in [
                 ("authorization", format!("bearer fixture-{label}")),
                 ("x-backbone-profile-id", format!("profile-{label}")),
@@ -575,3 +585,5 @@ fn interaction_state_binding_refusal_invalidates_the_whole_snapshot() {
     );
     server.join().unwrap();
 }
+#[path = "bound_actions/general_views.rs"]
+mod general_views;
