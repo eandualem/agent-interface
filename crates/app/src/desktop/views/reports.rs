@@ -159,18 +159,6 @@ pub(super) fn refresh_toolbar(pane: &ViewPane, cx: &mut Context<ViewPane>) -> gp
     controls(pane, &pane.reports.agents, cx)
 }
 
-fn label(item: &ReportItem) -> String {
-    match &item.content {
-        ReportContent::Document(_) => "document".into(),
-        ReportContent::Progress { status, .. } => status.clone(),
-        ReportContent::Response {
-            superseded_by: Some(id),
-            ..
-        } => format!("corrected by #{id}"),
-        ReportContent::Response { .. } => "response".into(),
-    }
-}
-
 /// The author's current runtime state, separate from the report's authored tag.
 pub(super) fn mark(item: &ReportItem, cx: &gpui::App) -> Option<gpui::Div> {
     let ReportContent::Progress { .. } = &item.content else {
@@ -194,14 +182,11 @@ fn current_state(
 }
 
 /// A report's authored state as a tag.
-fn state_tag(item: &ReportItem) -> gpui::Div {
-    let ReportContent::Progress { status, .. } = &item.content else {
-        return ui::tag(label(item), ui::Tone::Quiet);
-    };
+fn state_tag(item: &ReportItem, status: &str) -> gpui::Div {
     if item.needs_owner() {
         return ui::tag("report: blocked · you", ui::Tone::Attention);
     }
-    let tone = match status.as_str() {
+    let tone = match status {
         "active" => ui::Tone::Tag,
         "blocked" => ui::Tone::Attention,
         "complete" => ui::Tone::Done,
@@ -422,7 +407,7 @@ fn reader(
     let mut column = ui::reader_column().gap(px(t.space.s16));
     match &item.content {
         ReportContent::Document(_) => unreachable!("document has an isolated reader"),
-        ReportContent::Progress { sections, .. } => {
+        ReportContent::Progress { status, sections } => {
             column = column.gap_0().child(
                 div()
                     .flex()
@@ -432,7 +417,7 @@ fn reader(
                     .children(mark(item, cx))
                     .child(super::mono(item.author.clone()).text_color(c.text))
                     .children(runtime(pane, item))
-                    .child(state_tag(item))
+                    .child(state_tag(item, status))
                     .child(div().flex_1())
                     .child(
                         ui::text(div().text_color(c.muted), &t.text.meta).child(format!(
@@ -599,7 +584,7 @@ pub(super) fn body(pane: &ViewPane, page: &ReportPage, cx: &mut Context<ViewPane
             let ago = since(epoch_seconds(&item.created_at));
             let id = SharedString::from(format!("report-{}", item.id));
             let row = match &item.content {
-                ReportContent::Progress { sections, .. } => {
+                ReportContent::Progress { status, sections } => {
                     let summary = if item.needs_owner() {
                         sections
                             .iter()
@@ -611,12 +596,11 @@ pub(super) fn body(pane: &ViewPane, page: &ReportPage, cx: &mut Context<ViewPane
                     ui::record_row(
                         id,
                         index == 0,
-                        false,
                         !seen::is_seen(item),
                         mark(item, cx).unwrap_or_else(|| div()),
                         item.author.clone(),
                         line(summary),
-                        state_tag(item),
+                        state_tag(item, status),
                         ago,
                     )
                 }
@@ -628,7 +612,6 @@ pub(super) fn body(pane: &ViewPane, page: &ReportPage, cx: &mut Context<ViewPane
                 } => ui::question_row(
                     id,
                     index == 0,
-                    false,
                     !seen::is_seen(item),
                     item.author.clone(),
                     line(question),
@@ -705,7 +688,6 @@ pub(super) fn body(pane: &ViewPane, page: &ReportPage, cx: &mut Context<ViewPane
                         ui::shelf_card(
                             SharedString::from(format!("document-{}", item.id)),
                             "file-text",
-                            false,
                             tags,
                             metadata.title.clone(),
                             metadata.author().to_owned(),
@@ -995,7 +977,13 @@ mod tests {
             runtimes: Default::default(),
         });
         let open = state.open.unwrap();
-        assert_eq!(label(&open), "corrected by #9");
+        assert!(matches!(
+            open.content,
+            ReportContent::Response {
+                superseded_by: Some(9),
+                ..
+            }
+        ));
         assert!(
             matches!(open.content, ReportContent::Response { answer, .. } if answer == "Original answer")
         );

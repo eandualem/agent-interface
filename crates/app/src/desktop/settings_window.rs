@@ -852,7 +852,7 @@ impl SettingsWindow {
                     )
                     .child(ui::text(div().text_color(c.muted), &t.text.meta).child(detail))
                     .into_any_element(),
-                Self::note("States refresh every two seconds. The app only reads from Agent Backbone.").into_any_element(),
+                Self::note("States refresh every two seconds.").into_any_element(),
             ]))
             .child(
                 div()

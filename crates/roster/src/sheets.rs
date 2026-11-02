@@ -212,7 +212,7 @@ impl Client {
             let mut path = page_path(base, cursor, limit)?;
             if let Some(author) = author_id {
                 path.push_str("&author_id=");
-                path.push_str(&encode(author));
+                path.push_str(&crate::views::encode(author));
             }
             let page: Page = match self.read(&path, METADATA_LIMIT) {
                 Err(Error::ResponseTooLarge) if limit > 1 => {
@@ -497,21 +497,9 @@ fn page_path(base: &str, cursor: Option<&str>, limit: usize) -> Result<String, E
             return Err(Error::Invalid);
         }
         path.push_str("&cursor=");
-        path.push_str(&encode(cursor));
+        path.push_str(&crate::views::encode(cursor));
     }
     Ok(path)
-}
-fn encode(s: &str) -> String {
-    use std::fmt::Write;
-    let mut out = String::new();
-    for b in s.bytes() {
-        if b.is_ascii_alphanumeric() || b"-._~".contains(&b) {
-            out.push(char::from(b));
-        } else {
-            let _ = write!(out, "%{b:02X}");
-        }
-    }
-    out
 }
 /// All coordinates needed to read one immutable page.
 #[derive(Clone, Debug)]

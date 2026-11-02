@@ -1648,7 +1648,7 @@ impl Conversation {
                     if !changed.is_empty() {
                         happened.push_str(&format!(" · changed {}", changed.join(", ")));
                     }
-                    ui::thread_event("history", who, format!("{happened} · {time}"), None)
+                    ui::thread_event("history", who, format!("{happened} · {time}"))
                         .into_any_element()
                 }
                 Body::Step { step } => {
@@ -1658,13 +1658,8 @@ impl Conversation {
                         "blocked" => format!("is blocked on {}", step.title),
                         _ => format!("queued {}", step.title),
                     };
-                    ui::thread_event(
-                        "corner-down-right",
-                        who,
-                        format!("{happened} · {time}"),
-                        None,
-                    )
-                    .into_any_element()
+                    ui::thread_event("corner-down-right", who, format!("{happened} · {time}"))
+                        .into_any_element()
                 }
             });
             if stored.kind == Kind::Interaction

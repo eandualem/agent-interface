@@ -1340,7 +1340,6 @@ fn age(label: impl Into<SharedString>) -> Div {
 pub fn record_row(
     id: impl Into<SharedString>,
     first: bool,
-    selected: bool,
     unseen: bool,
     mark: Div,
     who: impl Into<SharedString>,
@@ -1365,8 +1364,7 @@ pub fn record_row(
             .text_color(c.text_2),
         &t.text.row,
     )
-    .when(selected, card_selected)
-    .when(!selected, |el| el.hover(|el| el.bg(colors().hover)))
+    .hover(|el| el.bg(colors().hover))
     .child(mark)
     .child(
         div()
@@ -1404,7 +1402,6 @@ pub fn record_row(
 pub fn question_row(
     id: impl Into<SharedString>,
     first: bool,
-    selected: bool,
     unseen: bool,
     who: impl Into<SharedString>,
     question: impl Into<SharedString>,
@@ -1432,8 +1429,7 @@ pub fn question_row(
             el.border_t(px(t.size.hairline)).border_color(c.line)
         })
         .cursor_pointer()
-        .when(selected, card_selected)
-        .when(!selected, |el| el.hover(|el| el.bg(colors().hover)))
+        .hover(|el| el.bg(colors().hover))
         .child(unseen_mark(unseen))
         .child(
             text(
@@ -1498,7 +1494,6 @@ pub fn shelf() -> Div {
 pub fn shelf_card(
     id: impl Into<SharedString>,
     name: &str,
-    selected: bool,
     tags: Vec<Div>,
     title: impl Into<SharedString>,
     who: impl Into<SharedString>,
@@ -1530,15 +1525,11 @@ pub fn shelf_card(
                         .flex_shrink_0()
                         .size(px(t.size.view_tile))
                         .rounded(px(t.radius.row))
-                        .bg(if selected { c.accent_soft } else { c.selected })
+                        .bg(c.selected)
                         .flex()
                         .items_center()
                         .justify_center()
-                        .child(icon(
-                            name,
-                            t.size.icon,
-                            if selected { c.accent_text } else { c.text_2 },
-                        )),
+                        .child(icon(name, t.size.icon, c.text_2)),
                 )
                 .child(div().flex_1())
                 .children(tags),
@@ -1565,9 +1556,6 @@ pub fn shelf_card(
             .child(div().flex_1())
             .child(key_hint(size)),
         )
-        .when(selected, |el| {
-            el.child(selection_ring(t.radius.popover, t.size.hairline))
-        })
 }
 
 // A plan: one card per agent on the list, its steps on a track and what
@@ -2316,13 +2304,12 @@ pub fn thread_divider(label: impl Into<SharedString>, new: bool) -> Div {
     .child(rule())
 }
 
-/// Something the artifact did, in its thread: an icon, the agent in mono,
-/// what happened, and at most one action at the far end.
+/// Something the artifact did, in its thread: an icon, the agent in mono
+/// and what happened.
 pub fn thread_event(
     icon: &'static str,
     actor: impl Into<SharedString>,
     happened: impl Into<SharedString>,
-    action: Option<Stateful<Div>>,
 ) -> Div {
     let (t, c) = (tokens(), colors());
     text(
@@ -2343,8 +2330,6 @@ pub fn thread_event(
             .child(actor.into()),
     )
     .child(happened.into())
-    .child(div().flex_1())
-    .children(action.map(|action| action.text_color(c.accent_text).cursor_pointer()))
 }
 
 /// Who sent a message and when, above or below its bubble.

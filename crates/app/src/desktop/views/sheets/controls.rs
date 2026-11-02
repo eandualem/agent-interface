@@ -154,7 +154,6 @@ impl Sheets {
                 ui::shelf_card(
                     SharedString::from(format!("sheet-{}", record.sheet_id)),
                     "sheet",
-                    false,
                     tags,
                     record.title.clone(),
                     record

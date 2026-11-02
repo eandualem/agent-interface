@@ -34,7 +34,7 @@ another client's selected window.
 
 | Crate | Responsibility |
 | --- | --- |
-| `core` | Workspace, tab and split models; validation; local navigation; three-way merge rules; compatibility keymap and theme data |
+| `core` | Workspace, tab and split models; validation; local navigation; three-way merge rules; compatibility keymap data |
 | `store` | Initializing, reading and transactionally saving schema-v2 `layouts.db` files |
 | `tmux` | Server discovery and validation, control-mode protocol, pane capture, recovery and input commands |
 | `term` | Terminal engine ownership, input encoding and owned display snapshots |
@@ -283,9 +283,8 @@ two seconds for settings writes, including writes from already-closed windows.
 The wait tracks file workers, independently of their UI result handlers. A
 write still blocked beyond that shutdown allowance may remain unfinished.
 
-The compatibility theme reader validates the legacy theme format but does not
-control native appearance. Likewise, the legacy keymap inspection commands do
-not replace native Settings shortcuts.
+The legacy keymap inspection commands do not replace native Settings
+shortcuts.
 
 The Agent Backbone adapter resolves configuration lazily and uses
 bounded, read-only requests to a local endpoint. Credential-bearing requests
@@ -713,8 +712,8 @@ and saved working-directory refresh select the server containing the exact
 ordinary session across the current and legacy sockets. A verified current owner
 is used without inspecting unused legacy metadata. When no owner is verified,
 a metadata or discovery failure does not authorize creating a replacement shell
-on another server. Settings,
-themes and keymaps fall back to the old configuration directory when the new file is absent; settings writes
+on another server. Settings
+and keymaps fall back to the old configuration directory when the new file is absent; settings writes
 use the new directory. Legacy environment overrides remain supported, with the new
 `AGENT_INTERFACE_*` names taking precedence. No database or running server is moved.
 The Linux launcher uses the packaged Agent Interface icon.

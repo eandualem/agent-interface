@@ -9,7 +9,7 @@ use std::{
 use gpui::{AnyElement, Context, EntityId, SharedString, Window, div, prelude::*, px};
 
 use super::{
-    Browser, Popover, components as ui,
+    Browser, components as ui,
     design::{colors, tokens},
     icons, settings,
 };
@@ -340,7 +340,7 @@ impl Browser {
             .on_mouse_down(
                 gpui::MouseButton::Right,
                 cx.listener(|browser, event: &gpui::MouseDownEvent, window, cx| {
-                    browser.open_menu(Popover::Workspace, event.position, window, cx);
+                    browser.open_workspace_menu(event.position, window, cx);
                     cx.stop_propagation();
                 }),
             )
@@ -355,7 +355,7 @@ impl Browser {
                     } else if browser.workspace_menu {
                         browser.close_menus();
                     } else {
-                        browser.open_menu(Popover::Workspace, event.position(), window, cx);
+                        browser.open_workspace_menu(event.position(), window, cx);
                     }
                     cx.notify();
                 }),
@@ -789,12 +789,7 @@ impl Browser {
                                     if let Some(layout) = &mut browser.layout {
                                         layout.model_mut().choose_workspace(&id);
                                     }
-                                    browser.open_menu(
-                                        Popover::Workspace,
-                                        event.position,
-                                        window,
-                                        cx,
-                                    );
+                                    browser.open_workspace_menu(event.position, window, cx);
                                     cx.stop_propagation();
                                 }
                             }),

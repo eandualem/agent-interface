@@ -79,8 +79,8 @@ pub fn read_session_directory(socket: &Path, session: &str) -> io::Result<String
     Ok(directory.to_owned())
 }
 
-/// A read-only attachment decision for a session on the queried server.
-/// IDs belong to that server incarnation, not to a reusable session name.
+/// A session's identity on the queried server. IDs belong to that server
+/// incarnation, not to a reusable session name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AttachmentPolicy {
     /// Numeric part of tmux's `$N` session ID.
@@ -89,21 +89,18 @@ pub struct AttachmentPolicy {
     pub window_id: u32,
     /// PID of the tmux server that supplied these IDs.
     pub server_pid: u32,
-    /// Only an explicit `destroy-unattached=off` permits grouping. All other
-    /// values, including unknown policies, require direct attachment.
-    pub may_group: bool,
 }
 
-/// Resolve an exact raw session name and its effective attachment policy.
+/// Resolve an exact raw session name to its identity on the server.
 /// Names are compared literally in a bounded listing: tmux's target syntax can
 /// interpret an ID-shaped name as an ID even with its exact-name prefix.
 ///
 /// This bounded read starts no server, attaches no client and changes no options.
-/// The format includes inherited `destroy-unattached` values. Call on a worker
-/// with an absolute socket. Missing sessions or malformed replies return a fixed
-/// diagnostic, never a guessed identity or permission to group. This is a
-/// snapshot: attachment code must revalidate the identity and policy before any
-/// lifecycle operation. A later session reusing the name is a different target.
+/// The reply must also carry the session's `destroy-unattached` value. Call on
+/// a worker with an absolute socket. Missing sessions or malformed replies
+/// return a fixed diagnostic, never a guessed identity. This is a snapshot:
+/// attachment code must revalidate the identity before any lifecycle
+/// operation. A later session reusing the name is a different target.
 pub fn read_attachment_policy(socket: &Path, session: &str) -> io::Result<AttachmentPolicy> {
     let _span = tracing::debug_span!("tmux_query", operation = "resolve_session").entered();
     let unavailable = || io::Error::other("Attachment policy unavailable");
@@ -177,7 +174,9 @@ fn policy(line: &str) -> Option<AttachmentPolicy> {
     let session_id = number(fields.next()?.strip_prefix('$')?)?;
     let window_id = number(fields.next()?.strip_prefix('@')?)?;
     let server_pid = number(fields.next()?)?;
-    let may_group = fields.next()? == "off";
+    // The session's destroy-unattached policy: the reply must carry it,
+    // though attaching no longer depends on it.
+    fields.next()?;
     if server_pid == 0 || fields.next().is_some() {
         return None;
     }
@@ -185,7 +184,6 @@ fn policy(line: &str) -> Option<AttachmentPolicy> {
         session_id,
         window_id,
         server_pid,
-        may_group,
     })
 }
 
@@ -467,7 +465,6 @@ mod tests {
             .unwrap();
         let socket = Path::new(socket.trim_end());
         let original = read_attachment_policy(socket, TmuxServer::SESSION).unwrap();
-        assert!(original.may_group);
         let mut owner = server
             .control(&[
                 "attach-session",
@@ -512,17 +509,10 @@ mod tests {
             .run(&["list-clients", "-F", "#{client_pid}"])
             .unwrap();
         let direct = read_attachment_policy(socket, TmuxServer::SESSION).unwrap();
-        assert_eq!(
-            direct,
-            AttachmentPolicy {
-                may_group: false,
-                ..original
-            }
-        );
+        assert_eq!(direct, original);
         let literal = read_attachment_policy(socket, &literal_name).unwrap();
         assert_eq!(literal.session_id.to_string(), &literal_id[1..]);
         assert_ne!(literal.session_id, original.session_id);
-        assert!(literal.may_group);
         assert_eq!(server.run(&["show-options", "-g"]).unwrap(), options);
         assert_eq!(
             server
@@ -555,8 +545,8 @@ mod tests {
         let missing = server.address().0.join("missing.sock");
         assert!(read_attachment_policy(&missing, TmuxServer::SESSION).is_err());
         assert!(!missing.exists());
-        assert!(!policy("$0|@0|123|future-policy").unwrap().may_group);
-        assert!(!policy("$0|@0|123|").unwrap().may_group);
+        assert!(policy("$0|@0|123|future-policy").is_some());
+        assert!(policy("$0|@0|123|").is_some());
         assert!(policy("$+0|@0|123|off").is_none());
         assert!(policy("$0|@0|123|off\nextra").is_none());
         assert!(policy("$0|@0|0|off").is_none());

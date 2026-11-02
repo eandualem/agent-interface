@@ -39,29 +39,6 @@ use super::pixels::Bgra;
 /// How long to wait for ScreenCaptureKit to answer a request.
 const TIMEOUT: Duration = Duration::from_secs(10);
 
-/// How a window is captured.
-#[derive(Clone, Copy, Debug)]
-pub struct CaptureOptions {
-    /// Pixels per point in the captured image: 1 gives one pixel per point,
-    /// 2 the full detail of a Retina display.
-    pub scale: f64,
-    /// The shortest time between two frames. Zero asks for every frame the
-    /// window server composites.
-    pub minimum_frame_interval: Duration,
-    /// How many frames ScreenCaptureKit may have in use at once.
-    pub queue_depth: usize,
-}
-
-impl Default for CaptureOptions {
-    fn default() -> Self {
-        Self {
-            scale: 1.0,
-            minimum_frame_interval: Duration::ZERO,
-            queue_depth: 8,
-        }
-    }
-}
-
 /// One complete frame of the window, lent to the frame callback.
 #[derive(Clone, Copy, Debug)]
 pub struct Frame<'a> {
@@ -83,10 +60,6 @@ pub struct CaptureStats {
     /// Any other sample: blank, suspended, started or stopped, or one that
     /// could not be read.
     pub other: u64,
-    /// When the first complete frame was displayed.
-    pub first_display: Option<HostTime>,
-    /// When the last complete frame was displayed.
-    pub last_display: Option<HostTime>,
 }
 
 /// The callback that receives each complete frame.
@@ -169,8 +142,6 @@ impl Output {
             return;
         }
         stats.complete += 1;
-        stats.first_display.get_or_insert(display_time);
-        stats.last_display = Some(display_time);
         drop(stats);
 
         let base = CVPixelBufferGetBaseAddress(&buffer).cast::<u8>();
@@ -247,7 +218,6 @@ impl WindowCapture {
     /// ScreenCaptureKit drops frames while earlier ones are still in use.
     pub fn start(
         window_id: u32,
-        options: CaptureOptions,
         on_frame: impl FnMut(&Frame<'_>) + Send + 'static,
     ) -> io::Result<Self> {
         if !CGPreflightScreenCaptureAccess() {
@@ -258,7 +228,7 @@ impl WindowCapture {
             ));
         }
         let (filter, frame) = window_filter(window_id)?;
-        let config = configuration(frame, options)?;
+        let config = configuration(frame);
         // SAFETY: the filter and configuration are fully initialised; no
         // delegate is needed because errors also end the frames.
         let stream = unsafe {
@@ -393,16 +363,11 @@ fn window_filter(window_id: u32) -> io::Result<(Retained<SCContentFilter>, CGRec
     result.map(|Handed(found)| found).map_err(io::Error::other)
 }
 
-/// Builds the stream configuration for a window of `frame` points.
-fn configuration(
-    frame: CGRect,
-    options: CaptureOptions,
-) -> io::Result<Retained<SCStreamConfiguration>> {
-    let pixels = |points: f64| (points * options.scale).round().max(1.0) as usize;
-    let interval = i64::try_from(options.minimum_frame_interval.as_nanos())
-        .map_err(|_| io::Error::other("the minimum frame interval is too long"))?;
-    let queue_depth = isize::try_from(options.queue_depth)
-        .map_err(|_| io::Error::other("the queue depth is too large"))?;
+/// Builds the stream configuration for a window of `frame` points: one pixel
+/// per point, every frame the window server composites, and up to eight
+/// frames in use at once.
+fn configuration(frame: CGRect) -> Retained<SCStreamConfiguration> {
+    let pixels = |points: f64| points.round().max(1.0) as usize;
     // SAFETY: a new configuration is set up before any stream uses it, with
     // values in the ranges ScreenCaptureKit documents.
     unsafe {
@@ -420,9 +385,9 @@ fn configuration(
         if config.respondsToSelector(sel!(setIgnoreShadowsSingleWindow:)) {
             config.setIgnoreShadowsSingleWindow(true);
         }
-        config.setMinimumFrameInterval(CMTime::new(interval, 1_000_000_000));
-        config.setQueueDepth(queue_depth);
-        Ok(config)
+        config.setMinimumFrameInterval(CMTime::new(0, 1_000_000_000));
+        config.setQueueDepth(8);
+        config
     }
 }
 

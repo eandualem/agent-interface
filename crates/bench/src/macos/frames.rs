@@ -5,7 +5,7 @@
 use std::sync::mpsc::{self, Receiver};
 use std::time::Duration;
 
-use super::capture::{CaptureOptions, CaptureStats, WindowCapture};
+use super::capture::{CaptureStats, WindowCapture};
 use super::clock::HostTime;
 use super::pixels::{Bgra, Rect};
 
@@ -32,7 +32,7 @@ impl<T: Send + 'static> Frames<T> {
         reduce: impl Fn(&Bgra<'_>) -> T + Send + 'static,
     ) -> Result<Self, String> {
         let (seen, received) = mpsc::channel();
-        let capture = WindowCapture::start(window, CaptureOptions::default(), move |frame| {
+        let capture = WindowCapture::start(window, move |frame| {
             let _ = seen.send(Seen {
                 time: frame.display_time,
                 value: reduce(&frame.image),

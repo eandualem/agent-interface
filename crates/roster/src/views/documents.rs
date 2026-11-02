@@ -106,7 +106,7 @@ pub(super) fn read_list(
     }
     if let Some(agent) = agent {
         path.push_str("&agent=");
-        path.push_str(&super::reports::encode(agent));
+        path.push_str(&super::encode(agent));
     }
     let body = fetch(api, &path, super::VIEW_LIMIT, false)?;
     let mut page = decode_list(&body, author_id)?;

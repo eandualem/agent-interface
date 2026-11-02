@@ -5,7 +5,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use super::capture::{CaptureOptions, WindowCapture};
+use super::capture::WindowCapture;
 use super::clock::HostTime;
 use super::keys::{self, Modifiers, keycode};
 use super::pixels::{Color, Rect, fraction_matching, region_digest};
@@ -81,7 +81,7 @@ pub fn run(options: &Options) -> Result<(), String> {
 
     let seen: Arc<Mutex<Vec<Seen>>> = Arc::default();
     let recorded = Arc::clone(&seen);
-    let capture = WindowCapture::start(window.id, CaptureOptions::default(), move |frame| {
+    let capture = WindowCapture::start(window.id, move |frame| {
         let image = &frame.image;
         let whole = Rect {
             x: 0,

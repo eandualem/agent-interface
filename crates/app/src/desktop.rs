@@ -363,11 +363,6 @@ struct EditingName {
     _events: gpui::Subscription,
 }
 
-#[derive(Clone, Copy)]
-enum Popover {
-    Workspace,
-}
-
 #[derive(Clone)]
 enum TabAction {
     Rename,
@@ -622,14 +617,7 @@ impl Browser {
             cx.notify();
             return;
         };
-        self.pending_save = Some(proposal);
-        self.editing = None;
-        self.chooser = None;
-        self.close_menus();
-        if let Some(focus) = &self.navigation {
-            window.focus(focus, cx);
-        }
-        self.save(cx);
+        self.save_edit(proposal, window, cx);
     }
 
     fn detach_focused(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -672,14 +660,7 @@ impl Browser {
             cx.notify();
             return;
         };
-        self.pending_save = Some(proposal);
-        self.editing = None;
-        self.chooser = None;
-        self.close_menus();
-        if let Some(focus) = &self.navigation {
-            window.focus(focus, cx);
-        }
-        self.save(cx);
+        self.save_edit(proposal, window, cx);
     }
 
     fn detach_pane(&mut self, target: &Target, window: &mut Window, cx: &mut Context<Self>) {
@@ -696,7 +677,18 @@ impl Browser {
         if !target.detach_from(&mut proposed) {
             return;
         }
-        self.pending_save = Some((base, proposed));
+        self.save_edit((base, proposed), window, cx);
+    }
+
+    /// Save a layout edit that removes panes, leaving nothing half-edited
+    /// and focus on the navigation.
+    fn save_edit(
+        &mut self,
+        proposal: (Document, Layout),
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.pending_save = Some(proposal);
         self.editing = None;
         self.chooser = None;
         self.close_menus();
@@ -1230,18 +1222,15 @@ impl Browser {
         cx.notify();
     }
 
-    fn open_menu(
+    fn open_workspace_menu(
         &mut self,
-        menu: Popover,
         at: gpui::Point<gpui::Pixels>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.close_menus();
         self.menu_at = Some(at);
-        match menu {
-            Popover::Workspace => self.workspace_menu = true,
-        }
+        self.workspace_menu = true;
         if let Some(focus) = &self.navigation {
             window.focus(focus, cx);
         }
