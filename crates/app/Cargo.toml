@@ -18,6 +18,7 @@ workspace = true
 
 [dependencies]
 libc.workspace = true
+rustix = { workspace = true, features = ["process"] }
 futures.workspace = true
 gpui.workspace = true
 gpui_platform.workspace = true

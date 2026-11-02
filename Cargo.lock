@@ -132,6 +132,7 @@ dependencies = [
  "pulldown-cmark",
  "raw-window-handle",
  "rusqlite",
+ "rustix",
  "serde",
  "serde_json",
  "sha2",

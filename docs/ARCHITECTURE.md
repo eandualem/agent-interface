@@ -528,8 +528,10 @@ or permission inspection.
 The app's `profiles` discovery client invokes only the provider's local
 `profiles list/show` commands using an explicit executable and captured operator
 environment. It preserves managed-agent identity so the provider's operator
-boundary still applies. Retained output, duration and cancellation are bounded;
-nonzero exits stay errors, and `show` must return the requested profile ID.
+boundary still applies. A nonblocking pipe bounds retained output and supplies backpressure; duration
+and cancellation are bounded. Each command owns a process group, cleaned before
+reaping its leader so wrappers cannot leave background writers behind.
+Nonzero exits stay errors, and `show` must return the requested profile ID.
 Discovery does not connect, adopt, start or repair a provider and is not yet
 wired into a selector. Returned records require the normal authenticated
 handshake before content use.
@@ -652,7 +654,8 @@ build-time advisory exception are described below.
   MIT HTTP/runtime dependencies, pinned exactly, for HTTP over a connected
   Unix socket after the peer identity check.
 - **`rustix` 1.1.5:** effective-UID access for that check. MIT OR Apache-2.0
-  OR Apache-2.0 WITH LLVM-exception.
+  OR Apache-2.0 WITH LLVM-exception. The app also uses this pinned workspace
+  dependency for safe nonblocking pipes and owned discovery-process cleanup.
 - **`objc2-web-kit` 0.3.2:** MIT-licensed bindings, pinned exactly, used by the
   macOS bridge to configure WebKit peer connections and its
   ephemeral data store before document execution. The app calls a safe bridge

@@ -4,9 +4,10 @@
 use agent_interface_roster::profiles::{self, Item, Profile};
 use std::{
     ffi::OsString,
-    os::unix::fs::FileExt,
+    io::Read,
+    os::unix::process::CommandExt,
     path::PathBuf,
-    process::{Command, Stdio},
+    process::{Child, Command, Stdio},
     time::{Duration, Instant},
 };
 
@@ -96,58 +97,106 @@ impl Client {
         if !live() {
             return Err(Error::Cancelled);
         }
-        // An inherited output pipe must not keep this read alive after the CLI
-        // exits. An anonymous file also avoids exposing a temporary output path.
-        let output = tempfile::tempfile().map_err(|_| Error::Unavailable)?;
-        let mut child = Command::new(&self.executable)
+        let child = Command::new(&self.executable)
             .env_clear()
             .envs(self.environment.iter().cloned())
             .args(arguments)
+            .process_group(0)
             .stdin(Stdio::null())
-            .stdout(output.try_clone().map_err(|_| Error::Unavailable)?)
+            .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
             .map_err(|_| Error::Unavailable)?;
+        let mut running = Running::new(child);
+        let mut output = running.child.stdout.take().ok_or(Error::Unavailable)?;
+        let flags = rustix::fs::fcntl_getfl(&output).map_err(|_| Error::Unavailable)?;
+        rustix::fs::fcntl_setfl(&output, flags | rustix::fs::OFlags::NONBLOCK)
+            .map_err(|_| Error::Unavailable)?;
         let deadline = Instant::now() + timeout;
-        let result = (|| {
-            loop {
-                if !live() {
-                    return Err(Error::Cancelled);
-                }
-                if output.metadata().map_err(|_| Error::Unavailable)?.len() > OUTPUT_LIMIT as u64 {
-                    return Err(Error::TooLarge);
-                }
-                match child.try_wait().map_err(|_| Error::Unavailable)? {
-                    Some(exit) if exit.success() => break,
-                    Some(_) => return Err(Error::CommandFailed),
-                    None if Instant::now() >= deadline => return Err(Error::TimedOut),
-                    None => std::thread::sleep(Duration::from_millis(10)),
-                }
-            }
-            let mut bytes = vec![0; OUTPUT_LIMIT + 1];
-            let mut length = 0;
-            while length < bytes.len() {
-                match output.read_at(&mut bytes[length..], length as u64) {
-                    Ok(0) => break,
-                    Ok(read) => length += read,
-                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
-                    Err(_) => return Err(Error::Unavailable),
-                }
-            }
+        let mut bytes = Vec::new();
+        let mut eof = false;
+        let mut exited = false;
+        loop {
             if !live() {
                 return Err(Error::Cancelled);
             }
-            if length > OUTPUT_LIMIT {
-                return Err(Error::TooLarge);
+            if Instant::now() >= deadline {
+                return Err(Error::TimedOut);
             }
-            bytes.truncate(length);
-            Ok(bytes)
-        })();
-        if result.is_err() {
-            let _ = child.kill();
-            let _ = child.wait();
+            // Bounded nonblocking batches keep cancellation responsive even if
+            // the writer never pauses. The kernel pipe supplies backpressure.
+            for _ in 0..16 {
+                if eof {
+                    break;
+                }
+                let mut chunk = [0; 4096];
+                match output.read(&mut chunk) {
+                    Ok(0) => {
+                        eof = true;
+                        break;
+                    }
+                    Ok(read) => {
+                        if read > OUTPUT_LIMIT - bytes.len() {
+                            return Err(Error::TooLarge);
+                        }
+                        bytes.extend_from_slice(&chunk[..read]);
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(_) => return Err(Error::Unavailable),
+                }
+            }
+            if !exited {
+                // NOWAIT keeps the leader unreaped until group cleanup, so its
+                // PID cannot be recycled into an unrelated process group.
+                let status = rustix::process::waitid(
+                    rustix::process::WaitId::Pid(running.pid),
+                    rustix::process::WaitIdOptions::EXITED
+                        | rustix::process::WaitIdOptions::NOHANG
+                        | rustix::process::WaitIdOptions::NOWAIT,
+                )
+                .map_err(|_| Error::Unavailable)?;
+                if let Some(status) = status {
+                    if status.exit_status() != Some(0) {
+                        return Err(Error::CommandFailed);
+                    }
+                    exited = true;
+                    // A completed wrapper may leave descendants holding stdout.
+                    // They belong to this command, never to a provider service.
+                    running.terminate_group();
+                }
+            }
+            if exited && eof {
+                return if live() {
+                    Ok(bytes)
+                } else {
+                    Err(Error::Cancelled)
+                };
+            }
+            std::thread::sleep(Duration::from_millis(10));
         }
-        result
+    }
+}
+
+struct Running {
+    child: Child,
+    pid: rustix::process::Pid,
+}
+impl Running {
+    fn new(child: Child) -> Self {
+        let pid = rustix::process::Pid::from_child(&child);
+        Self { child, pid }
+    }
+    fn terminate_group(&self) {
+        if !self.pid.is_init() {
+            let _ = rustix::process::kill_process_group(self.pid, rustix::process::Signal::KILL);
+        }
+    }
+}
+impl Drop for Running {
+    fn drop(&mut self) {
+        self.terminate_group();
+        let _ = self.child.wait();
     }
 }
 

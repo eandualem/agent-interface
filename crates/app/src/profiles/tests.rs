@@ -151,3 +151,58 @@ fn discovery_deadlines_and_cancellation_stop_the_original_child() {
     );
     assert!(start.elapsed() < Duration::from_secs(4));
 }
+
+#[test]
+fn discovery_cleans_wrapper_children_on_cancellation_timeout_and_success() {
+    for mode in ["cancel", "timeout", "success"] {
+        let script = r#"
+/bin/sh -c 'printf "%s" "$$" > "$CAPTURE.pid"; while :; do printf x >> "$CAPTURE.beats"; /bin/sleep 0.01; done' &
+"#.to_owned() + if mode == "success" {
+            r#"while [ ! -s "$CAPTURE.beats" ]; do /bin/sleep 0.01; done
+printf '{"schema_version":1,"items":[]}'
+"#
+        } else { "wait\n" };
+        let (directory, client) = stub(&script);
+        let beats = directory.path().join("calls.beats");
+        let result = client.read(
+            &["profiles", "list", "--json"],
+            &|| mode != "cancel" || !beats.exists(),
+            Duration::from_secs(2),
+        );
+        let before = fs::metadata(&beats).unwrap().len();
+        std::thread::sleep(Duration::from_millis(120));
+        let after = fs::metadata(&beats).unwrap().len();
+        if after != before {
+            // Clean up the fixture even when testing a regressed implementation.
+            // Growth proves this never-ending child still owns the recorded PID.
+            let pid = fs::read_to_string(directory.path().join("calls.pid"))
+                .unwrap()
+                .parse()
+                .unwrap();
+            let _ = rustix::process::kill_process(
+                rustix::process::Pid::from_raw(pid).unwrap(),
+                rustix::process::Signal::KILL,
+            );
+        }
+        assert_eq!(after, before, "wrapper child survived {mode}");
+        match mode {
+            "cancel" => assert_eq!(result, Err(Error::Cancelled)),
+            "timeout" => assert_eq!(result, Err(Error::TimedOut)),
+            "success" => assert!(result.is_ok()),
+            _ => unreachable!(),
+        }
+    }
+}
+
+#[test]
+fn an_unbounded_writer_hits_the_pipe_collection_limit() {
+    let (_directory, client) = stub("exec /usr/bin/yes fixture");
+    assert_eq!(
+        client.read(
+            &["profiles", "list", "--json"],
+            &|| true,
+            Duration::from_secs(5)
+        ),
+        Err(Error::TooLarge)
+    );
+}
