@@ -189,7 +189,7 @@ fn fetch(api: &Api<'_>, path: &str, limit: usize, detail: bool) -> Result<Vec<u8
     if !api.live() {
         return Err(UNAVAILABLE);
     }
-    match crate::transport::fetch(&api.url, path, &api.key, limit) {
+    match api.fetch(path, limit) {
         Ok(bytes) if bytes.len() <= limit => Ok(bytes),
         Ok(_) => Err(UNREADABLE),
         Err(Some(404)) if detail => Err(NOT_FOUND),

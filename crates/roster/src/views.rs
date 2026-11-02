@@ -16,6 +16,7 @@ use serde_json::value::RawValue;
 
 use crate::{configuration::configured, transport, valid_agent, within_depth};
 
+pub mod content;
 mod documents;
 mod library;
 mod reports;
@@ -152,30 +153,62 @@ pub enum Data {
     Agent(Box<Agent>),
 }
 
-/// An enabled provider's address and key, and whether the read is still
-/// wanted.
+/// The transport for one read chain. Bound reads record transport failures so
+/// optional roster enrichment cannot hide a rejected connection binding.
+enum Provider<'a> {
+    Legacy {
+        url: String,
+        key: String,
+    },
+    Bound {
+        connection: &'a crate::profiles::Connection,
+        error: std::cell::Cell<Option<crate::profiles::Error>>,
+    },
+}
+
 pub(crate) struct Api<'a> {
-    url: String,
-    key: String,
+    provider: Provider<'a>,
     live: &'a dyn Fn() -> bool,
 }
 
 impl<'a> Api<'a> {
-    #[cfg(test)]
     pub(crate) fn new(url: String, key: String, live: &'a dyn Fn() -> bool) -> Self {
-        Self { url, key, live }
+        Self {
+            provider: Provider::Legacy { url, key },
+            live,
+        }
     }
 
     fn live(&self) -> bool {
         (self.live)()
     }
 
-    fn get(&self, path: &str) -> Result<Vec<u8>, &'static str> {
+    fn fetch(&self, path: &str, limit: usize) -> Result<Vec<u8>, Option<u16>> {
         // A read nobody is waiting for any more starts no further request.
         if !self.live() {
-            return Err(UNAVAILABLE);
+            return Err(None);
         }
-        transport::get(&self.url, path, &self.key, VIEW_LIMIT).ok_or(UNAVAILABLE)
+        match &self.provider {
+            Provider::Legacy { url, key } => transport::fetch(url, path, key, limit),
+            Provider::Bound { connection, error } => {
+                // Once a chain loses its binding, never start another request.
+                if error.get().is_some() {
+                    return Err(None);
+                }
+                match connection.response(path, None, limit) {
+                    Ok(response) if (200..300).contains(&response.status) => Ok(response.body),
+                    Ok(response) => Err(Some(response.status)),
+                    Err(failure) => {
+                        error.set(Some(failure));
+                        Err(None)
+                    }
+                }
+            }
+        }
+    }
+
+    fn get(&self, path: &str) -> Result<Vec<u8>, &'static str> {
+        self.fetch(path, VIEW_LIMIT).map_err(|_| UNAVAILABLE)
     }
 }
 
@@ -185,7 +218,7 @@ fn instructions(api: &Api<'_>, name: &str) -> Result<Instructions, &'static str>
         return Err(UNAVAILABLE);
     }
     let path = format!("/api/agents/{name}/instructions");
-    match transport::fetch(&api.url, &path, &api.key, VIEW_LIMIT) {
+    match api.fetch(&path, VIEW_LIMIT) {
         Ok(body) => Instructions::decode(&body),
         Err(Some(404 | 405)) => Err(NOT_SERVED),
         Err(_) => Err(UNAVAILABLE),
@@ -203,11 +236,7 @@ fn usage_path(range: Range) -> String {
 pub fn members(data_dir: &Path) -> Option<std::collections::BTreeMap<String, Member>> {
     let (url, key) = configured(data_dir, None)?;
     let live = || true;
-    let api = Api {
-        url,
-        key,
-        live: &live,
-    };
+    let api = Api::new(url, key, &live);
     library::agents(&api)
         .map(|agents| {
             agents
@@ -229,7 +258,7 @@ pub fn read(
     live: &dyn Fn() -> bool,
 ) -> Result<Data, &'static str> {
     let (url, key) = configured(data_dir, url).ok_or(UNAVAILABLE)?;
-    let api = Api { url, key, live };
+    let api = Api::new(url, key, live);
     let data: Result<Data, &'static str> = match request {
         Request::Team => Ok(Data::Team(Team::decode(
             &api.get("/api/agents")?,
@@ -296,9 +325,11 @@ pub fn read(
         }
     };
     let mut data = data?;
-    if let Data::Reports(page) = &mut data {
+    if let Data::Reports(page) = &mut data
+        && let Provider::Legacy { url, .. } = &api.provider
+    {
         for item in &mut page.items {
-            item.provider_url = api.url.clone();
+            item.provider_url = url.clone();
         }
     }
     Ok(data)
@@ -673,7 +704,7 @@ fn history(api: &Api<'_>, since: u64) -> History {
             .map(|id| format!("&before_id={id}"))
             .unwrap_or_default();
         let path = format!("/api/agents/states?since={}&limit=500{cursor}", iso(since));
-        let body = match transport::fetch(&api.url, &path, &api.key, VIEW_LIMIT) {
+        let body = match api.fetch(&path, VIEW_LIMIT) {
             Ok(body) => body,
             Err(Some(404 | 405)) => return History::NotServed,
             Err(_) => return History::Failed(UNAVAILABLE),
