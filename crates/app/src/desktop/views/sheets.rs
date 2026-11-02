@@ -80,6 +80,11 @@ pub(super) enum Source {
 }
 
 impl Source {
+    pub fn belongs_to(&self, agents: &crate::desktop::agent_status::LiveAgents) -> bool {
+        self.identity()
+            .is_none_or(|identity| agents.belongs_to(identity))
+    }
+
     fn connect(&self) -> Result<Client, api::Error> {
         match self {
             Self::Legacy(directory) => Client::connect(directory),
@@ -674,6 +679,7 @@ mod tests {
         let origin_a = a.identity().clone();
         let source_a = Source::Bound(a.clone());
         let source_b = Source::Bound(b);
+        assert!(!source_a.belongs_to(&crate::desktop::agent_status::LiveAgents::default()));
         let worker = std::thread::spawn({
             let source_a = source_a.clone();
             move || source_a.connect().unwrap().list_all().unwrap()

@@ -489,12 +489,15 @@ impl ViewPane {
     }
 
     fn show_sheets(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.interactions_shown(false, cx);
         let source = match (&self.connection, &self.backbone) {
             (Some(connection), _) => sheets::Source::Bound(connection.clone()),
             (None, Some(directory)) => sheets::Source::Legacy(directory.clone()),
             (None, None) => return,
         };
+        if !source.belongs_to(&self.agents) {
+            return;
+        }
+        self.interactions_shown(false, cx);
         self.documents.surface.borrow_mut().clear();
         self.plans_shown(false, cx);
         if self.sheets.is_none() {
