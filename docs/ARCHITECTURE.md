@@ -286,7 +286,7 @@ write still blocked beyond that shutdown allowance may remain unfinished.
 The legacy keymap inspection commands do not replace native Settings
 shortcuts.
 
-The Agent Backbone adapter resolves configuration lazily and uses
+The active Agent Backbone adapter resolves configuration lazily and uses
 bounded, read-only requests to a local endpoint. Credential-bearing requests
 require an absolute Unix socket path from `BACKBONE_SOCKET_PATH` or the provider's
 saved `backbone.socket_path` setting. An explicit endpoint overrides the saved
@@ -313,6 +313,23 @@ permission files reject input beyond 1 MiB and skill previews retain their
 256 KiB limit. Permission inspection distinguishes missing optional files from
 read, size and parse failures, showing incomplete results explicitly. Rule
 deduplication preserves file order and first occurrence with set membership.
+
+The separate `roster::profiles` adapter implements the initial profile connection
+contract. It validates registry list/show records, rejects non-ready bindings,
+reads only the exact private dotenv credential reference, and verifies
+`/api/profile` against the expected profile, installation and lifecycle IDs and
+tmux socket. Its connection retains that credential and identity; every request
+carries all three identity headers, including the handshake and subsequent
+requests. Replacement or an unsupported provider fails explicitly without legacy
+fallback. This adapter is not yet wired into desktop startup or workspace
+selection; existing readers still use the configuration behavior above. It does
+not start services, migrate Default or configure runtime accounts.
+
+The JSON fixture in `crates/roster/tests/fixtures/profiles-v1.json` comes from
+Agent Backbone's [profile contract](https://github.com/eandualem/agent-backbone/blob/4848c6dc3b247781ea4ab4beb19f4a5b7922c2b4/docs/contracts/profiles-v1.json).
+Contract revision 2 uses wire schema 1. Disposable Unix-socket checks cover the
+handshake, pinned credentials, follow-up request headers and replacement refusal;
+these checks do not establish complete runtime or application profile isolation.
 
 Native document readers share selection state across styled text blocks and source
 text. GPUI text layouts map pointer positions to UTF-8 offsets, snapped to grapheme
@@ -576,8 +593,12 @@ build-time advisory exception are described below.
   strikethrough and task lists; the app draws the parsed blocks natively.
   Its transitive `unicase` 2.10.0 dependency (MIT OR Apache-2.0) supplies
   case-insensitive matching for Markdown reference labels.
-- **`alacritty_terminal` and `rio-vt`:** development-only comparison engines.
-  Apache-2.0 and MIT respectively.
+- **`alacritty_terminal` and `rio-vt` 0.5.29:** development-only comparison engines.
+  Apache-2.0 and MIT respectively. The exact Rio pin includes its Kitty graphics
+  file-path validation fix; the desktop terminal uses Ghostty. Its benchmark-only
+  support crates are `rio-graphics` and `rio-grapheme-width` (MIT), plus
+  `rio-unicode` (MIT OR Apache-2.0), all locked at 0.5.29 for graphics data,
+  grapheme widths and Unicode classification.
 - **`tracing` 0.1.44:** MIT-licensed structured diagnostic events in app, tmux
   and roster; pinned exactly. **`tracing-subscriber` 0.3.23** and
   **`tracing-appender` 0.2.5** (MIT, exact pins) provide the app-owned JSON

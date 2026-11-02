@@ -151,7 +151,7 @@ fn whitespace(ch: char) -> bool {
     ch.is_whitespace() || matches!(ch, '\u{1c}'..='\u{1f}')
 }
 
-fn dotenv_key(contents: &str) -> Option<String> {
+pub(crate) fn dotenv_key(contents: &str) -> Option<String> {
     let mut key = String::new();
     // Python's splitlines also recognizes these single-character boundaries.
     for line in contents.split([

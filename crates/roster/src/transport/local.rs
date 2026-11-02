@@ -12,6 +12,11 @@ use hyper::{Request, body::Bytes};
 use hyper_util::rt::TokioIo;
 use tokio::net::UnixStream;
 
+struct Authentication<'a> {
+    key: &'a str,
+    identity: Option<&'a crate::profiles::Identity>,
+}
+
 pub(super) fn request(
     socket: &str,
     path: &str,
@@ -20,7 +25,11 @@ pub(super) fn request(
     limit: usize,
     timeout: Duration,
 ) -> Result<Vec<u8>, Option<u16>> {
-    let response = exchange(socket, path, key, body, limit, timeout, false)?;
+    let auth = Authentication {
+        key,
+        identity: None,
+    };
+    let response = exchange(socket, path, auth, body, limit, timeout, false)?;
     if (200..300).contains(&response.status) {
         Ok(response.body)
     } else {
@@ -43,13 +52,32 @@ pub(crate) fn response(
     limit: usize,
     timeout: Duration,
 ) -> Result<Response, Option<u16>> {
-    exchange(socket, path, key, body, limit, timeout, true)
+    let auth = Authentication {
+        key,
+        identity: None,
+    };
+    exchange(socket, path, auth, body, limit, timeout, true)
+}
+
+pub(crate) fn profile_response(
+    socket: &str,
+    path: &str,
+    credentials: (&str, &crate::profiles::Identity),
+    body: Option<Vec<u8>>,
+    limit: usize,
+    timeout: Duration,
+) -> Result<Response, Option<u16>> {
+    let auth = Authentication {
+        key: credentials.0,
+        identity: Some(credentials.1),
+    };
+    exchange(socket, path, auth, body, limit, timeout, true)
 }
 
 fn exchange(
     socket: &str,
     path: &str,
-    key: &str,
+    auth: Authentication<'_>,
     body: Option<Vec<u8>>,
     limit: usize,
     timeout: Duration,
@@ -101,11 +129,17 @@ fn exchange(
             if body.is_some() {
                 request = request.header("Content-Type", "application/json");
             }
-            if !key.is_empty() {
+            if !auth.key.is_empty() {
                 let mut value =
-                    http::HeaderValue::from_str(&format!("Bearer {key}")).map_err(|_| None)?;
+                    http::HeaderValue::from_str(&format!("Bearer {}", auth.key)).map_err(|_| None)?;
                 value.set_sensitive(true);
                 request = request.header("Authorization", value);
+            }
+            if let Some(identity) = auth.identity {
+                request = request
+                    .header("X-Backbone-Profile-ID", &identity.profile_id)
+                    .header("X-Backbone-Installation-ID", &identity.installation_id)
+                    .header("X-Backbone-Lifecycle-ID", &identity.lifecycle_id);
             }
             let request = request
                 .body(Full::new(Bytes::from(body.unwrap_or_default())))
