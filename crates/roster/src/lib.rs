@@ -15,6 +15,7 @@ mod configuration;
 pub mod conversations;
 pub mod feedback;
 pub mod interactions;
+pub mod library_snapshots;
 pub mod lifecycle;
 pub mod plans;
 pub mod profiles;

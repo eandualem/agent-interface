@@ -61,10 +61,18 @@ fn profile_at(directory: &Path, socket: &str) -> (Profile, Value) {
 }
 
 fn serve(listener: UnixListener, replies: Vec<(u16, Value)>) -> thread::JoinHandle<Vec<String>> {
+    serve_with_hook(listener, replies, |_| {})
+}
+
+fn serve_with_hook(
+    listener: UnixListener,
+    replies: Vec<(u16, Value)>,
+    mut hook: impl FnMut(usize) + Send + 'static,
+) -> thread::JoinHandle<Vec<String>> {
     thread::spawn(move || {
         listener.set_nonblocking(true).unwrap();
         let mut requests = Vec::new();
-        for (status, body) in replies {
+        for (at, (status, body)) in replies.into_iter().enumerate() {
             let deadline = Instant::now() + Duration::from_secs(5);
             let mut stream = loop {
                 match listener.accept() {
@@ -90,6 +98,7 @@ fn serve(listener: UnixListener, replies: Vec<(u16, Value)>) -> thread::JoinHand
                 assert!(header.len() < 8192);
             }
             requests.push(String::from_utf8(header).unwrap().to_ascii_lowercase());
+            hook(at);
             let body = body.to_string();
             write!(stream, "HTTP/1.1 {status} Fixture\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
         }
@@ -208,3 +217,5 @@ fn credential_source_must_be_the_exact_private_regular_file() {
     assert_eq!(credential(&path), Err(Error::Unavailable));
     assert_eq!(credential(directory.path()), Err(Error::Unavailable));
 }
+
+mod library_snapshots;
