@@ -85,7 +85,7 @@ fn bound_interaction_navigation_and_discussions_keep_the_snapshot_origin() {
     let snapshot_b = source_b.read("start", "end", Some("worker")).unwrap();
     assert!(!source_a.accepts(&snapshot_b));
     assert!(matches!(
-        source_a.detail(&snapshot_b, id),
+        source_a.detail(&source_b.key(&snapshot_b.provider), id),
         Err(Error::Connection(
             agent_interface_roster::profiles::Error::BindingMismatch
         ))
@@ -99,9 +99,13 @@ fn bound_interaction_navigation_and_discussions_keep_the_snapshot_origin() {
         source_a.key(&snapshot_a.provider),
         source_b.key(&snapshot_b.provider)
     );
+    let accepted_origin = source_a.key(&snapshot_a.provider);
+    // A time-window refresh clears the ledger while its reader stays visible.
+    // Detail navigation must keep working without waiting for another snapshot.
+    drop(snapshot_a);
     assert_eq!(
         source_a
-            .detail(&snapshot_a, id)
+            .detail(&accepted_origin, id)
             .unwrap()
             .body
             .text

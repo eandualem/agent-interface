@@ -78,15 +78,15 @@ impl Source {
         }
     }
 
-    fn detail(&self, snapshot: &Snapshot, id: &str) -> Result<Interaction, Error> {
-        if !self.accepts(snapshot) {
+    fn detail(&self, expected: &str, id: &str) -> Result<Interaction, Error> {
+        if self.connection().is_some() && self.key("") != expected {
             return Err(Error::Connection(
                 agent_interface_roster::profiles::Error::BindingMismatch,
             ));
         }
         match self {
-            Self::Legacy(directory) => api::detail(directory, &snapshot.provider, id),
-            Self::Bound(_) => snapshot.detail(id),
+            Self::Legacy(directory) => api::detail(directory, expected, id),
+            Self::Bound(connection) => api::Client::new(connection.clone()).detail(id),
         }
     }
 
@@ -731,14 +731,16 @@ impl Interactions {
             return;
         }
         let generation = self.detail_generation;
-        let Some(snapshot) = self.snapshot.clone() else {
+        // The reader remains usable while changed() clears the ledger snapshot.
+        // Its original source and accepted origin survive that refresh.
+        let Some(provider) = self.provider.clone() else {
             return;
         };
         self.detail_reading = true;
         let source = self.source.clone();
         let worker = cx
             .background_executor()
-            .spawn(async move { source.detail(&snapshot, &id) });
+            .spawn(async move { source.detail(&provider, &id) });
         cx.spawn(async move |this, cx| {
             let result = worker.await;
             let _ = this.update(cx, |this, cx| {
