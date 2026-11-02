@@ -37,6 +37,11 @@ struct Read {
 }
 
 impl Source {
+    pub fn belongs_to(&self, agents: &crate::desktop::agent_status::LiveAgents) -> bool {
+        self.connection()
+            .is_none_or(|connection| agents.belongs_to(connection.identity()))
+    }
+
     fn connection(&self) -> Option<&Connection> {
         match self {
             Self::Bound(connection) => Some(connection),
@@ -1275,6 +1280,7 @@ mod tests {
         );
         let source_a = Source::Bound(a.clone());
         let source_b = Source::Bound(b.clone());
+        assert!(!source_a.belongs_to(&crate::desktop::agent_status::LiveAgents::default()));
         let worker = std::thread::spawn({
             let source = source_a.clone();
             move || source.read()

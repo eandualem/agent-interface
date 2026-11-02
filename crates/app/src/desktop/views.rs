@@ -474,6 +474,9 @@ impl ViewPane {
             (None, Some(directory)) => plans::Source::Legacy(directory.clone()),
             (None, None) => return,
         };
+        if !source.belongs_to(&self.agents) {
+            return;
+        }
         self.documents.surface.borrow_mut().clear();
         match &self.plans {
             Some(_) => self.plans_shown(true, cx),
