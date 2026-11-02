@@ -498,8 +498,20 @@ reads, pagination, read markers, sends and redelivery never resolve the current
 selection. Callers retain the message's request ID, recipient and anchor when
 retrying an uncertain conversation send. Feedback verifies the author and
 submits on that same binding, with no automatic retry after an unknown result.
-Binding refusals remain explicit. These adapters do not yet enable profile
-selection or change the desktop conversation and feedback paths.
+Binding refusals remain explicit. Native retained-content readers can use these adapters while keeping their
+connection for the pane's lifetime. Deferred operations capture that pane's
+client; they never look up the selected profile. The record's conversation
+entity keeps its draft, pending sends and retry identities across hiding and
+navigation. Bound read workers check origin and selection generation before
+applying an update. Document revision navigation retains the same pane origin.
+
+Bound seen-state and discussion keys include profile, installation and lifecycle.
+Legacy URL keys remain separate, and the legacy installation timestamp does not
+mark another profile's older records as seen. A bound reader has no legacy data
+directory, so general views, Plans, Interactions and Sheets cannot fall back to
+ambient configuration. The explicit constructor currently supports Reports,
+Responses and Documents and requires matching live-status ownership. Desktop
+startup still uses the legacy path; profile selection remains disabled.
 
 Durable Documents use Backbone's metadata-only `/api/documents` list and exact
 `/api/documents/{revision_id}` JSON reads. Backbone owns immutable revisions,

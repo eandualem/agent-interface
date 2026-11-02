@@ -10,6 +10,7 @@ use std::{
     sync::{LazyLock, Mutex},
 };
 
+use agent_interface_roster::profiles::Identity;
 use agent_interface_roster::views::{ReportContent, ReportItem, epoch_seconds};
 use serde::{Deserialize, Serialize};
 
@@ -22,6 +23,13 @@ struct Seen {
     since: f64,
     /// Opened records, oldest first.
     keys: VecDeque<String>,
+}
+
+impl Seen {
+    fn contains(&self, key: &str, published: &str, legacy: bool) -> bool {
+        (legacy && epoch_seconds(published).is_some_and(|at| at < self.since))
+            || self.keys.iter().any(|stored| stored == key)
+    }
 }
 
 static SEEN: LazyLock<Mutex<Seen>> = LazyLock::new(|| Mutex::new(load()));
@@ -75,13 +83,13 @@ fn lock() -> std::sync::MutexGuard<'static, Seen> {
 }
 
 /// Keys for one revision of a record, then for the record across revisions.
-fn keys(item: &ReportItem) -> (String, Option<String>) {
+fn keys(item: &ReportItem, origin: Option<&Identity>) -> (String, Option<String>) {
     let (kind, thing) = match &item.content {
         ReportContent::Progress { .. } => ("report", None),
         ReportContent::Response { .. } => ("response", None),
         ReportContent::Document(metadata) => ("document", Some(metadata.document_id.clone())),
     };
-    let base = format!("{}|{kind}", item.provider_url);
+    let base = format!("{}|{kind}", origin_key(origin, &item.provider_url));
     (
         format!("{base}|{}", item.id),
         thing.map(|thing| format!("{base}-thing|{thing}")),
@@ -91,8 +99,7 @@ fn keys(item: &ReportItem) -> (String, Option<String>) {
 /// Whether revision `key`, published at `published`, has been opened or
 /// predates the record of what was opened.
 pub(super) fn is_seen_key(key: &str, published: &str) -> bool {
-    let seen = lock();
-    epoch_seconds(published).is_some_and(|at| at < seen.since) || seen.keys.iter().any(|k| k == key)
+    lock().contains(key, published, true)
 }
 
 /// Whether any revision of the record `thing` has been opened.
@@ -121,22 +128,110 @@ pub(super) fn mark_keys(keys: &[String]) {
 }
 
 /// Whether the person has opened `item`, or it predates the record of that.
-pub(super) fn is_seen(item: &ReportItem) -> bool {
-    is_seen_key(&keys(item).0, &item.created_at)
+pub(super) fn is_seen(item: &ReportItem, origin: Option<&Identity>) -> bool {
+    let key = keys(item, origin).0;
+    // Legacy installation time must not mark an unseen profile or lifecycle read.
+    lock().contains(&key, &item.created_at, origin.is_none())
 }
 
 /// Whether `item` is a newer revision of a record the person has opened.
-pub(super) fn is_update(item: &ReportItem) -> bool {
-    keys(item).1.is_some_and(|thing| known(&thing))
+pub(super) fn is_update(item: &ReportItem, origin: Option<&Identity>) -> bool {
+    keys(item, origin).1.is_some_and(|thing| known(&thing))
 }
 
 /// Remember that the person opened `item`.
-pub(super) fn mark(item: &ReportItem) {
-    let (revision, thing) = keys(item);
+pub(super) fn mark(item: &ReportItem, origin: Option<&Identity>) {
+    let (revision, thing) = keys(item, origin);
     mark_keys(
         &[Some(revision), thing]
             .into_iter()
             .flatten()
             .collect::<Vec<_>>(),
     );
+}
+
+/// Legacy keys remain readable; bound keys cannot collide with URL authority.
+pub(super) fn origin_key(origin: Option<&Identity>, legacy: &str) -> String {
+    match origin {
+        None => legacy.to_owned(),
+        Some(identity) => format!(
+            "bound:{}",
+            serde_json::to_string(&[
+                &identity.profile_id,
+                &identity.installation_id,
+                &identity.lifecycle_id
+            ])
+            .expect("identity key")
+        ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn bound_seen_and_discussion_namespaces_do_not_reuse_a_lifecycle_or_legacy_url() {
+        let a = Identity {
+            profile_id: "a".into(),
+            installation_id: "i".into(),
+            lifecycle_id: "l".into(),
+        };
+        let key = origin_key(Some(&a), "unix:/provider");
+        assert_eq!(key, origin_key(Some(&a), ""));
+        assert_ne!(key, origin_key(None, "unix:/provider"));
+        for other in [
+            Identity {
+                profile_id: "b".into(),
+                ..a.clone()
+            },
+            Identity {
+                installation_id: "j".into(),
+                ..a.clone()
+            },
+            Identity {
+                lifecycle_id: "m".into(),
+                ..a.clone()
+            },
+        ] {
+            assert_ne!(key, origin_key(Some(&other), "unix:/provider"));
+        }
+    }
+
+    #[test]
+    fn legacy_history_does_not_mark_old_records_in_a_new_profile_or_restored_lifecycle() {
+        let item = ReportItem {
+            id: 7,
+            author: "worker".into(),
+            author_id: Some("b".repeat(32)),
+            registered: true,
+            provider_url: "unix:/provider".into(),
+            created_at: "2026-01-01T00:00:00Z".into(),
+            conversation_id: Some("7".into()),
+            content: ReportContent::Response {
+                question: "Q".into(),
+                answer: "A".into(),
+                action: String::new(),
+                superseded_by: None,
+            },
+        };
+        let origin = Identity {
+            profile_id: "a".into(),
+            installation_id: "i".into(),
+            lifecycle_id: "l".into(),
+        };
+        let restored = Identity {
+            lifecycle_id: "restored".into(),
+            ..origin.clone()
+        };
+        let mut seen = Seen {
+            since: epoch_seconds("2026-11-02T00:00:00Z").unwrap(),
+            keys: VecDeque::from([keys(&item, None).0]),
+        };
+        assert!(seen.contains(&keys(&item, None).0, &item.created_at, true));
+        let bound = keys(&item, Some(&origin)).0;
+        assert!(!seen.contains(&bound, &item.created_at, false));
+        seen.keys.push_back(bound.clone());
+        assert!(seen.contains(&bound, &item.created_at, false));
+        assert!(!seen.contains(&keys(&item, Some(&restored)).0, &item.created_at, false));
+    }
 }

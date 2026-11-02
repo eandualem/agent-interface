@@ -160,4 +160,4 @@ impl Drop for BoundContentSource {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

@@ -266,6 +266,10 @@ struct Source {
 }
 
 impl LiveAgents {
+    pub fn belongs_to(&self, identity: &Identity) -> bool {
+        self.0.origin.as_ref() == Some(&Origin::Bound(identity.clone()))
+    }
+
     fn update_bound(&self, mut update: crate::roster::BoundRosterUpdate) -> bool {
         if self.0.origin.as_ref() != Some(&Origin::Bound(update.identity)) {
             return false;

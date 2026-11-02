@@ -10,16 +10,16 @@ use std::{
     time::Instant,
 };
 
-struct Reply {
-    path: String,
-    status: u16,
-    body: Value,
-    delay: Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>,
-    replace: bool,
+pub(crate) struct Reply {
+    pub(crate) path: String,
+    pub(crate) status: u16,
+    pub(crate) body: Value,
+    pub(crate) delay: Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>,
+    pub(crate) replace: bool,
 }
 
 impl Reply {
-    fn ok(path: &str, body: Value) -> Self {
+    pub(crate) fn ok(path: &str, body: Value) -> Self {
         Self {
             path: path.into(),
             status: 200,
@@ -39,7 +39,10 @@ impl Reply {
 }
 
 // Scripted disposable providers assert every path, credential and identity header.
-fn provider(label: &str, replies: Vec<Reply>) -> (tempfile::TempDir, Connection, JoinHandle<()>) {
+pub(crate) fn provider(
+    label: &str,
+    replies: Vec<Reply>,
+) -> (tempfile::TempDir, Connection, JoinHandle<()>) {
     let directory = tempfile::tempdir().unwrap();
     fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
     let socket = directory.path().join("api.sock");
@@ -136,7 +139,7 @@ fn provider(label: &str, replies: Vec<Reply>) -> (tempfile::TempDir, Connection,
     (directory, connection, server)
 }
 
-fn record(label: &str) -> Value {
+pub(crate) fn record(label: &str) -> Value {
     let section = json!({"text":format!("sentinel-{label}"),"links":[]});
     json!({"id":7,"author_id":"b".repeat(32),"author_name":"worker","agent_name":"worker",
         "created_at":"2026-11-02T10:00:00Z","conversation_id":"7",

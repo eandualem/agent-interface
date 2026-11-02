@@ -32,7 +32,8 @@ use super::{
     design::{colors, tokens},
     name::{NameEvent, NameField},
 };
-use crate::roster::ViewSource;
+use agent_interface_roster::profiles::Connection;
+use source::Source;
 
 mod activity;
 mod agent;
@@ -51,6 +52,7 @@ mod seen;
 mod selection;
 mod sheets;
 mod skills;
+mod source;
 mod tags;
 mod team;
 mod usage;
@@ -155,7 +157,9 @@ pub(super) struct Open {
 pub(super) struct ViewPane {
     agents: crate::desktop::agent_status::LiveAgents,
     pub view: View,
-    source: Option<ViewSource>,
+    source: Option<Source>,
+    /// Immutable origin for retained content and every operation it opens.
+    connection: Option<Connection>,
     data: Option<Data>,
     error: Option<&'static str>,
     range: Range,
@@ -244,9 +248,35 @@ impl ViewPane {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        Self::new_with(view, backbone, directory, agents, None, window, cx)
+    }
+
+    /// An explicit bound reader; startup does not enable profile selection yet.
+    #[allow(dead_code)] // Used when workspace profile binding is enabled.
+    pub fn new_bound(
+        view: View,
+        connection: Connection,
+        agents: crate::desktop::agent_status::LiveAgents,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self::new_with(view, None, None, agents, Some(connection), window, cx)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn new_with(
+        view: View,
+        backbone: Option<PathBuf>,
+        directory: Option<PathBuf>,
+        agents: crate::desktop::agent_status::LiveAgents,
+        connection: Option<Connection>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let mut pane = Self {
             agents,
             source: None,
+            connection,
             data: None,
             error: None,
             range: Range::Day,
@@ -277,6 +307,13 @@ impl ViewPane {
             _search: Vec::new(),
             view,
         };
+        if let Some(connection) = &pane.connection
+            && (pane.view.kind != ViewKind::Reports
+                || !pane.agents.belongs_to(connection.identity()))
+        {
+            pane.error = Some("This view is unavailable for the original profile.");
+            return pane;
+        }
         if pane.view.kind == ViewKind::Artifacts {
             let artifacts = artifacts::create(directory, cx);
             pane._search
@@ -297,10 +334,10 @@ impl ViewPane {
                 }));
             pane.search = Some(field);
         }
-        let Some(directory) = backbone else {
+        if backbone.is_none() && pane.connection.is_none() {
             pane.error = Some("Agent Backbone is not set up on this computer.");
             return pane;
-        };
+        }
         // Backbone collects usage about once a minute, and a library gathers
         // many agents' previews and changes rarely; everything else is live.
         let every = Duration::from_secs(match pane.view.kind {
@@ -309,9 +346,15 @@ impl ViewPane {
             _ => 3,
         });
         let (wake, mut woken) = mpsc::unbounded();
-        match ViewSource::start(directory, pane.request(), every, move || {
-            let _ = wake.unbounded_send(());
-        }) {
+        match Source::start(
+            backbone,
+            pane.connection.as_ref(),
+            pane.request(),
+            every,
+            move || {
+                let _ = wake.unbounded_send(());
+            },
+        ) {
             Ok(source) => pane.source = Some(source),
             Err(_) => pane.error = Some(views::UNAVAILABLE),
         }
@@ -319,7 +362,7 @@ impl ViewPane {
             while woken.next().await.is_some() {
                 let updated = this.update(cx, |pane, cx| {
                     if let Some((request, update)) =
-                        pane.source.as_ref().and_then(ViewSource::take_update)
+                        pane.source.as_ref().and_then(Source::take_update)
                     {
                         // A read for an earlier request, such as another
                         // usage range, must not be shown under the new one.
@@ -857,35 +900,39 @@ impl Render for ViewPane {
         }
         let (t, c) = (tokens(), colors());
         let previous = self.conversation.take();
-        self.conversation =
-            self.reports
-                .open
-                .as_ref()
-                .zip(self.backbone.as_ref())
-                .map(|(item, directory)| {
-                    let key = format!(
-                        "{}\n{}\n{}",
-                        item.provider_url,
-                        item.author_id.as_deref().unwrap_or_default(),
-                        agent_interface_roster::feedback::reference(item)
-                    );
-                    self.conversations
-                        .entry(key)
-                        .or_insert_with(|| {
-                            cx.new(|cx| {
-                                conversation::Conversation::new(
-                                    self.agents.clone(),
-                                    item.clone(),
-                                    directory.clone(),
-                                    self.documents.surface.clone(),
-                                    self.visible.clone(),
-                                    window,
-                                    cx,
-                                )
-                            })
+        self.conversation = self
+            .reports
+            .open
+            .as_ref()
+            .filter(|_| self.connection.is_some() || self.backbone.is_some())
+            .map(|item| {
+                let key = format!(
+                    "{}\n{}\n{}",
+                    seen::origin_key(
+                        self.connection.as_ref().map(Connection::identity),
+                        &item.provider_url
+                    ),
+                    item.author_id.as_deref().unwrap_or_default(),
+                    agent_interface_roster::feedback::reference(item)
+                );
+                self.conversations
+                    .entry(key)
+                    .or_insert_with(|| {
+                        cx.new(|cx| {
+                            conversation::Conversation::new(
+                                self.agents.clone(),
+                                item.clone(),
+                                self.backbone.clone(),
+                                self.connection.clone(),
+                                self.documents.surface.clone(),
+                                self.visible.clone(),
+                                window,
+                                cx,
+                            )
                         })
-                        .clone()
-                });
+                    })
+                    .clone()
+            });
         // An open skill or policy has its own conversation.
         if self.conversation.is_none()
             && let (Some(open), Some(directory)) = (&self.open, &self.backbone)

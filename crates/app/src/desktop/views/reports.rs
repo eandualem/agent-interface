@@ -257,7 +257,12 @@ fn plural(count: usize, one: &'static str, many: &'static str) -> &'static str {
 }
 
 fn open_record(pane: &mut ViewPane, item: ReportItem, cx: &mut Context<ViewPane>) {
-    seen::mark(&item);
+    seen::mark(
+        &item,
+        pane.connection
+            .as_ref()
+            .map(|connection| connection.identity()),
+    );
     pane.documents.clear();
     pane.reports.open = Some(item);
     pane.refetch(false, cx);
@@ -596,7 +601,12 @@ pub(super) fn body(pane: &ViewPane, page: &ReportPage, cx: &mut Context<ViewPane
                     ui::record_row(
                         id,
                         index == 0,
-                        !seen::is_seen(item),
+                        !seen::is_seen(
+                            item,
+                            pane.connection
+                                .as_ref()
+                                .map(|connection| connection.identity()),
+                        ),
                         mark(item, &pane.agents).unwrap_or_else(|| div()),
                         item.author.clone(),
                         line(summary),
@@ -612,7 +622,12 @@ pub(super) fn body(pane: &ViewPane, page: &ReportPage, cx: &mut Context<ViewPane
                 } => ui::question_row(
                     id,
                     index == 0,
-                    !seen::is_seen(item),
+                    !seen::is_seen(
+                        item,
+                        pane.connection
+                            .as_ref()
+                            .map(|connection| connection.identity()),
+                    ),
                     item.author.clone(),
                     line(question),
                     line(answer),
@@ -676,8 +691,18 @@ pub(super) fn body(pane: &ViewPane, page: &ReportPage, cx: &mut Context<ViewPane
                     };
                     let open = (*item).clone();
                     let mut tags = Vec::new();
-                    if !seen::is_seen(item) {
-                        let label = if seen::is_update(item) {
+                    if !seen::is_seen(
+                        item,
+                        pane.connection
+                            .as_ref()
+                            .map(|connection| connection.identity()),
+                    ) {
+                        let label = if seen::is_update(
+                            item,
+                            pane.connection
+                                .as_ref()
+                                .map(|connection| connection.identity()),
+                        ) {
                             "updated"
                         } else {
                             "new"
