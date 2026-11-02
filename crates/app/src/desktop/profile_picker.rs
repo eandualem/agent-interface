@@ -277,9 +277,6 @@ impl Render for ProfilePicker {
                 .on_click(cx.listener(move |picker, _, _, cx| picker.choose(&id, cx))),
             );
         }
-        if let Some(error) = self.selection_error {
-            rows = rows.child(ui::group_note(message(error)));
-        }
         div()
             .size_full()
             .flex()
@@ -311,6 +308,10 @@ impl Render for ProfilePicker {
             }))
             .child(ui::view_header("layers", "Choose a profile"))
             .child(rows)
+            .children(
+                self.selection_error
+                    .map(|error| ui::group_note(message(error))),
+            )
             .child(
                 ui::view_toolbar()
                     .px(px(t.space.s12))
