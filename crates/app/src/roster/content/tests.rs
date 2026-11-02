@@ -45,6 +45,14 @@ pub(crate) fn provider(
     label: &str,
     replies: Vec<Reply>,
 ) -> (tempfile::TempDir, Connection, JoinHandle<()>) {
+    provider_with_tmux(label, replies, None)
+}
+
+pub(crate) fn provider_with_tmux(
+    label: &str,
+    replies: Vec<Reply>,
+    tmux: Option<std::path::PathBuf>,
+) -> (tempfile::TempDir, Connection, JoinHandle<()>) {
     let directory = tempfile::tempdir().unwrap();
     fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
     let socket = directory.path().join("api.sock");
@@ -56,7 +64,7 @@ pub(crate) fn provider(
     let identity = json!({
         "schema_version":1, "profile_id":format!("profile-{label}"),
         "installation_id":format!("installation-{label}"), "lifecycle_id":format!("lifecycle-{label}"),
-        "baseline_version":"fixture", "tmux":{"socket_path":directory.path().join("tmux.sock")}
+        "baseline_version":"fixture", "tmux":{"socket_path":tmux.unwrap_or_else(|| directory.path().join("tmux.sock"))}
     });
     let profile = profiles::Profile::parse(&serde_json::to_vec(&json!({
         "schema_version":1,"profile_id":identity["profile_id"],"display_name":label,
