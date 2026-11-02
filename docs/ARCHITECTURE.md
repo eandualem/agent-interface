@@ -897,6 +897,13 @@ identify participants, including retired registrations; an unknown sender remain
 unknown. A reverse relation keeps its recorded source ID. Full-body retention is
 separate from the start of retained history.
 
+Explicitly bound interaction panes retain one verified connection for summary,
+state/history reads, detail navigation and linked reports or responses. Deferred
+snapshots and link requests check the full origin. Interaction and referenced
+artifact discussions retain the same connection and profile-scoped draft keys;
+unsupported or refused bound reads never use a legacy directory or open the
+legacy Activity fallback.
+
 `desktop::views::interactions` owns the visible window, filters, selected original,
 peer-navigation stack and discussions. Reads run on a worker every 20 seconds
 while visible; numbered requests prevent an older selection's read from replacing
