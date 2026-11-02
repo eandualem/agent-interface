@@ -167,9 +167,10 @@ fn timeline(activity: &Activity, cx: &gpui::App) -> gpui::Div {
             .child(div().flex_shrink_0().w(px(t.size.fact_label))),
     );
     if lanes.is_empty() {
-        section = section.child(
-            "No message reached an agent in the last hour, and no agent is busy or waiting.",
-        );
+        section = section.child("No recent activity to show.");
+    }
+    if agents.active().is_none() {
+        section = section.child("Current agent status is unavailable.");
     }
     for Lane {
         member,

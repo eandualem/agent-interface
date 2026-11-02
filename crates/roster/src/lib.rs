@@ -142,9 +142,17 @@ fn decode(response: &[u8]) -> Option<Decoded> {
             .and_then(|v| serde_json::from_str::<String>(v.get()).ok())
             .unwrap_or_else(|| "unknown".into());
         // Last valid occurrence wins, matching the Python provider's map.
+        let field = |key: &str| item.get(key).map(|value| value.get());
         details.insert(
             name.clone(),
-            serde_json::from_str(raw.get()).unwrap_or_default(),
+            AgentDetails {
+                online: field("online").and_then(|value| serde_json::from_str(value).ok()),
+                reason: field("reason").and_then(|value| serde_json::from_str(value).ok()),
+                current_issue: field("current_issue")
+                    .and_then(|value| serde_json::from_str(value).ok()),
+                state_since: field("state_since")
+                    .and_then(|value| serde_json::from_str(value).ok()),
+            },
         );
         states.insert(name, state);
     }
@@ -212,6 +220,19 @@ fn truthy(value: &RawValue) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn malformed_details_do_not_discard_valid_fields() {
+        let mut snapshot = Snapshot::default();
+        snapshot.update(
+            br#"{"items":[{"name":"worker","state":"future","online":true,"reason":7,"current_issue":42,"state_since":"invalid"}]}"#,
+        );
+        let details = &snapshot.details["worker"];
+        assert_eq!(details.online, Some(true));
+        assert_eq!(details.reason, None);
+        assert_eq!(details.current_issue, Some(42));
+        assert_eq!(details.state_since, None);
+    }
 
     #[test]
     fn active_entries_follow_attention_order_and_hide_stale_rows_without_losing_cache() {

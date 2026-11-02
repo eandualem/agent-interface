@@ -592,8 +592,8 @@ impl Browser {
                 .collect();
             entries.sort_by_key(|(name, state)| {
                 (
-                    !state.working(),
                     !state.needs_you(),
+                    !state.working(),
                     name.to_ascii_lowercase(),
                     name.clone(),
                 )

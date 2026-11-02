@@ -127,6 +127,9 @@ impl LiveAgents {
 
     pub fn get(&self, name: &str) -> Rc<Status> {
         let current = self.0.borrow();
+        if name.is_empty() {
+            return current.unknown.clone();
+        }
         if current
             .snapshot
             .as_ref()
@@ -256,12 +259,11 @@ pub(super) fn start(directory: PathBuf, cx: &mut App) -> Option<LiveAgents> {
         while woken.next().await.is_some() {
             cx.update(|cx| {
                 let snapshot = cx.global::<Source>().roster.take_update();
-                if let Some(snapshot) = snapshot {
-                    let changed =
-                        cx.update_global::<Source, _>(|source, _| source.agents.update(snapshot));
-                    if changed {
-                        cx.refresh_windows();
-                    }
+                if let Some(snapshot) = snapshot
+                    && cx.global::<Source>().agents.update(snapshot)
+                {
+                    cx.update_global::<Source, _>(|_, _| {});
+                    cx.refresh_windows();
                 }
             });
         }
@@ -306,6 +308,7 @@ mod tests {
         snapshot.unavailable();
         first.update(snapshot.clone());
         assert_eq!(second.get("worker").state, AgentState::Unavailable);
+        assert_eq!(second.get("").state, AgentState::Unknown);
         assert!(!second.get("worker").state.working());
         assert!(second.active().is_none());
         snapshot.update(br#"{"items":[]}"#);
