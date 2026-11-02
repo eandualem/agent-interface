@@ -281,10 +281,17 @@ fn index(pane: &ViewPane, library: &SkillLibrary, cx: &mut Context<ViewPane>) ->
                 };
                 let target = Target::Skill(row.path().to_owned());
                 // Capture the rendered catalog row, not a path lookup after a refresh.
-                let captured = match row {
-                    Row::Store(skill) => Some((*skill).clone()),
-                    Row::Local(_) => None,
-                };
+                let captured = (
+                    match row {
+                        Row::Store(skill) => Some((*skill).clone()),
+                        Row::Local(_) => None,
+                    },
+                    library
+                        .agents
+                        .iter()
+                        .map(|agent| agent.name.clone())
+                        .collect::<Vec<_>>(),
+                );
                 card = card.child(
                     ui::group_row(
                         SharedString::from(format!("skill-{}-{at}-{index}", section.title)),

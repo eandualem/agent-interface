@@ -675,23 +675,28 @@ impl ViewPane {
     fn open_with_skill(
         &mut self,
         target: Target,
-        captured: Option<Option<views::Skill>>,
+        captured: Option<(Option<views::Skill>, Vec<String>)>,
         cx: &mut Context<Self>,
     ) {
         let bound_skill = self.connection.as_ref().and_then(|connection| {
             let Target::Skill(path) = &target else {
                 return None;
             };
-            let record = match &captured {
-                Some(record) => record.as_ref(),
+            let (record, team) = match &captured {
+                Some((record, team)) => (record.as_ref(), team.clone()),
                 None => match &self.data {
-                    Some(Data::Skills(library)) => {
-                        library.store.items.iter().find(|skill| &skill.path == path)
-                    }
-                    _ => None,
+                    Some(Data::Skills(library)) => (
+                        library.store.items.iter().find(|skill| &skill.path == path),
+                        library
+                            .agents
+                            .iter()
+                            .map(|agent| agent.name.clone())
+                            .collect(),
+                    ),
+                    _ => (None, Vec::new()),
                 },
             };
-            Some(bound_skills::Open::capture(connection, record))
+            Some(bound_skills::Open::capture(connection, record, &team))
         });
         self.open = Some(Open {
             target: target.clone(),
@@ -1012,11 +1017,7 @@ impl Render for ViewPane {
             && let Some(snapshot) = &bound.snapshot
         {
             let key = bound_skills::key(snapshot);
-            let candidates = bound
-                .record
-                .as_ref()
-                .map(|skill| skill.reaches.clone())
-                .unwrap_or_default();
+            let candidates = bound.candidates.clone();
             self.conversation = Some(
                 self.conversations
                     .entry(key)

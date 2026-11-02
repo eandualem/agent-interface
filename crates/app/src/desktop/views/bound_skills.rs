@@ -12,19 +12,30 @@ use std::sync::{
 
 pub(super) struct Open {
     pub record: Option<Skill>,
+    pub candidates: Vec<String>,
     pub artifact: Option<Artifact>,
     pub snapshot: Option<Snapshot>,
     live: Arc<AtomicBool>,
 }
 impl Open {
-    pub fn capture(connection: &Connection, record: Option<&Skill>) -> Self {
+    pub fn capture(connection: &Connection, record: Option<&Skill>, team: &[String]) -> Self {
         let record = record.cloned();
         let artifact = record.as_ref().and_then(|record| {
             Artifact::from_catalog(connection.clone(), Kind::Skill, record.artifact_id.clone()?)
                 .ok()
         });
+        let mut candidates = record
+            .as_ref()
+            .map(|record| record.reaches.clone())
+            .unwrap_or_default();
+        for name in team {
+            if !candidates.contains(name) {
+                candidates.push(name.clone());
+            }
+        }
         Self {
             record,
+            candidates,
             artifact,
             snapshot: None,
             live: Arc::new(AtomicBool::new(true)),
@@ -82,7 +93,7 @@ mod tests {
     fn version(text: &str) -> serde_json::Value {
         json!({"revision_id":"7","label":"version 7","created_at":"date","content":text,"sha256":format!("{:x}",Sha256::digest(text.as_bytes()))})
     }
-    fn catalog(connection: &Connection) -> Skill {
+    fn catalog(connection: &Connection) -> (Skill, Vec<String>) {
         let (wake, updates) = mpsc::channel();
         let source = super::super::source::Source::start(
             None,
@@ -100,12 +111,23 @@ mod tests {
         let views::Data::Skills(mut library) = data.unwrap() else {
             panic!("wrong data")
         };
-        library.store.items.remove(0)
+        (
+            library.store.items.remove(0),
+            library
+                .agents
+                .iter()
+                .map(|agent| agent.name.clone())
+                .collect(),
+        )
     }
     fn metadata() -> Vec<Reply> {
         vec![
             Reply::ok("/api/skills", row()),
-            Reply::ok("/api/agents", json!({"items":[]})),
+            Reply::ok(
+                "/api/agents",
+                json!({"items":[{"name":"worker","configured":true}]}),
+            ),
+            Reply::ok("/api/skills/preview/worker", json!({})),
         ]
     }
 
@@ -130,8 +152,12 @@ mod tests {
         ));
         replies.push(Reply::ok("/api/skills/artifact-1/versions/7", version("B")));
         let (_other, b, server_b) = provider("b", replies);
-        let mut record = catalog(&a);
-        let open = Open::capture(&a, Some(&record));
+        let (mut record, mut team) = catalog(&a);
+        let open = Open::capture(&a, Some(&record), &team);
+        assert!(record.reaches.is_empty());
+        assert_eq!(open.candidates, vec!["worker"]);
+        team.clear();
+        assert_eq!(open.candidates, vec!["worker"]);
         record.name = "replacement".into();
         record.artifact_id = Some("replacement".into());
         assert_eq!(open.record.as_ref().unwrap().name, "original");
@@ -141,7 +167,8 @@ mod tests {
         let job = thread::spawn(move || read(artifact, &ticket).unwrap());
         wait.recv_timeout(Duration::from_secs(5)).unwrap();
         std::fs::write(a.credential_reference(), "BACKBONE_API_KEY=rotated\n").unwrap();
-        let other = Open::capture(&b, Some(&catalog(&b)));
+        let (other_record, other_team) = catalog(&b);
+        let other = Open::capture(&b, Some(&other_record), &other_team);
         let other_snapshot = read(other.artifact.clone(), &other.ticket()).unwrap();
         release.send(()).unwrap();
         let snapshot = job.join().unwrap();
@@ -163,11 +190,11 @@ mod tests {
             artifact_id: Some("artifact-1".into()),
             ..Default::default()
         };
-        let first = Open::capture(&connection, Some(&record));
+        let first = Open::capture(&connection, Some(&record), &[]);
         let old = first.ticket();
         assert!(first.accepts(&old));
         drop(first);
-        let next = Open::capture(&connection, Some(&record));
+        let next = Open::capture(&connection, Some(&record), &[]);
         assert!(!old.load(Ordering::Acquire));
         assert!(!next.accepts(&old));
         assert!(next.accepts(&next.ticket()));
@@ -197,14 +224,14 @@ mod tests {
         };
         for id in [None, Some("../unsafe".into())] {
             record.artifact_id = id;
-            let open = Open::capture(&connection, Some(&record));
+            let open = Open::capture(&connection, Some(&record), &[]);
             assert_eq!(
                 read(open.artifact.clone(), &open.ticket()).err(),
                 Some("This skill has no provider snapshot available.")
             );
         }
         record.artifact_id = Some("artifact-1".into());
-        let open = Open::capture(&connection, Some(&record));
+        let open = Open::capture(&connection, Some(&record), &[]);
         assert_eq!(
             read(open.artifact.clone(), &open.ticket()).err(),
             Some("The original profile binding was refused. Reconnect to that profile.")
