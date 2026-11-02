@@ -536,6 +536,14 @@ Discovery does not connect, adopt, start or repair a provider and is not yet
 wired into a selector. Returned records require the normal authenticated
 handshake before content use.
 
+`roster::profiles::operations` prepares immutable create/start/stop bodies from
+the existing lifecycle contract and validates receipts against the original
+request ID, action and full tuple. Create pins the first reserved identity;
+terminal observations cannot regress or change. Provider error prose is dropped.
+These models execute no command and grant no content authority: a successful
+start still needs the authenticated identity handshake. Adoption and bound
+first-agent setup remain separate contracts.
+
 Durable Documents use Backbone's metadata-only `/api/documents` list and exact
 `/api/documents/{revision_id}` JSON reads. Backbone owns immutable revisions,
 stable document and author identities, publication authorization and retention;
