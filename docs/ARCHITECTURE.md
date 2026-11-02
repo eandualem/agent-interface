@@ -833,6 +833,12 @@ revision or discovery/history cursor. Other failures do not trigger automatic re
 Agent Backbone owns canonical data, calculated results, engine versions, storage
 admission and atomic updates. The app does not calculate formulas.
 
+An explicitly bound Sheets client retains its verified profile identity and
+credential snapshot through pagination, range reads, exports and mutations.
+Prepared mutations retain that client for exact retries, even after credential
+rotation; another profile or lifecycle cannot submit them. Binding refusals
+preserve drafts without legacy fallback. Native bound Sheets wiring is separate.
+
 `desktop::views::sheets` supplies a read-only native GPUI grid beside Documents and
 Responses in Reports & updates. Agents manage workbook creation, cell and structural
 edits, saved views and imports through Backbone. The native UI exposes inspection,
