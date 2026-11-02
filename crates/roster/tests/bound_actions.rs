@@ -365,3 +365,213 @@ fn feedback_pins_author_verification_and_submission_and_preserves_unknown_delive
     server_a.join().unwrap();
     server_b.join().unwrap();
 }
+
+fn plan_page(label: &str, next: Option<&str>) -> Value {
+    json!({"items":[{"author_id":"11111111111111111111111111111111","agent_name":label,"record":null}],"next_after_author_id":next})
+}
+
+#[test]
+fn plans_keep_delayed_pages_and_rotated_credentials_on_the_original_binding() {
+    use agent_interface_roster::plans;
+    let (arrived, reading) = mpsc::channel();
+    let (release, delayed) = mpsc::channel();
+    let (_dir_a, a, server_a) = provider(
+        "a",
+        vec![
+            Step {
+                delay: Some((arrived, delayed)),
+                ..Step::get(
+                    "/api/current-plans?limit=50",
+                    plan_page("a", Some("11111111111111111111111111111111")),
+                )
+            },
+            Step::get(
+                "/api/current-plans?limit=50&after_author_id=11111111111111111111111111111111",
+                plan_page("a", None),
+            ),
+            Step::get(
+                "/api/current-plans?limit=50",
+                plan_page("a", Some("11111111111111111111111111111111")),
+            ),
+            Step {
+                reply: Some((409, json!({"detail":{"code":"binding_mismatch"}}))),
+                replace: true,
+                ..Step::get(
+                    "/api/current-plans?limit=50&after_author_id=11111111111111111111111111111111",
+                    json!({}),
+                )
+            },
+        ],
+    );
+    let (_dir_b, b, server_b) = provider(
+        "b",
+        vec![Step::get(
+            "/api/current-plans?limit=50",
+            plan_page("b", None),
+        )],
+    );
+    let a = plans::Client::new(a);
+    let b = plans::Client::new(b);
+    assert_ne!(a.identity(), b.identity());
+    let worker = thread::spawn({
+        let a = a.clone();
+        move || a.list_all()
+    });
+    reading.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(b.list_all().unwrap().items[0].agent_name, "b");
+    fs::write(
+        _dir_a.path().join("profile.env"),
+        "BACKBONE_API_KEY=rotated\n",
+    )
+    .unwrap();
+    release.send(()).unwrap();
+    let pages = worker.join().unwrap().unwrap();
+    assert_eq!(pages.items.len(), 2);
+    assert!(pages.items.iter().all(|entry| entry.agent_name == "a"));
+    assert_eq!(
+        a.list_all(),
+        Err(plans::Error::Connection(Error::BindingMismatch))
+    );
+    assert_eq!(a.list(Some("bad cursor")), Err(plans::Error::Unreadable));
+    server_a.join().unwrap();
+    server_b.join().unwrap();
+}
+
+fn interaction_fixture(name: &str) -> Value {
+    let bytes: &[u8] = match name {
+        "summary" => include_bytes!("fixtures/interactions/summary.json"),
+        "history" => include_bytes!("fixtures/interactions/history.json"),
+        "detail" => include_bytes!("fixtures/interactions/detail.json"),
+        "states" => include_bytes!("fixtures/interactions/state-spans.json"),
+        _ => unreachable!(),
+    };
+    serde_json::from_slice(bytes).unwrap()
+}
+
+#[test]
+fn interactions_retain_snapshot_credentials_for_delayed_history_and_detail_pages() {
+    use agent_interface_roster::interactions;
+    let summary_path = "/api/interactions/summary?since=start&until=end";
+    let history_path = "/api/interactions?since=start&until=end&agent_id=worker&direction=both&limit=200&snapshot=fixture-not-a-live-cursor";
+    let state_path =
+        "/api/interactions/state-spans?since=start&until=end&limit=500&agent_id=worker";
+    let detail_path = "/api/interactions/11111111111111111111111111111111";
+    let (arrived, reading) = mpsc::channel();
+    let (release, delayed) = mpsc::channel();
+    let mut history_a = interaction_fixture("history");
+    history_a["items"][0]["body"]["text"] = json!("sentinel-a");
+    let mut detail_a = interaction_fixture("detail");
+    detail_a["body"]["text"] = json!("sentinel-a");
+    detail_a["attempts"]["next_cursor"] = json!("more");
+    detail_a["lifecycle"]["next_cursor"] = json!("more");
+    let (_dir_a, a, server_a) = provider(
+        "a",
+        vec![
+            Step {
+                delay: Some((arrived, delayed)),
+                ..Step::get(summary_path, interaction_fixture("summary"))
+            },
+            Step::get(history_path, history_a),
+            Step::get(state_path, interaction_fixture("states")),
+            Step::get(detail_path, detail_a),
+            Step::get(
+                "/api/interactions/11111111111111111111111111111111/attempts?limit=200&cursor=more",
+                json!({"items":[],"next_cursor":null}),
+            ),
+            Step::get(
+                "/api/interactions/11111111111111111111111111111111/events?limit=200&cursor=more",
+                json!({"items":[],"next_cursor":null}),
+            ),
+            Step {
+                reply: Some((409, json!({"detail":{"code":"binding_mismatch"}}))),
+                replace: true,
+                ..Step::get(detail_path, json!({}))
+            },
+        ],
+    );
+    let (_dir_b, b, server_b) = provider(
+        "b",
+        vec![
+            Step::get(summary_path, interaction_fixture("summary")),
+            Step::get(history_path, interaction_fixture("history")),
+            Step::get(state_path, interaction_fixture("states")),
+            Step::get(detail_path, interaction_fixture("detail")),
+        ],
+    );
+    let a = interactions::Client::new(a);
+    let b = interactions::Client::new(b);
+    let origin = a.identity().clone();
+    let worker = thread::spawn(move || a.read("start", "end", Some("worker")));
+    reading.recv_timeout(Duration::from_secs(5)).unwrap();
+    let b = b.read("start", "end", Some("worker")).unwrap();
+    assert_ne!(b.identity(), Some(&origin));
+    assert_ne!(
+        b.detail("11111111111111111111111111111111")
+            .unwrap()
+            .body
+            .text
+            .as_deref(),
+        Some("sentinel-a")
+    );
+    fs::write(
+        _dir_a.path().join("profile.env"),
+        "BACKBONE_API_KEY=rotated\n",
+    )
+    .unwrap();
+    release.send(()).unwrap();
+    let a = worker.join().unwrap().unwrap();
+    assert_eq!(a.identity(), Some(&origin));
+    assert!(a.provider.is_empty());
+    assert_eq!(
+        a.history.as_ref().unwrap().items[0].body.text.as_deref(),
+        Some("sentinel-a")
+    );
+    assert_eq!(
+        a.detail("11111111111111111111111111111111")
+            .unwrap()
+            .body
+            .text
+            .as_deref(),
+        Some("sentinel-a")
+    );
+    assert_eq!(
+        a.detail("11111111111111111111111111111111"),
+        Err(interactions::Error::Connection(Error::BindingMismatch))
+    );
+    assert!(!format!("{a:?}").contains("fixture-a"));
+    server_a.join().unwrap();
+    server_b.join().unwrap();
+}
+
+#[test]
+fn interaction_state_binding_refusal_invalidates_the_whole_snapshot() {
+    use agent_interface_roster::interactions;
+    let summary_path = "/api/interactions/summary?since=start&until=end";
+    let state_path = "/api/interactions/state-spans?since=start&until=end&limit=500";
+    let (_dir, connection, server) = provider(
+        "a",
+        vec![
+            Step::get(summary_path, interaction_fixture("summary")),
+            Step {
+                reply: Some((404, json!({}))),
+                ..Step::get(state_path, json!({}))
+            },
+            Step::get(summary_path, interaction_fixture("summary")),
+            Step {
+                reply: Some((409, json!({"detail":{"code":"binding_required"}}))),
+                replace: true,
+                ..Step::get(state_path, json!({}))
+            },
+        ],
+    );
+    let client = interactions::Client::new(connection);
+    assert_eq!(
+        client.read("start", "end", None).unwrap().state_error,
+        Some(interactions::Error::Unsupported)
+    );
+    assert_eq!(
+        client.read("start", "end", None).unwrap_err(),
+        interactions::Error::Connection(Error::BindingRequired)
+    );
+    server.join().unwrap();
+}

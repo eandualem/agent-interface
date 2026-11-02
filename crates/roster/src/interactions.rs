@@ -21,6 +21,8 @@ pub enum Error {
     Forbidden,
     /// Invalid or oversized provider data.
     Unreadable,
+    /// The captured profile connection refused or failed this read.
+    Connection(crate::profiles::Error),
 }
 
 impl Error {
@@ -36,6 +38,10 @@ impl Error {
             Self::Missing => "This message is no longer retained by Backbone.",
             Self::Forbidden => "Interaction history needs the owner's Backbone connection.",
             Self::Unreadable => "Backbone returned unreadable interaction history.",
+            Self::Connection(
+                crate::profiles::Error::BindingRequired | crate::profiles::Error::BindingMismatch,
+            ) => "The original Backbone profile binding was refused.",
+            Self::Connection(_) => "The original Backbone profile is unavailable.",
         }
     }
 }
@@ -43,7 +49,7 @@ impl Error {
 /// One provider-bound read, keeping summary and ledger on the same snapshot.
 #[derive(Clone, Debug)]
 pub struct Snapshot {
-    /// The verified provider this read came from; never silently rebind discussion.
+    /// Legacy provider URL; empty for bound snapshots. Use `identity` for bound origin.
     pub provider: String,
     /// Every agent's retained message counts and activity marks.
     pub summary: Summary,
@@ -53,33 +59,97 @@ pub struct Snapshot {
     pub states: Option<StateSpanPage>,
     /// Why state context is missing on this read.
     pub state_error: Option<Error>,
+    client: Option<Client>,
 }
 
-struct Api {
-    provider: String,
-    key: String,
+impl Snapshot {
+    /// Full origin of a bound read; legacy snapshots have no profile identity.
+    pub fn identity(&self) -> Option<&crate::profiles::Identity> {
+        self.client.as_ref().map(Client::identity)
+    }
+
+    /// Read retained detail with this bound snapshot's original credentials.
+    /// Legacy snapshots continue to use the explicit legacy `detail` function.
+    pub fn detail(&self, id: &str) -> Result<Interaction, Error> {
+        self.client.as_ref().ok_or(Error::Unavailable)?.detail(id)
+    }
 }
 
-impl Api {
+/// Interaction history and details pinned to one verified profile connection.
+#[derive(Clone)]
+pub struct Client {
+    connection: crate::profiles::Connection,
+}
+
+impl std::fmt::Debug for Client {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Client")
+            .field("identity", self.identity())
+            .finish_non_exhaustive()
+    }
+}
+
+impl Client {
+    /// Retain the verified binding and credentials for every follow-up request.
+    pub fn new(connection: crate::profiles::Connection) -> Self {
+        Self { connection }
+    }
+
+    /// Origin to check before applying deferred results.
+    pub fn identity(&self) -> &crate::profiles::Identity {
+        self.connection.identity()
+    }
+
+    /// Read bounded history and retain this connection on the returned snapshot.
+    pub fn read(&self, since: &str, until: &str, agent: Option<&str>) -> Result<Snapshot, Error> {
+        let mut snapshot = read_using(&Api::Bound(&self.connection), since, until, agent)?;
+        snapshot.client = Some(self.clone());
+        Ok(snapshot)
+    }
+
+    /// Read one record and its evidence pages on the same captured connection.
+    pub fn detail(&self, id: &str) -> Result<Interaction, Error> {
+        detail_using(&Api::Bound(&self.connection), id)
+    }
+}
+
+enum Api<'a> {
+    Legacy { provider: String, key: String },
+    Bound(&'a crate::profiles::Connection),
+}
+
+impl Api<'_> {
     fn new(directory: &Path) -> Result<Self, Error> {
         let (provider, key) =
             crate::configuration::configured(directory, None).ok_or(Error::Unavailable)?;
         if !provider.starts_with("unix:") || key.is_empty() {
             return Err(Error::Unavailable);
         }
-        Ok(Self { provider, key })
+        Ok(Self::Legacy { provider, key })
+    }
+
+    fn provider(&self) -> &str {
+        match self {
+            Self::Legacy { provider, .. } => provider,
+            Self::Bound(_) => "",
+        }
     }
 
     fn get<T: serde::de::DeserializeOwned>(&self, path: &str, detail: bool) -> Result<T, Error> {
-        let response = crate::transport::local::response(
-            &self.provider[5..],
-            path,
-            &self.key,
-            None,
-            LIMIT,
-            Duration::from_secs(15),
-        )
-        .map_err(|_| Error::Unavailable)?;
+        let response = match self {
+            Self::Legacy { provider, key } => crate::transport::local::response(
+                &provider[5..],
+                path,
+                key,
+                None,
+                LIMIT,
+                Duration::from_secs(15),
+            )
+            .map_err(|_| Error::Unavailable)?,
+            Self::Bound(connection) => connection
+                .response(path, None, LIMIT)
+                .map_err(Error::Connection)?,
+        };
         match response.status {
             200 => parse(&response.body),
             404 => Err(if detail {
@@ -145,6 +215,19 @@ pub fn read(
     agent: Option<&str>,
 ) -> Result<Snapshot, Error> {
     let api = Api::new(directory)?;
+    let snapshot = read_using(&api, since, until, agent)?;
+    if crate::conversations::provider(directory).as_deref() != Some(api.provider()) {
+        return Err(Error::Unavailable);
+    }
+    Ok(snapshot)
+}
+
+fn read_using(
+    api: &Api<'_>,
+    since: &str,
+    until: &str,
+    agent: Option<&str>,
+) -> Result<Snapshot, Error> {
     let bounds = format!("since={}&until={}", quote(since)?, quote(until)?);
     let summary: Summary = api.get(&format!("/api/interactions/summary?{bounds}"), false)?;
     validate_coverage(&summary.coverage)?;
@@ -202,23 +285,26 @@ pub fn read(
     } else {
         None
     };
-    let (states, state_error) = match state_spans(&api, &bounds, agent) {
+    let (states, state_error) = match state_spans(api, &bounds, agent) {
         Ok(page) => (Some(page), None),
+        Err(
+            error @ Error::Connection(
+                crate::profiles::Error::BindingRequired | crate::profiles::Error::BindingMismatch,
+            ),
+        ) => return Err(error),
         Err(error) => (None, Some(error)),
     };
-    if crate::conversations::provider(directory).as_ref() != Some(&api.provider) {
-        return Err(Error::Unavailable);
-    }
     Ok(Snapshot {
-        provider: api.provider,
+        provider: api.provider().to_owned(),
         summary,
         history,
         states,
         state_error,
+        client: None,
     })
 }
 
-fn state_spans(api: &Api, bounds: &str, agent: Option<&str>) -> Result<StateSpanPage, Error> {
+fn state_spans(api: &Api<'_>, bounds: &str, agent: Option<&str>) -> Result<StateSpanPage, Error> {
     let mut path = format!("/api/interactions/state-spans?{bounds}&limit=500");
     if let Some(agent) = agent {
         path.push_str(&format!("&agent_id={}", quote(agent)?));
@@ -275,9 +361,17 @@ fn validate_states(page: &StateSpanPage) -> Result<(), Error> {
 /// Read an immutable message outside the current window and its bounded evidence pages.
 pub fn detail(directory: &Path, provider: &str, id: &str) -> Result<Interaction, Error> {
     let api = Api::new(directory)?;
-    if api.provider != provider {
+    if api.provider() != provider {
         return Err(Error::Unavailable);
     }
+    let item = detail_using(&api, id)?;
+    if crate::conversations::provider(directory).as_deref() != Some(provider) {
+        return Err(Error::Unavailable);
+    }
+    Ok(item)
+}
+
+fn detail_using(api: &Api<'_>, id: &str) -> Result<Interaction, Error> {
     let path = id_path(id)?;
     let mut item: Interaction = api.get(&path, true)?;
     validate_record(&item)?;
@@ -321,9 +415,6 @@ pub fn detail(directory: &Path, provider: &str, id: &str) -> Result<Interaction,
         item.lifecycle.next_cursor = page.next_cursor;
     }
     validate_record(&item)?;
-    if crate::conversations::provider(directory).as_deref() != Some(provider) {
-        return Err(Error::Unavailable);
-    }
     Ok(item)
 }
 
@@ -966,7 +1057,7 @@ mod tests {
                 stream.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}").unwrap();
             }
         });
-        let api = Api {
+        let api = Api::Legacy {
             provider: format!("unix:{}", socket.display()),
             key: "fixture-key".into(),
         };
