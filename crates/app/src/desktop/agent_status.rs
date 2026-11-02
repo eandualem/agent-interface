@@ -67,6 +67,7 @@ impl AgentState {
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct Status {
     pub state: AgentState,
+    pub online: bool,
     pub label: String,
     pub since: Option<f64>,
     pub reason: Option<String>,
@@ -76,6 +77,7 @@ impl Status {
     fn new(state: AgentState) -> Self {
         Self {
             state,
+            online: state.online(),
             label: state.word().into(),
             since: None,
             reason: None,
@@ -147,7 +149,19 @@ impl LiveAgents {
         self.0.borrow().snapshot.is_some()
     }
 
-    pub fn update(&self, snapshot: Snapshot) -> bool {
+    pub fn update(&self, mut snapshot: Snapshot) -> bool {
+        // For online agents Backbone supplies the read time, not the time of
+        // a state transition. Only offline timestamps have presentation meaning.
+        // Normalizing here also preserves retained painting on unchanged polls.
+        for (name, details) in &mut snapshot.details {
+            if snapshot
+                .states
+                .get(name)
+                .is_none_or(|state| state != "offline")
+            {
+                details.state_since = None;
+            }
+        }
         let mut current = self.0.borrow_mut();
         let changed = current.snapshot.as_ref().is_none_or(|old| {
             old.states != snapshot.states
@@ -162,6 +176,9 @@ impl LiveAgents {
                     let mut status = Status::new(AgentState::from_runtime(value));
                     if let Some(details) = snapshot.details.get(name) {
                         status.since = details.state_since;
+                        if status.state == AgentState::Unknown {
+                            status.online = details.online.unwrap_or(false);
+                        }
                         status.reason = details.reason.clone();
                         let suffix = if status.state.needs_you() {
                             details.reason.clone()
@@ -263,11 +280,16 @@ mod tests {
         let second = first.clone();
         assert_eq!(first.get("worker").state, AgentState::Unknown);
         let mut snapshot = Snapshot::default();
-        snapshot.update(br#"{"items":[{"name":"worker","state":"busy","current_issue":7}]}"#);
+        snapshot.update(
+            br#"{"items":[{"name":"worker","state":"busy","current_issue":7,"state_since":10}]}"#,
+        );
         assert!(first.update(snapshot.clone()));
         assert!(Rc::ptr_eq(&first.get("worker"), &second.get("worker")));
         assert_eq!(second.get("worker").label, "working · #7");
         let unchanged = first.get("worker");
+        snapshot.update(
+            br#"{"items":[{"name":"worker","state":"busy","current_issue":7,"state_since":20}]}"#,
+        );
         assert!(!first.update(snapshot.clone()));
         assert!(Rc::ptr_eq(&unchanged, &second.get("worker")));
 
@@ -301,7 +323,7 @@ mod tests {
             {"name":"waiter","state":"waiting_for_human","reason":"permission"},
             {"name":"blocked","state":"blocked","reason":"quota"},
             {"name":"starter","state":"starting"},
-            {"name":"future","state":"new-state"}
+            {"name":"future","state":"new-state","online":true}
         ]}"#,
         );
         agents.update(snapshot);
@@ -310,6 +332,6 @@ mod tests {
         assert_eq!(agents.get("starter").state, AgentState::Starting);
         assert!(agents.get("starter").state.working());
         assert_eq!(agents.get("future").state, AgentState::Unknown);
-        assert!(!agents.get("future").state.online());
+        assert!(agents.get("future").online);
     }
 }

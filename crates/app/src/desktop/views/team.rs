@@ -30,7 +30,11 @@ pub(super) fn body(pane: &ViewPane, team: &Team, cx: &mut Context<ViewPane>) -> 
     let online = team
         .members
         .iter()
-        .filter(|m| state(m, cx).online())
+        .filter(|m| {
+            crate::desktop::agent_status::LiveAgents::shared(cx)
+                .get(&m.name)
+                .online
+        })
         .count();
     let mut grouping = ui::segments();
     for (choice, label) in [
@@ -116,15 +120,15 @@ pub(super) fn body(pane: &ViewPane, team: &Team, cx: &mut Context<ViewPane>) -> 
             .child(format!("{} idle", tally(AgentState::Idle))),
     )
     .child(format!("{} offline", tally(AgentState::Offline)))
-    .when(
-        tally(AgentState::Unknown) + tally(AgentState::Unavailable) > 0,
-        |el| {
-            el.child(format!(
-                "{} status unavailable",
-                tally(AgentState::Unknown) + tally(AgentState::Unavailable)
-            ))
-        },
-    );
+    .when(tally(AgentState::Unknown) > 0, |el| {
+        el.child(format!("{} status unknown", tally(AgentState::Unknown)))
+    })
+    .when(tally(AgentState::Unavailable) > 0, |el| {
+        el.child(format!(
+            "{} status unavailable",
+            tally(AgentState::Unavailable)
+        ))
+    });
 
     let column = match pane.grouping {
         Grouping::Folder => folders(team, cx),

@@ -28,6 +28,8 @@ const UNAVAILABLE: &str = "Backbone unavailable; states stale";
 #[derive(Clone, Debug, Default, PartialEq, serde::Deserialize)]
 #[serde(default)]
 pub struct AgentDetails {
+    /// Whether the provider observes an online agent, including unknown states.
+    pub online: Option<bool>,
     /// Why the agent is waiting or blocked.
     pub reason: Option<String>,
     /// The issue currently being worked on.
