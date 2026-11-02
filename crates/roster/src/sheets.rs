@@ -4,6 +4,7 @@
 //! a lost reply retains a byte-identical request for a deliberate safe retry.
 //! Transport, parsing and validation run on I/O workers, never the UI thread.
 
+use crate::profiles::{Connection, Identity};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{
     path::{Path, PathBuf},
@@ -26,6 +27,8 @@ const FILE_LIMIT: usize = 16 * 1024 * 1024;
 pub enum Error {
     /// Configuration no longer names the provider whose data was displayed.
     ProviderChanged,
+    /// The provider refused the original profile or lifecycle binding.
+    BindingRefused,
     /// No authenticated private local provider is configured.
     Unavailable,
     /// Invalid or oversized client input, before any request.
@@ -54,6 +57,9 @@ impl Error {
         match self {
             Self::ProviderChanged => {
                 "The Backbone connection changed. Keep this draft and reconnect to its original provider."
+            }
+            Self::BindingRefused => {
+                "The original profile binding was refused. Keep the draft and reconnect to that profile."
             }
             Self::Unavailable => "Sheets requires an authenticated private Backbone connection.",
             Self::Invalid => {
@@ -97,10 +103,45 @@ impl Error {
 /// A connection bound to the provider that supplied the displayed workbook.
 #[derive(Clone, Debug)]
 pub struct Client {
-    directory: PathBuf,
-    provider: String,
+    source: Source,
+}
+#[derive(Clone)]
+enum Source {
+    Legacy {
+        directory: PathBuf,
+        provider: String,
+    },
+    Bound(Connection),
+}
+impl std::fmt::Debug for Source {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Legacy {
+                directory,
+                provider,
+            } => f
+                .debug_struct("Legacy")
+                .field("directory", directory)
+                .field("provider", provider)
+                .finish(),
+            Self::Bound(connection) => f.debug_tuple("Bound").field(connection.identity()).finish(),
+        }
+    }
 }
 impl Client {
+    /// Retain a verified connection and its credentials for all workbook work.
+    pub fn bound(connection: Connection) -> Self {
+        Self {
+            source: Source::Bound(connection),
+        }
+    }
+    /// Full origin for deferred results and pane ownership; legacy is explicit.
+    pub fn identity(&self) -> Option<&Identity> {
+        match &self.source {
+            Source::Bound(connection) => Some(connection.identity()),
+            Source::Legacy { .. } => None,
+        }
+    }
     /// Resolve the existing configuration on a worker; no new credentials.
     pub fn connect(directory: &Path) -> Result<Self, Error> {
         let (provider, key) =
@@ -109,8 +150,10 @@ impl Client {
             return Err(Error::Unavailable);
         }
         Ok(Self {
-            directory: directory.into(),
-            provider,
+            source: Source::Legacy {
+                directory: directory.into(),
+                provider,
+            },
         })
     }
     fn request(&self, path: &str, body: Option<Vec<u8>>, limit: usize) -> Result<Vec<u8>, Error> {
@@ -123,30 +166,47 @@ impl Client {
         body: Option<Vec<u8>>,
         limit: usize,
     ) -> Result<crate::transport::local::Response, Error> {
-        let (provider, key) =
-            crate::configuration::configured(&self.directory, None).ok_or(Error::Unavailable)?;
-        if provider != self.provider {
-            return Err(Error::ProviderChanged);
-        }
-        if key.is_empty() {
-            return Err(Error::Unavailable);
-        }
         let mutation = body.is_some();
-        let result = crate::transport::local::response(
-            provider.strip_prefix("unix:").ok_or(Error::Unavailable)?,
-            path,
-            &key,
-            body,
-            limit,
-            Duration::from_secs(if mutation { 20 } else { 15 }),
-        )
-        .map_err(|_| {
-            if mutation {
-                Error::Unknown
-            } else {
-                Error::Unavailable
+        let result = match &self.source {
+            Source::Legacy {
+                directory,
+                provider: expected,
+            } => {
+                let (provider, key) =
+                    crate::configuration::configured(directory, None).ok_or(Error::Unavailable)?;
+                if &provider != expected {
+                    return Err(Error::ProviderChanged);
+                }
+                if key.is_empty() {
+                    return Err(Error::Unavailable);
+                }
+                crate::transport::local::response(
+                    provider.strip_prefix("unix:").ok_or(Error::Unavailable)?,
+                    path,
+                    &key,
+                    body,
+                    limit,
+                    Duration::from_secs(if mutation { 20 } else { 15 }),
+                )
+                .map_err(|_| {
+                    if mutation {
+                        Error::Unknown
+                    } else {
+                        Error::Unavailable
+                    }
+                })?
             }
-        })?;
+            Source::Bound(connection) => {
+                connection
+                    .response(path, body, limit)
+                    .map_err(|error| match error {
+                        crate::profiles::Error::BindingRequired
+                        | crate::profiles::Error::BindingMismatch => Error::BindingRefused,
+                        _ if mutation => Error::Unknown,
+                        _ => Error::Unavailable,
+                    })?
+            }
+        };
         if result.body.len() > limit {
             return Err(if mutation {
                 Error::Unknown
@@ -388,7 +448,7 @@ impl Client {
             return Err(Error::Invalid);
         }
         Ok(Prepared {
-            provider: self.provider.clone(),
+            client: self.clone(),
             path,
             body,
             expected,
@@ -397,10 +457,22 @@ impl Client {
     /// Send exactly once. An explicit retry calls this again with the same
     /// prepared value, not a freshly constructed edit or feedback key.
     pub fn submit(&self, request: &Prepared) -> Result<Accepted, Error> {
-        if request.provider != self.provider {
+        let same_origin = match (&self.source, &request.client.source) {
+            (Source::Bound(a), Source::Bound(b)) => a.identity() == b.identity(),
+            (Source::Legacy { provider: a, .. }, Source::Legacy { provider: b, .. }) => a == b,
+            _ => false,
+        };
+        if !same_origin {
             return Err(Error::ProviderChanged);
         }
-        let bytes = self.request(&request.path, Some(request.body.clone()), METADATA_LIMIT)?;
+        // A separately verified connection with rotated credentials must not
+        // replace the snapshot that prepared an uncertain mutation.
+        let sender = if self.identity().is_some() {
+            &request.client
+        } else {
+            self
+        };
+        let bytes = sender.request(&request.path, Some(request.body.clone()), METADATA_LIMIT)?;
         match &request.expected {
             Expected::Feedback { sheet, revision } => {
                 let result: FeedbackReceipt =
@@ -532,7 +604,7 @@ enum Expected {
 /// cannot be edited; a caller must explicitly prepare a different operation.
 #[derive(Clone, Debug)]
 pub struct Prepared {
-    provider: String,
+    client: Client,
     path: String,
     body: Vec<u8>,
     expected: Expected,
