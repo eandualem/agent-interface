@@ -593,8 +593,12 @@ build-time advisory exception are described below.
   strikethrough and task lists; the app draws the parsed blocks natively.
   Its transitive `unicase` 2.10.0 dependency (MIT OR Apache-2.0) supplies
   case-insensitive matching for Markdown reference labels.
-- **`alacritty_terminal` and `rio-vt`:** development-only comparison engines.
-  Apache-2.0 and MIT respectively.
+- **`alacritty_terminal` and `rio-vt` 0.5.29:** development-only comparison engines.
+  Apache-2.0 and MIT respectively. The exact Rio pin includes its Kitty graphics
+  file-path validation fix; the desktop terminal uses Ghostty. Its benchmark-only
+  support crates are `rio-graphics` and `rio-grapheme-width` (MIT), plus
+  `rio-unicode` (MIT OR Apache-2.0), all locked at 0.5.29 for graphics data,
+  grapheme widths and Unicode classification.
 - **`tracing` 0.1.44:** MIT-licensed structured diagnostic events in app, tmux
   and roster; pinned exactly. **`tracing-subscriber` 0.3.23** and
   **`tracing-appender` 0.2.5** (MIT, exact pins) provide the app-owned JSON
