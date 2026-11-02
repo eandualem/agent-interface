@@ -17,6 +17,7 @@ pub mod feedback;
 pub mod interactions;
 pub mod lifecycle;
 pub mod plans;
+pub mod profiles;
 pub mod sheets;
 mod transport;
 pub mod views;

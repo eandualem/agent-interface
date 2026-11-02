@@ -1,0 +1,361 @@
+//! Profile contract r2: explicit discovery and a pinned local connection.
+//! Not used by legacy startup or the desktop profile selector.
+
+use std::{
+    fs::OpenOptions,
+    io::Read,
+    os::unix::fs::{MetadataExt, OpenOptionsExt},
+    path::{Path, PathBuf},
+    time::Duration,
+};
+
+use serde::Deserialize;
+
+use crate::{RESPONSE_LIMIT, transport::local};
+
+/// A registered provider instance. Display names and baseline versions are not identity.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Deserialize)]
+pub struct Identity {
+    /// Stable profile, including across registered-instance replacement.
+    pub profile_id: String,
+    /// Existing provider signing audience.
+    pub installation_id: String,
+    /// Instance generation, changed by replacement or restored activation.
+    pub lifecycle_id: String,
+}
+
+/// A bounded failure category; provider prose and credentials are never retained.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Error {
+    /// Malformed, oversized or inconsistent discovery/identity data.
+    Invalid,
+    /// The provider or wire schema does not support bound connections.
+    Unsupported,
+    /// Provisioning is incomplete or failed.
+    NotReady,
+    /// The exact credential or local endpoint could not be read safely.
+    Unavailable,
+    /// The authenticated provider requires a complete binding.
+    BindingRequired,
+    /// The expected instance or tmux source does not match.
+    BindingMismatch,
+    /// Another HTTP refusal, retaining only its status.
+    Refused(u16),
+}
+
+/// Registry classification; it does not confer legacy connection eligibility.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Kind {
+    /// The installation adopted in place.
+    LegacyDefault,
+    /// A separately provisioned profile.
+    Isolated,
+}
+
+/// Registry provisioning state, independent of whether the service is running.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum State {
+    /// Not ready for content connections.
+    Creating,
+    /// Provisioned; still requires an authenticated identity handshake.
+    Ready,
+    /// Provisioning failed and needs explicit recovery.
+    Failed,
+}
+
+/// Discovery metadata. `Ready` describes provisioning, not service availability.
+#[derive(Clone, Debug, Deserialize)]
+pub struct Item {
+    /// Stable profile identity, never inferred from its name.
+    pub profile_id: String,
+    /// Human-readable label, not request authority.
+    pub display_name: String,
+    /// How the profile was provisioned.
+    pub kind: Kind,
+    /// Whether a connection binding may be present.
+    pub state: State,
+}
+
+#[derive(Deserialize)]
+struct Catalog {
+    schema_version: u32,
+    items: Vec<Item>,
+}
+
+/// Decode a successful registry list. A registry command error must not call this.
+pub fn list(bytes: &[u8]) -> Result<Vec<Item>, Error> {
+    let catalog: Catalog = parse(bytes)?;
+    schema(catalog.schema_version)?;
+    let mut ids = std::collections::HashSet::new();
+    for item in &catalog.items {
+        validate_item(item)?;
+        if !ids.insert(&item.profile_id) {
+            return Err(Error::Invalid);
+        }
+    }
+    Ok(catalog.items)
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum Endpoint {
+    Unix { path: PathBuf },
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum Credential {
+    Dotenv { path: PathBuf, key: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+struct Tmux {
+    socket_path: PathBuf,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct Binding {
+    installation_id: String,
+    lifecycle_id: String,
+    endpoint: Endpoint,
+    credential_reference: Credential,
+    tmux: Tmux,
+}
+
+#[derive(Deserialize)]
+struct Record {
+    schema_version: u32,
+    #[serde(flatten)]
+    item: Item,
+    // Raw JSON distinguishes a required null from a missing binding field.
+    binding: Box<serde_json::value::RawValue>,
+}
+
+/// An atomic registry record; only `connect` can turn it into a verified connection.
+#[derive(Clone, Debug)]
+pub struct Profile {
+    item: Item,
+    binding: Option<Binding>,
+}
+
+impl Profile {
+    /// Decode a bounded registry show reply and validate its binding consistency.
+    pub fn parse(bytes: &[u8]) -> Result<Self, Error> {
+        let record: Record = parse(bytes)?;
+        schema(record.schema_version)?;
+        validate_item(&record.item)?;
+        let binding: Option<Binding> =
+            serde_json::from_str(record.binding.get()).map_err(|_| Error::Invalid)?;
+        if (record.item.state == State::Ready) != binding.is_some() {
+            return Err(Error::Invalid);
+        }
+        if let Some(binding) = &binding {
+            let Endpoint::Unix { path } = &binding.endpoint;
+            let Credential::Dotenv {
+                path: credential,
+                key,
+            } = &binding.credential_reference;
+            if !valid_id(&binding.installation_id)
+                || !valid_id(&binding.lifecycle_id)
+                || !path.is_absolute()
+                || !credential.is_absolute()
+                || !binding.tmux.socket_path.is_absolute()
+                || key != "BACKBONE_API_KEY"
+            {
+                return Err(Error::Invalid);
+            }
+        }
+        Ok(Self {
+            item: record.item,
+            binding,
+        })
+    }
+
+    /// Read metadata without probing or starting the provider.
+    pub fn item(&self) -> &Item {
+        &self.item
+    }
+
+    /// Read only the named credential, then authenticate and verify the exact provider.
+    /// Runs on an I/O worker; does not discover, start or adopt a service.
+    pub fn connect(&self) -> Result<Connection, Error> {
+        let binding = self.binding.as_ref().ok_or(Error::NotReady)?;
+        let Credential::Dotenv { path, .. } = &binding.credential_reference;
+        let key = credential(path)?;
+        let Endpoint::Unix { path: socket } = &binding.endpoint;
+        let connection = Connection {
+            identity: Identity {
+                profile_id: self.item.profile_id.clone(),
+                installation_id: binding.installation_id.clone(),
+                lifecycle_id: binding.lifecycle_id.clone(),
+            },
+            socket: socket.clone(),
+            tmux: binding.tmux.clone(),
+            credential_reference: path.clone(),
+            key,
+        };
+        connection.verify()?;
+        Ok(connection)
+    }
+}
+
+/// Immutable identity, endpoint and credential snapshot for one connection's work.
+/// Intentionally has no Debug implementation because it holds a credential.
+#[derive(Clone)]
+pub struct Connection {
+    identity: Identity,
+    socket: PathBuf,
+    tmux: Tmux,
+    credential_reference: PathBuf,
+    key: String,
+}
+
+impl Connection {
+    /// The authenticated identity retained by every operation on this connection.
+    pub fn identity(&self) -> &Identity {
+        &self.identity
+    }
+    /// The tmux socket confirmed by the provider handshake.
+    pub fn tmux_socket(&self) -> &Path {
+        &self.tmux.socket_path
+    }
+    /// The original credential locator; this connection never re-reads it.
+    pub fn credential_reference(&self) -> &Path {
+        &self.credential_reference
+    }
+
+    /// Verify again on the same binding, never by re-resolving registry or environment.
+    pub fn verify(&self) -> Result<(), Error> {
+        #[derive(Deserialize)]
+        struct Reply {
+            schema_version: u32,
+            #[serde(flatten)]
+            identity: Identity,
+            baseline_version: String,
+            tmux: Tmux,
+        }
+        let response = self.response("/api/profile", None, RESPONSE_LIMIT)?;
+        if response.status == 404 {
+            return Err(Error::Unsupported);
+        }
+        successful(&response)?;
+        let reply: Reply = parse(&response.body)?;
+        schema(reply.schema_version)?;
+        if reply.baseline_version.is_empty() {
+            return Err(Error::Invalid);
+        }
+        if reply.identity != self.identity || reply.tmux != self.tmux {
+            return Err(Error::BindingMismatch);
+        }
+        Ok(())
+    }
+
+    // Every request carries the tuple, including requests after a successful probe.
+    // Future content adapters must use this connection rather than legacy configuration.
+    pub(crate) fn response(
+        &self,
+        path: &str,
+        body: Option<Vec<u8>>,
+        limit: usize,
+    ) -> Result<local::Response, Error> {
+        let response = local::profile_response(
+            self.socket.to_str().ok_or(Error::Invalid)?,
+            path,
+            (&self.key, &self.identity),
+            body,
+            limit,
+            Duration::from_secs(15),
+        )
+        .map_err(|_| Error::Unavailable)?;
+        if response.body.len() > limit {
+            return Err(Error::Invalid);
+        }
+        Ok(response)
+    }
+}
+
+fn successful(response: &local::Response) -> Result<(), Error> {
+    if (200..300).contains(&response.status) {
+        return Ok(());
+    }
+    if response.status == 409 {
+        #[derive(Deserialize)]
+        struct Refusal {
+            detail: Detail,
+        }
+        #[derive(Deserialize)]
+        struct Detail {
+            code: String,
+        }
+        if let Ok(refusal) = serde_json::from_slice::<Refusal>(&response.body) {
+            match refusal.detail.code.as_str() {
+                "binding_required" => return Err(Error::BindingRequired),
+                "binding_mismatch" => return Err(Error::BindingMismatch),
+                _ => {}
+            }
+        }
+    }
+    Err(Error::Refused(response.status))
+}
+
+fn schema(version: u32) -> Result<(), Error> {
+    if version == 1 {
+        Ok(())
+    } else {
+        Err(Error::Unsupported)
+    }
+}
+
+fn parse<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, Error> {
+    if bytes.len() > RESPONSE_LIMIT {
+        return Err(Error::Invalid);
+    }
+    serde_json::from_slice(bytes).map_err(|_| Error::Invalid)
+}
+
+fn valid_id(id: &str) -> bool {
+    !id.is_empty() && id.bytes().all(|b| b.is_ascii_graphic())
+}
+
+fn validate_item(item: &Item) -> Result<(), Error> {
+    if !valid_id(&item.profile_id)
+        || item.display_name.trim().is_empty()
+        || item.display_name.chars().any(char::is_control)
+    {
+        Err(Error::Invalid)
+    } else {
+        Ok(())
+    }
+}
+
+fn credential(path: &Path) -> Result<String, Error> {
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+        .map_err(|_| Error::Unavailable)?;
+    let metadata = file.metadata().map_err(|_| Error::Unavailable)?;
+    if !metadata.is_file()
+        || metadata.uid() != rustix::process::geteuid().as_raw()
+        || metadata.mode() & 0o777 != 0o600
+    {
+        return Err(Error::Unavailable);
+    }
+    let mut text = String::new();
+    file.take((RESPONSE_LIMIT + 1) as u64)
+        .read_to_string(&mut text)
+        .map_err(|_| Error::Unavailable)?;
+    if text.len() > RESPONSE_LIMIT {
+        return Err(Error::Unavailable);
+    }
+    let key = crate::configuration::dotenv_key(&text)
+        .filter(|key| !key.is_empty())
+        .ok_or(Error::Unavailable)?;
+    http::HeaderValue::from_str(&format!("Bearer {key}")).map_err(|_| Error::Unavailable)?;
+    Ok(key)
+}
+
+#[cfg(test)]
+mod tests;
