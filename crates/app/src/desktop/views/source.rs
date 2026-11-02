@@ -18,6 +18,8 @@ pub(super) enum Source {
 
 fn request(request: &views::Request) -> Option<content::Request> {
     Some(match request {
+        views::Request::Team => content::Request::Team,
+        views::Request::Tags => content::Request::Tags,
         views::Request::Policies => content::Request::Policies,
         views::Request::Skills => content::Request::Skills,
         views::Request::Usage(range) => content::Request::Usage(*range),
@@ -96,6 +98,8 @@ impl Source {
                     return None;
                 }
                 let wanted = match update.read.request {
+                    content::Request::Team => views::Request::Team,
+                    content::Request::Tags => views::Request::Tags,
                     content::Request::Policies => views::Request::Policies,
                     content::Request::Skills => views::Request::Skills,
                     content::Request::Usage(range) => views::Request::Usage(range),
@@ -111,6 +115,8 @@ impl Source {
                     .read
                     .result
                     .map(|data| match data {
+                        content::Data::Team(team) => views::Data::Team(team),
+                        content::Data::Tags(tags) => views::Data::Tags(tags),
                         content::Data::Policies(policies) => views::Data::Policies(policies),
                         content::Data::Skills(skills) => views::Data::Skills(skills),
                         content::Data::Usage(usage) => views::Data::Usage(usage),
@@ -177,7 +183,7 @@ mod tests {
             update.read.identity = changed;
             assert!(!accepts(&origin, 3, &update));
         }
-        assert!(request(&views::Request::Team).is_none());
+        assert!(request(&views::Request::Agent("worker".into(), views::Part::Card)).is_none());
     }
 
     #[test]
@@ -243,13 +249,7 @@ mod tests {
     fn observation_requests_exclude_agent_and_unsupported_library_paths() {
         assert!(request(&views::Request::Usage(views::Range::Day)).is_some());
         assert!(request(&views::Request::Activity).is_some());
-        for unsupported in [
-            views::Request::Team,
-            views::Request::Tags,
-            views::Request::Agent("worker".into(), views::Part::Card),
-        ] {
-            assert!(request(&unsupported).is_none());
-        }
+        assert!(request(&views::Request::Agent("worker".into(), views::Part::Card)).is_none());
     }
 
     #[test]
@@ -347,3 +347,7 @@ mod tests {
         server_b.join().unwrap();
     }
 }
+
+#[cfg(test)]
+#[path = "bound_team_tags_tests.rs"]
+mod team_tags_tests;

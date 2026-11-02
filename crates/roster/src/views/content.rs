@@ -6,6 +6,10 @@ use crate::profiles::{Connection, Identity};
 /// Retained content and explicitly supported read-only observation views.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Request {
+    /// Configured agents and swarms from the captured profile.
+    Team,
+    /// Tag membership and shared library associations.
+    Tags,
     /// Policy layers with catalog identities and provider-owned base/swarm text.
     Policies,
     /// Skill catalog and provider previews, without reading local files.
@@ -37,6 +41,10 @@ impl Request {
 /// Retained content without legacy URL-based action authority.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Data {
+    /// Team observation from the originating connection.
+    Team(super::Team),
+    /// Tag library from the originating connection.
+    Tags(Box<super::TagLibrary>),
     /// Policy library from the originating connection.
     Policies(Box<super::PolicyLibrary>),
     /// Skill catalog from the originating connection.
@@ -78,6 +86,8 @@ pub struct Read {
 /// environment, legacy configuration, local runtime files or actions are read.
 pub fn read(connection: &Connection, request: &Request, live: &dyn Fn() -> bool) -> Read {
     let observation = match request {
+        Request::Team => Some(super::bound::Request::Team),
+        Request::Tags => Some(super::bound::Request::Tags),
         Request::Policies => Some(super::bound::Request::Policies),
         Request::Skills => Some(super::bound::Request::Skills),
         Request::Usage(range) => Some(super::bound::Request::Usage(*range)),
@@ -90,6 +100,8 @@ pub fn read(connection: &Connection, request: &Request, live: &dyn Fn() -> bool)
             identity: read.identity,
             request: request.clone(),
             result: read.result.and_then(|data| match data {
+                super::Data::Team(team) => Ok(Data::Team(team)),
+                super::Data::Tags(tags) => Ok(Data::Tags(tags)),
                 super::Data::Policies(policies) => Ok(Data::Policies(policies)),
                 super::Data::Skills(skills) => Ok(Data::Skills(skills)),
                 super::Data::Usage(usage) => Ok(Data::Usage(usage)),
@@ -106,7 +118,12 @@ pub fn read(connection: &Connection, request: &Request, live: &dyn Fn() -> bool)
         live,
     };
     let result = match request {
-        Request::Policies | Request::Skills | Request::Usage(_) | Request::Activity => {
+        Request::Team
+        | Request::Tags
+        | Request::Policies
+        | Request::Skills
+        | Request::Usage(_)
+        | Request::Activity => {
             unreachable!("observation handled above")
         }
         Request::Reports(query, agent) => {

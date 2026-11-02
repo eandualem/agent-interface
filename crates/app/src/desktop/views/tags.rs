@@ -26,11 +26,11 @@ pub(super) fn body(
 ) -> AnyElement {
     match &pane.carriers_of {
         Some(tag) => carriers(pane, library, tag, cx),
-        None => cards(library, cx),
+        None => cards(pane, library, cx),
     }
 }
 
-fn cards(library: &TagLibrary, cx: &mut Context<ViewPane>) -> AnyElement {
+fn cards(pane: &ViewPane, library: &TagLibrary, cx: &mut Context<ViewPane>) -> AnyElement {
     let (t, c) = (tokens(), colors());
     let header =
         ui::view_header("hash", "Tags").child("what each tag gives the agents that carry it");
@@ -150,7 +150,11 @@ fn cards(library: &TagLibrary, cx: &mut Context<ViewPane>) -> AnyElement {
         .child(ui::grouped_page("tag-cards", rows))
         .child(ui::view_footer(
             &[("click", "the agents carrying it")],
-            "tags set with backbone agent tag NAME TAG…",
+            if pane.connection.is_some() {
+                "read-only"
+            } else {
+                "tags set with backbone agent tag NAME TAG…"
+            },
         ))
         .into_any_element()
 }
@@ -198,7 +202,11 @@ fn carriers(
         .child(bar)
         .child(ui::grouped_page("tag-agents", column))
         .child(ui::view_footer(
-            &[("esc", "back"), ("click", "show its terminal")],
+            if pane.connection.is_some() {
+                &[("esc", "back")]
+            } else {
+                &[("esc", "back"), ("click", "show its terminal")]
+            },
             "read-only",
         ))
         .into_any_element()
