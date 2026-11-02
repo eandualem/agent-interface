@@ -525,6 +525,15 @@ refusal; cancellation discards the complete observation. Native navigation and
 actions are wired separately, so this adapter does not enable ambient fallback
 or permission inspection.
 
+The app's `profiles` discovery client invokes only the provider's local
+`profiles list/show` commands using an explicit executable and captured operator
+environment. It preserves managed-agent identity so the provider's operator
+boundary still applies. Retained output, duration and cancellation are bounded;
+nonzero exits stay errors, and `show` must return the requested profile ID.
+Discovery does not connect, adopt, start or repair a provider and is not yet
+wired into a selector. Returned records require the normal authenticated
+handshake before content use.
+
 Durable Documents use Backbone's metadata-only `/api/documents` list and exact
 `/api/documents/{revision_id}` JSON reads. Backbone owns immutable revisions,
 stable document and author identities, publication authorization and retention;
