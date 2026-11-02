@@ -12,6 +12,7 @@ use std::{
 
 pub(crate) struct Reply {
     pub(crate) path: String,
+    pub(crate) prefix: bool,
     pub(crate) status: u16,
     pub(crate) body: Value,
     pub(crate) delay: Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>,
@@ -22,6 +23,7 @@ impl Reply {
     pub(crate) fn ok(path: &str, body: Value) -> Self {
         Self {
             path: path.into(),
+            prefix: false,
             status: 200,
             body,
             delay: None,
@@ -98,7 +100,15 @@ pub(crate) fn provider(
                 assert!(bytes.len() < 8192);
             }
             let request = String::from_utf8(bytes).unwrap().to_ascii_lowercase();
-            assert!(request.starts_with(&format!("get {} http/1.1\r\n", reply.path)));
+            if reply.prefix {
+                assert!(
+                    request.starts_with(&format!("get {}", reply.path)),
+                    "{request}"
+                );
+                assert!(request.lines().next().unwrap().ends_with(" http/1.1"));
+            } else {
+                assert!(request.starts_with(&format!("get {} http/1.1\r\n", reply.path)));
+            }
             for (header, value) in [
                 ("authorization", format!("bearer fixture-{label}")),
                 ("x-backbone-profile-id", format!("profile-{label}")),

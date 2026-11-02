@@ -510,7 +510,11 @@ Legacy URL keys remain separate, and the legacy installation timestamp does not
 mark another profile's older records as seen. A bound reader has no legacy data
 directory, so general views, Plans, Interactions and Sheets cannot fall back to
 ambient configuration. The explicit constructor currently supports Reports,
-Responses and Documents and requires matching live-status ownership. Desktop
+Responses, Documents, Usage and Activity and requires matching live-status
+ownership. Usage range changes and Activity refreshes share the bound content
+worker, including generation checks, hidden-pane cancellation and original
+credential retention. General Agent, library and terminal navigation remain
+unavailable through this constructor. Desktop
 startup still uses the legacy path; profile selection remains disabled.
 
 The general read-only adapter in `roster::views::bound` captures the same

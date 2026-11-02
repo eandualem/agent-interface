@@ -308,8 +308,10 @@ impl ViewPane {
             view,
         };
         if let Some(connection) = &pane.connection
-            && (pane.view.kind != ViewKind::Reports
-                || !pane.agents.belongs_to(connection.identity()))
+            && (!matches!(
+                pane.view.kind,
+                ViewKind::Reports | ViewKind::Usage | ViewKind::Activity
+            ) || !pane.agents.belongs_to(connection.identity()))
         {
             pane.error = Some("This view is unavailable for the original profile.");
             return pane;

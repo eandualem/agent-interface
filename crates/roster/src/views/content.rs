@@ -1,11 +1,15 @@
-//! Retained content read through one verified connection. No desktop actions.
+//! Content read through one verified connection. No desktop actions or local files.
 
 use super::{Api, DocumentRevision, Provider, ReportPage, ReportQuery, documents, reports};
 use crate::profiles::{Connection, Identity};
 
-/// Only retained-content endpoints; general views may still read local settings.
+/// Retained content and explicitly supported read-only observation views.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Request {
+    /// Token usage on the captured profile.
+    Usage(super::Range),
+    /// Deliveries, events and state history on the captured profile.
+    Activity,
     /// A filtered feed page, including its original pagination cursor.
     Reports(ReportQuery, Option<String>),
     /// An explicitly opened answer or correction.
@@ -29,6 +33,10 @@ impl Request {
 /// Retained content without legacy URL-based action authority.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Data {
+    /// Token usage from the originating connection.
+    Usage(super::Usage),
+    /// Deliveries, events and state history from the originating connection.
+    Activity(super::Activity),
     /// A feed page or a single report/answer. Item provider URLs stay empty.
     Reports(ReportPage),
     /// Size- and digest-checked HTML from the originating connection.
@@ -61,6 +69,23 @@ pub struct Read {
 /// Pagination and later detail requests must use this same connection. No
 /// environment, legacy configuration, local runtime files or actions are read.
 pub fn read(connection: &Connection, request: &Request, live: &dyn Fn() -> bool) -> Read {
+    let observation = match request {
+        Request::Usage(range) => Some(super::bound::Request::Usage(*range)),
+        Request::Activity => Some(super::bound::Request::Activity),
+        _ => None,
+    };
+    if let Some(observation) = observation {
+        let read = super::bound::read(connection, &observation, live);
+        return Read {
+            identity: read.identity,
+            request: request.clone(),
+            result: read.result.and_then(|data| match data {
+                super::Data::Usage(usage) => Ok(Data::Usage(usage)),
+                super::Data::Activity(activity) => Ok(Data::Activity(activity)),
+                _ => Err(Error::Content(super::UNREADABLE)),
+            }),
+        };
+    }
     let api = Api {
         provider: Provider::Bound {
             connection,
@@ -69,6 +94,7 @@ pub fn read(connection: &Connection, request: &Request, live: &dyn Fn() -> bool)
         live,
     };
     let result = match request {
+        Request::Usage(_) | Request::Activity => unreachable!("observation handled above"),
         Request::Reports(query, agent) => {
             reports::read(&api, query, agent.as_deref()).map(Data::Reports)
         }
