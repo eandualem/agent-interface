@@ -35,6 +35,7 @@ enum Direction {
 }
 
 pub(super) struct Interactions {
+    agents: crate::desktop::agent_status::LiveAgents,
     directory: PathBuf,
     visible: Rc<Cell<bool>>,
     shown: bool,
@@ -139,6 +140,7 @@ impl Interactions {
     pub fn new(
         directory: PathBuf,
         visible: Rc<Cell<bool>>,
+        agents: crate::desktop::agent_status::LiveAgents,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -185,6 +187,7 @@ impl Interactions {
             }
         });
         Self {
+            agents,
             directory,
             visible,
             shown: true,

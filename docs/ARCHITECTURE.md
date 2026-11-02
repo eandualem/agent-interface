@@ -328,6 +328,15 @@ verified identity and typed failure; a failed read retains only that worker's
 previous metadata and observation time, marked stale. A running worker cannot
 be rebound. Dropping it interrupts the polling wait and joins its bounded
 in-flight request, so UI owners must dispose of it off the UI thread.
+Desktop status observations are owned by explicit `LiveAgents` handles passed
+from each window to its views and child readers. A weak source registry shares
+one live poller per full profile/installation/lifecycle identity; explicit legacy
+sources are keyed separately by provider directory. Closing the last owner
+releases its cache and disposes of the poller off the UI thread. Deferred wakes
+refer weakly to their original source, and bound updates must match that source's
+identity. Failed reads hide its active rows and show unavailable status without
+changing another source's attention state. No global selected source supplies
+status to readers. Authored reports and historical events never update this model.
 These bound readers are not yet wired into desktop startup or workspace
 selection; existing desktop readers still use the configuration behavior above.
 They do not start services, migrate Default or configure runtime accounts.
@@ -380,11 +389,11 @@ read. This is invoked only by a user drag, with no screenshot monitoring.
 Agent views cache unchanged render trees; data, size, focus and appearance
 changes invalidate them. Visible working and starting indicators animate using GPUI; other states are
 static. State labels retain the distinction between starting and busy, and
-between blocked and waiting for a person. One application-wide roster worker reads
-immediately and then two seconds after each completed request. Its shared live
-model constructs each agent's status, label and ordering once per observation;
-all windows, navigation badges, choosers and information views consume that same
-model. Shared UI components render its symbol, colour and label. Roster changes
+between blocked and waiting for a person. Each connection-owned roster worker reads
+immediately and then two seconds after each completed request. Its live model
+constructs each agent's status, label and ordering once per observation; windows,
+navigation badges, choosers and information views retain that connection's model.
+Shared UI components render its symbol, colour and label. Roster changes
 invalidate retained view painting even when an authored record or plan is held
 open. Offline stays distinct from idle; an unavailable roster suppresses working
 indicators rather than presenting cached observations as current. Requests have

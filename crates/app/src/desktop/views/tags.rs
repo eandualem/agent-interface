@@ -25,7 +25,7 @@ pub(super) fn body(
     cx: &mut Context<ViewPane>,
 ) -> AnyElement {
     match &pane.carriers_of {
-        Some(tag) => carriers(library, tag, cx),
+        Some(tag) => carriers(pane, library, tag, cx),
         None => cards(library, cx),
     }
 }
@@ -156,7 +156,12 @@ fn cards(library: &TagLibrary, cx: &mut Context<ViewPane>) -> AnyElement {
 }
 
 /// The agents carrying `tag`, or every agent for `all`.
-fn carriers(library: &TagLibrary, tag: &str, cx: &mut Context<ViewPane>) -> AnyElement {
+fn carriers(
+    pane: &ViewPane,
+    library: &TagLibrary,
+    tag: &str,
+    cx: &mut Context<ViewPane>,
+) -> AnyElement {
     let t = tokens();
     let members: Vec<_> = library
         .agents
@@ -178,7 +183,7 @@ fn carriers(library: &TagLibrary, tag: &str, cx: &mut Context<ViewPane>) -> AnyE
         ));
     let mut card = ui::group_card();
     for (index, member) in members.iter().enumerate() {
-        card = card.child(team::agent_row(member, "", tag, index == 0, cx));
+        card = card.child(team::agent_row(pane, member, "", tag, index == 0, cx));
     }
     let column = if members.is_empty() {
         div().child(ui::group_note("No agent carries this tag."))

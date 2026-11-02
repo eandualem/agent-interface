@@ -40,7 +40,7 @@ pub(super) fn body(pane: &ViewPane, agent: &Agent, cx: &mut Context<ViewPane>) -
             ))
             .into_any_element();
     }
-    let status = crate::desktop::agent_status::LiveAgents::shared(cx).get(&agent.name);
+    let status = pane.agents.get(&agent.name);
     let name = agent.name.clone();
     let header = ui::view_header("user", agent.name.clone())
         .pr(px(t.space.s6))

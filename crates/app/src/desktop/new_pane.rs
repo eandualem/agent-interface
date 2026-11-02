@@ -228,6 +228,7 @@ impl NewPane {
         pane: String,
         socket: Option<PathBuf>,
         backbone: Option<PathBuf>,
+        agents: crate::desktop::agent_status::LiveAgents,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -273,7 +274,7 @@ impl NewPane {
             }
         });
         Self {
-            agents: super::agent_status::LiveAgents::shared(cx),
+            agents,
             pane,
             field,
             query: String::new(),

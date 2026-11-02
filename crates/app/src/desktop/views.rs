@@ -153,6 +153,7 @@ pub(super) struct Open {
 
 /// One view in one pane, with its newest data and what the person chose in it.
 pub(super) struct ViewPane {
+    agents: crate::desktop::agent_status::LiveAgents,
     pub view: View,
     source: Option<ViewSource>,
     data: Option<Data>,
@@ -239,10 +240,12 @@ impl ViewPane {
         view: View,
         backbone: Option<PathBuf>,
         directory: Option<PathBuf>,
+        agents: crate::desktop::agent_status::LiveAgents,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let mut pane = Self {
+            agents,
             source: None,
             data: None,
             error: None,
@@ -431,7 +434,8 @@ impl ViewPane {
             Some(_) => self.plans_shown(true, cx),
             None => {
                 let visible = self.visible.clone();
-                let plans = cx.new(|cx| plans::Plans::new(directory, visible, cx));
+                let plans =
+                    cx.new(|cx| plans::Plans::new(directory, visible, self.agents.clone(), cx));
                 self._search
                     .push(cx.observe(&plans, |_, _, cx| cx.notify()));
                 self.plans = Some(plans);
@@ -473,7 +477,9 @@ impl ViewPane {
         self.plans_shown(false, cx);
         if self.interactions.is_none() {
             let visible = self.visible.clone();
-            let view = cx.new(|cx| interactions::Interactions::new(directory, visible, window, cx));
+            let view = cx.new(|cx| {
+                interactions::Interactions::new(directory, visible, self.agents.clone(), window, cx)
+            });
             self._search.push(cx.observe(&view, |_, _, cx| cx.notify()));
             self._search
                 .push(cx.subscribe(&view, |pane, _, event, cx| match event {
@@ -868,6 +874,7 @@ impl Render for ViewPane {
                         .or_insert_with(|| {
                             cx.new(|cx| {
                                 conversation::Conversation::new(
+                                    self.agents.clone(),
                                     item.clone(),
                                     directory.clone(),
                                     self.documents.surface.clone(),
