@@ -469,8 +469,10 @@ impl ViewPane {
 
     fn show_plans(&mut self, cx: &mut Context<Self>) {
         self.interactions_shown(false, cx);
-        let Some(directory) = self.backbone.clone() else {
-            return;
+        let source = match (&self.connection, &self.backbone) {
+            (Some(connection), _) => plans::Source::Bound(connection.clone()),
+            (None, Some(directory)) => plans::Source::Legacy(directory.clone()),
+            (None, None) => return,
         };
         self.documents.surface.borrow_mut().clear();
         match &self.plans {
@@ -478,7 +480,7 @@ impl ViewPane {
             None => {
                 let visible = self.visible.clone();
                 let plans =
-                    cx.new(|cx| plans::Plans::new(directory, visible, self.agents.clone(), cx));
+                    cx.new(|cx| plans::Plans::new(source, visible, self.agents.clone(), cx));
                 self._search
                     .push(cx.observe(&plans, |_, _, cx| cx.notify()));
                 self.plans = Some(plans);
@@ -850,8 +852,8 @@ impl Render for ViewPane {
             self.conversation = plans
                 .read(cx)
                 .conversation()
-                .zip(self.backbone.clone())
-                .map(|(target, directory)| {
+                .filter(|_| self.connection.is_some() || self.backbone.is_some())
+                .map(|target| {
                     let key = target.key();
                     self.conversations
                         .entry(key)
@@ -859,7 +861,7 @@ impl Render for ViewPane {
                             let conversation = cx.new(|cx| {
                                 conversation::Conversation::about_plan(
                                     &target,
-                                    directory,
+                                    self.backbone.clone(),
                                     self.visible.clone(),
                                     window,
                                     cx,

@@ -95,3 +95,30 @@ pub fn read(connection: &Connection, request: &Request, live: &dyn Fn() -> bool)
         result,
     }
 }
+
+/// Read plan-view runtime metadata on the same verified profile as its plans.
+/// A binding refusal invalidates the complete metadata read.
+pub fn members(
+    connection: &Connection,
+) -> Result<std::collections::BTreeMap<String, super::Member>, Error> {
+    let api = Api {
+        provider: Provider::Bound {
+            connection,
+            error: Default::default(),
+        },
+        live: &|| true,
+    };
+    let result = super::library::agents(&api).map(|agents| {
+        agents
+            .into_iter()
+            .map(|agent| (agent.name.clone(), agent))
+            .collect()
+    });
+    let Provider::Bound { error, .. } = &api.provider else {
+        unreachable!()
+    };
+    match error.get() {
+        Some(error) => Err(Error::Connection(error)),
+        None => result.map_err(Error::Content),
+    }
+}
