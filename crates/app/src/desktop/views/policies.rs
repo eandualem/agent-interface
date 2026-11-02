@@ -80,13 +80,14 @@ pub(super) fn body(
 }
 
 fn index(library: &PolicyLibrary, header: Div, cx: &mut Context<ViewPane>) -> AnyElement {
+    let candidates: std::sync::Arc<[String]> = library.members.clone().into();
     let mut number = 0;
     let mut card = |sources: &[Source], numbered: bool, cx: &mut Context<ViewPane>| {
         let mut card = ui::group_card();
         for (at, source) in sources.iter().enumerate() {
             number += 1;
             let source = source.clone();
-            let candidates = library.members.clone();
+            let candidates = candidates.clone();
             card = card.child(
                 ui::group_row(
                     SharedString::from(format!("policy-{number}")),

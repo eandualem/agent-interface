@@ -683,7 +683,7 @@ impl ViewPane {
                 .into_iter()
                 .find(|source| source.path.as_ref() == path)
         {
-            self.open_policy(source.clone(), library.members.clone(), cx);
+            self.open_policy(source.clone(), library.members.clone().into(), cx);
             return;
         }
         self.open_with_skill(target, None, cx);
@@ -692,7 +692,7 @@ impl ViewPane {
     fn open_policy(
         &mut self,
         source: views::Source,
-        candidates: Vec<String>,
+        candidates: std::sync::Arc<[String]>,
         cx: &mut Context<Self>,
     ) {
         let Some(connection) = &self.connection else {
@@ -754,7 +754,7 @@ impl ViewPane {
     fn open_with_skill(
         &mut self,
         target: Target,
-        captured: Option<(Option<views::Skill>, Vec<String>)>,
+        captured: Option<(Option<views::Skill>, std::sync::Arc<[String]>)>,
         cx: &mut Context<Self>,
     ) {
         let bound_skill = self.connection.as_ref().and_then(|connection| {
@@ -770,9 +770,10 @@ impl ViewPane {
                             .agents
                             .iter()
                             .map(|agent| agent.name.clone())
-                            .collect(),
+                            .collect::<Vec<_>>()
+                            .into(),
                     ),
-                    _ => (None, Vec::new()),
+                    _ => (None, std::sync::Arc::from([])),
                 },
             };
             Some(bound_skills::Open::capture(connection, record, &team))
@@ -1130,7 +1131,7 @@ impl Render for ViewPane {
                         cx.new(|cx| {
                             conversation::Conversation::about_snapshot(
                                 snapshot,
-                                bound.candidates.clone(),
+                                bound.candidates.to_vec(),
                                 self.visible.clone(),
                                 window,
                                 cx,

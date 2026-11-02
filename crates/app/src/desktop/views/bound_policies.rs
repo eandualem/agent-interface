@@ -11,13 +11,13 @@ use std::sync::{
 
 pub(super) struct Open {
     pub source: Source,
-    pub candidates: Vec<String>,
+    pub candidates: Arc<[String]>,
     pub artifact: Option<Artifact>,
     pub snapshot: Option<Snapshot>,
     live: Arc<AtomicBool>,
 }
 impl Open {
-    pub fn capture(connection: &Connection, source: Source, candidates: Vec<String>) -> Self {
+    pub fn capture(connection: &Connection, source: Source, candidates: Arc<[String]>) -> Self {
         let artifact = source.artifact_id.as_ref().and_then(|id| {
             Artifact::from_catalog(connection.clone(), Kind::Policy, id.clone()).ok()
         });
@@ -149,19 +149,21 @@ mod tests {
         assert!(library.global[0].text.is_none());
         assert!(library.base[0].artifact_id.is_none());
         assert_eq!(library.base[0].text.as_deref(), Some("provider base"));
-        let open = Open::capture(&a, library.global[0].clone(), library.members.clone());
+        let recipients: Arc<[String]> = library.members.clone().into();
+        let open = Open::capture(&a, library.global[0].clone(), recipients.clone());
+        assert!(Arc::ptr_eq(&recipients, &open.candidates));
         library.global[0].name = "replacement".into();
         library.global[0].artifact_id = Some("replacement".into());
         library.members.clear();
         assert_eq!(open.source.name.as_ref(), "original");
-        assert_eq!(open.candidates, vec!["worker"]);
+        assert_eq!(open.candidates.as_ref(), ["worker"]);
         let ticket = open.ticket();
         let artifact = open.artifact.clone();
         let job = thread::spawn(move || read(artifact, &ticket).unwrap());
         wait.recv_timeout(Duration::from_secs(5)).unwrap();
         std::fs::write(a.credential_reference(), "BACKBONE_API_KEY=rotated\n").unwrap();
         let other = catalog(&b).unwrap();
-        let other = Open::capture(&b, other.global[0].clone(), other.members);
+        let other = Open::capture(&b, other.global[0].clone(), other.members.into());
         let other = read(other.artifact.clone(), &other.ticket()).unwrap();
         release.send(()).unwrap();
         let snapshot = job.join().unwrap();
@@ -211,13 +213,13 @@ mod tests {
         source.path = path.to_string_lossy().as_ref().into();
         for id in [None, Some("../unsafe".into())] {
             source.artifact_id = id;
-            let open = Open::capture(&connection, source.clone(), library.members.clone());
+            let open = Open::capture(&connection, source.clone(), library.members.clone().into());
             assert_eq!(
                 read(open.artifact.clone(), &open.ticket()).err(),
                 Some("This policy has no provider snapshot available.")
             );
         }
-        let base = Open::capture(&connection, library.base[0].clone(), library.members);
+        let base = Open::capture(&connection, library.base[0].clone(), library.members.into());
         assert!(base.artifact.is_none());
         assert_eq!(base.source.text.as_deref(), Some("provider base"));
         server.join().unwrap();
@@ -231,11 +233,11 @@ mod tests {
             path: "/same/path".into(),
             ..Default::default()
         };
-        let first = Open::capture(&connection, source.clone(), vec![]);
+        let first = Open::capture(&connection, source.clone(), Arc::from([]));
         let old = first.ticket();
         assert!(first.accepts(&old));
         drop(first);
-        let next = Open::capture(&connection, source, vec![]);
+        let next = Open::capture(&connection, source, Arc::from([]));
         assert!(!old.load(Ordering::Acquire));
         assert!(!next.accepts(&old));
         assert!(next.accepts(&next.ticket()));
