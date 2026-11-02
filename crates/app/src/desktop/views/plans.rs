@@ -39,12 +39,13 @@ pub(super) struct Plans {
 /// What the section shows, copied for each frame it draws.
 #[derive(Clone, Default)]
 struct Frame {
+    agents: crate::desktop::agent_status::LiveAgents,
     /// The plans last read, kept when a later read fails.
     page: Option<PlansPage>,
     provider: Option<String>,
     /// Drafts and unresolved deliveries keep their observed plans accessible.
     held: bool,
-    /// Each agent's runtime and reported state, by name, from the same read.
+    /// Each agent's runtime metadata from the plan read; live state is shared.
     members: BTreeMap<String, Member>,
     /// Why the latest read failed, shown beside the plans last read.
     error: Option<Error>,
@@ -69,7 +70,10 @@ impl Plans {
         });
         Self {
             directory,
-            frame: Frame::default(),
+            frame: Frame {
+                agents: crate::desktop::agent_status::LiveAgents::shared(cx),
+                ..Frame::default()
+            },
             asked: 0,
             applied: 0,
             reading: false,
@@ -334,11 +338,7 @@ impl Frame {
 
     /// `agent`'s reported state; one the roster does not list is unknown.
     fn state(&self, agent: &str) -> ui::AgentState {
-        self.members
-            .get(agent)
-            .map_or(ui::AgentState::Unknown, |member| {
-                ui::AgentState::from_report(&member.state)
-            })
+        self.agents.get(agent).state
     }
 
     fn opened(&self) -> Option<&Entry> {
@@ -443,17 +443,6 @@ fn step(item: &Item, at: &At) -> ui::Step {
     }
 }
 
-/// The agent's mark from its reported state; an agent at rest with every
-/// step done shows the plan finished.
-fn mark(plan: &plans::Plan, state: ui::AgentState) -> gpui::Div {
-    let resting = state == ui::AgentState::Idle;
-    if resting && plan.items.iter().all(Item::done) {
-        ui::done_symbol()
-    } else {
-        ui::agent_symbol(state)
-    }
-}
-
 fn runtime(plans: &Frame, agent: &str) -> Option<gpui::Div> {
     plans
         .members
@@ -502,7 +491,7 @@ fn card(pane: &ViewPane, plans: &Frame, entry: &Entry, cx: &mut Context<ViewPane
             .gap(px(t.space.s8))
             .py(px(t.space.s10))
             .cursor_default()
-            .child(ui::agent_symbol(ui::AgentState::Idle))
+            .child(ui::agent_symbol(plans.state(&entry.agent_name)))
             .child(ui::text(name.text_color(c.text_2), &t.text.body))
             .child(ui::text(div().text_color(c.muted), &t.text.status).child("No current plan"))
             .into_any_element();
@@ -560,7 +549,7 @@ fn card(pane: &ViewPane, plans: &Frame, entry: &Entry, cx: &mut Context<ViewPane
                 .items_center()
                 .gap(px(t.space.s8))
                 .w_full()
-                .child(mark(plan, state))
+                .child(ui::agent_symbol(state))
                 .child(ui::text(name.text_color(c.text), &t.text.body))
                 .children(runtime(plans, &entry.agent_name))
                 .child(div().flex_1())
@@ -669,11 +658,8 @@ fn waits(plans: &Frame, entry: &Entry, plan: &plans::Plan, at: &At) -> gpui::Div
     let state = plans.state(&entry.agent_name);
     let mut tags = Vec::new();
     if state.needs_you() {
-        let reason = plans
-            .members
-            .get(&entry.agent_name)
-            .and_then(|member| member.reason.as_deref())
-            .and_then(first_line);
+        let status = plans.agents.get(&entry.agent_name);
+        let reason = status.reason.as_deref().and_then(first_line);
         let held = plan
             .items
             .iter()
@@ -877,16 +863,7 @@ fn detail(
     let mut facts = ui::text(div().flex().flex_col().gap(px(t.space.s6)), &t.text.status);
     let state = plans.state(&entry.agent_name);
     if at.stopped_at(item) && state.needs_you() {
-        let reason = plans
-            .members
-            .get(&entry.agent_name)
-            .and_then(|member| member.reason.as_deref())
-            .map(str::trim)
-            .filter(|reason| !reason.is_empty())
-            .map_or_else(
-                || state.word().to_owned(),
-                |reason| format!("{} · {reason}", state.word()),
-            );
+        let reason = plans.agents.get(&entry.agent_name).label.clone();
         facts = facts.child(fact(
             "Agent",
             div()
@@ -1031,7 +1008,7 @@ fn opened(
             .text_color(c.muted),
         &t.text.meta,
     )
-    .child(mark(plan, state))
+    .child(ui::agent_symbol(state))
     .child(ui::text(
         super::mono(entry.agent_name.clone()).text_color(c.text),
         &t.text.body,
@@ -1177,6 +1154,26 @@ pub(super) fn body(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn held_plan_frame_observes_live_status_without_refreshing_its_page() {
+        let agents = crate::desktop::agent_status::LiveAgents::default();
+        let frame = Frame {
+            agents: agents.clone(),
+            held: true,
+            ..Default::default()
+        };
+        let mut snapshot = agent_interface_roster::Snapshot::default();
+        snapshot.update(br#"{"items":[{"name":"worker","state":"busy"}]}"#);
+        agents.update(snapshot.clone());
+        assert_eq!(frame.state("worker"), ui::AgentState::Working);
+        snapshot.update(br#"{"items":[{"name":"worker","state":"idle"}]}"#);
+        agents.update(snapshot.clone());
+        assert_eq!(frame.state("worker"), ui::AgentState::Idle);
+        snapshot.unavailable();
+        agents.update(snapshot);
+        assert_eq!(frame.state("worker"), ui::AgentState::Unavailable);
+    }
 
     #[test]
     fn opening_a_refreshed_plan_discards_a_removed_card_step() {

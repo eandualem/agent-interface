@@ -1464,7 +1464,7 @@ impl Conversation {
             div().id("conversation-open").on_click(
                 cx.listener(|conversation, _, window, cx| conversation.toggle(window, cx)),
             ),
-            self.mark(),
+            self.mark(cx),
             self.stored
                 .as_ref()
                 .and_then(|stored| stored.page.as_ref())
@@ -1693,10 +1693,10 @@ impl Conversation {
         markdown::render_in(&markdown::parse_authored(text), &look, self, cx).min_w_0()
     }
 
-    fn mark(&self) -> Option<gpui::Div> {
+    fn mark(&self, cx: &gpui::App) -> Option<gpui::Div> {
         self.record
             .as_ref()
-            .and_then(|(item, _)| reports::mark(item))
+            .and_then(|(item, _)| reports::mark(item, cx))
     }
 
     fn thread(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -1965,7 +1965,7 @@ impl Conversation {
         let can_send = self.can_send(cx);
         ui::conversation_panel()
             .child(ui::conversation_header(
-                self.mark(),
+                self.mark(cx),
                 self.agent(),
                 self.about,
                 ui::icon_button("conversation-close", "panel-right-close").on_click(

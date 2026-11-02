@@ -171,21 +171,26 @@ fn label(item: &ReportItem) -> String {
     }
 }
 
-/// A report's authored state as a mark: shape first, colour second.
-pub(super) fn mark(item: &ReportItem) -> Option<gpui::Div> {
-    let ReportContent::Progress { status, .. } = &item.content else {
+/// The author's current runtime state, separate from the report's authored tag.
+pub(super) fn mark(item: &ReportItem, cx: &gpui::App) -> Option<gpui::Div> {
+    let ReportContent::Progress { .. } = &item.content else {
         return None;
     };
-    Some(if item.needs_owner() || status == "blocked" {
-        ui::agent_symbol(ui::AgentState::NeedsYou)
+    Some(ui::agent_symbol(current_state(
+        item,
+        &crate::desktop::agent_status::LiveAgents::shared(cx),
+    )))
+}
+
+fn current_state(
+    item: &ReportItem,
+    agents: &crate::desktop::agent_status::LiveAgents,
+) -> ui::AgentState {
+    if item.registered {
+        agents.get(&item.author).state
     } else {
-        match status.as_str() {
-            "active" => ui::agent_symbol(ui::AgentState::Working),
-            "complete" => ui::done_symbol(),
-            "inactive" => ui::agent_symbol(ui::AgentState::Idle),
-            _ => ui::agent_symbol(ui::AgentState::Unknown),
-        }
-    })
+        ui::AgentState::Unknown
+    }
 }
 
 /// A report's authored state as a tag.
@@ -194,7 +199,7 @@ fn state_tag(item: &ReportItem) -> gpui::Div {
         return ui::tag(label(item), ui::Tone::Quiet);
     };
     if item.needs_owner() {
-        return ui::tag("blocked · you", ui::Tone::Attention);
+        return ui::tag("report: blocked · you", ui::Tone::Attention);
     }
     let tone = match status.as_str() {
         "active" => ui::Tone::Tag,
@@ -202,7 +207,7 @@ fn state_tag(item: &ReportItem) -> gpui::Div {
         "complete" => ui::Tone::Done,
         _ => ui::Tone::Quiet,
     };
-    ui::tag(status.clone(), tone)
+    ui::tag(format!("report: {status}"), tone)
 }
 
 /// "Today 14:32", "Mon 27 Oct 09:05".
@@ -424,7 +429,7 @@ fn reader(
                     .items_center()
                     .gap(px(t.space.s8))
                     .pb(px(t.space.s10))
-                    .children(mark(item))
+                    .children(mark(item, cx))
                     .child(super::mono(item.author.clone()).text_color(c.text))
                     .children(runtime(pane, item))
                     .child(state_tag(item))
@@ -608,7 +613,7 @@ pub(super) fn body(pane: &ViewPane, page: &ReportPage, cx: &mut Context<ViewPane
                         index == 0,
                         false,
                         !seen::is_seen(item),
-                        mark(item).unwrap_or_else(|| div()),
+                        mark(item, cx).unwrap_or_else(|| div()),
                         item.author.clone(),
                         line(summary),
                         state_tag(item),
@@ -928,6 +933,39 @@ fn controls(pane: &ViewPane, agents: &[String], cx: &mut Context<ViewPane>) -> g
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn active_report_uses_live_agent_state_even_while_the_record_stays_open() {
+        let mut item = ReportItem {
+            id: 1,
+            author: "worker".into(),
+            author_id: None,
+            registered: true,
+            provider_url: String::new(),
+            created_at: String::new(),
+            conversation_id: None,
+            content: ReportContent::Progress {
+                status: "active".into(),
+                sections: vec![],
+            },
+        };
+        let agents = crate::desktop::agent_status::LiveAgents::default();
+        let mut snapshot = agent_interface_roster::Snapshot::default();
+        snapshot.update(br#"{"items":[{"name":"worker","state":"busy"}]}"#);
+        agents.update(snapshot.clone());
+        assert_eq!(current_state(&item, &agents), ui::AgentState::Working);
+        snapshot.update(br#"{"items":[{"name":"worker","state":"offline"}]}"#);
+        agents.update(snapshot.clone());
+        assert_eq!(current_state(&item, &agents), ui::AgentState::Offline);
+        assert!(
+            matches!(&item.content, ReportContent::Progress { status, .. } if status == "active")
+        );
+        snapshot.unavailable();
+        agents.update(snapshot);
+        assert_eq!(current_state(&item, &agents), ui::AgentState::Unavailable);
+        item.registered = false;
+        assert_eq!(current_state(&item, &agents), ui::AgentState::Unknown);
+    }
 
     #[test]
     fn an_open_answer_keeps_its_text_but_observes_a_correction() {

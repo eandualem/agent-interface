@@ -138,7 +138,7 @@ impl Browser {
             let needs_you = space
                 .tabs
                 .iter()
-                .any(|tab| self.tab_needs_you(tab, states.as_ref()));
+                .any(|tab| self.tab_needs_you(tab, states.as_deref()));
             let key = (index < 9).then(|| {
                 if cfg!(target_os = "macos") {
                     format!("⌥⌘{}", index + 1)

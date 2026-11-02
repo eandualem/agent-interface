@@ -256,49 +256,34 @@ pub fn menu_rule() -> Div {
     div().my(px(t.space.s4)).h(px(t.size.hairline)).bg(c.line)
 }
 
-/// How an agent is doing, as Agent Backbone reports it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AgentState {
-    NeedsYou,
-    Blocked,
-    Working,
-    Starting,
-    Idle,
-    Unknown,
+pub use super::agent_status::AgentState;
+
+/// Shared colour for an agent state, independent of the surrounding layout.
+pub fn agent_color(state: AgentState) -> Rgba {
+    let c = colors();
+    match state {
+        AgentState::NeedsYou | AgentState::Blocked => c.attention_text,
+        AgentState::Working | AgentState::Starting => c.accent_text,
+        _ => c.muted,
+    }
 }
 
-impl AgentState {
-    /// Preserve reported states while sharing their visual categories.
-    pub fn from_report(state: &str) -> Self {
-        match state {
-            "waiting_for_human" => Self::NeedsYou,
-            "blocked" => Self::Blocked,
-            "busy" => Self::Working,
-            "starting" => Self::Starting,
-            "idle" | "running" => Self::Idle,
-            _ => Self::Unknown,
-        }
-    }
+/// The same symbol and label wherever a current agent status is shown.
+pub fn agent_status(status: &super::agent_status::Status) -> Div {
+    let t = tokens();
+    div()
+        .flex()
+        .items_center()
+        .gap(px(t.space.s6))
+        .child(agent_symbol(status.state))
+        .child(agent_status_text(status))
+}
 
-    pub fn needs_you(self) -> bool {
-        matches!(self, Self::NeedsYou | Self::Blocked)
-    }
-
-    pub fn working(self) -> bool {
-        matches!(self, Self::Working | Self::Starting)
-    }
-
-    /// The short word shown beside a working or needs-you agent.
-    pub fn word(self) -> &'static str {
-        match self {
-            Self::NeedsYou => "needs you",
-            Self::Blocked => "blocked",
-            Self::Working => "working",
-            Self::Starting => "starting",
-            Self::Idle => "idle",
-            Self::Unknown => "unknown",
-        }
-    }
+/// A status label for rows that place the symbol beside the agent's name.
+pub fn agent_status_text(status: &super::agent_status::Status) -> Div {
+    div()
+        .text_color(agent_color(status.state))
+        .child(status.label.clone())
 }
 
 /// An agent's state symbol: shape first, colour second.
@@ -340,7 +325,13 @@ pub fn agent_symbol(state: AgentState) -> Div {
                 .border(px(t.size.minimap_stroke * 1.5))
                 .border_color(c.faint),
         ),
-        AgentState::Unknown => frame
+        AgentState::Offline => frame.child(
+            div()
+                .w(px(t.space.s8))
+                .h(px(t.size.hairline + 0.5))
+                .bg(c.faint),
+        ),
+        AgentState::Unknown | AgentState::Unavailable => frame
             .rounded_full()
             .border(px(t.size.minimap_stroke * 1.5))
             .border_dashed()
@@ -2504,21 +2495,21 @@ mod tests {
     #[test]
     fn reported_states_keep_distinct_labels_and_visual_categories() {
         assert_eq!(
-            AgentState::from_report("waiting_for_human"),
+            AgentState::from_runtime("waiting_for_human"),
             AgentState::NeedsYou
         );
-        assert_eq!(AgentState::from_report("blocked"), AgentState::Blocked);
-        assert_eq!(AgentState::from_report("busy"), AgentState::Working);
-        assert_eq!(AgentState::from_report("starting"), AgentState::Starting);
+        assert_eq!(AgentState::from_runtime("blocked"), AgentState::Blocked);
+        assert_eq!(AgentState::from_runtime("busy"), AgentState::Working);
+        assert_eq!(AgentState::from_runtime("starting"), AgentState::Starting);
         assert!(AgentState::Blocked.needs_you());
         assert!(AgentState::Starting.working());
         assert!(!AgentState::Idle.working());
         assert_eq!(AgentState::Blocked.word(), "blocked");
         assert_eq!(AgentState::Starting.word(), "starting");
-        assert_eq!(AgentState::from_report("idle"), AgentState::Idle);
-        assert_eq!(AgentState::from_report(""), AgentState::Unknown);
+        assert_eq!(AgentState::from_runtime("idle"), AgentState::Idle);
+        assert_eq!(AgentState::from_runtime(""), AgentState::Unknown);
         assert_eq!(
-            AgentState::from_report("something new"),
+            AgentState::from_runtime("something new"),
             AgentState::Unknown
         );
     }

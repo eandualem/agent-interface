@@ -92,7 +92,7 @@ impl Browser {
                 let attachment = leaf.attachment.as_ref()?;
                 Some((
                     leaf.id.clone(),
-                    self.attachment_state(attachment, states.as_ref())?,
+                    self.attachment_state(attachment, states.as_deref())?,
                 ))
             })
             .collect();

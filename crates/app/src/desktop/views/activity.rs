@@ -16,20 +16,6 @@ const HOUR: f64 = 3_600.0;
 /// The most lanes the timeline draws.
 const LANES: usize = 10;
 
-/// An agent's state now, its word, and whether it is on the timeline
-/// without a recent delivery: busy or waiting, not idle, offline or unknown.
-fn state_now(member: &Member) -> (Option<AgentState>, &'static str, bool) {
-    if member.state == "offline" {
-        return (None, "offline", false);
-    }
-    let state = AgentState::from_report(&member.state);
-    let active = matches!(
-        state,
-        AgentState::Working | AgentState::Starting | AgentState::NeedsYou | AgentState::Blocked
-    );
-    (Some(state), state.word(), active)
-}
-
 /// Whether a delivery reached its agent.
 fn delivered(entry: &Entry) -> bool {
     matches!(entry.outcome.as_str(), "delivered" | "handed_off")
@@ -37,24 +23,12 @@ fn delivered(entry: &Entry) -> bool {
 
 /// An agent's state now, beside its lane: the state symbol and its word, so
 /// it reads without colour.
-fn state_label(member: &Member) -> gpui::Div {
-    let (t, c) = (tokens(), colors());
-    let (state, word, _) = state_now(member);
-    let color = match state {
-        Some(AgentState::NeedsYou | AgentState::Blocked) => c.attention_text,
-        Some(AgentState::Working | AgentState::Starting) => c.accent_text,
-        _ => c.muted,
-    };
-    div()
+fn state_label(status: &crate::desktop::agent_status::Status) -> gpui::Div {
+    let t = tokens();
+    ui::agent_status(status)
         .flex_shrink_0()
         .w(px(t.size.fact_label))
         .pl(px(t.space.s10))
-        .flex()
-        .items_center()
-        .gap(px(t.space.s6))
-        .text_color(color)
-        .children(state.map(ui::agent_symbol))
-        .child(word)
 }
 
 /// One agent's line on the timeline, as shares of the hour.
@@ -68,7 +42,11 @@ struct Lane<'a> {
 
 /// One lane per agent that received something in the last hour, was busy or
 /// waiting in it, or is now, most recently active first.
-fn lanes(activity: &Activity, end: f64) -> Vec<Lane<'_>> {
+fn lanes<'a>(
+    activity: &'a Activity,
+    end: f64,
+    agents: &crate::desktop::agent_status::LiveAgents,
+) -> Vec<Lane<'a>> {
     let start = end - HOUR;
     let share = |at: f64| ((at.clamp(start, end) - start) / HOUR) as f32;
     let mut lanes: Vec<(Lane<'_>, f64)> = Vec::new();
@@ -100,12 +78,13 @@ fn lanes(activity: &Activity, end: f64) -> Vec<Lane<'_>> {
             })
             .filter(|(from, to, _)| to > from)
             .collect();
-        let (_, _, active) = state_now(member);
+        let state = agents.get(&member.name).state;
+        let active = state.working() || state.needs_you();
         // Observations of an idle or offline agent are not activity: Backbone
         // records one for every agent when it starts keeping history.
         let worked = spans.iter().any(|(_, _, state)| {
             matches!(
-                AgentState::from_report(state),
+                AgentState::from_runtime(state),
                 AgentState::Working
                     | AgentState::Starting
                     | AgentState::NeedsYou
@@ -146,18 +125,19 @@ fn span_color(state: &str) -> Rgba {
     if state == "offline" {
         return c.selected;
     }
-    match AgentState::from_report(state) {
+    match AgentState::from_runtime(state) {
         AgentState::NeedsYou | AgentState::Blocked => c.attention,
         AgentState::Working | AgentState::Starting => c.accent,
         AgentState::Idle => c.line_strong,
-        AgentState::Unknown => c.selected,
+        AgentState::Unknown | AgentState::Offline | AgentState::Unavailable => c.selected,
     }
 }
 
-fn timeline(activity: &Activity) -> gpui::Div {
+fn timeline(activity: &Activity, cx: &gpui::App) -> gpui::Div {
     let (t, c) = (tokens(), colors());
     let name_width = t.size.tag_card_label + t.space.s24;
-    let lanes = lanes(activity, now() as f64);
+    let agents = crate::desktop::agent_status::LiveAgents::shared(cx);
+    let lanes = lanes(activity, now() as f64, &agents);
     let mut axis = div().flex_1().flex().justify_between();
     for label in ["60 min ago", "45", "30", "15", "now"] {
         axis = axis.child(label);
@@ -239,7 +219,7 @@ fn timeline(activity: &Activity) -> gpui::Div {
                         .text_color(c.text_2),
                 )
                 .child(track)
-                .child(state_label(member)),
+                .child(state_label(&agents.get(&member.name))),
         );
     }
     let swatch = |color: Rgba, label: &'static str| {
@@ -328,7 +308,7 @@ pub(super) fn body(pane: &ViewPane, activity: &Activity, cx: &mut Context<ViewPa
     let mut rows = list("activity-rows")
         .px(px(0.0))
         .py(px(0.0))
-        .child(timeline(activity))
+        .child(timeline(activity, cx))
         .child(filters);
     for entry in activity.entries.iter().filter(|entry| match pane.records {
         Records::All => true,
@@ -451,7 +431,13 @@ mod tests {
             ],
             history: History::NotServed,
         };
-        let lanes = lanes(&activity, end);
+        let agents = crate::desktop::agent_status::LiveAgents::default();
+        let mut snapshot = agent_interface_roster::Snapshot::default();
+        snapshot.update(
+            br#"{"items":[{"name":"builder","state":"busy"},{"name":"worker","state":"idle"}]}"#,
+        );
+        agents.update(snapshot);
+        let lanes = lanes(&activity, end, &agents);
         let names: Vec<&str> = lanes.iter().map(|lane| lane.member.name.as_str()).collect();
         assert_eq!(names, ["builder", "worker"]);
         assert_eq!(lanes[1].ticks, [0.75]);
@@ -485,7 +471,13 @@ mod tests {
             },
             ..Activity::default()
         };
-        let lanes = lanes(&activity, end);
+        let agents = crate::desktop::agent_status::LiveAgents::default();
+        let mut snapshot = agent_interface_roster::Snapshot::default();
+        snapshot.update(
+            br#"{"items":[{"name":"builder","state":"busy"},{"name":"worker","state":"idle"}]}"#,
+        );
+        agents.update(snapshot);
+        let lanes = lanes(&activity, end, &agents);
         let spans: Vec<(f32, f32, &str)> = lanes[0].spans.clone();
         assert_eq!(spans[0], (0.0, 0.5, "busy"));
         assert_eq!(spans[1], (0.5, 0.75, "idle"));

@@ -17,7 +17,7 @@ use gpui::{
 };
 
 use super::{
-    components::{self as ui, AgentState},
+    components::{self as ui},
     design::{colors, tokens},
     name::{NameEvent, NameField},
     views::Section,
@@ -195,6 +195,7 @@ fn reconcile_selection(
 }
 
 pub(super) struct NewPane {
+    agents: super::agent_status::LiveAgents,
     pane: String,
     field: Entity<NameField>,
     query: String,
@@ -272,6 +273,7 @@ impl NewPane {
             }
         });
         Self {
+            agents: super::agent_status::LiveAgents::shared(cx),
             pane,
             field,
             query: String::new(),
@@ -356,11 +358,7 @@ impl NewPane {
                     .cloned()
                     .collect();
                 agents.sort_by_key(|member| {
-                    let rank = match AgentState::from_report(&member.state) {
-                        AgentState::NeedsYou | AgentState::Blocked => 0,
-                        AgentState::Working | AgentState::Starting => 1,
-                        _ => 2,
-                    };
+                    let rank = self.agents.get(&member.name).rank();
                     (rank, member.name.to_ascii_lowercase())
                 });
                 let others: Vec<String> = self
@@ -645,7 +643,10 @@ impl Render for NewPane {
                 SharedString::from(format!("new-pane-{}-{number}-{}", self.pane, row_key(&row)));
             let element = match &row {
                 Row::Heading(label, note) => ui::view_heading(*label, *note).into_any_element(),
-                Row::Agent(member) => agent_row(id, member, &key, selected).into_any_element(),
+                Row::Agent(member) => {
+                    agent_row(id, member, &self.agents.get(&member.name), &key, selected)
+                        .into_any_element()
+                }
                 Row::Session(name) => ui::choice_frame(id, selected)
                     .child(ui::icon("terminal", t.size.icon, c.muted))
                     .child(mono(name.clone()).flex_1().text_color(c.text))
@@ -841,35 +842,18 @@ fn row_key(row: &Row) -> String {
 fn agent_row(
     id: SharedString,
     member: &Member,
+    status: &super::agent_status::Status,
     key: &str,
     selected: bool,
 ) -> gpui::Stateful<gpui::Div> {
     let (t, c) = (tokens(), colors());
-    let state = AgentState::from_report(&member.state);
-    let (word, color) = match state {
-        AgentState::NeedsYou | AgentState::Blocked => (
-            member.reason.as_ref().map_or_else(
-                || state.word().to_owned(),
-                |reason| format!("{} · {reason}", state.word()),
-            ),
-            c.attention_text,
-        ),
-        AgentState::Working | AgentState::Starting => (
-            match member.current_issue {
-                Some(issue) => format!("{} · #{issue}", state.word()),
-                None => state.word().into(),
-            },
-            c.accent_text,
-        ),
-        _ => (member.state.replace('_', " "), c.muted),
-    };
     let place = if member.repo.is_empty() {
         member.tags.join(" · ")
     } else {
         member.repo.clone()
     };
     ui::choice_frame(id.clone(), selected)
-        .child(ui::agent_symbol(state))
+        .child(ui::agent_symbol(status.state))
         .child(mono(member.name.clone()).flex_shrink_0().text_color(c.text))
         .child(ui::badge(member.runtime.clone()))
         .child(
@@ -885,7 +869,10 @@ fn agent_row(
             )
             .child(place),
         )
-        .child(ui::text(div().flex_shrink_0().text_color(color), &t.text.meta).child(word))
+        .child(ui::text(
+            ui::agent_status_text(status).flex_shrink_0(),
+            &t.text.meta,
+        ))
         .child(ui::choice_key(key.to_owned()))
 }
 

@@ -24,15 +24,29 @@ pub mod views;
 const RESPONSE_LIMIT: usize = 1024 * 1024;
 const UNAVAILABLE: &str = "Backbone unavailable; states stale";
 
+/// Presentation metadata from the same observation as an agent's state.
+#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize)]
+#[serde(default)]
+pub struct AgentDetails {
+    /// Why the agent is waiting or blocked.
+    pub reason: Option<String>,
+    /// The issue currently being worked on.
+    pub current_issue: Option<u64>,
+    /// Provider timestamp of the state observation.
+    pub state_since: Option<f64>,
+}
+
 /// Cached metadata, separate from tmux attachment availability.
 ///
-/// Only names and states are retained. In particular, an API `online` value
+/// Names, states and their presentation details are retained. An API `online` value
 /// cannot establish that a tmux session exists. A failed response preserves
 /// cached states and their timestamp, but the error marks those states stale.
 #[derive(Clone, Debug, Default)]
 pub struct Snapshot {
     /// Validated agent names and their reported states, including offline names.
     pub states: BTreeMap<String, String>,
+    /// Details observed together with `states`.
+    pub details: BTreeMap<String, AgentDetails>,
     /// A fixed diagnostic when cached states are stale; none after success.
     pub error: Option<&'static str>,
     /// Last successful response time, or none before any successful response.
@@ -79,8 +93,9 @@ impl Snapshot {
     /// A successful empty list clears old names and any earlier error.
     pub fn update(&mut self, response: &[u8]) {
         match decode(response) {
-            Some(states) => {
+            Some((states, details)) => {
                 self.states = states;
+                self.details = details;
                 self.error = None;
                 self.observed_at = Some(Instant::now());
             }
@@ -95,7 +110,9 @@ impl Snapshot {
     }
 }
 
-fn decode(response: &[u8]) -> Option<BTreeMap<String, String>> {
+type Decoded = (BTreeMap<String, String>, BTreeMap<String, AgentDetails>);
+
+fn decode(response: &[u8]) -> Option<Decoded> {
     if response.len() > RESPONSE_LIMIT || !within_depth(response) {
         return None;
     }
@@ -104,8 +121,9 @@ fn decode(response: &[u8]) -> Option<BTreeMap<String, String>> {
     let document: BTreeMap<String, &RawValue> = serde_json::from_slice(response).ok()?;
     let items: Vec<&RawValue> = serde_json::from_str(document.get("items")?.get()).ok()?;
     let mut states = BTreeMap::new();
-    for item in items {
-        let Ok(item) = serde_json::from_str::<BTreeMap<String, &RawValue>>(item.get()) else {
+    let mut details = BTreeMap::new();
+    for raw in items {
+        let Ok(item) = serde_json::from_str::<BTreeMap<String, &RawValue>>(raw.get()) else {
             continue;
         };
         let Some(name) = item
@@ -122,9 +140,13 @@ fn decode(response: &[u8]) -> Option<BTreeMap<String, String>> {
             .and_then(|v| serde_json::from_str::<String>(v.get()).ok())
             .unwrap_or_else(|| "unknown".into());
         // Last valid occurrence wins, matching the Python provider's map.
+        details.insert(
+            name.clone(),
+            serde_json::from_str(raw.get()).unwrap_or_default(),
+        );
         states.insert(name, state);
     }
-    Some(states)
+    Some((states, details))
 }
 
 // RawValue skips nested data without the normal Value recursion limit. Bound

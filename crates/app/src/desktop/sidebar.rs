@@ -109,19 +109,8 @@ impl Browser {
     }
 
     /// Each agent's state, or none while Agent Backbone is unreachable.
-    pub(super) fn agent_states(&self) -> Option<HashMap<String, AgentState>> {
-        let snapshot = self.agents.as_ref()?;
-        if snapshot.error.is_some() {
-            return None;
-        }
-        Some(
-            snapshot
-                .states
-                .iter()
-                .filter(|(_, state)| state.as_str() != "offline")
-                .map(|(name, state)| (name.to_owned(), AgentState::from_report(state)))
-                .collect(),
-        )
+    pub(super) fn agent_states(&self) -> Option<std::rc::Rc<HashMap<String, AgentState>>> {
+        self.roster.as_ref()?.active()
     }
 
     /// Refresh identities after library or roster updates. Keep at most one
@@ -244,9 +233,9 @@ impl Browser {
                     cx.listener(|browser, _, window, cx| browser.create(Create::Tab, window, cx)),
                 )),
             )
-            .child(self.tab_list(states.as_ref(), cx))
+            .child(self.tab_list(states.as_deref(), cx))
             .children(self.agents_block(window, cx))
-            .child(self.switcher(states.as_ref(), width, cx))
+            .child(self.switcher(states.as_deref(), width, cx))
             .child(
                 // The right edge resizes the panel.
                 div()
@@ -596,17 +585,22 @@ impl Browser {
             return None;
         }
         let (t, c) = (tokens(), colors());
-        let entries: Option<Vec<(String, AgentState)>> =
-            self.agents.as_ref().and_then(|snapshot| {
-                snapshot.active_entries().map(|entries| {
-                    let mut entries: Vec<_> = entries
-                        .into_iter()
-                        .map(|(name, state)| (name.to_owned(), AgentState::from_report(state)))
-                        .collect();
-                    entries.sort_by_key(|(_, state)| !state.working());
-                    entries
-                })
+        let entries = self.agent_states().map(|states| {
+            let mut entries: Vec<_> = states
+                .iter()
+                .map(|(name, state)| (name.clone(), *state))
+                .collect();
+            entries.sort_by_key(|(name, state)| {
+                (
+                    !state.working(),
+                    !state.needs_you(),
+                    name.to_ascii_lowercase(),
+                    name.clone(),
+                )
             });
+            entries
+        });
+        let observed = self.roster.as_ref().is_some_and(|roster| roster.observed());
         let needing = entries.as_ref().map_or(0, |entries| {
             entries
                 .iter()
@@ -617,7 +611,7 @@ impl Browser {
             entries.iter().filter(|(_, state)| state.working()).count()
         });
         let (summary, summary_color) = match &entries {
-            None if self.agents.is_some() => ("unavailable".to_owned(), c.attention_text),
+            None if observed => ("unavailable".to_owned(), c.attention_text),
             None => (String::new(), c.muted),
             Some(_) if needing > 0 => (format!("{needing} need you"), c.attention_text),
             Some(_) if working > 0 => (format!("{working} active"), c.accent_text),
@@ -656,7 +650,7 @@ impl Browser {
             )
             .overflow_y_scroll();
         match &entries {
-            None if self.agents.is_some() => {
+            None if observed => {
                 rows = rows.child(quiet("Agent Backbone unavailable", Some("unplug")))
             }
             None => rows = rows.child(quiet("Loading agents…", None)),

@@ -14,6 +14,7 @@ use gpui::{
 };
 
 use crate::library::{Library, Update, WindowLayout};
+mod agent_status;
 mod chooser;
 mod layout_edit;
 mod name;
@@ -362,26 +363,6 @@ struct EditingName {
     _events: gpui::Subscription,
 }
 
-/// A window's roster poller. Stopping it joins a worker that may be inside a
-/// bounded request, so a closing window stops it off the UI thread.
-struct Roster(Option<crate::roster::RosterSource>);
-
-impl Roster {
-    fn take_update(&self) -> Option<agent_interface_roster::Snapshot> {
-        self.0
-            .as_ref()
-            .and_then(crate::roster::RosterSource::take_update)
-    }
-}
-
-impl Drop for Roster {
-    fn drop(&mut self) {
-        if let Some(source) = self.0.take() {
-            std::thread::spawn(move || drop(source));
-        }
-    }
-}
-
 #[derive(Clone, Copy)]
 enum Popover {
     Workspace,
@@ -556,9 +537,8 @@ struct Browser {
     workspace_menu: bool,
     icon_picker: bool,
     menu_at: Option<gpui::Point<gpui::Pixels>>,
-    roster: Option<Roster>,
-    agents: Option<agent_interface_roster::Snapshot>,
-    roster_updates: Option<Task<()>>,
+    roster: Option<agent_status::LiveAgents>,
+    roster_updates: Option<gpui::Subscription>,
     jump: Option<jump::Jump>,
     /// A navigation panel drag: where it started and the width then.
     sidebar_drag: Option<(gpui::Pixels, gpui::Pixels)>,
@@ -780,34 +760,10 @@ impl Browser {
             return;
         };
         self.backbone = Some(directory.clone());
-        let (wake, mut woken) = mpsc::unbounded();
-        let Ok(roster) = crate::roster::RosterSource::start(directory, None, move || {
-            let _ = wake.unbounded_send(());
-        }) else {
-            return;
-        };
-        self.roster = Some(Roster(Some(roster)));
-        self.roster_updates = Some(cx.spawn(async move |this, cx| {
-            while woken.next().await.is_some() {
-                let updated = this.update(cx, |browser, cx| {
-                    if let Some(snapshot) = browser.roster.as_ref().and_then(Roster::take_update) {
-                        let changed = browser.agents.as_ref().is_none_or(|previous| {
-                            previous.states != snapshot.states || previous.error != snapshot.error
-                        });
-                        browser.agents = Some(snapshot);
-                        browser.refresh_source_matches(cx);
-                        if changed {
-                            // Clear retained paint when status changes, including
-                            // badges beside cached terminal bodies.
-                            cx.refresh_windows();
-                        }
-                        cx.notify();
-                    }
-                });
-                if updated.is_err() {
-                    break;
-                }
-            }
+        self.roster = agent_status::start(directory, cx);
+        self.roster_updates = Some(cx.observe_global::<agent_status::Source>(|browser, cx| {
+            browser.refresh_source_matches(cx);
+            cx.notify();
         }));
     }
 
@@ -2080,9 +2036,8 @@ impl Render for Browser {
             }
             // A stopped Backbone agent's pane offers Resume and Start new.
             let agent = leaf.attachment.as_ref().and_then(|attachment| {
-                let snapshot = self.agents.as_ref()?;
-                if snapshot.error.is_some()
-                    || snapshot.states.get(&attachment.session)? != "offline"
+                let status = self.roster.as_ref()?.get(&attachment.session);
+                if status.state != components::AgentState::Offline
                     || !self.is_window_source(attachment.source_socket.as_deref())
                 {
                     return None;
@@ -3222,15 +3177,18 @@ mod tests {
         let mut browser = Browser::default();
         let mut snapshot = agent_interface_roster::Snapshot::default();
         snapshot.update(br#"{"items":[{"name":"worker","state":"busy"},{"name":"idle","state":""},{"name":"gone","state":"offline"}]}"#);
-        browser.agents = Some(snapshot);
+        let roster = agent_status::LiveAgents::default();
+        roster.update(snapshot.clone());
+        browser.roster = Some(roster.clone());
         let states = browser.agent_states().unwrap();
         assert_eq!(states.len(), 2);
         assert_eq!(states["worker"], components::AgentState::Working);
         assert_eq!(
             states["idle"],
-            components::AgentState::from_report("unknown")
+            components::AgentState::from_runtime("unknown")
         );
-        browser.agents.as_mut().unwrap().update(b"invalid");
+        snapshot.update(b"invalid");
+        roster.update(snapshot);
         assert!(browser.agent_states().is_none());
     }
 

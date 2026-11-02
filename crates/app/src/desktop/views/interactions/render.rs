@@ -428,17 +428,19 @@ fn agents(view: &Interactions, cx: &mut Context<Interactions>) -> AnyElement {
         let Some(id) = item.agent.id.clone() else {
             continue;
         };
+        let status =
+            crate::desktop::agent_status::LiveAgents::shared(cx).get(if item.agent.retired {
+                ""
+            } else {
+                &item.agent.name
+            });
         let mut title = div()
             .flex()
             .items_center()
             .gap(px(t.space.s8))
-            .child(ui::agent_symbol(ui::AgentState::from_report(&item.state)))
             .child(actor(&item.agent))
             .child(ui::badge(item.runtime.clone()))
-            .child(ui::text(
-                div().text_color(c.muted).child(item.state.clone()),
-                &t.text.meta,
-            ));
+            .child(ui::agent_status(&status));
         if item.latest.is_none() {
             title = title.child(ui::text(
                 div()
