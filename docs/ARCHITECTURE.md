@@ -562,6 +562,9 @@ system WebKit on macOS and GTK/WebKitGTK on Linux; unused Android dependencies
 are not part of a supported build. The GTK compatibility patch and narrow
 build-time advisory exception are described below.
 
+- **`async-executor` 1.14.1:** MIT OR Apache-2.0, locked for the Linux
+  accessibility and asynchronous service stack. This replaces yanked 1.14.0
+  and fixes its executor-teardown use-after-free regression.
 - **GPUI (`gpui-pre` and platform packages):** native windowing and GPU drawing,
   pinned as one package family. Apache-2.0. The macOS 0.3.9 backend is
   [vendored with a narrow native focus correction](../native/gpui-macos/README.md):
