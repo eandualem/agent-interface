@@ -40,34 +40,12 @@ pub(super) fn body(pane: &ViewPane, agent: &Agent, cx: &mut Context<ViewPane>) -
             ))
             .into_any_element();
     }
-    let state = AgentState::from_report(&agent.state);
-    let (word, color) = match (agent.online, state) {
-        (false, _) => ("offline".to_owned(), c.muted),
-        (true, AgentState::NeedsYou | AgentState::Blocked) => (
-            match &agent.reason {
-                Some(reason) => format!("{} · {reason}", state.word()),
-                None => state.word().to_owned(),
-            },
-            c.attention_text,
-        ),
-        (true, AgentState::Working | AgentState::Starting) => {
-            (state.word().to_owned(), c.accent_text)
-        }
-        (true, state) => (state.word().to_owned(), c.muted),
-    };
+    let status = crate::desktop::agent_status::LiveAgents::shared(cx).get(&agent.name);
     let name = agent.name.clone();
     let header = ui::view_header("user", agent.name.clone())
         .pr(px(t.space.s6))
         .child(ui::badge(agent.runtime.clone()))
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(t.space.s4 + 1.0))
-                .text_color(color)
-                .when(agent.online, |el| el.child(ui::agent_symbol(state)))
-                .child(word),
-        )
+        .child(ui::agent_status(&status))
         .child(div().flex_1())
         .child(
             ui::text(
@@ -135,7 +113,7 @@ pub(super) fn body(pane: &ViewPane, agent: &Agent, cx: &mut Context<ViewPane>) -
     }
 
     let content = match pane.section {
-        AgentSection::Overview => overview(agent, state),
+        AgentSection::Overview => overview(agent, &status),
         AgentSection::Permissions => permissions(agent),
         AgentSection::Connections => connections(agent),
         AgentSection::Skills => skills_section(agent, cx),
@@ -659,13 +637,15 @@ fn tab(id: SharedString, label: &'static str, mark: String, on: bool) -> gpui::S
     })
 }
 
-fn overview(agent: &Agent, state: AgentState) -> AnyElement {
+fn overview(agent: &Agent, status: &crate::desktop::agent_status::Status) -> AnyElement {
     let (t, c) = (tokens(), colors());
+    let matching = status.state == AgentState::from_runtime(&agent.state);
+    let age = matching.then_some(agent.state_age_seconds).flatten();
     let mut body = list("agent-overview")
         .px(px(t.space.s18))
         .py(px(t.space.s16))
         .gap(px(t.space.s16));
-    if agent.online && state.needs_you() {
+    if status.state.needs_you() && matching {
         body = body.child(
             div()
                 .flex_shrink_0()
@@ -687,7 +667,7 @@ fn overview(agent: &Agent, state: AgentState) -> AnyElement {
                         )
                         .child(div().text_color(c.muted).child(format!(
                             "{} ago · it does nothing more until someone answers in its terminal",
-                            agent.state_age_seconds.map(ago).unwrap_or_default()
+                            age.map(ago).unwrap_or_default()
                         ))),
                 )
                 .children(agent.last_message.as_ref().map(|message| {
@@ -698,7 +678,7 @@ fn overview(agent: &Agent, state: AgentState) -> AnyElement {
                         .child("From its last reply, as its hook reported it."),
                 ),
         );
-    } else if let Some(detail) = &agent.detail {
+    } else if matching && let Some(detail) = &agent.detail {
         body = body
             .child(ui::text(div().text_color(c.attention_text), &t.text.body).child(line(detail)));
     }
@@ -743,9 +723,7 @@ fn overview(agent: &Agent, state: AgentState) -> AnyElement {
             .child(ui::fact(
                 "In this state",
                 div().child(
-                    agent
-                        .state_age_seconds
-                        .map(ago)
+                    age.map(ago)
                         .map(|age| format!("for {age}"))
                         .unwrap_or_else(|| "unknown".into()),
                 ),

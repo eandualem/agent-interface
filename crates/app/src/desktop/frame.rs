@@ -92,7 +92,7 @@ impl Browser {
                 let attachment = leaf.attachment.as_ref()?;
                 Some((
                     leaf.id.clone(),
-                    self.attachment_state(attachment, states.as_ref())?,
+                    self.attachment_state(attachment, states.as_deref())?,
                 ))
             })
             .collect();
@@ -126,9 +126,8 @@ impl Browser {
                     .and_then(super::pane_drag::Drag::tree)
             })
             .or_else(|| self.resize.as_ref().map(split_resize::Drag::tree))
-            .unwrap_or(&tab.tree)
-            .clone();
-        let element = Self::tree(&node, &cards, cx);
+            .unwrap_or(&tab.tree);
+        let element = Self::tree(node, &cards, cx);
         area.child(element).into_any_element()
     }
 

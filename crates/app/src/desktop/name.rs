@@ -226,11 +226,11 @@ impl NameField {
         cx.notify();
     }
 
-    /// Empty the field without announcing a change.
     pub fn set_read_only(&mut self, read_only: bool) {
         self.read_only = read_only;
     }
 
+    /// Empty the field without announcing a change.
     pub fn clear(&mut self, cx: &mut Context<Self>) {
         self.text.value.clear();
         self.text.anchor = 0;

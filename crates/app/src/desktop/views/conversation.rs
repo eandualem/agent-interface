@@ -33,7 +33,7 @@ use gpui::{
 
 use super::{
     clock::Local,
-    markdown, reports,
+    markdown,
     selection::{self, Selectable, Selection},
 };
 use crate::desktop::{
@@ -1464,7 +1464,7 @@ impl Conversation {
             div().id("conversation-open").on_click(
                 cx.listener(|conversation, _, window, cx| conversation.toggle(window, cx)),
             ),
-            self.mark(),
+            self.mark(cx),
             self.stored
                 .as_ref()
                 .and_then(|stored| stored.page.as_ref())
@@ -1648,7 +1648,7 @@ impl Conversation {
                     if !changed.is_empty() {
                         happened.push_str(&format!(" · changed {}", changed.join(", ")));
                     }
-                    ui::thread_event("history", who, format!("{happened} · {time}"), None)
+                    ui::thread_event("history", who, format!("{happened} · {time}"))
                         .into_any_element()
                 }
                 Body::Step { step } => {
@@ -1658,13 +1658,8 @@ impl Conversation {
                         "blocked" => format!("is blocked on {}", step.title),
                         _ => format!("queued {}", step.title),
                     };
-                    ui::thread_event(
-                        "corner-down-right",
-                        who,
-                        format!("{happened} · {time}"),
-                        None,
-                    )
-                    .into_any_element()
+                    ui::thread_event("corner-down-right", who, format!("{happened} · {time}"))
+                        .into_any_element()
                 }
             });
             if stored.kind == Kind::Interaction
@@ -1693,10 +1688,33 @@ impl Conversation {
         markdown::render_in(&markdown::parse_authored(text), &look, self, cx).min_w_0()
     }
 
-    fn mark(&self) -> Option<gpui::Div> {
-        self.record
+    fn mark(&self, cx: &gpui::App) -> Option<gpui::Div> {
+        let (item, _) = self.record.as_ref()?;
+        if !matches!(item.content, ReportContent::Progress { .. }) {
+            return None;
+        }
+        let registered = if self.needs_recipient() {
+            self.recipient.is_some()
+        } else if let Some(page) = self
+            .stored
             .as_ref()
-            .and_then(|(item, _)| reports::mark(item))
+            .and_then(|stored| stored.page.as_ref())
+            .filter(|page| !page.responsible.name.is_empty())
+        {
+            page.responsible.status == "active"
+        } else {
+            item.registered
+        };
+        let name = if registered {
+            self.agent()
+        } else {
+            String::new()
+        };
+        Some(ui::agent_symbol(
+            crate::desktop::agent_status::LiveAgents::shared(cx)
+                .get(&name)
+                .state,
+        ))
     }
 
     fn thread(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -1965,7 +1983,7 @@ impl Conversation {
         let can_send = self.can_send(cx);
         ui::conversation_panel()
             .child(ui::conversation_header(
-                self.mark(),
+                self.mark(cx),
                 self.agent(),
                 self.about,
                 ui::icon_button("conversation-close", "panel-right-close").on_click(

@@ -255,31 +255,6 @@ pub struct Conversation {
     pub entries: Vec<Entry>,
     /// Pass as [`Page::Before`]; `None` at the start.
     pub older: Option<String>,
-    /// Pass as [`Page::After`]; `None` on the newest page.
-    pub newer: Option<String>,
-}
-
-/// One conversation's badge.
-#[derive(Clone, Debug, Deserialize, PartialEq)]
-pub struct Summary {
-    /// What it is about.
-    pub kind: Kind,
-    /// The artifact's stable identity.
-    pub artifact_id: String,
-    /// The default recipient.
-    pub responsible: Participant,
-    /// Agent messages and events not yet read.
-    pub unread: u64,
-    /// Messages, events excluded.
-    pub total: u64,
-    /// When the latest entry was stored.
-    #[serde(default)]
-    pub last_entry_at: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct Summaries {
-    items: Vec<Summary>,
 }
 
 /// Header counts after the read marker moved.
@@ -300,8 +275,6 @@ pub enum Page {
     Newest,
     /// Entries older than a page's `older` cursor.
     Before(String),
-    /// Entries newer than a page's `newer` cursor, for polling.
-    After(String),
     /// Exactly these entries, up to 50, to follow their delivery.
     Entries(Vec<u64>),
 }
@@ -432,29 +405,6 @@ pub fn resolve(directory: &Path, provider: &str, kind: Kind, path: &str) -> Resu
     }
 }
 
-/// Badges for up to 50 conversations. Runs on an I/O worker.
-pub fn summaries(
-    directory: &Path,
-    provider: &str,
-    keys: &[(Kind, &str)],
-) -> Result<Vec<Summary>, Error> {
-    if keys.is_empty() || keys.len() > 50 || keys.iter().any(|(_, id)| !token(id)) {
-        return Err(Error::Unreadable);
-    }
-    let ids: Vec<String> = keys
-        .iter()
-        .map(|(kind, id)| format!("{}:{id}", kind.name()))
-        .collect();
-    let path = format!("/api/conversations?limit=50&ids={}", ids.join(","));
-    let response = exchange(directory, provider, &path, None)?;
-    match response.status {
-        200 => parse::<Summaries>(&response.body).map(|page| page.items),
-        404 => Err(Error::Unsupported),
-        401 | 403 => Err(Error::Forbidden),
-        _ => Err(Error::Unavailable),
-    }
-}
-
 /// Append an owner message. Runs on an I/O worker.
 pub fn send(directory: &Path, provider: &str, kind: Kind, id: &str, message: &Message) -> Outcome {
     let Some(path) = base(kind, id).map(|base| base + "/messages") else {
@@ -509,9 +459,8 @@ fn show_path(kind: Kind, id: &str, page: &Page) -> Option<String> {
     let mut path = base(kind, id)? + "?limit=50";
     match page {
         Page::Newest => {}
-        Page::Before(cursor) | Page::After(cursor) if !token(cursor) => return None,
+        Page::Before(cursor) if !token(cursor) => return None,
         Page::Before(cursor) => path.push_str(&format!("&before={cursor}")),
-        Page::After(cursor) => path.push_str(&format!("&after={cursor}")),
         Page::Entries(ids) if ids.is_empty() || ids.len() > 50 => return None,
         Page::Entries(ids) => {
             let ids: Vec<String> = ids.iter().map(u64::to_string).collect();
@@ -721,7 +670,7 @@ mod tests {
             Some("/api/conversations/document/d?limit=50&entries=4182,4190")
         );
         assert!(show_path(Kind::Document, "d", &Page::Entries(Vec::new())).is_none());
-        assert!(show_path(Kind::Plan, "a", &Page::After("x y".into())).is_none());
+        assert!(show_path(Kind::Plan, "a", &Page::Before("x y".into())).is_none());
     }
 
     #[test]

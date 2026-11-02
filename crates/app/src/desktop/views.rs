@@ -1,7 +1,8 @@
 //! Native information views and local HTML artifacts shown beside terminals.
 //!
-//! A [`ViewPane`] exists only while its pane is shown, and polls its data on
-//! an I/O worker until then (`crate::roster::ViewSource`). Each view draws its
+//! A [`ViewPane`] exists while its pane is shown, and a hidden saved pane
+//! keeps it while it holds conversations or Sheets. It polls its data on an
+//! I/O worker only while visible (`crate::roster::ViewSource`). Each view draws its
 //! data in its own module from the shared pieces in `components`, following
 //! the design boards. Every view stays inside its pane: choosing a skill or a
 //! policy opens it in the same pane through `reader`, with a way back. Backbone

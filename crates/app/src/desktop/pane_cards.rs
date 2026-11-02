@@ -15,7 +15,7 @@ use super::{
     new_pane::NewPane,
     settings::{self, PaneHeaders},
     terminal::LiveTerminal,
-    views::{self, ViewPane},
+    views::ViewPane,
 };
 use ui::AgentState;
 
@@ -468,27 +468,6 @@ impl Browser {
                     .as_deref()
                     .map(|path| home_relative(path, std::env::var("HOME").ok().as_deref()))
                     .unwrap_or_default();
-                if let Some(view) = &leaf.view {
-                    return row
-                        .child(ui::icon(
-                            views::about(view.kind).icon,
-                            t.size.icon - t.space.s2 / 2.0,
-                            icon_color,
-                        ))
-                        .child(div().text_color(title_color).child(ViewPane::title(view)))
-                        .when(view.agent.is_some(), |row| {
-                            row.child(div().child(views::about(view.kind).label))
-                        })
-                        .child(div().flex_1())
-                        .child(
-                            div()
-                                .w(px(t.size.pane_number_width))
-                                .flex_shrink_0()
-                                .font_family(t.font.mono.clone())
-                                .text_size(t.text.key.size())
-                                .child(number.to_string()),
-                        );
-                }
                 row = row
                     .child(ui::icon(
                         "terminal",

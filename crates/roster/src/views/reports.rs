@@ -35,7 +35,7 @@ impl ReportQuery {
                 );
                 if let Some(cursor) = cursor {
                     path.push_str("&cursor=");
-                    path.push_str(&encode(cursor));
+                    path.push_str(&super::encode(cursor));
                 }
                 path
             }
@@ -50,23 +50,10 @@ impl ReportQuery {
         };
         if let Some(agent) = agent {
             path.push_str("&agent=");
-            path.push_str(&encode(agent));
+            path.push_str(&super::encode(agent));
         }
         path
     }
-}
-
-pub(super) fn encode(value: &str) -> String {
-    let mut encoded = String::new();
-    for byte in value.bytes() {
-        if byte.is_ascii_alphanumeric() || b"-._~".contains(&byte) {
-            encoded.push(char::from(byte));
-        } else {
-            use std::fmt::Write;
-            let _ = write!(encoded, "%{byte:02X}");
-        }
-    }
-    encoded
 }
 
 /// One authored section; its links are shown only after a user chooses the record.

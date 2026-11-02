@@ -1289,6 +1289,20 @@ impl Agent {
 
 type Document<'a> = BTreeMap<String, &'a RawValue>;
 
+/// Percent-encode a query value, keeping only RFC 3986 unreserved bytes.
+pub(crate) fn encode(value: &str) -> String {
+    let mut encoded = String::new();
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || b"-._~".contains(&byte) {
+            encoded.push(char::from(byte));
+        } else {
+            use std::fmt::Write;
+            let _ = write!(encoded, "%{byte:02X}");
+        }
+    }
+    encoded
+}
+
 fn document(body: &[u8]) -> Result<Document<'_>, &'static str> {
     if body.len() > VIEW_LIMIT || !within_depth(body) {
         return Err(UNREADABLE);

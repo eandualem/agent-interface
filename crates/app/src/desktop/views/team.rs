@@ -14,23 +14,28 @@ use crate::desktop::{
     design::{colors, tokens},
 };
 
-fn state(member: &Member) -> Option<AgentState> {
-    (member.state != "offline").then(|| AgentState::from_report(&member.state))
+fn state(member: &Member, cx: &gpui::App) -> AgentState {
+    crate::desktop::agent_status::LiveAgents::shared(cx)
+        .get(&member.name)
+        .state
 }
 
-fn rank(member: &Member) -> (u8, String) {
-    let rank = match state(member) {
-        Some(AgentState::NeedsYou | AgentState::Blocked) => 0,
-        Some(AgentState::Working | AgentState::Starting) => 1,
-        Some(_) => 2,
-        None => 3,
-    };
-    (rank, member.name.to_ascii_lowercase())
+fn rank(member: &Member, cx: &gpui::App) -> (u8, String) {
+    let status = crate::desktop::agent_status::LiveAgents::shared(cx).get(&member.name);
+    (status.rank(), member.name.to_ascii_lowercase())
 }
 
 pub(super) fn body(pane: &ViewPane, team: &Team, cx: &mut Context<ViewPane>) -> AnyElement {
     let (t, c) = (tokens(), colors());
-    let online = team.members.iter().filter(|m| state(m).is_some()).count();
+    let online = team
+        .members
+        .iter()
+        .filter(|m| {
+            crate::desktop::agent_status::LiveAgents::shared(cx)
+                .get(&m.name)
+                .online
+        })
+        .count();
     let mut grouping = ui::segments();
     for (choice, label) in [
         (Grouping::Folder, "Folder"),
@@ -55,17 +60,21 @@ pub(super) fn body(pane: &ViewPane, team: &Team, cx: &mut Context<ViewPane>) -> 
         .child(div().flex_1())
         .child(grouping);
 
-    let tally =
-        |wanted: Option<AgentState>| team.members.iter().filter(|m| state(m) == wanted).count();
+    let tally = |wanted: AgentState| {
+        team.members
+            .iter()
+            .filter(|m| state(m, cx) == wanted)
+            .count()
+    };
     let needing = team
         .members
         .iter()
-        .filter(|m| state(m).is_some_and(AgentState::needs_you))
+        .filter(|m| state(m, cx).needs_you())
         .count();
     let working = team
         .members
         .iter()
-        .filter(|m| state(m).is_some_and(AgentState::working))
+        .filter(|m| state(m, cx).working())
         .count();
     let summary = ui::text(
         div()
@@ -108,9 +117,18 @@ pub(super) fn body(pane: &ViewPane, team: &Team, cx: &mut Context<ViewPane>) -> 
             .items_center()
             .gap(px(t.space.s6))
             .child(ui::agent_symbol(AgentState::Idle))
-            .child(format!("{} idle", tally(Some(AgentState::Idle)))),
+            .child(format!("{} idle", tally(AgentState::Idle))),
     )
-    .child(format!("{} offline", tally(None)));
+    .child(format!("{} offline", tally(AgentState::Offline)))
+    .when(tally(AgentState::Unknown) > 0, |el| {
+        el.child(format!("{} status unknown", tally(AgentState::Unknown)))
+    })
+    .when(tally(AgentState::Unavailable) > 0, |el| {
+        el.child(format!(
+            "{} status unavailable",
+            tally(AgentState::Unavailable)
+        ))
+    });
 
     let column = match pane.grouping {
         Grouping::Folder => folders(team, cx),
@@ -223,7 +241,7 @@ fn folders(team: &Team, cx: &mut Context<ViewPane>) -> gpui::Div {
     let mut column = div();
     for ((_, folder), members) in order {
         let mut members = members.clone();
-        members.sort_by_key(|member| rank(member));
+        members.sort_by_key(|member| rank(member, cx));
         let lead = leads.get(folder.as_str()).copied();
         let above = lead.is_none().then(|| led_from(&leads, folder)).flatten();
         let (title, mut note) = if folder.is_empty() {
@@ -271,7 +289,7 @@ fn by_tag(team: &Team, cx: &mut Context<ViewPane>) -> gpui::Div {
     }
     let mut column = div();
     for ((_, tag), mut members) in groups {
-        members.sort_by_key(|member| rank(member));
+        members.sort_by_key(|member| rank(member, cx));
         let label = if tag.is_empty() {
             ui::tag("no tag", Tone::Quiet)
         } else {
@@ -334,28 +352,11 @@ pub(super) fn agent_row(
     cx: &mut Context<ViewPane>,
 ) -> AnyElement {
     let (t, c) = (tokens(), colors());
-    let state = state(member);
+    let status = crate::desktop::agent_status::LiveAgents::shared(cx).get(&member.name);
+    let state = state(member, cx);
     let name = member.name.clone();
     // An agent can appear in several groups; each row needs its own identity.
     let id = SharedString::from(format!("team-{group}-{name}-{}", guide.len()));
-    let word = match (state, &member.reason) {
-        (None, _) => "offline".to_owned(),
-        (Some(state @ (AgentState::NeedsYou | AgentState::Blocked)), Some(reason)) => {
-            format!("{} · {reason}", state.word())
-        }
-        (Some(state @ (AgentState::Working | AgentState::Starting)), _) => {
-            match member.current_issue {
-                Some(issue) => format!("{} · #{issue}", state.word()),
-                None => state.word().to_owned(),
-            }
-        }
-        (Some(state), _) => state.word().to_owned(),
-    };
-    let word_color = match state {
-        Some(AgentState::NeedsYou | AgentState::Blocked) => c.attention_text,
-        Some(AgentState::Working | AgentState::Starting) => c.accent_text,
-        _ => c.muted,
-    };
     div()
         .id(id.clone())
         .flex()
@@ -369,28 +370,14 @@ pub(super) fn agent_row(
         })
         .cursor_pointer()
         .hover(|el| el.bg(colors().hover))
-        .when(state.is_none(), |el| el.opacity(0.7))
+        .when(state == AgentState::Offline, |el| el.opacity(0.7))
         .when(!guide.is_empty(), |el| {
             el.child(mono(guide).text_color(c.faint))
         })
-        .child(match state {
-            Some(state) => ui::agent_symbol(state),
-            None => div()
-                .size(px(t.size.agent_symbol))
-                .flex_shrink_0()
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(
-                    div()
-                        .w(px(t.space.s8))
-                        .h(px(t.size.hairline + 0.5))
-                        .bg(c.faint),
-                ),
-        })
+        .child(ui::agent_symbol(status.state))
         .child(
             ui::text(div().flex_shrink_0(), &t.text.row)
-                .text_color(if state.is_some_and(|s| s != AgentState::Idle) {
+                .text_color(if state.working() || state.needs_you() {
                     c.text
                 } else {
                     c.muted
@@ -414,7 +401,10 @@ pub(super) fn agent_row(
             )
             .child(member.tags.join(" · ")),
         )
-        .child(ui::text(div().flex_shrink_0().text_color(word_color), &t.text.meta).child(word))
+        .child(ui::text(
+            ui::agent_status_text(&status).flex_shrink_0(),
+            &t.text.meta,
+        ))
         .child(
             ui::text(
                 div()
@@ -426,8 +416,8 @@ pub(super) fn agent_row(
             )
             // Backbone's time for a live agent is when it was last read, not
             // when its state began; only an offline agent's says something.
-            .child(if state.is_none() {
-                since(member.state_since)
+            .child(if state == AgentState::Offline {
+                since(status.since)
             } else {
                 String::new()
             }),

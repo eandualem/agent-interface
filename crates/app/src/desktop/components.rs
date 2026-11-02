@@ -256,49 +256,34 @@ pub fn menu_rule() -> Div {
     div().my(px(t.space.s4)).h(px(t.size.hairline)).bg(c.line)
 }
 
-/// How an agent is doing, as Agent Backbone reports it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AgentState {
-    NeedsYou,
-    Blocked,
-    Working,
-    Starting,
-    Idle,
-    Unknown,
+pub use super::agent_status::AgentState;
+
+/// Shared colour for an agent state, independent of the surrounding layout.
+pub fn agent_color(state: AgentState) -> Rgba {
+    let c = colors();
+    match state {
+        AgentState::NeedsYou | AgentState::Blocked => c.attention_text,
+        AgentState::Working | AgentState::Starting => c.accent_text,
+        _ => c.muted,
+    }
 }
 
-impl AgentState {
-    /// Preserve reported states while sharing their visual categories.
-    pub fn from_report(state: &str) -> Self {
-        match state {
-            "waiting_for_human" => Self::NeedsYou,
-            "blocked" => Self::Blocked,
-            "busy" => Self::Working,
-            "starting" => Self::Starting,
-            "idle" | "running" => Self::Idle,
-            _ => Self::Unknown,
-        }
-    }
+/// The same symbol and label wherever a current agent status is shown.
+pub fn agent_status(status: &super::agent_status::Status) -> Div {
+    let t = tokens();
+    div()
+        .flex()
+        .items_center()
+        .gap(px(t.space.s6))
+        .child(agent_symbol(status.state))
+        .child(agent_status_text(status))
+}
 
-    pub fn needs_you(self) -> bool {
-        matches!(self, Self::NeedsYou | Self::Blocked)
-    }
-
-    pub fn working(self) -> bool {
-        matches!(self, Self::Working | Self::Starting)
-    }
-
-    /// The short word shown beside a working or needs-you agent.
-    pub fn word(self) -> &'static str {
-        match self {
-            Self::NeedsYou => "needs you",
-            Self::Blocked => "blocked",
-            Self::Working => "working",
-            Self::Starting => "starting",
-            Self::Idle => "idle",
-            Self::Unknown => "unknown",
-        }
-    }
+/// A status label for rows that place the symbol beside the agent's name.
+pub fn agent_status_text(status: &super::agent_status::Status) -> Div {
+    div()
+        .text_color(agent_color(status.state))
+        .child(status.label.clone())
 }
 
 /// An agent's state symbol: shape first, colour second.
@@ -340,7 +325,13 @@ pub fn agent_symbol(state: AgentState) -> Div {
                 .border(px(t.size.minimap_stroke * 1.5))
                 .border_color(c.faint),
         ),
-        AgentState::Unknown => frame
+        AgentState::Offline => frame.child(
+            div()
+                .w(px(t.space.s8))
+                .h(px(t.size.hairline + 0.5))
+                .bg(c.faint),
+        ),
+        AgentState::Unknown | AgentState::Unavailable => frame
             .rounded_full()
             .border(px(t.size.minimap_stroke * 1.5))
             .border_dashed()
@@ -1349,7 +1340,6 @@ fn age(label: impl Into<SharedString>) -> Div {
 pub fn record_row(
     id: impl Into<SharedString>,
     first: bool,
-    selected: bool,
     unseen: bool,
     mark: Div,
     who: impl Into<SharedString>,
@@ -1374,8 +1364,7 @@ pub fn record_row(
             .text_color(c.text_2),
         &t.text.row,
     )
-    .when(selected, card_selected)
-    .when(!selected, |el| el.hover(|el| el.bg(colors().hover)))
+    .hover(|el| el.bg(colors().hover))
     .child(mark)
     .child(
         div()
@@ -1413,7 +1402,6 @@ pub fn record_row(
 pub fn question_row(
     id: impl Into<SharedString>,
     first: bool,
-    selected: bool,
     unseen: bool,
     who: impl Into<SharedString>,
     question: impl Into<SharedString>,
@@ -1441,8 +1429,7 @@ pub fn question_row(
             el.border_t(px(t.size.hairline)).border_color(c.line)
         })
         .cursor_pointer()
-        .when(selected, card_selected)
-        .when(!selected, |el| el.hover(|el| el.bg(colors().hover)))
+        .hover(|el| el.bg(colors().hover))
         .child(unseen_mark(unseen))
         .child(
             text(
@@ -1507,7 +1494,6 @@ pub fn shelf() -> Div {
 pub fn shelf_card(
     id: impl Into<SharedString>,
     name: &str,
-    selected: bool,
     tags: Vec<Div>,
     title: impl Into<SharedString>,
     who: impl Into<SharedString>,
@@ -1539,15 +1525,11 @@ pub fn shelf_card(
                         .flex_shrink_0()
                         .size(px(t.size.view_tile))
                         .rounded(px(t.radius.row))
-                        .bg(if selected { c.accent_soft } else { c.selected })
+                        .bg(c.selected)
                         .flex()
                         .items_center()
                         .justify_center()
-                        .child(icon(
-                            name,
-                            t.size.icon,
-                            if selected { c.accent_text } else { c.text_2 },
-                        )),
+                        .child(icon(name, t.size.icon, c.text_2)),
                 )
                 .child(div().flex_1())
                 .children(tags),
@@ -1574,9 +1556,6 @@ pub fn shelf_card(
             .child(div().flex_1())
             .child(key_hint(size)),
         )
-        .when(selected, |el| {
-            el.child(selection_ring(t.radius.popover, t.size.hairline))
-        })
 }
 
 // A plan: one card per agent on the list, its steps on a track and what
@@ -2325,13 +2304,12 @@ pub fn thread_divider(label: impl Into<SharedString>, new: bool) -> Div {
     .child(rule())
 }
 
-/// Something the artifact did, in its thread: an icon, the agent in mono,
-/// what happened, and at most one action at the far end.
+/// Something the artifact did, in its thread: an icon, the agent in mono
+/// and what happened.
 pub fn thread_event(
     icon: &'static str,
     actor: impl Into<SharedString>,
     happened: impl Into<SharedString>,
-    action: Option<Stateful<Div>>,
 ) -> Div {
     let (t, c) = (tokens(), colors());
     text(
@@ -2352,8 +2330,6 @@ pub fn thread_event(
             .child(actor.into()),
     )
     .child(happened.into())
-    .child(div().flex_1())
-    .children(action.map(|action| action.text_color(c.accent_text).cursor_pointer()))
 }
 
 /// Who sent a message and when, above or below its bubble.
@@ -2504,21 +2480,21 @@ mod tests {
     #[test]
     fn reported_states_keep_distinct_labels_and_visual_categories() {
         assert_eq!(
-            AgentState::from_report("waiting_for_human"),
+            AgentState::from_runtime("waiting_for_human"),
             AgentState::NeedsYou
         );
-        assert_eq!(AgentState::from_report("blocked"), AgentState::Blocked);
-        assert_eq!(AgentState::from_report("busy"), AgentState::Working);
-        assert_eq!(AgentState::from_report("starting"), AgentState::Starting);
+        assert_eq!(AgentState::from_runtime("blocked"), AgentState::Blocked);
+        assert_eq!(AgentState::from_runtime("busy"), AgentState::Working);
+        assert_eq!(AgentState::from_runtime("starting"), AgentState::Starting);
         assert!(AgentState::Blocked.needs_you());
         assert!(AgentState::Starting.working());
         assert!(!AgentState::Idle.working());
         assert_eq!(AgentState::Blocked.word(), "blocked");
         assert_eq!(AgentState::Starting.word(), "starting");
-        assert_eq!(AgentState::from_report("idle"), AgentState::Idle);
-        assert_eq!(AgentState::from_report(""), AgentState::Unknown);
+        assert_eq!(AgentState::from_runtime("idle"), AgentState::Idle);
+        assert_eq!(AgentState::from_runtime(""), AgentState::Unknown);
         assert_eq!(
-            AgentState::from_report("something new"),
+            AgentState::from_runtime("something new"),
             AgentState::Unknown
         );
     }

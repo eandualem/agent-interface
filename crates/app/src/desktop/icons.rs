@@ -109,7 +109,6 @@ icons!(
     "layout-grid",
     "align-left",
     "send",
-    "file",
     "file-text",
     "refresh-cw",
     "history",
@@ -239,6 +238,7 @@ mod tests {
                 "{name} is not bundled"
             );
         }
+        assert!(Assets.load(&path("circle-check")).unwrap().is_some());
         assert_eq!(workspace(Some("rocket"), Some("★")), Some("rocket"));
         assert_eq!(workspace(Some("unknown"), Some("★")), Some("star"));
         assert_eq!(workspace(None, Some("⌂")), Some("house"));

@@ -165,7 +165,7 @@ impl Browser {
                                 group: "PANES",
                                 label: attachment.session.clone(),
                                 meta: format!("{} · {}", tab.name, space.name),
-                                agent: self.attachment_state(attachment, states.as_ref()),
+                                agent: self.attachment_state(attachment, states.as_deref()),
                                 target: Target::Pane {
                                     workspace: space.id.clone(),
                                     tab: tab.id.clone(),

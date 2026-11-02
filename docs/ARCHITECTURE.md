@@ -34,7 +34,7 @@ another client's selected window.
 
 | Crate | Responsibility |
 | --- | --- |
-| `core` | Workspace, tab and split models; validation; local navigation; three-way merge rules; compatibility keymap and theme data |
+| `core` | Workspace, tab and split models; validation; local navigation; three-way merge rules; compatibility keymap data |
 | `store` | Initializing, reading and transactionally saving schema-v2 `layouts.db` files |
 | `tmux` | Server discovery and validation, control-mode protocol, pane capture, recovery and input commands |
 | `term` | Terminal engine ownership, input encoding and owned display snapshots |
@@ -283,9 +283,8 @@ two seconds for settings writes, including writes from already-closed windows.
 The wait tracks file workers, independently of their UI result handlers. A
 write still blocked beyond that shutdown allowance may remain unfinished.
 
-The compatibility theme reader validates the legacy theme format but does not
-control native appearance. Likewise, the legacy keymap inspection commands do
-not replace native Settings shortcuts.
+The legacy keymap inspection commands do not replace native Settings
+shortcuts.
 
 The Agent Backbone adapter resolves configuration lazily and uses
 bounded, read-only requests to a local endpoint. Credential-bearing requests
@@ -356,10 +355,17 @@ read. This is invoked only by a user drag, with no screenshot monitoring.
 Agent views cache unchanged render trees; data, size, focus and appearance
 changes invalidate them. Visible working and starting indicators animate using GPUI; other states are
 static. State labels retain the distinction between starting and busy, and
-between blocked and waiting for a person. The roster reads immediately and then
-two seconds after each completed request; Team and agent-card views poll every
-three seconds after a read. Requests have a three-second deadline, and failures
-mark cached observations stale.
+between blocked and waiting for a person. One application-wide roster worker reads
+immediately and then two seconds after each completed request. Its shared live
+model constructs each agent's status, label and ordering once per observation;
+all windows, navigation badges, choosers and information views consume that same
+model. Shared UI components render its symbol, colour and label. Roster changes
+invalidate retained view painting even when an authored record or plan is held
+open. Offline stays distinct from idle; an unavailable roster suppresses working
+indicators rather than presenting cached observations as current. Requests have
+a three-second deadline. Team and agent-card metadata still poll every three
+seconds; these reads do not supply live status. Activity's historical spans
+remain separate from its current-state labels.
 Team-wide libraries (`roster::views::library`) are gathered from per-agent
 reads, the store, each agent's skill preview and its brief, for at most 32
 agents per refresh, merged by file path so no row names an agent. Skill paths and
@@ -392,7 +398,9 @@ roster is unavailable. Each row opens the complete authored record, including
 its sections and links. An open record keeps its contents through background refreshes.
 An open Response is polled by ID so its correction metadata stays current even
 after newer publications move it off its former list page.
-Authored status and blocker text do not change runtime state or grant approval.
+Report tags explicitly identify the authored report status; the adjacent agent
+symbol comes from the shared live model. Authored status and blocker text do not
+change runtime state or grant approval.
 
 Every reader places one native conversation (`views/conversation.rs`) beside
 the authored content: a rail while closed, a thread and composer while open.
@@ -704,8 +712,8 @@ and saved working-directory refresh select the server containing the exact
 ordinary session across the current and legacy sockets. A verified current owner
 is used without inspecting unused legacy metadata. When no owner is verified,
 a metadata or discovery failure does not authorize creating a replacement shell
-on another server. Settings,
-themes and keymaps fall back to the old configuration directory when the new file is absent; settings writes
+on another server. Settings
+and keymaps fall back to the old configuration directory when the new file is absent; settings writes
 use the new directory. Legacy environment overrides remain supported, with the new
 `AGENT_INTERFACE_*` names taking precedence. No database or running server is moved.
 The Linux launcher uses the packaged Agent Interface icon.
@@ -763,9 +771,10 @@ No spreadsheet widget or formula engine is added.
 authenticated local transport as Sheets, on a worker, every 20 seconds while
 the Current plans section is open. It is read-only: it publishes, approves and
 changes nothing. A missing endpoint is reported as unsupported, and a failed
-reread keeps the plans last read. Each refresh also reads the agents' runtimes
-and working states; failure of either read preserves the last complete snapshot
-and shows the read-error notice in both the list and opened plan.
+reread keeps the plans last read. Each refresh also reads the agents' runtime
+metadata; failure of either read preserves the last complete snapshot and shows
+the read-error notice in both the list and opened plan. Working states
+come from the shared live roster, independently of the plan refresh.
 The section draws through the pane, like the record readers, so
 an opened plan's text can be selected and copied. Its selected step uses the shared
 conversation panel, addressed by the plan author's stable identity. Drafts are
