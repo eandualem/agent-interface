@@ -337,6 +337,19 @@ refer weakly to their original source, and bound updates must match that source'
 identity. Failed reads hide its active rows and show unavailable status without
 changing another source's attention state. No global selected source supplies
 status to readers. Authored reports and historical events never update this model.
+`roster::views::content` reads only retained Reports, Responses and Documents
+through a captured connection, including pagination and roster enrichment.
+Document fetches keep their larger wire limit and digest validation. Transport
+failures remain typed and invalidate the whole read even during optional
+metadata enrichment. Each observation retains its full identity and request;
+legacy provider URL fields stay empty and do not authorize actions. Bound reads
+use the credential and socket captured by their connection; they do not re-read
+configuration or credentials per request.
+`app::roster::BoundContentSource` owns that connection for its lifetime. Selection
+and visibility changes invalidate pending results and in-flight generations;
+Documents wait for explicit refresh. Its wake callback belongs to the original
+owner. Dropping the source waits for its bounded in-flight request, so UI owners
+must drop it off the UI thread.
 These bound readers are not yet wired into desktop startup or workspace
 selection; existing desktop readers still use the configuration behavior above.
 They do not start services, migrate Default or configure runtime accounts.
