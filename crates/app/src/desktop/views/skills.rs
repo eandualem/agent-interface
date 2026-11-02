@@ -280,6 +280,11 @@ fn index(pane: &ViewPane, library: &SkillLibrary, cx: &mut Context<ViewPane>) ->
                     Row::Local(skill) => (&skill.name, skill.error.as_deref(), String::new()),
                 };
                 let target = Target::Skill(row.path().to_owned());
+                // Capture the rendered catalog row, not a path lookup after a refresh.
+                let captured = match row {
+                    Row::Store(skill) => Some((*skill).clone()),
+                    Row::Local(_) => None,
+                };
                 card = card.child(
                     ui::group_row(
                         SharedString::from(format!("skill-{}-{at}-{index}", section.title)),
@@ -291,7 +296,9 @@ fn index(pane: &ViewPane, library: &SkillLibrary, cx: &mut Context<ViewPane>) ->
                             None => div().child(trailing),
                         },
                     )
-                    .on_click(cx.listener(move |pane, _, _, cx| pane.open(target.clone(), cx))),
+                    .on_click(cx.listener(move |pane, _, _, cx| {
+                        pane.open_with_skill(target.clone(), Some(captured.clone()), cx)
+                    })),
                 );
             }
             column = column.child(card);
@@ -339,11 +346,14 @@ fn detail(
     let header = ui::view_header("diamond", "Skills").child("reading SKILL.md");
     let targets = targets(pane, library);
     let at = targets.iter().position(|target| *target == open.target);
-    let store = library
-        .store
-        .items
-        .iter()
-        .find(|skill| &skill.path == folder);
+    let store = match &open.bound_skill {
+        Some(bound) => bound.record.as_ref(),
+        None => library
+            .store
+            .items
+            .iter()
+            .find(|skill| &skill.path == folder),
+    };
     let local = [&library.repositories, &library.user]
         .into_iter()
         .flatten()

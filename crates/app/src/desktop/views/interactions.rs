@@ -112,7 +112,9 @@ impl Source {
                     .and_then(|data| match data {
                         content::Data::Reports(page) => Ok(views::Data::Reports(page)),
                         content::Data::Document(document) => Ok(views::Data::Document(document)),
-                        content::Data::Usage(_) | content::Data::Activity(_) => {
+                        content::Data::Skills(_)
+                        | content::Data::Usage(_)
+                        | content::Data::Activity(_) => {
                             Err(content::Error::Content(views::UNREADABLE))
                         }
                     })

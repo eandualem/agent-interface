@@ -518,12 +518,22 @@ Legacy URL keys remain separate, and the legacy installation timestamp does not
 mark another profile's older records as seen. A bound reader has no legacy data
 directory, so general views, Plans, Interactions and Sheets cannot fall back to
 ambient configuration. The explicit constructor currently supports Reports,
-Responses, Documents, Usage and Activity and requires matching live-status
+Responses, Documents, Usage, Activity and Skills and requires matching live-status
 ownership. Usage range changes and Activity refreshes share the bound content
 worker, including generation checks, hidden-pane cancellation and original
-credential retention. General Agent, library and terminal navigation remain
+credential retention. General Agent, Policy and terminal navigation remain
 unavailable through this constructor. Desktop
 startup still uses the legacy path; profile selection remains disabled.
+
+Native bound Skills retain the rendered catalog row, stable artifact ID and
+verified connection when opened. Preview reads select an immutable provider
+revision and verify its digest; provider paths never become local file reads.
+Closing or reopening uses a new completion ticket, so an obsolete response cannot
+populate the next opening. The reader keeps its original metadata through catalog
+refreshes. Discussions are keyed by full origin, artifact and displayed revision,
+and retain that revision in outgoing message anchors and retries. Missing IDs and
+repository/runtime-local previews show unavailable; they do not fall back to local
+SKILL.md files. Profile selection and the Policy library remain separate work.
 
 The general read-only adapter in `roster::views::bound` captures the same
 verified connection for Team, Usage, Activity, Skills, Policies and Tags. Its

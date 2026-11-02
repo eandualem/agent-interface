@@ -39,6 +39,7 @@ mod activity;
 mod agent;
 pub(super) mod artifact_web;
 mod artifacts;
+mod bound_skills;
 mod clock;
 mod conversation;
 mod documents;
@@ -149,6 +150,7 @@ pub(super) enum Target {
 /// What the reader shows in place of a list.
 pub(super) struct Open {
     pub target: Target,
+    bound_skill: Option<bound_skills::Open>,
     /// A skill's text once read, and whether it was cut.
     pub text: Option<Result<(String, bool), &'static str>>,
 }
@@ -310,7 +312,7 @@ impl ViewPane {
         if let Some(connection) = &pane.connection
             && (!matches!(
                 pane.view.kind,
-                ViewKind::Reports | ViewKind::Usage | ViewKind::Activity
+                ViewKind::Reports | ViewKind::Usage | ViewKind::Activity | ViewKind::Skills
             ) || !pane.agents.belongs_to(connection.identity()))
         {
             pane.error = Some("This view is unavailable for the original profile.");
@@ -667,10 +669,75 @@ impl ViewPane {
 
     /// Open `target` in the reader, reading a skill's SKILL.md off the UI thread.
     fn open(&mut self, target: Target, cx: &mut Context<Self>) {
+        self.open_with_skill(target, None, cx);
+    }
+
+    fn open_with_skill(
+        &mut self,
+        target: Target,
+        captured: Option<Option<views::Skill>>,
+        cx: &mut Context<Self>,
+    ) {
+        let bound_skill = self.connection.as_ref().and_then(|connection| {
+            let Target::Skill(path) = &target else {
+                return None;
+            };
+            let record = match &captured {
+                Some(record) => record.as_ref(),
+                None => match &self.data {
+                    Some(Data::Skills(library)) => {
+                        library.store.items.iter().find(|skill| &skill.path == path)
+                    }
+                    _ => None,
+                },
+            };
+            Some(bound_skills::Open::capture(connection, record))
+        });
         self.open = Some(Open {
             target: target.clone(),
+            bound_skill,
             text: None,
         });
+        if self.connection.is_some() {
+            let Some(bound) = self
+                .open
+                .as_ref()
+                .and_then(|open| open.bound_skill.as_ref())
+            else {
+                return;
+            };
+            let ticket = bound.ticket();
+            let artifact = bound.artifact.clone();
+            let read_ticket = ticket.clone();
+            let read = cx
+                .background_executor()
+                .spawn(async move { bound_skills::read(artifact, &read_ticket) });
+            cx.spawn(async move |this, cx| {
+                let result = read.await;
+                let _ = this.update(cx, |pane, cx| {
+                    if let Some(open) = &mut pane.open
+                        && let Some(bound) = &mut open.bound_skill
+                        && bound.accepts(&ticket)
+                    {
+                        open.text = Some(match result {
+                            Ok(snapshot) => {
+                                let text = snapshot
+                                    .content
+                                    .clone()
+                                    .ok_or("This skill's source is unavailable.");
+                                bound.snapshot = Some(snapshot);
+                                text.map(|text| (text, false))
+                            }
+                            Err(error) => Err(error),
+                        });
+                        cx.notify();
+                    }
+                });
+            })
+            .detach();
+            cx.notify();
+            return;
+        }
         cx.notify();
         let Target::Skill(folder) = target else {
             return;
@@ -936,6 +1003,37 @@ impl Render for ViewPane {
                     })
                     .clone()
             });
+        // Bound skill discussions retain the exact displayed artifact revision.
+        if self.conversation.is_none()
+            && let Some(bound) = self
+                .open
+                .as_ref()
+                .and_then(|open| open.bound_skill.as_ref())
+            && let Some(snapshot) = &bound.snapshot
+        {
+            let key = bound_skills::key(snapshot);
+            let candidates = bound
+                .record
+                .as_ref()
+                .map(|skill| skill.reaches.clone())
+                .unwrap_or_default();
+            self.conversation = Some(
+                self.conversations
+                    .entry(key)
+                    .or_insert_with(|| {
+                        cx.new(|cx| {
+                            conversation::Conversation::about_snapshot(
+                                snapshot,
+                                candidates,
+                                self.visible.clone(),
+                                window,
+                                cx,
+                            )
+                        })
+                    })
+                    .clone(),
+            );
+        }
         // An open skill or policy has its own conversation.
         if self.conversation.is_none()
             && let (Some(open), Some(directory)) = (&self.open, &self.backbone)
