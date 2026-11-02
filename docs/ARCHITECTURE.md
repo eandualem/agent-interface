@@ -489,6 +489,18 @@ current provider, then the `artifact_id` that `/api/skills` or `/api/policies`
 lists for its source path. Without a maintainer, a message names the agent the
 person chose.
 
+Profile-bound action adapters are separate from these legacy desktop callers.
+`roster::conversations::Client` owns a verified connection and one artifact's
+kind and ID; `roster::feedback::Client` owns a connection and the original
+record. Both compare the record's full profile, installation and lifecycle
+identity before construction. Clones retain the original credential snapshot;
+reads, pagination, read markers, sends and redelivery never resolve the current
+selection. Callers retain the message's request ID, recipient and anchor when
+retrying an uncertain conversation send. Feedback verifies the author and
+submits on that same binding, with no automatic retry after an unknown result.
+Binding refusals remain explicit. These adapters do not yet enable profile
+selection or change the desktop conversation and feedback paths.
+
 Durable Documents use Backbone's metadata-only `/api/documents` list and exact
 `/api/documents/{revision_id}` JSON reads. Backbone owns immutable revisions,
 stable document and author identities, publication authorization and retention;
@@ -550,6 +562,9 @@ system WebKit on macOS and GTK/WebKitGTK on Linux; unused Android dependencies
 are not part of a supported build. The GTK compatibility patch and narrow
 build-time advisory exception are described below.
 
+- **`async-executor` 1.14.1:** MIT OR Apache-2.0, locked for the Linux
+  accessibility and asynchronous service stack. This replaces yanked 1.14.0
+  and fixes its executor-teardown use-after-free regression.
 - **GPUI (`gpui-pre` and platform packages):** native windowing and GPU drawing,
   pinned as one package family. Apache-2.0. The macOS 0.3.9 backend is
   [vendored with a narrow native focus correction](../native/gpui-macos/README.md):

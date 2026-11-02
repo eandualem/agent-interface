@@ -10,6 +10,8 @@ use std::{path::Path, time::Duration};
 
 use serde::{Deserialize, Serialize};
 
+use crate::profiles::{Connection, Identity};
+
 /// What a conversation is about.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
@@ -326,6 +328,8 @@ pub enum Error {
     UnknownArtifact,
     /// The response violated the bounded contract.
     Unreadable,
+    /// A verified profile connection failed or rejected its captured binding.
+    Connection(crate::profiles::Error),
 }
 
 impl Error {
@@ -338,7 +342,75 @@ impl Error {
             Self::Unsupported => "This Agent Backbone does not keep conversations yet.",
             Self::UnknownArtifact => "Backbone has no record of this item.",
             Self::Unreadable => "Backbone returned an unreadable conversation.",
+            Self::Connection(
+                crate::profiles::Error::BindingRequired | crate::profiles::Error::BindingMismatch,
+            ) => "The Backbone profile binding was refused. Reconnect to the original profile.",
+            Self::Connection(_) => "The original Backbone profile is unavailable.",
         }
+    }
+}
+
+/// One artifact's conversation on an immutable verified profile connection.
+/// Clone this client for pending operations; retries keep its original binding
+/// and credential snapshot. No method re-resolves configuration or changes origin.
+#[derive(Clone)]
+pub struct Client {
+    connection: Connection,
+    kind: Kind,
+    id: String,
+}
+
+impl Client {
+    /// Bind an artifact from `origin` to its verified connection before any I/O.
+    pub fn new(
+        connection: Connection,
+        origin: &Identity,
+        kind: Kind,
+        id: String,
+    ) -> Result<Self, Error> {
+        if connection.identity() != origin {
+            return Err(Error::Connection(crate::profiles::Error::BindingMismatch));
+        }
+        if !token(&id) {
+            return Err(Error::Unreadable);
+        }
+        Ok(Self {
+            connection,
+            kind,
+            id,
+        })
+    }
+
+    /// Full identity for labelling pending operations and validating callbacks.
+    pub fn identity(&self) -> &Identity {
+        self.connection.identity()
+    }
+
+    /// Read a page on this artifact's original connection, on an I/O worker.
+    pub fn show(&self, page: &Page) -> Result<Conversation, Error> {
+        show_using(&Api::Bound(&self.connection), self.kind, &self.id, page)
+    }
+
+    /// Send on the original connection. Retry an uncertain result with the same
+    /// message, including its original request ID, recipient and anchor.
+    pub fn send(&self, message: &Message) -> Outcome {
+        send_using(&Api::Bound(&self.connection), self.kind, &self.id, message)
+    }
+
+    /// Retry delivery of the original entry; preserve the request ID on retry.
+    pub fn redeliver(&self, entry: u64, request_id: &str) -> Outcome {
+        redeliver_using(
+            &Api::Bound(&self.connection),
+            self.kind,
+            &self.id,
+            entry,
+            request_id,
+        )
+    }
+
+    /// Advance this artifact's read marker without changing its origin.
+    pub fn read(&self, through: u64) -> Result<Counts, Error> {
+        read_using(&Api::Bound(&self.connection), self.kind, &self.id, through)
     }
 }
 
@@ -350,8 +422,12 @@ pub fn show(
     id: &str,
     page: &Page,
 ) -> Result<Conversation, Error> {
+    show_using(&Api::Legacy(directory, provider), kind, id, page)
+}
+
+fn show_using(api: &Api<'_>, kind: Kind, id: &str, page: &Page) -> Result<Conversation, Error> {
     let path = show_path(kind, id, page).ok_or(Error::Unreadable)?;
-    let response = exchange(directory, provider, &path, None)?;
+    let response = api.exchange(&path, None)?;
     match response.status {
         200 => parse(&response.body),
         404 => Err(missing(&response.body)),
@@ -407,13 +483,17 @@ pub fn resolve(directory: &Path, provider: &str, kind: Kind, path: &str) -> Resu
 
 /// Append an owner message. Runs on an I/O worker.
 pub fn send(directory: &Path, provider: &str, kind: Kind, id: &str, message: &Message) -> Outcome {
+    send_using(&Api::Legacy(directory, provider), kind, id, message)
+}
+
+fn send_using(api: &Api<'_>, kind: Kind, id: &str, message: &Message) -> Outcome {
     let Some(path) = base(kind, id).map(|base| base + "/messages") else {
         return Outcome::Unknown;
     };
     let Ok(body) = serde_json::to_vec(message) else {
         return Outcome::Unknown;
     };
-    outcome(exchange(directory, provider, &path, Some(body)))
+    outcome(api.exchange(&path, Some(body)))
 }
 
 /// Queue a new delivery for a failed owner message. Runs on an I/O worker.
@@ -425,13 +505,23 @@ pub fn redeliver(
     entry: u64,
     request_id: &str,
 ) -> Outcome {
+    redeliver_using(
+        &Api::Legacy(directory, provider),
+        kind,
+        id,
+        entry,
+        request_id,
+    )
+}
+
+fn redeliver_using(api: &Api<'_>, kind: Kind, id: &str, entry: u64, request_id: &str) -> Outcome {
     let Some(path) = base(kind, id).map(|base| format!("{base}/messages/{entry}/redeliver")) else {
         return Outcome::Unknown;
     };
     let body = serde_json::json!({ "request_id": request_id })
         .to_string()
         .into_bytes();
-    outcome(exchange(directory, provider, &path, Some(body)))
+    outcome(api.exchange(&path, Some(body)))
 }
 
 /// Move the owner's read marker forward. Runs on an I/O worker.
@@ -442,11 +532,15 @@ pub fn read(
     id: &str,
     through: u64,
 ) -> Result<Counts, Error> {
+    read_using(&Api::Legacy(directory, provider), kind, id, through)
+}
+
+fn read_using(api: &Api<'_>, kind: Kind, id: &str, through: u64) -> Result<Counts, Error> {
     let path = base(kind, id).ok_or(Error::Unreadable)? + "/read";
     let body = serde_json::json!({ "read_through": through })
         .to_string()
         .into_bytes();
-    let response = exchange(directory, provider, &path, Some(body))?;
+    let response = api.exchange(&path, Some(body))?;
     match response.status {
         200 => parse(&response.body),
         404 => Err(missing(&response.body)),
@@ -483,15 +577,26 @@ fn token(text: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b':' | b'.'))
 }
 
-/// `provider` is the address the record was read from; a changed connection
-/// could hold an unrelated artifact under the same ID.
-fn exchange(
-    directory: &Path,
-    expected: &str,
-    path: &str,
-    body: Option<Vec<u8>>,
-) -> Result<crate::transport::local::Response, Error> {
-    exchange_within(directory, expected, path, body, LIMIT)
+enum Api<'a> {
+    Legacy(&'a Path, &'a str),
+    Bound(&'a Connection),
+}
+
+impl Api<'_> {
+    fn exchange(
+        &self,
+        path: &str,
+        body: Option<Vec<u8>>,
+    ) -> Result<crate::transport::local::Response, Error> {
+        match self {
+            Self::Legacy(directory, provider) => {
+                exchange_within(directory, provider, path, body, LIMIT)
+            }
+            Self::Bound(connection) => connection
+                .response(path, body, LIMIT)
+                .map_err(Error::Connection),
+        }
+    }
 }
 
 fn exchange_within(
@@ -569,6 +674,16 @@ fn outcome(response: Result<crate::transport::local::Response, Error>) -> Outcom
         Err(error @ Error::Moved) => {
             return Outcome::Refused {
                 error: "moved".into(),
+                message: error.message().into(),
+            };
+        }
+        Err(
+            error @ Error::Connection(
+                crate::profiles::Error::BindingRequired | crate::profiles::Error::BindingMismatch,
+            ),
+        ) => {
+            return Outcome::Refused {
+                error: "binding_refused".into(),
                 message: error.message().into(),
             };
         }
