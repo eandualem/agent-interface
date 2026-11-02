@@ -144,8 +144,14 @@ fn bound_workers_keep_delayed_responses_credentials_and_stale_caches_separate() 
     let identity_a = connection_a.identity().clone();
     let identity_b = connection_b.identity().clone();
     let (wake_a, woken_a) = mpsc::channel();
+    let (resume_a, resumed_a) = mpsc::channel();
     let source_a = BoundRosterSource::start(connection_a, move || {
         let _ = wake_a.send(());
+        // Hold each published observation until the test has inspected it.
+        assert_ne!(
+            resumed_a.recv_timeout(Duration::from_secs(10)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        );
     })
     .unwrap();
     reading.recv_timeout(Duration::from_secs(5)).unwrap();
@@ -153,8 +159,13 @@ fn bound_workers_keep_delayed_responses_credentials_and_stale_caches_separate() 
     // change the credential used by either existing worker on its next poll.
     fs::write(credential_a, "BACKBONE_API_KEY=fixture-rotated\n").unwrap();
     let (wake_b, woken_b) = mpsc::channel();
+    let (resume_b, resumed_b) = mpsc::channel();
     let source_b = BoundRosterSource::start(connection_b, move || {
         let _ = wake_b.send(());
+        assert_ne!(
+            resumed_b.recv_timeout(Duration::from_secs(10)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        );
     })
     .unwrap();
     woken_b.recv_timeout(Duration::from_secs(5)).unwrap();
@@ -177,6 +188,8 @@ fn bound_workers_keep_delayed_responses_credentials_and_stale_caches_separate() 
     assert!(first_b.error.is_none() && first_b.snapshot.error.is_none());
     // A's refusal must replace its unread success, retaining A's timestamp and
     // sentinel. Meanwhile B continues polling its own provider successfully.
+    resume_a.send(()).unwrap();
+    resume_b.send(()).unwrap();
     woken_a.recv_timeout(Duration::from_secs(5)).unwrap();
     let failed_a = source_a.take_update().unwrap();
     assert_eq!(failed_a.identity, identity_a);
@@ -194,6 +207,12 @@ fn bound_workers_keep_delayed_responses_credentials_and_stale_caches_separate() 
     );
     assert!(next_b.error.is_none() && next_b.snapshot.error.is_none());
     assert!(next_b.snapshot.observed_at > first_b.snapshot.observed_at);
+    // Stop before releasing the final callbacks, so a third poll cannot race
+    // teardown after the fixture providers have finished serving responses.
+    source_a.stop.send(()).unwrap();
+    source_b.stop.send(()).unwrap();
+    drop(resume_a);
+    drop(resume_b);
     drop(source_a);
     drop(source_b);
     assert_eq!(woken_a.recv(), Err(mpsc::RecvError));
