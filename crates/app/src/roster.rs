@@ -16,7 +16,7 @@ use agent_interface_roster::{Snapshot, views};
 
 mod bound;
 pub use bound::{BoundRosterSource, BoundRosterUpdate};
-mod content;
+pub(crate) mod content;
 pub use content::{BoundContentSource, BoundContentUpdate};
 mod location;
 pub use location::provider_directory;
