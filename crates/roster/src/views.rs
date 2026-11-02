@@ -1168,6 +1168,9 @@ fn rules(runtime: &str, dir: &str, home: Option<std::path::PathBuf>) -> Permissi
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct Source {
+    /// Shared catalog identity attached by a bound library read, never a path lookup at open.
+    #[serde(skip)]
+    pub artifact_id: Option<String>,
     /// The policy's name, or `base` or `swarm`.
     pub name: std::sync::Arc<str>,
     /// Its file.

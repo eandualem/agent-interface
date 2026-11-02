@@ -269,6 +269,8 @@ fn project_of(path: &str) -> String {
 /// the global policies in order, each tag's policies, and swarm briefs.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PolicyLibrary {
+    /// Configured agents from the same library observation, for discussion recipients.
+    pub members: Vec<String>,
     /// The base brief.
     pub base: Vec<Source>,
     /// Global policies, in the order every agent receives them.
@@ -286,6 +288,54 @@ pub struct PolicyLibrary {
 }
 
 impl PolicyLibrary {
+    /// Shared policy bodies are read only from the stable catalog identity's
+    /// immutable snapshot. Instruction previews contribute grouping, not bodies
+    /// or later path-based discussion authority. Base/swarm text stays read-only.
+    pub(super) fn bind_shared(
+        &mut self,
+        connection: &crate::profiles::Connection,
+        live: &dyn Fn() -> bool,
+    ) -> Result<(), super::content::Error> {
+        use crate::library_snapshots::{self, Kind};
+        if self.global.is_empty() && self.tags.iter().all(|(_, sources)| sources.is_empty()) {
+            return Ok(());
+        }
+        let catalog =
+            library_snapshots::list(connection, Kind::Policy, live).map_err(
+                |error| match error {
+                    library_snapshots::Error::Connection(error) => {
+                        super::content::Error::Connection(error)
+                    }
+                    library_snapshots::Error::Cancelled => super::content::Error::Cancelled,
+                    _ => super::content::Error::Content(super::UNREADABLE),
+                },
+            )?;
+        let mut index = BTreeMap::new();
+        for entry in catalog {
+            if index
+                .insert(
+                    (entry.name, entry.path),
+                    entry.artifact.map(|artifact| artifact.id().to_owned()),
+                )
+                .is_some()
+            {
+                return Err(super::content::Error::Content(super::UNREADABLE));
+            }
+        }
+        for source in self
+            .global
+            .iter_mut()
+            .chain(self.tags.iter_mut().flat_map(|(_, sources)| sources))
+        {
+            source.artifact_id = index
+                .get(&(source.name.to_string(), source.path.to_string()))
+                .cloned()
+                .flatten();
+            // A later preview of a reused path must not become this artifact's body.
+            source.text = None;
+        }
+        Ok(())
+    }
     pub(super) fn read(api: &Api<'_>, agents: &[Member]) -> Result<Self, &'static str> {
         let mut briefs = Vec::new();
         let mut failure = None;
@@ -345,6 +395,7 @@ impl PolicyLibrary {
 
     fn gather(briefs: &[Instructions], agents: &[Member]) -> Self {
         let mut library = Self {
+            members: agents.iter().map(|agent| agent.name.clone()).collect(),
             read: briefs.len(),
             agents: agents.len(),
             ..Self::default()
@@ -647,6 +698,7 @@ mod tests {
 
     fn source(name: &str, scope: &str) -> Source {
         Source {
+            artifact_id: None,
             name: name.into(),
             path: format!("/t/{name}.md").into(),
             scope: scope.into(),

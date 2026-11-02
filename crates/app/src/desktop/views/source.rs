@@ -18,6 +18,7 @@ pub(super) enum Source {
 
 fn request(request: &views::Request) -> Option<content::Request> {
     Some(match request {
+        views::Request::Policies => content::Request::Policies,
         views::Request::Skills => content::Request::Skills,
         views::Request::Usage(range) => content::Request::Usage(*range),
         views::Request::Activity => content::Request::Activity,
@@ -95,6 +96,7 @@ impl Source {
                     return None;
                 }
                 let wanted = match update.read.request {
+                    content::Request::Policies => views::Request::Policies,
                     content::Request::Skills => views::Request::Skills,
                     content::Request::Usage(range) => views::Request::Usage(range),
                     content::Request::Activity => views::Request::Activity,
@@ -109,6 +111,7 @@ impl Source {
                     .read
                     .result
                     .map(|data| match data {
+                        content::Data::Policies(policies) => views::Data::Policies(policies),
                         content::Data::Skills(skills) => views::Data::Skills(skills),
                         content::Data::Usage(usage) => views::Data::Usage(usage),
                         content::Data::Activity(activity) => views::Data::Activity(activity),
@@ -242,7 +245,6 @@ mod tests {
         assert!(request(&views::Request::Activity).is_some());
         for unsupported in [
             views::Request::Team,
-            views::Request::Policies,
             views::Request::Tags,
             views::Request::Agent("worker".into(), views::Part::Card),
         ] {

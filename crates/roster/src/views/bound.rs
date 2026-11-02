@@ -70,6 +70,12 @@ pub fn read(connection: &Connection, request: &Request, live: &dyn Fn() -> bool)
     } else {
         result.map_err(Error::Content)
     };
+    let result = result.and_then(|mut data| {
+        if let Data::Policies(library) = &mut data {
+            library.bind_shared(connection, live)?;
+        }
+        Ok(data)
+    });
     Read {
         identity: connection.identity().clone(),
         request: request.clone(),
