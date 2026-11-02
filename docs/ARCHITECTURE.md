@@ -851,6 +851,15 @@ rows or columns exist. Copy uses selected cells or the displayed range; the labe
 states its scope. Export uses an occluding deferred menu above the grid.
 No spreadsheet widget or formula engine is added.
 
+`roster::plans::Client` and `roster::interactions::Client` retain a verified
+profile connection for all list, history and detail pages. Bound interaction
+snapshots retain that client for later detail reads, including its original
+credentials; their legacy provider URL is empty. Every bound request carries the
+full identity. Binding refusal from optional state-history enrichment invalidates
+the whole snapshot, while unsupported state history remains an optional error.
+Legacy plan pagination also captures its connection once per complete read.
+These clients do not enable native profile selection or bound UI wiring.
+
 `roster::plans` reads Backbone's `/api/current-plans` list over the same
 authenticated local transport as Sheets, on a worker, every 20 seconds while
 the Current plans section is open. It is read-only: it publishes, approves and

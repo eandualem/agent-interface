@@ -131,6 +131,8 @@ pub enum Error {
     Unsupported,
     /// The response violated the bounded contract.
     Unreadable,
+    /// The captured profile connection refused or failed this read.
+    Connection(crate::profiles::Error),
 }
 
 impl Error {
@@ -140,6 +142,10 @@ impl Error {
             Self::Unavailable => "Current plans need an authenticated private Backbone connection.",
             Self::Unsupported => "This Agent Backbone does not offer current plans yet.",
             Self::Unreadable => "Backbone returned an unreadable plans response.",
+            Self::Connection(
+                crate::profiles::Error::BindingRequired | crate::profiles::Error::BindingMismatch,
+            ) => "The original Backbone profile binding was refused.",
+            Self::Connection(_) => "The original Backbone profile is unavailable.",
         }
     }
 }
@@ -147,15 +153,63 @@ impl Error {
 /// The most pages read for one list, bounding a misbehaving cursor.
 const PAGES: usize = 20;
 
+/// Current-plan reads pinned to one verified profile and credential snapshot.
+#[derive(Clone)]
+pub struct Client {
+    connection: crate::profiles::Connection,
+}
+
+impl Client {
+    /// Retain the verified connection for reads and pagination.
+    pub fn new(connection: crate::profiles::Connection) -> Self {
+        Self { connection }
+    }
+
+    /// Origin to check before applying a deferred result.
+    pub fn identity(&self) -> &crate::profiles::Identity {
+        self.connection.identity()
+    }
+
+    /// Read all bounded pages on the original connection, or fail the whole read.
+    pub fn list_all(&self) -> Result<PlansPage, Error> {
+        list_all_using(&Api::Bound(&self.connection))
+    }
+
+    /// Read one page on the captured connection.
+    pub fn list(&self, after: Option<&str>) -> Result<PlansPage, Error> {
+        list_using(&Api::Bound(&self.connection), after)
+    }
+}
+
+enum Api<'a> {
+    Legacy(String, String),
+    Bound(&'a crate::profiles::Connection),
+}
+
+impl Api<'_> {
+    fn legacy(directory: &Path) -> Result<Self, Error> {
+        let (provider, key) =
+            crate::configuration::configured(directory, None).ok_or(Error::Unavailable)?;
+        if !provider.starts_with("unix:") || key.is_empty() {
+            return Err(Error::Unavailable);
+        }
+        Ok(Self::Legacy(provider, key))
+    }
+}
+
 /// Read every active agent's current plan, following the page cursor. Runs on
-/// an I/O worker.
+/// an I/O worker and captures the legacy connection once for the complete read.
 pub fn list_all(directory: &Path) -> Result<PlansPage, Error> {
-    let mut all = list(directory, None)?;
+    list_all_using(&Api::legacy(directory)?)
+}
+
+fn list_all_using(api: &Api<'_>) -> Result<PlansPage, Error> {
+    let mut all = list_using(api, None)?;
     for _ in 1..PAGES {
         let Some(after) = all.next_after_author_id.take() else {
             return Ok(all);
         };
-        let mut page = list(directory, Some(&after))?;
+        let mut page = list_using(api, Some(&after))?;
         all.items.append(&mut page.items);
         all.next_after_author_id = page.next_after_author_id;
     }
@@ -165,14 +219,12 @@ pub fn list_all(directory: &Path) -> Result<PlansPage, Error> {
     }
 }
 
-/// Read one page of current plans. Runs on an I/O worker.
+/// Read one legacy page of current plans. Runs on an I/O worker.
 pub fn list(directory: &Path, after: Option<&str>) -> Result<PlansPage, Error> {
-    let (provider, key) =
-        crate::configuration::configured(directory, None).ok_or(Error::Unavailable)?;
-    let socket = provider.strip_prefix("unix:").ok_or(Error::Unavailable)?;
-    if key.is_empty() {
-        return Err(Error::Unavailable);
-    }
+    list_using(&Api::legacy(directory)?, after)
+}
+
+fn list_using(api: &Api<'_>, after: Option<&str>) -> Result<PlansPage, Error> {
     let mut path = "/api/current-plans?limit=50".to_owned();
     if let Some(after) = after {
         if after.len() != 32 || !after.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -181,15 +233,20 @@ pub fn list(directory: &Path, after: Option<&str>) -> Result<PlansPage, Error> {
         path.push_str("&after_author_id=");
         path.push_str(after);
     }
-    let response = crate::transport::local::response(
-        socket,
-        &path,
-        &key,
-        None,
-        LIST_LIMIT,
-        Duration::from_secs(15),
-    )
-    .map_err(|_| Error::Unavailable)?;
+    let response = match api {
+        Api::Legacy(provider, key) => crate::transport::local::response(
+            &provider[5..],
+            &path,
+            key,
+            None,
+            LIST_LIMIT,
+            Duration::from_secs(15),
+        )
+        .map_err(|_| Error::Unavailable)?,
+        Api::Bound(connection) => connection
+            .response(&path, None, LIST_LIMIT)
+            .map_err(Error::Connection)?,
+    };
     match response.status {
         200 => parse(&response.body),
         404 => Err(Error::Unsupported),
