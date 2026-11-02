@@ -80,14 +80,12 @@ pub struct Item {
 
 #[derive(Deserialize)]
 struct Catalog {
-    schema_version: u32,
     items: Vec<Item>,
 }
 
 /// Decode a successful registry list. A registry command error must not call this.
 pub fn list(bytes: &[u8]) -> Result<Vec<Item>, Error> {
     let catalog: Catalog = parse(bytes)?;
-    schema(catalog.schema_version)?;
     let mut ids = std::collections::HashSet::new();
     for item in &catalog.items {
         validate_item(item)?;
@@ -126,7 +124,6 @@ struct Binding {
 
 #[derive(Deserialize)]
 struct Record {
-    schema_version: u32,
     #[serde(flatten)]
     item: Item,
     // Raw JSON distinguishes a required null from a missing binding field.
@@ -144,7 +141,6 @@ impl Profile {
     /// Decode a bounded registry show reply and validate its binding consistency.
     pub fn parse(bytes: &[u8]) -> Result<Self, Error> {
         let record: Record = parse(bytes)?;
-        schema(record.schema_version)?;
         validate_item(&record.item)?;
         let binding: Option<Binding> =
             serde_json::from_str(record.binding.get()).map_err(|_| Error::Invalid)?;
@@ -230,7 +226,6 @@ impl Connection {
     pub fn verify(&self) -> Result<(), Error> {
         #[derive(Deserialize)]
         struct Reply {
-            schema_version: u32,
             #[serde(flatten)]
             identity: Identity,
             baseline_version: String,
@@ -242,7 +237,6 @@ impl Connection {
         }
         successful(&response)?;
         let reply: Reply = parse(&response.body)?;
-        schema(reply.schema_version)?;
         if reply.baseline_version.is_empty() {
             return Err(Error::Invalid);
         }
@@ -272,6 +266,9 @@ impl Connection {
         if response.body.len() > limit {
             return Err(Error::Invalid);
         }
+        if let Some(error) = binding_refusal(&response) {
+            return Err(error);
+        }
         Ok(response)
     }
 }
@@ -280,6 +277,10 @@ fn successful(response: &local::Response) -> Result<(), Error> {
     if (200..300).contains(&response.status) {
         return Ok(());
     }
+    Err(binding_refusal(response).unwrap_or(Error::Refused(response.status)))
+}
+
+fn binding_refusal(response: &local::Response) -> Option<Error> {
     if response.status == 409 {
         #[derive(Deserialize)]
         struct Refusal {
@@ -291,13 +292,13 @@ fn successful(response: &local::Response) -> Result<(), Error> {
         }
         if let Ok(refusal) = serde_json::from_slice::<Refusal>(&response.body) {
             match refusal.detail.code.as_str() {
-                "binding_required" => return Err(Error::BindingRequired),
-                "binding_mismatch" => return Err(Error::BindingMismatch),
+                "binding_required" => return Some(Error::BindingRequired),
+                "binding_mismatch" => return Some(Error::BindingMismatch),
                 _ => {}
             }
         }
     }
-    Err(Error::Refused(response.status))
+    None
 }
 
 fn schema(version: u32) -> Result<(), Error> {
@@ -312,6 +313,13 @@ fn parse<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, Error> {
     if bytes.len() > RESPONSE_LIMIT {
         return Err(Error::Invalid);
     }
+    #[derive(Deserialize)]
+    struct Version {
+        schema_version: u32,
+    }
+    // Inspect the envelope before decoding fields that a newer schema may change.
+    let version: Version = serde_json::from_slice(bytes).map_err(|_| Error::Invalid)?;
+    schema(version.schema_version)?;
     serde_json::from_slice(bytes).map_err(|_| Error::Invalid)
 }
 

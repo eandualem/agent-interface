@@ -16,6 +16,9 @@ fn fixture() -> Value {
 fn canonical_discovery_decodes_and_invalid_bindings_are_not_selectable() {
     let fixture = fixture();
     let bytes = |value: &Value| serde_json::to_vec(value).unwrap();
+    let future = br#"{"schema_version":2,"new_shape":true}"#;
+    assert_eq!(list(future).err(), Some(Error::Unsupported));
+    assert_eq!(Profile::parse(future).err(), Some(Error::Unsupported));
     let items = list(&bytes(&fixture["discovery"]["list"])).unwrap();
     assert_eq!(items.len(), 1);
     let ready = Profile::parse(&bytes(&fixture["discovery"]["show_ready"])).unwrap();
@@ -115,7 +118,12 @@ fn connection_pins_credentials_and_identity_through_followup_and_replacement() {
         .unwrap();
     assert_eq!(response.status, 200);
     // The same path now refuses the old instance. No unbound retry follows.
-    assert_eq!(connection.verify(), Err(Error::BindingMismatch));
+    assert_eq!(
+        connection
+            .response("/api/example", Some(vec![]), 1024)
+            .err(),
+        Some(Error::BindingMismatch)
+    );
     let requests = server.join().unwrap();
     assert_eq!(requests.len(), 3);
     assert!(requests[1].starts_with("post /api/example "));
@@ -142,13 +150,15 @@ fn handshake_rejects_wrong_identity_tmux_and_unsupported_provider() {
             (200, identity),
             (404, json!({})),
             (409, required),
+            (200, json!({"schema_version":2,"new_shape":true})),
         ],
     );
     assert_eq!(profile.connect().err(), Some(Error::BindingMismatch));
     assert_eq!(profile.connect().err(), Some(Error::BindingMismatch));
     assert_eq!(profile.connect().err(), Some(Error::Unsupported));
     assert_eq!(profile.connect().err(), Some(Error::BindingRequired));
-    assert_eq!(server.join().unwrap().len(), 4);
+    assert_eq!(profile.connect().err(), Some(Error::Unsupported));
+    assert_eq!(server.join().unwrap().len(), 5);
 }
 
 #[test]
