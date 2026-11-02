@@ -160,14 +160,14 @@ pub(super) fn refresh_toolbar(pane: &ViewPane, cx: &mut Context<ViewPane>) -> gp
 }
 
 /// The author's current runtime state, separate from the report's authored tag.
-pub(super) fn mark(item: &ReportItem, cx: &gpui::App) -> Option<gpui::Div> {
+pub(super) fn mark(
+    item: &ReportItem,
+    agents: &crate::desktop::agent_status::LiveAgents,
+) -> Option<gpui::Div> {
     let ReportContent::Progress { .. } = &item.content else {
         return None;
     };
-    Some(ui::agent_symbol(current_state(
-        item,
-        &crate::desktop::agent_status::LiveAgents::shared(cx),
-    )))
+    Some(ui::agent_symbol(current_state(item, agents)))
 }
 
 fn current_state(
@@ -414,7 +414,7 @@ fn reader(
                     .items_center()
                     .gap(px(t.space.s8))
                     .pb(px(t.space.s10))
-                    .children(mark(item, cx))
+                    .children(mark(item, &pane.agents))
                     .child(super::mono(item.author.clone()).text_color(c.text))
                     .children(runtime(pane, item))
                     .child(state_tag(item, status))
@@ -597,7 +597,7 @@ pub(super) fn body(pane: &ViewPane, page: &ReportPage, cx: &mut Context<ViewPane
                         id,
                         index == 0,
                         !seen::is_seen(item),
-                        mark(item, cx).unwrap_or_else(|| div()),
+                        mark(item, &pane.agents).unwrap_or_else(|| div()),
                         item.author.clone(),
                         line(summary),
                         state_tag(item, status),

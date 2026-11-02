@@ -101,6 +101,7 @@ impl Selectable for Conversation {
 }
 
 pub(super) struct Conversation {
+    agents: crate::desktop::agent_status::LiveAgents,
     /// The record messages are about and where to send them; `None` when the
     /// owning view delivers them itself.
     record: Option<(ReportItem, PathBuf)>,
@@ -342,6 +343,7 @@ pub(super) struct ReferenceTarget {
 impl Conversation {
     /// The conversation about an authored record, sent to its author.
     pub fn new(
+        agents: crate::desktop::agent_status::LiveAgents,
         item: ReportItem,
         directory: PathBuf,
         surface: Rc<RefCell<super::artifact_web::Surface>>,
@@ -350,6 +352,7 @@ impl Conversation {
         cx: &mut Context<Self>,
     ) -> Self {
         let mut conversation = Self::create(subject(&item), window, cx);
+        conversation.agents = agents;
         conversation.visible = visible;
         conversation.agent = item.author.clone();
         conversation.anchor = Some(format!("#{}", item.id));
@@ -684,6 +687,7 @@ impl Conversation {
             },
         );
         Self {
+            agents: crate::desktop::agent_status::LiveAgents::default(),
             record: None,
             agent: String::new(),
             about,
@@ -1464,7 +1468,7 @@ impl Conversation {
             div().id("conversation-open").on_click(
                 cx.listener(|conversation, _, window, cx| conversation.toggle(window, cx)),
             ),
-            self.mark(cx),
+            self.mark(),
             self.stored
                 .as_ref()
                 .and_then(|stored| stored.page.as_ref())
@@ -1688,7 +1692,7 @@ impl Conversation {
         markdown::render_in(&markdown::parse_authored(text), &look, self, cx).min_w_0()
     }
 
-    fn mark(&self, cx: &gpui::App) -> Option<gpui::Div> {
+    fn mark(&self) -> Option<gpui::Div> {
         let (item, _) = self.record.as_ref()?;
         if !matches!(item.content, ReportContent::Progress { .. }) {
             return None;
@@ -1710,11 +1714,7 @@ impl Conversation {
         } else {
             String::new()
         };
-        Some(ui::agent_symbol(
-            crate::desktop::agent_status::LiveAgents::shared(cx)
-                .get(&name)
-                .state,
-        ))
+        Some(ui::agent_symbol(self.agents.get(&name).state))
     }
 
     fn thread(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -1983,7 +1983,7 @@ impl Conversation {
         let can_send = self.can_send(cx);
         ui::conversation_panel()
             .child(ui::conversation_header(
-                self.mark(cx),
+                self.mark(),
                 self.agent(),
                 self.about,
                 ui::icon_button("conversation-close", "panel-right-close").on_click(

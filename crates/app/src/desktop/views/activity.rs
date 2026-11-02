@@ -133,11 +133,10 @@ fn span_color(state: &str) -> Rgba {
     }
 }
 
-fn timeline(activity: &Activity, cx: &gpui::App) -> gpui::Div {
+fn timeline(activity: &Activity, agents: &crate::desktop::agent_status::LiveAgents) -> gpui::Div {
     let (t, c) = (tokens(), colors());
     let name_width = t.size.tag_card_label + t.space.s24;
-    let agents = crate::desktop::agent_status::LiveAgents::shared(cx);
-    let lanes = lanes(activity, now() as f64, &agents);
+    let lanes = lanes(activity, now() as f64, agents);
     let mut axis = div().flex_1().flex().justify_between();
     for label in ["60 min ago", "45", "30", "15", "now"] {
         axis = axis.child(label);
@@ -309,7 +308,7 @@ pub(super) fn body(pane: &ViewPane, activity: &Activity, cx: &mut Context<ViewPa
     let mut rows = list("activity-rows")
         .px(px(0.0))
         .py(px(0.0))
-        .child(timeline(activity, cx))
+        .child(timeline(activity, &pane.agents))
         .child(filters);
     for entry in activity.entries.iter().filter(|entry| match pane.records {
         Records::All => true,

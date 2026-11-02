@@ -300,6 +300,24 @@ fn open_browser(
     source: Result<PathBuf, String>,
     cx: &mut App,
 ) -> Result<(), String> {
+    let backbone = crate::roster::provider_directory(None, None, None, false)
+        .ok()
+        .flatten();
+    let roster = backbone
+        .as_ref()
+        .and_then(|directory| agent_status::start_legacy(directory.clone(), cx));
+    open_browser_with_status(directory, source, backbone, roster, cx)
+}
+
+/// Another native window retains the originating status observation, including
+/// standalone mode, without resolving a different provider during creation.
+fn open_browser_with_status(
+    directory: Option<PathBuf>,
+    source: Result<PathBuf, String>,
+    backbone: Option<PathBuf>,
+    roster: Option<agent_status::LiveAgents>,
+    cx: &mut App,
+) -> Result<(), String> {
     let options = WindowOptions {
         app_id: Some(APP_ID.into()),
         window_decorations: cfg!(target_os = "linux").then_some(gpui::WindowDecorations::Client),
@@ -329,6 +347,8 @@ fn open_browser(
     cx.open_window(options, |_, cx| {
         cx.new(|cx| {
             let mut browser = Browser {
+                backbone,
+                roster,
                 source: Some(source),
                 shell_environment: Some(
                     agent_interface_tmux::shells::Environment::capture()
@@ -338,7 +358,12 @@ fn open_browser(
                 ..Browser::default()
             };
             browser.open(directory, cx);
-            browser.start_roster(cx);
+            if browser.roster.is_some() {
+                browser.roster_updates =
+                    Some(cx.observe_global::<agent_status::Sources>(|browser, cx| {
+                        browser.refresh_source_matches(cx);
+                    }));
+            }
             // Stopping the library joins its storage worker, which can wait on
             // a locked database; keep that off the UI thread when the window closes.
             cx.on_release(|browser, cx| {
@@ -703,7 +728,13 @@ impl Browser {
             .source
             .clone()
             .unwrap_or_else(|| Err("Source socket unavailable".into()));
-        if let Err(error) = open_browser(self.directory.clone(), source, cx) {
+        if let Err(error) = open_browser_with_status(
+            self.directory.clone(),
+            source,
+            self.backbone.clone(),
+            self.roster.clone(),
+            cx,
+        ) {
             self.error = Some(format!("Cannot open window: {error}"));
             cx.notify();
         }
@@ -743,19 +774,6 @@ impl Browser {
         self.error = None;
         self.loading = true;
         self.start_reader(cx);
-    }
-
-    /// Poll Agent Backbone for agent states when it is installed. Without it
-    /// the panel has no agents section.
-    fn start_roster(&mut self, cx: &mut Context<Self>) {
-        let Ok(Some(directory)) = crate::roster::provider_directory(None, None, None, false) else {
-            return;
-        };
-        self.backbone = Some(directory.clone());
-        self.roster = agent_status::start(directory, cx);
-        self.roster_updates = Some(cx.observe_global::<agent_status::Source>(|browser, cx| {
-            browser.refresh_source_matches(cx);
-        }));
     }
 
     /// Show the tab holding this agent's session: the current tab if it does,
@@ -2064,7 +2082,16 @@ impl Render for Browser {
                 let backbone = self.backbone.clone();
                 let directory = self.directory.clone();
                 let reports = view.kind == agent_interface_core::ViewKind::Reports;
-                let pane = cx.new(|cx| views::ViewPane::new(view, backbone, directory, window, cx));
+                let pane = cx.new(|cx| {
+                    views::ViewPane::new(
+                        view,
+                        backbone,
+                        directory,
+                        self.roster.clone().unwrap_or_default(),
+                        window,
+                        cx,
+                    )
+                });
                 if let Some(section) = self.opening_sections.remove(&id)
                     && reports
                 {
@@ -2143,8 +2170,16 @@ impl Render for Browser {
                 let socket = self.source.clone().and_then(Result::ok);
                 let backbone = self.backbone.clone();
                 let pane = id.clone();
-                let chooser =
-                    cx.new(|cx| new_pane::NewPane::new(pane, socket, backbone, window, cx));
+                let chooser = cx.new(|cx| {
+                    new_pane::NewPane::new(
+                        pane,
+                        socket,
+                        backbone,
+                        self.roster.clone().unwrap_or_default(),
+                        window,
+                        cx,
+                    )
+                });
                 let events =
                     cx.subscribe_in(&chooser, window, |browser, chooser, event, window, cx| {
                         let pane = chooser.read(cx).pane().to_owned();

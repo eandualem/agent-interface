@@ -59,7 +59,12 @@ struct Frame {
 }
 
 impl Plans {
-    pub fn new(directory: PathBuf, visible: Rc<Cell<bool>>, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        directory: PathBuf,
+        visible: Rc<Cell<bool>>,
+        agents: crate::desktop::agent_status::LiveAgents,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let poll = cx.spawn(async move |this, cx| {
             loop {
                 if this.update(cx, |plans, cx| plans.poll(cx)).is_err() {
@@ -71,7 +76,7 @@ impl Plans {
         Self {
             directory,
             frame: Frame {
-                agents: crate::desktop::agent_status::LiveAgents::shared(cx),
+                agents,
                 ..Frame::default()
             },
             asked: 0,

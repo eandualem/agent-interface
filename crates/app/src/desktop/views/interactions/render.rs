@@ -428,12 +428,11 @@ fn agents(view: &Interactions, cx: &mut Context<Interactions>) -> AnyElement {
         let Some(id) = item.agent.id.clone() else {
             continue;
         };
-        let status =
-            crate::desktop::agent_status::LiveAgents::shared(cx).get(if item.agent.retired {
-                ""
-            } else {
-                &item.agent.name
-            });
+        let status = view.agents.get(if item.agent.retired {
+            ""
+        } else {
+            &item.agent.name
+        });
         let mut title = div()
             .flex()
             .items_center()

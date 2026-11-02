@@ -14,14 +14,12 @@ use crate::desktop::{
     design::{colors, tokens},
 };
 
-fn state(member: &Member, cx: &gpui::App) -> AgentState {
-    crate::desktop::agent_status::LiveAgents::shared(cx)
-        .get(&member.name)
-        .state
+fn state(member: &Member, pane: &ViewPane) -> AgentState {
+    pane.agents.get(&member.name).state
 }
 
-fn rank(member: &Member, cx: &gpui::App) -> (u8, String) {
-    let status = crate::desktop::agent_status::LiveAgents::shared(cx).get(&member.name);
+fn rank(member: &Member, pane: &ViewPane) -> (u8, String) {
+    let status = pane.agents.get(&member.name);
     (status.rank(), member.name.to_ascii_lowercase())
 }
 
@@ -30,11 +28,7 @@ pub(super) fn body(pane: &ViewPane, team: &Team, cx: &mut Context<ViewPane>) -> 
     let online = team
         .members
         .iter()
-        .filter(|m| {
-            crate::desktop::agent_status::LiveAgents::shared(cx)
-                .get(&m.name)
-                .online
-        })
+        .filter(|m| pane.agents.get(&m.name).online)
         .count();
     let mut grouping = ui::segments();
     for (choice, label) in [
@@ -63,18 +57,18 @@ pub(super) fn body(pane: &ViewPane, team: &Team, cx: &mut Context<ViewPane>) -> 
     let tally = |wanted: AgentState| {
         team.members
             .iter()
-            .filter(|m| state(m, cx) == wanted)
+            .filter(|m| state(m, pane) == wanted)
             .count()
     };
     let needing = team
         .members
         .iter()
-        .filter(|m| state(m, cx).needs_you())
+        .filter(|m| state(m, pane).needs_you())
         .count();
     let working = team
         .members
         .iter()
-        .filter(|m| state(m, cx).working())
+        .filter(|m| state(m, pane).working())
         .count();
     let summary = ui::text(
         div()
@@ -131,9 +125,9 @@ pub(super) fn body(pane: &ViewPane, team: &Team, cx: &mut Context<ViewPane>) -> 
     });
 
     let column = match pane.grouping {
-        Grouping::Folder => folders(team, cx),
-        Grouping::Tag => by_tag(team, cx),
-        Grouping::Swarm => swarms(team, cx),
+        Grouping::Folder => folders(pane, team, cx),
+        Grouping::Tag => by_tag(pane, team, cx),
+        Grouping::Swarm => swarms(pane, team, cx),
     };
     div()
         .size_full()
@@ -175,6 +169,7 @@ fn coordinates(member: &Member) -> bool {
 
 /// One card of agents, with tree guides for the agents a coordinator leads.
 fn card(
+    pane: &ViewPane,
     members: &[&Member],
     group: &str,
     lead: Option<&Member>,
@@ -183,7 +178,7 @@ fn card(
     let mut card = ui::group_card();
     let mut first = true;
     if let Some(lead) = lead {
-        card = card.child(agent_row(lead, "", group, true, cx));
+        card = card.child(agent_row(pane, lead, "", group, true, cx));
         first = false;
     }
     // A coordinator leads the agents in its own folder; others on the card
@@ -199,11 +194,11 @@ fn card(
         } else {
             "├ "
         };
-        card = card.child(agent_row(member, guide, group, first, cx));
+        card = card.child(agent_row(pane, member, guide, group, first, cx));
         first = false;
     }
     for member in rest {
-        card = card.child(agent_row(member, "", group, first, cx));
+        card = card.child(agent_row(pane, member, "", group, first, cx));
         first = false;
     }
     card
@@ -212,7 +207,7 @@ fn card(
 /// Agents by the folder they work in, ordered by path so a folder's
 /// subfolders follow it, lone folders last. A folder's coordinator comes first and leads the
 /// others; a subfolder without one says which coordinator above leads it.
-fn folders(team: &Team, cx: &mut Context<ViewPane>) -> gpui::Div {
+fn folders(pane: &ViewPane, team: &Team, cx: &mut Context<ViewPane>) -> gpui::Div {
     let mut groups: BTreeMap<(bool, String), Vec<&Member>> = BTreeMap::new();
     for member in &team.members {
         let folder = parent(&member.dir).to_owned();
@@ -241,7 +236,7 @@ fn folders(team: &Team, cx: &mut Context<ViewPane>) -> gpui::Div {
     let mut column = div();
     for ((_, folder), members) in order {
         let mut members = members.clone();
-        members.sort_by_key(|member| rank(member, cx));
+        members.sort_by_key(|member| rank(member, pane));
         let lead = leads.get(folder.as_str()).copied();
         let above = lead.is_none().then(|| led_from(&leads, folder)).flatten();
         let (title, mut note) = if folder.is_empty() {
@@ -257,7 +252,7 @@ fn folders(team: &Team, cx: &mut Context<ViewPane>) -> gpui::Div {
         }
         column = column
             .child(ui::group_title(title, note))
-            .child(card(&members, folder, lead, cx));
+            .child(card(pane, &members, folder, lead, cx));
     }
     column
 }
@@ -274,7 +269,7 @@ fn led_from<'a>(leads: &BTreeMap<&str, &'a Member>, folder: &str) -> Option<&'a 
     None
 }
 
-fn by_tag(team: &Team, cx: &mut Context<ViewPane>) -> gpui::Div {
+fn by_tag(pane: &ViewPane, team: &Team, cx: &mut Context<ViewPane>) -> gpui::Div {
     let mut groups: BTreeMap<(bool, String), Vec<&Member>> = BTreeMap::new();
     for member in &team.members {
         if member.tags.is_empty() {
@@ -289,7 +284,7 @@ fn by_tag(team: &Team, cx: &mut Context<ViewPane>) -> gpui::Div {
     }
     let mut column = div();
     for ((_, tag), mut members) in groups {
-        members.sort_by_key(|member| rank(member, cx));
+        members.sort_by_key(|member| rank(member, pane));
         let label = if tag.is_empty() {
             ui::tag("no tag", Tone::Quiet)
         } else {
@@ -297,12 +292,12 @@ fn by_tag(team: &Team, cx: &mut Context<ViewPane>) -> gpui::Div {
         };
         column = column
             .child(ui::group_label(label, plural(members.len())))
-            .child(card(&members, &tag, None, cx));
+            .child(card(pane, &members, &tag, None, cx));
     }
     column
 }
 
-fn swarms(team: &Team, cx: &mut Context<ViewPane>) -> gpui::Div {
+fn swarms(pane: &ViewPane, team: &Team, cx: &mut Context<ViewPane>) -> gpui::Div {
     let mut column = div();
     if team.swarms.is_empty() {
         column = column.child(ui::group_note("No swarm is running."));
@@ -322,7 +317,7 @@ fn swarms(team: &Team, cx: &mut Context<ViewPane>) -> gpui::Div {
                 swarm.name.clone(),
                 format!("{}{issue} · {}", swarm.repo, plural(members.len())),
             ))
-            .child(card(&members, &swarm.name, None, cx));
+            .child(card(pane, &members, &swarm.name, None, cx));
     }
     let outside: Vec<&Member> = team
         .members
@@ -337,7 +332,7 @@ fn swarms(team: &Team, cx: &mut Context<ViewPane>) -> gpui::Div {
     if !outside.is_empty() {
         column = column
             .child(ui::group_title("Not in a swarm", plural(outside.len())))
-            .child(card(&outside, "", None, cx));
+            .child(card(pane, &outside, "", None, cx));
     }
     column
 }
@@ -345,6 +340,7 @@ fn swarms(team: &Team, cx: &mut Context<ViewPane>) -> gpui::Div {
 /// One agent on a card: its state, name, CLI and tags, what it is doing and
 /// for how long. `guide` draws its place under a coordinator.
 pub(super) fn agent_row(
+    pane: &ViewPane,
     member: &Member,
     guide: &'static str,
     group: &str,
@@ -352,8 +348,8 @@ pub(super) fn agent_row(
     cx: &mut Context<ViewPane>,
 ) -> AnyElement {
     let (t, c) = (tokens(), colors());
-    let status = crate::desktop::agent_status::LiveAgents::shared(cx).get(&member.name);
-    let state = state(member, cx);
+    let status = pane.agents.get(&member.name);
+    let state = state(member, pane);
     let name = member.name.clone();
     // An agent can appear in several groups; each row needs its own identity.
     let id = SharedString::from(format!("team-{group}-{name}-{}", guide.len()));
