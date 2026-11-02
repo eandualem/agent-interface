@@ -10,7 +10,9 @@ use crate::profiles::{
     selection::{Selected, Selection},
 };
 use agent_interface_roster::profiles::{Item, State};
-use gpui::{Context, EventEmitter, FocusHandle, SharedString, Window, div, prelude::*, px};
+use gpui::{
+    Context, EventEmitter, FocusHandle, ScrollHandle, SharedString, Window, div, prelude::*, px,
+};
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -76,6 +78,10 @@ impl Catalog {
         let next = at.saturating_add_signed(by).min(ready.len() - 1);
         self.focused = Some(ready[next].profile_id.clone());
     }
+    fn focused_index(&self) -> Option<usize> {
+        let id = self.focused.as_ref()?;
+        self.items.iter().position(|item| &item.profile_id == id)
+    }
     fn can_choose(&self, id: &str) -> bool {
         !self.loading
             && self.error.is_none()
@@ -98,6 +104,7 @@ pub(super) struct ProfilePicker {
     selection_error: Option<Error>,
     closed: bool,
     pub focus: FocusHandle,
+    scroll: ScrollHandle,
 }
 impl EventEmitter<Choice> for ProfilePicker {}
 impl ProfilePicker {
@@ -111,6 +118,7 @@ impl ProfilePicker {
             selection_error: None,
             closed: false,
             focus: cx.focus_handle(),
+            scroll: ScrollHandle::new(),
         };
         picker.refresh(cx);
         picker
@@ -119,6 +127,9 @@ impl ProfilePicker {
         if self.closed {
             return;
         }
+        self.selection.cancel();
+        self.selection_error = None;
+        self.scroll.scroll_to_item(0);
         let ticket = self.catalog.begin();
         let worker_ticket = ticket.clone();
         let client = self.client.clone();
@@ -129,6 +140,7 @@ impl ProfilePicker {
             let result = read.await;
             let _ = this.update(cx, |picker, cx| {
                 if !picker.closed && picker.catalog.complete(&ticket, result) {
+                    picker.reveal_focus();
                     cx.notify();
                 }
             });
@@ -173,6 +185,11 @@ impl ProfilePicker {
         .detach();
         cx.notify();
     }
+    fn reveal_focus(&self) {
+        if let Some(index) = self.catalog.focused_index() {
+            self.scroll.scroll_to_item(index);
+        }
+    }
     fn cancel(&mut self, cx: &mut Context<Self>) {
         if self.closed {
             return;
@@ -216,6 +233,7 @@ impl Render for ProfilePicker {
             .flex_1()
             .min_h_0()
             .overflow_y_scroll()
+            .track_scroll(&self.scroll)
             .p(px(t.space.s12));
         if self.catalog.loading {
             rows = rows.child(ui::group_note("Loading profiles…"));
@@ -240,11 +258,14 @@ impl Render for ProfilePicker {
                     SharedString::from(format!("profile-{id}")),
                     self.catalog.focused.as_deref() == Some(id.as_str()),
                 )
+                .h(px(t.size.row * 2.0))
                 .when(!ready, |row| row.cursor_default().opacity(0.65))
                 .child(
                     div()
                         .flex_1()
                         .min_w_0()
+                        .flex()
+                        .flex_col()
                         .child(item.display_name.clone())
                         .child(
                             div()
@@ -284,6 +305,7 @@ impl Render for ProfilePicker {
                     }
                     _ => return,
                 }
+                picker.reveal_focus();
                 cx.stop_propagation();
                 cx.notify();
             }))
@@ -346,7 +368,20 @@ mod tests {
         ));
         assert!(!catalog.can_choose("a"));
         assert!(catalog.can_choose("b"));
+        assert_eq!(catalog.focused_index(), Some(1));
+        let large = catalog.begin();
+        let mut items = (0..40)
+            .map(|index| item(&format!("p-{index}"), State::Ready))
+            .collect::<Vec<_>>();
+        items[20].state = State::Creating;
+        assert!(catalog.complete(&large, Ok(items)));
+        for _ in 0..20 {
+            catalog.navigate(1);
+        }
+        assert_eq!(catalog.focused.as_deref(), Some("p-21"));
+        assert_eq!(catalog.focused_index(), Some(21));
         drop(catalog);
         assert!(!fresh.load(Ordering::Acquire));
+        assert!(!large.load(Ordering::Acquire));
     }
 }
