@@ -321,14 +321,22 @@ reads only the exact private dotenv credential reference, and verifies
 tmux socket. Its connection retains that credential and identity; every request
 carries all three identity headers, including the handshake and subsequent
 requests. Replacement or an unsupported provider fails explicitly without legacy
-fallback. This adapter is not yet wired into desktop startup or workspace
-selection; existing readers still use the configuration behavior above. It does
-not start services, migrate Default or configure runtime accounts.
+fallback. `Connection::roster` reads the agents endpoint on that same binding.
+The explicit `app::roster::BoundRosterSource` owns one connection for its entire
+worker lifetime, with a private coalescing cache. Every update carries its
+verified identity and typed failure; a failed read retains only that worker's
+previous metadata and observation time, marked stale. A running worker cannot
+be rebound. Dropping it interrupts the polling wait and joins its bounded
+in-flight request, so UI owners must dispose of it off the UI thread.
+These bound readers are not yet wired into desktop startup or workspace
+selection; existing desktop readers still use the configuration behavior above.
+They do not start services, migrate Default or configure runtime accounts.
 
 The JSON fixture in `crates/roster/tests/fixtures/profiles-v1.json` comes from
 Agent Backbone's [profile contract](https://github.com/eandualem/agent-backbone/blob/4848c6dc3b247781ea4ab4beb19f4a5b7922c2b4/docs/contracts/profiles-v1.json).
 Contract revision 2 uses wire schema 1. Disposable Unix-socket checks cover the
-handshake, pinned credentials, follow-up request headers and replacement refusal;
+handshake, pinned credentials, follow-up request headers, independent roster
+workers with delayed responses, stale-cache ownership and replacement refusal;
 these checks do not establish complete runtime or application profile isolation.
 
 Native document readers share selection state across styled text blocks and source

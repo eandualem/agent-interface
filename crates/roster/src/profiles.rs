@@ -11,7 +11,7 @@ use std::{
 
 use serde::Deserialize;
 
-use crate::{RESPONSE_LIMIT, transport::local};
+use crate::{RESPONSE_LIMIT, Snapshot, transport::local};
 
 /// A registered provider instance. Display names and baseline versions are not identity.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Deserialize)]
@@ -220,6 +220,20 @@ impl Connection {
     /// The original credential locator; this connection never re-reads it.
     pub fn credential_reference(&self) -> &Path {
         &self.credential_reference
+    }
+
+    /// Read the roster on this verified binding without re-reading configuration.
+    /// Runs on an I/O worker. Refusals retain their typed category; malformed
+    /// roster data returns `Invalid` without exposing the response body.
+    pub fn roster(&self) -> Result<Snapshot, Error> {
+        let response = self.response("/api/agents", None, RESPONSE_LIMIT)?;
+        successful(&response)?;
+        let mut snapshot = Snapshot::default();
+        snapshot.update(&response.body);
+        if snapshot.error.is_some() {
+            return Err(Error::Invalid);
+        }
+        Ok(snapshot)
     }
 
     /// Verify again on the same binding, never by re-resolving registry or environment.

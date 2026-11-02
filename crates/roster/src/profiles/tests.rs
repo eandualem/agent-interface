@@ -78,6 +78,7 @@ fn serve(listener: UnixListener, replies: Vec<(u16, Value)>) -> thread::JoinHand
                     Err(error) => panic!("fixture accept: {error}"),
                 }
             };
+            stream.set_nonblocking(false).unwrap();
             stream
                 .set_read_timeout(Some(Duration::from_secs(5)))
                 .unwrap();
@@ -131,6 +132,38 @@ fn connection_pins_credentials_and_identity_through_followup_and_replacement() {
         assert!(request.contains("authorization: bearer fixture-original\r\n"));
         assert!(request.contains("x-backbone-profile-id: profile-a\r\n"));
         assert!(request.contains("x-backbone-installation-id: installation-a\r\n"));
+        assert!(request.contains("x-backbone-lifecycle-id: lifecycle-a1\r\n"));
+    }
+}
+
+#[test]
+fn bound_roster_preserves_typed_failures_and_decodes_success() {
+    let (directory, listener, url) = crate::transport::tests::local_listener();
+    let (profile, identity) = profile_at(directory.path(), url.strip_prefix("unix:").unwrap());
+    let required = fixture()["http_errors"]["binding_required"]["body"].clone();
+    let server = serve(
+        listener,
+        vec![
+            (200, identity),
+            (409, required),
+            (403, json!({})),
+            (200, json!({"items": "invalid"})),
+            (200, json!({"items": [{"name": "worker", "state": "busy"}]})),
+            (200, json!({"items": []})),
+        ],
+    );
+    let connection = profile.connect().unwrap();
+    assert_eq!(connection.roster().err(), Some(Error::BindingRequired));
+    assert_eq!(connection.roster().err(), Some(Error::Refused(403)));
+    assert_eq!(connection.roster().err(), Some(Error::Invalid));
+    let roster = connection.roster().unwrap();
+    assert_eq!(roster.states["worker"], "busy");
+    assert!(roster.error.is_none() && roster.observed_at.is_some());
+    assert!(connection.roster().unwrap().states.is_empty());
+    let requests = server.join().unwrap();
+    assert_eq!(requests.len(), 6);
+    for request in &requests[1..] {
+        assert!(request.starts_with("get /api/agents "));
         assert!(request.contains("x-backbone-lifecycle-id: lifecycle-a1\r\n"));
     }
 }
