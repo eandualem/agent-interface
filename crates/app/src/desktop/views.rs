@@ -490,13 +490,15 @@ impl ViewPane {
 
     fn show_sheets(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.interactions_shown(false, cx);
-        let Some(directory) = self.backbone.clone() else {
-            return;
+        let source = match (&self.connection, &self.backbone) {
+            (Some(connection), _) => sheets::Source::Bound(connection.clone()),
+            (None, Some(directory)) => sheets::Source::Legacy(directory.clone()),
+            (None, None) => return,
         };
         self.documents.surface.borrow_mut().clear();
         self.plans_shown(false, cx);
         if self.sheets.is_none() {
-            let sheets = cx.new(|cx| sheets::Sheets::new(directory, window, cx));
+            let sheets = cx.new(|cx| sheets::Sheets::new(source, window, cx));
             // An opened workbook trades the section bar for its own.
             self._search
                 .push(cx.observe(&sheets, |_, _, cx| cx.notify()));

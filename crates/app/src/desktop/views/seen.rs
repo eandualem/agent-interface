@@ -98,8 +98,8 @@ fn keys(item: &ReportItem, origin: Option<&Identity>) -> (String, Option<String>
 
 /// Whether revision `key`, published at `published`, has been opened or
 /// predates the record of what was opened.
-pub(super) fn is_seen_key(key: &str, published: &str) -> bool {
-    lock().contains(key, published, true)
+pub(super) fn is_seen_key(key: &str, published: &str, legacy: bool) -> bool {
+    lock().contains(key, published, legacy)
 }
 
 /// Whether any revision of the record `thing` has been opened.

@@ -8,6 +8,7 @@ use crate::desktop::{
 };
 use agent_interface_roster::{
     feedback::Outcome,
+    profiles::{Connection, Identity},
     sheets::{self as api, *},
 };
 use gpui::{
@@ -71,11 +72,34 @@ impl Selection {
     }
 }
 
+/// A pane has one immutable source; refreshing never consults another profile.
+#[derive(Clone)]
+pub(super) enum Source {
+    Legacy(PathBuf),
+    Bound(Connection),
+}
+
+impl Source {
+    fn connect(&self) -> Result<Client, api::Error> {
+        match self {
+            Self::Legacy(directory) => Client::connect(directory),
+            Self::Bound(connection) => Ok(Client::bound(connection.clone())),
+        }
+    }
+
+    fn identity(&self) -> Option<&Identity> {
+        match self {
+            Self::Legacy(_) => None,
+            Self::Bound(connection) => Some(connection.identity()),
+        }
+    }
+}
+
 pub(super) struct Sheets {
     focus: gpui::FocusHandle,
     rows_scroll: UniformListScrollHandle,
     columns_scroll: ScrollHandle,
-    directory: PathBuf,
+    source: Source,
     client: Option<Client>,
     catalog: Vec<Record>,
     open: Option<Open>,
@@ -101,7 +125,7 @@ pub(super) struct Sheets {
     _inputs: Vec<Subscription>,
 }
 impl Sheets {
-    pub fn new(directory: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(source: Source, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let conversation =
             cx.new(|cx| Conversation::delivered_by_owner("about this sheet", window, cx));
         let input = Self::watch(&conversation, cx);
@@ -109,7 +133,7 @@ impl Sheets {
             focus: cx.focus_handle(),
             rows_scroll: UniformListScrollHandle::new(),
             columns_scroll: ScrollHandle::new(),
-            directory,
+            source,
             client: None,
             catalog: Vec::new(),
             open: None,
@@ -202,9 +226,9 @@ impl Sheets {
             return;
         }
         self.begin(cx);
-        let directory = self.directory.clone();
+        let source = self.source.clone();
         let work = cx.background_executor().spawn(async move {
-            let client = Client::connect(&directory)?;
+            let client = source.connect()?;
             let records = client.list_all()?;
             Ok::<_, api::Error>((client, records))
         });
@@ -239,7 +263,7 @@ impl Sheets {
         if !self.clean(cx) {
             return;
         }
-        super::seen::mark_keys(&seen_keys(&record));
+        super::seen::mark_keys(&seen_keys(&record, self.source.identity()));
         self.read_grid(record, tab, row, column, cx);
     }
     fn read_grid(
@@ -488,10 +512,13 @@ fn selection_label(tab: &str, rows: &[usize], columns: &[usize]) -> Option<Strin
 }
 
 /// Keys for a workbook revision, then for the workbook across revisions.
-fn seen_keys(record: &Record) -> [String; 2] {
+fn seen_keys(record: &Record, origin: Option<&Identity>) -> [String; 2] {
+    let prefix = origin
+        .map(|origin| format!("{}|", super::seen::origin_key(Some(origin), "")))
+        .unwrap_or_default();
     [
-        format!("sheet|{}", record.revision_id),
-        format!("sheet-thing|{}", record.sheet_id),
+        format!("{prefix}sheet|{}", record.revision_id),
+        format!("{prefix}sheet-thing|{}", record.sheet_id),
     ]
 }
 
@@ -525,7 +552,7 @@ fn column_name(mut n: usize) -> String {
 impl Render for Sheets {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if let Some(open) = &self.open {
-            let sheet = open.record.sheet_id.to_string();
+            let sheet = seen_keys(&open.record, self.source.identity())[1].clone();
             if !self.conversations.contains_key(&sheet) {
                 let conversation =
                     cx.new(|cx| Conversation::delivered_by_owner("about this sheet", window, cx));
@@ -613,6 +640,73 @@ fn reveal_column(offset: gpui::Pixels, viewport: gpui::Pixels, column: usize) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn fixture_page(label: &str) -> serde_json::Value {
+        let mut fixture: serde_json::Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../roster/tests/fixtures/sheets-api.json"
+        )))
+        .unwrap();
+        fixture["list"]["items"][0]["title"] = label.into();
+        fixture["list"]["next_cursor"] = serde_json::Value::Null;
+        fixture["list"].clone()
+    }
+
+    #[test]
+    fn shelf_refresh_retains_original_connection_and_profile_scoped_keys() {
+        use crate::roster::content::tests::{Reply, provider};
+        use std::{sync::mpsc, time::Duration};
+        let (arrived, reading) = mpsc::channel();
+        let (release, delayed) = mpsc::channel();
+        let (_dir_a, a, server_a) = provider(
+            "a",
+            vec![
+                Reply {
+                    delay: Some((arrived, delayed)),
+                    ..Reply::ok("/api/sheets?limit=50", fixture_page("a"))
+                },
+                Reply::ok("/api/sheets?limit=50", fixture_page("a-refresh")),
+            ],
+        );
+        let (_dir_b, b, server_b) = provider(
+            "b",
+            vec![Reply::ok("/api/sheets?limit=50", fixture_page("b"))],
+        );
+        let origin_a = a.identity().clone();
+        let source_a = Source::Bound(a.clone());
+        let source_b = Source::Bound(b);
+        let worker = std::thread::spawn({
+            let source_a = source_a.clone();
+            move || source_a.connect().unwrap().list_all().unwrap()
+        });
+        reading.recv_timeout(Duration::from_secs(5)).unwrap();
+        let records_b = source_b.connect().unwrap().list_all().unwrap();
+        std::fs::write(a.credential_reference(), "BACKBONE_API_KEY=rotated\n").unwrap();
+        release.send(()).unwrap();
+        let records_a = worker.join().unwrap();
+        assert_eq!(records_a[0].title, "a");
+        assert_eq!(records_b[0].title, "b");
+        assert_eq!(records_a[0].sheet_id, records_b[0].sheet_id);
+        assert_eq!(source_a.connect().unwrap().identity(), Some(&origin_a));
+        assert_eq!(
+            source_a.connect().unwrap().list_all().unwrap()[0].title,
+            "a-refresh"
+        );
+        let keys_a = seen_keys(&records_a[0], source_a.identity());
+        assert_ne!(keys_a, seen_keys(&records_b[0], source_b.identity()));
+        assert_ne!(keys_a, seen_keys(&records_a[0], None));
+        let restored = Identity {
+            lifecycle_id: "replacement".into(),
+            ..origin_a
+        };
+        assert_ne!(keys_a, seen_keys(&records_a[0], Some(&restored)));
+        assert_eq!(
+            seen_keys(&records_a[0], None)[0],
+            format!("sheet|{}", records_a[0].revision_id)
+        );
+        server_a.join().unwrap();
+        server_b.join().unwrap();
+    }
+
     #[test]
     fn successful_cursor_transitions_preserve_retry_routes_and_restart_cleanly() {
         let (first, second, third) = (None, Some("page2".into()), Some("page3".into()));
