@@ -763,7 +763,6 @@ impl Browser {
         self.roster = agent_status::start(directory, cx);
         self.roster_updates = Some(cx.observe_global::<agent_status::Source>(|browser, cx| {
             browser.refresh_source_matches(cx);
-            cx.notify();
         }));
     }
 

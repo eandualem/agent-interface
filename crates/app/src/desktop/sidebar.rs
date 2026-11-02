@@ -58,7 +58,7 @@ fn reorder_tab_proposal(
 }
 
 /// Socket identities resolved by a background worker, never while drawing.
-#[derive(Default)]
+#[derive(Default, PartialEq, Eq)]
 pub(super) struct SourceMatches {
     inherited: bool,
     explicit: HashSet<String>,
@@ -138,9 +138,11 @@ impl Browser {
         self.source_match_updates = Some(cx.spawn(async move |this, cx| {
             let matches = work.await;
             let _ = this.update(cx, |browser, cx| {
-                browser.source_matches = matches;
                 browser.source_match_updates = None;
-                cx.notify();
+                if browser.source_matches != matches {
+                    browser.source_matches = matches;
+                    cx.notify();
+                }
             });
         }));
     }
@@ -873,9 +875,17 @@ mod tests {
         let alias = alias.to_str().unwrap().to_owned();
         let invalid = "invalid\0socket".to_owned();
         let paths = [alias.clone(), invalid.clone(), "/other/socket".into()].into();
-        let matches = SourceMatches::resolve(Some(socket), paths);
+        let matches = SourceMatches::resolve(Some(socket.clone()), paths);
+        assert!(
+            matches
+                == SourceMatches::resolve(
+                    Some(socket.clone()),
+                    [alias.clone(), invalid.clone(), "/other/socket".into()].into(),
+                )
+        );
         // Rendering needs only the snapshot, even if the alias is gone later.
         std::fs::remove_file(&alias).unwrap();
+        assert!(matches != SourceMatches::resolve(Some(socket), [alias.clone()].into()));
         assert!(matches.contains(None));
         assert!(matches.contains(Some(&alias)));
         assert!(!matches.contains(Some(&invalid)));

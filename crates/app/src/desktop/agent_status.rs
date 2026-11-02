@@ -259,11 +259,14 @@ pub(super) fn start(directory: PathBuf, cx: &mut App) -> Option<LiveAgents> {
         while woken.next().await.is_some() {
             cx.update(|cx| {
                 let snapshot = cx.global::<Source>().roster.take_update();
-                if let Some(snapshot) = snapshot
-                    && cx.global::<Source>().agents.update(snapshot)
-                {
-                    cx.update_global::<Source, _>(|_, _| {});
-                    cx.refresh_windows();
+                if let Some(snapshot) = snapshot {
+                    // Windows retry socket resolution on each observation,
+                    // but only changed status or socket matches repaint them.
+                    let changed =
+                        cx.update_global::<Source, _>(|source, _| source.agents.update(snapshot));
+                    if changed {
+                        cx.refresh_windows();
+                    }
                 }
             });
         }

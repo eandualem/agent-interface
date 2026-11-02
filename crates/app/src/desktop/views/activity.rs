@@ -169,7 +169,7 @@ fn timeline(activity: &Activity, cx: &gpui::App) -> gpui::Div {
     if lanes.is_empty() {
         section = section.child("No recent activity to show.");
     }
-    if agents.active().is_none() {
+    if agents.observed() && agents.active().is_none() {
         section = section.child("Current agent status is unavailable.");
     }
     for Lane {
