@@ -207,6 +207,11 @@ impl Prepared {
         {
             return Err(Error::BindingMismatch);
         }
+        // Derived structs also accept positional arrays; only the canonical
+        // object (or null) may establish terminal progress.
+        if wire.error.get() != "null" && !wire.error.get().starts_with('{') {
+            return Err(Error::Invalid);
+        }
         let error: Option<Failure> =
             serde_json::from_str(wire.error.get()).map_err(|_| Error::Invalid)?;
         let error_code = match (wire.status, error) {

@@ -170,6 +170,25 @@ fn failed_create_before_reservation_is_terminal_and_drops_provider_prose() {
 }
 
 #[test]
+fn malformed_failure_cannot_reserve_identity_or_establish_terminal_progress() {
+    let lifecycle = &fixture()["lifecycle"];
+    let mut create = Prepared::create("operation-create-a", "Work", "baseline-example-v1").unwrap();
+    let original = create.bytes().to_vec();
+    let mut failed = lifecycle["create_reserved_pending"].clone();
+    failed["status"] = json!("failed");
+    failed["error"] = json!(["binding_mismatch", "failure"]);
+    assert_eq!(create.observe(&bytes(&failed)), Err(Error::Invalid));
+    assert!(create.identity().is_none());
+    assert_eq!(create.bytes(), original);
+    let mut success = lifecycle["create_reserved_pending"].clone();
+    success["status"] = json!("succeeded");
+    assert_eq!(
+        create.observe(&bytes(&success)).unwrap().status,
+        Status::Succeeded
+    );
+}
+
+#[test]
 fn requests_reject_nonready_profiles_and_invalid_or_oversized_input() {
     let creating = Profile::parse(&bytes(&fixture()["discovery"]["show_creating"])).unwrap();
     assert!(matches!(
