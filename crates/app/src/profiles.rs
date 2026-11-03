@@ -1,5 +1,7 @@
-//! Read-only local operator discovery. This does not select a profile, connect
-//! to its content endpoint, adopt an installation or change service state.
+//! Local operator discovery and explicit verified selection handoffs. No
+//! installation adoption, service change or implicit workspace retargeting.
+
+pub mod selection;
 
 use agent_interface_roster::profiles::{self, Item, Profile};
 use std::{
@@ -69,12 +71,7 @@ impl Client {
     /// Read one atomic record and reject a response for a different profile.
     /// A returned record still needs its authenticated connection handshake.
     pub fn show(&self, profile_id: &str, live: &dyn Fn() -> bool) -> Result<Profile, Error> {
-        if profile_id.is_empty()
-            || profile_id.len() > OUTPUT_LIMIT
-            || !profile_id.bytes().all(|byte| byte.is_ascii_graphic())
-        {
-            return Err(Error::Invalid);
-        }
+        validate_id(profile_id)?;
         // End option parsing so even an opaque ID beginning with '-' is data.
         let bytes = self.read(
             &["profiles", "show", "--json", "--", profile_id],
@@ -176,6 +173,16 @@ impl Client {
             std::thread::sleep(Duration::from_millis(10));
         }
     }
+}
+
+fn validate_id(profile_id: &str) -> Result<(), Error> {
+    if profile_id.is_empty()
+        || profile_id.len() > OUTPUT_LIMIT
+        || !profile_id.bytes().all(|byte| byte.is_ascii_graphic())
+    {
+        return Err(Error::Invalid);
+    }
+    Ok(())
 }
 
 struct Running {

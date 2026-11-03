@@ -136,7 +136,10 @@ try { new WebSocket('TARGET/socket'.replace('http:', 'ws:')); } catch (_) {}
         db.execute('INSERT INTO terminal_layout VALUES (1, ?)', (json.dumps(model),))
 
     def command(*args, check=True):
-        return subprocess.run(args, env=env, text=True, capture_output=True,
+        # Match onboarding's bounded OCR worker count on constrained runners.
+        # Leave the app, window manager, timeouts and assertions unchanged.
+        command_env = {**env, "OMP_THREAD_LIMIT": "1"} if args[0] == "tesseract" else env
+        return subprocess.run(args, env=command_env, text=True, capture_output=True,
                               timeout=15, check=check).stdout.strip()
 
     app = wm = window = None

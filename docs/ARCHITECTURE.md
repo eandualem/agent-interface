@@ -1075,4 +1075,10 @@ WebKitGTK's nonaccelerated drawing policy for headless/software environments.
 
 Bound native Policies retain shared catalog IDs with the displayed instruction layers. Shared bodies come from the exact immutable provider revision, and discussions retain that artifact, revision and connection. Base and swarm briefs remain provider-owned read-only previews without artifact discussion authority. Catalog binding refusals invalidate the whole library; missing IDs cannot fall back to preview text or local paths. Reader completion tickets cancel closed openings and reject results after reopening the same path.
 
-Bound Team and Tags panes use the same captured content connection and generation checks as other observations, with live status from a matching `LiveAgents` origin. Tag membership drill-down stays within the pane. Agent rows in bound mode are read-only until profile-owned terminal and agent-card routes are available; no name-only legacy navigation or ambient tag-mutation command is offered.
+### Bound native Team and Tags
+
+`roster::views::content` owns Team and Tags reads, and `desktop::views` owns their native panes. Bound Team and Tags panes use the same captured content connection and generation checks as other observations, with live status from a matching `LiveAgents` origin. Tag membership drill-down stays within the pane. Agent rows in bound mode are read-only until profile-owned terminal and agent-card routes are available; no name-only legacy navigation or ambient tag-mutation command is offered.
+
+### Verified profile selection
+
+Profile selection uses an explicit cancellable handoff in the app crate. Each attempt retains its discovery client and requested profile ID, reads one atomic registry record and authenticates its connection before exposing a selected result. Per-owner tickets reject superseded or cancelled completions, including repeated choices of the same ID. Registry labels/readiness confer no connection authority, and a failed choice supplies no replacement for existing workspace connections. This handoff performs no service or account changes; native selector presentation and workspace activation are separate.
