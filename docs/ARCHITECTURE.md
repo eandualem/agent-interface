@@ -354,6 +354,14 @@ These bound readers are not yet wired into desktop startup or workspace
 selection; existing desktop readers still use the configuration behavior above.
 They do not start services, migrate Default or configure runtime accounts.
 
+`roster::library_snapshots` reads shared Skill and Policy catalogs using one
+verified connection. Each selectable artifact retains its catalog identity and
+credential snapshot; opening it selects a version and fetches that exact revision,
+checking the revision ID and SHA-256 digest before exposing text. Source paths are
+display metadata and never authorize local file reads. Cancellation and binding
+refusals stop the chain. Repository and runtime-local skills are excluded, and
+native library navigation remains separate from this reader. No new dependencies.
+
 The JSON fixture in `crates/roster/tests/fixtures/profiles-v1.json` comes from
 Agent Backbone's [profile contract](https://github.com/eandualem/agent-backbone/blob/4848c6dc3b247781ea4ab4beb19f4a5b7922c2b4/docs/contracts/profiles-v1.json).
 Contract revision 2 uses wire schema 1. Disposable Unix-socket checks cover the
