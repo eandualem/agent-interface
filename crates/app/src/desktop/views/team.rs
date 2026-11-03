@@ -137,10 +137,14 @@ pub(super) fn body(pane: &ViewPane, team: &Team, cx: &mut Context<ViewPane>) -> 
         .child(summary)
         .child(ui::grouped_page("team-rows", column))
         .child(ui::view_footer(
-            &[
-                ("click", "show its terminal"),
-                ("⌥ click", "agent card beside"),
-            ],
+            if pane.connection.is_some() {
+                &[]
+            } else {
+                &[
+                    ("click", "show its terminal"),
+                    ("⌥ click", "agent card beside"),
+                ]
+            },
             "updates every 3 s",
         ))
         .into_any_element()
@@ -364,8 +368,9 @@ pub(super) fn agent_row(
         .when(!first, |el| {
             el.border_t(px(t.size.hairline)).border_color(c.line)
         })
-        .cursor_pointer()
-        .hover(|el| el.bg(colors().hover))
+        .when(pane.connection.is_none(), |el| {
+            el.cursor_pointer().hover(|el| el.bg(colors().hover))
+        })
         .when(state == AgentState::Offline, |el| el.opacity(0.7))
         .when(!guide.is_empty(), |el| {
             el.child(mono(guide).text_color(c.faint))
@@ -418,19 +423,44 @@ pub(super) fn agent_row(
                 String::new()
             }),
         )
-        .on_click(cx.listener(move |_, event: &gpui::ClickEvent, _, cx| {
-            if event.modifiers().alt {
-                cx.emit(ViewEvent::OpenBeside(View::agent(name.clone(), None)));
-            } else {
-                cx.emit(ViewEvent::ShowAgent(name.clone()));
+        .on_click(cx.listener(move |pane, event: &gpui::ClickEvent, _, cx| {
+            if let Some(event) = row_event(pane.connection.as_ref(), &name, event.modifiers().alt) {
+                cx.emit(event);
             }
         }))
         .into_any_element()
 }
 
+// Agent/terminal navigation needs a retained profile route before bound rows
+// can emit it. A name alone must never select a legacy terminal or agent card.
+fn row_event(
+    connection: Option<&agent_interface_roster::profiles::Connection>,
+    name: &str,
+    card: bool,
+) -> Option<ViewEvent> {
+    if connection.is_some() {
+        return None;
+    }
+    Some(if card {
+        ViewEvent::OpenBeside(View::agent(name.to_owned(), None))
+    } else {
+        ViewEvent::ShowAgent(name.to_owned())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bound_rows_cannot_route_same_name_to_legacy_terminal_or_card() {
+        let (_dir, connection, server) = crate::roster::content::tests::provider("a", vec![]);
+        for card in [false, true] {
+            assert!(row_event(Some(&connection), "worker", card).is_none());
+            assert!(row_event(None, "worker", card).is_some());
+        }
+        server.join().unwrap();
+    }
 
     #[test]
     fn folders_and_coordinators_come_from_the_workspace_path() {

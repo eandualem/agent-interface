@@ -319,6 +319,8 @@ impl ViewPane {
                     | ViewKind::Activity
                     | ViewKind::Skills
                     | ViewKind::Policies
+                    | ViewKind::Team
+                    | ViewKind::Tags
             ) || !pane.agents.belongs_to(connection.identity()))
         {
             pane.error = Some("This view is unavailable for the original profile.");
