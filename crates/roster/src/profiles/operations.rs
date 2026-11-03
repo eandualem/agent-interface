@@ -1,7 +1,9 @@
 //! Immutable local lifecycle requests and origin-checked receipts. This module
-//! invokes no command; it excludes adoption and first-agent setup contracts.
+//! invokes no command. First-agent setup uses a separate versioned contract.
 
 use super::{Error, Identity, Profile, valid_id};
+mod recovery;
+
 use serde::Deserialize;
 use serde_json::{json, value::RawValue};
 
@@ -15,6 +17,8 @@ pub enum Action {
     Start,
     /// Stop the exact registered instance while preserving data.
     Stop,
+    /// Adopt the previewed Default installation without copying its mutable data.
+    AdoptDefault,
 }
 impl Action {
     fn name(self) -> &'static str {
@@ -22,6 +26,7 @@ impl Action {
             Self::Create => "create",
             Self::Start => "start",
             Self::Stop => "stop",
+            Self::AdoptDefault => "adopt_default",
         }
     }
 }
@@ -45,7 +50,7 @@ pub struct Receipt {
     pub request_id: String,
     /// The original action.
     pub action: Action,
-    /// Full reserved identity; absent only for create before reservation.
+    /// Full reserved identity; absent only for create/adoption before reservation.
     pub identity: Option<Identity>,
     /// Pending or a durable terminal result.
     pub status: Status,
@@ -69,8 +74,77 @@ struct Failure {
     message: String,
 }
 
+/// Read-only adoption preflight. Paths are display metadata, never authority to
+/// open files or contact a service. The opaque token is retained only for the
+/// exact prepared request and intentionally has no Debug representation.
+pub struct AdoptionPreview {
+    installation_id: String,
+    data_dir: std::path::PathBuf,
+    tmux_socket: std::path::PathBuf,
+    baseline_version: String,
+    token: String,
+}
+
+impl AdoptionPreview {
+    /// Decode the canonical schema-1 preflight without touching its paths.
+    pub fn parse(bytes: &[u8]) -> Result<Self, Error> {
+        #[derive(Deserialize)]
+        struct Wire {
+            installation_id: String,
+            data_dir: std::path::PathBuf,
+            tmux: Box<RawValue>,
+            baseline_version: String,
+            adoption_token: String,
+        }
+        let wire: Wire = super::parse(bytes)?;
+        if !wire.tmux.get().starts_with('{') {
+            return Err(Error::Invalid);
+        }
+        let tmux: super::Tmux =
+            serde_json::from_str(wire.tmux.get()).map_err(|_| Error::Invalid)?;
+        let path = |path: &std::path::Path| {
+            path.is_absolute()
+                && path
+                    .to_str()
+                    .is_some_and(|s| !s.chars().any(char::is_control))
+        };
+        if !valid_id(&wire.installation_id)
+            || !valid_id(&wire.baseline_version)
+            || !valid_id(&wire.adoption_token)
+            || !path(&wire.data_dir)
+            || !path(&tmux.socket_path)
+        {
+            return Err(Error::Invalid);
+        }
+        Ok(Self {
+            installation_id: wire.installation_id,
+            data_dir: wire.data_dir,
+            tmux_socket: tmux.socket_path,
+            baseline_version: wire.baseline_version,
+            token: wire.adoption_token,
+        })
+    }
+
+    /// Expected installation signing audience, captured by preflight.
+    pub fn installation_id(&self) -> &str {
+        &self.installation_id
+    }
+    /// Existing data directory, for display before adoption only.
+    pub fn data_directory(&self) -> &std::path::Path {
+        &self.data_dir
+    }
+    /// Existing tmux socket, for display before adoption only.
+    pub fn tmux_socket(&self) -> &std::path::Path {
+        &self.tmux_socket
+    }
+    /// Installed baseline reported by preflight.
+    pub fn baseline_version(&self) -> &str {
+        &self.baseline_version
+    }
+}
+
 /// Original request bytes, target and progress. Selection changes cannot rewrite
-/// them. Create pins its first reserved identity; terminal results cannot regress.
+/// them. Create/adoption pins its first reserved identity; terminal results cannot regress.
 /// Keep this value across uncertain delivery and look up its original request ID.
 pub struct Prepared {
     request_id: String,
@@ -78,6 +152,7 @@ pub struct Prepared {
     body: Vec<u8>,
     identity: Option<Identity>,
     terminal: Option<Receipt>,
+    adoption_installation: Option<String>,
 }
 
 impl Prepared {
@@ -104,6 +179,26 @@ impl Prepared {
                 "display_name":display_name,"baseline_version":baseline_version,
             }),
         )
+    }
+
+    /// Prepare an explicit adoption of exactly the previewed installation.
+    /// Retry these bytes unchanged, even if a later preview has a new token.
+    /// A new attempt requires a fresh preview and a distinct request ID.
+    pub fn adopt_default(request_id: &str, preview: &AdoptionPreview) -> Result<Self, Error> {
+        if !valid_id(request_id) {
+            return Err(Error::Invalid);
+        }
+        let mut prepared = Self::prepare(
+            request_id,
+            Action::AdoptDefault,
+            None,
+            json!({
+                "schema_version":1, "request_id":request_id, "action":"adopt_default",
+                "expected_installation_id":preview.installation_id, "adoption_token":preview.token,
+            }),
+        )?;
+        prepared.adoption_installation = Some(preview.installation_id.clone());
+        Ok(prepared)
     }
 
     /// Capture start's expected tuple from an atomic ready registry record.
@@ -149,6 +244,7 @@ impl Prepared {
             body,
             identity,
             terminal: None,
+            adoption_installation: None,
         })
     }
 
@@ -160,6 +256,11 @@ impl Prepared {
     pub fn request_id(&self) -> &str {
         &self.request_id
     }
+    /// The validated terminal observation, if any; restored checkpoints retain it.
+    pub fn terminal(&self) -> Option<&Receipt> {
+        self.terminal.as_ref()
+    }
+
     /// Expected or reserved origin, never a verified connection.
     pub fn identity(&self) -> Option<&Identity> {
         self.identity.as_ref()
@@ -170,7 +271,10 @@ impl Prepared {
     /// without changing the original request or previously observed reservation.
     /// Success still requires the normal identity handshake before content use.
     pub fn observe(&mut self, bytes: &[u8]) -> Result<Receipt, Error> {
-        let wire: WireReceipt = super::parse(bytes)?;
+        self.observe_wire(super::parse(bytes)?)
+    }
+
+    fn observe_wire(&mut self, wire: WireReceipt) -> Result<Receipt, Error> {
         if wire.request_id != self.request_id || wire.action != self.action {
             return Err(Error::Invalid);
         }
@@ -194,12 +298,20 @@ impl Prepared {
                 })
             }
             (None, None, None)
-                if self.action == Action::Create && wire.status != Status::Succeeded =>
+                if matches!(self.action, Action::Create | Action::AdoptDefault)
+                    && wire.status != Status::Succeeded =>
             {
                 None
             }
             _ => return Err(Error::Invalid),
         };
+        if self.adoption_installation.as_ref().is_some_and(|expected| {
+            identity
+                .as_ref()
+                .is_some_and(|identity| &identity.installation_id != expected)
+        }) {
+            return Err(Error::BindingMismatch);
+        }
         if self
             .identity
             .as_ref()

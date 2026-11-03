@@ -1,7 +1,14 @@
-//! Local operator discovery and explicit verified selection handoffs. No
-//! installation adoption, service change or implicit workspace retargeting.
+//! Local operator discovery, verified selection and explicitly prepared profile
+//! operations. Discovery and selection never invoke lifecycle or setup actions.
 
+mod recovery;
+
+pub mod controller;
+pub mod journal;
+pub mod lifecycle;
 pub mod selection;
+pub mod setup;
+pub mod setup_controller;
 
 use agent_interface_roster::profiles::{self, Item, Profile};
 use std::{
@@ -23,7 +30,7 @@ pub enum Error {
     Invalid,
     /// The executable or its bounded output could not be accessed.
     Unavailable,
-    /// Discovery exited unsuccessfully, including an operator-role refusal.
+    /// A command exited unsuccessfully without an acceptable durable receipt.
     CommandFailed,
     /// The read exceeded its deadline.
     TimedOut,
@@ -31,6 +38,8 @@ pub enum Error {
     TooLarge,
     /// The caller no longer wants this observation.
     Cancelled,
+    /// A stored request belongs to a different captured caller context.
+    ContextChanged,
     /// The provider record was malformed, unsupported or for another profile.
     Profile(profiles::Error),
 }
@@ -41,12 +50,14 @@ pub enum Error {
 #[derive(Clone)]
 pub struct Client {
     executable: PathBuf,
+    directory: PathBuf,
     environment: Vec<(OsString, OsString)>,
 }
 
 impl Client {
     /// Capture the explicit executable and current environment, using the same
-    /// PATH that resolved the provider. No command or filesystem read runs here.
+    /// PATH that resolved the provider and the current working directory.
+    /// No provider command or profile-data read runs here.
     pub fn new(executable: PathBuf, path_env: OsString) -> Result<Self, Error> {
         if !executable.is_absolute() {
             return Err(Error::Invalid);
@@ -57,8 +68,20 @@ impl Client {
         environment.push(("PATH".into(), path_env));
         Ok(Self {
             executable,
+            directory: std::env::current_dir().map_err(|_| Error::Unavailable)?,
             environment,
         })
+    }
+
+    /// Every invocation uses the executable, effective environment and directory
+    /// captured together, including delayed retries and read-only discovery.
+    fn command(&self) -> Command {
+        let mut command = Command::new(&self.executable);
+        command
+            .env_clear()
+            .envs(self.environment.iter().cloned())
+            .current_dir(&self.directory);
+        command
     }
 
     /// List metadata only. Nonzero exits are errors, never an empty catalog.
@@ -85,6 +108,50 @@ impl Client {
         Ok(profile)
     }
 
+    /// Observe runtimes only in the retained profile context. Schema/flag errors
+    /// are final; there is no retry through the unbound legacy catalog.
+    pub fn runtimes(
+        &self,
+        identity: &profiles::Identity,
+        live: &dyn Fn() -> bool,
+    ) -> Result<profiles::runtime_catalog::Catalog, Error> {
+        for value in [
+            &identity.profile_id,
+            &identity.installation_id,
+            &identity.lifecycle_id,
+        ] {
+            validate_id(value)?;
+        }
+        // Joined option values preserve opaque IDs beginning with '-'.
+        let profile = format!("--profile={}", identity.profile_id);
+        let installation = format!("--expected-installation-id={}", identity.installation_id);
+        let lifecycle = format!("--expected-lifecycle-id={}", identity.lifecycle_id);
+        let bytes = self.read(
+            &[
+                "runtimes",
+                "--json",
+                "--check-setup",
+                &profile,
+                &installation,
+                &lifecycle,
+            ],
+            live,
+            TIMEOUT,
+        )?;
+        profiles::runtime_catalog::Catalog::parse(&bytes, identity).map_err(Error::Profile)
+    }
+
+    /// Read the provider's explicit Default-adoption preflight in this captured
+    /// caller context. Returned paths are display metadata, never read here.
+    /// This does not migrate data, select a profile or submit an adoption.
+    pub fn adoption_preview(
+        &self,
+        live: &dyn Fn() -> bool,
+    ) -> Result<profiles::operations::AdoptionPreview, Error> {
+        let bytes = self.read(&["profiles", "adoption-preview", "--json"], live, TIMEOUT)?;
+        profiles::operations::AdoptionPreview::parse(&bytes).map_err(Error::Profile)
+    }
+
     fn read(
         &self,
         arguments: &[&str],
@@ -94,9 +161,8 @@ impl Client {
         if !live() {
             return Err(Error::Cancelled);
         }
-        let child = Command::new(&self.executable)
-            .env_clear()
-            .envs(self.environment.iter().cloned())
+        let child = self
+            .command()
             .args(arguments)
             .process_group(0)
             .stdin(Stdio::null())

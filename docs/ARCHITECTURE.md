@@ -39,6 +39,7 @@ another client's selected window.
 | `tmux` | Server discovery and validation, control-mode protocol, pane capture, recovery and input commands |
 | `term` | Terminal engine ownership, input encoding and owned display snapshots |
 | `roster` | Agent Backbone roster and pane-view reads, plus explicit user feedback through bounded local requests |
+| `native-fs` | Safe descriptor-based native filesystem checks; narrowly scoped Darwin ACL FFI, no paths or application state |
 | `webview-host` | Borrowed XCB-to-Xlib window-handle adaptation for Linux document embedding; no application state or process ownership |
 | `app` | Native windows, input routing, storage and terminal workers, and integration between the other crates |
 
@@ -1194,3 +1195,147 @@ registration identity, so a refreshed same-name replacement disarms selection an
 cannot inherit a previously rendered number key or click target. The chooser
 exposes only the supported bound overview and permission card; it never builds a
 name-only bound Agent view.
+
+The lifecycle request model also accepts the canonical Default-adoption preflight.
+Its installation, baseline and display-only paths are validated without filesystem
+access; the opaque token is captured only in immutable request bytes. Adoption
+receipts must retain the previewed installation and, once reserved, the complete
+profile tuple. Exact retries keep the original token; a fresh preflight cannot
+rewrite a pending operation. Failed token validation is terminal for that request.
+These models perform no adoption, command execution or service changes themselves.
+
+Profile first-agent setup uses an independent schema-2 request model. Preparation
+captures the full expected profile tuple and immutable agent/hook choices; the
+cancellation body changes only the action and keeps the original request ID.
+Bounded JSON-lines decoding checks every progress and final event against that
+origin and action, enforces monotonic sequence numbers and refuses incomplete or
+contradictory streams. Only a precise provider cancellation acknowledgement allows
+new choices; unsafe cancellation preserves the original operation. These models
+invoke no process and do not activate the legacy setup UI for a bound workspace.
+
+Profile runtime catalogs use the captured discovery executable and caller context,
+with all three expected identity fields sent explicitly. Only successful schema-2
+responses for that tuple are retained; unsupported flags, command failures and
+foreign results never fall back to legacy discovery. Catalogs keep authentication
+observations separate from executable availability and setup compatibility.
+Provider paths and unattended argument examples are discarded; these reads cannot
+launch runtimes or authorize an account operation. Discovery remains bounded and
+cancellable, and retained catalogs carry their full origin for deferred consumers.
+
+Local lifecycle `Operation` owns a prepared request together with the discovery
+client's captured executable and caller environment. Apply writes the exact bytes
+to a private temporary file; receipt lookup uses the original request ID without
+resubmitting. Bounded receipt reads and deadlines leave uncertain outcomes attached to
+that request. Nonzero exits may yield validated durable failure receipts, never
+success. Cleanup terminates only the direct command, since a provider may launch
+long-lived service children; it does not kill the service process group. Callers
+must persist original request state before exposing lifecycle actions in the UI.
+No lifecycle control is automatically invoked by discovery or selection.
+The receipt sink is an anonymous regular file, so inherited service writers do
+not receive SIGPIPE when the consumer finishes or exits. Receipt reads reject an
+observed file above the output limit during invocation; the provider owns the
+logging destination and lifetime of any service that inherits the descriptor.
+
+Profile setup execution owns immutable schema-2 requests and the captured provider
+client. It emits only validated progress steps before exit; terminal readiness or
+cancellation is returned only when the full-origin result matches the process exit
+contract. Timeouts retain the same request for explicit retry/cancellation.
+Private request files and anonymous regular output files preserve inherited service
+writers, while observed receipt bytes and stream events remain bounded. The provider
+owns long-lived service logging. No setup executor is invoked by discovery or
+selection; durable request persistence and native recovery controls precede UI activation.
+
+Lifecycle request checkpoints use a private consumer format, separate from the
+provider protocol. They preserve exact generated request bytes, the first reserved
+identity and terminal non-regression across restoration. Restoring validates the
+original request and saved observation without discovery, new IDs or command
+execution. Adoption tokens remain private checkpoint data; provider diagnostic
+prose is discarded. A restored record supplies expectations only. Durable storage
+and verification of the original operator/registry context are required before
+any restored request may execute; these model APIs do not activate lifecycle UI.
+
+Setup request checkpoints retain both generated schema-2 bodies byte for byte,
+including cancellation's original ID, profile tuple, hooks, project and brief.
+Restoration validates all choices and rejects changed or noncanonical bodies
+without discovery or allocation. The private format records request intent only:
+interrupted output streams and successful readiness/cancellation are not inferred
+from it. Durable storage and original caller-context verification remain required
+before recovery can submit either body. No setup UI is activated by restoration.
+
+Profile control-plane clients capture the working directory with their executable
+and environment; all discovery, lifecycle and setup commands use that snapshot.
+Private executor recovery records wrap model checkpoints with an operation kind
+and a SHA-256 fingerprint of the executable path, directory and effective environment.
+Environment values are not persisted. Restoration rejects any context change before
+execution, including an otherwise harmless changed session variable. This is a
+conservative continuity check, not authentication of an executable or protection
+against malicious same-user record replacement. Changed contexts require explicit
+reconciliation; they never silently retry an unknown operation in another registry.
+The existing MIT/Apache-2.0 `sha2` dependency supplies the digest. These APIs still
+require durable storage and recovery UI before lifecycle/setup controls activate.
+
+Private operation journals use an owned 0700 directory and 0600 records. Directory
+components and record opens reject symbolic links; file descriptors pin the root
+for subsequent access. A stable advisory lock serializes independent windows and
+processes. Compare-and-swap revisions prevent stale observations from replacing
+newer ones. Writes use exclusive temporary files, file sync, atomic rename and
+directory sync; a write error may follow replacement, so callers reread before
+retrying. Bounded binary records retain exact opaque capsules with identity,
+revision and checksum validation. The existing `rustix` and `sha2` dependencies
+provide descriptor-relative filesystem operations/locking and corruption checks.
+The journal grants no operation authority and invokes no provider; controllers
+must validate capsule context and state, persist before submission and reconcile
+uncertain writes before native recovery actions can be enabled.
+On macOS, the journal also refuses extended ACLs through the open descriptors:
+mode bits alone cannot establish privacy there. This deliberately includes
+otherwise restrictive ACLs. Opening an existing journal syncs its parent too,
+so an interrupted directory initialization cannot bypass that durability step.
+
+The MIT `native-fs` workspace crate keeps Darwin ACL FFI outside the safe app
+crate. It uses the existing MIT/Apache-2.0 `libc` dependency for system types; no
+additional third-party dependency or service is introduced.
+
+The app's lifecycle controller stores exact request intent before submission and
+syncs a `Submitted` phase before invoking the provider. Recovery reads the
+original request receipt by default; resending requires an explicit identical
+retry. Journal keys derive from the original request ID, so duplicate enqueue
+attempts cannot silently replace intent. Each invocation claims a revision and
+may publish its validated receipt only after the updated capsule is durably
+stored at that revision. Competing observations fail closed; the caller rereads
+the same key after errors. Terminal receipts disable further controller commands.
+These receipts remain lifecycle progress, never authenticated content access.
+The controller performs blocking work off the UI thread; native action controls
+and first-agent setup recovery are separate integration work.
+
+Recovered controller state crosses a fresh directory-sync barrier before it is
+returned or treated as terminal. A visible record alone cannot establish durable
+completion after an earlier post-rename sync failure. The journal's ordinary
+read remains a storage inspection; `read_durable` provides this recovery barrier.
+
+Setup terminal observations have a separate private checkpoint from request
+intent. They retain the original tuple, request, action, sequence and bounded
+outcome/retry fields, including the actual launch ID for confirmed readiness.
+Normalization removes provider prose and unneeded result details; restoration
+revalidates the result through the existing schema-2 stream rules and requires
+canonical encoding for the original prepared request and explicit action.
+Progress is never reconstructed as terminal authority. The executor must still
+verify the matching process exit before a controller durably saves an outcome;
+these model checkpoints neither prove that exit nor grant content/account access.
+
+The setup controller persists both exact request bodies before execution and
+records cancellation intent before invoking it. An unknown cancellation outcome
+permits only an explicit retry of that same cancellation; it never resumes
+first-agent work. Confirmed unsafe cancellation preserves the original setup
+request, while validated retry policies govern subsequent explicit attempts.
+Readiness and successful cancellation close the request. Every claim and result
+uses journal revision checks, and recovered state crosses the durability barrier.
+Progress carries the record key and revision for deferred UI checks; terminal
+results are returned only after matching process exit and durable storage.
+Native controls remain a separate integration step.
+
+The local discovery client also reads the explicit adoption preflight using its
+captured executable, environment and working directory. It validates the bounded
+schema-1 preview and retains its opaque token for an explicitly prepared adoption.
+Preview paths remain display metadata: the consumer does not open them, connect,
+migrate data or submit an action. A later preview cannot rewrite an existing
+operation's token, installation expectation or request ID.

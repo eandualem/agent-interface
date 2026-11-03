@@ -15,7 +15,9 @@ pub mod operations;
 
 use serde::Deserialize;
 
+pub mod runtime_catalog;
 pub mod runtime_context;
+pub mod setup;
 
 use crate::{RESPONSE_LIMIT, Snapshot, transport::local};
 

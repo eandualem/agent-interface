@@ -12,6 +12,7 @@ members = [
     "crates/roster",
     "crates/app",
     "crates/webview-host",
+    "crates/native-fs",
     "crates/test-support",
     "crates/bench",
     "crates/bench-rio",
