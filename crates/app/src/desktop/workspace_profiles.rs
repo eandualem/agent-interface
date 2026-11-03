@@ -273,6 +273,13 @@ impl Browser {
             })
     }
 
+    pub(super) fn keyboard_pane(&self) -> Option<&agent_interface_core::Leaf> {
+        if self.profile_content_unavailable() {
+            return None;
+        }
+        self.layout.as_ref()?.model().pane()
+    }
+
     pub(super) fn terminal_available(&self, pane: &str) -> bool {
         let Some(space) = self
             .layout

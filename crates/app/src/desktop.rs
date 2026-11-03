@@ -2945,9 +2945,7 @@ impl Render for Browser {
                             .as_ref()
                             .is_some_and(|focus| focus.is_focused(window))
                         && let Some(pane) = browser
-                            .layout
-                            .as_ref()
-                            .and_then(|layout| layout.model().pane())
+                            .keyboard_pane()
                             .filter(|leaf| leaf.empty && leaf.attachment.is_none())
                             .map(|leaf| leaf.id.clone())
                         && let Some((chooser, _)) = browser.new_panes.get(&pane)
@@ -2961,11 +2959,7 @@ impl Render for Browser {
                             .navigation
                             .as_ref()
                             .is_some_and(|focus| focus.is_focused(window))
-                        && let Some(pane) = browser
-                            .layout
-                            .as_ref()
-                            .and_then(|layout| layout.model().pane())
-                            .map(|leaf| leaf.id.clone())
+                        && let Some(pane) = browser.keyboard_pane().map(|leaf| leaf.id.clone())
                         && let Some((view, _)) = browser.views.get(&pane)
                         && view.update(cx, |view, cx| view.key(key, window, cx))
                     {

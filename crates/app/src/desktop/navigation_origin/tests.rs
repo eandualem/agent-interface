@@ -67,6 +67,7 @@ fn profile_retirement_preserves_hidden_focus_and_expires_unavailable_empty_panes
     assert!(browser.terminals.is_empty());
     browser.retire_profile_panes();
     assert!(!browser.reset_focus);
+    assert!(browser.keyboard_pane().is_some());
     browser.workspace_rosters.remove(&spaces[0].id);
     browser.retire_profile_panes();
     assert!(!browser.reset_focus);
@@ -74,9 +75,11 @@ fn profile_retirement_preserves_hidden_focus_and_expires_unavailable_empty_panes
     browser.retire_profile_panes();
     assert!(!browser.reset_focus);
     assert_eq!(selected(&browser), spaces[1].id);
+    assert!(browser.keyboard_pane().is_some());
     browser.workspace_rosters.remove(&spaces[1].id);
     browser.retire_profile_panes();
     assert!(browser.reset_focus);
+    assert!(browser.keyboard_pane().is_none());
     // Remaining unavailable must not steal focus back from recovery controls.
     browser.reset_focus = false;
     browser.retire_profile_panes();
