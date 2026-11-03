@@ -2,10 +2,15 @@
 //! invokes no command. First-agent setup uses a separate versioned contract.
 
 use super::{Error, Identity, Profile, valid_id};
+
 mod recovery;
 
 use serde::Deserialize;
 use serde_json::{json, value::RawValue};
+
+/// Maximum bytes in a consumer-generated lifecycle request ID. Receipt lookup
+/// transports this ID as one command argument, even though submission uses a file.
+pub const REQUEST_ID_LIMIT: usize = 1024;
 
 /// Existing r2 local lifecycle actions. No action is inferred from a receipt.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
@@ -234,6 +239,9 @@ impl Prepared {
         identity: Option<Identity>,
         body: serde_json::Value,
     ) -> Result<Self, Error> {
+        if request_id.len() > REQUEST_ID_LIMIT {
+            return Err(Error::Invalid);
+        }
         let body = serde_json::to_vec(&body).map_err(|_| Error::Invalid)?;
         if body.len() > crate::RESPONSE_LIMIT {
             return Err(Error::Invalid);

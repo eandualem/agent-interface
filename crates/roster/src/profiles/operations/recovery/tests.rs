@@ -138,21 +138,27 @@ fn corrupt_checkpoints_do_not_normalize_or_replace_requests() {
 #[test]
 fn boundary_sized_requests_and_sanitized_receipts_remain_restorable() {
     let fixture = fixture();
-    let profile = Profile::parse(&bytes(&fixture["discovery"]["show_ready"])).unwrap();
-    let overhead = Prepared::start("x", &profile).unwrap().bytes().len() - 1;
-    let id = "x".repeat(crate::RESPONSE_LIMIT - overhead);
-    let prepared = Prepared::start(&id, &profile).unwrap();
+    // Lookup IDs have a smaller independent bound. Keep exercising the exact
+    // wire boundary through request content and retained receipt metadata.
+    let overhead = Prepared::create("x", "x", "baseline")
+        .unwrap()
+        .bytes()
+        .len()
+        - 1;
+    let name = "x".repeat(crate::RESPONSE_LIMIT - overhead);
+    let prepared = Prepared::create("x", &name, "baseline").unwrap();
     assert_eq!(prepared.bytes().len(), crate::RESPONSE_LIMIT);
     restored(&prepared);
 
     let mut failed = fixture["lifecycle"]["failed"].clone();
     failed["error"]["message"] = json!("x");
     failed["request_id"] = json!("x");
+    failed["action"] = json!("create");
+    failed["profile_id"] = json!("x");
     let overhead = bytes(&failed).len() - 1;
-    let id = "x".repeat(crate::RESPONSE_LIMIT - overhead);
-    failed["request_id"] = json!(id);
+    failed["profile_id"] = json!("x".repeat(crate::RESPONSE_LIMIT - overhead));
     assert_eq!(bytes(&failed).len(), crate::RESPONSE_LIMIT);
-    let mut prepared = Prepared::start(&id, &profile).unwrap();
+    let mut prepared = Prepared::create("x", "Work", "baseline").unwrap();
     let terminal = prepared.observe(&bytes(&failed)).unwrap();
     let mut prepared = restored(&prepared);
     assert_eq!(prepared.observe(&bytes(&failed)).unwrap(), terminal);

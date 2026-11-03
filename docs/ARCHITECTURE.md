@@ -1405,3 +1405,9 @@ consumer cleanup. Unsafe temporary locations fail before provider invocation.
 The journal capacity includes the worst-case JSON escaping of a complete
 client recovery capsule and its envelope, including terminal observations; an
 accepted large request cannot exhaust that capacity merely by gaining a receipt.
+
+Consumer-generated lifecycle request IDs are limited to 1 KiB before intent is
+accepted or restored. Submission uses a file, but receipt lookup passes the ID
+as a command argument; the bound keeps accepted IDs well below native argument
+limits. Large request content and terminal metadata retain their separate wire
+and journal bounds, and lost-reply recovery still looks up the original ID.

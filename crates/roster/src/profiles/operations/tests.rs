@@ -19,6 +19,31 @@ fn starting() -> Prepared {
 }
 
 #[test]
+fn lifecycle_intent_and_recovery_refuse_oversized_lookup_ids() {
+    let profile = profile();
+    let preview = AdoptionPreview::parse(&bytes(&fixture()["adoption"]["preview"])).unwrap();
+    for length in [REQUEST_ID_LIMIT + 1, crate::RESPONSE_LIMIT - 1024] {
+        let id = "x".repeat(length);
+        for result in [
+            Prepared::create(&id, "Work", "baseline"),
+            Prepared::start(&id, &profile),
+            Prepared::stop(&id, &profile),
+            Prepared::adopt_default(&id, &preview),
+        ] {
+            assert!(matches!(result, Err(Error::Invalid)));
+        }
+        let request = json!({"schema_version":1,"request_id":id,"action":"create",
+            "display_name":"Work","baseline_version":"baseline"});
+        let checkpoint = json!({"checkpoint_version":1,
+            "request":serde_json::to_string(&request).unwrap(),"observation":null});
+        assert!(matches!(
+            Prepared::restore(&bytes(&checkpoint)),
+            Err(Error::Invalid)
+        ));
+    }
+}
+
+#[test]
 fn prepared_requests_match_canonical_bodies_and_keep_exact_retry_bytes() {
     let fixture = fixture();
     let lifecycle = &fixture["lifecycle"];

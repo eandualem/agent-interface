@@ -62,13 +62,14 @@ fn intent() -> Prepared {
 }
 
 #[test]
-fn large_escaped_request_receipt_remains_durable_after_provider_success() {
-    let fixture = Fixture::new("");
-    let request_id = "\\".repeat((super::super::OUTPUT_LIMIT - 1024) / 2);
-    let prepared = Prepared::create(&request_id, "Example", "baseline-a").unwrap();
+fn maximum_lifecycle_id_and_large_escaped_receipt_recover_after_lost_reply() {
+    let fixture = Fixture::new("if [ \"$2\" = apply ]; then printf invalid; exit 0; fi");
+    let request_id = "x".repeat(agent_interface_roster::profiles::operations::REQUEST_ID_LIMIT);
+    let escaped = "\\".repeat((super::super::OUTPUT_LIMIT - 4096) / 2);
+    let prepared = Prepared::create(&request_id, &escaped, "baseline-a").unwrap();
     let reply = serde_json::to_vec(&serde_json::json!({
         "schema_version":1,"request_id":request_id,"action":"create",
-        "profile_id":"profile-a","installation_id":"installation-a",
+        "profile_id":escaped,"installation_id":"installation-a",
         "lifecycle_id":"lifecycle-a","status":"succeeded","error":null,
     }))
     .unwrap();
@@ -77,14 +78,18 @@ fn large_escaped_request_receipt_remains_durable_after_provider_success() {
     fs::write(fixture.root.path().join("reply"), reply).unwrap();
     let controller = fixture.controller();
     let saved = controller.enqueue(prepared).unwrap();
-    let receipt = controller.submit(&saved.key, &|| true).unwrap();
-    assert_eq!(receipt.status, Status::Succeeded);
+    assert!(matches!(
+        controller.submit(&saved.key, &|| true),
+        Err(Error::Client(_))
+    ));
     drop(controller);
+    let receipt = fixture.controller().refresh(&saved.key, &|| true).unwrap();
+    assert_eq!(receipt.status, Status::Succeeded);
     assert_eq!(
         fixture.controller().read(&saved.key).unwrap().terminal,
         Some(receipt)
     );
-    assert_eq!(fixture.calls(), "apply\n");
+    assert_eq!(fixture.calls(), "apply\noperation\n");
 }
 
 #[test]
