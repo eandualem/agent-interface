@@ -1278,7 +1278,9 @@ require durable storage and recovery UI before lifecycle/setup controls activate
 Private operation journals use an owned 0700 directory and 0600 records. Directory
 components and record opens reject symbolic links; file descriptors pin the root
 for subsequent access. A stable advisory lock serializes independent windows and
-processes. Compare-and-swap revisions prevent stale observations from replacing
+processes. The lock guard explicitly unlocks before closing its descriptor, so a
+concurrently spawned child cannot prolong a completed operation's lock before exec.
+Compare-and-swap revisions prevent stale observations from replacing
 newer ones. Writes use exclusive temporary files, file sync, atomic rename and
 directory sync; a write error may follow replacement, so callers reread before
 retrying. Bounded binary records retain exact opaque capsules with identity,

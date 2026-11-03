@@ -62,6 +62,18 @@ pub struct Journal {
     directory: File,
 }
 
+struct Lock {
+    file: File,
+}
+
+impl Drop for Lock {
+    fn drop(&mut self) {
+        // A concurrent fork can inherit this open file description until exec.
+        // Closing our descriptor alone would leave its lock held by the child.
+        let _ = sys::flock(&self.file, FlockOperation::Unlock);
+    }
+}
+
 impl Journal {
     /// Open an owned 0700 directory, creating only the final path component.
     /// Existing parents must be absolute directories without symbolic links.
@@ -281,7 +293,7 @@ impl Journal {
         Ok(record)
     }
 
-    fn lock(&self) -> Result<File, Error> {
+    fn lock(&self) -> Result<Lock, Error> {
         private(&self.directory, true)?;
         let mut attempts = 0;
         let fd = loop {
@@ -312,7 +324,7 @@ impl Journal {
         let file = File::from(fd);
         private(&file, false)?;
         match sys::flock(&file, FlockOperation::NonBlockingLockExclusive) {
-            Ok(()) => Ok(file),
+            Ok(()) => Ok(Lock { file }),
             Err(rustix::io::Errno::WOULDBLOCK) => Err(Error::Busy),
             Err(_) => Err(Error::Unavailable),
         }

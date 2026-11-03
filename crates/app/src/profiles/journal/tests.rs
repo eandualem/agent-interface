@@ -56,8 +56,7 @@ fn durable_records_restore_exact_capsules_and_reject_stale_revisions() {
 }
 #[test]
 fn independent_handles_cannot_overwrite_a_concurrent_winner() {
-    // Parallel process-spawning tests may briefly inherit a CLOEXEC lock
-    // descriptor before exec. Busy is an expected API result, not corruption.
+    // Competing writers may return Busy without changing the stored revision.
     fn eventually<T>(mut operation: impl FnMut() -> Result<T, Error>) -> Result<T, Error> {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
@@ -101,6 +100,21 @@ fn independent_handles_cannot_overwrite_a_concurrent_winner() {
     assert_eq!(stored.revision(), 2);
     assert!(stored.payload() == b"left" || stored.payload() == b"right");
 }
+#[test]
+fn inherited_descriptor_does_not_extend_completed_journal_lock() {
+    let (_root, path, journal) = fixture();
+    let lock = journal.lock().unwrap();
+    // A duplicate shares the open file description, just like a descriptor
+    // inherited by a child between fork and exec, despite CLOEXEC.
+    let inherited = lock.file.try_clone().unwrap();
+    let other = Journal::open(&path).unwrap();
+    assert!(matches!(other.save(ID, None, b"blocked"), Err(Error::Busy)));
+    drop(lock);
+    other.save(ID, None, b"released").unwrap();
+    assert_eq!(other.read(ID).unwrap().unwrap().payload(), b"released");
+    drop(inherited);
+}
+
 #[test]
 fn child_cannot_take_an_existing_journal_lock() {
     let Some(path) = std::env::var_os("JOURNAL_LOCK_FIXTURE") else {
