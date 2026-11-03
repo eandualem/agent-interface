@@ -30,6 +30,8 @@ mod menus;
 mod onboarding;
 mod pane_cards;
 mod pane_drag;
+#[allow(dead_code)] // Connected when workspace profile ownership is integrated.
+mod profile_picker;
 mod settings;
 mod settings_window;
 mod shortcuts;
