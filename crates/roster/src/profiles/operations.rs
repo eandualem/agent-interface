@@ -252,6 +252,11 @@ impl Prepared {
     pub fn bytes(&self) -> &[u8] {
         &self.body
     }
+    /// Original action, retained independently of later selection or receipts.
+    pub fn action(&self) -> Action {
+        self.action
+    }
+
     /// The original durable lookup key; a timeout must not allocate a new one.
     pub fn request_id(&self) -> &str {
         &self.request_id

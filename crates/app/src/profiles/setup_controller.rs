@@ -33,6 +33,8 @@ pub enum Error {
     Completed,
     /// The validated provider result does not permit a same-request retry.
     RetryRefused,
+    /// An original request for this profile instance still needs recovery.
+    Pending,
     /// Storage failed or another revision won; reread the original key.
     Storage(journal::Error),
     /// Caller context or provider invocation could not be validated.
@@ -142,12 +144,28 @@ impl Controller {
             .collect()
     }
 
-    /// Persist exact setup and cancellation intent before any invocation.
+    /// Persist exact setup and cancellation intent before any invocation. A
+    /// journal-wide admission check refuses a different pending request for the
+    /// same full profile instance. Invalid or foreign-caller records fail closed.
+    /// The scan has a bounded record count and an eight-second read budget.
     pub fn enqueue(&self, prepared: Prepared) -> Result<Snapshot, Error> {
         let setup = Setup::new(&self.client, prepared);
         let key = Self::key(setup.request_id());
         let bytes = encode(Phase::Prepared, &setup, None, None)?;
-        let record = self.journal.save(&key, None, &bytes)?;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+        let record = self.journal.insert_checked(&key, &bytes, |record| {
+            if std::time::Instant::now() >= deadline {
+                return Err(Error::Client(super::Error::TimedOut));
+            }
+            let existing = self.decode(record)?;
+            if std::time::Instant::now() >= deadline {
+                return Err(Error::Client(super::Error::TimedOut));
+            }
+            if existing.setup.identity() == setup.identity() && !existing.closed() {
+                return Err(Error::Pending);
+            }
+            Ok(())
+        })?;
         Ok(Stored {
             record,
             phase: Phase::Prepared,
@@ -161,6 +179,43 @@ impl Controller {
     /// Restore after a fresh durability barrier, without retrying either action.
     pub fn read(&self, key: &str) -> Result<Snapshot, Error> {
         Ok(self.load(key)?.snapshot())
+    }
+
+    /// Enumerate bounded private record keys without executing setup or reading
+    /// request bodies. Each displayed record still needs `read` validation.
+    pub fn ids(&self) -> Result<Vec<String>, Error> {
+        self.journal.ids().map_err(Error::Storage)
+    }
+
+    /// Read pending requests for one full instance before presenting new choices.
+    /// Any unreadable record or interrupted scan fails closed. This is only an
+    /// observation; `enqueue` repeats admission under the journal lock.
+    pub fn pending(
+        &self,
+        identity: &Identity,
+        live: &dyn Fn() -> bool,
+    ) -> Result<Vec<Snapshot>, Error> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+        let mut pending = Vec::new();
+        for key in self.ids()? {
+            if !live() {
+                return Err(Error::Client(super::Error::Cancelled));
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(Error::Client(super::Error::TimedOut));
+            }
+            let stored = self.load(&key)?;
+            if stored.setup.identity() == identity && !stored.closed() {
+                pending.push(stored.snapshot());
+            }
+        }
+        if !live() {
+            return Err(Error::Client(super::Error::Cancelled));
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(Error::Client(super::Error::TimedOut));
+        }
+        Ok(pending)
     }
 
     /// First submission only; a saved submission claim precedes execution.
@@ -203,6 +258,11 @@ impl Controller {
 
     fn load(&self, key: &str) -> Result<Stored, Error> {
         let record = self.journal.read_durable(key)?.ok_or(Error::Missing)?;
+        self.decode(record)
+    }
+
+    fn decode(&self, record: journal::Record) -> Result<Stored, Error> {
+        let key = record.id();
         let envelope: Envelope =
             serde_json::from_slice(record.payload()).map_err(|_| Error::Invalid)?;
         if envelope.format != 1

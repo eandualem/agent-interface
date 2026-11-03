@@ -14,11 +14,14 @@ fn fixtures() -> Value {
     .unwrap()
 }
 fn intent() -> Prepared {
-    let profile =
-        Profile::parse(&serde_json::to_vec(&fixtures()["discovery"]["show_ready"]).unwrap())
-            .unwrap();
+    intent_for("setup-a1", "lifecycle-a1")
+}
+fn intent_for(request_id: &str, lifecycle: &str) -> Prepared {
+    let mut wire = fixtures()["discovery"]["show_ready"].clone();
+    wire["binding"]["lifecycle_id"] = lifecycle.into();
+    let profile = Profile::parse(&serde_json::to_vec(&wire).unwrap()).unwrap();
     Prepared::first_agent(
-        "setup-a1",
+        request_id,
         &profile,
         vec!["codex".into()],
         Agent {
@@ -115,6 +118,7 @@ fn saved_intent_executes_nothing_and_first_submission_is_claimed_once() {
     let fixture = Fixture::new("");
     let controller = fixture.controller();
     let snapshot = controller.enqueue(intent()).unwrap();
+    assert_eq!(controller.ids().unwrap(), vec![snapshot.key.clone()]);
     assert_eq!(snapshot.phase, Phase::Prepared);
     assert_eq!(snapshot.key, Controller::key("setup-a1"));
     assert_eq!(controller.read(&snapshot.key).unwrap(), snapshot);
@@ -341,4 +345,141 @@ fn progress_is_stamped_and_a_cancel_winner_discards_stale_first_agent_success() 
     assert!(progress.event.step.is_some());
     assert!(progress.event.ready_agent.is_none());
     assert_eq!(fixture.calls(), "first\ncancel\n");
+}
+
+#[test]
+fn new_choices_wait_for_durable_safe_cancellation_of_the_original() {
+    let fixture = Fixture::new("");
+    let controller = fixture.controller();
+    let original = controller.enqueue(intent()).unwrap();
+    assert_eq!(
+        controller.enqueue(intent_for("setup-a2", "lifecycle-a1")),
+        Err(Error::Pending)
+    );
+    fixture.raw(Action::FirstAgent, b"lost", 0);
+    assert!(controller.submit(&original.key, &|| true, |_| {}).is_err());
+    fixture.raw(Action::CancelFirstAgent, b"lost", 0);
+    assert!(controller.cancel(&original.key, &|| true, |_| {}).is_err());
+    assert_eq!(
+        fixture
+            .controller()
+            .enqueue(intent_for("setup-a2", "lifecycle-a1")),
+        Err(Error::Pending)
+    );
+    assert_eq!(controller.ids().unwrap(), vec![original.key.clone()]);
+    fixture.reply(
+        Action::CancelFirstAgent,
+        &fixtures()["setup"]["cancellation_result"],
+        0,
+    );
+    controller
+        .retry_cancel(&original.key, &|| true, |_| {})
+        .unwrap();
+    let next = fixture
+        .controller()
+        .enqueue(intent_for("setup-a2", "lifecycle-a1"))
+        .unwrap();
+    assert_eq!(next.phase, Phase::Prepared);
+    assert_eq!(next.request_id, "setup-a2");
+    assert_eq!(controller.ids().unwrap().len(), 2);
+    assert!(
+        controller
+            .read(&original.key)
+            .unwrap()
+            .cancellation_result
+            .unwrap()
+            .cancelled
+    );
+    assert_eq!(fixture.calls(), "first\ncancel\ncancel\n");
+}
+
+#[test]
+fn concurrent_fresh_choices_admit_only_one_request_for_the_instance() {
+    use std::sync::{Arc, Barrier};
+    let fixture = Fixture::new("");
+    let controllers = [fixture.controller(), fixture.controller()];
+    let barrier = Arc::new(Barrier::new(2));
+    let workers: Vec<_> = controllers
+        .into_iter()
+        .enumerate()
+        .map(|(index, controller)| {
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                let request = format!("setup-{index}");
+                barrier.wait();
+                controller.enqueue(intent_for(&request, "lifecycle-a1"))
+            })
+        })
+        .collect();
+    let results: Vec<_> = workers
+        .into_iter()
+        .map(|worker| worker.join().unwrap())
+        .collect();
+    assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1);
+    assert!(
+        results.iter().any(|r| matches!(
+            r,
+            Err(Error::Pending | Error::Storage(journal::Error::Busy))
+        )),
+        "{results:?}"
+    );
+    let recovered = fixture.controller();
+    assert_eq!(recovered.ids().unwrap().len(), 1);
+    assert_eq!(
+        recovered.enqueue(intent_for("another", "lifecycle-a1")),
+        Err(Error::Pending)
+    );
+    assert_eq!(fixture.calls(), "");
+}
+
+#[test]
+fn admission_separates_lifecycles_but_never_ignores_unreadable_caller_records() {
+    let fixture = Fixture::new("");
+    let controller = fixture.controller();
+    controller.enqueue(intent()).unwrap();
+    controller
+        .enqueue(intent_for("other-life", "lifecycle-a2"))
+        .unwrap();
+    let mut changed = fixture.client.clone();
+    changed
+        .environment
+        .push(("CONTEXT_VERSION".into(), "changed".into()));
+    let foreign = Controller::new(journal::Journal::open(&fixture.journal).unwrap(), &changed);
+    assert_eq!(
+        foreign.enqueue(intent_for("other-caller", "lifecycle-a3")),
+        Err(Error::Client(super::super::Error::ContextChanged))
+    );
+    let journal = journal::Journal::open(&fixture.journal).unwrap();
+    journal
+        .save("00000000000000000000000000000000", None, b"malformed")
+        .unwrap();
+    assert_eq!(
+        controller.enqueue(intent_for("another", "lifecycle-a4")),
+        Err(Error::Invalid)
+    );
+    assert_eq!(controller.ids().unwrap().len(), 3);
+    assert_eq!(fixture.calls(), "");
+}
+
+#[test]
+fn pending_observation_retains_full_origin_and_cancellation_fails_closed() {
+    let fixture = Fixture::new("");
+    let controller = fixture.controller();
+    let original = controller.enqueue(intent()).unwrap();
+    let foreign = controller
+        .enqueue(intent_for("other-life", "lifecycle-a2"))
+        .unwrap();
+    assert_eq!(
+        controller.pending(&original.identity, &|| true).unwrap(),
+        vec![original.clone()]
+    );
+    assert_eq!(
+        controller.pending(&foreign.identity, &|| true).unwrap(),
+        vec![foreign]
+    );
+    assert_eq!(
+        controller.pending(&original.identity, &|| false),
+        Err(Error::Client(super::super::Error::Cancelled))
+    );
+    assert_eq!(fixture.calls(), "");
 }

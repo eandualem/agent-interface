@@ -56,6 +56,8 @@ pub struct Snapshot {
     pub revision: u64,
     /// Whether submission might already have occurred.
     pub phase: Phase,
+    /// The action retained by the exact original request.
+    pub action: agent_interface_roster::profiles::operations::Action,
     /// The original provider idempotency key.
     pub request_id: String,
     /// Original or reserved tuple; still requires the normal content handshake.
@@ -83,6 +85,7 @@ impl Stored {
             key: self.record.id().into(),
             revision: self.record.revision(),
             phase: self.phase,
+            action: self.operation.action(),
             request_id: self.operation.request_id().into(),
             identity: self.operation.identity().cloned(),
             terminal: self.operation.terminal().cloned(),
@@ -133,6 +136,12 @@ impl Controller {
             operation,
         }
         .snapshot())
+    }
+
+    /// Enumerate bounded opaque record IDs without loading recovery payloads.
+    /// Read individual records separately to validate context and durability.
+    pub fn ids(&self) -> Result<Vec<String>, Error> {
+        self.journal.ids().map_err(Error::Storage)
     }
 
     /// Restore validated state without issuing an action or allocating a new ID.

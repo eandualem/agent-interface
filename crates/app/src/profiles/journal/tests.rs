@@ -343,3 +343,28 @@ fn post_rename_sync_failure_requires_a_fresh_durability_barrier() {
     assert_eq!(durable.payload(), b"terminal");
     assert_eq!(durable.revision(), first.revision() + 1);
 }
+
+#[test]
+fn checked_admission_requires_durable_previous_state_before_its_predicate() {
+    let (_root, _path, journal) = fixture();
+    journal.save(ID, None, b"terminal observation").unwrap();
+    let checked = std::cell::Cell::new(false);
+    let result = journal.insert_checked_with_sync::<Error>(
+        OTHER,
+        b"new request",
+        |_| {
+            checked.set(true);
+            Ok(())
+        },
+        &|_| Err(Error::Unavailable),
+    );
+    assert!(matches!(result, Err(Error::Unavailable)));
+    assert!(!checked.get());
+    assert!(journal.read(OTHER).unwrap().is_none());
+    let result = journal.insert_checked::<Error>(OTHER, b"new request", |record| {
+        assert_eq!(record.id(), ID);
+        Err(Error::Conflict)
+    });
+    assert!(matches!(result, Err(Error::Conflict)));
+    assert!(journal.read(OTHER).unwrap().is_none());
+}

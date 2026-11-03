@@ -1132,9 +1132,10 @@ require the same connection instance, including its credential snapshot. Bound
 terminal attachments use only the verified tmux socket, recheck the provider before
 and after attachment, and release the owned client if that final check fails.
 Bound panes never resume agents or create ordinary shells through legacy paths.
-Profile-owned shell creation, lifecycle/setup controls and account acceptance
-remain separate work; unavailable operations are omitted or shown as
-unavailable. Existing standalone workspaces retain their ordinary shell behavior.
+Native lifecycle and setup controls use the captured operator client and durable
+recovery controllers. Profile-owned shell creation and real-account acceptance
+remain separate; unavailable provider operations are shown explicitly. Existing
+standalone workspaces retain their ordinary shell behavior.
 
 Sidebar attention actions, retained view events and Jump results capture their
 workspace, connection epoch and library origin before dispatch. Navigation validates
@@ -1243,7 +1244,7 @@ contract. Timeouts retain the same request for explicit retry/cancellation.
 Private request files and anonymous regular output files preserve inherited service
 writers, while observed receipt bytes and stream events remain bounded. The provider
 owns long-lived service logging. No setup executor is invoked by discovery or
-selection; durable request persistence and native recovery controls precede UI activation.
+selection; native recovery controls persist the exact request before execution.
 
 Lifecycle request checkpoints use a private consumer format, separate from the
 provider protocol. They preserve exact generated request bytes, the first reserved
@@ -1304,8 +1305,8 @@ may publish its validated receipt only after the updated capsule is durably
 stored at that revision. Competing observations fail closed; the caller rereads
 the same key after errors. Terminal receipts disable further controller commands.
 These receipts remain lifecycle progress, never authenticated content access.
-The controller performs blocking work off the UI thread; native action controls
-and first-agent setup recovery are separate integration work.
+Native action controls invoke the controller off the UI thread. First-agent setup
+uses its own controller and journal with the same durable recovery boundary.
 
 Recovered controller state crosses a fresh directory-sync barrier before it is
 returned or treated as terminal. A visible record alone cannot establish durable
@@ -1331,7 +1332,8 @@ Readiness and successful cancellation close the request. Every claim and result
 uses journal revision checks, and recovered state crosses the durability barrier.
 Progress carries the record key and revision for deferred UI checks; terminal
 results are returned only after matching process exit and durable storage.
-Native controls remain a separate integration step.
+Native recovery controls retain the original record key and revision while invoking
+this controller off the UI thread.
 
 The local discovery client also reads the explicit adoption preflight using its
 captured executable, environment and working directory. It validates the bounded
@@ -1339,6 +1341,60 @@ schema-1 preview and retains its opaque token for an explicitly prepared adoptio
 Preview paths remain display metadata: the consumer does not open them, connect,
 migrate data or submit an action. A later preview cannot rewrite an existing
 operation's token, installation expectation or request ID.
+
+Native profile service controls are an explicit branch of the workspace picker.
+Opening them captures the selected library location once and opens a private
+lifecycle journal; it does not invoke a lifecycle action. Start/Stop controls use
+an atomic registry record loaded before the buttons appear. Submitting switches
+the view to the original operation key before persistence or provider execution,
+so ambiguous writes and replies retain recovery identity. Reopening enumerates
+bounded record IDs and validates one page of durable, caller-bound snapshots at
+a time. Receipt lookup and identical retry are distinct explicit actions. Closing
+cancels observation only; it does not claim provider cancellation or rollback.
+Worker generations reject stale results and controls. Successful receipts remain
+progress metadata: workspace selection still performs the authenticated handshake.
+Create and adoption choices use child forms. Fresh first-agent setup choices
+remain separate from saved-request recovery.
+
+Native creation takes an explicit profile name and installed baseline version;
+it invents neither a version catalog API nor a default version. Adoption first
+loads the bounded read-only preflight and displays the existing installation,
+data and tmux mapping. Only explicit confirmation prepares a fresh immutable
+request. Forms emit that request once into the same durable lifecycle controller
+and recovery view; later previews or field edits cannot rewrite it. Escape/back
+cancel form observation, and text composition is respected. Neither form selects
+a workspace or grants connection authority. Provider implementation and real
+account acceptance remain independent of consumer fixture checks.
+
+Native profile management exposes saved first-agent setup separately from the
+current runtime catalog. It opens a private setup journal from the already
+resolved library directory and renders validated records in bounded pages.
+Retries and cancellation retain the original caller context, profile tuple and
+request bytes. Progress is checked against its journal key, request, tuple and
+revision; superseded pane tasks cannot publish results. Stopping observation
+reloads the same record and never reports safe cancellation. Confirmed setup
+readiness does not authorize account access or open an ambient terminal.
+
+Fresh setup admission validates existing durable setup records and inserts the
+new intent under one journal lock. An unresolved request for the same full
+profile instance blocks different choices; independent lifecycles remain
+separate. An unsafe, malformed or caller-mismatched record is an error rather
+than proof that no request exists. A directory durability barrier precedes the
+check, and the bounded scan has a read budget. Catalog-facing pending reads are
+observations only: actual admission repeats the check atomically. This local
+journal rule does not replace the provider's own request serialization.
+
+Native first-agent setup captures one atomic registry profile and the operator
+client before loading choices. It checks the independent private setup journal
+for unresolved requests before reading that instance's schema-2 runtime catalog.
+An explicit project folder, name, brief, runtime and optional catalog model are
+frozen with hook and greeting choices into one original request. Compatibility
+and authentication observations remain separate; neither opens a terminal or
+connects a workspace. Confirmation hands the retained controller and prepared
+request to recovery with its original key established before admission or I/O.
+Admission repeats the pending check atomically. Failed or interrupted submission
+keeps recovery on the original key; queued form callbacks cannot create a second
+request after the form closes.
 
 Provider request files are created inside fresh private directories only after
 checking the temporary path's ancestors, ownership, mode and macOS ACLs. Open

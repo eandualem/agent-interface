@@ -192,6 +192,56 @@ impl Journal {
             return Err(Error::TooLarge);
         }
         let _lock = self.lock()?;
+        self.save_locked(id, expected, payload, sync)
+    }
+
+    /// Check every existing durable record and insert while holding one journal
+    /// lock. The predicate must not reenter this journal or execute commands.
+    pub(super) fn insert_checked<E: From<Error>>(
+        &self,
+        id: &str,
+        payload: &[u8],
+        check: impl FnMut(Record) -> Result<(), E>,
+    ) -> Result<Record, E> {
+        self.insert_checked_with_sync(id, payload, check, &|directory| {
+            directory.sync_all().map_err(|_| Error::Unavailable)
+        })
+    }
+
+    fn insert_checked_with_sync<E: From<Error>>(
+        &self,
+        id: &str,
+        payload: &[u8],
+        mut check: impl FnMut(Record) -> Result<(), E>,
+        sync: &dyn Fn(&File) -> Result<(), Error>,
+    ) -> Result<Record, E> {
+        if !valid_id(id) || payload.is_empty() {
+            return Err(Error::Invalid.into());
+        }
+        if payload.len() > LIMIT {
+            return Err(Error::TooLarge.into());
+        }
+        let _lock = self.lock()?;
+        if self.read_locked(id)?.is_some() {
+            return Err(Error::Conflict.into());
+        }
+        // Earlier post-rename errors are ambiguous. Confirm their durability
+        // before using any terminal record to permit a new request.
+        sync(&self.directory)?;
+        for key in self.ids_locked()? {
+            let record = self.read_locked(&key)?.ok_or(Error::Unavailable)?;
+            check(record)?;
+        }
+        self.save_locked(id, None, payload, sync).map_err(E::from)
+    }
+
+    fn save_locked(
+        &self,
+        id: &str,
+        expected: Option<u64>,
+        payload: &[u8],
+        sync: &dyn Fn(&File) -> Result<(), Error>,
+    ) -> Result<Record, Error> {
         let previous = self.read_locked(id)?;
         if previous.as_ref().map(Record::revision) != expected {
             return Err(Error::Conflict);
@@ -233,8 +283,9 @@ impl Journal {
 
     fn lock(&self) -> Result<File, Error> {
         private(&self.directory, true)?;
-        let file = File::from(
-            sys::openat(
+        let mut attempts = 0;
+        let fd = loop {
+            match sys::openat(
                 &self.directory,
                 ".lock",
                 OFlags::RDWR
@@ -243,9 +294,22 @@ impl Journal {
                     | OFlags::NONBLOCK
                     | OFlags::CLOEXEC,
                 Mode::RUSR | Mode::WUSR,
-            )
-            .map_err(|_| Error::Unsafe)?,
-        );
+            ) {
+                Ok(fd) => break fd,
+                // Concurrent first lock-file creation can return NOENT. Retry
+                // only this descriptor-relative open, never a resolved path or
+                // relaxed permission check; a persistent absence stays busy.
+                Err(rustix::io::Errno::NOENT) => {
+                    attempts += 1;
+                    if attempts == 3 {
+                        return Err(Error::Busy);
+                    }
+                    std::thread::yield_now();
+                }
+                Err(_) => return Err(Error::Unsafe),
+            }
+        };
+        let file = File::from(fd);
         private(&file, false)?;
         match sys::flock(&file, FlockOperation::NonBlockingLockExclusive) {
             Ok(()) => Ok(file),

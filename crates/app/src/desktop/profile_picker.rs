@@ -1,4 +1,4 @@
-//! Native read-only profile picker. Its owner must bind the verified result to
+//! Native profile picker with explicit service management. Its owner must bind the verified result to
 //! a workspace explicitly; constructing this pane does not change app sources.
 
 use super::{
@@ -105,15 +105,27 @@ pub(super) struct ProfilePicker {
     closed: bool,
     pub focus: FocusHandle,
     scroll: ScrollHandle,
+    directory: Option<std::path::PathBuf>,
+    management: Option<(
+        gpui::Entity<super::profile_management::Management>,
+        gpui::Subscription,
+    )>,
 }
 impl EventEmitter<Choice> for ProfilePicker {}
 impl ProfilePicker {
-    pub fn focus_handle(&self) -> FocusHandle {
-        self.focus.clone()
+    pub fn focus_handle(&self, cx: &gpui::App) -> FocusHandle {
+        self.management.as_ref().map_or_else(
+            || self.focus.clone(),
+            |(pane, _)| pane.read(cx).focus_handle(cx),
+        )
     }
     /// The caller supplies the already resolved executable and captured caller
     /// context. No ambient provider or Default profile is selected implicitly.
-    pub fn new(client: Client, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        client: Client,
+        directory: Option<std::path::PathBuf>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let mut picker = Self {
             client,
             catalog: Catalog::default(),
@@ -122,6 +134,8 @@ impl ProfilePicker {
             closed: false,
             focus: cx.focus_handle(),
             scroll: ScrollHandle::new(),
+            directory,
+            management: None,
         };
         picker.refresh(cx);
         picker
@@ -153,7 +167,7 @@ impl ProfilePicker {
     }
     fn choose(&mut self, id: &str, cx: &mut Context<Self>) {
         // Recheck the current catalog: a click may belong to an older frame.
-        if self.closed || !self.catalog.can_choose(id) {
+        if self.closed || self.management.is_some() || !self.catalog.can_choose(id) {
             return;
         }
         self.selection_error = None;
@@ -186,6 +200,41 @@ impl ProfilePicker {
             });
         })
         .detach();
+        cx.notify();
+    }
+    fn manage(&mut self, profile: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
+        if self.closed || self.management.is_some() {
+            return;
+        }
+        if let Some(id) = &profile
+            && !self.catalog.can_choose(id)
+        {
+            return;
+        }
+        self.selection.cancel();
+        self.selection_error = None;
+        let client = self.client.clone();
+        let directory = self.directory.clone();
+        let pane =
+            cx.new(|cx| super::profile_management::Management::new(client, directory, profile, cx));
+        window.focus(&pane.read(cx).focus.clone(), cx);
+        let subscription = cx.subscribe_in(
+            &pane,
+            window,
+            |picker, pane, _: &super::profile_management::Back, window, cx| {
+                if !picker
+                    .management
+                    .as_ref()
+                    .is_some_and(|(active, _)| active == pane)
+                {
+                    return;
+                }
+                picker.management = None;
+                picker.refresh(cx);
+                window.focus(&picker.focus, cx);
+            },
+        );
+        self.management = Some((pane, subscription));
         cx.notify();
     }
     fn reveal_focus(&self) {
@@ -231,6 +280,9 @@ fn message(error: Error) -> &'static str {
 
 impl Render for ProfilePicker {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if let Some((pane, _)) = &self.management {
+            return div().size_full().child(pane.clone());
+        }
         let (t, c) = (tokens(), colors());
         let mut rows = div()
             .id("profile-rows")
@@ -250,6 +302,7 @@ impl Render for ProfilePicker {
         }
         for item in &self.catalog.items {
             let id = item.profile_id.clone();
+            let manage_id = id.clone();
             let ready = item.state == State::Ready;
             let pending = self.selection.pending() == Some(id.as_str());
             let state = match item.state {
@@ -277,6 +330,21 @@ impl Render for ProfilePicker {
                                 .child(format!("{} · {state}", item.profile_id)),
                         ),
                 )
+                .when(ready, |row| {
+                    row.child(
+                        ui::button(
+                            SharedString::from(format!("manage-{manage_id}")),
+                            "Manage",
+                            ui::Button::Secondary,
+                        )
+                        .on_click(cx.listener(
+                            move |picker, _, window, cx| {
+                                cx.stop_propagation();
+                                picker.manage(Some(manage_id.clone()), window, cx);
+                            },
+                        )),
+                    )
+                })
                 .when(pending, |row| row.child("Connecting…"))
                 .on_click(cx.listener(move |picker, _, _, cx| picker.choose(&id, cx))),
             );
@@ -323,6 +391,38 @@ impl Render for ProfilePicker {
                     .child(
                         ui::button("profiles-refresh", "Refresh", ui::Button::Secondary)
                             .on_click(cx.listener(|picker, _, _, cx| picker.refresh(cx))),
+                    )
+                    .when(
+                        self.catalog
+                            .focused
+                            .as_ref()
+                            .is_some_and(|id| self.catalog.can_choose(id)),
+                        |bar| {
+                            bar.child(
+                                ui::button(
+                                    "profiles-manage",
+                                    "Manage selected",
+                                    ui::Button::Secondary,
+                                )
+                                .on_click(cx.listener(
+                                    |picker, _, window, cx| {
+                                        if let Some(id) = picker.catalog.focused.clone() {
+                                            picker.manage(Some(id), window, cx);
+                                        }
+                                    },
+                                )),
+                            )
+                        },
+                    )
+                    .child(
+                        ui::button(
+                            "profiles-operations",
+                            "Manage profiles",
+                            ui::Button::Secondary,
+                        )
+                        .on_click(
+                            cx.listener(|picker, _, window, cx| picker.manage(None, window, cx)),
+                        ),
                     )
                     .child(
                         ui::button("profiles-cancel", "Cancel", ui::Button::Secondary)

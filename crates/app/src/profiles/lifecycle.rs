@@ -50,6 +50,11 @@ impl Operation {
         Ok(Self::new(client, prepared))
     }
 
+    /// Original action for recovery presentation; never inferred from selection.
+    pub fn action(&self) -> profiles::operations::Action {
+        self.prepared.action()
+    }
+
     /// Original durable ID, unchanged across submissions and unknown outcomes.
     pub fn request_id(&self) -> &str {
         self.prepared.request_id()

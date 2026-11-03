@@ -94,6 +94,11 @@ fn intent_is_durable_before_execution_and_duplicate_ids_cannot_replace_it() {
     let saved = controller.enqueue(intent()).unwrap();
     assert_eq!(saved.key, Controller::key("request-a"));
     assert_eq!(saved.phase, Phase::Prepared);
+    assert_eq!(
+        saved.action,
+        agent_interface_roster::profiles::operations::Action::Create
+    );
+    assert_eq!(controller.ids().unwrap(), vec![saved.key.clone()]);
     assert!(saved.identity.is_none());
     assert_eq!(controller.read(&saved.key).unwrap(), saved);
     assert_eq!(fixture.calls(), "");
@@ -302,4 +307,46 @@ fn recovery_confirms_a_terminal_record_left_by_a_post_rename_failure() {
     assert_eq!(recovered.read(&key).unwrap().terminal, Some(receipt));
     assert_eq!(recovered.retry(&key, &|| true), Err(Error::Completed));
     assert_eq!(fixture.calls(), "apply\n");
+}
+
+#[test]
+fn interrupted_adoption_recovers_original_preflight_bytes_after_a_fresh_preview() {
+    use agent_interface_roster::profiles::operations::{Action, AdoptionPreview};
+    let fixture = Fixture::new(
+        "if [ \"$2\" = apply ] && [ ! -f \"$ROOT/attempted\" ]; then /usr/bin/touch \"$ROOT/attempted\"; printf invalid; exit 0; fi",
+    );
+    let preview = |token: &str| {
+        AdoptionPreview::parse(serde_json::json!({
+        "schema_version":1,"installation_id":"installation-a","data_dir":"/not-opened/data",
+        "tmux":{"socket_path":"/not-opened/tmux.sock"},"baseline_version":"baseline-a","adoption_token":token
+    }).to_string().as_bytes()).unwrap()
+    };
+    let prepared = Prepared::adopt_default("request-a", &preview("first-token")).unwrap();
+    let original = prepared.bytes().to_vec();
+    let controller = fixture.controller();
+    let saved = controller.enqueue(prepared).unwrap();
+    assert!(controller.submit(&saved.key, &|| true).is_err());
+    drop(controller);
+    let later = Prepared::adopt_default("another-request", &preview("later-token")).unwrap();
+    assert_ne!(later.bytes(), original);
+    fs::write(fixture.root.path().join("reply"), serde_json::json!({
+        "schema_version":1,"request_id":"request-a","action":"adopt_default","profile_id":"profile-a",
+        "installation_id":"installation-a","lifecycle_id":"lifecycle-a","status":"succeeded","error":null
+    }).to_string()).unwrap();
+    let restored = fixture.controller();
+    let snapshot = restored.read(&saved.key).unwrap();
+    assert_eq!(snapshot.action, Action::AdoptDefault);
+    assert_eq!(snapshot.phase, Phase::Submitted);
+    assert_eq!(
+        restored.submit(&saved.key, &|| true),
+        Err(Error::WrongPhase)
+    );
+    assert_eq!(
+        restored.retry(&saved.key, &|| true).unwrap().action,
+        Action::AdoptDefault
+    );
+    let bodies = fs::read_to_string(fixture.root.path().join("bodies")).unwrap();
+    assert_eq!(bodies.lines().count(), 2);
+    assert!(bodies.lines().all(|body| body.as_bytes() == original));
+    assert!(restored.read(&saved.key).unwrap().terminal.is_some());
 }
