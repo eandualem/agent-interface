@@ -360,7 +360,7 @@ credential snapshot; opening it selects a version and fetches that exact revisio
 checking the revision ID and SHA-256 digest before exposing text. Source paths are
 display metadata and never authorize local file reads. Cancellation and binding
 refusals stop the chain. Repository and runtime-local skills are excluded, and
-native library navigation remains separate from this reader. No new dependencies.
+native library navigation remains separate from this reader.
 
 The JSON fixture in `crates/roster/tests/fixtures/profiles-v1.json` comes from
 Agent Backbone's [profile contract](https://github.com/eandualem/agent-backbone/blob/4848c6dc3b247781ea4ab4beb19f4a5b7922c2b4/docs/contracts/profiles-v1.json).
