@@ -849,7 +849,12 @@ cursor cycles, and orders unread revisions first, newest updates first within ea
 group. It has no separate page controls. Grid navigation appears only when more
 rows or columns exist. Copy uses selected cells or the displayed range; the label
 states its scope. Export uses an occluding deferred menu above the grid.
-No spreadsheet widget or formula engine is added.
+No spreadsheet widget or formula engine is added. An explicitly bound Reports
+pane opens Sheets with the same verified connection. Shelf refreshes, navigation,
+exports and prepared feedback keep that original source and credential snapshot.
+Read markers and retained workbook conversations include the full profile,
+installation and lifecycle identity. Bound workbooks do not inherit the legacy
+installation's initial read timestamp. Startup and profile selection remain unchanged.
 
 `roster::plans::Client` and `roster::interactions::Client` retain a verified
 profile connection for all list, history and detail pages. Bound interaction
