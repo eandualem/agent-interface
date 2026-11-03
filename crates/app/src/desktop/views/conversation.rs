@@ -572,6 +572,35 @@ impl Conversation {
         conversation
     }
 
+    /// Keep a shared library discussion anchored to the snapshot actually read.
+    pub fn about_snapshot(
+        snapshot: &agent_interface_roster::library_snapshots::Snapshot,
+        candidates: Vec<String>,
+        visible: Rc<Cell<bool>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let kind = match snapshot.artifact.kind() {
+            agent_interface_roster::library_snapshots::Kind::Skill => Kind::Skill,
+            agent_interface_roster::library_snapshots::Kind::Policy => Kind::Policy,
+        };
+        let target = ReferenceTarget {
+            provider: String::new(),
+            connection: Some(snapshot.artifact.connection().clone()),
+            kind,
+            id: snapshot.artifact.id().to_owned(),
+        };
+        let mut conversation = Self::about_reference(target, None, visible, window, cx);
+        conversation.open = false;
+        conversation.candidates = candidates;
+        conversation.plan_anchor = Some(stored::Anchor {
+            revision_id: Some(snapshot.revision_id.clone()),
+            label: Some(snapshot.label.clone()),
+            ..Default::default()
+        });
+        conversation
+    }
+
     /// Discussion stays anchored to the original message, independently of the ledger window.
     #[allow(clippy::too_many_arguments)]
     pub fn about_interaction(
@@ -1414,14 +1443,11 @@ impl Conversation {
             }
             _ if self.record.is_some() => self.deliver(index, cx),
             _ if self.plan_anchor.is_some() => {
-                let what = if self
-                    .stored
-                    .as_ref()
-                    .is_some_and(|s| s.kind == Kind::Interaction)
-                {
-                    "message discussion"
-                } else {
-                    "plan conversation"
+                let what = match self.stored.as_ref().map(|stored| stored.kind) {
+                    Some(Kind::Interaction) => "message discussion",
+                    Some(Kind::Skill) => "skill discussion",
+                    Some(Kind::Policy) => "policy discussion",
+                    _ => "plan conversation",
                 };
                 self.messages[index].delivery = Delivery::NotSent(format!(
                     "Backbone could not open this {what}. Nothing was sent."

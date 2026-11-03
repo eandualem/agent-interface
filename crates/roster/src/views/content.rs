@@ -6,6 +6,8 @@ use crate::profiles::{Connection, Identity};
 /// Retained content and explicitly supported read-only observation views.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Request {
+    /// Skill catalog and provider previews, without reading local files.
+    Skills,
     /// Token usage on the captured profile.
     Usage(super::Range),
     /// Deliveries, events and state history on the captured profile.
@@ -33,6 +35,8 @@ impl Request {
 /// Retained content without legacy URL-based action authority.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Data {
+    /// Skill catalog from the originating connection.
+    Skills(Box<super::SkillLibrary>),
     /// Token usage from the originating connection.
     Usage(super::Usage),
     /// Deliveries, events and state history from the originating connection.
@@ -70,6 +74,7 @@ pub struct Read {
 /// environment, legacy configuration, local runtime files or actions are read.
 pub fn read(connection: &Connection, request: &Request, live: &dyn Fn() -> bool) -> Read {
     let observation = match request {
+        Request::Skills => Some(super::bound::Request::Skills),
         Request::Usage(range) => Some(super::bound::Request::Usage(*range)),
         Request::Activity => Some(super::bound::Request::Activity),
         _ => None,
@@ -80,6 +85,7 @@ pub fn read(connection: &Connection, request: &Request, live: &dyn Fn() -> bool)
             identity: read.identity,
             request: request.clone(),
             result: read.result.and_then(|data| match data {
+                super::Data::Skills(skills) => Ok(Data::Skills(skills)),
                 super::Data::Usage(usage) => Ok(Data::Usage(usage)),
                 super::Data::Activity(activity) => Ok(Data::Activity(activity)),
                 _ => Err(Error::Content(super::UNREADABLE)),
@@ -94,7 +100,9 @@ pub fn read(connection: &Connection, request: &Request, live: &dyn Fn() -> bool)
         live,
     };
     let result = match request {
-        Request::Usage(_) | Request::Activity => unreachable!("observation handled above"),
+        Request::Skills | Request::Usage(_) | Request::Activity => {
+            unreachable!("observation handled above")
+        }
         Request::Reports(query, agent) => {
             reports::read(&api, query, agent.as_deref()).map(Data::Reports)
         }

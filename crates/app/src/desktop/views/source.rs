@@ -18,6 +18,7 @@ pub(super) enum Source {
 
 fn request(request: &views::Request) -> Option<content::Request> {
     Some(match request {
+        views::Request::Skills => content::Request::Skills,
         views::Request::Usage(range) => content::Request::Usage(*range),
         views::Request::Activity => content::Request::Activity,
         views::Request::Reports(query, agent) => {
@@ -94,6 +95,7 @@ impl Source {
                     return None;
                 }
                 let wanted = match update.read.request {
+                    content::Request::Skills => views::Request::Skills,
                     content::Request::Usage(range) => views::Request::Usage(range),
                     content::Request::Activity => views::Request::Activity,
                     content::Request::Reports(query, agent) => {
@@ -107,6 +109,7 @@ impl Source {
                     .read
                     .result
                     .map(|data| match data {
+                        content::Data::Skills(skills) => views::Data::Skills(skills),
                         content::Data::Usage(usage) => views::Data::Usage(usage),
                         content::Data::Activity(activity) => views::Data::Activity(activity),
                         content::Data::Reports(page) => views::Data::Reports(page),
@@ -234,12 +237,11 @@ mod tests {
     }
 
     #[test]
-    fn observation_requests_exclude_agent_and_local_library_paths() {
+    fn observation_requests_exclude_agent_and_unsupported_library_paths() {
         assert!(request(&views::Request::Usage(views::Range::Day)).is_some());
         assert!(request(&views::Request::Activity).is_some());
         for unsupported in [
             views::Request::Team,
-            views::Request::Skills,
             views::Request::Policies,
             views::Request::Tags,
             views::Request::Agent("worker".into(), views::Part::Card),

@@ -56,6 +56,19 @@ pub struct Artifact {
     id: String,
 }
 impl Artifact {
+    /// Retain a stable ID already supplied by a catalog on this connection.
+    /// The caller must capture the ID with its displayed row, never resolve a
+    /// provider path later. This does not perform a request or verify existence.
+    pub fn from_catalog(connection: Connection, kind: Kind, id: String) -> Result<Self, Error> {
+        if !token(&id) {
+            return Err(Error::Invalid);
+        }
+        Ok(Self {
+            connection,
+            kind,
+            id,
+        })
+    }
     /// Stable artifact ID for discussion targets on this same connection.
     pub fn id(&self) -> &str {
         &self.id

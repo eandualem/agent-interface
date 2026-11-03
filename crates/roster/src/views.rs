@@ -831,6 +831,8 @@ impl Activity {
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct Skill {
+    /// Stable shared artifact identity observed with this catalog row.
+    pub artifact_id: Option<String>,
     /// Skill name.
     pub name: String,
     /// Its folder in the store, as Backbone reports it.
@@ -879,6 +881,7 @@ impl Skills {
             (
                 skill.tags.len().max(1),
                 skill.name.len()
+                    + skill.artifact_id.as_ref().map_or(0, String::len)
                     + skill.path.len()
                     + skill.description.len()
                     + skill.error.as_ref().map_or(0, String::len)

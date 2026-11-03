@@ -63,6 +63,8 @@ with tempfile.TemporaryDirectory(prefix="agent-interface-desktop-") as directory
     wm = subprocess.Popen(["xfwm4", "--compositor=off" if args.no_compositor else "--compositor=on", "--sm-client-disable"], env=env,
                           stdout=wm_log, stderr=subprocess.STDOUT)
     app = None
+    window = None
+    geometry_observations = []
     server_created = False
     try:
         wait_for(lambda: "_GTK_FRAME_EXTENTS" in command("xprop", "-root", "_NET_SUPPORTED"), "window manager ready")
@@ -86,7 +88,9 @@ with tempfile.TemporaryDirectory(prefix="agent-interface-desktop-") as directory
 
         def geometry():
             fields = command("xdotool", "getwindowgeometry", "--shell", window)
-            return {key: int(value) for key, value in (line.split("=", 1) for line in fields.splitlines())}
+            result = {key: int(value) for key, value in (line.split("=", 1) for line in fields.splitlines())}
+            geometry_observations.append({"time": time.monotonic(), **result})
+            return result
 
         def state():
             return command("xprop", "-id", window, "_NET_WM_STATE")
@@ -123,7 +127,16 @@ with tempfile.TemporaryDirectory(prefix="agent-interface-desktop-") as directory
         # GPUI groups successive clicks for 400 ms, even across maximization.
         time.sleep(0.6)
         double_click_caption()
-        wait_for(lambda: "MAXIMIZED" not in state(), "caption double-click restore")
+        def restored_geometry():
+            restored = geometry()
+            return ("MAXIMIZED" not in state()
+                    and restored["WIDTH"] == initial["WIDTH"]
+                    and restored["HEIGHT"] == initial["HEIGHT"])
+
+        wait_for(restored_geometry, "caption double-click restore")
+        # The WM flag/configure event can precede GPUI's restored resize hit areas,
+        # just as with the restore button above. Do not click the maximized frame.
+        time.sleep(0.6)
         before_resize = geometry()
         command("xdotool", "mousemove", "--window", window,
                 str(before_resize["WIDTH"] - 2), str(before_resize["HEIGHT"] - 2),
@@ -141,7 +154,19 @@ with tempfile.TemporaryDirectory(prefix="agent-interface-desktop-") as directory
         (OUTPUT / "result.json").write_text(json.dumps({"platform": "Ubuntu X11 / Xfwm / software Mesa",
             "initial_geometry": initial, "checks": ["launch", "terminal fixture", "maximize", "restore", "caption double-click", "resize", "minimize", "close"]}, indent=2) + "\n")
         print("Linux desktop smoke passed: launch, maximize, restore, double-click, resize, minimize, close")
+    except Exception:
+        if window is not None and app is not None and app.poll() is None:
+            try:
+                command("import", "-window", window, str(OUTPUT / "failure.png"))
+                (OUTPUT / "failure-state.txt").write_text(state() + "\n")
+            except Exception as error:
+                print(f"Could not capture failure window: {error}", file=sys.stderr)
+        raise
     finally:
+        try:
+            (OUTPUT / "geometry.json").write_text(json.dumps(geometry_observations, indent=2) + "\n")
+        except OSError as error:
+            print(f"Could not retain window geometry: {error}", file=sys.stderr)
         if app is not None and app.poll() is None:
             app.terminate()
             app.wait(timeout=15)
