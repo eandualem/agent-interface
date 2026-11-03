@@ -1071,6 +1071,8 @@ paths. Its child profile restricts capabilities. This optional system setup
 requires sudo; refusal or failure does not block installing native views. `LIBGL_ALWAYS_SOFTWARE=1` selects
 WebKitGTK's nonaccelerated drawing policy for headless/software environments.
 
+### Bound native Policies
+
 Bound native Policies retain shared catalog IDs with the displayed instruction layers. Shared bodies come from the exact immutable provider revision, and discussions retain that artifact, revision and connection. Base and swarm briefs remain provider-owned read-only previews without artifact discussion authority. Catalog binding refusals invalidate the whole library; missing IDs cannot fall back to preview text or local paths. Reader completion tickets cancel closed openings and reject results after reopening the same path.
 
 Bound Team and Tags panes use the same captured content connection and generation checks as other observations, with live status from a matching `LiveAgents` origin. Tag membership drill-down stays within the pane. Agent rows in bound mode are read-only until profile-owned terminal and agent-card routes are available; no name-only legacy navigation or ambient tag-mutation command is offered.
