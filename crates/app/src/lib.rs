@@ -13,6 +13,7 @@ pub mod diagnostics;
 pub mod keymap;
 pub mod library;
 pub mod panes;
+pub mod profiles;
 mod restore;
 pub mod roster;
 mod seed;
