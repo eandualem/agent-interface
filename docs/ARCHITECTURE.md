@@ -873,6 +873,11 @@ reread keeps the plans last read. Each refresh also reads the agents' runtime
 metadata; failure of either read preserves the last complete snapshot and shows
 the read-error notice in both the list and opened plan. Working states
 come from the shared live roster, independently of the plan refresh.
+Explicitly bound panes read plans and runtime metadata through the same captured
+connection. Plan frames reject another profile's deferred result, and discussions
+retain the connection, author, observed revision and step. Their draft keys include
+the full profile, installation and lifecycle identity; refreshing or switching
+sections cannot redirect an existing discussion. Profile selection remains separate.
 The section draws through the pane, like the record readers, so
 an opened plan's text can be selected and copied. Its selected step uses the shared
 conversation panel, addressed by the plan author's stable identity. Drafts are

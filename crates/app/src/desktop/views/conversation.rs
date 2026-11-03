@@ -457,7 +457,7 @@ impl Conversation {
     /// A plan conversation retains the provider, author and observed step.
     pub fn about_plan(
         target: &super::plans::ConversationTarget,
-        directory: PathBuf,
+        directory: Option<PathBuf>,
         visible: Rc<Cell<bool>>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -468,9 +468,17 @@ impl Conversation {
         conversation.anchor = target.anchor.label.clone();
         conversation.plan_anchor = Some(target.anchor.clone());
         conversation.open = true;
+        let bound = match target.bound_client() {
+            Ok(client) => client,
+            Err(error) => {
+                conversation.read_error = Some(error);
+                conversation.blocked = true;
+                return conversation;
+            }
+        };
         conversation.stored = Some(Stored {
-            bound: None,
-            directory,
+            bound,
+            directory: directory.unwrap_or_default(),
             provider: target.provider.clone(),
             kind: Kind::Plan,
             source: None,
