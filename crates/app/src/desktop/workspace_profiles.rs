@@ -290,6 +290,22 @@ impl Browser {
         }
     }
 
+    pub(super) fn invalidate_profile_pane(&mut self, pane: &str) {
+        let focused = self
+            .layout
+            .as_ref()
+            .and_then(|layout| layout.model().pane())
+            .is_some_and(|leaf| leaf.id == pane);
+        let choosing = self
+            .chooser
+            .as_ref()
+            .is_some_and(|chooser| chooser.destination.pane == pane);
+        if choosing {
+            self.chooser = None;
+        }
+        self.reset_focus |= focused || choosing;
+    }
+
     pub(super) fn refresh_profiles(&mut self, cx: &mut Context<Self>) {
         let needed = self.profile_picker_requested
             || self.layout.as_ref().is_some_and(|layout| {

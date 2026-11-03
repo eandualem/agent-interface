@@ -51,6 +51,33 @@ fn selected(browser: &Browser) -> String {
 }
 
 #[test]
+fn hidden_profile_invalidation_preserves_the_healthy_workspace_focus() {
+    let (_a_dir, a, a_server) = provider("a", vec![]);
+    let (_b_dir, b, b_server) = provider("b", vec![]);
+    a_server.join().unwrap();
+    b_server.join().unwrap();
+    let mut browser = browser(&a, &b);
+    let spaces = browser.layout.as_ref().unwrap().model().workspaces.clone();
+    let pane_a = &spaces[0].tabs[0].tree.leaves()[0].id;
+    let pane_b = &spaces[1].tabs[0].tree.leaves()[0].id;
+    browser
+        .layout
+        .as_mut()
+        .unwrap()
+        .model_mut()
+        .choose_workspace(&spaces[1].id);
+    // Both failed observations and changed owners use this retirement policy.
+    browser.invalidate_profile_pane(pane_a);
+    assert!(!browser.reset_focus);
+    browser.layout.as_mut().unwrap().model_mut().workspaces[0].profile_id = None;
+    browser.invalidate_profile_pane(pane_a);
+    assert!(!browser.reset_focus);
+    assert_eq!(selected(&browser), spaces[1].id);
+    browser.invalidate_profile_pane(pane_b);
+    assert!(browser.reset_focus);
+}
+
+#[test]
 fn delayed_sidebar_view_and_jump_targets_return_to_the_displayed_profile() {
     let (_a_dir, a, a_server) = provider("a", vec![]);
     let (_b_dir, b, b_server) = provider("b", vec![]);
