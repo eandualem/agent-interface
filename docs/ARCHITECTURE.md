@@ -1086,3 +1086,11 @@ Profile selection uses an explicit cancellable handoff in the app crate. Each at
 The native `ProfilePicker` component consumes an explicit discovery client and the selection handoff. Catalog tickets invalidate stale refreshes and rows; only currently ready IDs can start verification. Selection emits an authenticated connection or a fixed error, never a registry-only binding. Closing cancels pending work, and committed/closed pickers reject further interaction. The component remains unattached to startup until workspace-owned source routing is integrated.
 
 Profile-bound session discovery retains a verified connection and queries only its authenticated tmux socket. It verifies the original provider binding before and after each read-only session listing; refusal clears session names and returns a typed profile error with the full origin. Visibility generations and cancellation discard obsolete reads. This path neither starts servers nor attaches clients, and does not fall back to legacy socket resolution. Workspace source integration remains separate.
+
+Verified connections also carry an opaque, process-local cache key. Clones share
+that key; each fresh authenticated handshake gets a new one even if its full
+provider identity is unchanged. The desktop roster registry deduplicates by both
+origin and this key, so retained panes keep their old credential worker while a
+fresh connection can recover after credential rotation. The key is neither
+serialized nor used as request authority; wire validation still uses the full
+profile, installation and lifecycle identity. Legacy directory sharing is unchanged.

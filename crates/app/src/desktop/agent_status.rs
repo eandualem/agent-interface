@@ -10,7 +10,7 @@ use std::{
 
 use agent_interface_roster::{
     Snapshot,
-    profiles::{Connection, Identity},
+    profiles::{Connection, ConnectionKey, Identity},
 };
 use futures::{StreamExt, channel::mpsc};
 use gpui::{App, BorrowAppContext, Global, Task};
@@ -225,18 +225,24 @@ enum Origin {
 /// Windows and their child views own sources. The registry only deduplicates
 /// live owners, so closing the last view releases its poller and cached state.
 #[derive(Default)]
-pub(super) struct Sources(HashMap<Origin, Weak<Source>>);
+pub(super) struct Sources(HashMap<(Origin, Option<ConnectionKey>), Weak<Source>>);
 impl Global for Sources {}
 
 impl Sources {
-    fn get(&mut self, origin: &Origin) -> Option<LiveAgents> {
+    fn get(&mut self, origin: &Origin, key: &Option<ConnectionKey>) -> Option<LiveAgents> {
         self.0.retain(|_, source| source.strong_count() > 0);
-        self.0.get(origin).and_then(Weak::upgrade).map(LiveAgents)
+        self.0
+            .get(&(origin.clone(), key.clone()))
+            .and_then(Weak::upgrade)
+            .map(LiveAgents)
     }
 
     fn insert(&mut self, agents: &LiveAgents) {
         if let Some(origin) = &agents.0.origin {
-            self.0.insert(origin.clone(), Rc::downgrade(&agents.0));
+            self.0.insert(
+                (origin.clone(), agents.0.connection_key.clone()),
+                Rc::downgrade(&agents.0),
+            );
         }
     }
 }
@@ -260,6 +266,7 @@ impl Drop for Roster {
 #[derive(Default)]
 struct Source {
     origin: Option<Origin>,
+    connection_key: Option<ConnectionKey>,
     current: RefCell<Current>,
     roster: Roster,
     updates: RefCell<Option<Task<()>>>,
@@ -290,7 +297,7 @@ impl LiveAgents {
 
 pub(super) fn start_legacy(directory: PathBuf, cx: &mut App) -> Option<LiveAgents> {
     let origin = Origin::Legacy(directory.clone());
-    start(origin, cx, move |wake| {
+    start(origin, None, cx, move |wake| {
         crate::roster::RosterSource::start(directory, None, wake).map(Worker::Legacy)
     })
 }
@@ -300,20 +307,23 @@ pub(super) fn start_legacy(directory: PathBuf, cx: &mut App) -> Option<LiveAgent
 #[allow(dead_code)] // Used when workspace profile binding is enabled.
 pub(super) fn start_bound(connection: Connection, cx: &mut App) -> Option<LiveAgents> {
     let origin = Origin::Bound(connection.identity().clone());
-    start(origin, cx, move |wake| {
+    start(origin, Some(connection.connection_key()), cx, move |wake| {
         crate::roster::BoundRosterSource::start(connection, wake).map(Worker::Bound)
     })
 }
 
 fn start(
     origin: Origin,
+    connection_key: Option<ConnectionKey>,
     cx: &mut App,
     worker: impl FnOnce(Box<dyn Fn() + Send>) -> std::io::Result<Worker>,
 ) -> Option<LiveAgents> {
     if !cx.has_global::<Sources>() {
         cx.set_global(Sources::default());
     }
-    if let Some(agents) = cx.update_global::<Sources, _>(|sources, _| sources.get(&origin)) {
+    if let Some(agents) =
+        cx.update_global::<Sources, _>(|sources, _| sources.get(&origin, &connection_key))
+    {
         return Some(agents);
     }
     let (wake, mut woken) = mpsc::unbounded();
@@ -323,6 +333,7 @@ fn start(
     .ok()?;
     let agents = LiveAgents(Rc::new(Source {
         origin: Some(origin),
+        connection_key,
         roster: Roster(Some(roster)),
         ..Source::default()
     }));
@@ -426,11 +437,20 @@ mod tests {
     }
 
     fn acquire(sources: &mut Sources, origin: Origin) -> LiveAgents {
-        if let Some(agents) = sources.get(&origin) {
+        acquire_key(sources, origin, None)
+    }
+
+    fn acquire_key(
+        sources: &mut Sources,
+        origin: Origin,
+        connection_key: Option<ConnectionKey>,
+    ) -> LiveAgents {
+        if let Some(agents) = sources.get(&origin, &connection_key) {
             return agents;
         }
         let agents = LiveAgents(Rc::new(Source {
             origin: Some(origin),
+            connection_key,
             ..Source::default()
         }));
         sources.insert(&agents);
@@ -512,6 +532,57 @@ mod tests {
         let reopened = acquire(&mut sources, identity);
         assert!(!reopened.observed());
         assert!(old_callback.upgrade().is_none());
+    }
+
+    #[test]
+    fn fresh_verified_connections_do_not_reuse_retained_credential_workers() {
+        use crate::roster::content::tests::provider;
+
+        // Two independently authenticated snapshots report the same full identity.
+        let (_old_dir, old_connection, old_server) = provider("a", vec![]);
+        let (_new_dir, new_connection, new_server) = provider("a", vec![]);
+        old_server.join().unwrap();
+        new_server.join().unwrap();
+        assert_eq!(old_connection.identity(), new_connection.identity());
+        let origin = Origin::Bound(old_connection.identity().clone());
+        let mut sources = Sources::default();
+        let old = acquire_key(
+            &mut sources,
+            origin.clone(),
+            Some(old_connection.connection_key()),
+        );
+        let retained = acquire_key(
+            &mut sources,
+            origin.clone(),
+            Some(old_connection.clone().connection_key()),
+        );
+        let new = acquire_key(
+            &mut sources,
+            origin.clone(),
+            Some(new_connection.connection_key()),
+        );
+        assert!(Rc::ptr_eq(&old.0, &retained.0));
+        assert!(!Rc::ptr_eq(&old.0, &new.0));
+        old.update_bound(observation(&origin, "waiting_for_human"));
+        assert!(!new.observed());
+        new.update_bound(observation(&origin, "busy"));
+        let mut refused = observation(&origin, "idle");
+        refused.error = Some(agent_interface_roster::profiles::Error::Refused(401));
+        old.update_bound(refused);
+        assert_eq!(retained.get("worker").state, AgentState::Unavailable);
+        assert_eq!(new.get("worker").state, AgentState::Working);
+        drop(old);
+        drop(retained);
+        assert!(
+            sources
+                .get(&origin, &Some(old_connection.connection_key()))
+                .is_none()
+        );
+        assert!(
+            sources
+                .get(&origin, &Some(new_connection.connection_key()))
+                .is_some()
+        );
     }
 
     #[test]
