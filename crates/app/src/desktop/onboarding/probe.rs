@@ -232,6 +232,17 @@ fn backbone() -> Backbone {
     }
 }
 
+/// Resolve only the provider executable; never probe ambient provider content.
+pub(in crate::desktop) fn profile_client() -> Option<crate::profiles::Client> {
+    let (mut found, path_env) =
+        shell_lookup().unwrap_or_else(|| (Vec::new(), std::env::var("PATH").unwrap_or_default()));
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let (fallback, path_env) = path_lookup(&path_env, home.as_deref());
+    found.extend(fallback);
+    let executable = found.into_iter().find(|(name, _)| *name == "backbone")?.1;
+    crate::profiles::Client::new(executable, path_env.into()).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

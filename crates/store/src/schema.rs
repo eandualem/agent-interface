@@ -71,6 +71,15 @@ fn identify(item: &Object, at: &str, identities: &mut HashSet<String>) -> Result
 // agent view names an agent, with Backbone's agent-name rule, and only it
 // may name the section it opens on.
 fn view(item: &Object, occupied: bool, at: &str) -> Result<Option<View>> {
+    let registration_id = match item.get("view_registration_id") {
+        None | Some(Value::Null) => None,
+        Some(value) => Some(
+            value
+                .as_str()
+                .ok_or_else(|| format!("{at}.view_registration_id: invalid registration"))?
+                .to_owned(),
+        ),
+    };
     let agent = match item.get("view_agent") {
         None => None,
         Some(value) => Some(
@@ -91,6 +100,11 @@ fn view(item: &Object, occupied: bool, at: &str) -> Result<Option<View>> {
         ),
     };
     let Some(kind) = item.get("view") else {
+        if registration_id.is_some() {
+            return Err(format!(
+                "{at}.view_registration_id: registration without a view"
+            ));
+        }
         return match (agent, item.contains_key("view_section")) {
             (Some(_), _) => Err(format!("{at}.view_agent: agent without a view")),
             (None, true) => Err(format!("{at}.view_section: section without a view")),
@@ -125,6 +139,7 @@ fn view(item: &Object, occupied: bool, at: &str) -> Result<Option<View>> {
         kind,
         agent,
         section,
+        registration_id,
     };
     if !view.is_valid() {
         return Err(format!(
@@ -204,9 +219,16 @@ fn node(
                 "{at}.ratio: expected a finite split ratio from 0.01 to 0.99"
             ));
         }
-        if ["cwd", "source_socket", "view", "view_agent", "view_section"]
-            .iter()
-            .any(|key| item.contains_key(*key))
+        if [
+            "cwd",
+            "source_socket",
+            "view",
+            "view_agent",
+            "view_section",
+            "view_registration_id",
+        ]
+        .iter()
+        .any(|key| item.contains_key(*key))
         {
             return Err(format!("{at}: split also contains leaf fields"));
         }
@@ -284,6 +306,19 @@ fn read_layout(value: &Value, navigation: bool) -> Result<Layout> {
                 ));
             }
         };
+        let profile_id = match item.get("profile_id") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(id))
+                if !id.is_empty() && id.bytes().all(|byte| byte.is_ascii_graphic()) =>
+            {
+                Some(id.clone())
+            }
+            _ => {
+                return Err(format!(
+                    "{at}.profile_id: expected a nonempty ASCII profile identifier"
+                ));
+            }
+        };
         let raw_tabs = item
             .get("tabs")
             .and_then(Value::as_array)
@@ -333,6 +368,7 @@ fn read_layout(value: &Value, navigation: bool) -> Result<Layout> {
             name,
             icon,
             symbol,
+            profile_id,
             tabs,
             selected,
         });

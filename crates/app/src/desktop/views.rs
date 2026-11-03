@@ -17,6 +17,8 @@ use std::{
     time::Duration,
 };
 
+mod bound_agent;
+
 use agent_interface_core::{AgentSection, View, ViewKind};
 use agent_interface_roster::{
     conversations::Kind,
@@ -54,7 +56,7 @@ mod seen;
 mod selection;
 mod sheets;
 mod skills;
-mod source;
+pub(super) mod source;
 mod tags;
 mod team;
 mod usage;
@@ -197,6 +199,7 @@ pub(super) struct ViewPane {
     sheets: Option<Entity<sheets::Sheets>>,
     plans: Option<Entity<plans::Plans>>,
     interactions: Option<Entity<interactions::Interactions>>,
+    bound_agent: Option<Entity<bound_agent::Card>>,
     /// The Reports & updates section shown when it is not a record feed.
     pub(super) shown: Shown,
     _updates: Option<Task<()>>,
@@ -306,11 +309,16 @@ impl ViewPane {
             sheets: None,
             plans: None,
             interactions: None,
+            bound_agent: None,
             shown: Shown::Records,
             _updates: None,
             _search: Vec::new(),
             view,
         };
+        if pane.connection.is_none() && pane.view.registration_id.is_some() {
+            pane.error = Some("This saved agent view requires its original profile.");
+            return pane;
+        }
         if let Some(connection) = &pane.connection
             && (!matches!(
                 pane.view.kind,
@@ -321,9 +329,30 @@ impl ViewPane {
                     | ViewKind::Policies
                     | ViewKind::Team
                     | ViewKind::Tags
+                    | ViewKind::Agent
             ) || !pane.agents.belongs_to(connection.identity()))
         {
             pane.error = Some("This view is unavailable for the original profile.");
+            return pane;
+        }
+        if pane.view.kind == ViewKind::Agent
+            && let Some(connection) = &pane.connection
+        {
+            if !pane.view.is_valid() || pane.view.registration_id.is_none() {
+                pane.error = Some("Reopen this agent from the profile's Team view.");
+                return pane;
+            }
+            if !matches!(
+                pane.view.section,
+                None | Some(AgentSection::Overview | AgentSection::Permissions)
+            ) {
+                pane.error = Some("This agent section is unavailable for the original profile.");
+                return pane;
+            }
+            let connection = connection.clone();
+            let visible = pane.visible.clone();
+            pane.bound_agent =
+                Some(cx.new(|cx| bound_agent::Card::new(connection, &pane.view, visible, cx)));
             return pane;
         }
         if pane.view.kind == ViewKind::Artifacts {
@@ -965,6 +994,9 @@ impl Drop for ViewPane {
 
 impl Render for ViewPane {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if let Some(card) = &self.bound_agent {
+            return div().size_full().child(card.clone());
+        }
         if let Some(artifacts) = &self.artifacts {
             return div().size_full().child(artifacts.clone());
         }

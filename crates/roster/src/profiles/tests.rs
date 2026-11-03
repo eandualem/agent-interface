@@ -12,6 +12,253 @@ fn fixture() -> Value {
     serde_json::from_str(include_str!("../../tests/fixtures/profiles-v1.json")).unwrap()
 }
 
+fn inspected(registration: Value) -> Value {
+    json!({"name":"worker","known":true,"runtime":"codex","registration_id":registration,"recent_deliveries":[{"kind":"direct_message","outcome":"queued","preview":"fixture","created_at":"2026-11-02T07:00:00Z"}]})
+}
+
+#[test]
+fn retained_runtime_context_uses_canonical_permissions_and_original_registration() {
+    use super::runtime_context::{self as context, Status};
+    let fixtures = fixture();
+    let context_fixtures = &fixtures["runtime_context"];
+    let registration = context_fixtures["available"]["registration_id"].clone();
+    let (directory, listener, url) = crate::transport::tests::local_listener();
+    let (profile, identity) = profile_at(directory.path(), url.strip_prefix("unix:").unwrap());
+    let mut replies = vec![(200, identity), (200, inspected(registration.clone()))];
+    for name in ["available", "missing", "invalid", "unreadable"] {
+        replies.push((200, context_fixtures[name].clone()));
+    }
+    // Unsupported metadata must still match the captured runtime.
+    let mut unsupported = context_fixtures["unsupported"].clone();
+    unsupported["runtime"] = json!("codex");
+    replies.push((200, unsupported));
+    replies.push((200, inspected(registration.clone())));
+    replies.push((
+        409,
+        context_fixtures["registration_changed"]["body"].clone(),
+    ));
+    replies.push((
+        409,
+        fixtures["http_errors"]["binding_mismatch"]["body"].clone(),
+    ));
+    replies.push((404, json!({})));
+    let server = serve(listener, replies);
+    let connection = profile.connect().unwrap();
+    let card = context::inspect(connection.clone(), "worker", None).unwrap();
+    assert_eq!(
+        card.target.registration_id(),
+        registration.as_str().unwrap()
+    );
+    assert!(card.agent.permissions.files.is_empty());
+    assert_eq!(card.agent.received.len(), 1);
+    assert_eq!(card.agent.received[0].preview, "fixture");
+    fs::write(
+        connection.credential_reference(),
+        "BACKBONE_API_KEY=rotated\n",
+    )
+    .unwrap();
+    for expected in [
+        Status::Available,
+        Status::Unavailable,
+        Status::Unavailable,
+        Status::Unavailable,
+        Status::Unsupported,
+    ] {
+        let permissions = card.target.permissions().unwrap();
+        assert_eq!(permissions.status, expected);
+        assert_eq!(
+            permissions.message().is_none(),
+            expected == Status::Available
+        );
+    }
+    assert_eq!(card.target.refresh().unwrap().name, "worker");
+    assert_eq!(
+        card.target.refresh().err(),
+        Some(context::Error::RegistrationChanged)
+    );
+    assert_eq!(
+        card.target.permissions().err(),
+        Some(context::Error::Connection(Error::BindingMismatch))
+    );
+    assert_eq!(
+        card.target.permissions().err(),
+        Some(context::Error::Unsupported)
+    );
+    let requests = server.join().unwrap();
+    assert!(requests[1].starts_with("get /api/agents/worker/inspect http/1.1"));
+    for request in &requests[2..] {
+        assert!(request.lines().next().unwrap().contains(&format!(
+            "?expected_registration_id={} ",
+            registration.as_str().unwrap()
+        )));
+        assert!(request.contains("authorization: bearer fixture-original\r\n"));
+        assert!(request.contains("x-backbone-profile-id: profile-a\r\n"));
+        assert!(request.contains("x-backbone-installation-id: installation-a\r\n"));
+        assert!(request.contains("x-backbone-lifecycle-id: lifecycle-a1\r\n"));
+    }
+}
+
+#[test]
+fn runtime_context_rejects_foreign_targets_and_malformed_permission_metadata() {
+    use super::runtime_context as context;
+    let fixtures = fixture();
+    let available = &fixtures["runtime_context"]["available"];
+    let registration = available["registration_id"].as_str().unwrap();
+    let (directory, listener, url) = crate::transport::tests::local_listener();
+    let (profile, identity) = profile_at(directory.path(), url.strip_prefix("unix:").unwrap());
+    let mut replies = vec![(200, identity), (200, inspected(json!(registration)))];
+    let mut expected = Vec::new();
+    for field in [
+        "profile_id",
+        "installation_id",
+        "lifecycle_id",
+        "agent_name",
+        "runtime",
+        "registration_id",
+    ] {
+        let mut wrong = available.clone();
+        wrong[field] = json!("other");
+        replies.push((200, wrong));
+        expected.push(if field == "registration_id" {
+            context::Error::RegistrationChanged
+        } else {
+            context::Error::Invalid
+        });
+    }
+    for path in [
+        "/private/config.toml",
+        "../config.toml",
+        "project/../../config.toml",
+        "C:\\config.toml",
+    ] {
+        let mut wrong = available.clone();
+        wrong["permissions"]["files"][0]["display_path"] = json!(path);
+        replies.push((200, wrong));
+        expected.push(context::Error::Invalid);
+    }
+    for field in ["allow", "deny", "ask", "modes", "files"] {
+        let mut wrong = available.clone();
+        wrong["permissions"][field] = json!("malformed");
+        replies.push((200, wrong));
+        expected.push(context::Error::Invalid);
+    }
+    for field in ["scope", "state"] {
+        let mut wrong = available.clone();
+        wrong["permissions"]["files"][0][field] = json!("unknown");
+        replies.push((200, wrong));
+        expected.push(context::Error::Invalid);
+    }
+    let mut invalid_available = available.clone();
+    invalid_available["permissions"]["files"][0]["state"] = json!("unreadable");
+    replies.push((200, invalid_available));
+    expected.push(context::Error::Invalid);
+    let mut raw_error = fixtures["runtime_context"]["missing"].clone();
+    raw_error["permissions"]["error"]["message"] = json!("private provider diagnostic");
+    replies.push((200, raw_error));
+    expected.push(context::Error::Invalid);
+    replies.push((200, json!({"schema_version":2,"replacement":true})));
+    expected.push(context::Error::Unsupported);
+    let server = serve(listener, replies);
+    let card = context::inspect(profile.connect().unwrap(), "worker", Some(registration)).unwrap();
+    for error in expected {
+        assert_eq!(card.target.permissions().err(), Some(error));
+    }
+    let requests = server.join().unwrap();
+    assert!(requests[1].starts_with(&format!(
+        "get /api/agents/worker/inspect?expected_registration_id={registration} "
+    )));
+}
+
+#[test]
+fn retained_inspection_cannot_replace_or_drop_registration() {
+    use super::runtime_context as context;
+    let fixtures = fixture();
+    let registration = fixtures["runtime_context"]["available"]["registration_id"]
+        .as_str()
+        .unwrap();
+    let (directory, listener, url) = crate::transport::tests::local_listener();
+    let (profile, identity) = profile_at(directory.path(), url.strip_prefix("unix:").unwrap());
+    let mut missing = inspected(json!(registration));
+    missing.as_object_mut().unwrap().remove("registration_id");
+    let server = serve(
+        listener,
+        vec![
+            (200, identity),
+            (200, inspected(json!(registration))),
+            (200, inspected(json!("abcdef1234567890abcdef1234567890"))),
+            (200, inspected(Value::Null)),
+            (200, missing),
+            (200, inspected(Value::Null)),
+        ],
+    );
+    let connection = profile.connect().unwrap();
+    for invalid in ["", "UPPERCASE1234567890ABCDEF12345678", "../other", "a"] {
+        assert_eq!(
+            context::inspect(connection.clone(), "worker", Some(invalid))
+                .err()
+                .unwrap(),
+            context::Error::Invalid
+        );
+    }
+    assert_eq!(
+        context::inspect(connection.clone(), "../other", None)
+            .err()
+            .unwrap(),
+        context::Error::Invalid
+    );
+    let card = context::inspect(connection.clone(), "worker", None).unwrap();
+    assert_eq!(
+        card.target.refresh().err(),
+        Some(context::Error::RegistrationChanged)
+    );
+    assert_eq!(
+        card.target.refresh().err(),
+        Some(context::Error::RegistrationChanged)
+    );
+    assert_eq!(card.target.refresh().err(), Some(context::Error::Invalid));
+    assert_eq!(
+        context::inspect(connection, "worker", None).err().unwrap(),
+        context::Error::Unavailable
+    );
+    assert_eq!(server.join().unwrap().len(), 6);
+}
+
+#[test]
+fn same_named_agent_contexts_remain_with_their_profile() {
+    use super::runtime_context as context;
+    let mut profiles = Vec::new();
+    for label in ["a", "b"] {
+        let (directory, listener, url) = crate::transport::tests::local_listener();
+        let (mut profile, mut identity) =
+            profile_at(directory.path(), url.strip_prefix("unix:").unwrap());
+        profile.item.profile_id = format!("profile-{label}");
+        identity["profile_id"] = json!(profile.item.profile_id);
+        let mut permissions = fixture()["runtime_context"]["available"].clone();
+        permissions["profile_id"] = json!(profile.item.profile_id);
+        permissions["permissions"]["allow"] = json!([format!("rule-{label}")]);
+        let registration = permissions["registration_id"].clone();
+        let server = serve(
+            listener,
+            vec![
+                (200, identity),
+                (200, inspected(registration)),
+                (200, permissions),
+            ],
+        );
+        let card = context::inspect(profile.connect().unwrap(), "worker", None).unwrap();
+        profiles.push((directory, server, card));
+    }
+    let (_b_dir, b_server, b) = profiles.pop().unwrap();
+    let (_a_dir, a_server, a) = profiles.pop().unwrap();
+    assert_eq!(b.target.permissions().unwrap().allow, ["rule-b"]);
+    assert_eq!(a.target.permissions().unwrap().allow, ["rule-a"]);
+    for (server, label) in [(a_server, "a"), (b_server, "b")] {
+        for request in server.join().unwrap() {
+            assert!(request.contains(&format!("x-backbone-profile-id: profile-{label}\r\n")));
+        }
+    }
+}
+
 #[test]
 fn canonical_discovery_decodes_and_invalid_bindings_are_not_selectable() {
     let fixture = fixture();

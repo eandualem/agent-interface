@@ -147,6 +147,7 @@ impl Layout {
             name: "Workspace 1".into(),
             icon: None,
             symbol: None,
+            profile_id: None,
             selected: tab.id.clone(),
             tabs: vec![tab],
         };
@@ -462,12 +463,17 @@ impl Layout {
 
     /// Move the selected tab to another workspace and select it there. Retain
     /// its complete tree and focus; the source selects its first remaining tab.
-    /// Missing or current destinations, and empty sources, do nothing.
+    /// Missing/current destinations, different profile bindings and empty sources do nothing.
+    /// Desktop routing must also check the retained authenticated connection.
     pub fn transfer_tab(&mut self, destination: &str) -> bool {
         let Some(source) = self.workspace() else {
             return false;
         };
-        if source.id == destination || !self.workspaces.iter().any(|space| space.id == destination)
+        if source.id == destination
+            || !self
+                .workspaces
+                .iter()
+                .any(|space| space.id == destination && space.profile_id == source.profile_id)
         {
             return false;
         }
@@ -505,6 +511,7 @@ impl Layout {
             name,
             icon: None,
             symbol: None,
+            profile_id: None,
             tabs: vec![],
             selected: String::new(),
         };

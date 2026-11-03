@@ -34,6 +34,9 @@ pub struct Workspace {
     pub icon: Option<String>,
     /// Optional named native icon, which takes precedence over `icon`.
     pub symbol: Option<String>,
+    /// Optional stable provider profile ID. None preserves legacy/standalone routing.
+    /// This is a lookup key, never an authenticated connection or credential.
+    pub profile_id: Option<String>,
     /// Tabs in saved order.
     pub tabs: Vec<Tab>,
     /// Initially selected tab, or the empty string for an empty workspace.
@@ -115,6 +118,8 @@ pub struct View {
     pub agent: Option<String>,
     /// The section an agent view opens on; none for every other kind.
     pub section: Option<AgentSection>,
+    /// Durable registration captured for a profile-bound agent view.
+    pub registration_id: Option<String>,
 }
 
 impl View {
@@ -124,6 +129,7 @@ impl View {
             kind,
             agent: None,
             section: None,
+            registration_id: None,
         }
     }
 
@@ -133,6 +139,7 @@ impl View {
             kind: ViewKind::Agent,
             agent: Some(name),
             section,
+            registration_id: None,
         }
     }
 
@@ -140,7 +147,15 @@ impl View {
     /// agent, and it alone may open on a section.
     pub fn is_valid(&self) -> bool {
         let agent = self.kind == ViewKind::Agent;
-        agent == self.agent.is_some() && (agent || self.section.is_none())
+        agent == self.agent.is_some()
+            && (agent || self.section.is_none())
+            && self.registration_id.as_ref().is_none_or(|id| {
+                agent
+                    && id.len() == 32
+                    && id
+                        .bytes()
+                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            })
     }
 }
 

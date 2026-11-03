@@ -68,6 +68,8 @@ impl Edge {
 }
 
 pub(super) struct Drag {
+    pub origin: Option<super::navigation_origin::Origin>,
+    profile: Option<String>,
     pub dragging: bool,
     pub active: bool,
     pub destination: Option<(String, Edge)>,
@@ -94,6 +96,8 @@ impl Drag {
             return None;
         }
         Some(Self {
+            origin: None,
+            profile: model.workspace()?.profile_id.clone(),
             dragging: true,
             active: false,
             destination: None,
@@ -112,6 +116,9 @@ impl Drag {
         !self.cancelled
             && !model.focus_mode()
             && model.selected == self.workspace
+            && model
+                .workspace()
+                .is_some_and(|space| space.profile_id == self.profile)
             && model
                 .tab()
                 .is_some_and(|tab| tab.id == self.tab && tab.tree == self.original)
@@ -171,7 +178,15 @@ impl Drag {
 }
 
 impl Browser {
-    pub(super) fn begin_pane_drag(&mut self, source: &str, position: Point<Pixels>) {
+    pub(super) fn begin_pane_drag(
+        &mut self,
+        origin: Option<&super::navigation_origin::Origin>,
+        source: &str,
+        position: Point<Pixels>,
+    ) {
+        if !self.selected_origin_is_current(origin) {
+            return;
+        }
         if self.saving
             || self.save_failed
             || self.resize.is_some()
@@ -182,7 +197,12 @@ impl Browser {
             return;
         }
         self.pane_drag = self.layout.as_ref().and_then(|layout| {
-            Drag::begin(layout.model(), source, &self.pane_bounds.borrow(), position)
+            Drag::begin(layout.model(), source, &self.pane_bounds.borrow(), position).map(
+                |mut drag| {
+                    drag.origin = origin.cloned();
+                    drag
+                },
+            )
         });
     }
 
@@ -192,10 +212,15 @@ impl Browser {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let origin_valid = self
+            .pane_drag
+            .as_ref()
+            .is_some_and(|drag| self.selected_origin_is_current(drag.origin.as_ref()));
         let Some(drag) = &mut self.pane_drag else {
             return;
         };
-        if !event.dragging()
+        if !origin_valid
+            || !event.dragging()
             || !self
                 .layout
                 .as_ref()
@@ -238,6 +263,7 @@ impl Browser {
         }
         if !self.saving
             && !self.save_failed
+            && self.selected_origin_is_current(drag.origin.as_ref())
             && drag.same_bounds(&self.pane_bounds.borrow())
             && let Some(proposal) = self
                 .layout
@@ -339,5 +365,24 @@ mod tests {
         assert_eq!(cancelled.destination, None);
         assert!(!cancelled.motion(point(px(308.), px(10.))));
         assert!(cancelled.proposal(&window).is_none());
+    }
+    #[test]
+    fn a_binding_change_invalidates_a_gesture_with_an_unchanged_tree() {
+        let mut model = Layout::initial("/".into());
+        let first = model.pane().unwrap().id.clone();
+        model.split(Direction::Right, "/".into(), true);
+        let bounds = Bounds::new(point(px(0.), px(0.)), size(px(400.), px(200.)));
+        let drag = Drag::begin(
+            &model,
+            &first,
+            &HashMap::from([(first.clone(), bounds)]),
+            point(px(10.), px(10.)),
+        )
+        .unwrap();
+        assert!(drag.valid(&model));
+        let tree = model.tab().unwrap().tree.clone();
+        model.workspaces[0].profile_id = Some("profile-a".into());
+        assert_eq!(model.tab().unwrap().tree, tree);
+        assert!(!drag.valid(&model));
     }
 }

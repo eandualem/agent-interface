@@ -15,6 +15,8 @@ pub mod operations;
 
 use serde::Deserialize;
 
+pub mod runtime_context;
+
 use crate::{RESPONSE_LIMIT, Snapshot, transport::local};
 
 /// A registered provider instance. Display names and baseline versions are not identity.

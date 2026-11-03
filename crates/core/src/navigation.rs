@@ -20,6 +20,17 @@ impl Node {
 }
 
 impl Layout {
+    /// Find a pane's owning workspace, including panes in hidden tabs.
+    /// The profile ID is a persisted lookup key, not authority to perform I/O.
+    pub fn workspace_for_pane(&self, pane: &str) -> Option<&crate::Workspace> {
+        self.workspaces.iter().find(|space| {
+            space
+                .tabs
+                .iter()
+                .any(|tab| tab.tree.leaves().iter().any(|leaf| leaf.id == pane))
+        })
+    }
+
     /// Keep this window's navigation when loading a newer shared arrangement.
     ///
     /// Existing selections follow stable identities, including pane focus when
@@ -27,7 +38,7 @@ impl Layout {
     /// the first available item; an empty workspace selects no tab. Shared
     /// names, trees, attachments and roster visibility come from `self`.
     /// Returns true when the active tab's tree changed, including a change of
-    /// attachment or removal of the active tab. The caller must then move input
+    /// attachment, workspace profile binding or removal of the active tab. The caller must then move input
     /// focus to navigation and require a fresh pane selection. Renaming alone
     /// or changing saved working directories does not require that handoff.
     /// This does not dispatch input, write either
@@ -73,6 +84,13 @@ impl Layout {
             .or_else(|| self.workspaces.first())
             .map(|space| space.id.clone())
             .unwrap_or_default();
+        if self.workspace().and_then(|space| space.profile_id.as_ref())
+            != previous
+                .workspace()
+                .and_then(|space| space.profile_id.as_ref())
+        {
+            return true;
+        }
         match (self.tab(), previous.tab()) {
             (Some(current), Some(old)) => {
                 current.id != old.id || !same_input_tree(&current.tree, &old.tree)
@@ -183,6 +201,7 @@ mod tests {
                     name: "First".into(),
                     icon: None,
                     symbol: None,
+                    profile_id: None,
                     selected: tab.id.clone(),
                     tabs: vec![tab],
                 },
@@ -191,6 +210,7 @@ mod tests {
                     name: "Second".into(),
                     icon: None,
                     symbol: None,
+                    profile_id: None,
                     selected: String::new(),
                     tabs: vec![],
                 },

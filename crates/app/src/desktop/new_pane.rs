@@ -6,10 +6,13 @@
 //! what a pane can display instead of a terminal. Nothing is created until a choice is made, and the owner makes
 //! it from the [`NewPaneEvent`] this emits.
 
-use std::{path::PathBuf, time::Duration};
+use std::path::PathBuf;
 
 use agent_interface_core::{View, ViewKind};
-use agent_interface_roster::views::{Data, Member, Request, Team};
+use agent_interface_roster::{
+    profiles::Connection,
+    views::{Data, Member, Team},
+};
 use futures::{StreamExt, channel::mpsc};
 use gpui::{
     Context, Entity, EventEmitter, ScrollHandle, SharedString, Subscription, Task, Window, div,
@@ -17,12 +20,15 @@ use gpui::{
 };
 
 use super::{
+    chooser_source::{Origin, Sessions},
+    views::source::Source,
+};
+use super::{
     components::{self as ui},
     design::{colors, tokens},
     name::{NameEvent, NameField},
     views::Section,
 };
-use crate::{roster::ViewSource, sessions::SessionSource};
 
 /// What the person chose.
 pub(super) enum NewPaneEvent {
@@ -171,7 +177,12 @@ enum Row {
     Session(String),
     View(usize),
     Section(usize),
-    Pick(String),
+    Pick(View),
+}
+
+fn numbered_row(presented: &[String], number: usize, choices: Vec<Row>) -> Option<Row> {
+    let key = presented.get(number.checked_sub(1)?)?;
+    choices.into_iter().find(|row| row_key(row) == *key)
 }
 
 fn reconcile_selection(
@@ -196,6 +207,7 @@ fn reconcile_selection(
 
 pub(super) struct NewPane {
     agents: super::agent_status::LiveAgents,
+    origin: Origin,
     pane: String,
     field: Entity<NameField>,
     query: String,
@@ -203,6 +215,8 @@ pub(super) struct NewPane {
     /// The chosen row by identity, so refreshes that reorder or remove rows
     /// never move Enter onto another session.
     selected: Option<String>,
+    /// Number keys resolve the last rendered list, never newly arrived numbering.
+    presented: Vec<String>,
     /// The chosen row disappeared; nothing is chosen until the next move.
     disarmed: bool,
     /// Scroll the chosen row into view at the next frame.
@@ -215,8 +229,8 @@ pub(super) struct NewPane {
     visible: bool,
     backbone: bool,
     scroll: ScrollHandle,
-    session_source: Option<SessionSource>,
-    team_source: Option<ViewSource>,
+    session_source: Option<Sessions>,
+    team_source: Option<Source>,
     _updates: Task<()>,
     _input: Subscription,
 }
@@ -229,6 +243,51 @@ impl NewPane {
         socket: Option<PathBuf>,
         backbone: Option<PathBuf>,
         agents: crate::desktop::agent_status::LiveAgents,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self::new_with(
+            pane,
+            Origin::Legacy {
+                socket,
+                directory: backbone,
+            },
+            agents,
+            window,
+            cx,
+        )
+    }
+
+    /// The workspace owner must retain this connection when accepting events.
+    #[allow(dead_code)] // Used by the following workspace routing integration.
+    pub fn new_bound(
+        pane: String,
+        connection: Connection,
+        agents: super::agent_status::LiveAgents,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Self> {
+        if !agents.belongs_to(connection.identity()) {
+            return None;
+        }
+        Some(Self::new_with(
+            pane,
+            Origin::Bound(connection),
+            agents,
+            window,
+            cx,
+        ))
+    }
+
+    #[allow(dead_code)] // The event owner validates this before routing bound choices.
+    pub fn connection(&self) -> Option<&Connection> {
+        self.origin.connection()
+    }
+
+    fn new_with(
+        pane: String,
+        origin: Origin,
+        agents: super::agent_status::LiveAgents,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -247,25 +306,19 @@ impl NewPane {
             cx.notify();
         });
         let (wake, mut woken) = mpsc::unbounded::<()>();
-        let session_source = socket.and_then(|socket| {
-            let wake = wake.clone();
-            SessionSource::start(socket, move || {
+        let session_wake = wake.clone();
+        let (session_source, sessions_error) = match origin.sessions(move || {
+            let _ = session_wake.unbounded_send(());
+        }) {
+            Ok(source) => (source, None),
+            Err(_) => (None, Some("Session discovery is unavailable.".into())),
+        };
+        let team_source = origin
+            .team(move || {
                 let _ = wake.unbounded_send(());
             })
             .ok()
-        });
-        let team_source = backbone.as_ref().and_then(|directory| {
-            let wake = wake.clone();
-            ViewSource::start(
-                directory.clone(),
-                Request::Team,
-                Duration::from_secs(3),
-                move || {
-                    let _ = wake.unbounded_send(());
-                },
-            )
-            .ok()
-        });
+            .flatten();
         let updates = cx.spawn(async move |this, cx| {
             while woken.next().await.is_some() {
                 if this.update(cx, |chooser, cx| chooser.refresh(cx)).is_err() {
@@ -280,15 +333,17 @@ impl NewPane {
             query: String::new(),
             mode: Mode::Sessions,
             selected: None,
+            presented: Vec::new(),
             disarmed: false,
             reveal: false,
             sessions: Vec::new(),
-            sessions_error: None,
+            sessions_error,
             loading: session_source.is_some(),
             team: None,
             team_loading: team_source.is_some(),
             visible: true,
-            backbone: backbone.is_some(),
+            backbone: origin.has_provider(),
+            origin,
             scroll: ScrollHandle::new(),
             session_source,
             team_source,
@@ -309,7 +364,9 @@ impl NewPane {
             source.set_active(visible);
         }
         self.sessions.clear();
-        self.sessions_error = None;
+        if self.session_source.is_some() {
+            self.sessions_error = None;
+        }
         self.team = None;
         self.loading = self.session_source.is_some();
         self.team_loading = self.team_source.is_some();
@@ -320,17 +377,13 @@ impl NewPane {
         if !self.visible {
             return;
         }
-        if let Some(observation) = self
-            .session_source
-            .as_ref()
-            .and_then(SessionSource::take_update)
-        {
+        if let Some(observation) = self.session_source.as_ref().and_then(Sessions::take_update) {
             self.sessions = observation.sessions;
             self.sessions_error = observation.error;
             self.loading = false;
             cx.notify();
         }
-        if let Some((_, update)) = self.team_source.as_ref().and_then(ViewSource::take_update) {
+        if let Some((_, update)) = self.team_source.as_ref().and_then(Source::take_update) {
             self.team_loading = false;
             // Without a current read, show plain sessions rather than old states.
             self.team = match update {
@@ -404,20 +457,27 @@ impl NewPane {
                     VIEWS
                         .iter()
                         .enumerate()
-                        .filter(|(_, view)| self.matches(view.label))
+                        .filter(|(_, view)| {
+                            self.origin.allows_view(view.kind) && self.matches(view.label)
+                        })
                         .map(|(index, _)| Row::View(index)),
                 );
             }
             Mode::Agents => {
-                let mut names: Vec<String> = self
+                let mut views: Vec<View> = self
                     .team
                     .iter()
                     .flat_map(|team| team.members.iter())
-                    .map(|member| member.name.clone())
-                    .filter(|name| self.matches(name))
+                    .filter(|member| self.matches(&member.name))
+                    .filter_map(|member| self.origin.agent_view(member))
                     .collect();
-                names.sort_by_key(|name| name.to_ascii_lowercase());
-                rows.extend(names.into_iter().map(Row::Pick));
+                views.sort_by_key(|view| {
+                    view.agent
+                        .as_deref()
+                        .unwrap_or_default()
+                        .to_ascii_lowercase()
+                });
+                rows.extend(views.into_iter().map(Row::Pick));
             }
         }
         rows
@@ -482,6 +542,7 @@ impl NewPane {
 
     /// Choose the selected row.
     pub fn activate(&mut self, cx: &mut Context<Self>) {
+        self.refresh(cx);
         let mut choices = self.choices();
         if let Some(at) = self.selected_index(&choices) {
             let row = choices.swap_remove(at);
@@ -491,14 +552,18 @@ impl NewPane {
 
     /// Choose the numbered row, 1 to 9.
     pub fn choose_number(&mut self, number: usize, cx: &mut Context<Self>) {
-        let mut choices = self.choices();
-        if (1..=choices.len()).contains(&number) {
-            let row = choices.swap_remove(number - 1);
+        self.refresh(cx);
+        if let Some(row) = numbered_row(&self.presented, number, self.choices()) {
             self.choose(row, cx);
         }
     }
 
     fn choose(&mut self, row: Row, cx: &mut Context<Self>) {
+        if matches!(&row, Row::View(index) if !self.origin.allows_view(VIEWS[*index].kind))
+            || (matches!(&row, Row::Pick(_)) && !self.origin.allows_view(ViewKind::Agent))
+        {
+            return;
+        }
         match row {
             Row::Heading(..) => {}
             Row::Agent(member) => cx.emit(NewPaneEvent::Attach(member.name)),
@@ -508,7 +573,13 @@ impl NewPane {
                 kind => cx.emit(NewPaneEvent::OpenView(View::of(kind))),
             },
             Row::Section(index) => cx.emit(NewPaneEvent::OpenSection(SECTIONS[index].section)),
-            Row::Pick(name) => cx.emit(NewPaneEvent::OpenView(View::agent(name, None))),
+            Row::Pick(view) => {
+                if view.is_valid()
+                    && (self.origin.connection().is_none() || view.registration_id.is_some())
+                {
+                    cx.emit(NewPaneEvent::OpenView(view));
+                }
+            }
         }
     }
 
@@ -529,6 +600,11 @@ impl Render for NewPane {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (t, c) = (tokens(), colors());
         let rows = self.rows();
+        self.presented = rows
+            .iter()
+            .filter(|row| Self::selectable(row))
+            .map(row_key)
+            .collect();
         let count = rows.iter().filter(|row| Self::selectable(row)).count();
         let refreshing = match self.mode {
             Mode::Sessions => self.loading || self.team_loading,
@@ -542,19 +618,21 @@ impl Render for NewPane {
             .flex_wrap()
             .flex_shrink_0()
             .gap(px(t.space.s10))
-            .child(
-                ui::choice_button(
-                    "new-pane-terminal",
-                    "terminal",
-                    "Open terminal",
-                    "⌘↵",
-                    false,
+            .when(self.origin.allows_terminal(), |buttons| {
+                buttons.child(
+                    ui::choice_button(
+                        "new-pane-terminal",
+                        "terminal",
+                        "Open terminal",
+                        "⌘↵",
+                        false,
+                    )
+                    .on_click(cx.listener(|_, _, _, cx| {
+                        cx.stop_propagation();
+                        cx.emit(NewPaneEvent::OpenTerminal);
+                    })),
                 )
-                .on_click(cx.listener(|_, _, _, cx| {
-                    cx.stop_propagation();
-                    cx.emit(NewPaneEvent::OpenTerminal);
-                })),
-            )
+            })
             .when(self.backbone, |buttons| {
                 buttons
                     .child(
@@ -659,7 +737,11 @@ impl Render for NewPane {
                         id,
                         view.glyph,
                         view.label,
-                        view.description,
+                        if self.origin.connection().is_some() && view.kind == ViewKind::Agent {
+                            "One agent: overview and runtime permissions"
+                        } else {
+                            view.description
+                        },
                         view.scope,
                         key,
                         selected,
@@ -679,9 +761,13 @@ impl Render for NewPane {
                     )
                     .into_any_element()
                 }
-                Row::Pick(name) => ui::choice_frame(id, selected)
+                Row::Pick(view) => ui::choice_frame(id, selected)
                     .child(ui::icon("user", t.size.icon, c.muted))
-                    .child(mono(name.clone()).flex_1().text_color(c.text))
+                    .child(
+                        mono(view.agent.clone().unwrap_or_default())
+                            .flex_1()
+                            .text_color(c.text),
+                    )
                     .child(ui::choice_key(key))
                     .into_any_element(),
             };
@@ -760,7 +846,14 @@ impl Render for NewPane {
                     )
                     .child(list),
             )
-            .child(ui::hint_bar(&hints, "Nothing is created until you choose."))
+            .child(ui::hint_bar(
+                &hints,
+                if self.origin.allows_terminal() {
+                    "Nothing is created until you choose."
+                } else {
+                    "New shells are unavailable for this profile."
+                },
+            ))
             .capture_key_down(cx.listener(|chooser, event: &gpui::KeyDownEvent, _, cx| {
                 if chooser.field.read(cx).composing() {
                     return;
@@ -779,6 +872,9 @@ impl NewPane {
     pub fn key(&mut self, key: &gpui::Keystroke, navigating: bool, cx: &mut Context<Self>) -> bool {
         let m = &key.modifiers;
         if key.key == "enter" && m.platform && !m.control && !m.alt {
+            if !self.origin.allows_terminal() {
+                return true;
+            }
             cx.emit(NewPaneEvent::OpenTerminal);
             return true;
         }
@@ -834,7 +930,12 @@ fn row_key(row: &Row) -> String {
     match row {
         Row::Heading(label, _) => (*label).to_owned(),
         Row::Agent(member) => member.name.clone(),
-        Row::Session(name) | Row::Pick(name) => name.clone(),
+        Row::Session(name) => name.clone(),
+        Row::Pick(view) => format!(
+            "agent:{}:{}",
+            view.agent.as_deref().unwrap_or_default(),
+            view.registration_id.as_deref().unwrap_or_default()
+        ),
         Row::View(index) => VIEWS[*index].label.to_owned(),
         Row::Section(index) => SECTIONS[*index].label.to_owned(),
     }
@@ -889,6 +990,75 @@ fn mono(text: impl Into<SharedString>) -> gpui::Div {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn same_name_replacement_cannot_inherit_displayed_agent_selection() {
+        let (_dir, connection, server) = crate::roster::content::tests::provider("a", vec![]);
+        let origin = Origin::Bound(connection);
+        let mut member = Member {
+            name: "worker".into(),
+            registration_id: Some("1234567890abcdef1234567890abcdef".into()),
+            ..Member::default()
+        };
+        let original = origin.agent_view(&member).unwrap();
+        let key = row_key(&Row::Pick(original.clone()));
+        member.registration_id = Some("abcdef1234567890abcdef1234567890".into());
+        let replacement = origin.agent_view(&member).unwrap();
+        assert!(
+            numbered_row(
+                std::slice::from_ref(&key),
+                1,
+                vec![Row::Pick(replacement.clone())]
+            )
+            .is_none()
+        );
+        let mut selected = Some(key);
+        let mut disarmed = false;
+        reconcile_selection(
+            &[Row::Pick(replacement)],
+            &mut selected,
+            &mut disarmed,
+            false,
+        );
+        assert!(selected.is_none() && disarmed);
+        assert_eq!(
+            original.registration_id.as_deref(),
+            Some("1234567890abcdef1234567890abcdef")
+        );
+        member.registration_id = None;
+        assert!(origin.agent_view(&member).is_none());
+        member.registration_id = Some("invalid".into());
+        assert!(origin.agent_view(&member).is_none());
+        let legacy = Origin::Legacy {
+            socket: None,
+            directory: None,
+        };
+        assert!(
+            legacy
+                .agent_view(&member)
+                .unwrap()
+                .registration_id
+                .is_none()
+        );
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn numbered_selection_keeps_displayed_identity_across_pending_refreshes() {
+        let presented = vec!["alpha".into(), "beta".into()];
+        assert!(numbered_row(&presented, 1, vec![Row::Session("beta".into())]).is_none());
+        let reordered = vec![Row::Session("beta".into()), Row::Session("alpha".into())];
+        assert_eq!(
+            row_key(&numbered_row(&presented, 1, reordered).unwrap()),
+            "alpha"
+        );
+        assert_eq!(
+            row_key(&numbered_row(&presented, 2, vec![Row::Session("beta".into())]).unwrap()),
+            "beta"
+        );
+        assert!(numbered_row(&presented, 0, vec![]).is_none());
+        assert!(numbered_row(&presented, 3, vec![Row::Session("gamma".into())]).is_none());
+    }
 
     #[test]
     fn tab_moves_through_sessions_sections_and_views_both_ways() {

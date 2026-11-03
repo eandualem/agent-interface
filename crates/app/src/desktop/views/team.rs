@@ -138,7 +138,7 @@ pub(super) fn body(pane: &ViewPane, team: &Team, cx: &mut Context<ViewPane>) -> 
         .child(ui::grouped_page("team-rows", column))
         .child(ui::view_footer(
             if pane.connection.is_some() {
-                &[]
+                &[("⌥ click", "agent card beside")]
             } else {
                 &[
                     ("click", "show its terminal"),
@@ -355,6 +355,7 @@ pub(super) fn agent_row(
     let status = pane.agents.get(&member.name);
     let state = state(member, pane);
     let name = member.name.clone();
+    let registration = member.registration_id.clone();
     // An agent can appear in several groups; each row needs its own identity.
     let id = SharedString::from(format!("team-{group}-{name}-{}", guide.len()));
     div()
@@ -368,7 +369,7 @@ pub(super) fn agent_row(
         .when(!first, |el| {
             el.border_t(px(t.size.hairline)).border_color(c.line)
         })
-        .when(pane.connection.is_none(), |el| {
+        .when(pane.connection.is_none() || registration.is_some(), |el| {
             el.cursor_pointer().hover(|el| el.bg(colors().hover))
         })
         .when(state == AgentState::Offline, |el| el.opacity(0.7))
@@ -424,22 +425,33 @@ pub(super) fn agent_row(
             }),
         )
         .on_click(cx.listener(move |pane, event: &gpui::ClickEvent, _, cx| {
-            if let Some(event) = row_event(pane.connection.as_ref(), &name, event.modifiers().alt) {
+            if let Some(event) = row_event(
+                pane.connection.as_ref(),
+                &name,
+                registration.as_deref(),
+                event.modifiers().alt,
+            ) {
                 cx.emit(event);
             }
         }))
         .into_any_element()
 }
 
-// Agent/terminal navigation needs a retained profile route before bound rows
-// can emit it. A name alone must never select a legacy terminal or agent card.
+// Bound agent cards capture the observed registration before emitting navigation.
+// Name-only terminal navigation remains unavailable from these rows.
 fn row_event(
     connection: Option<&agent_interface_roster::profiles::Connection>,
     name: &str,
+    registration: Option<&str>,
     card: bool,
 ) -> Option<ViewEvent> {
     if connection.is_some() {
-        return None;
+        if !card {
+            return None;
+        }
+        let mut view = View::agent(name.to_owned(), None);
+        view.registration_id = Some(registration?.to_owned());
+        return view.is_valid().then_some(ViewEvent::OpenBeside(view));
     }
     Some(if card {
         ViewEvent::OpenBeside(View::agent(name.to_owned(), None))
@@ -456,9 +468,17 @@ mod tests {
     fn bound_rows_cannot_route_same_name_to_legacy_terminal_or_card() {
         let (_dir, connection, server) = crate::roster::content::tests::provider("a", vec![]);
         for card in [false, true] {
-            assert!(row_event(Some(&connection), "worker", card).is_none());
-            assert!(row_event(None, "worker", card).is_some());
+            assert!(row_event(Some(&connection), "worker", None, card).is_none());
+            assert!(row_event(None, "worker", None, card).is_some());
         }
+        let registration = "1234567890abcdef1234567890abcdef";
+        assert!(row_event(Some(&connection), "worker", Some("bad"), true).is_none());
+        let Some(ViewEvent::OpenBeside(view)) =
+            row_event(Some(&connection), "worker", Some(registration), true)
+        else {
+            panic!("missing registered card")
+        };
+        assert_eq!(view.registration_id.as_deref(), Some(registration));
         server.join().unwrap();
     }
 
