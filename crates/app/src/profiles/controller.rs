@@ -8,7 +8,7 @@ use agent_interface_roster::profiles::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-const LIMIT: usize = 10 * 1024 * 1024;
+const LIMIT: usize = journal::LIMIT;
 
 /// Submission intent, independent of provider progress or content readiness.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

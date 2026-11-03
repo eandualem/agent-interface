@@ -9,7 +9,10 @@ use std::{
     path::{Component, Path},
 };
 
-const LIMIT: usize = 10 * 1024 * 1024;
+// A canonical client capsule can double when escaped into a controller
+// envelope. Reserve the complete capsule bound plus envelope metadata, including
+// future terminal observations, rather than only the initial request's size.
+pub(super) const LIMIT: usize = 2 * super::recovery::LIMIT + 1024;
 const HEADER: usize = 88;
 const MAGIC: &[u8; 8] = b"AIPJNL01";
 const MAX_RECORDS: usize = 4096;
@@ -284,7 +287,7 @@ fn valid_id(id: &str) -> bool {
             .bytes()
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
-fn private(file: &File, directory: bool) -> Result<(), Error> {
+pub(super) fn private(file: &File, directory: bool) -> Result<(), Error> {
     let metadata = file.metadata().map_err(|_| Error::Unavailable)?;
     if metadata.uid() != rustix::process::geteuid().as_raw()
         || metadata.mode() & 0o077 != 0

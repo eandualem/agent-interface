@@ -62,6 +62,32 @@ fn intent() -> Prepared {
 }
 
 #[test]
+fn large_escaped_request_receipt_remains_durable_after_provider_success() {
+    let fixture = Fixture::new("");
+    let request_id = "\\".repeat((super::super::OUTPUT_LIMIT - 1024) / 2);
+    let prepared = Prepared::create(&request_id, "Example", "baseline-a").unwrap();
+    let reply = serde_json::to_vec(&serde_json::json!({
+        "schema_version":1,"request_id":request_id,"action":"create",
+        "profile_id":"profile-a","installation_id":"installation-a",
+        "lifecycle_id":"lifecycle-a","status":"succeeded","error":null,
+    }))
+    .unwrap();
+    assert!(prepared.bytes().len() <= super::super::OUTPUT_LIMIT);
+    assert!(reply.len() <= super::super::OUTPUT_LIMIT);
+    fs::write(fixture.root.path().join("reply"), reply).unwrap();
+    let controller = fixture.controller();
+    let saved = controller.enqueue(prepared).unwrap();
+    let receipt = controller.submit(&saved.key, &|| true).unwrap();
+    assert_eq!(receipt.status, Status::Succeeded);
+    drop(controller);
+    assert_eq!(
+        fixture.controller().read(&saved.key).unwrap().terminal,
+        Some(receipt)
+    );
+    assert_eq!(fixture.calls(), "apply\n");
+}
+
+#[test]
 fn intent_is_durable_before_execution_and_duplicate_ids_cannot_replace_it() {
     let fixture = Fixture::new("");
     let controller = fixture.controller();

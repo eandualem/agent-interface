@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, os::unix::ffi::OsStrExt};
 
-const LIMIT: usize = 8 * super::OUTPUT_LIMIT + 4096;
+pub(super) const LIMIT: usize = 8 * super::OUTPUT_LIMIT + 4096;
 
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

@@ -4,7 +4,6 @@ use super::{Client, Error, OUTPUT_LIMIT};
 use agent_interface_roster::profiles::setup::{Action, Event, Prepared, Stream};
 use std::{
     fs::File,
-    io::Write,
     os::unix::fs::FileExt,
     process::{Child, Stdio},
     time::{Duration, Instant},
@@ -97,14 +96,10 @@ impl Setup {
         if !live() {
             return Err(Error::Cancelled);
         }
-        let mut input = tempfile::NamedTempFile::new().map_err(|_| Error::Unavailable)?;
-        input
-            .write_all(self.bytes(action))
-            .map_err(|_| Error::Unavailable)?;
-        input.flush().map_err(|_| Error::Unavailable)?;
+        let input = super::invocation_file::InvocationFile::new(self.bytes(action))?;
         // A regular anonymous sink does not SIGPIPE a service/agent that
         // inherits stdout after this invocation finishes. Provider owns logging.
-        let output = tempfile::tempfile().map_err(|_| Error::Unavailable)?;
+        let output = super::invocation_file::InvocationFile::new(&[])?.into_file();
         let child = self
             .client
             .command()

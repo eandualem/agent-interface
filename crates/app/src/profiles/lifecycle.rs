@@ -8,7 +8,6 @@ use agent_interface_roster::profiles::{
 };
 use std::{
     ffi::OsString,
-    io::Write,
     os::unix::fs::FileExt,
     process::{Child, ExitStatus, Stdio},
     time::{Duration, Instant},
@@ -86,11 +85,7 @@ impl Operation {
         if !live() {
             return Err(Error::Cancelled);
         }
-        let mut input = tempfile::NamedTempFile::new().map_err(|_| Error::Unavailable)?;
-        input
-            .write_all(self.prepared.bytes())
-            .map_err(|_| Error::Unavailable)?;
-        input.flush().map_err(|_| Error::Unavailable)?;
+        let input = super::invocation_file::InvocationFile::new(self.prepared.bytes())?;
         let args: Vec<OsString> = vec![
             "profiles".into(),
             "apply".into(),
@@ -142,7 +137,7 @@ impl Operation {
         // A service may inherit this descriptor. A regular anonymous file stays
         // writable after the app closes its copy, unlike a pipe (SIGPIPE/EPIPE).
         // The provider remains responsible for its service logging destination.
-        let output = tempfile::tempfile().map_err(|_| Error::Unavailable)?;
+        let output = super::invocation_file::InvocationFile::new(&[])?.into_file();
         let child = self
             .client
             .command()

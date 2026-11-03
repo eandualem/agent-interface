@@ -1339,3 +1339,13 @@ schema-1 preview and retains its opaque token for an explicitly prepared adoptio
 Preview paths remain display metadata: the consumer does not open them, connect,
 migrate data or submit an action. A later preview cannot rewrite an existing
 operation's token, installation expectation or request ID.
+
+Provider request files are created inside fresh private directories only after
+checking the temporary path's ancestors, ownership, mode and macOS ACLs. Open
+directory and file descriptors must pass the same privacy checks as the journal
+before any request bytes are written. Receipt sinks use this preparation too,
+then become anonymous regular files so inherited service writers can survive
+consumer cleanup. Unsafe temporary locations fail before provider invocation.
+The journal capacity includes the worst-case JSON escaping of a complete
+client recovery capsule and its envelope, including terminal observations; an
+accepted large request cannot exhaust that capacity merely by gaining a receipt.

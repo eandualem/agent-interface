@@ -1,6 +1,7 @@
 //! Local operator discovery, verified selection and explicitly prepared profile
 //! operations. Discovery and selection never invoke lifecycle or setup actions.
 
+mod invocation_file;
 mod recovery;
 
 pub mod controller;
