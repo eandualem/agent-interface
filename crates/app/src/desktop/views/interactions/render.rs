@@ -1317,7 +1317,7 @@ impl Render for Interactions {
             .flex_col()
             .bg(c.surface)
             .child(toolbar(self, cx));
-        if self.error == Some(Error::Unsupported) {
+        if self.error == Some(Error::Unsupported) && self.source.connection().is_none() {
             frame = frame.child(
                 ui::interaction_chip("interactions-open-activity", "Open Activity", false)
                     .on_click(cx.listener(|_, _, _, cx| cx.emit(Event::Activity))),

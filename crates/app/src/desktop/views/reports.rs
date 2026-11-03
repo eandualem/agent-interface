@@ -810,7 +810,13 @@ fn controls(pane: &ViewPane, agents: &[String], cx: &mut Context<ViewPane>) -> g
                 .on_click(cx.listener(|pane, _, _, cx| pane.show_plans(cx))),
             );
         }
-        if index == 1 && pane.backbone.is_some() {
+        if index == 1
+            && (pane.backbone.is_some()
+                || pane
+                    .connection
+                    .as_ref()
+                    .is_some_and(|connection| pane.agents.belongs_to(connection.identity())))
+        {
             sections = sections.child(
                 ui::segment(
                     "reports-Interactions",

@@ -385,8 +385,25 @@ const CLOSED_POLL: Duration = Duration::from_secs(25);
 /// A recorded artifact link, already bound to the provider which supplied it.
 pub(super) struct ReferenceTarget {
     pub provider: String,
+    pub connection: Option<Connection>,
     pub kind: Kind,
     pub id: String,
+}
+
+impl ReferenceTarget {
+    pub fn bound_client(&self) -> Result<Option<stored::Client>, stored::Error> {
+        self.connection
+            .as_ref()
+            .map(|connection| {
+                stored::Client::new(
+                    connection.clone(),
+                    connection.identity(),
+                    self.kind,
+                    self.id.clone(),
+                )
+            })
+            .transpose()
+    }
 }
 
 impl Conversation {
@@ -504,7 +521,7 @@ impl Conversation {
     /// guessed source path, responsible agent or one-way feedback fallback.
     pub fn about_reference(
         target: ReferenceTarget,
-        directory: PathBuf,
+        directory: Option<PathBuf>,
         visible: Rc<Cell<bool>>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -523,9 +540,17 @@ impl Conversation {
         conversation.visible = visible;
         conversation.open = true;
         conversation.anchor = Some(format!("{} {}", target.kind.name(), target.id));
+        let bound = match target.bound_client() {
+            Ok(client) => client,
+            Err(error) => {
+                conversation.read_error = Some(error);
+                conversation.blocked = true;
+                return conversation;
+            }
+        };
         conversation.stored = Some(Stored {
-            bound: None,
-            directory,
+            bound,
+            directory: directory.unwrap_or_default(),
             provider: target.provider,
             kind: target.kind,
             source: None,
@@ -552,8 +577,8 @@ impl Conversation {
     pub fn about_interaction(
         item: &agent_interface_roster::interactions::Interaction,
         focus: &str,
-        provider: String,
-        directory: PathBuf,
+        target: ReferenceTarget,
+        directory: Option<PathBuf>,
         visible: Rc<Cell<bool>>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -591,10 +616,18 @@ impl Conversation {
             label: conversation.anchor.clone(),
             ..Default::default()
         });
+        let bound = match target.bound_client() {
+            Ok(client) => client,
+            Err(error) => {
+                conversation.read_error = Some(error);
+                conversation.blocked = true;
+                return conversation;
+            }
+        };
         conversation.stored = Some(Stored {
-            bound: None,
-            directory,
-            provider,
+            bound,
+            directory: directory.unwrap_or_default(),
+            provider: target.provider,
             kind: Kind::Interaction,
             source: None,
             id: item.id.clone(),

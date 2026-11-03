@@ -523,21 +523,28 @@ impl ViewPane {
     }
 
     fn show_interactions(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(directory) = self.backbone.clone() else {
-            return;
+        let source = match (&self.connection, &self.backbone) {
+            (Some(connection), _) => interactions::Source::Bound(connection.clone()),
+            (None, Some(directory)) => interactions::Source::Legacy(directory.clone()),
+            (None, None) => return,
         };
+        if !source.belongs_to(&self.agents) {
+            return;
+        }
         self.documents.surface.borrow_mut().clear();
         self.plans_shown(false, cx);
         if self.interactions.is_none() {
             let visible = self.visible.clone();
             let view = cx.new(|cx| {
-                interactions::Interactions::new(directory, visible, self.agents.clone(), window, cx)
+                interactions::Interactions::new(source, visible, self.agents.clone(), window, cx)
             });
             self._search.push(cx.observe(&view, |_, _, cx| cx.notify()));
             self._search
                 .push(cx.subscribe(&view, |pane, _, event, cx| match event {
                     interactions::Event::Activity => {
-                        cx.emit(ViewEvent::OpenBeside(View::of(ViewKind::Activity)))
+                        if pane.connection.is_none() {
+                            cx.emit(ViewEvent::OpenBeside(View::of(ViewKind::Activity)));
+                        }
                     }
                     interactions::Event::Report {
                         id,
@@ -546,8 +553,14 @@ impl ViewPane {
                         provider,
                         anchor,
                     } => {
-                        let Some(directory) = pane.backbone.clone() else {
-                            return;
+                        let source = match (&pane.connection, &pane.backbone) {
+                            (Some(connection), _) => {
+                                interactions::Source::Bound(connection.clone())
+                            }
+                            (None, Some(directory)) => {
+                                interactions::Source::Legacy(directory.clone())
+                            }
+                            (None, None) => return,
                         };
                         let id = *id;
                         let response = *response;
@@ -555,31 +568,9 @@ impl ViewPane {
                         let provider = provider.clone();
                         let expected = provider.clone();
                         let anchor = anchor.clone();
-                        let worker = cx.background_executor().spawn(async move {
-                            if agent_interface_roster::conversations::provider(&directory)
-                                .as_deref()
-                                != Some(&expected)
-                            {
-                                return Err("Backbone connection changed.");
-                            }
-                            let result = views::read(
-                                &directory,
-                                None,
-                                &if response {
-                                    Request::Response(id)
-                                } else {
-                                    Request::Report(id)
-                                },
-                                &|| true,
-                            );
-                            if agent_interface_roster::conversations::provider(&directory)
-                                .as_deref()
-                                != Some(&expected)
-                            {
-                                return Err("Backbone connection changed.");
-                            }
-                            result
-                        });
+                        let worker = cx
+                            .background_executor()
+                            .spawn(async move { source.report(&expected, id, response) });
                         cx.spawn(async move |this, cx| {
                             let result = worker.await;
                             let _ = this.update(cx, |pane, cx| {
