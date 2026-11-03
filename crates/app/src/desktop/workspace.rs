@@ -12,6 +12,11 @@ pub(super) fn create(window: &WindowLayout, name: &str) -> Option<(Document, Lay
     (edit.apply(&mut proposed, name) == RenameOutcome::Applied).then_some((base, proposed))
 }
 
+/// Provider labels may normalize to empty under native workspace name rules.
+pub(super) fn create_profile(window: &WindowLayout, label: &str) -> Option<(Document, Layout)> {
+    create(window, label).or_else(|| create(window, "Profile workspace"))
+}
+
 pub(super) fn delete(window: &WindowLayout, expected: &str) -> Option<(Document, Layout)> {
     let (base, mut proposed) = window.save_snapshot();
     (proposed.selected == expected && proposed.delete_workspace()).then_some((base, proposed))
@@ -69,5 +74,16 @@ mod tests {
         assert!(!deleted.focus_mode());
         window.model_mut().add_tab(None, "/tmp".into(), true);
         assert!(delete(&window, &other).is_none());
+    }
+
+    #[test]
+    fn profile_labels_that_normalize_to_empty_still_create_a_workspace() {
+        let window = window();
+        let (_, proposed) = create_profile(&window, "\u{e000}").unwrap();
+        assert_eq!(proposed.workspaces.len(), 2);
+        assert_eq!(proposed.workspace().unwrap().name, "Profile workspace");
+        let (_, proposed) = create_profile(&window, "Project Alpha").unwrap();
+        assert_eq!(proposed.workspace().unwrap().name, "Project Alpha");
+        assert_eq!(window.model().workspaces.len(), 1);
     }
 }

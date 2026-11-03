@@ -32,6 +32,30 @@ pub fn merge_shared_layout(
     let base = shared(base)?;
     let mine = shared(mine)?;
     let latest = shared(latest)?;
+    // A field-wise merge must never transplant a pane edit or tab transfer
+    // into a concurrently changed provider binding. This runs again against
+    // the transaction's latest document, not just the UI's earlier snapshot.
+    for original in base["workspaces"].as_array().ok_or(LayoutConflict)? {
+        let workspace = id(original)?;
+        let find = |value: &Value| -> Option<Value> {
+            value["workspaces"]
+                .as_array()?
+                .iter()
+                .find(|space| id(space).ok() == Some(workspace))
+                .cloned()
+        };
+        let (Some(local), Some(remote)) = (find(&mine), find(&latest)) else {
+            continue;
+        };
+        let binding = |value: &Value| value.get("profile_id").cloned().unwrap_or(Value::Null);
+        if (binding(&remote) != binding(original)
+            && pane_contents(&local)? != pane_contents(original)?)
+            || (binding(&local) != binding(original)
+                && pane_contents(&remote)? != pane_contents(original)?)
+        {
+            return Err(LayoutConflict);
+        }
+    }
     let merged = merge(Some(&base), Some(&mine), Some(&latest), false)?.ok_or(LayoutConflict)?;
     let spaces = merged["workspaces"].as_array().ok_or(LayoutConflict)?;
     if spaces.is_empty() {
@@ -49,6 +73,22 @@ pub fn merge_shared_layout(
         }
     }
     Ok(merged)
+}
+
+// Naming and ordering do not change I/O authority. Pane trees and tab identities
+// do; keep those associated with the binding under which the edit was prepared.
+fn pane_contents(space: &Value) -> Result<BTreeMap<String, Value>, LayoutConflict> {
+    space["tabs"]
+        .as_array()
+        .ok_or(LayoutConflict)?
+        .iter()
+        .map(|tab| {
+            Ok((
+                id(tab)?.to_owned(),
+                tab.get("tree").cloned().ok_or(LayoutConflict)?,
+            ))
+        })
+        .collect()
 }
 
 fn shared(state: &Value) -> Result<Value, LayoutConflict> {

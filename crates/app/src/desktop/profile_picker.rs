@@ -108,6 +108,9 @@ pub(super) struct ProfilePicker {
 }
 impl EventEmitter<Choice> for ProfilePicker {}
 impl ProfilePicker {
+    pub fn focus_handle(&self) -> FocusHandle {
+        self.focus.clone()
+    }
     /// The caller supplies the already resolved executable and captured caller
     /// context. No ambient provider or Default profile is selected implicitly.
     pub fn new(client: Client, cx: &mut Context<Self>) -> Self {

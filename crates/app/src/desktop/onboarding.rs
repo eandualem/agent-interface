@@ -4,7 +4,7 @@
 //! the application menu at any time after.
 
 mod first;
-mod probe;
+pub(super) mod probe;
 mod setup;
 
 use std::time::Duration;

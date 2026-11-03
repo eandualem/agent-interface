@@ -904,7 +904,7 @@ pane opens Sheets with the same verified connection. Shelf refreshes, navigation
 exports and prepared feedback keep that original source and credential snapshot.
 Read markers and retained workbook conversations include the full profile,
 installation and lifecycle identity. Bound workbooks do not inherit the legacy
-installation's initial read timestamp. Startup and profile selection remain unchanged.
+installation's initial read timestamp. Workspace routing supplies the verified connection when a profile workspace opens.
 
 `roster::plans::Client` and `roster::interactions::Client` retain a verified
 profile connection for all list, history and detail pages. Bound interaction
@@ -913,7 +913,7 @@ credentials; their legacy provider URL is empty. Every bound request carries the
 full identity. Binding refusal from optional state-history enrichment invalidates
 the whole snapshot, while unsupported state history remains an optional error.
 Legacy plan pagination also captures its connection once per complete read.
-These clients do not enable native profile selection or bound UI wiring.
+Native profile panes consume these clients through their retained connection.
 
 `roster::plans` reads Backbone's `/api/current-plans` list over the same
 authenticated local transport as Sheets, on a worker, every 20 seconds while
@@ -927,7 +927,7 @@ Explicitly bound panes read plans and runtime metadata through the same captured
 connection. Plan frames reject another profile's deferred result, and discussions
 retain the connection, author, observed revision and step. Their draft keys include
 the full profile, installation and lifecycle identity; refreshing or switching
-sections cannot redirect an existing discussion. Profile selection remains separate.
+sections cannot redirect an existing discussion. Workspace selection supplies the connection without rewriting an existing pane.
 The section draws through the pane, like the record readers, so
 an opened plan's text can be selected and copied. Its selected step uses the shared
 conversation panel, addressed by the plan author's stable identity. Drafts are
@@ -1077,15 +1077,15 @@ Bound native Policies retain shared catalog IDs with the displayed instruction l
 
 ### Bound native Team and Tags
 
-`roster::views::content` owns Team and Tags reads, and `desktop::views` owns their native panes. Bound Team and Tags panes use the same captured content connection and generation checks as other observations, with live status from a matching `LiveAgents` origin. Tag membership drill-down stays within the pane. Agent rows in bound mode are read-only until profile-owned terminal and agent-card routes are available; no name-only legacy navigation or ambient tag-mutation command is offered.
+`roster::views::content` owns Team and Tags reads, and `desktop::views` owns their native panes. Bound Team and Tags panes use the same captured content connection and generation checks as other observations, with live status from a matching `LiveAgents` origin. Tag membership drill-down stays within the pane. Bound Team rows can open registration-pinned Agent cards; name-only terminal navigation and ambient tag-mutation commands remain unavailable.
 
 ### Verified profile selection
 
-Profile selection uses an explicit cancellable handoff in the app crate. Each attempt retains its discovery client and requested profile ID, reads one atomic registry record and authenticates its connection before exposing a selected result. Per-owner tickets reject superseded or cancelled completions, including repeated choices of the same ID. Registry labels/readiness confer no connection authority, and a failed choice supplies no replacement for existing workspace connections. This handoff performs no service or account changes; native selector presentation and workspace activation are separate.
+Profile selection uses an explicit cancellable handoff in the app crate. Each attempt retains its discovery client and requested profile ID, reads one atomic registry record and authenticates its connection before exposing a selected result. Per-owner tickets reject superseded or cancelled completions, including repeated choices of the same ID. Registry labels/readiness confer no connection authority, and a failed choice supplies no replacement for existing workspace connections. This handoff performs no service or account changes; workspace activation consumes only that authenticated result.
 
-The native `ProfilePicker` component consumes an explicit discovery client and the selection handoff. Catalog tickets invalidate stale refreshes and rows; only currently ready IDs can start verification. Selection emits an authenticated connection or a fixed error, never a registry-only binding. Closing cancels pending work, and committed/closed pickers reject further interaction. The component remains unattached to startup until workspace-owned source routing is integrated.
+The native `ProfilePicker` component consumes an explicit discovery client and the selection handoff. Catalog tickets invalidate stale refreshes and rows; only currently ready IDs can start verification. Selection emits an authenticated connection or a fixed error, never a registry-only binding. Closing cancels pending work, and committed/closed pickers reject further interaction. The workspace menu opens this picker to create a workspace bound to an existing ready profile.
 
-Profile-bound session discovery retains a verified connection and queries only its authenticated tmux socket. It verifies the original provider binding before and after each read-only session listing; refusal clears session names and returns a typed profile error with the full origin. Visibility generations and cancellation discard obsolete reads. This path neither starts servers nor attaches clients, and does not fall back to legacy socket resolution. Workspace source integration remains separate.
+Profile-bound session discovery retains a verified connection and queries only its authenticated tmux socket. It verifies the original provider binding before and after each read-only session listing; refusal clears session names and returns a typed profile error with the full origin. Visibility generations and cancellation discard obsolete reads. This path neither starts servers nor attaches clients, and does not fall back to legacy socket resolution. Workspace choosers supply their own verified connection.
 
 Verified connections also carry an opaque, process-local cache key. Clones share
 that key; each fresh authenticated handshake gets a new one even if its full
@@ -1094,3 +1094,103 @@ origin and this key, so retained panes keep their old credential worker while a
 fresh connection can recover after credential rotation. The key is neither
 serialized nor used as request authority; wire validation still uses the full
 profile, installation and lifecycle identity. Legacy directory sharing is unchanged.
+
+`roster::profiles::runtime_context` acquires an agent registration from a bound
+inspection and retains that registration, runtime and verified connection for
+refreshes and permission reads. List-derived navigation supplies its observed
+registration immediately. Retained requests always include `expected_registration_id`;
+replacement or removal invalidates the target. Permission responses must match
+the full profile identity, name, runtime and registration. Typed provider-parsed
+permissions expose only relative display labels and fixed unavailable/unsupported
+messages; no local runtime files or home directories are read. Native Agent cards
+consume this retained context. The shared profiles fixture includes contract
+revision 2 extension 1 for adoption, setup schema 2 and registered runtime context.
+
+Native pane and attachment choosers retain an explicit discovery origin. Bound
+constructors use the verified connection for both session and team observations;
+legacy constructors keep their explicit directory/socket behavior. Session replies
+must match the retained full identity, and worker visibility generations discard
+hidden reads. Event owners can retrieve the retained connection and must validate
+it against their workspace before accepting a choice. Bound new-pane choosers omit
+ordinary shell creation, including its keyboard shortcuts, and retain registrations
+for Agent cards. Desktop routing constructs them from the owning workspace connection.
+
+Workspace records may carry an optional stable `profile_id`. Schema-v2 projection
+and ordinary three-way conflict handling preserve it; endpoints, lifecycles and
+credentials are never persisted in the layout. Missing or null IDs retain explicit
+legacy/standalone meaning. A native picker can create a workspace for an existing
+ready profile. Restored bindings resolve through read-only registry discovery and
+an authenticated handshake, with bounded concurrent attempts and explicit retry.
+Unavailable bindings display a connection state instead of opening legacy content.
+
+Each workspace retains its verified connection and status source. Pane entities,
+attachment choosers, attention markers and new native windows inherit that authority.
+Changing a saved binding or explicitly reconnecting invalidates old pane owners;
+delayed callbacks cannot apply to their replacements. Cross-workspace tab transfers
+require the same connection instance, including its credential snapshot. Bound
+terminal attachments use only the verified tmux socket, recheck the provider before
+and after attachment, and release the owned client if that final check fails.
+Bound panes never resume agents or create ordinary shells through legacy paths.
+Profile-owned shell creation, lifecycle/setup controls and account acceptance
+remain separate work; unavailable operations are omitted or shown as
+unavailable. Existing standalone workspaces retain their ordinary shell behavior.
+
+Sidebar attention actions, retained view events and Jump results capture their
+workspace, connection epoch and library origin before dispatch. Navigation validates
+that origin and selects the original workspace; a removed, rebound or reconnected
+workspace rejects the old callback. Jump activates the displayed target rather than
+looking up its old list index again. Closed view entities and replaced popovers
+cannot dispatch into their successors. Moving a retained view renews its event
+subscription for the destination workspace; events from the previous subscription
+generation expire while the view and its conversation state remain intact.
+
+New Tab and Split controls capture the displayed workspace, selection and connection
+epoch. They refuse stale callbacks and recheck after consuming a pending library
+update, before creating a save intent. Keyboard commands capture at dispatch;
+rendered buttons, Jump commands and tab options retain their displayed destination.
+Tab-menu listeners also retain the menu generation, so a retired listener cannot
+consume a replacement menu or its creation target. Name editors and inline pane
+choosers accept events only from their active entity. Tab operations, name commits
+and icon changes recheck the selected workspace origin after pending library
+updates, while focus changes within the same workspace remain valid. Attachment
+and terminal openers also capture the pane origin before their own refresh; a
+nested refresh cannot turn an earlier bound action into a legacy-source lookup.
+Sidebar workspace/tab choices, menu openers, pane focus and tmux window controls
+retain their rendered origin. Reorder and resize gestures reject binding or
+connection changes even when saved IDs and tree contents remain unchanged;
+retired terminal entities cannot receive window-selection callbacks. Workspace
+menus also retain an opening generation, so an old action cannot consume or
+replace a newer menu. The unavailable-profile retry button retains its displayed
+origin and rechecks pending library updates before resetting connection state;
+delayed retries cannot discard a different or already recovered connection.
+Close Pane and Close Tab capture the selected origin before consuming library
+updates and reject changed bindings or connection epochs even when tab and pane
+IDs are unchanged. Fresh local closes still work for unavailable profiles.
+The application-menu setup command also consumes pending library updates before
+admission. It requires the same captured workspace and library origin to remain
+explicitly legacy; binding removal cannot redirect an old bound request into
+legacy setup, and bound or unavailable profiles never enter that flow.
+
+Save reconciliation treats a workspace's profile binding and its tab contents as
+an ownership boundary: a concurrent binding change cannot merge with a pane edit,
+tab addition or transfer in that workspace. The transaction rechecks this against
+the latest stored layout, so a pre-save UI check alone cannot authorize a stale
+edit. Connection-unavailable content also hides retained native web surfaces, and
+background focus resets preserve an open profile picker's keyboard ownership.
+
+Profile-bound Team cards retain a listed agent registration on Alt-click and save
+it as `view_registration_id` in the schema-v2 pane. Bound agent overview and
+permission reads require this registration and the owning workspace connection;
+restoring a saved card cannot reacquire a same-name replacement. A separate native
+card uses provider-parsed runtime context, never legacy host-file permission
+inspection or default launch-policy claims. Refusals clear the card. Name-only
+saved cards require reopening from Team, and removing a workspace binding does
+not convert a registration-pinned card into a legacy read. Other bound agent
+sections and name-only terminal navigation are unavailable.
+
+The new-pane Agent chooser carries the same observed registration as Team
+navigation. Bound choices omit unregistered or malformed targets. Row keys include
+registration identity, so a refreshed same-name replacement disarms selection and
+cannot inherit a previously rendered number key or click target. The chooser
+exposes only the supported bound overview and permission card; it never builds a
+name-only bound Agent view.

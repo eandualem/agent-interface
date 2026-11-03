@@ -353,6 +353,8 @@ pub struct Team {
 pub struct Member {
     /// Agent name.
     pub name: String,
+    /// Durable registration from a bound list, absent for unregistered rows.
+    pub registration_id: Option<String>,
     /// The CLI it runs in.
     pub runtime: String,
     /// The repository it owns, or empty.
@@ -1310,7 +1312,7 @@ pub fn read_skill(folder: &str) -> Result<(String, bool), &'static str> {
 }
 
 impl Agent {
-    fn decode(body: &[u8]) -> Result<Self, &'static str> {
+    pub(crate) fn decode(body: &[u8]) -> Result<Self, &'static str> {
         let document = document(body)?;
         let raw = std::str::from_utf8(body).map_err(|_| UNREADABLE)?;
         let mut agent: Self = serde_json::from_str(raw).map_err(|_| UNREADABLE)?;

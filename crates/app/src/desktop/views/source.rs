@@ -7,7 +7,7 @@ use agent_interface_roster::{
 };
 use std::{cell::Cell, io, path::PathBuf, time::Duration};
 
-pub(super) enum Source {
+pub(in crate::desktop) enum Source {
     Legacy(ViewSource),
     Bound {
         worker: BoundContentSource,

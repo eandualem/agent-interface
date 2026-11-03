@@ -20,6 +20,8 @@ pub(super) struct Jump {
     field: Entity<NameField>,
     query: String,
     index: usize,
+    displayed: Vec<Hit>,
+    ticket: std::rc::Rc<()>,
     scroll: ScrollHandle,
     _events: Subscription,
 }
@@ -35,16 +37,16 @@ impl Jump {
 #[derive(Clone)]
 pub(super) enum Target {
     Tab {
-        workspace: String,
+        origin: super::navigation_origin::Origin,
         tab: String,
     },
     Pane {
-        workspace: String,
+        origin: super::navigation_origin::Origin,
         tab: String,
         pane: String,
     },
-    Agent(String),
-    Command(Create),
+    Agent(super::navigation_origin::AgentTarget),
+    Command(Create, Option<super::creation_origin::Target>),
     NewWorkspace,
     Settings,
 }
@@ -74,12 +76,20 @@ impl Browser {
         self.close_menus();
         self.menu_at = Some(at);
         let field = cx.new(|cx| NameField::search(window, cx));
-        let events = cx.subscribe_in(&field, window, |browser, _, event, window, cx| {
+        let events = cx.subscribe_in(&field, window, |browser, sender, event, window, cx| {
+            if !browser
+                .jump
+                .as_ref()
+                .is_some_and(|jump| jump.field == *sender)
+            {
+                return;
+            }
             match event {
                 NameEvent::Changed(query) => {
                     if let Some(jump) = &mut browser.jump {
                         jump.query = query.clone();
                         jump.index = 0;
+                        jump.displayed.clear();
                         jump.scroll = ScrollHandle::new();
                     }
                 }
@@ -94,6 +104,8 @@ impl Browser {
             field,
             query: String::new(),
             index: 0,
+            displayed: Vec::new(),
+            ticket: std::rc::Rc::new(()),
             scroll: ScrollHandle::new(),
             _events: events,
         });
@@ -110,10 +122,10 @@ impl Browser {
 
     /// Move the highlighted result.
     pub(super) fn jump_move(&mut self, step: isize, cx: &mut Context<Self>) {
-        let hits = self.jump_hits();
         if let Some(jump) = &mut self.jump
-            && !hits.is_empty()
+            && !jump.displayed.is_empty()
         {
+            let hits = &jump.displayed;
             jump.index = (jump.index as isize + step).rem_euclid(hits.len() as isize) as usize;
             // Each group's heading is a row before its results; reveal the
             // highlighted result's row.
@@ -147,7 +159,7 @@ impl Browser {
                             meta: space.name.clone(),
                             agent: None,
                             target: Target::Tab {
-                                workspace: space.id.clone(),
+                                origin: self.navigation_origin(&space.id).expect("saved workspace"),
                                 tab: tab.id.clone(),
                             },
                         });
@@ -165,9 +177,11 @@ impl Browser {
                                 group: "PANES",
                                 label: attachment.session.clone(),
                                 meta: format!("{} · {}", tab.name, space.name),
-                                agent: self.attachment_state(attachment, states.as_deref()),
+                                agent: self.attachment_state_in(space, attachment),
                                 target: Target::Pane {
-                                    workspace: space.id.clone(),
+                                    origin: self
+                                        .navigation_origin(&space.id)
+                                        .expect("saved workspace"),
                                     tab: tab.id.clone(),
                                     pane: leaf.id.clone(),
                                 },
@@ -181,26 +195,31 @@ impl Browser {
             let mut agents: Vec<_> = states.iter().collect();
             agents.sort_by_key(|(name, state)| (!state.needs_you(), name.to_lowercase()));
             for (name, state) in agents {
-                if matches(name) {
+                if matches(name)
+                    && let Some(target) = self.agent_target(name)
+                {
                     hits.push(Hit {
                         group: "AGENTS",
                         label: name.clone(),
                         meta: state.word().into(),
                         agent: Some(*state),
-                        target: Target::Agent(name.clone()),
+                        target: Target::Agent(target),
                     });
                 }
             }
         }
         for (label, target) in [
-            ("New tab", Target::Command(Create::Tab)),
+            (
+                "New tab",
+                Target::Command(Create::Tab, self.creation_target()),
+            ),
             (
                 "Split right",
-                Target::Command(Create::Split(Direction::Right)),
+                Target::Command(Create::Split(Direction::Right), self.creation_target()),
             ),
             (
                 "Split below",
-                Target::Command(Create::Split(Direction::Below)),
+                Target::Command(Create::Split(Direction::Below), self.creation_target()),
             ),
             ("New workspace", Target::NewWorkspace),
             ("Settings", Target::Settings),
@@ -221,35 +240,36 @@ impl Browser {
     /// Go to the highlighted result.
     pub(super) fn jump_go(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let index = self.jump.as_ref().map_or(0, |jump| jump.index);
-        let Some(hit) = self.jump_hits().into_iter().nth(index) else {
+        let Some(target) = self
+            .jump
+            .as_ref()
+            .and_then(|jump| jump.displayed.get(index))
+            .map(|hit| hit.target.clone())
+        else {
             return;
         };
+        self.jump_to(target, window, cx);
+    }
+
+    fn jump_to(&mut self, target: Target, window: &mut Window, cx: &mut Context<Self>) {
+        if self.jump.is_none() {
+            return;
+        }
         self.jump = None;
         if let Some(focus) = &self.navigation {
             window.focus(focus, cx);
         }
-        match hit.target {
-            Target::Tab { workspace, tab } => {
-                if let Some(layout) = &mut self.layout {
-                    let model = layout.model_mut();
-                    model.choose_workspace(&workspace);
-                    model.choose_tab(&tab);
-                }
+        match target {
+            Target::Tab { origin, tab } => {
+                self.select_navigation(&origin, &tab, None);
             }
-            Target::Pane {
-                workspace,
-                tab,
-                pane,
-            } => {
-                if let Some(layout) = &mut self.layout {
-                    let model = layout.model_mut();
-                    model.choose_workspace(&workspace);
-                    model.choose_tab(&tab);
-                    model.choose_pane(&pane);
-                }
+            Target::Pane { origin, tab, pane } => {
+                self.select_navigation(&origin, &tab, Some(&pane));
             }
-            Target::Agent(name) => self.go_to_agent(&name, window, cx),
-            Target::Command(action) => self.create(action, window, cx),
+            Target::Agent(target) => self.go_to_agent_target(&target, window, cx),
+            Target::Command(action, target) => {
+                self.create_from(action, target.as_ref(), window, cx)
+            }
             Target::NewWorkspace => self.begin_workspace(window, cx),
             Target::Settings => cx.defer(super::settings_window::show),
         }
@@ -262,7 +282,10 @@ impl Browser {
         let (t, c) = (tokens(), colors());
         let field = jump.field.clone();
         let index = jump.index;
+        let ticket = jump.ticket.clone();
+        let scroll = jump.scroll.clone();
         let hits = self.jump_hits();
+        self.jump.as_mut()?.displayed = hits.clone();
         let mut list = div()
             .id("jump-results")
             .p(px(t.size.popover_padding))
@@ -270,7 +293,7 @@ impl Browser {
             .flex_col()
             .max_h(px(t.size.window_min_height - t.size.titlebar * 2.0))
             .overflow_y_scroll()
-            .track_scroll(&jump.scroll);
+            .track_scroll(&scroll);
         let mut group = "";
         for (position, hit) in hits.iter().enumerate() {
             if hit.group != group {
@@ -278,6 +301,8 @@ impl Browser {
                 list = list.child(ui::menu_heading(group));
             }
             let chosen = position == index;
+            let target = hit.target.clone();
+            let ticket = ticket.clone();
             list = list.child(
                 ui::menu_item(
                     SharedString::from(format!("jump-{position}")),
@@ -297,10 +322,13 @@ impl Browser {
                     )
                 })
                 .on_click(cx.listener(move |browser, _, window, cx| {
-                    if let Some(jump) = &mut browser.jump {
-                        jump.index = position;
+                    if browser
+                        .jump
+                        .as_ref()
+                        .is_some_and(|jump| std::rc::Rc::ptr_eq(&jump.ticket, &ticket))
+                    {
+                        browser.jump_to(target.clone(), window, cx);
                     }
-                    browser.jump_go(window, cx);
                 })),
             );
         }

@@ -123,6 +123,11 @@ impl<'a> Projection<'a> {
                     "view_section",
                     view.and_then(|view| view.section).map(AgentSection::as_str),
                 );
+                optional(
+                    &mut item,
+                    "view_registration_id",
+                    view.and_then(|view| view.registration_id.as_deref()),
+                );
                 item
             }
             Node::Split {
@@ -143,6 +148,7 @@ impl<'a> Projection<'a> {
                         "view",
                         "view_agent",
                         "view_section",
+                        "view_registration_id",
                     ],
                 )?;
                 item.insert(
@@ -219,6 +225,16 @@ pub(crate) fn apply(raw: &str, model: &Layout) -> Result<String, String> {
                 .is_some_and(|symbol| symbol.get() != "null")
         {
             optional(&mut item, "symbol", space.symbol.as_deref());
+        }
+        // Preserve an unchanged missing/null legacy binding, as with optional icons.
+        if space.profile_id.is_some()
+            || projection
+                .objects
+                .get(&space.id)
+                .and_then(|item| item.get("profile_id"))
+                .is_some_and(|id| id.get() != "null")
+        {
+            optional(&mut item, "profile_id", space.profile_id.as_deref());
         }
         let mut tabs = Vec::new();
         for tab in &space.tabs {

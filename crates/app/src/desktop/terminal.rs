@@ -1,5 +1,8 @@
 //! Connect each saved leaf to its actual existing tmux session.
 
+#[cfg(test)]
+mod profile_isolation_tests;
+
 use super::{components as ui, design};
 use crate::{
     library,
@@ -15,34 +18,58 @@ use std::{path::PathBuf, sync::Arc};
 
 static CONNECTION_ATTEMPTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone)]
 pub(super) struct Target {
+    pub connection: Option<agent_interface_roster::profiles::Connection>,
     pub leaf: Leaf,
     pub directory: Option<PathBuf>,
     pub source: Result<PathBuf, String>,
 }
 
+impl PartialEq for Target {
+    fn eq(&self, other: &Self) -> bool {
+        self.leaf == other.leaf
+            && self.directory == other.directory
+            && self.source == other.source
+            && self.connection.as_ref().map(|c| c.connection_key())
+                == other.connection.as_ref().map(|c| c.connection_key())
+    }
+}
+impl Eq for Target {}
+
 impl Target {
+    fn profile_matches(&self, space: &agent_interface_core::Workspace) -> bool {
+        space.profile_id.as_deref()
+            == self
+                .connection
+                .as_ref()
+                .map(|c| c.identity().profile_id.as_str())
+    }
     /// Clear only the pane contents the user acted on, in the selected tab.
     pub fn detach_from(&self, layout: &mut agent_interface_core::Layout) -> bool {
-        layout.tab().is_some_and(|tab| {
-            tab.tree
-                .leaves()
-                .into_iter()
-                .any(|leaf| self.matches_leaf(leaf))
-        }) && layout.choose_pane(&self.leaf.id)
+        layout
+            .workspace()
+            .is_some_and(|space| self.profile_matches(space))
+            && layout.tab().is_some_and(|tab| {
+                tab.tree
+                    .leaves()
+                    .into_iter()
+                    .any(|leaf| self.matches_leaf(leaf))
+            })
+            && layout.choose_pane(&self.leaf.id)
             && layout.detach_pane()
     }
 
     /// A hidden tab still owns its connection until the saved target changes.
     pub fn exists_in(&self, layout: &agent_interface_core::Layout) -> bool {
         layout.workspaces.iter().any(|workspace| {
-            workspace.tabs.iter().any(|tab| {
-                tab.tree
-                    .leaves()
-                    .into_iter()
-                    .any(|leaf| self.matches_leaf(leaf))
-            })
+            self.profile_matches(workspace)
+                && workspace.tabs.iter().any(|tab| {
+                    tab.tree
+                        .leaves()
+                        .into_iter()
+                        .any(|leaf| self.matches_leaf(leaf))
+                })
         })
     }
 
@@ -57,6 +84,8 @@ impl Target {
         self.matches_leaf(&other.leaf)
             && self.directory == other.directory
             && self.source == other.source
+            && self.connection.as_ref().map(|c| c.connection_key())
+                == other.connection.as_ref().map(|c| c.connection_key())
     }
 }
 
@@ -89,7 +118,30 @@ fn connect_selected(
     selected: Option<SessionWindow>,
     reopened: bool,
 ) -> Result<Ready, String> {
-    let (socket, session) = if let Some(attachment) = &target.leaf.attachment {
+    let bound = target.connection.clone();
+    if let Some(connection) = &bound {
+        connection
+            .verify()
+            .map_err(|_| "The workspace profile connection is unavailable.".to_owned())?;
+    }
+    let (socket, session) = if let Some(connection) = &bound {
+        let attachment = target
+            .leaf
+            .attachment
+            .as_ref()
+            .ok_or("Profile-owned shell creation is unavailable.")?;
+        if attachment
+            .source_socket
+            .as_deref()
+            .is_some_and(|path| std::path::Path::new(path) != connection.tmux_socket())
+        {
+            return Err("The saved session belongs to a different profile socket.".into());
+        }
+        (
+            connection.tmux_socket().to_owned(),
+            attachment.session.clone(),
+        )
+    } else if let Some(attachment) = &target.leaf.attachment {
         let socket = match &attachment.source_socket {
             Some(path) => {
                 sessions::source_socket(Some(path.as_ref())).map_err(|e| e.to_string())?
@@ -135,7 +187,7 @@ fn connect_selected(
         },
     )
     .map_err(|e| e.to_string())?;
-    Ok(Ready {
+    let ready = Ready {
         socket,
         panes: Some(Arc::new(panes)),
         window: connection.layout.window,
@@ -143,7 +195,13 @@ fn connect_selected(
         layout: Some(connection.layout),
         input: connection.input,
         updates: Some(updates),
-    })
+    };
+    if let Some(connection) = &bound {
+        connection
+            .verify()
+            .map_err(|_| "The workspace profile connection changed while attaching.".to_owned())?;
+    }
+    Ok(ready)
 }
 
 pub(super) struct LiveTerminal {
@@ -671,6 +729,121 @@ mod tests {
     };
 
     #[test]
+    fn bound_attachment_ignores_legacy_source_and_refuses_foreign_or_shell_targets() {
+        use crate::roster::content::tests::{Reply, provider_with_tmux};
+        use serde_json::json;
+        let a = TmuxServer::start().unwrap();
+        let b = TmuxServer::start().unwrap();
+        for server in [&a, &b] {
+            server
+                .run(&["new-session", "-d", "-s", "same-name", "cat"])
+                .unwrap();
+        }
+        let socket: PathBuf = a
+            .run(&["display-message", "-p", "#{socket_path}"])
+            .unwrap()
+            .trim()
+            .into();
+        let other: PathBuf = b
+            .run(&["display-message", "-p", "#{socket_path}"])
+            .unwrap()
+            .trim()
+            .into();
+        let identity = json!({"schema_version":1,"profile_id":"profile-a","installation_id":"installation-a","lifecycle_id":"lifecycle-a","baseline_version":"fixture","tmux":{"socket_path":socket}});
+        let (_dir, connection, server) = provider_with_tmux(
+            "a",
+            (0..4)
+                .map(|_| Reply::ok("/api/profile", identity.clone()))
+                .collect(),
+            Some(socket.clone()),
+        );
+        let mut model = agent_interface_core::Layout::initial("/tmp".into());
+        model.workspaces[0].profile_id = Some("profile-a".into());
+        model.attach(Some(Attachment {
+            session: "same-name".into(),
+            source_socket: None,
+        }));
+        let mut target = Target {
+            connection: Some(connection),
+            leaf: model.pane().unwrap().clone(),
+            directory: None,
+            source: Ok(other.clone()),
+        };
+        assert!(target.exists_in(&model));
+        let ready = connect(target.clone()).unwrap();
+        assert_eq!(ready.socket, socket);
+        assert!(b.run(&["list-clients"]).unwrap().is_empty());
+        drop(ready);
+        target.leaf.attachment.as_mut().unwrap().source_socket =
+            Some(other.to_str().unwrap().into());
+        assert!(
+            connect(target.clone())
+                .err()
+                .expect("attachment must fail")
+                .contains("different profile socket")
+        );
+        target.leaf.attachment = None;
+        assert!(
+            connect(target)
+                .err()
+                .expect("attachment must fail")
+                .contains("shell creation is unavailable")
+        );
+        assert!(b.run(&["list-clients"]).unwrap().is_empty());
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn changed_binding_during_attachment_releases_the_owned_client() {
+        use crate::roster::content::tests::{Reply, provider_with_tmux};
+        use serde_json::json;
+        let tmux = TmuxServer::start().unwrap();
+        let socket: PathBuf = tmux
+            .run(&["display-message", "-p", "#{socket_path}"])
+            .unwrap()
+            .trim()
+            .into();
+        let identity = json!({"schema_version":1,"profile_id":"profile-a","installation_id":"installation-a","lifecycle_id":"lifecycle-a","baseline_version":"fixture","tmux":{"socket_path":socket}});
+        let (_dir, connection, server) = provider_with_tmux(
+            "a",
+            vec![
+                Reply::ok("/api/profile", identity),
+                Reply {
+                    status: 409,
+                    ..Reply::ok(
+                        "/api/profile",
+                        json!({"detail":{"code":"binding_mismatch"}}),
+                    )
+                },
+            ],
+            Some(socket),
+        );
+        let mut model = agent_interface_core::Layout::initial("/tmp".into());
+        model.attach(Some(Attachment {
+            session: "fixture".into(),
+            source_socket: None,
+        }));
+        let target = Target {
+            connection: Some(connection),
+            leaf: model.pane().unwrap().clone(),
+            directory: None,
+            source: Err("no legacy source".into()),
+        };
+        assert!(
+            connect(target)
+                .err()
+                .expect("attachment must fail")
+                .contains("changed while attaching")
+        );
+        server.join().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !tmux.run(&["list-clients"]).unwrap().is_empty() {
+            assert!(Instant::now() < deadline, "bound client was not released");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
     fn attachment_survives_navigation_and_detach_returns_the_same_pane_to_its_chooser() {
         let mut model = agent_interface_core::Layout::initial("/work".into());
         model.attach(Some(Attachment {
@@ -678,6 +851,7 @@ mod tests {
             source_socket: Some("/fixture/source".into()),
         }));
         let target = Target {
+            connection: None,
             leaf: model.pane().unwrap().clone(),
             directory: None,
             source: Ok("/fixture/source".into()),
@@ -734,6 +908,7 @@ mod tests {
             .run(&["display-message", "-p", "#{socket_path}"])
             .unwrap();
         let target = Target {
+            connection: None,
             leaf: Leaf {
                 id: "123456abcdef".into(),
                 cwd: None,
@@ -858,6 +1033,7 @@ mod tests {
         };
         let original = current();
         let target = Target {
+            connection: None,
             leaf: Leaf {
                 id: "123456abcdef".into(),
                 cwd: None,
@@ -1006,6 +1182,7 @@ mod tests {
                 .unwrap()
         };
         let target = Target {
+            connection: None,
             leaf: Leaf {
                 id: "abcdef123456".into(),
                 cwd: None,
@@ -1161,6 +1338,7 @@ mod tests {
             .run(&["show-environment", "-t", &target_name])
             .unwrap();
         let mut target = Target {
+            connection: None,
             leaf: Leaf {
                 id: "123456abcdef".into(),
                 cwd: None,

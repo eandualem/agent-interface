@@ -150,6 +150,15 @@ impl LiveAgents {
         self.0.current.borrow().active.clone()
     }
 
+    pub fn unavailable(&self) -> bool {
+        self.0
+            .current
+            .borrow()
+            .snapshot
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.error.is_some())
+    }
+
     pub fn observed(&self) -> bool {
         self.0.current.borrow().snapshot.is_some()
     }

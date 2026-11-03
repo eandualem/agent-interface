@@ -53,7 +53,26 @@ impl Browser {
                 .into_any_element();
         };
         let model = layout.model();
+        if self.profile_content_unavailable() {
+            let origin = self.selected_navigation_origin();
+            return area
+                .child(
+                    ui::empty_state(
+                        ui::empty_tile("plug", c.selected, c.text_2),
+                        "Workspace profile unavailable",
+                        "Reconnect to this workspace’s saved profile to continue.",
+                    )
+                    .child(
+                        ui::button("retry-profile", "Retry connection", ui::Button::Secondary)
+                            .on_click(cx.listener(move |browser, _, _, cx| {
+                                browser.retry_profile(origin.as_ref(), cx)
+                            })),
+                    ),
+                )
+                .into_any_element();
+        }
         let Some(tab) = model.tab() else {
+            let creation = self.creation_target();
             let name = model
                 .workspace()
                 .map_or(String::new(), |space| space.name.clone());
@@ -67,7 +86,7 @@ impl Browser {
                     .child(
                         ui::button("first-tab", "New tab", ui::Button::Primary)
                             .child(ui::key_hint(shortcuts::label(Command::NewTab)).text_color(c.on_accent))
-                            .on_click(cx.listener(|browser, _, window, cx| browser.create(Create::Tab, window, cx))),
+                            .on_click(cx.listener(move |browser, _, window, cx| browser.create_from(Create::Tab, creation.as_ref(), window, cx))),
                     ),
                 )
                 .into_any_element();
@@ -101,6 +120,7 @@ impl Browser {
         let focus_changed = self.painted_pane_focus.as_ref() != Some(&tab.focus);
         self.painted_pane_focus = Some(tab.focus.clone());
         let cards = super::pane_cards::Cards {
+            origin: self.selected_navigation_origin(),
             focus: &tab.focus,
             focus_changed,
             accessibility_active: window.is_a11y_active(),
@@ -117,6 +137,21 @@ impl Browser {
                 .filter(|drag| drag.dragging)
                 .and_then(|drag| drag.destination.as_ref()),
             leaf_states,
+            unavailable: leaves
+                .iter()
+                .filter(|leaf| {
+                    leaf.runs_terminal()
+                        && (matches!(self.pane_connection(&leaf.id), Ok(Some(_)))
+                            && leaf.attachment.is_none()
+                            || !self.terminal_available(&leaf.id))
+                })
+                .map(|leaf| {
+                    (
+                        leaf.id.clone(),
+                        "This terminal is unavailable for the workspace profile.",
+                    )
+                })
+                .collect(),
         };
         let node = tree
             .as_ref()
@@ -138,7 +173,9 @@ impl Browser {
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let t = tokens();
-        let body = if let Some(jump) = self.jump_popover(cx) {
+        let body = if let Some((picker, _)) = &self.profile_picker {
+            div().w(px(480.0)).h(px(560.0)).child(picker.clone())
+        } else if let Some(jump) = self.jump_popover(cx) {
             jump
         } else if self.icon_picker {
             self.icon_picker(cx)
