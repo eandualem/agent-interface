@@ -70,7 +70,7 @@ impl Registry {
                         Entry {
                             profile_id: entry.profile_id.clone(),
                             selection: Selection::default(),
-                            result: entry.result.clone(),
+                            result: entry.result.clone().filter(|result| result.is_ok()),
                         },
                     )
                 })
@@ -736,6 +736,48 @@ mod tests {
         assert!(
             matches!(inherited.route(&layout.workspaces[0]), Route::Bound(c) if c.connection_key() == first.connection_key())
         );
+    }
+
+    #[test]
+    fn new_windows_retry_failed_lookups_without_replacing_successful_connections() {
+        let (root, connection, server) = provider("a", vec![]);
+        server.join().unwrap();
+        let mut layout = Layout::initial("/tmp".into());
+        layout.workspaces[0].profile_id = Some("profile-a".into());
+        layout.add_workspace("Unavailable".into());
+        layout.workspaces[1].profile_id = Some("profile-b".into());
+        let failed = layout.workspaces[1].id.clone();
+        let mut registry = Registry::default();
+        assert!(registry.bind(&layout.workspaces[0], connection.clone()));
+        registry.entries.insert(
+            failed.clone(),
+            Entry {
+                profile_id: "profile-b".into(),
+                selection: Selection::default(),
+                result: Some(Err(Error::Unavailable)),
+            },
+        );
+        let client = Client::new(root.path().join("provider"), "/usr/bin:/bin".into()).unwrap();
+        // The original window still waits for explicit Retry. A new window
+        // starts its own lookup, without probing again for the healthy sibling.
+        assert!(registry.reconcile(&layout, Some(&client)).is_empty());
+        let mut inherited = registry.inherit();
+        let work = inherited.reconcile(&layout, Some(&client));
+        assert_eq!(work.len(), 1);
+        assert_eq!(work[0].workspace, failed);
+        assert!(matches!(
+            inherited.route(&layout.workspaces[1]),
+            Route::Unavailable
+        ));
+        assert!(
+            matches!(inherited.route(&layout.workspaces[0]), Route::Bound(c)
+                if c.connection_key() == connection.connection_key())
+        );
+        assert!(matches!(
+            registry.entries[&failed].result,
+            Some(Err(Error::Unavailable))
+        ));
+        assert!(registry.entries[&failed].selection.pending().is_none());
     }
 
     #[test]
