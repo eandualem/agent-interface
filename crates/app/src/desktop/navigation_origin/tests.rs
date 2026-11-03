@@ -51,30 +51,36 @@ fn selected(browser: &Browser) -> String {
 }
 
 #[test]
-fn hidden_profile_invalidation_preserves_the_healthy_workspace_focus() {
+fn profile_retirement_preserves_hidden_focus_and_expires_unavailable_empty_panes() {
     let (_a_dir, a, a_server) = provider("a", vec![]);
     let (_b_dir, b, b_server) = provider("b", vec![]);
     a_server.join().unwrap();
     b_server.join().unwrap();
     let mut browser = browser(&a, &b);
     let spaces = browser.layout.as_ref().unwrap().model().workspaces.clone();
-    let pane_a = &spaces[0].tabs[0].tree.leaves()[0].id;
-    let pane_b = &spaces[1].tabs[0].tree.leaves()[0].id;
-    browser
-        .layout
-        .as_mut()
-        .unwrap()
-        .model_mut()
-        .choose_workspace(&spaces[1].id);
-    // Both failed observations and changed owners use this retirement policy.
-    browser.invalidate_profile_pane(pane_a);
+    let model = browser.layout.as_mut().unwrap().model_mut();
+    model.choose_workspace(&spaces[1].id);
+    model.add_tab(None, "/".into(), true);
+    assert!(model.pane().unwrap().empty);
+    // Exercise the production retirement path with an empty focused destination,
+    // which can own an attachment chooser without a terminal entity.
+    assert!(browser.terminals.is_empty());
+    browser.retire_profile_panes();
+    assert!(!browser.reset_focus);
+    browser.workspace_rosters.remove(&spaces[0].id);
+    browser.retire_profile_panes();
     assert!(!browser.reset_focus);
     browser.layout.as_mut().unwrap().model_mut().workspaces[0].profile_id = None;
-    browser.invalidate_profile_pane(pane_a);
+    browser.retire_profile_panes();
     assert!(!browser.reset_focus);
     assert_eq!(selected(&browser), spaces[1].id);
-    browser.invalidate_profile_pane(pane_b);
+    browser.workspace_rosters.remove(&spaces[1].id);
+    browser.retire_profile_panes();
     assert!(browser.reset_focus);
+    // Remaining unavailable must not steal focus back from recovery controls.
+    browser.reset_focus = false;
+    browser.retire_profile_panes();
+    assert!(!browser.reset_focus);
 }
 
 #[test]

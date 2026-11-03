@@ -290,6 +290,69 @@ impl Browser {
         }
     }
 
+    pub(super) fn retire_profile_panes(&mut self) {
+        let owners: HashMap<_, _> = self
+            .layout
+            .iter()
+            .flat_map(|layout| &layout.model().workspaces)
+            .flat_map(|space| &space.tabs)
+            .flat_map(|tab| tab.tree.leaves())
+            .filter_map(|leaf| {
+                self.pane_owner(&leaf.id)
+                    .map(|owner| (leaf.id.clone(), owner))
+            })
+            .collect();
+        let changed: Vec<_> = self
+            .pane_owners
+            .iter()
+            .filter(|(id, owner)| {
+                owners.get(*id) != Some(*owner)
+                    && self
+                        .layout
+                        .as_ref()
+                        .is_some_and(|layout| layout.model().workspace_for_pane(id).is_some())
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        let allowed_terminals: std::collections::HashSet<_> = owners
+            .keys()
+            .filter(|id| self.terminal_available(id))
+            .cloned()
+            .collect();
+        let unavailable: std::collections::HashSet<_> = owners
+            .keys()
+            .filter(|id| !allowed_terminals.contains(*id))
+            .cloned()
+            .collect();
+        let mut invalidated: Vec<_> = unavailable
+            .difference(&self.unavailable_profile_panes)
+            .cloned()
+            .collect();
+        if let Some(chooser) = &self.chooser
+            && unavailable.contains(&chooser.destination.pane)
+        {
+            invalidated.push(chooser.destination.pane.clone());
+        }
+        self.unavailable_profile_panes = unavailable;
+        for id in invalidated.iter().chain(&changed) {
+            self.invalidate_profile_pane(id);
+        }
+        self.terminals.retain(|id, _| {
+            self.pane_owners.get(id) == owners.get(id) && allowed_terminals.contains(id)
+        });
+        self.window_choices
+            .retain(|id, _| self.pane_owners.get(id) == owners.get(id) && owners.contains_key(id));
+        self.views
+            .retain(|id, _| self.pane_owners.get(id) == owners.get(id) && owners.contains_key(id));
+        self.new_panes
+            .retain(|id, _| self.pane_owners.get(id) == owners.get(id) && owners.contains_key(id));
+        self.pane_owners = owners;
+        if !changed.is_empty() {
+            self.save_notice =
+                Some("The workspace binding changed. Existing panes were closed.".into());
+        }
+    }
+
     pub(super) fn invalidate_profile_pane(&mut self, pane: &str) {
         let focused = self
             .layout

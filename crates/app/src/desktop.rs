@@ -614,6 +614,7 @@ struct Browser {
         ),
     >,
     pane_owners: HashMap<String, workspace_profiles::Owner>,
+    unavailable_profile_panes: std::collections::HashSet<String>,
     profile_client: Option<Result<crate::profiles::Client, ()>>,
     profile_client_loading: bool,
     profile_picker_requested: bool,
@@ -2235,57 +2236,7 @@ impl Browser {
 impl Render for Browser {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.refresh_profiles(cx);
-        let owners: HashMap<_, _> = self
-            .layout
-            .iter()
-            .flat_map(|layout| &layout.model().workspaces)
-            .flat_map(|space| &space.tabs)
-            .flat_map(|tab| tab.tree.leaves())
-            .filter_map(|leaf| {
-                self.pane_owner(&leaf.id)
-                    .map(|owner| (leaf.id.clone(), owner))
-            })
-            .collect();
-        let changed: Vec<_> = self
-            .pane_owners
-            .iter()
-            .filter(|(id, owner)| {
-                owners.get(*id) != Some(*owner)
-                    && self
-                        .layout
-                        .as_ref()
-                        .is_some_and(|layout| layout.model().workspace_for_pane(id).is_some())
-            })
-            .map(|(id, _)| id.clone())
-            .collect();
-        let allowed_terminals: std::collections::HashSet<_> = owners
-            .keys()
-            .filter(|id| self.terminal_available(id))
-            .cloned()
-            .collect();
-        let unavailable: Vec<_> = self
-            .terminals
-            .keys()
-            .filter(|id| !allowed_terminals.contains(*id))
-            .cloned()
-            .collect();
-        for id in unavailable.iter().chain(&changed) {
-            self.invalidate_profile_pane(id);
-        }
-        self.terminals.retain(|id, _| {
-            self.pane_owners.get(id) == owners.get(id) && allowed_terminals.contains(id)
-        });
-        self.window_choices
-            .retain(|id, _| self.pane_owners.get(id) == owners.get(id) && owners.contains_key(id));
-        self.views
-            .retain(|id, _| self.pane_owners.get(id) == owners.get(id) && owners.contains_key(id));
-        self.new_panes
-            .retain(|id, _| self.pane_owners.get(id) == owners.get(id) && owners.contains_key(id));
-        self.pane_owners = owners;
-        if !changed.is_empty() {
-            self.save_notice =
-                Some("The workspace binding changed. Existing panes were closed.".into());
-        }
+        self.retire_profile_panes();
         if self.resize_activation.is_none() {
             self.resize_activation =
                 Some(cx.observe_window_activation(window, |browser, window, cx| {
