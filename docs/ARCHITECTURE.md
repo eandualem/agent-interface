@@ -513,6 +513,14 @@ ambient configuration. The explicit constructor currently supports Reports,
 Responses and Documents and requires matching live-status ownership. Desktop
 startup still uses the legacy path; profile selection remains disabled.
 
+The general read-only adapter in `roster::views::bound` captures the same
+verified connection for Team, Usage, Activity, Skills, Policies and Tags. Its
+closed request set excludes Agent inspection and local runtime or skill-file
+reads. Optional history or per-agent enrichment cannot hide a connection
+refusal; cancellation discards the complete observation. Native navigation and
+actions are wired separately, so this adapter does not enable ambient fallback
+or permission inspection.
+
 Durable Documents use Backbone's metadata-only `/api/documents` list and exact
 `/api/documents/{revision_id}` JSON reads. Backbone owns immutable revisions,
 stable document and author identities, publication authorization and retention;
