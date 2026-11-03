@@ -3,9 +3,11 @@
 
 use std::{
     fs::OpenOptions,
+    hash::{Hash, Hasher},
     io::Read,
     os::unix::fs::{MetadataExt, OpenOptionsExt},
     path::{Path, PathBuf},
+    sync::Arc,
     time::Duration,
 };
 
@@ -193,9 +195,28 @@ impl Profile {
             tmux: binding.tmux.clone(),
             credential_reference: path.clone(),
             key,
+            connection_key: ConnectionKey(Arc::new(())),
         };
         connection.verify()?;
         Ok(connection)
+    }
+}
+
+/// Opaque process-local cache identity for a verified connection snapshot.
+/// Clones share a key; a fresh handshake gets a distinct key even when the
+/// provider identity is unchanged. This is not request authority or a wire ID.
+#[derive(Clone)]
+pub struct ConnectionKey(Arc<()>);
+
+impl PartialEq for ConnectionKey {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+impl Eq for ConnectionKey {}
+impl Hash for ConnectionKey {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        Arc::as_ptr(&self.0).hash(state);
     }
 }
 
@@ -208,9 +229,16 @@ pub struct Connection {
     tmux: Tmux,
     credential_reference: PathBuf,
     key: String,
+    connection_key: ConnectionKey,
 }
 
 impl Connection {
+    /// Cache identity shared only by clones of this verified snapshot.
+    /// Fresh connections must not reuse workers holding older credentials.
+    pub fn connection_key(&self) -> ConnectionKey {
+        self.connection_key.clone()
+    }
+
     /// The authenticated identity retained by every operation on this connection.
     pub fn identity(&self) -> &Identity {
         &self.identity
