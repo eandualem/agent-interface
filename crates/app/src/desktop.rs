@@ -672,9 +672,7 @@ impl Browser {
             .as_ref()
             .is_some_and(|focus| focus.is_focused(window))
             && self
-                .layout
-                .as_ref()
-                .and_then(|layout| layout.model().pane())
+                .keyboard_pane()
                 .and_then(|pane| self.views.get(&pane.id))
                 .is_some_and(|(view, _)| {
                     view.update(cx, |view, cx| {
