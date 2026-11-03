@@ -64,6 +64,14 @@ pub(super) fn body(
         && let Target::Policy(path) = &open.target
     {
         let all = library.all();
+        if let Some(bound) = &open.bound_policy {
+            let sources = [&bound.source];
+            let mut displayed = page(&sources, 0, "Policies".into(), false);
+            displayed.at = all.iter().position(|source| source.path.as_ref() == path);
+            displayed.count = all.len();
+            displayed.text = super::skills::text(open);
+            return reader::render(pane, header, displayed, cx);
+        }
         if let Some(at) = all.iter().position(|source| source.path.as_ref() == path) {
             return reader::render(pane, header, page(&all, at, "Policies".into(), false), cx);
         }
@@ -72,23 +80,25 @@ pub(super) fn body(
 }
 
 fn index(library: &PolicyLibrary, header: Div, cx: &mut Context<ViewPane>) -> AnyElement {
+    let candidates: std::sync::Arc<[String]> = library.members.clone().into();
     let mut number = 0;
     let mut card = |sources: &[Source], numbered: bool, cx: &mut Context<ViewPane>| {
         let mut card = ui::group_card();
         for (at, source) in sources.iter().enumerate() {
             number += 1;
-            let path = source.path.to_string();
+            let source = source.clone();
+            let candidates = candidates.clone();
             card = card.child(
                 ui::group_row(
                     SharedString::from(format!("policy-{number}")),
                     at == 0,
                     numbered.then(|| ui::number_tile((at + 1).to_string()).into_any_element()),
                     source.name.to_string(),
-                    title(source),
+                    title(&source),
                 )
-                .on_click(
-                    cx.listener(move |pane, _, _, cx| pane.open(Target::Policy(path.clone()), cx)),
-                ),
+                .on_click(cx.listener(move |pane, _, _, cx| {
+                    pane.open_policy(source.clone(), candidates.clone(), cx)
+                })),
             );
         }
         card

@@ -39,6 +39,7 @@ mod activity;
 mod agent;
 pub(super) mod artifact_web;
 mod artifacts;
+mod bound_policies;
 mod bound_skills;
 mod clock;
 mod conversation;
@@ -151,6 +152,7 @@ pub(super) enum Target {
 pub(super) struct Open {
     pub target: Target,
     bound_skill: Option<bound_skills::Open>,
+    bound_policy: Option<bound_policies::Open>,
     /// A skill's text once read, and whether it was cut.
     pub text: Option<Result<(String, bool), &'static str>>,
 }
@@ -312,7 +314,11 @@ impl ViewPane {
         if let Some(connection) = &pane.connection
             && (!matches!(
                 pane.view.kind,
-                ViewKind::Reports | ViewKind::Usage | ViewKind::Activity | ViewKind::Skills
+                ViewKind::Reports
+                    | ViewKind::Usage
+                    | ViewKind::Activity
+                    | ViewKind::Skills
+                    | ViewKind::Policies
             ) || !pane.agents.belongs_to(connection.identity()))
         {
             pane.error = Some("This view is unavailable for the original profile.");
@@ -669,13 +675,86 @@ impl ViewPane {
 
     /// Open `target` in the reader, reading a skill's SKILL.md off the UI thread.
     fn open(&mut self, target: Target, cx: &mut Context<Self>) {
+        if self.connection.is_some()
+            && let Target::Policy(path) = &target
+            && let Some(Data::Policies(library)) = &self.data
+            && let Some(source) = library
+                .all()
+                .into_iter()
+                .find(|source| source.path.as_ref() == path)
+        {
+            self.open_policy(source.clone(), library.members.clone().into(), cx);
+            return;
+        }
         self.open_with_skill(target, None, cx);
+    }
+
+    fn open_policy(
+        &mut self,
+        source: views::Source,
+        candidates: std::sync::Arc<[String]>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(connection) = &self.connection else {
+            self.open(Target::Policy(source.path.to_string()), cx);
+            return;
+        };
+        let bound = bound_policies::Open::capture(connection, source, candidates);
+        let initial = bound
+            .source
+            .text
+            .as_ref()
+            .map(|text| Ok((text.to_string(), false)));
+        let artifact = bound.artifact.clone();
+        let ticket = bound.ticket();
+        self.open = Some(Open {
+            target: Target::Policy(bound.source.path.to_string()),
+            bound_skill: None,
+            bound_policy: Some(bound),
+            text: initial,
+        });
+        if artifact.is_none() {
+            if let Some(open) = &mut self.open {
+                open.text
+                    .get_or_insert(Err("This policy has no provider snapshot available."));
+            }
+            cx.notify();
+            return;
+        }
+        let read_ticket = ticket.clone();
+        let read = cx
+            .background_executor()
+            .spawn(async move { bound_policies::read(artifact, &read_ticket) });
+        cx.spawn(async move |this, cx| {
+            let result = read.await;
+            let _ = this.update(cx, |pane, cx| {
+                if let Some(open) = &mut pane.open
+                    && let Some(bound) = &mut open.bound_policy
+                    && bound.accepts(&ticket)
+                {
+                    open.text = Some(match result {
+                        Ok(snapshot) => {
+                            let text = snapshot
+                                .content
+                                .clone()
+                                .ok_or("This policy's source is unavailable.");
+                            bound.snapshot = Some(snapshot);
+                            text.map(|text| (text, false))
+                        }
+                        Err(error) => Err(error),
+                    });
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+        cx.notify();
     }
 
     fn open_with_skill(
         &mut self,
         target: Target,
-        captured: Option<(Option<views::Skill>, Vec<String>)>,
+        captured: Option<(Option<views::Skill>, std::sync::Arc<[String]>)>,
         cx: &mut Context<Self>,
     ) {
         let bound_skill = self.connection.as_ref().and_then(|connection| {
@@ -691,9 +770,10 @@ impl ViewPane {
                             .agents
                             .iter()
                             .map(|agent| agent.name.clone())
-                            .collect(),
+                            .collect::<Vec<_>>()
+                            .into(),
                     ),
-                    _ => (None, Vec::new()),
+                    _ => (None, std::sync::Arc::from([])),
                 },
             };
             Some(bound_skills::Open::capture(connection, record, &team))
@@ -701,6 +781,7 @@ impl ViewPane {
         self.open = Some(Open {
             target: target.clone(),
             bound_skill,
+            bound_policy: None,
             text: None,
         });
         if self.connection.is_some() {
@@ -1026,6 +1107,31 @@ impl Render for ViewPane {
                             conversation::Conversation::about_snapshot(
                                 snapshot,
                                 candidates,
+                                self.visible.clone(),
+                                window,
+                                cx,
+                            )
+                        })
+                    })
+                    .clone(),
+            );
+        }
+        if self.conversation.is_none()
+            && let Some(bound) = self
+                .open
+                .as_ref()
+                .and_then(|open| open.bound_policy.as_ref())
+            && let Some(snapshot) = &bound.snapshot
+        {
+            let key = bound_policies::key(snapshot);
+            self.conversation = Some(
+                self.conversations
+                    .entry(key)
+                    .or_insert_with(|| {
+                        cx.new(|cx| {
+                            conversation::Conversation::about_snapshot(
+                                snapshot,
+                                bound.candidates.to_vec(),
                                 self.visible.clone(),
                                 window,
                                 cx,

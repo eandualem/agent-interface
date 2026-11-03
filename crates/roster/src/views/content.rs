@@ -6,6 +6,8 @@ use crate::profiles::{Connection, Identity};
 /// Retained content and explicitly supported read-only observation views.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Request {
+    /// Policy layers with catalog identities and provider-owned base/swarm text.
+    Policies,
     /// Skill catalog and provider previews, without reading local files.
     Skills,
     /// Token usage on the captured profile.
@@ -35,6 +37,8 @@ impl Request {
 /// Retained content without legacy URL-based action authority.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Data {
+    /// Policy library from the originating connection.
+    Policies(Box<super::PolicyLibrary>),
     /// Skill catalog from the originating connection.
     Skills(Box<super::SkillLibrary>),
     /// Token usage from the originating connection.
@@ -74,6 +78,7 @@ pub struct Read {
 /// environment, legacy configuration, local runtime files or actions are read.
 pub fn read(connection: &Connection, request: &Request, live: &dyn Fn() -> bool) -> Read {
     let observation = match request {
+        Request::Policies => Some(super::bound::Request::Policies),
         Request::Skills => Some(super::bound::Request::Skills),
         Request::Usage(range) => Some(super::bound::Request::Usage(*range)),
         Request::Activity => Some(super::bound::Request::Activity),
@@ -85,6 +90,7 @@ pub fn read(connection: &Connection, request: &Request, live: &dyn Fn() -> bool)
             identity: read.identity,
             request: request.clone(),
             result: read.result.and_then(|data| match data {
+                super::Data::Policies(policies) => Ok(Data::Policies(policies)),
                 super::Data::Skills(skills) => Ok(Data::Skills(skills)),
                 super::Data::Usage(usage) => Ok(Data::Usage(usage)),
                 super::Data::Activity(activity) => Ok(Data::Activity(activity)),
@@ -100,7 +106,7 @@ pub fn read(connection: &Connection, request: &Request, live: &dyn Fn() -> bool)
         live,
     };
     let result = match request {
-        Request::Skills | Request::Usage(_) | Request::Activity => {
+        Request::Policies | Request::Skills | Request::Usage(_) | Request::Activity => {
             unreachable!("observation handled above")
         }
         Request::Reports(query, agent) => {
