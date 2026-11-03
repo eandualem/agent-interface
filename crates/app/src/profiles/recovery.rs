@@ -62,21 +62,39 @@ impl Client {
     }
 
     pub(super) fn restore_checkpoint(&self, kind: Kind, bytes: &[u8]) -> Result<Vec<u8>, Error> {
-        if bytes.len() > LIMIT {
-            return Err(Error::TooLarge);
-        }
-        if bytes.first() != Some(&b'{') {
-            return Err(Error::Invalid);
-        }
-        let checkpoint: Checkpoint = serde_json::from_slice(bytes).map_err(|_| Error::Invalid)?;
-        if checkpoint.version != 1 || checkpoint.kind != kind {
-            return Err(Error::Invalid);
-        }
+        let checkpoint = decode(kind, bytes)?;
         if checkpoint.context != self.context_fingerprint() {
             return Err(Error::ContextChanged);
         }
         Ok(checkpoint.state.into_bytes())
     }
+}
+
+/// Inspect stored model data only; this never grants execution authority under
+/// the current caller. Executors must still use `restore_checkpoint`.
+pub(super) fn inspect_checkpoint(kind: Kind, bytes: &[u8]) -> Result<Vec<u8>, Error> {
+    Ok(decode(kind, bytes)?.state.into_bytes())
+}
+
+fn decode(kind: Kind, bytes: &[u8]) -> Result<Checkpoint, Error> {
+    if bytes.len() > LIMIT {
+        return Err(Error::TooLarge);
+    }
+    if bytes.first() != Some(&b'{') {
+        return Err(Error::Invalid);
+    }
+    let checkpoint: Checkpoint = serde_json::from_slice(bytes).map_err(|_| Error::Invalid)?;
+    if checkpoint.version != 1
+        || checkpoint.kind != kind
+        || checkpoint.context.len() != 64
+        || !checkpoint
+            .context
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err(Error::Invalid);
+    }
+    Ok(checkpoint)
 }
 
 #[cfg(test)]

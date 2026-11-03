@@ -1240,7 +1240,10 @@ logging destination and lifetime of any service that inherits the descriptor.
 Profile setup execution owns immutable schema-2 requests and the captured provider
 client. It emits only validated progress steps before exit; terminal readiness or
 cancellation is returned only when the full-origin result matches the process exit
-contract. Timeouts retain the same request for explicit retry/cancellation.
+contract. Timeouts and loss of observation terminate and reap only the direct
+command, leaving the same request with an unknown outcome for explicit recovery.
+Neither cleanup nor closing confirms provider cancellation or rollback. The
+consumer does not detach a setup command and allow a concurrent retry.
 Private request files and anonymous regular output files preserve inherited service
 writers, while observed receipt bytes and stream events remain bounded. The provider
 owns long-lived service logging. No setup executor is invoked by discovery or
@@ -1272,8 +1275,8 @@ execution, including an otherwise harmless changed session variable. This is a
 conservative continuity check, not authentication of an executable or protection
 against malicious same-user record replacement. Changed contexts require explicit
 reconciliation; they never silently retry an unknown operation in another registry.
-The existing MIT/Apache-2.0 `sha2` dependency supplies the digest. These APIs still
-require durable storage and recovery UI before lifecycle/setup controls activate.
+The existing MIT/Apache-2.0 `sha2` dependency supplies the digest. The durable
+controllers and native recovery panes described below build on these records.
 
 Private operation journals use an owned 0700 directory and 0600 records. Directory
 components and record opens reject symbolic links; file descriptors pin the root
@@ -1352,7 +1355,8 @@ the view to the original operation key before persistence or provider execution,
 so ambiguous writes and replies retain recovery identity. Reopening enumerates
 bounded record IDs and validates one page of durable, caller-bound snapshots at
 a time. Receipt lookup and identical retry are distinct explicit actions. Closing
-cancels observation only; it does not claim provider cancellation or rollback.
+interrupts the local command; its outcome remains unknown and closing does not
+claim provider cancellation or rollback.
 Worker generations reject stale results and controls. Successful receipts remain
 progress metadata: workspace selection still performs the authenticated handshake.
 Create and adoption choices use child forms. Fresh first-agent setup choices
@@ -1380,8 +1384,11 @@ readiness does not authorize account access or open an ambient terminal.
 Fresh setup admission validates existing durable setup records and inserts the
 new intent under one journal lock. An unresolved request for the same full
 profile instance blocks different choices; independent lifecycles remain
-separate. An unsafe, malformed or caller-mismatched record is an error rather
-than proof that no request exists. A directory durability barrier precedes the
+separate. Admission inspects the existing format-1 request and outcome metadata
+without restoring an executor: valid closed records from another caller context
+do not block new work, and unresolved records still block their exact instance.
+Execution and recovery reads continue to require the original caller context.
+Unsafe or malformed records fail closed. A directory durability barrier precedes the
 check, and the bounded scan has a read budget. Catalog-facing pending reads are
 observations only: actual admission repeats the check atomically. This local
 journal rule does not replace the provider's own request serialization.

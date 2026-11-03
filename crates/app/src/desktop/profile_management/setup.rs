@@ -449,7 +449,7 @@ impl Render for Pane {
         let (t, c) = (tokens(), colors());
         let ticket = self.ticket.0.clone();
         let mut body = div().id("setup-recovery-body").flex_1().min_h_0().overflow_y_scroll().p(px(t.space.s12)).flex().flex_col().gap(px(t.space.s8))
-            .child(ui::group_note("Closing stops observation. It does not cancel setup. Recovery keeps the original profile, choices and request; confirmed readiness does not connect a workspace."));
+            .child(ui::group_note("Closing interrupts the local setup command. The provider outcome may remain unknown; closing does not confirm safe cancellation. Recovery keeps the original profile, choices and request; confirmed readiness does not connect a workspace."));
         match &self.page {
             Page::Loading => body = body.child(ui::group_note("Opening saved setup requests…")),
             Page::History { ids, offset, rows } => {
@@ -542,7 +542,7 @@ impl Render for Pane {
                     body = body.child(
                         ui::button(
                             "setup-stop-observing",
-                            "Stop observing and reload",
+                            "Stop waiting and reload",
                             ui::Button::Secondary,
                         )
                         .on_click(

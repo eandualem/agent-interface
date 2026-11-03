@@ -69,6 +69,17 @@ pub struct Snapshot {
     /// Latest durable cancellation result, absent during an unknown cancel attempt.
     pub cancellation_result: Option<Event>,
 }
+impl Snapshot {
+    fn closed(&self) -> bool {
+        self.first_result
+            .as_ref()
+            .is_some_and(|event| event.ready_agent.is_some())
+            || self
+                .cancellation_result
+                .as_ref()
+                .is_some_and(|event| event.cancelled)
+    }
+}
 
 /// Nonterminal progress stamped with its claimed durable revision.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -146,7 +157,8 @@ impl Controller {
 
     /// Persist exact setup and cancellation intent before any invocation. A
     /// journal-wide admission check refuses a different pending request for the
-    /// same full profile instance. Invalid or foreign-caller records fail closed.
+    /// same full profile instance. Invalid records fail closed; inspecting valid
+    /// metadata from another caller does not authorize executing its request.
     /// The scan has a bounded record count and an eight-second read budget.
     pub fn enqueue(&self, prepared: Prepared) -> Result<Snapshot, Error> {
         let setup = Setup::new(&self.client, prepared);
@@ -157,11 +169,11 @@ impl Controller {
             if std::time::Instant::now() >= deadline {
                 return Err(Error::Client(super::Error::TimedOut));
             }
-            let existing = self.decode(record)?;
+            let (_, existing) = inspect(&record)?;
             if std::time::Instant::now() >= deadline {
                 return Err(Error::Client(super::Error::TimedOut));
             }
-            if existing.setup.identity() == setup.identity() && !existing.closed() {
+            if &existing.identity == setup.identity() && !existing.closed() {
                 return Err(Error::Pending);
             }
             Ok(())
@@ -204,9 +216,10 @@ impl Controller {
             if std::time::Instant::now() >= deadline {
                 return Err(Error::Client(super::Error::TimedOut));
             }
-            let stored = self.load(&key)?;
-            if stored.setup.identity() == identity && !stored.closed() {
-                pending.push(stored.snapshot());
+            let record = self.journal.read_durable(&key)?.ok_or(Error::Missing)?;
+            let (_, snapshot) = inspect(&record)?;
+            if &snapshot.identity == identity && !snapshot.closed() {
+                pending.push(snapshot);
             }
         }
         if !live() {
@@ -262,38 +275,14 @@ impl Controller {
     }
 
     fn decode(&self, record: journal::Record) -> Result<Stored, Error> {
-        let key = record.id();
-        let envelope: Envelope =
-            serde_json::from_slice(record.payload()).map_err(|_| Error::Invalid)?;
-        if envelope.format != 1
-            || envelope.kind != "setup"
-            || serde_json::to_vec(&envelope).map_err(|_| Error::Invalid)? != record.payload()
-        {
-            return Err(Error::Invalid);
-        }
+        let (envelope, snapshot) = inspect(&record)?;
         let setup = Setup::restore(&self.client, envelope.capsule.as_bytes())?;
-        if Self::key(setup.request_id()) != key
-            || (envelope.phase == Phase::Prepared
-                && (envelope.first.is_some() || envelope.cancel.is_some()))
-        {
-            return Err(Error::Invalid);
-        }
-        let first = envelope
-            .first
-            .as_ref()
-            .map(|bytes| setup.restore_outcome(Action::FirstAgent, bytes.as_bytes()))
-            .transpose()?;
-        let cancel = envelope
-            .cancel
-            .as_ref()
-            .map(|bytes| setup.restore_outcome(Action::CancelFirstAgent, bytes.as_bytes()))
-            .transpose()?;
         Ok(Stored {
             record,
             phase: envelope.phase,
             setup,
-            first,
-            cancel,
+            first: snapshot.first_result,
+            cancel: snapshot.cancellation_result,
         })
     }
 
@@ -388,6 +377,53 @@ impl Controller {
         self.journal.save(key, Some(claimed.revision()), &bytes)?;
         Ok(event)
     }
+}
+
+// Validate the existing format-1 capsule and outcomes without constructing an
+// executor under a different caller. Admission uses only this durable metadata.
+fn inspect(record: &journal::Record) -> Result<(Envelope, Snapshot), Error> {
+    let envelope: Envelope =
+        serde_json::from_slice(record.payload()).map_err(|_| Error::Invalid)?;
+    if envelope.format != 1
+        || envelope.kind != "setup"
+        || serde_json::to_vec(&envelope).map_err(|_| Error::Invalid)? != record.payload()
+    {
+        return Err(Error::Invalid);
+    }
+    let state = super::recovery::inspect_checkpoint(
+        super::recovery::Kind::Setup,
+        envelope.capsule.as_bytes(),
+    )?;
+    let prepared = Prepared::restore(&state).map_err(super::Error::Profile)?;
+    if Controller::key(prepared.request_id()) != record.id()
+        || (envelope.phase == Phase::Prepared
+            && (envelope.first.is_some() || envelope.cancel.is_some()))
+    {
+        return Err(Error::Invalid);
+    }
+    let outcome = |action, bytes: &String| {
+        prepared
+            .restore_outcome(action, bytes.as_bytes())
+            .map_err(super::Error::Profile)
+    };
+    let snapshot = Snapshot {
+        key: record.id().into(),
+        revision: record.revision(),
+        phase: envelope.phase,
+        identity: prepared.identity().clone(),
+        request_id: prepared.request_id().into(),
+        first_result: envelope
+            .first
+            .as_ref()
+            .map(|bytes| outcome(Action::FirstAgent, bytes))
+            .transpose()?,
+        cancellation_result: envelope
+            .cancel
+            .as_ref()
+            .map(|bytes| outcome(Action::CancelFirstAgent, bytes))
+            .transpose()?,
+    };
+    Ok((envelope, snapshot))
 }
 
 enum Invocation {

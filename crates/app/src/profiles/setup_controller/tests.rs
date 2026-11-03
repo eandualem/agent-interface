@@ -433,10 +433,10 @@ fn concurrent_fresh_choices_admit_only_one_request_for_the_instance() {
 }
 
 #[test]
-fn admission_separates_lifecycles_but_never_ignores_unreadable_caller_records() {
+fn admission_inspects_other_contexts_but_never_ignores_invalid_records() {
     let fixture = Fixture::new("");
     let controller = fixture.controller();
-    controller.enqueue(intent()).unwrap();
+    let original = controller.enqueue(intent()).unwrap();
     controller
         .enqueue(intent_for("other-life", "lifecycle-a2"))
         .unwrap();
@@ -446,9 +446,16 @@ fn admission_separates_lifecycles_but_never_ignores_unreadable_caller_records() 
         .push(("CONTEXT_VERSION".into(), "changed".into()));
     let foreign = Controller::new(journal::Journal::open(&fixture.journal).unwrap(), &changed);
     assert_eq!(
-        foreign.enqueue(intent_for("other-caller", "lifecycle-a3")),
-        Err(Error::Client(super::super::Error::ContextChanged))
+        foreign.enqueue(intent_for("same-instance", "lifecycle-a1")),
+        Err(Error::Pending)
     );
+    assert_eq!(
+        foreign.pending(&original.identity, &|| true).unwrap(),
+        vec![original]
+    );
+    foreign
+        .enqueue(intent_for("other-caller", "lifecycle-a3"))
+        .unwrap();
     let journal = journal::Journal::open(&fixture.journal).unwrap();
     journal
         .save("00000000000000000000000000000000", None, b"malformed")
@@ -457,8 +464,40 @@ fn admission_separates_lifecycles_but_never_ignores_unreadable_caller_records() 
         controller.enqueue(intent_for("another", "lifecycle-a4")),
         Err(Error::Invalid)
     );
-    assert_eq!(controller.ids().unwrap().len(), 3);
+    assert_eq!(controller.ids().unwrap().len(), 4);
     assert_eq!(fixture.calls(), "");
+}
+
+#[test]
+fn closed_format_one_records_do_not_block_admission_after_context_change() {
+    let fixture = Fixture::new("");
+    fixture.reply(Action::FirstAgent, &fixtures()["setup"]["result"], 0);
+    let controller = fixture.controller();
+    let original = controller.enqueue(intent()).unwrap();
+    controller.submit(&original.key, &|| true, |_| {}).unwrap();
+    let mut changed = fixture.client.clone();
+    changed
+        .environment
+        .push(("SESSION_VERSION".into(), "new".into()));
+    let other = Controller::new(journal::Journal::open(&fixture.journal).unwrap(), &changed);
+    assert!(
+        other
+            .pending(&original.identity, &|| true)
+            .unwrap()
+            .is_empty()
+    );
+    other
+        .enqueue(intent_for("setup-a2", "lifecycle-a1"))
+        .unwrap();
+    assert_eq!(
+        other.read(&original.key),
+        Err(Error::Client(super::super::Error::ContextChanged))
+    );
+    assert_eq!(
+        other.retry(&original.key, &|| true, |_| {}),
+        Err(Error::Client(super::super::Error::ContextChanged))
+    );
+    assert_eq!(fixture.calls(), "first\n");
 }
 
 #[test]

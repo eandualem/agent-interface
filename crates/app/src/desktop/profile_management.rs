@@ -651,7 +651,7 @@ impl Render for Management {
                 }
             }
             Page::Operation { key, snapshot } => {
-                body = body.child(ui::group_note("Closing stops observation only. It does not cancel or roll back the provider operation."));
+                body = body.child(ui::group_note("Closing interrupts the local command. The provider outcome may remain unknown; closing does not confirm cancellation or rollback. Recover the original request before retrying."));
                 body = body.child(format!("Operation {key}"));
                 if let Some(snapshot) = snapshot {
                     body = body
