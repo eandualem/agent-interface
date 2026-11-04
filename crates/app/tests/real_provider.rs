@@ -211,5 +211,8 @@ fn adopted_default_opens_a_bound_shell() {
             .filter(|r| r.available)
             .count())
     );
-    println!("default sign-in: {:?}", connection.sign_in_session("codex"));
+    assert_eq!(
+        connection.sign_in_session("codex").err(),
+        Some(Error::Refused(422))
+    );
 }

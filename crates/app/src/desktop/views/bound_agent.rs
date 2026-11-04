@@ -203,7 +203,7 @@ impl Render for Card {
         if self.removal == Removal::Confirming {
             body = body
                 .child(ui::group_note(format!(
-                    "Remove {}? Its session stops and it leaves this profile. Its project folder is not changed.",
+                    "Remove {}? Its session stops and it leaves this profile. Your project folder and files stay. Backbone removes only the skill links it added.",
                     self.name
                 )))
                 .child(
@@ -219,8 +219,7 @@ impl Render for Card {
                 );
         }
         if self.removal == Removal::Done {
-            let done =
-                "This agent was removed from the profile. Its project folder was not changed.";
+            let done = "This agent was removed from the profile. Your project folder and files stay. Backbone removed only the skill links it added.";
             body = body.child(ui::text(div().text_color(c.muted), &t.text.row).child(done));
         } else if let Some(message) = self.error {
             body = body.child(ui::text(div().text_color(c.muted), &t.text.row).child(message));
