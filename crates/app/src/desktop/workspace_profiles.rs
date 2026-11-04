@@ -536,8 +536,9 @@ impl Browser {
             return;
         };
         let client = client.clone();
-        let picker = cx.new(|cx| profile_picker::ProfilePicker::new(client, cx));
-        window.focus(&picker.read(cx).focus_handle(), cx);
+        let directory = self.directory.clone();
+        let picker = cx.new(|cx| profile_picker::ProfilePicker::new(client, directory, cx));
+        window.focus(&picker.read(cx).focus_handle(cx), cx);
         let events = cx.subscribe_in(&picker, window, |browser, picker, choice, window, cx| {
             if !browser
                 .profile_picker

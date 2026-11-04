@@ -114,6 +114,7 @@ name = "agent-interface-app"
 version = "0.2.7"
 dependencies = [
  "agent-interface-core",
+ "agent-interface-native-fs",
  "agent-interface-roster",
  "agent-interface-store",
  "agent-interface-term",
@@ -191,6 +192,13 @@ dependencies = [
  "toml 0.8.23",
  "unicode-properties",
  "uuid",
+]
+
+[[package]]
+name = "agent-interface-native-fs"
+version = "0.2.7"
+dependencies = [
+ "libc",
 ]
 
 [[package]]

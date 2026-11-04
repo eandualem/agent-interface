@@ -34,6 +34,7 @@ mod onboarding;
 mod pane_cards;
 mod pane_drag;
 #[allow(dead_code)] // Connected when workspace profile ownership is integrated.
+mod profile_management;
 mod profile_picker;
 mod settings;
 mod settings_window;
@@ -2296,7 +2297,12 @@ impl Render for Browser {
         }
         if std::mem::take(&mut self.reset_focus) {
             if let Some((picker, _)) = &self.profile_picker {
-                window.focus(&picker.read(cx).focus_handle(), cx);
+                let focus = picker.read(cx).focus_handle(cx);
+                // Preserve a focused input inside the active overlay while
+                // restoring only a missing/outside focus after layout updates.
+                if !focus.contains_focused(window, cx) {
+                    window.focus(&focus, cx);
+                }
             } else if let Some(focus) = &self.navigation {
                 window.focus(focus, cx);
             }

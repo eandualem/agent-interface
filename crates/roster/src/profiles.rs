@@ -15,7 +15,9 @@ pub mod operations;
 
 use serde::Deserialize;
 
+pub mod runtime_catalog;
 pub mod runtime_context;
+pub mod setup;
 
 use crate::{RESPONSE_LIMIT, Snapshot, transport::local};
 
@@ -178,6 +180,17 @@ impl Profile {
     /// Read metadata without probing or starting the provider.
     pub fn item(&self) -> &Item {
         &self.item
+    }
+
+    /// Capture registry identity metadata without reading credentials or probing
+    /// the provider. This expectation alone does not authorize a connection.
+    pub fn expected_identity(&self) -> Result<Identity, Error> {
+        let binding = self.binding.as_ref().ok_or(Error::NotReady)?;
+        Ok(Identity {
+            profile_id: self.item.profile_id.clone(),
+            installation_id: binding.installation_id.clone(),
+            lifecycle_id: binding.lifecycle_id.clone(),
+        })
     }
 
     /// Read only the named credential, then authenticate and verify the exact provider.
