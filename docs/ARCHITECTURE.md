@@ -551,7 +551,7 @@ boundary still applies. A nonblocking pipe bounds retained output and supplies b
 and cancellation are bounded. Each command owns a process group, cleaned before
 reaping its leader so wrappers cannot leave background writers behind.
 Nonzero exits stay errors, and `show` must return the requested profile ID.
-Discovery does not connect, adopt, start or repair a provider and is not yet
+Discovery does not connect, start or repair a provider and is not yet
 wired into a selector. Returned records require the normal authenticated
 handshake before content use.
 
@@ -560,8 +560,8 @@ the existing lifecycle contract and validates receipts against the original
 request ID, action and full tuple. Create pins the first reserved identity;
 terminal observations cannot regress or change. Provider error prose is dropped.
 These models execute no command and grant no content authority: a successful
-start still needs the authenticated identity handshake. Adoption and bound
-first-agent setup remain separate contracts.
+start still needs the authenticated identity handshake. Bound first-agent setup
+remains a separate contract.
 
 Durable Documents use Backbone's metadata-only `/api/documents` list and exact
 `/api/documents/{revision_id}` JSON reads. Backbone owns immutable revisions,
@@ -1105,7 +1105,7 @@ the full profile identity, name, runtime and registration. Typed provider-parsed
 permissions expose only relative display labels and fixed unavailable/unsupported
 messages; no local runtime files or home directories are read. Native Agent cards
 consume this retained context. The shared profiles fixture includes contract
-revision 2 extension 1 for adoption, setup schema 2 and registered runtime context.
+revision 2 extension 1 for setup schema 2 and registered runtime context.
 
 Native pane and attachment choosers retain an explicit discovery origin. Bound
 constructors use the verified connection for both session and team observations;
@@ -1138,7 +1138,7 @@ sends no environment and never starts a bound tmux server, so the app's launch
 context cannot reach the shell. Signing a CLI account in works the same way:
 `POST /api/profile/accounts/sign-in` returns a session on that socket, and the pane
 attaches to it so the person completes the CLI's own sign-in there. A profile itself
-has no sign-in; a workspace selects it. An adopted Default keeps its existing CLI
+has no sign-in; a workspace selects it. A Default profile keeps its existing CLI
 sign-ins, so it does not offer this. An Agent card removes its agent after a
 confirmation: the app stops the session, then deletes the registration, because the
 provider refuses to remove a running agent. Native lifecycle and setup controls use the captured
@@ -1206,14 +1206,6 @@ cannot inherit a previously rendered number key or click target. The chooser
 exposes only the supported bound overview and permission card; it never builds a
 name-only bound Agent view.
 
-The lifecycle request model also accepts the canonical Default-adoption preflight.
-Its installation, baseline and display-only paths are validated without filesystem
-access; the opaque token is captured only in immutable request bytes. Adoption
-receipts must retain the previewed installation and, once reserved, the complete
-profile tuple. Exact retries keep the original token; a fresh preflight cannot
-rewrite a pending operation. Failed token validation is terminal for that request.
-These models perform no adoption, command execution or service changes themselves.
-
 Profile first-agent setup uses an independent schema-2 request model. Preparation
 captures the full expected profile tuple and immutable agent/hook choices; the
 cancellation body changes only the action and keeps the original request ID.
@@ -1262,7 +1254,7 @@ Lifecycle request checkpoints use a private consumer format, separate from the
 provider protocol. They preserve exact generated request bytes, the first reserved
 identity and terminal non-regression across restoration. Restoring validates the
 original request and saved observation without discovery, new IDs or command
-execution. Adoption tokens remain private checkpoint data; provider diagnostic
+execution. Provider diagnostic
 prose is discarded. A restored record supplies expectations only. Durable storage
 and verification of the original operator/registry context are required before
 any restored request may execute; these model APIs do not activate lifecycle UI.
@@ -1349,13 +1341,6 @@ results are returned only after matching process exit and durable storage.
 Native recovery controls retain the original record key and revision while invoking
 this controller off the UI thread.
 
-The local discovery client also reads the explicit adoption preflight using its
-captured executable, environment and working directory. It validates the bounded
-schema-1 preview and retains its opaque token for an explicitly prepared adoption.
-Preview paths remain display metadata: the consumer does not open them, connect,
-migrate data or submit an action. A later preview cannot rewrite an existing
-operation's token, installation expectation or request ID.
-
 Native profile service controls are an explicit branch of the workspace picker.
 Opening them captures the selected library location once and opens a private
 lifecycle journal; it does not invoke a lifecycle action. Start/Stop controls use
@@ -1368,18 +1353,14 @@ interrupts the local command; its outcome remains unknown and closing does not
 claim provider cancellation or rollback.
 Worker generations reject stale results and controls. Successful receipts remain
 progress metadata: workspace selection still performs the authenticated handshake.
-Create and adoption choices use child forms. Fresh first-agent setup choices
+Creation uses a child form. Fresh first-agent setup choices
 remain separate from saved-request recovery.
 
-Native creation takes an explicit profile name and installed baseline version;
-it invents neither a version catalog API nor a default version. Adoption first
-loads the bounded read-only preflight and displays the existing installation,
-data and tmux mapping. Only explicit confirmation prepares a fresh immutable
-request. Forms emit that request once into the same durable lifecycle controller
-and recovery view; later previews or field edits cannot rewrite it. Escape/back
-cancel form observation, and text composition is respected. Neither form selects
-a workspace or grants connection authority. Provider implementation and real
-account acceptance remain independent of consumer fixture checks.
+Native creation takes an explicit profile name and uses the one baseline the
+provider can create today. The form emits one immutable request into the same
+durable lifecycle controller and recovery view; later field edits cannot rewrite
+it. Escape/back cancel form observation, and text composition is respected. The
+form neither selects a workspace nor grants connection authority.
 
 Native profile management exposes saved first-agent setup separately from the
 current runtime catalog. It opens a private setup journal from the already

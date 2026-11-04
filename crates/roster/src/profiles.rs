@@ -55,7 +55,7 @@ pub enum Error {
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
-    /// The installation adopted in place.
+    /// The original installation, registered in place.
     LegacyDefault,
     /// A separately provisioned profile.
     Isolated,
@@ -194,7 +194,7 @@ impl Profile {
     }
 
     /// Read only the named credential, then authenticate and verify the exact provider.
-    /// Runs on an I/O worker; does not discover, start or adopt a service.
+    /// Runs on an I/O worker; does not discover or start a service.
     pub fn connect(&self) -> Result<Connection, Error> {
         let binding = self.binding.as_ref().ok_or(Error::NotReady)?;
         let Credential::Dotenv { path, .. } = &binding.credential_reference;

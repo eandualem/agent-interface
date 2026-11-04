@@ -209,7 +209,7 @@ impl Management {
         });
         self.observe_operation(ticket, work, cx);
     }
-    fn create(&mut self, mode: creation::Mode, window: &mut Window, cx: &mut Context<Self>) {
+    fn create(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy
             || self.form.is_some()
             || self.setup.is_some()
@@ -219,8 +219,7 @@ impl Management {
             return;
         }
         self.ticket.begin();
-        let client = self.client.clone();
-        let form = cx.new(|cx| creation::Form::new(mode, client, window, cx));
+        let form = cx.new(|cx| creation::Form::new(window, cx));
         window.focus(&form.read(cx).focus.clone(), cx);
         let subscription = cx.subscribe_in(
             &form,
@@ -560,7 +559,6 @@ fn action_label(action: Action) -> &'static str {
         Action::Create => "Create profile",
         Action::Start => "Start service",
         Action::Stop => "Stop service",
-        Action::AdoptDefault => "Adopt Default",
     }
 }
 fn status(snapshot: &Snapshot) -> &'static str {
@@ -758,14 +756,10 @@ impl Render for Management {
             );
         }
         if self.controller.is_some() && !self.busy {
-            for (mode, label) in [
-                (creation::Mode::Create, "Create profile"),
-                (creation::Mode::Adopt, "Adopt Default"),
-            ] {
-                body = body.child(ui::button(label, label, ui::Button::Secondary).on_click(
-                    cx.listener(move |pane, _, window, cx| pane.create(mode, window, cx)),
-                ));
-            }
+            body = body.child(
+                ui::button("Create profile", "Create profile", ui::Button::Secondary)
+                    .on_click(cx.listener(|pane, _, window, cx| pane.create(window, cx))),
+            );
         }
         if self.busy {
             body = body.child(ui::group_note("Working…"));

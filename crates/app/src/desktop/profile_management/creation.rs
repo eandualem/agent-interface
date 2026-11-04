@@ -1,24 +1,13 @@
-//! Explicit fresh-profile and adoption choices; no lifecycle execution here.
+//! Explicit fresh-profile choices; no lifecycle execution here.
 use super::{Ticket, ui};
-use crate::{
-    desktop::{
-        design::{colors, tokens},
-        name::NameField,
-    },
-    profiles::{Client, Error},
+use crate::desktop::{
+    design::{colors, tokens},
+    name::NameField,
 };
-use agent_interface_roster::profiles::operations::{AdoptionPreview, Prepared};
+use agent_interface_roster::profiles::operations::Prepared;
 use gpui::{Context, Entity, EventEmitter, FocusHandle, Subscription, Window, div, prelude::*, px};
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-};
+use std::sync::{Arc, atomic::AtomicBool};
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum Mode {
-    Create,
-    Adopt,
-}
 /// The only baseline the provider can create today, so nobody has to know it.
 const BASELINE: &str = "core-v1";
 
@@ -28,13 +17,9 @@ pub(super) enum Event {
 }
 
 pub(super) struct Form {
-    mode: Mode,
-    client: Client,
-    name: Option<Entity<NameField>>,
-    _fields: Vec<Subscription>,
-    preview: Option<AdoptionPreview>,
+    name: Entity<NameField>,
+    _field: Subscription,
     ticket: Ticket,
-    busy: bool,
     error: Option<&'static str>,
     prepared: Option<Prepared>,
     finished: bool,
@@ -42,95 +27,39 @@ pub(super) struct Form {
 }
 impl EventEmitter<Event> for Form {}
 impl Form {
-    pub fn new(mode: Mode, client: Client, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let name = (mode == Mode::Create).then(|| cx.new(|cx| NameField::filter(window, cx)));
-        let fields = name
-            .iter()
-            .map(|field| cx.observe(field, |_, _, cx| cx.notify()))
-            .collect();
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let name = cx.new(|cx| NameField::filter(window, cx));
+        let field = cx.observe(&name, |_, _, cx| cx.notify());
         let mut form = Self {
-            mode,
-            client,
             name,
-            _fields: fields,
-            preview: None,
+            _field: field,
             ticket: Ticket::default(),
-            busy: false,
             error: None,
             prepared: None,
             finished: false,
             focus: cx.focus_handle(),
         };
         form.ticket.begin();
-        if mode == Mode::Adopt {
-            form.refresh(cx);
-        }
         form
     }
     pub fn take_prepared(&mut self) -> Option<Prepared> {
         self.prepared.take()
     }
-    fn refresh(&mut self, cx: &mut Context<Self>) {
-        if self.finished || self.busy || self.mode != Mode::Adopt {
-            return;
-        }
-        self.preview = None;
-        self.error = None;
-        self.busy = true;
-        let ticket = self.ticket.begin();
-        let worker = ticket.clone();
-        let client = self.client.clone();
-        let work = cx
-            .background_executor()
-            .spawn(async move { client.adoption_preview(&|| worker.load(Ordering::Acquire)) });
-        cx.spawn(async move |this, cx| {
-            let result = work.await;
-            let _ = this.update(cx, |form, cx| {
-                if !form.ticket.accepts(&ticket) || form.finished {
-                    return;
-                }
-                form.busy = false;
-                match result {
-                    Ok(preview) => form.preview = Some(preview),
-                    Err(error) => {
-                        form.error = Some(match error {
-                            Error::ContextChanged => "The original operator context changed.",
-                            _ => "Adoption preflight is unavailable. No adoption was submitted.",
-                        })
-                    }
-                }
-                cx.notify();
-            });
-        })
-        .detach();
-        cx.notify();
-    }
     fn valid(&self, cx: &Context<Self>) -> bool {
-        if self.busy || self.finished {
+        if self.finished {
             return false;
         }
-        match self.mode {
-            Mode::Create => self.name.as_ref().is_some_and(|name| {
-                let name = name.read(cx);
-                !name.composing() && Prepared::create("validation", name.value(), BASELINE).is_ok()
-            }),
-            Mode::Adopt => self.preview.is_some(),
-        }
+        let name = self.name.read(cx);
+        !name.composing() && Prepared::create("validation", name.value(), BASELINE).is_ok()
     }
     fn submit(&mut self, expected: &Arc<AtomicBool>, cx: &mut Context<Self>) {
         if !self.ticket.accepts(expected) || !self.valid(cx) {
             return;
         }
         let id = uuid::Uuid::new_v4().simple().to_string();
-        let prepared = match self.mode {
-            Mode::Create => {
-                Prepared::create(&id, self.name.as_ref().unwrap().read(cx).value(), BASELINE)
-            }
-            Mode::Adopt => Prepared::adopt_default(&id, self.preview.as_ref().unwrap()),
-        };
-        match prepared {
+        match Prepared::create(&id, self.name.read(cx).value(), BASELINE) {
             Ok(prepared) => {
-                // Emit once. Later field edits/previews cannot rewrite these bytes.
+                // Emit once. Later field edits cannot rewrite these bytes.
                 self.finished = true;
                 self.ticket.cancel();
                 self.prepared = Some(prepared);
@@ -161,53 +90,12 @@ impl Render for Form {
             .p(px(t.space.s12))
             .flex()
             .flex_col()
-            .gap(px(t.space.s8));
-        let title = match self.mode {
-            Mode::Create => "Create an isolated profile",
-            Mode::Adopt => "Adopt Default in place",
-        };
-        match self.mode {
-            Mode::Create => {
-                body = body
-                    .child(ui::group_note(
-                        "The new profile starts with separate mutable data and accounts.",
-                    ))
-                    .child(ui::group_title("Profile name", ""))
-                    .child(self.name.as_ref().unwrap().clone());
-            }
-            Mode::Adopt => {
-                body = body.child(ui::group_note("Adoption registers the existing Default installation in place. It preserves its data, accounts and service mapping; it does not copy them into a new profile."));
-                if self.busy {
-                    body = body.child(ui::group_note("Reading adoption preflight…"));
-                }
-                if let Some(preview) = &self.preview {
-                    for (label, value) in [
-                        ("Installation", preview.installation_id().to_owned()),
-                        ("Baseline", preview.baseline_version().to_owned()),
-                        (
-                            "Existing data",
-                            preview.data_directory().display().to_string(),
-                        ),
-                        (
-                            "Existing tmux socket",
-                            preview.tmux_socket().display().to_string(),
-                        ),
-                    ] {
-                        body = body.child(format!("{label}: {value}"));
-                    }
-                }
-                if !self.busy && !self.finished {
-                    body = body.child(
-                        ui::button(
-                            "adoption-refresh",
-                            "Refresh preflight",
-                            ui::Button::Secondary,
-                        )
-                        .on_click(cx.listener(|form, _, _, cx| form.refresh(cx))),
-                    );
-                }
-            }
-        }
+            .gap(px(t.space.s8))
+            .child(ui::group_note(
+                "The new profile starts with separate mutable data and accounts.",
+            ))
+            .child(ui::group_title("Profile name", ""))
+            .child(self.name.clone());
         if let Some(error) = self.error {
             body = body.child(ui::group_note(error));
         }
@@ -218,16 +106,13 @@ impl Render for Form {
             .bg(c.surface)
             .track_focus(&self.focus)
             .capture_key_down(cx.listener(|form, event: &gpui::KeyDownEvent, _, cx| {
-                let composing = form
-                    .name
-                    .as_ref()
-                    .is_some_and(|field| field.read(cx).composing());
+                let composing = form.name.read(cx).composing();
                 if !composing && event.keystroke.key == "escape" {
                     form.back(cx);
                     cx.stop_propagation();
                 }
             }))
-            .child(ui::view_header("layers", title))
+            .child(ui::view_header("layers", "Create an isolated profile"))
             .child(body)
             .child(
                 ui::view_toolbar()
@@ -239,18 +124,10 @@ impl Render for Form {
                     )
                     .when(self.valid(cx), |bar| {
                         bar.child(
-                            ui::button(
-                                "creation-submit",
-                                if self.mode == Mode::Create {
-                                    "Create profile"
-                                } else {
-                                    "Adopt this installation"
-                                },
-                                ui::Button::Primary,
-                            )
-                            .on_click(
-                                cx.listener(move |form, _, _, cx| form.submit(&confirmation, cx)),
-                            ),
+                            ui::button("creation-submit", "Create profile", ui::Button::Primary)
+                                .on_click(cx.listener(move |form, _, _, cx| {
+                                    form.submit(&confirmation, cx)
+                                })),
                         )
                     }),
             )

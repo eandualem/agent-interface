@@ -16,7 +16,6 @@ struct Checkpoint {
 
 impl Prepared {
     /// Encode exact request bytes and retained reservation/terminal progress.
-    /// This contains the adoption token when present: store privately, never log.
     /// The caller must durably save it before submission and after observations.
     pub fn checkpoint(&self) -> Result<Vec<u8>, Error> {
         let observation = if self.identity.is_some() || self.terminal.is_some() {
@@ -119,22 +118,6 @@ impl Prepared {
                     "profile_id":identity.profile_id,"expected_installation_id":identity.installation_id,
                     "expected_lifecycle_id":identity.lifecycle_id});
                 Self::prepare(id, action, Some(identity), canonical)?
-            }
-            "adopt_default" => {
-                let installation = field("expected_installation_id")?;
-                let token = field("adoption_token")?;
-                if !super::valid_id(installation) || !super::valid_id(token) {
-                    return Err(Error::Invalid);
-                }
-                let mut prepared = Self::prepare(
-                    id,
-                    Action::AdoptDefault,
-                    None,
-                    json!({"schema_version":1,"request_id":id,"action":"adopt_default",
-                        "expected_installation_id":installation,"adoption_token":token}),
-                )?;
-                prepared.adoption_installation = Some(installation.into());
-                prepared
             }
             _ => return Err(Error::Invalid),
         };

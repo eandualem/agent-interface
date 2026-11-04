@@ -41,7 +41,7 @@ pub struct Inspection {
 
 /// Inspect an explicitly selected name, optionally pinned by a list observation.
 /// Omit the registration only for fresh navigation, never a retained card refresh.
-/// Runs on an I/O worker and does not start, discover or adopt a provider.
+/// Runs on an I/O worker and does not start or discover a provider.
 pub fn inspect(
     connection: Connection,
     name: &str,

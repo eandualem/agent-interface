@@ -4,7 +4,7 @@
 
 use agent_interface_app::profiles::{Client, lifecycle::Operation, setup::Setup};
 use agent_interface_roster::profiles::{
-    Connection, Error, Kind,
+    Connection, Error,
     operations::{Action as Lifecycle, Prepared},
     setup::{Action, Agent, Brief, Prepared as SetupRequest},
 };
@@ -166,50 +166,4 @@ fn create_start_setup_and_shell_on_a_new_profile() {
         .roster()
         .expect("roster straight after a removal");
     connection.remove_agent("second").expect("remove again");
-}
-
-#[test]
-#[ignore = "needs a disposable real provider with an identity"]
-fn adopt_default() {
-    let client = client();
-    let preview = client.adoption_preview(&live).expect("adoption preview");
-    let mut adopt = Operation::new(
-        &client,
-        Prepared::adopt_default(&format!("adopt-{}", std::process::id()), &preview).unwrap(),
-    );
-    println!("adopt: {:?}", adopt.apply(&live).expect("adopt"));
-}
-
-#[test]
-#[ignore = "needs a disposable real provider restarted after adoption"]
-fn adopted_default_opens_a_bound_shell() {
-    let client = client();
-    let default = client
-        .list(&live)
-        .unwrap()
-        .into_iter()
-        .find(|item| item.kind == Kind::LegacyDefault)
-        .expect("adopted Default");
-    let connection = client
-        .show(&default.profile_id, &live)
-        .unwrap()
-        .connect()
-        .expect("handshake");
-    let session = connection
-        .ensure_shell("0123456789ad", None)
-        .expect("provider shell");
-    assert!(sessions(&connection).contains(&session));
-    println!("default roster ok: {}", connection.roster().is_ok());
-    println!(
-        "default catalog: {:?}",
-        client.runtimes(connection.identity(), &live).map(|c| c
-            .items()
-            .iter()
-            .filter(|r| r.available)
-            .count())
-    );
-    assert_eq!(
-        connection.sign_in_session("codex").err(),
-        Some(Error::Refused(422))
-    );
 }

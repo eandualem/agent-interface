@@ -144,17 +144,6 @@ impl Client {
         profiles::runtime_catalog::Catalog::parse(&bytes, identity).map_err(Error::Profile)
     }
 
-    /// Read the provider's explicit Default-adoption preflight in this captured
-    /// caller context. Returned paths are display metadata, never read here.
-    /// This does not migrate data, select a profile or submit an adoption.
-    pub fn adoption_preview(
-        &self,
-        live: &dyn Fn() -> bool,
-    ) -> Result<profiles::operations::AdoptionPreview, Error> {
-        let bytes = self.read(&["profiles", "adoption-preview", "--json"], live, TIMEOUT)?;
-        profiles::operations::AdoptionPreview::parse(&bytes).map_err(Error::Profile)
-    }
-
     fn read(
         &self,
         arguments: &[&str],
