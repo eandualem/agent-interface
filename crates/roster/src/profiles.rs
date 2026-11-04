@@ -351,6 +351,36 @@ impl Connection {
         Ok(reply.session)
     }
 
+    /// Stop this agent's session and remove it from this profile. The provider
+    /// refuses to remove a running agent, so the stop comes first. An agent that
+    /// is already gone counts as removed. Runs on an I/O worker.
+    pub fn remove_agent(&self, name: &str) -> Result<(), Error> {
+        if !crate::valid_agent(name) {
+            return Err(Error::Invalid);
+        }
+        let response = self.response(
+            &format!("/api/agents/{name}/stop"),
+            Some(Vec::new()),
+            RESPONSE_LIMIT,
+        )?;
+        if response.status == 404 {
+            return Ok(());
+        }
+        successful(&response)?;
+        let response = local::profile_delete(
+            self.socket.to_str().ok_or(Error::Invalid)?,
+            &format!("/api/agents/{name}"),
+            (&self.key, &self.identity),
+            RESPONSE_LIMIT,
+            Duration::from_secs(15),
+        )
+        .map_err(|_| Error::Unavailable)?;
+        if response.status == 404 {
+            return Ok(());
+        }
+        successful(&response)
+    }
+
     /// Verify again on the same binding, never by re-resolving registry or environment.
     pub fn verify(&self) -> Result<(), Error> {
         #[derive(Deserialize)]

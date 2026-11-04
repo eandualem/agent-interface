@@ -503,6 +503,42 @@ fn shared_session_cases_decode_and_refusals_keep_their_status() {
 }
 
 #[test]
+fn removing_an_agent_stops_it_first_and_treats_a_missing_one_as_removed() {
+    let (directory, listener, url) = crate::transport::tests::local_listener();
+    let (profile, identity) = profile_at(directory.path(), url.strip_prefix("unix:").unwrap());
+    let stopped = json!({"ok": true, "session": "worker"});
+    let server = serve(
+        listener,
+        vec![
+            (200, identity.clone()),
+            (200, stopped.clone()),
+            (200, json!({"ok": true, "name": "worker"})),
+            (404, json!({})),
+            (200, stopped.clone()),
+            (404, json!({})),
+            (200, stopped),
+            (409, json!({"detail": "'worker' is running"})),
+        ],
+    );
+    let connection = profile.connect().unwrap();
+    assert_eq!(connection.remove_agent("worker"), Ok(()));
+    assert_eq!(connection.remove_agent("worker"), Ok(()));
+    assert_eq!(connection.remove_agent("worker"), Ok(()));
+    assert_eq!(
+        connection.remove_agent("worker").err(),
+        Some(Error::Refused(409))
+    );
+    assert_eq!(
+        connection.remove_agent("../other").err(),
+        Some(Error::Invalid)
+    );
+    let requests = server.join().unwrap();
+    assert!(requests[1].starts_with("post /api/agents/worker/stop "));
+    assert!(requests[2].starts_with("delete /api/agents/worker "));
+    assert!(requests[2].contains("x-backbone-lifecycle-id: "));
+}
+
+#[test]
 fn bound_roster_preserves_typed_failures_and_decodes_success() {
     let (directory, listener, url) = crate::transport::tests::local_listener();
     let (profile, identity) = profile_at(directory.path(), url.strip_prefix("unix:").unwrap());

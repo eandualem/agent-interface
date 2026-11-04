@@ -158,6 +158,17 @@ fn create_start_setup_and_shell_on_a_new_profile() {
     let outcome = Setup::new(&client, request).run(Action::FirstAgent, &live, |_| ());
     println!("second agent outcome: {outcome:?}");
     println!("sessions: {:?}", sessions(&connection));
+
+    // Removing stops the session first; removing it again still succeeds.
+    connection.remove_agent("second").expect("remove agent");
+    assert!(!sessions(&connection).contains(&"second".to_owned()));
+    // The provider answers 409 briefly while its agent list catches up.
+    let settled = (0..20).any(|_| {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        connection.roster().is_ok()
+    });
+    assert!(settled, "roster recovers after a removal");
+    connection.remove_agent("second").expect("remove again");
 }
 
 #[test]

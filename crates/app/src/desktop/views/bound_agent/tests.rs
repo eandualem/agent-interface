@@ -91,3 +91,10 @@ fn foreign_permission_context_cannot_publish_an_agent_snapshot() {
     ));
     server.join().unwrap();
 }
+
+#[test]
+fn removal_refusals_say_what_happened() {
+    assert!(removal_refusal(ProfileError::Refused(409)).contains("still running"));
+    assert!(removal_refusal(ProfileError::Refused(403)).contains("refused"));
+    assert!(removal_refusal(ProfileError::Unavailable).contains("connection"));
+}
