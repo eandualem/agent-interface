@@ -1132,10 +1132,13 @@ require the same connection instance, including its credential snapshot. Bound
 terminal attachments use only the verified tmux socket, recheck the provider before
 and after attachment, and release the owned client if that final check fails.
 Bound panes never resume agents or create ordinary shells through legacy paths.
-Native lifecycle and setup controls use the captured operator client and durable
-recovery controllers. Profile-owned shell creation and real-account acceptance
-remain separate; unavailable provider operations are shown explicitly. Existing
-standalone workspaces retain their ordinary shell behavior.
+A bound shell comes from the provider: `POST /api/profile/shells` ensures a session
+for the pane on the verified tmux socket, and the app then attaches to it. The app
+sends no environment and never starts a bound tmux server, so the app's launch
+context cannot reach the shell. Native lifecycle and setup controls use the captured
+operator client and durable recovery controllers. Real-account acceptance remains
+separate; unavailable provider operations are shown explicitly. Existing standalone
+workspaces retain their ordinary shell behavior.
 
 Sidebar attention actions, retained view events and Jump results capture their
 workspace, connection epoch and library origin before dispatch. Navigation validates

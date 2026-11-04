@@ -1395,12 +1395,14 @@ impl Browser {
             return;
         };
         if matches!(action, TabAction::ReturnToShell)
-            && layout
-                .model()
-                .workspace()
-                .is_some_and(|space| space.profile_id.is_some())
+            && layout.model().workspace().is_some_and(|space| {
+                matches!(
+                    self.workspace_profiles.route(space),
+                    workspace_profiles::Route::Unavailable
+                )
+            })
         {
-            self.save_notice = Some("Profile-owned shell creation is unavailable.".into());
+            self.save_notice = Some("The workspace profile is unavailable.".into());
             cx.notify();
             return;
         }
@@ -1604,7 +1606,10 @@ impl Browser {
         if self.saving || self.save_failed {
             return;
         }
-        if let Some(Err(error)) = &self.shell_environment {
+        // Bound shells use the provider's environment, never this captured one.
+        if let Some(Err(error)) = &self.shell_environment
+            && matches!(self.pane_connection(pane), Ok(None))
+        {
             self.save_notice = Some(format!("Cannot open terminal: {error}"));
             cx.notify();
             return;
@@ -1618,8 +1623,8 @@ impl Browser {
             cx.notify();
             return;
         }
-        if !matches!(self.pane_connection(pane), Ok(None)) {
-            self.save_notice = Some("Profile-owned shell creation is unavailable.".into());
+        if self.pane_connection(pane).is_err() {
+            self.save_notice = Some("The workspace profile is unavailable.".into());
             cx.notify();
             return;
         }

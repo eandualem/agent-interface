@@ -344,7 +344,16 @@ fn serve_with_hook(
                 header.push(byte[0]);
                 assert!(header.len() < 8192);
             }
-            requests.push(String::from_utf8(header).unwrap().to_ascii_lowercase());
+            let mut request = String::from_utf8(header).unwrap().to_ascii_lowercase();
+            if let Some(length) = request
+                .lines()
+                .find_map(|line| line.strip_prefix("content-length: "))
+            {
+                let mut body = vec![0; length.trim().parse().unwrap()];
+                stream.read_exact(&mut body).unwrap();
+                request.push_str(&String::from_utf8(body).unwrap().to_ascii_lowercase());
+            }
+            requests.push(request);
             hook(at);
             let body = body.to_string();
             write!(stream, "HTTP/1.1 {status} Fixture\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
@@ -390,6 +399,45 @@ fn connection_pins_credentials_and_identity_through_followup_and_replacement() {
         assert!(request.contains("x-backbone-installation-id: installation-a\r\n"));
         assert!(request.contains("x-backbone-lifecycle-id: lifecycle-a1\r\n"));
     }
+}
+
+#[test]
+fn bound_shell_request_carries_no_environment_and_checks_its_reply() {
+    let (directory, listener, url) = crate::transport::tests::local_listener();
+    let (profile, identity) = profile_at(directory.path(), url.strip_prefix("unix:").unwrap());
+    let reply = |shell_id: &str, lifecycle: &str| {
+        json!({"schema_version": 1, "profile_id": identity["profile_id"],
+            "installation_id": identity["installation_id"], "lifecycle_id": lifecycle,
+            "shell_id": shell_id, "session": "opaque-session", "created": true})
+    };
+    let lifecycle = identity["lifecycle_id"].as_str().unwrap();
+    let server = serve(
+        listener,
+        vec![
+            (200, identity.clone()),
+            (200, reply("123456abcdef", lifecycle)),
+            (200, reply("123456abcdef", "lifecycle-other")),
+            (200, reply("foreign000000", lifecycle)),
+            (503, json!({"detail": {"code": "shell_unavailable"}})),
+            (404, json!({})),
+        ],
+    );
+    let connection = profile.connect().unwrap();
+    let ensure = |cwd| connection.ensure_shell("123456abcdef", cwd);
+    assert_eq!(ensure(Some("/work")).as_deref(), Ok("opaque-session"));
+    assert_eq!(ensure(None).err(), Some(Error::BindingMismatch));
+    assert_eq!(ensure(None).err(), Some(Error::Invalid));
+    assert_eq!(ensure(None).err(), Some(Error::Refused(503)));
+    assert_eq!(ensure(None).err(), Some(Error::Unsupported));
+    let requests = server.join().unwrap();
+    assert!(requests[1].starts_with("post /api/profile/shells "));
+    assert!(requests[1].contains("x-backbone-lifecycle-id: "));
+    let body = requests[1].rsplit("\r\n\r\n").next().unwrap();
+    let keys: Value = serde_json::from_str(body).unwrap();
+    assert_eq!(
+        keys,
+        json!({"schema_version": 1, "shell_id": "123456abcdef", "cwd": "/work"})
+    );
 }
 
 #[test]

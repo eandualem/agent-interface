@@ -281,6 +281,38 @@ impl Connection {
         Ok(snapshot)
     }
 
+    /// Ask the provider to ensure this pane's shell and return its session name,
+    /// which lives on this connection's tmux socket. The provider owns the shell's
+    /// environment and tmux server; the name is opaque. Runs on an I/O worker.
+    pub fn ensure_shell(&self, shell_id: &str, cwd: Option<&str>) -> Result<String, Error> {
+        #[derive(Deserialize)]
+        struct Reply {
+            #[serde(flatten)]
+            identity: Identity,
+            shell_id: String,
+            session: String,
+        }
+        let body = serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1,
+            "shell_id": shell_id,
+            "cwd": cwd,
+        }))
+        .map_err(|_| Error::Invalid)?;
+        let response = self.response("/api/profile/shells", Some(body), RESPONSE_LIMIT)?;
+        if response.status == 404 {
+            return Err(Error::Unsupported);
+        }
+        successful(&response)?;
+        let reply: Reply = parse(&response.body)?;
+        if reply.identity != self.identity {
+            return Err(Error::BindingMismatch);
+        }
+        if reply.shell_id != shell_id || reply.session.is_empty() {
+            return Err(Error::Invalid);
+        }
+        Ok(reply.session)
+    }
+
     /// Verify again on the same binding, never by re-resolving registry or environment.
     pub fn verify(&self) -> Result<(), Error> {
         #[derive(Deserialize)]

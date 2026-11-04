@@ -109,6 +109,17 @@ impl Drop for Ready {
     }
 }
 
+fn shell_refusal(error: agent_interface_roster::profiles::Error) -> String {
+    use agent_interface_roster::profiles::Error;
+    match error {
+        Error::Unsupported => "This provider does not support profile shells.",
+        Error::Refused(503) => "The profile could not start this shell.",
+        Error::Refused(_) => "The profile refused this shell.",
+        _ => "The workspace profile connection is unavailable.",
+    }
+    .to_owned()
+}
+
 fn connect(target: Target) -> Result<Ready, String> {
     connect_selected(target, None, false)
 }
@@ -125,22 +136,23 @@ fn connect_selected(
             .map_err(|_| "The workspace profile connection is unavailable.".to_owned())?;
     }
     let (socket, session) = if let Some(connection) = &bound {
-        let attachment = target
-            .leaf
-            .attachment
-            .as_ref()
-            .ok_or("Profile-owned shell creation is unavailable.")?;
-        if attachment
-            .source_socket
-            .as_deref()
-            .is_some_and(|path| std::path::Path::new(path) != connection.tmux_socket())
-        {
-            return Err("The saved session belongs to a different profile socket.".into());
-        }
-        (
-            connection.tmux_socket().to_owned(),
-            attachment.session.clone(),
-        )
+        let session = match &target.leaf.attachment {
+            Some(attachment) => {
+                if attachment
+                    .source_socket
+                    .as_deref()
+                    .is_some_and(|path| std::path::Path::new(path) != connection.tmux_socket())
+                {
+                    return Err("The saved session belongs to a different profile socket.".into());
+                }
+                attachment.session.clone()
+            }
+            // The provider creates the shell; the app never starts a bound server.
+            None => connection
+                .ensure_shell(&target.leaf.id, target.leaf.cwd.as_deref())
+                .map_err(shell_refusal)?,
+        };
+        (connection.tmux_socket().to_owned(), session)
     } else if let Some(attachment) = &target.leaf.attachment {
         let socket = match &attachment.source_socket {
             Some(path) => {
@@ -729,7 +741,7 @@ mod tests {
     };
 
     #[test]
-    fn bound_attachment_ignores_legacy_source_and_refuses_foreign_or_shell_targets() {
+    fn bound_attachment_ignores_legacy_source_and_refuses_foreign_targets() {
         use crate::roster::content::tests::{Reply, provider_with_tmux};
         use serde_json::json;
         let a = TmuxServer::start().unwrap();
@@ -752,7 +764,7 @@ mod tests {
         let identity = json!({"schema_version":1,"profile_id":"profile-a","installation_id":"installation-a","lifecycle_id":"lifecycle-a","baseline_version":"fixture","tmux":{"socket_path":socket}});
         let (_dir, connection, server) = provider_with_tmux(
             "a",
-            (0..4)
+            (0..3)
                 .map(|_| Reply::ok("/api/profile", identity.clone()))
                 .collect(),
             Some(socket.clone()),
@@ -781,13 +793,6 @@ mod tests {
                 .err()
                 .expect("attachment must fail")
                 .contains("different profile socket")
-        );
-        target.leaf.attachment = None;
-        assert!(
-            connect(target)
-                .err()
-                .expect("attachment must fail")
-                .contains("shell creation is unavailable")
         );
         assert!(b.run(&["list-clients"]).unwrap().is_empty());
         server.join().unwrap();

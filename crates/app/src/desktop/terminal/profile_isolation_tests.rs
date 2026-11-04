@@ -180,3 +180,74 @@ fn equal_terminal_ids_keep_streams_and_input_isolated_when_one_profile_stops() {
     assert!(!remaining.contains("must-not-fallback"));
     assert!(!remaining.contains("only-A-input"));
 }
+
+#[test]
+fn bound_shell_attaches_to_the_provider_session_and_never_creates_one() {
+    let server = TmuxServer::start().unwrap();
+    let socket: PathBuf = server
+        .run(&["display-message", "-p", "#{socket_path}"])
+        .unwrap()
+        .trim()
+        .into();
+    server
+        .run(&[
+            "respawn-pane",
+            "-k",
+            "-t",
+            "=fixture:",
+            "sh",
+            "-c",
+            "printf 'provider-shell-ready\\n'; exec cat",
+        ])
+        .unwrap();
+    let target = |replies: Vec<Reply>| {
+        let (directory, connection, provider) =
+            provider_with_tmux("a", replies, Some(socket.clone()));
+        (
+            directory,
+            provider,
+            Target {
+                connection: Some(connection),
+                leaf: Leaf {
+                    id: "123456abcdef".into(),
+                    cwd: None,
+                    empty: false,
+                    view: None,
+                    attachment: None,
+                },
+                directory: None,
+                source: Err("A bound shell must not use the legacy source.".into()),
+            },
+        )
+    };
+    let identity = json!({"schema_version":1,"profile_id":"profile-a",
+        "installation_id":"installation-a","lifecycle_id":"lifecycle-a",
+        "baseline_version":"fixture","tmux":{"socket_path":socket}});
+    let shell = json!({"schema_version":1,"profile_id":"profile-a",
+        "installation_id":"installation-a","lifecycle_id":"lifecycle-a",
+        "shell_id":"123456abcdef","session":"fixture","created":true});
+    let (_directory, provider, opened) = target(vec![
+        Reply::ok("/api/profile", identity.clone()),
+        Reply::post("/api/profile/shells", 200, shell),
+        Reply::ok("/api/profile", identity.clone()),
+    ]);
+    let ready = connect(opened).unwrap();
+    provider.join().unwrap();
+    wait_for_text(&ready, "provider-shell-ready", "foreign");
+    let sessions = server.run(&["list-sessions", "-F", "#S"]).unwrap();
+    assert_eq!(sessions.trim(), "fixture");
+
+    let (_directory, provider, refused) = target(vec![
+        Reply::ok("/api/profile", identity),
+        Reply::post(
+            "/api/profile/shells",
+            503,
+            json!({"detail":{"code":"shell_unavailable"}}),
+        ),
+    ]);
+    assert_eq!(
+        connect(refused).err().as_deref(),
+        Some("The profile could not start this shell.")
+    );
+    provider.join().unwrap();
+}

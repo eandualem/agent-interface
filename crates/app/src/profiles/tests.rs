@@ -72,6 +72,25 @@ esac
 }
 
 #[test]
+fn only_a_valid_absent_registry_refusal_is_distinguished() {
+    let refusal = |code: &str| {
+        format!(
+            r#"echo '{{"schema_version":1,"error":{{"code":"{code}","message":"x"}}}}'; exit 1"#
+        )
+    };
+    let list = |script: &str| stub(script).1.list(&|| true).err();
+    assert_eq!(
+        list(&refusal("registry_absent")),
+        Some(Error::RegistryAbsent)
+    );
+    assert_eq!(
+        list(&refusal("registry_unavailable")),
+        Some(Error::CommandFailed)
+    );
+    assert_eq!(list("exit 1"), Some(Error::CommandFailed));
+}
+
+#[test]
 fn runtime_observations_use_original_tuple_and_never_fall_back_to_legacy() {
     let wire = &fixture()["runtime_catalog"]["catalog"];
     let identity = profiles::Identity {

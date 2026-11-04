@@ -17,6 +17,7 @@ pub(crate) struct Reply {
     pub(crate) body: Value,
     pub(crate) delay: Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>,
     pub(crate) replace: bool,
+    pub(crate) post: bool,
 }
 
 impl Reply {
@@ -28,6 +29,15 @@ impl Reply {
             body,
             delay: None,
             replace: false,
+            post: false,
+        }
+    }
+
+    pub(crate) fn post(path: &str, status: u16, body: Value) -> Self {
+        Self {
+            status,
+            post: true,
+            ..Self::ok(path, body)
         }
     }
 
@@ -108,6 +118,13 @@ pub(crate) fn provider_with_tmux(
                 assert!(bytes.len() < 8192);
             }
             let request = String::from_utf8(bytes).unwrap().to_ascii_lowercase();
+            if let Some(length) = request
+                .lines()
+                .find_map(|line| line.strip_prefix("content-length: "))
+            {
+                let mut body = vec![0; length.trim().parse().unwrap()];
+                stream.read_exact(&mut body).unwrap();
+            }
             if reply.prefix {
                 assert!(
                     request.starts_with(&format!("get {}", reply.path)),
@@ -115,7 +132,11 @@ pub(crate) fn provider_with_tmux(
                 );
                 assert!(request.lines().next().unwrap().ends_with(" http/1.1"));
             } else {
-                assert!(request.starts_with(&format!("get {} http/1.1\r\n", reply.path)));
+                let method = if reply.post { "post" } else { "get" };
+                assert!(
+                    request.starts_with(&format!("{method} {} http/1.1\r\n", reply.path)),
+                    "{request}"
+                );
             }
             for (header, value) in [
                 ("authorization", format!("bearer fixture-{label}")),

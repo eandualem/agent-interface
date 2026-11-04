@@ -106,6 +106,7 @@ pub(super) struct ProfilePicker {
     pub focus: FocusHandle,
     scroll: ScrollHandle,
     directory: Option<std::path::PathBuf>,
+    has_bound_workspaces: bool,
     management: Option<(
         gpui::Entity<super::profile_management::Management>,
         gpui::Subscription,
@@ -124,6 +125,7 @@ impl ProfilePicker {
     pub fn new(
         client: Client,
         directory: Option<std::path::PathBuf>,
+        has_bound_workspaces: bool,
         cx: &mut Context<Self>,
     ) -> Self {
         let mut picker = Self {
@@ -135,6 +137,7 @@ impl ProfilePicker {
             focus: cx.focus_handle(),
             scroll: ScrollHandle::new(),
             directory,
+            has_bound_workspaces,
             management: None,
         };
         picker.refresh(cx);
@@ -156,6 +159,7 @@ impl ProfilePicker {
         cx.spawn(async move |this, cx| {
             let result = read.await;
             let _ = this.update(cx, |picker, cx| {
+                let result = first_run(result, picker.has_bound_workspaces);
                 if !picker.closed && picker.catalog.complete(&ticket, result) {
                     picker.reveal_focus();
                     cx.notify();
@@ -254,6 +258,18 @@ impl ProfilePicker {
     }
 }
 
+/// An absent registry is a fresh machine, unless a saved workspace needs a profile:
+/// then the registry was lost, and showing an empty list would hide that.
+fn first_run(
+    result: Result<Vec<Item>, Error>,
+    has_bound_workspaces: bool,
+) -> Result<Vec<Item>, Error> {
+    match result {
+        Err(Error::RegistryAbsent) if !has_bound_workspaces => Ok(Vec::new()),
+        other => other,
+    }
+}
+
 fn message(error: Error) -> &'static str {
     use agent_interface_roster::profiles::Error as ProfileError;
     match error {
@@ -272,6 +288,7 @@ fn message(error: Error) -> &'static str {
             "The selected profile could not be reached or authenticated."
         }
         Error::Unavailable => "The profile discovery command is unavailable.",
+        Error::RegistryAbsent => "The profile registry is missing.",
         Error::Invalid | Error::TooLarge | Error::Profile(ProfileError::Invalid) => {
             "The provider returned invalid profile information."
         }
@@ -444,6 +461,19 @@ mod tests {
             state,
         }
     }
+    #[test]
+    fn absent_registry_is_first_run_only_without_bound_workspaces() {
+        assert!(first_run(Err(Error::RegistryAbsent), false).is_ok_and(|items| items.is_empty()));
+        assert_eq!(
+            first_run(Err(Error::RegistryAbsent), true).err(),
+            Some(Error::RegistryAbsent)
+        );
+        assert_eq!(
+            first_run(Err(Error::CommandFailed), false).err(),
+            Some(Error::CommandFailed)
+        );
+    }
+
     #[test]
     fn refresh_invalidates_stale_rows_results_and_readiness_without_using_labels() {
         let mut catalog = Catalog::default();

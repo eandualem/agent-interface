@@ -618,21 +618,19 @@ impl Render for NewPane {
             .flex_wrap()
             .flex_shrink_0()
             .gap(px(t.space.s10))
-            .when(self.origin.allows_terminal(), |buttons| {
-                buttons.child(
-                    ui::choice_button(
-                        "new-pane-terminal",
-                        "terminal",
-                        "Open terminal",
-                        "⌘↵",
-                        false,
-                    )
-                    .on_click(cx.listener(|_, _, _, cx| {
-                        cx.stop_propagation();
-                        cx.emit(NewPaneEvent::OpenTerminal);
-                    })),
+            .child(
+                ui::choice_button(
+                    "new-pane-terminal",
+                    "terminal",
+                    "Open terminal",
+                    "⌘↵",
+                    false,
                 )
-            })
+                .on_click(cx.listener(|_, _, _, cx| {
+                    cx.stop_propagation();
+                    cx.emit(NewPaneEvent::OpenTerminal);
+                })),
+            )
             .when(self.backbone, |buttons| {
                 buttons
                     .child(
@@ -846,14 +844,7 @@ impl Render for NewPane {
                     )
                     .child(list),
             )
-            .child(ui::hint_bar(
-                &hints,
-                if self.origin.allows_terminal() {
-                    "Nothing is created until you choose."
-                } else {
-                    "New shells are unavailable for this profile."
-                },
-            ))
+            .child(ui::hint_bar(&hints, "Nothing is created until you choose."))
             .capture_key_down(cx.listener(|chooser, event: &gpui::KeyDownEvent, _, cx| {
                 if chooser.field.read(cx).composing() {
                     return;
@@ -872,9 +863,6 @@ impl NewPane {
     pub fn key(&mut self, key: &gpui::Keystroke, navigating: bool, cx: &mut Context<Self>) -> bool {
         let m = &key.modifiers;
         if key.key == "enter" && m.platform && !m.control && !m.alt {
-            if !self.origin.allows_terminal() {
-                return true;
-            }
             cx.emit(NewPaneEvent::OpenTerminal);
             return true;
         }

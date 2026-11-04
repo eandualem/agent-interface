@@ -38,10 +38,6 @@ impl Origin {
         )
     }
 
-    pub fn allows_terminal(&self) -> bool {
-        self.connection().is_none()
-    }
-
     pub fn allows_view(&self, kind: ViewKind) -> bool {
         self.connection().is_none() || kind != ViewKind::Artifacts
     }
@@ -134,7 +130,6 @@ mod tests {
             Some(socket),
         );
         let origin = Origin::Bound(connection.clone());
-        assert!(!origin.allows_terminal());
         assert!(origin.allows_view(ViewKind::Agent));
         assert!(!origin.allows_view(ViewKind::Artifacts));
         assert!(origin.allows_view(ViewKind::Reports));
@@ -184,6 +179,6 @@ mod tests {
         };
         assert!(legacy.sessions(|| {}).unwrap().is_none());
         assert!(legacy.team(|| {}).unwrap().is_none());
-        assert!(legacy.allows_terminal() && legacy.allows_view(ViewKind::Agent));
+        assert!(legacy.allows_view(ViewKind::Agent));
     }
 }

@@ -537,7 +537,16 @@ impl Browser {
         };
         let client = client.clone();
         let directory = self.directory.clone();
-        let picker = cx.new(|cx| profile_picker::ProfilePicker::new(client, directory, cx));
+        let has_bound_workspaces = self.layout.as_ref().is_some_and(|layout| {
+            layout
+                .model()
+                .workspaces
+                .iter()
+                .any(|space| space.profile_id.is_some())
+        });
+        let picker = cx.new(|cx| {
+            profile_picker::ProfilePicker::new(client, directory, has_bound_workspaces, cx)
+        });
         window.focus(&picker.read(cx).focus_handle(cx), cx);
         let events = cx.subscribe_in(&picker, window, |browser, picker, choice, window, cx| {
             if !browser
