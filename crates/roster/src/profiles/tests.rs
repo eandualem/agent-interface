@@ -476,6 +476,7 @@ fn shared_session_cases_decode_and_refusals_keep_their_status() {
         ],
     );
     let connection = profile.connect().unwrap();
+    assert_eq!(connection.kind(), &Kind::Isolated);
     let shell_id = sessions["shell_request"]["shell_id"].as_str().unwrap();
     let shell = |cwd| connection.ensure_shell(shell_id, cwd);
     let session = sessions["shell_response"]["session"].as_str().unwrap();

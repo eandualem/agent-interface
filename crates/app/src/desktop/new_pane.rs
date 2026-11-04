@@ -10,7 +10,7 @@ use std::path::PathBuf;
 
 use agent_interface_core::{View, ViewKind};
 use agent_interface_roster::{
-    profiles::{Connection, Error as ProfileError},
+    profiles::{Connection, Error as ProfileError, Kind},
     views::{Data, Member, Team},
 };
 use futures::{StreamExt, channel::mpsc};
@@ -669,7 +669,12 @@ impl Render for NewPane {
             .flex_wrap()
             .flex_shrink_0()
             .gap(px(t.space.s10));
-        if self.origin.connection().is_some() {
+        // Default keeps its existing CLI sign-ins, so only isolated profiles offer this.
+        if self
+            .origin
+            .connection()
+            .is_some_and(|connection| *connection.kind() == Kind::Isolated)
+        {
             for (runtime, label) in SIGN_IN_RUNTIMES {
                 sign_in = sign_in.child(
                     ui::choice_button(

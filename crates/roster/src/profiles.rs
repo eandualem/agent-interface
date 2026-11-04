@@ -206,6 +206,7 @@ impl Profile {
                 installation_id: binding.installation_id.clone(),
                 lifecycle_id: binding.lifecycle_id.clone(),
             },
+            kind: self.item.kind.clone(),
             socket: socket.clone(),
             tmux: binding.tmux.clone(),
             credential_reference: path.clone(),
@@ -240,6 +241,7 @@ impl Hash for ConnectionKey {
 #[derive(Clone)]
 pub struct Connection {
     identity: Identity,
+    kind: Kind,
     socket: PathBuf,
     tmux: Tmux,
     credential_reference: PathBuf,
@@ -257,6 +259,10 @@ impl Connection {
     /// The authenticated identity retained by every operation on this connection.
     pub fn identity(&self) -> &Identity {
         &self.identity
+    }
+    /// How this profile was provisioned, from the record that was connected.
+    pub fn kind(&self) -> &Kind {
+        &self.kind
     }
     /// The tmux socket confirmed by the provider handshake.
     pub fn tmux_socket(&self) -> &Path {
