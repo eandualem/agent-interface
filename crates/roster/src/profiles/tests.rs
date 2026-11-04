@@ -539,6 +539,27 @@ fn removing_an_agent_stops_it_first_and_treats_a_missing_one_as_removed() {
 }
 
 #[test]
+fn agent_list_reads_again_while_registrations_settle_but_not_forever() {
+    let (directory, listener, url) = crate::transport::tests::local_listener();
+    let (profile, identity) = profile_at(directory.path(), url.strip_prefix("unix:").unwrap());
+    let settling = (
+        409,
+        json!({"detail": {"code": "registration_changed", "message": "Changed."}}),
+    );
+    let mut replies = vec![
+        (200, identity.clone()),
+        settling.clone(),
+        (200, json!({"items": [], "total": 0})),
+    ];
+    replies.extend(std::iter::repeat_n(settling, 41));
+    let server = serve(listener, replies);
+    let connection = profile.connect().unwrap();
+    assert!(connection.roster().is_ok());
+    assert_eq!(connection.roster().err(), Some(Error::Refused(409)));
+    assert_eq!(server.join().unwrap().len(), 44);
+}
+
+#[test]
 fn bound_roster_preserves_typed_failures_and_decodes_success() {
     let (directory, listener, url) = crate::transport::tests::local_listener();
     let (profile, identity) = profile_at(directory.path(), url.strip_prefix("unix:").unwrap());

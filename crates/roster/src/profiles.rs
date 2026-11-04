@@ -413,15 +413,26 @@ impl Connection {
         body: Option<Vec<u8>>,
         limit: usize,
     ) -> Result<local::Response, Error> {
-        let response = local::profile_response(
-            self.socket.to_str().ok_or(Error::Invalid)?,
-            path,
-            (&self.key, &self.identity),
-            body,
-            limit,
-            Duration::from_secs(15),
-        )
-        .map_err(|_| Error::Unavailable)?;
+        // The agent list refuses a read until its next refresh after an agent is
+        // removed. That is a moment to read again, not a failure to show anyone.
+        // Callers are I/O workers, so waiting here holds no interface thread.
+        let mut retries = if path == "/api/agents" { 40 } else { 0 };
+        let response = loop {
+            let response = local::profile_response(
+                self.socket.to_str().ok_or(Error::Invalid)?,
+                path,
+                (&self.key, &self.identity),
+                body.clone(),
+                limit,
+                Duration::from_secs(15),
+            )
+            .map_err(|_| Error::Unavailable)?;
+            if retries == 0 || !registrations_settling(&response) {
+                break response;
+            }
+            retries -= 1;
+            std::thread::sleep(Duration::from_millis(250));
+        };
         if response.body.len() > limit {
             return Err(Error::Invalid);
         }
@@ -437,6 +448,12 @@ fn successful(response: &local::Response) -> Result<(), Error> {
         return Ok(());
     }
     Err(binding_refusal(response).unwrap_or(Error::Refused(response.status)))
+}
+
+fn registrations_settling(response: &local::Response) -> bool {
+    response.status == 409
+        && serde_json::from_slice::<serde_json::Value>(&response.body)
+            .is_ok_and(|refusal| refusal["detail"]["code"] == "registration_changed")
 }
 
 fn binding_refusal(response: &local::Response) -> Option<Error> {
