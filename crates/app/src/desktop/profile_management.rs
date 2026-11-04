@@ -10,7 +10,7 @@ use crate::profiles::{
     journal,
 };
 use agent_interface_roster::profiles::{
-    Profile, State,
+    Kind, Profile, State,
     operations::{Action, Prepared, Status},
 };
 use gpui::{Context, EventEmitter, FocusHandle, SharedString, Window, div, prelude::*, px};
@@ -622,10 +622,12 @@ impl Render for Management {
             Page::Detail(profile) => {
                 body = body.child(profile.item().display_name.clone()).child(profile.item().profile_id.clone()).child(ui::group_note("Service controls preserve profile data. Connecting to a workspace is a separate action."));
                 if profile.item().state == State::Ready && !self.busy {
-                    if self.directory.is_some() {
+                    // Default keeps its host environment, so its runtimes are not
+                    // available through this bound setup; it keeps its unbound setup.
+                    if self.directory.is_some() && profile.item().kind == Kind::Isolated {
                         let expected = ticket.clone();
                         body = body.child(
-                            ui::button("new-agent-setup", "First-agent setup", ui::Button::Primary)
+                            ui::button("new-agent-setup", "Add agent", ui::Button::Primary)
                                 .on_click(cx.listener(move |pane, _, window, cx| {
                                     pane.choices(&expected, window, cx)
                                 })),

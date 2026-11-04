@@ -113,6 +113,7 @@ fn shell_refusal(error: agent_interface_roster::profiles::Error) -> String {
     use agent_interface_roster::profiles::Error;
     match error {
         Error::Unsupported => "This provider does not support profile shells.",
+        Error::Refused(422) => "This folder is not available to the profile.",
         Error::Refused(503) => "The profile could not start this shell.",
         Error::Refused(_) => "The profile refused this shell.",
         _ => "The workspace profile connection is unavailable.",

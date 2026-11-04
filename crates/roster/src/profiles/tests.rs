@@ -441,6 +441,67 @@ fn bound_shell_request_carries_no_environment_and_checks_its_reply() {
 }
 
 #[test]
+fn shared_session_cases_decode_and_refusals_keep_their_status() {
+    let (directory, listener, url) = crate::transport::tests::local_listener();
+    let (profile, identity) = profile_at(directory.path(), url.strip_prefix("unix:").unwrap());
+    let sessions = fixture()["sessions"].clone();
+    let tuple = |mut reply: Value| {
+        for key in ["profile_id", "installation_id", "lifecycle_id"] {
+            reply[key] = identity[key].clone();
+        }
+        reply
+    };
+    let refusal = |case: &Value| {
+        (
+            case["status"].as_u64().unwrap() as u16,
+            case["body"].clone(),
+        )
+    };
+    let mut foreign = tuple(sessions["sign_in_response"].clone());
+    foreign["lifecycle_id"] = json!("lifecycle-other");
+    let server = serve(
+        listener,
+        vec![
+            (200, identity.clone()),
+            (200, tuple(sessions["shell_response"].clone())),
+            (200, tuple(sessions["shell_reused"].clone())),
+            refusal(&sessions["shell_refusals"]["invalid_cwd"]),
+            refusal(&sessions["shell_refusals"]["shell_unavailable"]),
+            (200, tuple(sessions["sign_in_response"].clone())),
+            (200, tuple(sessions["sign_in_reused"].clone())),
+            refusal(&sessions["sign_in_refusals"]["runtime_unavailable"]),
+            refusal(&sessions["sign_in_refusals"]["shell_unavailable"]),
+            (200, foreign),
+            (404, json!({})),
+        ],
+    );
+    let connection = profile.connect().unwrap();
+    let shell_id = sessions["shell_request"]["shell_id"].as_str().unwrap();
+    let shell = |cwd| connection.ensure_shell(shell_id, cwd);
+    let session = sessions["shell_response"]["session"].as_str().unwrap();
+    assert_eq!(shell(Some("/work")).as_deref(), Ok(session));
+    assert_eq!(shell(None).as_deref(), Ok(session));
+    assert_eq!(shell(None).err(), Some(Error::Refused(422)));
+    assert_eq!(shell(None).err(), Some(Error::Refused(503)));
+
+    let runtime = sessions["sign_in_request"]["runtime"].as_str().unwrap();
+    let session = sessions["sign_in_response"]["session"].as_str().unwrap();
+    let sign_in = || connection.sign_in_session(runtime);
+    assert_eq!(sign_in().as_deref(), Ok(session));
+    assert_eq!(sign_in().as_deref(), Ok(session));
+    assert_eq!(sign_in().err(), Some(Error::Refused(422)));
+    assert_eq!(sign_in().err(), Some(Error::Refused(503)));
+    assert_eq!(sign_in().err(), Some(Error::BindingMismatch));
+    assert_eq!(sign_in().err(), Some(Error::Unsupported));
+
+    let requests = server.join().unwrap();
+    assert!(requests[5].starts_with("post /api/profile/accounts/sign-in "));
+    let body = requests[5].rsplit("\r\n\r\n").next().unwrap();
+    let sent: Value = serde_json::from_str(body).unwrap();
+    assert_eq!(sent, sessions["sign_in_request"]);
+}
+
+#[test]
 fn bound_roster_preserves_typed_failures_and_decodes_success() {
     let (directory, listener, url) = crate::transport::tests::local_listener();
     let (profile, identity) = profile_at(directory.path(), url.strip_prefix("unix:").unwrap());

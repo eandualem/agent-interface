@@ -405,7 +405,7 @@ impl Render for Form {
                     _ => (),
                 }
             }))
-            .child(ui::view_header("layers", "First-agent setup"))
+            .child(ui::view_header("layers", "Add agent"))
             .child(body)
             .child(
                 ui::view_toolbar()

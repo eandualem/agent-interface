@@ -313,6 +313,38 @@ impl Connection {
         Ok(reply.session)
     }
 
+    /// Ask the provider for a session that signs a CLI account in for `runtime`
+    /// inside this profile, and return its name on this connection's tmux socket.
+    /// A repeat reuses the session while it is live. Runs on an I/O worker.
+    pub fn sign_in_session(&self, runtime: &str) -> Result<String, Error> {
+        #[derive(Deserialize)]
+        struct Reply {
+            #[serde(flatten)]
+            identity: Identity,
+            runtime: String,
+            session: String,
+        }
+        let body = serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1,
+            "runtime": runtime,
+        }))
+        .map_err(|_| Error::Invalid)?;
+        let response =
+            self.response("/api/profile/accounts/sign-in", Some(body), RESPONSE_LIMIT)?;
+        if response.status == 404 {
+            return Err(Error::Unsupported);
+        }
+        successful(&response)?;
+        let reply: Reply = parse(&response.body)?;
+        if reply.identity != self.identity {
+            return Err(Error::BindingMismatch);
+        }
+        if reply.runtime != runtime || reply.session.is_empty() {
+            return Err(Error::Invalid);
+        }
+        Ok(reply.session)
+    }
+
     /// Verify again on the same binding, never by re-resolving registry or environment.
     pub fn verify(&self) -> Result<(), Error> {
         #[derive(Deserialize)]

@@ -1135,7 +1135,10 @@ Bound panes never resume agents or create ordinary shells through legacy paths.
 A bound shell comes from the provider: `POST /api/profile/shells` ensures a session
 for the pane on the verified tmux socket, and the app then attaches to it. The app
 sends no environment and never starts a bound tmux server, so the app's launch
-context cannot reach the shell. Native lifecycle and setup controls use the captured
+context cannot reach the shell. Signing a CLI account in works the same way:
+`POST /api/profile/accounts/sign-in` returns a session on that socket, and the pane
+attaches to it so the person completes the CLI's own sign-in there. A profile itself
+has no sign-in; a workspace selects it. Native lifecycle and setup controls use the captured
 operator client and durable recovery controllers. Real-account acceptance remains
 separate; unavailable provider operations are shown explicitly. Existing standalone
 workspaces retain their ordinary shell behavior.

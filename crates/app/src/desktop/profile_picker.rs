@@ -285,7 +285,7 @@ fn message(error: Error) -> &'static str {
             "This provider does not support profile connections."
         }
         Error::Profile(ProfileError::Unavailable | ProfileError::Refused(_)) => {
-            "The selected profile could not be reached or authenticated."
+            "The selected profile could not be reached or authenticated. If its service is stopped, start it from Manage profiles."
         }
         Error::Unavailable => "The profile discovery command is unavailable.",
         Error::RegistryAbsent => "The profile registry is missing.",

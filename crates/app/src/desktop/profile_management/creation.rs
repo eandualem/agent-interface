@@ -19,6 +19,9 @@ pub(super) enum Mode {
     Create,
     Adopt,
 }
+/// The only baseline the provider can create today, so nobody has to know it.
+const BASELINE: &str = "core-v1";
+
 pub(super) enum Event {
     Submit,
     Back,
@@ -28,7 +31,6 @@ pub(super) struct Form {
     mode: Mode,
     client: Client,
     name: Option<Entity<NameField>>,
-    version: Option<Entity<NameField>>,
     _fields: Vec<Subscription>,
     preview: Option<AdoptionPreview>,
     ticket: Ticket,
@@ -41,24 +43,15 @@ pub(super) struct Form {
 impl EventEmitter<Event> for Form {}
 impl Form {
     pub fn new(mode: Mode, client: Client, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let (name, version) = if mode == Mode::Create {
-            (
-                Some(cx.new(|cx| NameField::filter(window, cx))),
-                Some(cx.new(|cx| NameField::filter(window, cx))),
-            )
-        } else {
-            (None, None)
-        };
+        let name = (mode == Mode::Create).then(|| cx.new(|cx| NameField::filter(window, cx)));
         let fields = name
             .iter()
-            .chain(version.iter())
             .map(|field| cx.observe(field, |_, _, cx| cx.notify()))
             .collect();
         let mut form = Self {
             mode,
             client,
             name,
-            version,
             _fields: fields,
             preview: None,
             ticket: Ticket::default(),
@@ -117,18 +110,10 @@ impl Form {
             return false;
         }
         match self.mode {
-            Mode::Create => {
-                self.name
-                    .as_ref()
-                    .zip(self.version.as_ref())
-                    .is_some_and(|(name, version)| {
-                        let name = name.read(cx);
-                        let version = version.read(cx);
-                        !name.composing()
-                            && !version.composing()
-                            && Prepared::create("validation", name.value(), version.value()).is_ok()
-                    })
-            }
+            Mode::Create => self.name.as_ref().is_some_and(|name| {
+                let name = name.read(cx);
+                !name.composing() && Prepared::create("validation", name.value(), BASELINE).is_ok()
+            }),
             Mode::Adopt => self.preview.is_some(),
         }
     }
@@ -138,11 +123,9 @@ impl Form {
         }
         let id = uuid::Uuid::new_v4().simple().to_string();
         let prepared = match self.mode {
-            Mode::Create => Prepared::create(
-                &id,
-                self.name.as_ref().unwrap().read(cx).value(),
-                self.version.as_ref().unwrap().read(cx).value(),
-            ),
+            Mode::Create => {
+                Prepared::create(&id, self.name.as_ref().unwrap().read(cx).value(), BASELINE)
+            }
             Mode::Adopt => Prepared::adopt_default(&id, self.preview.as_ref().unwrap()),
         };
         match prepared {
@@ -153,7 +136,7 @@ impl Form {
                 self.prepared = Some(prepared);
                 cx.emit(Event::Submit);
             }
-            Err(_) => self.error = Some("Check the profile name and installed baseline version."),
+            Err(_) => self.error = Some("Check the profile name."),
         }
         cx.notify();
     }
@@ -185,9 +168,12 @@ impl Render for Form {
         };
         match self.mode {
             Mode::Create => {
-                body = body.child(ui::group_note("The new profile starts with separate mutable data and accounts. Enter a baseline version already installed by the provider."))
-                    .child(ui::group_title("Profile name", "")).child(self.name.as_ref().unwrap().clone())
-                    .child(ui::group_title("Installed baseline version", "")).child(self.version.as_ref().unwrap().clone());
+                body = body
+                    .child(ui::group_note(
+                        "The new profile starts with separate mutable data and accounts.",
+                    ))
+                    .child(ui::group_title("Profile name", ""))
+                    .child(self.name.as_ref().unwrap().clone());
             }
             Mode::Adopt => {
                 body = body.child(ui::group_note("Adoption registers the existing Default installation in place. It preserves its data, accounts and service mapping; it does not copy them into a new profile."));
@@ -231,34 +217,14 @@ impl Render for Form {
             .flex_col()
             .bg(c.surface)
             .track_focus(&self.focus)
-            .capture_key_down(cx.listener(|form, event: &gpui::KeyDownEvent, window, cx| {
+            .capture_key_down(cx.listener(|form, event: &gpui::KeyDownEvent, _, cx| {
                 let composing = form
                     .name
                     .as_ref()
-                    .is_some_and(|field| field.read(cx).composing())
-                    || form
-                        .version
-                        .as_ref()
-                        .is_some_and(|field| field.read(cx).composing());
-                if composing {
-                    return;
-                }
-                match event.keystroke.key.as_str() {
-                    "escape" => {
-                        form.back(cx);
-                        cx.stop_propagation();
-                    }
-                    "tab" if form.mode == Mode::Create => {
-                        let name = form.name.as_ref().unwrap().read(cx).focus.clone();
-                        let version = form.version.as_ref().unwrap().read(cx).focus.clone();
-                        if name.is_focused(window) {
-                            window.focus(&version, cx);
-                        } else {
-                            window.focus(&name, cx);
-                        }
-                        cx.stop_propagation();
-                    }
-                    _ => (),
+                    .is_some_and(|field| field.read(cx).composing());
+                if !composing && event.keystroke.key == "escape" {
+                    form.back(cx);
+                    cx.stop_propagation();
                 }
             }))
             .child(ui::view_header("layers", title))
