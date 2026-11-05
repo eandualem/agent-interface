@@ -104,14 +104,17 @@ fn removal_refusals_say_what_happened() {
 }
 
 #[test]
-fn a_section_reads_its_part_on_the_card_connection_and_its_failure_keeps_the_card() {
+fn a_section_reads_on_the_card_connection_and_missing_parts_keep_the_card() {
     let inspect_path = format!("/api/agents/worker/inspect?expected_registration_id={REG}");
     let context_path = format!("/api/agents/worker/runtime-context?expected_registration_id={REG}");
     let (_a, a, server) = provider(
         "a",
         vec![
             Reply::ok(&inspect_path, inspect("a")),
-            Reply::ok(&context_path, permissions("a")),
+            Reply {
+                status: 404,
+                ..Reply::ok(&context_path, json!({}))
+            },
             Reply {
                 status: 503,
                 ..Reply::ok("/api/skills/preview/worker", json!({}))
@@ -120,6 +123,7 @@ fn a_section_reads_its_part_on_the_card_connection_and_its_failure_keeps_the_car
     );
     let snapshot = reader(a).read(AgentSection::Skills).unwrap();
     assert_eq!(snapshot.agent.repo, "sentinel-a");
+    assert!(snapshot.permissions.message().is_some());
     assert!(matches!(snapshot.agent.skills, Some(Err(_))));
     server.join().unwrap();
 }

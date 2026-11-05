@@ -274,6 +274,19 @@ pub struct Permissions {
 }
 
 impl Permissions {
+    /// What a provider without permission inspection supplies: nothing.
+    pub fn unsupported() -> Self {
+        Self {
+            status: Status::Unsupported,
+            files: Vec::new(),
+            allow: Vec::new(),
+            deny: Vec::new(),
+            ask: Vec::new(),
+            modes: Vec::new(),
+            error: None,
+        }
+    }
+
     /// Fixed status explanation; raw provider diagnostic text is never displayed.
     pub fn message(&self) -> Option<&'static str> {
         match self.status {

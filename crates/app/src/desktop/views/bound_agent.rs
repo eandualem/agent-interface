@@ -38,11 +38,17 @@ impl Reader {
             self.target = Some(inspection.target);
             inspection.agent
         };
-        let permissions = self
+        // A provider without permission inspection still shows the rest of the
+        // card; the Permissions section says it is unsupported.
+        let permissions = match self
             .target
             .as_ref()
             .expect("inspected target")
-            .permissions()?;
+            .permissions()
+        {
+            Err(runtime_context::Error::Unsupported) => Permissions::unsupported(),
+            result => result?,
+        };
         let part = match section {
             AgentSection::Skills => Part::Skills,
             AgentSection::Policies => Part::Policies,
