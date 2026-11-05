@@ -14,6 +14,8 @@ use std::{
 };
 
 const TIMEOUT: Duration = Duration::from_secs(60);
+/// Longer than the provider's own 60-second limit, so its receipt arrives.
+const APPLY_TIMEOUT: Duration = Duration::from_secs(90);
 
 /// One operation owns both its exact request and captured executable/environment.
 /// Keep it after errors: only lookup or an explicit identical retry can resolve
@@ -78,7 +80,7 @@ impl Operation {
     /// Cancellation only stops waiting for this invocation; it does not claim
     /// that the provider rolled back or cancelled its durable operation.
     pub fn apply(&mut self, live: &dyn Fn() -> bool) -> Result<Receipt, Error> {
-        self.apply_with_timeout(live, TIMEOUT)
+        self.apply_with_timeout(live, APPLY_TIMEOUT)
     }
 
     fn apply_with_timeout(

@@ -527,7 +527,7 @@ impl Render for Pane {
                 }
                 for (key, result) in rows {
                     let label = match result {
-                        Ok(s) => format!("{} · {}", s.identity.profile_id, status(s)),
+                        Ok(s) => format!("{} · {}", s.agent_name, status(s)),
                         Err(e) => message(*e).into(),
                     };
                     let key = key.clone();

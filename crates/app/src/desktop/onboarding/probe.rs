@@ -216,19 +216,30 @@ fn path_lookup(path_env: &str, home: Option<&Path>) -> (Vec<(&'static str, PathB
     (found, path_env)
 }
 
+/// A fresh install's first profile is Default, read through its verified connection.
 fn backbone() -> Backbone {
-    match crate::roster::provider_directory(None, None, None, false) {
-        Ok(Some(directory)) => {
-            let mut snapshot = agent_interface_roster::Snapshot::default();
-            snapshot.fetch_configured(&directory, None);
-            match snapshot.error {
-                Some(error) => Backbone::Unreachable(error),
-                None => Backbone::Running {
-                    agents: snapshot.states.len(),
-                },
-            }
-        }
-        _ => Backbone::NotSetUp,
+    use agent_interface_roster::profiles::Kind;
+    const UNANSWERED: &str = "The Default profile is not answering";
+    let live = || true;
+    let Some(client) = profile_client() else {
+        return Backbone::NotSetUp;
+    };
+    let Ok(items) = client.list(&live) else {
+        return Backbone::NotSetUp;
+    };
+    let Some(default) = items.iter().find(|item| item.kind == Kind::LegacyDefault) else {
+        return Backbone::NotSetUp;
+    };
+    let roster = client
+        .show(&default.profile_id, &live)
+        .ok()
+        .and_then(|profile| profile.connect().ok())
+        .and_then(|connection| connection.roster().ok());
+    match roster {
+        Some(snapshot) => Backbone::Running {
+            agents: snapshot.states.len(),
+        },
+        None => Backbone::Unreachable(UNANSWERED),
     }
 }
 
