@@ -25,19 +25,18 @@ impl Setup {
         }
     }
 
-    /// Encode private request state with its original caller-context fingerprint.
-    /// Store durably before submission; no environment values are included.
+    /// Encode private request state. Store durably before submission; no
+    /// environment values are included.
     pub fn checkpoint(&self) -> Result<Vec<u8>, Error> {
-        self.client.checkpoint(
+        super::recovery::checkpoint(
             super::recovery::Kind::Setup,
             &self.prepared.checkpoint().map_err(Error::Profile)?,
         )
     }
 
-    /// Restore only under the same executable path, working directory and
-    /// effective environment. A changed context fails before any command runs.
+    /// Restore under the current caller, however the app was launched this time.
     pub fn restore(client: &Client, bytes: &[u8]) -> Result<Self, Error> {
-        let state = client.restore_checkpoint(super::recovery::Kind::Setup, bytes)?;
+        let state = super::recovery::restore_checkpoint(super::recovery::Kind::Setup, bytes)?;
         let prepared = Prepared::restore(&state).map_err(Error::Profile)?;
         Ok(Self::new(client, prepared))
     }
@@ -47,13 +46,18 @@ impl Setup {
         self.prepared.request_id()
     }
 
+    /// The agent this request adds.
+    pub fn agent_name(&self) -> &str {
+        self.prepared.agent_name()
+    }
+
     /// Original expected tuple; readiness never substitutes for a handshake.
     pub fn identity(&self) -> &agent_interface_roster::profiles::Identity {
         self.prepared.identity()
     }
 
     /// Encode an outcome returned after this executor verified process exit.
-    /// Store alongside the original context-checked request capsule.
+    /// Store alongside the original request capsule.
     pub fn outcome_checkpoint(&self, event: &Event) -> Result<Vec<u8>, Error> {
         self.prepared
             .outcome_checkpoint(event)

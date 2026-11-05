@@ -208,19 +208,10 @@ fn reservations_survive_restart_and_reject_a_replacement_receipt() {
 }
 
 #[test]
-fn caller_changes_and_invalid_envelopes_fail_before_any_command() {
+fn invalid_envelopes_fail_before_any_command() {
     let fixture = Fixture::new("");
     let controller = fixture.controller();
     let key = controller.enqueue(intent()).unwrap().key;
-    let mut changed = fixture.client.clone();
-    changed
-        .environment
-        .push(("BACKBONE_AGENT".into(), "changed".into()));
-    let other = Controller::new(journal::Journal::open(&fixture.journal).unwrap(), &changed);
-    assert_eq!(
-        other.submit(&key, &|| true),
-        Err(Error::Client(super::super::Error::ContextChanged))
-    );
     let journal = journal::Journal::open(&fixture.journal).unwrap();
     let saved = journal.read(&key).unwrap().unwrap();
     let mut envelope: Envelope = serde_json::from_slice(saved.payload()).unwrap();

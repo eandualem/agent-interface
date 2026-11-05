@@ -28,10 +28,13 @@ pub(super) enum Event {
 }
 enum State {
     Loading,
-    Pending(Arc<Controller>),
+    /// Saved requests could not be checked, so new choices wait for recovery.
+    Unchecked(Arc<Controller>),
     Ready {
         controller: Arc<Controller>,
         catalog: Catalog,
+        /// Open requests, offered for recovery without blocking other agents.
+        pending: usize,
     },
     Failed,
 }
@@ -137,7 +140,7 @@ impl Form {
     }
     pub fn controller(&self) -> Option<Arc<Controller>> {
         match &self.state {
-            State::Pending(controller) | State::Ready { controller, .. } => {
+            State::Unchecked(controller) | State::Ready { controller, .. } => {
                 Some(controller.clone())
             }
             _ => None,
@@ -237,16 +240,16 @@ fn load_choices(
     let journal = journal::Journal::open(&directory.join("profile-setup"))
         .map_err(|_| "Private setup storage is unavailable.")?;
     let controller = Arc::new(Controller::new(journal, &client));
-    let pending = controller.pending(identity, live).map_err(|_| "Existing setup state could not be checked. Recover saved requests before creating new choices.")?;
-    if !pending.is_empty() {
-        return Ok(State::Pending(controller));
-    }
+    let Ok(pending) = controller.pending(identity, live) else {
+        return Ok(State::Unchecked(controller));
+    };
     let catalog = client.runtimes(identity, live).map_err(
         |_| "The runtime catalog for this profile instance is unavailable. No setup was submitted.",
     )?;
     Ok(State::Ready {
         controller,
         catalog,
+        pending: pending.len(),
     })
 }
 struct Selection<'a> {
@@ -335,10 +338,15 @@ impl Render for Form {
             .child(self.profile.item().display_name.clone());
         match &self.state {
             State::Loading => body = body.child(ui::group_note("Checking saved requests and this profile's runtime catalog…")),
-            State::Pending(_) => body = body.child(ui::group_note("An original setup request is still pending for this profile instance. Recover it before changing choices."))
-                .child(ui::button("recover-pending-setup", "Recover saved setup", ui::Button::Secondary).on_click(cx.listener(|form, _, _, cx| form.finish(Event::Recover, cx)))),
+            State::Unchecked(_) => body = body.child(ui::group_note("A saved setup request could not be read. Open it to forget it, then check again."))
+                .child(ui::button("recover-pending-setup", "Saved setup requests", ui::Button::Secondary).on_click(cx.listener(|form, _, _, cx| form.finish(Event::Recover, cx))))
+                .child(ui::button("recheck-setup", "Check again", ui::Button::Secondary).on_click(cx.listener(|form, _, _, cx| form.load(cx)))),
             State::Failed => body = body.child(ui::button("retry-setup-catalog", "Check again", ui::Button::Secondary).on_click(cx.listener(|form, _, _, cx| form.load(cx)))),
-            State::Ready { catalog, .. } => {
+            State::Ready { catalog, pending, .. } => {
+                if *pending > 0 {
+                    body = body.child(ui::group_note(if *pending == 1 { "One earlier setup in this profile still needs attention.".to_owned() } else { format!("{pending} earlier setups in this profile still need attention.") }))
+                        .child(ui::button("recover-pending-setup", "Saved setup requests", ui::Button::Secondary).on_click(cx.listener(|form, _, _, cx| form.finish(Event::Recover, cx))));
+                }
                 body = body.child(ui::group_note("Choose a project and an available runtime from this profile. Setup preserves these choices for retries; it does not connect a workspace or establish account access."))
                     .child(ui::group_title("Agent name", "")).child(self.name.clone())
                     .child(ui::group_title("Project folder", ""))

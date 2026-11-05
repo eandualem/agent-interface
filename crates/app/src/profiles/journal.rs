@@ -207,6 +207,25 @@ impl Journal {
         self.save_locked(id, expected, payload, sync)
     }
 
+    /// Remove a record. `expected` refuses a revision this caller did not read;
+    /// `None` is for a record too damaged to give one. Removing nothing succeeds.
+    pub fn delete(&self, id: &str, expected: Option<u64>) -> Result<(), Error> {
+        if !valid_id(id) {
+            return Err(Error::Invalid);
+        }
+        let _lock = self.lock()?;
+        if let Some(expected) = expected
+            && self.read_locked(id)?.map(|record| record.revision()) != Some(expected)
+        {
+            return Err(Error::Conflict);
+        }
+        match sys::unlinkat(&self.directory, id, AtFlags::empty()) {
+            Ok(()) | Err(rustix::io::Errno::NOENT) => {}
+            Err(_) => return Err(Error::Unavailable),
+        }
+        self.directory.sync_all().map_err(|_| Error::Unavailable)
+    }
+
     /// Check every existing durable record and insert while holding one journal
     /// lock. The predicate must not reenter this journal or execute commands.
     pub(super) fn insert_checked<E: From<Error>>(

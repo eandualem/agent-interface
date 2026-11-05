@@ -275,7 +275,6 @@ fn message(error: Error) -> &'static str {
     match error {
         Error::CommandFailed => "Profile discovery was refused or failed.",
         Error::TimedOut => "Profile discovery timed out. Try again.",
-        Error::ContextChanged => "The original operator context has changed.",
         Error::Cancelled => "Profile selection was cancelled.",
         Error::Profile(ProfileError::NotReady) => "This profile is not ready to connect.",
         Error::Profile(ProfileError::BindingMismatch | ProfileError::BindingRequired) => {

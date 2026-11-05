@@ -351,8 +351,6 @@ and visibility changes invalidate pending results and in-flight generations;
 Documents wait for explicit refresh. Its wake callback belongs to the original
 owner. Dropping the source waits for its bounded in-flight request, so UI owners
 must drop it off the UI thread.
-These bound readers are not yet wired into desktop startup or workspace
-selection; existing desktop readers still use the configuration behavior above.
 They do not start services, migrate Default or configure runtime accounts.
 
 `roster::library_snapshots` reads shared Skill and Policy catalogs using one
@@ -523,8 +521,7 @@ Responses, Documents, Usage, Activity and Skills and requires matching live-stat
 ownership. Usage range changes and Activity refreshes share the bound content
 worker, including generation checks, hidden-pane cancellation and original
 credential retention. General Agent, Policy and terminal navigation remain
-unavailable through this constructor. Desktop
-startup still uses the legacy path; profile selection remains disabled.
+unavailable through this constructor.
 
 Native bound Skills retain the rendered catalog row, stable artifact ID and
 verified connection when opened. Preview reads select an immutable provider
@@ -551,8 +548,7 @@ boundary still applies. A nonblocking pipe bounds retained output and supplies b
 and cancellation are bounded. Each command owns a process group, cleaned before
 reaping its leader so wrappers cannot leave background writers behind.
 Nonzero exits stay errors, and `show` must return the requested profile ID.
-Discovery does not connect, start or repair a provider and is not yet
-wired into a selector. Returned records require the normal authenticated
+Discovery does not connect, start or repair a provider. Returned records require the normal authenticated
 handshake before content use.
 
 `roster::profiles::operations` prepares immutable create/start/stop bodies from
@@ -1112,9 +1108,8 @@ constructors use the verified connection for both session and team observations;
 legacy constructors keep their explicit directory/socket behavior. Session replies
 must match the retained full identity, and worker visibility generations discard
 hidden reads. Event owners can retrieve the retained connection and must validate
-it against their workspace before accepting a choice. Bound new-pane choosers omit
-ordinary shell creation, including its keyboard shortcuts, and retain registrations
-for Agent cards. Desktop routing constructs them from the owning workspace connection.
+it against their workspace before accepting a choice. Bound new-pane choosers
+retain registrations for Agent cards. Desktop routing constructs them from the owning workspace connection.
 
 Workspace records may carry an optional stable `profile_id`. Schema-v2 projection
 and ordinary three-way conflict handling preserve it; endpoints, lifecycles and
@@ -1132,8 +1127,10 @@ require the same connection instance, including its credential snapshot. Bound
 terminal attachments use only the verified tmux socket, recheck the provider before
 and after attachment, and release the owned client if that final check fails.
 Bound panes never resume agents or create ordinary shells through legacy paths.
-A bound shell comes from the provider: `POST /api/profile/shells` ensures a session
-for the pane on the verified tmux socket, and the app then attaches to it. The app
+A bound shell comes from the provider: when a pane with no attachment connects,
+`POST /api/profile/shells` ensures a session for the pane on the verified tmux socket,
+and the app then attaches to it. A new pane sends no folder, so the shell starts in the
+profile's home. The app
 sends no environment and never starts a bound tmux server, so the app's launch
 context cannot reach the shell. Signing a CLI account in works the same way:
 `POST /api/profile/accounts/sign-in` returns a session on that socket, and the pane
@@ -1267,19 +1264,16 @@ including cancellation's original ID, profile tuple, hooks, project and brief.
 Restoration validates all choices and rejects changed or noncanonical bodies
 without discovery or allocation. The private format records request intent only:
 interrupted output streams and successful readiness/cancellation are not inferred
-from it. Durable storage and original caller-context verification remain required
-before recovery can submit either body. No setup UI is activated by restoration.
+from it. Durable storage remains required before recovery can submit either body. No setup UI is activated by restoration.
 
 Profile control-plane clients capture the working directory with their executable
 and environment; all discovery, lifecycle and setup commands use that snapshot.
-Private executor recovery records wrap model checkpoints with an operation kind
-and a SHA-256 fingerprint of the executable path, directory and effective environment.
-Environment values are not persisted. Restoration rejects any context change before
-execution, including an otherwise harmless changed session variable. This is a
-conservative continuity check, not authentication of an executable or protection
-against malicious same-user record replacement. Changed contexts require explicit
-reconciliation; they never silently retry an unknown operation in another registry.
-The existing MIT/Apache-2.0 `sha2` dependency supplies the digest. The durable
+Private executor recovery records wrap model checkpoints with an operation kind.
+Environment values are not persisted. A record reopens however the app was launched,
+because launching from another terminal or after a reboot changes the environment
+without changing the operation: the profile tuple and request ID pin it, and the
+provider refuses a tuple that no longer matches. This is not authentication of an
+executable or protection against malicious same-user record replacement. The durable
 controllers and native recovery panes described below build on these records.
 
 Private operation journals use an owned 0700 directory and 0600 records. Directory
@@ -1368,27 +1362,29 @@ form neither selects a workspace nor grants connection authority.
 Native profile management exposes saved first-agent setup separately from the
 current runtime catalog. It opens a private setup journal from the already
 resolved library directory and renders validated records in bounded pages.
-Retries and cancellation retain the original caller context, profile tuple and
-request bytes. Progress is checked against its journal key, request, tuple and
+Retries and cancellation retain the original profile tuple and request bytes. Progress is checked against its journal key, request, tuple and
 revision; superseded pane tasks cannot publish results. Stopping observation
 reloads the same record and never reports safe cancellation. Confirmed setup
 readiness does not authorize account access or open an ambient terminal.
 
 Fresh setup admission validates existing durable setup records and inserts the
-new intent under one journal lock. An unresolved request for the same full
-profile instance blocks different choices; independent lifecycles remain
-separate. Admission inspects the existing format-1 request and outcome metadata
-without restoring an executor: valid closed records from another caller context
-do not block new work, and unresolved records still block their exact instance.
-Execution and recovery reads continue to require the original caller context.
-Unsafe or malformed records fail closed. A directory durability barrier precedes the
+new intent under one journal lock. An open request blocks only the same agent name
+in the same full profile instance, so a second agent can be added while another
+needs attention. A request closes on confirmed readiness, safe cancellation, or a
+result whose retry policy says this same request can go no further (a name already
+in use answers `new_request`, for example). A result the provider says can be retried
+(`launch_timeout`, `runtime_permission`) stays open, and the recovery view shows fixed
+text for its code. Forgetting a request removes only the app's saved record; it runs
+no command and keeps any agent the request created. Malformed records fail closed
+until they are forgotten; unsafe storage always fails closed. A directory durability barrier precedes the
 check, and the bounded scan has a read budget. Catalog-facing pending reads are
 observations only: actual admission repeats the check atomically. This local
 journal rule does not replace the provider's own request serialization.
 
 Native first-agent setup captures one atomic registry profile and the operator
 client before loading choices. It checks the independent private setup journal
-for unresolved requests before reading that instance's schema-2 runtime catalog.
+for open requests, which it points to without blocking other agent names, and then
+reads that instance's schema-2 runtime catalog.
 An explicit project folder, name, brief, runtime and optional catalog model are
 frozen with hook and greeting choices into one original request. Compatibility
 and authentication observations remain separate; neither opens a terminal or

@@ -11,6 +11,7 @@ fn snapshot() -> Snapshot {
             installation_id: "install-a".into(),
             lifecycle_id: "life-a".into(),
         },
+        agent_name: "worker".into(),
         request_id: "request-a".into(),
         first_result: None,
         cancellation_result: None,
@@ -95,7 +96,31 @@ fn readonly_reload_remains_available_when_record_cannot_be_restored() {
     failure.retry = Some("new_request".into());
     s.first_result = Some(failure);
     assert!(!Command::Retry.allowed(Some(&s)));
-    assert!(Command::Cancel.allowed(Some(&s)));
+    // Nothing further can happen on this request, so it offers no provider action.
+    assert!(!Command::Cancel.allowed(Some(&s)));
+    assert_eq!(status(&s), "Agent not added");
+    let retryable = |code: &str| {
+        let mut s = snapshot();
+        let mut result = event(&s);
+        result.code = Some(code.into());
+        result.retry = Some("same_request".into());
+        s.first_result = Some(result);
+        s
+    };
+    let timeout = retryable("launch_timeout");
+    assert_eq!(status(&timeout), "Needs attention");
+    assert!(Command::Retry.allowed(Some(&timeout)));
+    assert!(
+        outcome(&timeout)
+            .unwrap()
+            .contains("has not reported ready")
+    );
+    assert!(outcome(&retryable("agent_ready")).is_none());
+    assert!(
+        outcome(&retryable("something_new"))
+            .unwrap()
+            .contains("something_new")
+    );
 }
 
 #[test]

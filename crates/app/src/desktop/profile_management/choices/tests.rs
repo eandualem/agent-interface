@@ -109,7 +109,7 @@ fn unavailable_setup_is_not_selectable_and_no_optional_action_is_implied() {
 }
 
 #[test]
-fn pending_or_unreadable_saved_intent_precedes_any_catalog_command() {
+fn an_open_request_leaves_new_choices_and_an_unreadable_one_precedes_the_catalog() {
     use std::{fs, os::unix::fs::PermissionsExt};
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();
@@ -136,36 +136,30 @@ fn pending_or_unreadable_saved_intent_precedes_any_catalog_command() {
         choice(),
     )
     .unwrap();
-    let saved = controller.enqueue(prepared).unwrap();
-    let state = load_choices(
-        client.clone(),
-        root.clone(),
-        &profile().expected_identity().unwrap(),
-        &|| true,
-    )
-    .unwrap();
-    let State::Pending(retained) = state else {
-        panic!("pending request must not expose choices")
-    };
-    assert_eq!(retained.read(&saved.key).unwrap().request_id, "original");
-    assert!(!calls.exists());
+    controller.enqueue(prepared).unwrap();
+    // The open request does not stop the catalog read for other agent names.
     assert!(
         load_choices(
             client.clone(),
             root.clone(),
             &profile().expected_identity().unwrap(),
-            &|| false
+            &|| true,
         )
         .is_err()
     );
-    assert!(!calls.exists());
+    assert!(calls.exists());
+    std::fs::remove_file(&calls).unwrap();
     // A malformed second record cannot be treated as an empty pending list.
     let bad = journal::Journal::open(&root.join("profile-setup")).unwrap();
     bad.save("ffffffffffffffffffffffffffffffff", None, b"not a capsule")
         .unwrap();
     let mut other = profile().expected_identity().unwrap();
     other.lifecycle_id = "other-life".into();
-    assert!(load_choices(client, root, &other, &|| true).is_err());
+    let state = load_choices(client, root, &other, &|| true).unwrap();
+    let State::Unchecked(retained) = state else {
+        panic!("an unreadable record must not expose choices")
+    };
+    assert_eq!(retained.ids().unwrap().len(), 2);
     assert!(!calls.exists());
 }
 #[test]

@@ -33,19 +33,18 @@ impl Operation {
         }
     }
 
-    /// Encode private request state with its original caller-context fingerprint.
-    /// Store durably before submission; no environment values are included.
+    /// Encode private request state. Store durably before submission; no
+    /// environment values are included.
     pub fn checkpoint(&self) -> Result<Vec<u8>, Error> {
-        self.client.checkpoint(
+        super::recovery::checkpoint(
             super::recovery::Kind::Lifecycle,
             &self.prepared.checkpoint().map_err(Error::Profile)?,
         )
     }
 
-    /// Restore only under the same executable path, working directory and
-    /// effective environment. A changed context fails before any command runs.
+    /// Restore under the current caller, however the app was launched this time.
     pub fn restore(client: &Client, bytes: &[u8]) -> Result<Self, Error> {
-        let state = client.restore_checkpoint(super::recovery::Kind::Lifecycle, bytes)?;
+        let state = super::recovery::restore_checkpoint(super::recovery::Kind::Lifecycle, bytes)?;
         let prepared = Prepared::restore(&state).map_err(Error::Profile)?;
         Ok(Self::new(client, prepared))
     }

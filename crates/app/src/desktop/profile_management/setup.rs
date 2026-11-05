@@ -34,7 +34,7 @@ impl Command {
         let Some(s) = snapshot else {
             return false;
         };
-        if closed(s) {
+        if s.closed() {
             return false;
         }
         let retry = |event: Option<&Event>| {
@@ -61,12 +61,6 @@ impl Command {
         }
     }
 }
-fn closed(s: &Snapshot) -> bool {
-    s.first_result
-        .as_ref()
-        .is_some_and(|e| e.ready_agent.is_some())
-        || s.cancellation_result.as_ref().is_some_and(|e| e.cancelled)
-}
 fn status(s: &Snapshot) -> &'static str {
     if s.cancellation_result.as_ref().is_some_and(|e| e.cancelled) {
         "Safely cancelled"
@@ -82,9 +76,44 @@ fn status(s: &Snapshot) -> &'static str {
         "Cancellation outcome not confirmed"
     } else if s.first_result.is_none() && s.cancellation_result.is_none() {
         "Setup outcome not confirmed"
+    } else if s.closed() {
+        "Agent not added"
     } else {
-        "Provider action required"
+        "Needs attention"
     }
+}
+/// What the latest result means for the person, for each code the provider sends.
+fn outcome(s: &Snapshot) -> Option<String> {
+    let event = if s.phase == Phase::CancelPending {
+        s.cancellation_result.as_ref()
+    } else {
+        s.first_result.as_ref()
+    }?;
+    Some(match event.code.as_deref()? {
+        "agent_ready" | "request_cancelled" => return None,
+        "agent_conflict" => format!(
+            "An agent or terminal in this profile already uses the name {} or its folder. Go back and choose another.",
+            s.agent_name
+        ),
+        "invalid_request" => "The agent name, folder or model was refused. Go back and change it.".into(),
+        "launch_timeout" => format!(
+            "{} was added but has not reported ready. Open it from the workspace, sign in if it asks, then retry.",
+            s.agent_name
+        ),
+        "runtime_permission" => format!(
+            "{} is waiting for you, often for a sign-in or a permission. Continue in its terminal from the workspace, then retry.",
+            s.agent_name
+        ),
+        "runtime_missing" => "This CLI is not installed where the profile can use it. Install it, then retry.".into(),
+        "starter_conflict" => "The profile's starter files or this brief need attention. Fix them, then retry.".into(),
+        "launch_failed" => format!("{} could not start. Check it in the workspace.", s.agent_name),
+        "outcome_unknown" => format!(
+            "The result is not known. Check whether {} is in the workspace before adding it again.",
+            s.agent_name
+        ),
+        "cancellation_unsafe" => "Setup may already have made changes, so it could not be cancelled. The request and any agent were kept.".into(),
+        code => format!("The profile answered: {code}."),
+    })
 }
 fn message(error: Error) -> &'static str {
     match error {
@@ -94,12 +123,9 @@ fn message(error: Error) -> &'static str {
             "The saved request changed. Reload its original state."
         }
         Error::Pending => {
-            "An original setup request is still pending. Recover it before changing choices."
+            "A saved request for this agent name is still open. Open Saved setup requests to finish or forget it, or use another name."
         }
         Error::RetryRefused => "The retained provider result does not allow this retry.",
-        Error::Client(crate::profiles::Error::ContextChanged) => {
-            "Open this request from its original operator context."
-        }
         Error::Storage(journal::Error::Unsafe) => "Setup storage is not private or safe to use.",
         Error::Storage(journal::Error::Busy | journal::Error::Conflict) => {
             "Another update won. Reload the original request."
@@ -393,6 +419,37 @@ impl Pane {
         .detach();
         cx.notify();
     }
+    fn forget(&mut self, expected: &Arc<AtomicBool>, cx: &mut Context<Self>) {
+        if self.busy || !self.accepts(expected) {
+            return;
+        }
+        let Page::Operation { key, snapshot, .. } = &self.page else {
+            return;
+        };
+        let Some(controller) = self.controller.clone() else {
+            return;
+        };
+        let (key, revision) = (key.clone(), snapshot.as_ref().map(|s| s.revision));
+        self.busy = true;
+        self.error = None;
+        let ticket = self.ticket.begin();
+        let worker = ticket.clone();
+        let work = cx.background_executor().spawn(async move {
+            controller.forget(&key, revision)?;
+            history(&controller, None, 0, &worker)
+        });
+        cx.spawn(async move |this, cx| {
+            let result = work.await;
+            let _ = this.update(cx, |pane, cx| {
+                if pane.accepts(&ticket) {
+                    pane.complete(result);
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+        cx.notify();
+    }
     fn stop_observing(&mut self, expected: &Arc<AtomicBool>, cx: &mut Context<Self>) {
         if !self.busy || !self.accepts(expected) || !matches!(self.page, Page::Operation { .. }) {
             return;
@@ -531,6 +588,9 @@ impl Render for Pane {
                     {
                         body = body.child(format!("Ready agent: {name}"));
                     }
+                    if let Some(text) = outcome(s) {
+                        body = body.child(ui::group_note(text));
+                    }
                 }
                 if progress.is_some() {
                     body = body.child(ui::group_note(
@@ -574,6 +634,15 @@ impl Render for Pane {
                                 )),
                             );
                         }
+                    }
+                    if snapshot.is_some() || self.error == Some(Error::Invalid) {
+                        let ticket = ticket.clone();
+                        body = body
+                            .child(ui::group_note("Forgetting removes this saved request from the app. It does not stop or remove an agent."))
+                            .child(
+                                ui::button("setup-forget", "Forget this request", ui::Button::Secondary)
+                                    .on_click(cx.listener(move |pane, _, _, cx| pane.forget(&ticket, cx))),
+                            );
                     }
                 }
             }

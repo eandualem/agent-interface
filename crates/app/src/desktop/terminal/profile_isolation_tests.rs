@@ -182,6 +182,20 @@ fn equal_terminal_ids_keep_streams_and_input_isolated_when_one_profile_stops() {
 }
 
 #[test]
+fn a_new_bound_pane_asks_for_the_profile_home_and_a_saved_folder_is_kept() {
+    let leaf = |cwd: Option<&str>| Leaf {
+        id: "123456abcdef".into(),
+        cwd: cwd.map(str::to_owned),
+        empty: false,
+        view: None,
+        attachment: None,
+    };
+    assert_eq!(bound_shell_folder(&leaf(Some("/"))), None);
+    assert_eq!(bound_shell_folder(&leaf(None)), None);
+    assert_eq!(bound_shell_folder(&leaf(Some("/work"))), Some("/work"));
+}
+
+#[test]
 fn bound_shell_attaches_to_the_provider_session_and_never_creates_one() {
     let server = TmuxServer::start().unwrap();
     let socket: PathBuf = server

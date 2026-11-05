@@ -39,8 +39,6 @@ pub enum Error {
     TooLarge,
     /// The caller no longer wants this observation.
     Cancelled,
-    /// A stored request belongs to a different captured caller context.
-    ContextChanged,
     /// The provider record was malformed, unsupported or for another profile.
     Profile(profiles::Error),
     /// The provider reports that no profile registry exists on this machine.

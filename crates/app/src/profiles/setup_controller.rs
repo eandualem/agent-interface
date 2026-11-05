@@ -64,21 +64,38 @@ pub struct Snapshot {
     pub identity: Identity,
     /// Original request ID shared with cancellation.
     pub request_id: String,
+    /// The agent this request adds.
+    pub agent_name: String,
     /// Latest durable first-agent result, absent during an unknown attempt.
     pub first_result: Option<Event>,
     /// Latest durable cancellation result, absent during an unknown cancel attempt.
     pub cancellation_result: Option<Event>,
 }
 impl Snapshot {
-    fn closed(&self) -> bool {
-        self.first_result
-            .as_ref()
-            .is_some_and(|event| event.ready_agent.is_some())
-            || self
-                .cancellation_result
-                .as_ref()
-                .is_some_and(|event| event.cancelled)
+    /// Whether this request has nothing further to do.
+    pub fn closed(&self) -> bool {
+        closed(
+            self.phase,
+            self.first_result.as_ref(),
+            self.cancellation_result.as_ref(),
+        )
     }
+}
+
+/// Readiness and safe cancellation end a request, and so does a result the
+/// provider says this same request cannot go further from: a new request or
+/// nothing is what follows it. An unknown outcome stays open.
+fn closed(phase: Phase, first: Option<&Event>, cancel: Option<&Event>) -> bool {
+    let final_result = |event: &Event| event.retry.as_deref() != Some("same_request");
+    first.is_some_and(|event| event.ready_agent.is_some())
+        || cancel.is_some_and(|event| event.cancelled)
+        || match phase {
+            Phase::Prepared => false,
+            Phase::Submitted => first.is_some_and(final_result),
+            Phase::CancelPending => {
+                first.is_some_and(final_result) && cancel.is_some_and(final_result)
+            }
+        }
 }
 
 /// Nonterminal progress stamped with its claimed durable revision.
@@ -117,15 +134,13 @@ impl Stored {
             phase: self.phase,
             identity: self.setup.identity().clone(),
             request_id: self.setup.request_id().into(),
+            agent_name: self.setup.agent_name().into(),
             first_result: self.first.clone(),
             cancellation_result: self.cancel.clone(),
         }
     }
     fn closed(&self) -> bool {
-        self.first
-            .as_ref()
-            .is_some_and(|event| event.ready_agent.is_some())
-            || self.cancel.as_ref().is_some_and(|event| event.cancelled)
+        closed(self.phase, self.first.as_ref(), self.cancel.as_ref())
     }
 }
 
@@ -156,9 +171,9 @@ impl Controller {
     }
 
     /// Persist exact setup and cancellation intent before any invocation. A
-    /// journal-wide admission check refuses a different pending request for the
-    /// same full profile instance. Invalid records fail closed; inspecting valid
-    /// metadata from another caller does not authorize executing its request.
+    /// journal-wide admission check refuses a different open request for the same
+    /// agent name in the same full profile instance; other names stay free.
+    /// Invalid records fail closed.
     /// The scan has a bounded record count and an eight-second read budget.
     pub fn enqueue(&self, prepared: Prepared) -> Result<Snapshot, Error> {
         let setup = Setup::new(&self.client, prepared);
@@ -173,7 +188,10 @@ impl Controller {
             if std::time::Instant::now() >= deadline {
                 return Err(Error::Client(super::Error::TimedOut));
             }
-            if &existing.identity == setup.identity() && !existing.closed() {
+            if &existing.identity == setup.identity()
+                && existing.agent_name.eq_ignore_ascii_case(setup.agent_name())
+                && !existing.closed()
+            {
                 return Err(Error::Pending);
             }
             Ok(())
@@ -199,7 +217,7 @@ impl Controller {
         self.journal.ids().map_err(Error::Storage)
     }
 
-    /// Read pending requests for one full instance before presenting new choices.
+    /// Read open requests for one full instance, to point at them from new choices.
     /// Any unreadable record or interrupted scan fails closed. This is only an
     /// observation; `enqueue` repeats admission under the journal lock.
     pub fn pending(
@@ -229,6 +247,19 @@ impl Controller {
             return Err(Error::Client(super::Error::TimedOut));
         }
         Ok(pending)
+    }
+
+    /// Remove a saved request from the app. This runs no command, so an agent the
+    /// request already created stays. `revision` is what the person was shown;
+    /// `None` applies only to a record that cannot be read.
+    pub fn forget(&self, key: &str, revision: Option<u64>) -> Result<(), Error> {
+        if revision.is_none()
+            && let Ok(Some(record)) = self.journal.read_durable(key)
+            && inspect(&record).is_ok()
+        {
+            return Err(Error::WrongPhase);
+        }
+        self.journal.delete(key, revision).map_err(Error::Storage)
     }
 
     /// First submission only; a saved submission claim precedes execution.
@@ -380,7 +411,7 @@ impl Controller {
 }
 
 // Validate the existing format-1 capsule and outcomes without constructing an
-// executor under a different caller. Admission uses only this durable metadata.
+// executor. Admission uses only this durable metadata.
 fn inspect(record: &journal::Record) -> Result<(Envelope, Snapshot), Error> {
     let envelope: Envelope =
         serde_json::from_slice(record.payload()).map_err(|_| Error::Invalid)?;
@@ -390,7 +421,7 @@ fn inspect(record: &journal::Record) -> Result<(Envelope, Snapshot), Error> {
     {
         return Err(Error::Invalid);
     }
-    let state = super::recovery::inspect_checkpoint(
+    let state = super::recovery::restore_checkpoint(
         super::recovery::Kind::Setup,
         envelope.capsule.as_bytes(),
     )?;
@@ -412,6 +443,7 @@ fn inspect(record: &journal::Record) -> Result<(Envelope, Snapshot), Error> {
         phase: envelope.phase,
         identity: prepared.identity().clone(),
         request_id: prepared.request_id().into(),
+        agent_name: prepared.agent_name().into(),
         first_result: envelope
             .first
             .as_ref()

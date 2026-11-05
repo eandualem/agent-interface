@@ -147,6 +147,10 @@ impl Prepared {
     pub fn identity(&self) -> &Identity {
         &self.identity
     }
+    /// The agent this request adds.
+    pub fn agent_name(&self) -> &str {
+        &self.name
+    }
     /// Original durable operation ID.
     pub fn request_id(&self) -> &str {
         &self.request_id

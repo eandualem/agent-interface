@@ -2369,9 +2369,6 @@ impl Render for Browser {
             let Ok(connection) = self.pane_connection(&leaf.id) else {
                 continue;
             };
-            if connection.is_some() && leaf.attachment.is_none() {
-                continue;
-            }
             let target = Target {
                 directory: connection
                     .is_none()

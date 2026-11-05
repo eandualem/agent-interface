@@ -139,12 +139,7 @@ impl Browser {
             leaf_states,
             unavailable: leaves
                 .iter()
-                .filter(|leaf| {
-                    leaf.runs_terminal()
-                        && (matches!(self.pane_connection(&leaf.id), Ok(Some(_)))
-                            && leaf.attachment.is_none()
-                            || !self.terminal_available(&leaf.id))
-                })
+                .filter(|leaf| leaf.runs_terminal() && !self.terminal_available(&leaf.id))
                 .map(|leaf| {
                     (
                         leaf.id.clone(),

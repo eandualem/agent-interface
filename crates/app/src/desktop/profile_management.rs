@@ -576,9 +576,6 @@ fn message(error: controller::Error) -> &'static str {
         Missing => "This operation record is missing. No request was sent by this read.",
         Invalid => "This operation record could not be validated.",
         WrongPhase | Completed => "The operation changed. Reload its saved state.",
-        Client(crate::profiles::Error::ContextChanged) => {
-            "Open this operation from its original operator context."
-        }
         Client(_) => {
             "The provider result could not be confirmed. Keep this operation and check its original receipt."
         }

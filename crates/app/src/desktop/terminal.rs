@@ -121,6 +121,12 @@ fn shell_refusal(error: agent_interface_roster::profiles::Error) -> String {
     .to_owned()
 }
 
+/// "/" is what a new bound pane saves as a placeholder; the provider starts that
+/// shell in the profile's home.
+fn bound_shell_folder(leaf: &Leaf) -> Option<&str> {
+    leaf.cwd.as_deref().filter(|cwd| *cwd != "/")
+}
+
 fn connect(target: Target) -> Result<Ready, String> {
     connect_selected(target, None, false)
 }
@@ -150,7 +156,7 @@ fn connect_selected(
             }
             // The provider creates the shell; the app never starts a bound server.
             None => connection
-                .ensure_shell(&target.leaf.id, target.leaf.cwd.as_deref())
+                .ensure_shell(&target.leaf.id, bound_shell_folder(&target.leaf))
                 .map_err(shell_refusal)?,
         };
         (connection.tmux_socket().to_owned(), session)
@@ -656,7 +662,14 @@ impl Render for LiveTerminal {
                         .when(!attached, |el| {
                             el.child(
                                 ui::button("open-terminal", "Open terminal", ui::Button::Secondary)
-                                    .on_click(cx.listener(|_, _, _, cx| cx.emit(OpenTerminal))),
+                                    .on_click(cx.listener(|terminal, _, _, cx| {
+                                        // The provider starts a bound shell; connect asks it again.
+                                        if terminal.target.connection.is_some() {
+                                            terminal.start(cx);
+                                        } else {
+                                            cx.emit(OpenTerminal);
+                                        }
+                                    })),
                             )
                         })
                         .when(attached, |el| {
