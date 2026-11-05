@@ -627,9 +627,20 @@ impl Render for Management {
             Page::Detail(profile) => {
                 body = body.child(profile.item().display_name.clone()).child(profile.item().profile_id.clone()).child(ui::group_note("Service controls preserve profile data. Connecting to a workspace is a separate action."));
                 if profile.item().state == State::Ready && !self.busy {
-                    // Default keeps its host environment, so its runtimes are not
-                    // available through this bound setup; it keeps its unbound setup.
-                    if self.directory.is_some() && profile.item().kind == Kind::Isolated {
+                    // Default keeps its host environment, so the provider refuses its
+                    // bound setup; first-run setup adds Default's agents instead.
+                    if profile.item().kind == Kind::LegacyDefault {
+                        body = body.child(
+                            ui::button("new-agent-setup", "Add agent", ui::Button::Primary)
+                                .on_click(|_, _, cx| {
+                                    cx.defer(|cx| {
+                                        if let Err(error) = super::onboarding::show(false, cx) {
+                                            tracing::error!(event = "setup_window_failed", %error, "Cannot open setup");
+                                        }
+                                    })
+                                }),
+                        );
+                    } else if self.directory.is_some() && profile.item().kind == Kind::Isolated {
                         let expected = ticket.clone();
                         body = body.child(
                             ui::button("new-agent-setup", "Add agent", ui::Button::Primary)

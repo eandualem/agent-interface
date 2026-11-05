@@ -1177,10 +1177,9 @@ delayed retries cannot discard a different or already recovered connection.
 Close Pane and Close Tab capture the selected origin before consuming library
 updates and reject changed bindings or connection epochs even when tab and pane
 IDs are unchanged. Fresh local closes still work for unavailable profiles.
-The application-menu setup command also consumes pending library updates before
-admission. It requires the same captured workspace and library origin to remain
-explicitly legacy; binding removal cannot redirect an old bound request into
-legacy setup, and bound or unavailable profiles never enter that flow.
+The application-menu setup command opens first-run setup from any workspace.
+Setup always adds its agent to the Default profile, never to the selected
+workspace's profile, and Manage offers the same flow as Add agent on Default.
 
 Save reconciliation treats a workspace's profile binding and its tab contents as
 an ownership boundary: a concurrent binding change cannot merge with a pane edit,

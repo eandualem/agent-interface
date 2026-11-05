@@ -266,32 +266,6 @@ impl Browser {
         self.workspace_agents(self.layout.as_ref()?.model().workspace()?)
     }
 
-    pub(super) fn legacy_setup_allowed(&mut self) -> bool {
-        let origin = self.selected_navigation_origin();
-        let update = self
-            .library
-            .as_ref()
-            .and_then(crate::library::Library::take_update);
-        self.legacy_setup_after_update(origin.as_ref(), update)
-    }
-
-    /// A pending peer edit cannot turn a setup request into another profile's flow.
-    pub(super) fn legacy_setup_after_update(
-        &mut self,
-        origin: Option<&super::navigation_origin::Origin>,
-        update: Option<crate::library::Update>,
-    ) -> bool {
-        if let Some(update) = update {
-            self.apply(update);
-        }
-        self.selected_origin_is_current(origin)
-            && self
-                .layout
-                .as_ref()
-                .and_then(|layout| layout.model().workspace())
-                .is_some_and(|space| space.profile_id.is_none())
-    }
-
     /// Whether the selected workspace's connection state replaces its panes.
     pub(super) fn profile_content_unavailable(&self) -> bool {
         self.layout
@@ -799,12 +773,6 @@ mod tests {
             roster: Some(agent_status::LiveAgents::default()),
             ..Browser::default()
         };
-        assert!(!Browser::default().legacy_setup_allowed());
-        assert!(!browser.legacy_setup_allowed());
-        browser.layout.as_mut().unwrap().model_mut().workspaces[1].profile_id = None;
-        assert!(browser.legacy_setup_allowed());
-        browser.layout.as_mut().unwrap().model_mut().workspaces[1].profile_id =
-            Some("profile-b".into());
         assert!(browser.pane_connection(&pane_a).is_err());
         assert!(browser.active_agents().is_none());
         browser

@@ -122,30 +122,10 @@ pub fn run(directory: Option<PathBuf>) -> Result<(), String> {
             // Defer: a window that is dispatching this action cannot be updated
             // until dispatch returns.
             cx.on_action(|_: &OpenSettings, cx| cx.defer(settings_window::show));
+            // Setup always adds its agent to Default, whichever workspace is
+            // selected, so any window may open it.
             cx.on_action(|_: &RunSetup, cx| {
-                let window = cx.active_window();
-                cx.defer(move |cx| {
-                    // A Settings or other auxiliary window carries no workspace
-                    // authority. Never infer one from an arbitrary open browser.
-                    let Some(browser) = window.and_then(|window| window.downcast::<Browser>())
-                    else {
-                        return;
-                    };
-                    if browser
-                        .update(cx, |browser, _, cx| {
-                            if !browser.legacy_setup_allowed() {
-                                browser.save_notice =
-                                    Some("Setup for this profile is unavailable.".into());
-                                cx.notify();
-                                true
-                            } else {
-                                false
-                            }
-                        })
-                        .unwrap_or(true)
-                    {
-                        return;
-                    }
+                cx.defer(|cx| {
                     if let Err(error) = onboarding::show(false, cx) {
                         tracing::error!(event = "setup_window_failed", %error, "Cannot open setup");
                     }
