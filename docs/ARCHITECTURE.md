@@ -1195,8 +1195,10 @@ restoring a saved card cannot reacquire a same-name replacement. A separate nati
 card uses provider-parsed runtime context, never legacy host-file permission
 inspection or default launch-policy claims. Refusals clear the card. Name-only
 saved cards require reopening from Team, and removing a workspace binding does
-not convert a registration-pinned card into a legacy read. Other bound agent
-sections and name-only terminal navigation are unavailable.
+not convert a registration-pinned card into a legacy read. The card's other
+sections (Connections, Skills, Policies and Usage) read on the same connection
+after that registration check; their skill and policy rows list without opening
+the reader. Name-only terminal navigation is unavailable.
 
 The new-pane Agent chooser carries the same observed registration as Team
 navigation. Bound choices omit unregistered or malformed targets. Row keys include

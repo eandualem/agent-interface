@@ -1,14 +1,14 @@
 //! A native card whose saved registration and connection never change.
 
-use super::{list, ui};
+use super::{agent, list, ui};
 use crate::desktop::design::{colors, tokens};
-use agent_interface_core::View;
+use agent_interface_core::{AgentSection, View};
 use agent_interface_roster::{
     profiles::{
         Connection, Error as ProfileError,
         runtime_context::{self, Permissions, Target},
     },
-    views::Agent,
+    views::{Agent, Part, Range, content},
 };
 use gpui::{Context, Task, Window, div, prelude::*, px};
 use std::{cell::Cell, rc::Rc, time::Duration};
@@ -26,8 +26,8 @@ struct Snapshot {
 }
 
 impl Reader {
-    fn read(&mut self) -> Result<Snapshot, runtime_context::Error> {
-        let agent = if let Some(target) = &self.target {
+    fn read(&mut self, section: AgentSection) -> Result<Snapshot, runtime_context::Error> {
+        let mut agent = if let Some(target) = &self.target {
             target.refresh()?
         } else {
             let inspection = runtime_context::inspect(
@@ -43,6 +43,14 @@ impl Reader {
             .as_ref()
             .expect("inspected target")
             .permissions()?;
+        let part = match section {
+            AgentSection::Skills => Part::Skills,
+            AgentSection::Policies => Part::Policies,
+            AgentSection::Usage => Part::Usage(Range::Day),
+            _ => Part::Card,
+        };
+        // A section's own read failing leaves the card; the section says why.
+        let _ = content::agent_part(&self.connection, &part, &mut agent, &|| true);
         Ok(Snapshot { agent, permissions })
     }
 }
@@ -70,6 +78,7 @@ pub(super) struct Card {
     removal_error: Option<&'static str>,
     reader: Option<Reader>,
     snapshot: Option<Snapshot>,
+    section: AgentSection,
     name: String,
     error: Option<&'static str>,
     visible: Rc<Cell<bool>>,
@@ -107,6 +116,7 @@ impl Card {
                 target: None,
             }),
             snapshot: None,
+            section: view.section.unwrap_or_default(),
             name,
             error: None,
             visible,
@@ -148,6 +158,14 @@ impl Card {
         cx.notify();
     }
 
+    fn set_section(&mut self, section: AgentSection, cx: &mut Context<Self>) {
+        if self.section != section {
+            self.section = section;
+            self.refresh(cx);
+            cx.notify();
+        }
+    }
+
     fn refresh(&mut self, cx: &mut Context<Self>) {
         if !self.visible.get() || self.removal == Removal::Done {
             return;
@@ -155,8 +173,9 @@ impl Card {
         let Some(mut reader) = self.reader.take() else {
             return;
         };
+        let section = self.section;
         let work = cx.background_executor().spawn(async move {
-            let result = reader.read();
+            let result = reader.read(section);
             (reader, result)
         });
         cx.spawn(async move |this, cx| {
@@ -223,7 +242,24 @@ impl Render for Card {
             body = body.child(ui::text(div().text_color(c.muted), &t.text.row).child(done));
         } else if let Some(message) = self.error {
             body = body.child(ui::text(div().text_color(c.muted), &t.text.row).child(message));
-        } else if let Some(snapshot) = &self.snapshot {
+        } else if let Some(snapshot) = self.snapshot.as_ref().filter(|_| {
+            !matches!(
+                self.section,
+                AgentSection::Overview | AgentSection::Permissions
+            )
+        }) {
+            let section = match self.section {
+                AgentSection::Connections => agent::connections(&snapshot.agent),
+                AgentSection::Skills => agent::skills_section::<Self>(&snapshot.agent, cx, None),
+                AgentSection::Policies => {
+                    agent::policies_section::<Self>(&snapshot.agent, cx, None)
+                }
+                _ => agent::usage_section(&snapshot.agent),
+            };
+            body = body.child(section);
+        } else if let Some(snapshot) = &self.snapshot
+            && self.section == AgentSection::Overview
+        {
             for (label, value) in [
                 ("Runtime", snapshot.agent.runtime.as_str()),
                 ("Repository", snapshot.agent.repo.as_str()),
@@ -235,8 +271,8 @@ impl Render for Card {
                         .child(format!("{label}: {value}")),
                 );
             }
+        } else if let Some(snapshot) = &self.snapshot {
             let permissions = &snapshot.permissions;
-            body = body.child(ui::group_title("Permissions", ""));
             if let Some(message) = permissions.message() {
                 body = body.child(ui::text(div().text_color(c.muted), &t.text.row).child(message));
             } else {
@@ -293,6 +329,28 @@ impl Render for Card {
             body = body
                 .child(ui::text(div().text_color(c.muted), &t.text.row).child("Reading agent…"));
         }
+        let mut nav = div()
+            .id("bound-agent-sections")
+            .flex()
+            .flex_shrink_0()
+            .items_end()
+            .gap(px(t.space.s2))
+            .h(px(t.size.view_toolbar))
+            .px(px(t.space.s10))
+            .overflow_x_scroll()
+            .border_b(px(t.size.hairline))
+            .border_color(c.line);
+        for section in AgentSection::ALL {
+            nav = nav.child(
+                agent::tab(
+                    format!("bound-agent-section-{}", section.as_str()).into(),
+                    agent::label(section),
+                    String::new(),
+                    section == self.section,
+                )
+                .on_click(cx.listener(move |card, _, _, cx| card.set_section(section, cx))),
+            );
+        }
         div()
             .size_full()
             .flex()
@@ -314,6 +372,7 @@ impl Render for Card {
                         ))
                     }),
             )
+            .child(nav)
             .child(body)
     }
 }

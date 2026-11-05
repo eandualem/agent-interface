@@ -153,6 +153,38 @@ pub fn read(connection: &Connection, request: &Request, live: &dyn Fn() -> bool)
     }
 }
 
+/// Read one agent card section on the same verified connection, into an agent
+/// already inspected under its saved registration. No local files are read.
+pub fn agent_part(
+    connection: &Connection,
+    part: &super::Part,
+    agent: &mut super::Agent,
+    live: &dyn Fn() -> bool,
+) -> Result<(), Error> {
+    if !crate::valid_agent(&agent.name) {
+        return Err(Error::Content(super::UNREADABLE));
+    }
+    let api = Api {
+        provider: Provider::Bound {
+            connection,
+            error: Default::default(),
+        },
+        live,
+    };
+    let name = agent.name.clone();
+    super::read_part(&api, &name, part, agent);
+    let Provider::Bound { error, .. } = &api.provider else {
+        unreachable!()
+    };
+    if let Some(error) = error.get() {
+        Err(Error::Connection(error))
+    } else if !live() {
+        Err(Error::Cancelled)
+    } else {
+        Ok(())
+    }
+}
+
 /// Read plan-view runtime metadata on the same verified profile as its plans.
 /// A binding refusal invalidates the complete metadata read.
 pub fn members(

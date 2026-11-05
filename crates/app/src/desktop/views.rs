@@ -347,13 +347,6 @@ impl ViewPane {
                 pane.error = Some("Reopen this agent from the profile's Team view.");
                 return pane;
             }
-            if !matches!(
-                pane.view.section,
-                None | Some(AgentSection::Overview | AgentSection::Permissions)
-            ) {
-                pane.error = Some("This agent section is unavailable for the original profile.");
-                return pane;
-            }
             let connection = connection.clone();
             let visible = pane.visible.clone();
             pane.bound_agent =
