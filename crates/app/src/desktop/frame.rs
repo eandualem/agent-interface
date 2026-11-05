@@ -70,7 +70,7 @@ impl Browser {
             };
             return area
                 .child(
-                    ui::empty_state(ui::empty_tile("plug", c.selected, c.text_2), title, note)
+                    ui::empty_state(ui::empty_tile("unplug", c.selected, c.text_2), title, note)
                         .when(failure.is_some() && self.profile_can_start(), |state| {
                             state.child(
                                 ui::button("start-profile", "Start service", ui::Button::Primary)
@@ -183,13 +183,17 @@ impl Browser {
             .or_else(|| self.resize.as_ref().map(split_resize::Drag::tree))
             .unwrap_or(&tab.tree);
         let element = Self::tree(node, &cards, cx);
-        area.when(self.profile_status_unavailable(), |area| {
-            area.child(ui::group_note(
-                "Agent status is unavailable right now. Terminals stay connected.",
-            ))
-        })
-        .child(element)
-        .into_any_element()
+        if self.profile_status_unavailable() {
+            return area
+                .flex()
+                .flex_col()
+                .child(ui::group_note(
+                    "Agent status is unavailable right now. Terminals stay connected.",
+                ))
+                .child(div().flex_1().min_h_0().child(element))
+                .into_any_element();
+        }
+        area.child(element).into_any_element()
     }
 
     /// The open menu or jump popover, placed where it was opened.

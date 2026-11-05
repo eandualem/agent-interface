@@ -220,7 +220,11 @@ fn start_service(
         .map_err(|_| FAILED)?;
     let key = Controller::key(prepared.request_id());
     controller.enqueue(prepared).map_err(|_| FAILED)?;
-    match controller.submit(&key, &live).map_err(|_| FAILED)?.status {
+    let receipt = controller.submit(&key, &live).map_err(|_| FAILED)?;
+    match receipt.status {
+        Status::Failed if receipt.error_code.as_deref() == Some("operation_busy") => Err(
+            "An earlier start or stop of this profile has not finished. Check it under Manage, Saved operations.",
+        ),
         Status::Failed => Err(FAILED),
         Status::Pending | Status::Succeeded => Ok(()),
     }
