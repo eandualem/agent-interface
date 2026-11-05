@@ -289,9 +289,9 @@ shortcuts.
 
 The active Agent Backbone adapter resolves configuration lazily and uses
 bounded, read-only requests to a local endpoint. Credential-bearing requests
-require an absolute Unix socket path from `BACKBONE_SOCKET_PATH` or the provider's
-saved `backbone.socket_path` setting. An explicit endpoint overrides the saved
-setting, which is re-read on each request. The socket must
+require the Unix socket at `run/api.sock` in the provider's data directory, or an
+explicit endpoint. A bound profile takes its endpoint from `profiles show` instead.
+The socket must
 be owned by the app's effective user with mode 0600, inside a directory owned
 by that user with mode 0700. The connected peer's UID must match before HTTP
 or credentials are sent. This authenticates the OS account, not an individual

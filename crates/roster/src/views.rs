@@ -49,8 +49,7 @@ fn bounded_groups(entries: impl Iterator<Item = (usize, usize)>) -> bool {
 }
 
 /// Why a view has no data. The text is fixed and contains no response content.
-pub const UNAVAILABLE: &str =
-    "Backbone is unavailable. Check BACKBONE_SOCKET_PATH and its private socket.";
+pub const UNAVAILABLE: &str = "Backbone is unavailable. Check that its service is running.";
 /// Backbone answered that it does not serve this read.
 pub const NOT_SERVED: &str = "This Backbone does not serve policies yet; it needs updating.";
 /// A response this version cannot read.

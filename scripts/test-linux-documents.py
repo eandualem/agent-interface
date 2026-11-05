@@ -50,10 +50,10 @@ with tempfile.TemporaryDirectory(prefix="document-smoke-") as directory:
     settings.mkdir(parents=True)
     (settings / "settings.toml").write_text(f'interface_size = {SCALE}\n[setup]\nintro_seen = true\ndone = true\n')
     provider = root / "provider"
-    provider.mkdir()
+    provider.mkdir(mode=0o700)
     (provider / "backbone.db").touch()
-    env.update(BACKBONE_DATA_DIR=str(provider), BACKBONE_API_KEY="test-only",
-               BACKBONE_SOCKET_PATH=str(root / "provider.sock"))
+    (provider / "run").mkdir(mode=0o700)
+    env.update(BACKBONE_DATA_DIR=str(provider), BACKBONE_API_KEY="test-only")
     leaks = []
 
     class Trap(http.server.BaseHTTPRequestHandler):
@@ -117,8 +117,8 @@ try { new WebSocket('TARGET/socket'.replace('http:', 'ws:')); } catch (_) {}
     class Server(socketserver.ThreadingUnixStreamServer):
         daemon_threads = True
 
-    server = Server(str(root / 'provider.sock'), Provider)
-    os.chmod(root / 'provider.sock', 0o600)
+    server = Server(str(provider / 'run/api.sock'), Provider)
+    os.chmod(provider / 'run/api.sock', 0o600)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     library = root / 'library'
     library.mkdir()

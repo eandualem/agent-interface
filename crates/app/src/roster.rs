@@ -299,7 +299,6 @@ mod tests {
                 "--nocapture",
             ])
             .env("VIEW_POLL_FIXTURE_DIR", directory.path())
-            .env_remove("BACKBONE_SOCKET_PATH")
             .env("BACKBONE_API_KEY", "")
             .env(
                 "BACKBONE_PORT",
@@ -428,9 +427,12 @@ mod tests {
     #[test]
     fn polling_rereads_configuration_coalesces_failures_and_recovers() {
         use std::os::unix::{fs::PermissionsExt, net::UnixListener};
-        let socket_directory = tempfile::tempdir().unwrap();
-        fs::set_permissions(socket_directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
-        let socket_path = socket_directory.path().join("api.sock");
+        let directory = tempfile::tempdir().unwrap();
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let run = directory.path().join("run");
+        fs::create_dir(&run).unwrap();
+        fs::set_permissions(&run, fs::Permissions::from_mode(0o700)).unwrap();
+        let socket_path = run.join("api.sock");
         let listener = UnixListener::bind(&socket_path).unwrap();
         fs::set_permissions(&socket_path, fs::Permissions::from_mode(0o600)).unwrap();
         listener.set_nonblocking(true).unwrap();
@@ -476,7 +478,6 @@ mod tests {
             }
             requests
         });
-        let directory = tempfile::tempdir().unwrap();
         fs::write(directory.path().join(".env"), "BACKBONE_API_KEY=poll-key-1").unwrap();
         let status = Command::new(env::current_exe().unwrap())
             .args([
@@ -486,7 +487,6 @@ mod tests {
             ])
             .env("ROSTER_POLL_FIXTURE_DIR", directory.path())
             .env("BACKBONE_API_KEY", "")
-            .env("BACKBONE_SOCKET_PATH", &socket_path)
             .status()
             .unwrap();
         assert!(status.success());
@@ -495,7 +495,8 @@ mod tests {
             assert!(request.starts_with("get /api/agents http/1.1\r\n"));
             assert!(request.contains(&format!("authorization: bearer poll-key-{}\r\n", index + 1)));
         }
-        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+        // Only the key and the socket's folder: polling writes nothing here.
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 2);
     }
 
     #[test]

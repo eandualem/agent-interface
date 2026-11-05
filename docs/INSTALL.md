@@ -288,9 +288,7 @@ backbone service restart
 If Agent Interface was already open, quit and reopen it after changing the
 connection.
 
-The app reads the saved `backbone.socket_path` setting. To use another socket,
-set `BACKBONE_SOCKET_PATH` in the app's launch environment. The path must be
-absolute. The socket must be owned by your user with permissions 0600, in a
+The app connects to `run/api.sock` in Backbone's data directory. The socket must be owned by your user with permissions 0600, in a
 directory owned by your user with permissions 0700. The app does not send
 credentials over TCP.
 

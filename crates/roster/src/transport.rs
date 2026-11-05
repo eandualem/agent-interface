@@ -218,6 +218,19 @@ pub(super) mod tests {
         (directory, listener, url)
     }
 
+    /// A listener where a profile's provider listens, inside its data directory.
+    pub(crate) fn listener_in_data_dir(data_dir: &std::path::Path) -> (UnixListener, String) {
+        let run = data_dir.join("run");
+        std::fs::create_dir(&run).unwrap();
+        std::fs::set_permissions(data_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::set_permissions(&run, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let path = run.join("api.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let url = format!("unix:{}", path.display());
+        (listener, url)
+    }
+
     #[test]
     fn credentials_require_a_private_socket_and_never_fall_back_to_tcp() {
         let tcp = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -255,8 +268,19 @@ pub(super) mod tests {
 
     pub(crate) fn server(reply: String, pause: Duration) -> (String, thread::JoinHandle<String>) {
         let (directory, listener, url) = local_listener();
+        let thread = serve_on(listener, Some(directory), reply, pause);
+        (url, thread)
+    }
+
+    /// Answer one request on `listener`, keeping `directory` alive until then.
+    pub(crate) fn serve_on(
+        listener: UnixListener,
+        directory: Option<tempfile::TempDir>,
+        reply: String,
+        pause: Duration,
+    ) -> thread::JoinHandle<String> {
         listener.set_nonblocking(true).unwrap();
-        let thread = thread::spawn(move || {
+        thread::spawn(move || {
             let _directory = directory;
             let deadline = Instant::now() + Duration::from_secs(10);
             let mut socket = loop {
@@ -291,8 +315,7 @@ pub(super) mod tests {
             }
             thread::sleep(pause);
             String::from_utf8(request).unwrap()
-        });
-        (url, thread)
+        })
     }
 
     fn tcp_server(reply: String) -> (String, thread::JoinHandle<String>) {
