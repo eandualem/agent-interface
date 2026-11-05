@@ -172,11 +172,6 @@ pub(crate) fn start_outcome(
 }
 
 fn supports_defaults(url: &str, key: &str, name: &str) -> bool {
-    supports_defaults_with(|path| transport::get(url, path, key, 1024 * 1024), name)
-}
-
-/// Whether the agent's runtime accepts terminal colours, read through `read`.
-pub(crate) fn supports_defaults_with(read: impl Fn(&str) -> Option<Vec<u8>>, name: &str) -> bool {
     #[derive(Deserialize)]
     struct Runtime {
         id: String,
@@ -187,6 +182,7 @@ pub(crate) fn supports_defaults_with(read: impl Fn(&str) -> Option<Vec<u8>>, nam
     struct Agent {
         runtime: String,
     }
+    let read = |path: &str| transport::get(url, path, key, 1024 * 1024);
     let Some(catalog) =
         read("/api/runtimes").and_then(|bytes| serde_json::from_slice::<Vec<Runtime>>(&bytes).ok())
     else {

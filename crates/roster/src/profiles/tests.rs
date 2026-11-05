@@ -520,23 +520,23 @@ fn starting_a_stopped_agent_uses_the_bound_route_and_reports_the_outcome() {
     );
     let connection = profile.connect().unwrap();
     assert!(matches!(
-        connection.start_agent("worker", false, None),
+        connection.start_agent("worker", false),
         Outcome::Accepted(_)
     ));
     assert_eq!(
-        connection.start_agent("worker", true, None),
+        connection.start_agent("worker", true),
         Outcome::AlreadyRunning
     );
     assert!(matches!(
-        connection.start_agent("worker", false, None),
+        connection.start_agent("worker", false),
         Outcome::Refused(_)
     ));
     assert!(matches!(
-        connection.start_agent("worker", true, None),
+        connection.start_agent("worker", true),
         Outcome::Refused(_)
     ));
     assert!(matches!(
-        connection.start_agent("../other", false, None),
+        connection.start_agent("../other", false),
         Outcome::Refused(_)
     ));
     let requests = server.join().unwrap();
@@ -545,38 +545,6 @@ fn starting_a_stopped_agent_uses_the_bound_route_and_reports_the_outcome() {
     let body = requests[2].rsplit("\r\n\r\n").next().unwrap();
     let sent: Value = serde_json::from_str(body).unwrap();
     assert_eq!(sent, json!({"resume": true, "wait": false}));
-}
-
-#[test]
-fn starting_an_agent_sends_terminal_colours_when_its_runtime_supports_them() {
-    let (directory, listener, url) = crate::transport::tests::local_listener();
-    let (profile, identity) = profile_at(directory.path(), url.strip_prefix("unix:").unwrap());
-    let server = serve(
-        listener,
-        vec![
-            (200, identity),
-            (
-                200,
-                json!([{"id": "codex", "terminal_defaults_supported": true}]),
-            ),
-            (200, json!({"name": "worker", "runtime": "codex"})),
-            (
-                200,
-                json!({"ok": true, "session": "worker", "already_existed": false, "ready": "not_waited"}),
-            ),
-        ],
-    );
-    let connection = profile.connect().unwrap();
-    let defaults = crate::lifecycle::TerminalDefaults::new([1, 2, 3], [250, 251, 252]);
-    connection.start_agent("worker", false, Some(defaults));
-    let requests = server.join().unwrap();
-    assert!(requests[3].starts_with("post /api/agents/worker/start "));
-    let body = requests[3].rsplit("\r\n\r\n").next().unwrap();
-    let sent: Value = serde_json::from_str(body).unwrap();
-    assert_eq!(
-        sent["terminal_defaults"],
-        json!({"foreground": "#010203", "background": "#fafbfc"})
-    );
 }
 
 #[test]

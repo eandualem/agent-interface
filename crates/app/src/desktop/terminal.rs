@@ -285,7 +285,7 @@ impl LiveTerminal {
         let work = cx.background_executor().spawn(async move {
             use agent_interface_roster::lifecycle;
             match (connection, &target.0) {
-                (Some(connection), _) => connection.start_agent(&target.1, resume, Some(defaults)),
+                (Some(connection), _) => connection.start_agent(&target.1, resume),
                 (None, Some(data_dir)) => {
                     lifecycle::start_with_defaults(data_dir, &target.1, resume, defaults)
                 }
