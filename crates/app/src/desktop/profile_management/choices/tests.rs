@@ -25,7 +25,7 @@ fn choice() -> Selection<'static> {
         project: Path::new("/example/project"),
         runtime: "codex",
         model: None,
-        brief: "Do the project work",
+        brief: Some("Do the project work"),
         hooks: false,
         greeting: false,
     }
@@ -89,7 +89,7 @@ fn changed_origin_or_stale_runtime_model_cannot_prepare() {
     selected.project = Path::new("relative");
     assert!(freeze("request", &profile(), &catalog, selected).is_none());
     let mut selected = choice();
-    selected.brief = " ";
+    selected.brief = Some(" ");
     assert!(freeze("request", &profile(), &catalog, selected).is_none());
 }
 #[test]
@@ -167,4 +167,17 @@ fn pending_or_unreadable_saved_intent_precedes_any_catalog_command() {
     other.lifecycle_id = "other-life".into();
     assert!(load_choices(client, root, &other, &|| true).is_err());
     assert!(!calls.exists());
+}
+#[test]
+fn the_default_brief_is_the_fresh_install_template() {
+    let wire = fixtures()["runtime_catalog"]["catalog"].clone();
+    let mut selected = choice();
+    selected.brief = None;
+    let prepared = freeze("request", &profile(), &catalog(&wire), selected).unwrap();
+    let body: serde_json::Value =
+        serde_json::from_slice(prepared.bytes(Action::FirstAgent)).unwrap();
+    assert_eq!(
+        body["agent"]["brief"],
+        json!({"template":"orchestrator-v1"})
+    );
 }

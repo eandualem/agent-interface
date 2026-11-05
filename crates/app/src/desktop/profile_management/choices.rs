@@ -42,6 +42,7 @@ pub(super) struct Form {
     state: State,
     name: Entity<NameField>,
     brief: Entity<NameField>,
+    custom_brief: bool,
     _fields: Vec<Subscription>,
     project: Option<PathBuf>,
     runtime: Option<String>,
@@ -63,7 +64,11 @@ impl Form {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let name = cx.new(|cx| NameField::filter(window, cx));
+        let name = cx.new(|cx| {
+            let mut field = NameField::filter(window, cx);
+            field.set_value("guide", cx);
+            field
+        });
         let brief = cx.new(|cx| NameField::feedback(window, cx));
         let fields = [&name, &brief]
             .into_iter()
@@ -76,12 +81,13 @@ impl Form {
             state: State::Loading,
             name,
             brief,
+            custom_brief: false,
             _fields: fields,
             project: None,
             runtime: None,
             model: None,
-            hooks: false,
-            greeting: false,
+            hooks: true,
+            greeting: true,
             prepared: None,
             error: None,
             ticket: Ticket::default(),
@@ -165,7 +171,9 @@ impl Form {
                 project: self.project.as_deref()?,
                 runtime: self.runtime.as_deref()?,
                 model: self.model.as_deref(),
-                brief: self.brief.read(cx).value().trim(),
+                brief: self
+                    .custom_brief
+                    .then(|| self.brief.read(cx).value().trim()),
                 hooks: self.hooks,
                 greeting: self.greeting,
             },
@@ -246,7 +254,8 @@ struct Selection<'a> {
     project: &'a std::path::Path,
     runtime: &'a str,
     model: Option<&'a str>,
-    brief: &'a str,
+    /// Own instructions; `None` is the coordinating brief a fresh install starts with.
+    brief: Option<&'a str>,
     hooks: bool,
     greeting: bool,
 }
@@ -283,8 +292,11 @@ fn freeze(
             create_directory: false,
             runtime: runtime.id.clone(),
             model: choice.model.map(str::to_owned),
-            brief: Brief::Text {
-                text: choice.brief.into(),
+            brief: match choice.brief {
+                Some(text) => Brief::Text { text: text.into() },
+                None => Brief::Template {
+                    template: "orchestrator-v1".into(),
+                },
             },
         },
         choice.greeting,
@@ -361,7 +373,14 @@ impl Render for Form {
                             })));
                     }
                 }
-                body = body.child(ui::group_title("Instructions", "")).child(self.brief.clone());
+                body = body.child(ui::group_title("Instructions", "")).child(
+                    ui::segments()
+                        .child(ui::segment("brief-coordinating", "Coordinating brief", !self.custom_brief).on_click(cx.listener(|form, _, _, cx| { form.custom_brief = false; cx.notify(); })))
+                        .child(ui::segment("brief-own", "My own", self.custom_brief).on_click(cx.listener(|form, _, _, cx| { form.custom_brief = true; cx.notify(); }))),
+                );
+                if self.custom_brief {
+                    body = body.child(self.brief.clone());
+                }
                 for (hooks, value, label) in [(true, self.hooks, "Install selected runtime hooks"), (false, self.greeting, "Send the agent's greeting")] {
                     let expected = ticket.clone();
                     body = body.child(ui::choice_frame(label, value).child(format!("{} · {}", label, if value { "Yes" } else { "No" })).on_click(cx.listener(move |form, _, _, cx| {
@@ -393,7 +412,7 @@ impl Render for Form {
                         let name = form.name.read(cx).focus.clone();
                         let brief = form.brief.read(cx).focus.clone();
                         window.focus(
-                            if name.is_focused(window) {
+                            if name.is_focused(window) && form.custom_brief {
                                 &brief
                             } else {
                                 &name
