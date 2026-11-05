@@ -831,6 +831,16 @@ impl Render for Onboarding {
 
 /// Show the actual agent terminal for login/permissions or the introduction.
 /// The saved library may still be loading when setup opens the workspace.
+fn default_profile() -> Option<String> {
+    use agent_interface_roster::profiles::Kind;
+    probe::profile_client()?
+        .list(&|| true)
+        .ok()?
+        .into_iter()
+        .find(|item| item.kind == Kind::LegacyDefault)
+        .map(|item| item.profile_id)
+}
+
 fn show_agent(name: String, cx: &mut App) -> Result<(), &'static str> {
     if super::browser_window(cx).is_none() {
         let source = crate::sessions::source_socket(None).map_err(|error| error.to_string());
@@ -838,19 +848,23 @@ fn show_agent(name: String, cx: &mut App) -> Result<(), &'static str> {
             .map_err(|_| "The agent window could not open. Try again.")?;
     }
     let handle = super::browser_window(cx).ok_or("The agent window could not open. Try again.")?;
+    let default = cx.background_executor().spawn(async { default_profile() });
     cx.spawn(async move |cx| {
-        for _ in 0..50 {
-            let opened = handle
-                .update(cx, |browser, window, cx| {
-                    browser.open_setup_agent(&name, window, cx)
-                })
-                .unwrap_or(true);
-            if opened {
-                return;
+        // Setup adds the first agent to Default, the profile a new install starts in.
+        if let Some(profile_id) = default.await {
+            for _ in 0..50 {
+                let opened = handle
+                    .update(cx, |browser, window, cx| {
+                        browser.open_setup_agent(&name, &profile_id, window, cx)
+                    })
+                    .unwrap_or(true);
+                if opened {
+                    return;
+                }
+                cx.background_executor()
+                    .timer(Duration::from_millis(100))
+                    .await;
             }
-            cx.background_executor()
-                .timer(Duration::from_millis(100))
-                .await;
         }
         let _ = handle.update(cx, |browser, _, cx| {
             browser.save_notice = Some(format!(

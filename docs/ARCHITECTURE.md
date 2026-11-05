@@ -1381,6 +1381,19 @@ check, and the bounded scan has a read budget. Catalog-facing pending reads are
 observations only: actual admission repeats the check atomically. This local
 journal rule does not replace the provider's own request serialization.
 
+First run stays with the installer's Default profile: the installer initializes it,
+onboarding adds the first agent through schema-1 setup, and the app then opens that
+agent in a workspace bound to Default, through the same handshake as any profile.
+tmux-only use, with no Backbone, stays unbound.
+
+A profile workspace separates connecting from a failed connection and shows the
+reason. A profile's service does not restart itself after a reboot and its agents
+never return with the service, so the failed state offers Start service (`profiles
+apply` start, recorded in the same journal as Manage) and a stopped agent's pane offers
+Resume and Start new (`POST /api/agents/{session}/start`, which takes the name only).
+A failed roster read loses status, not access: tmux keeps the sessions and panes stay
+attached, with a status note, while the read retries.
+
 Native first-agent setup captures one atomic registry profile and the operator
 client before loading choices. It checks the independent private setup journal
 for open requests, which it points to without blocking other agent names, and then

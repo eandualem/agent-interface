@@ -262,13 +262,6 @@ impl Browser {
         self.workspace_agents(self.layout.as_ref()?.model().workspace()?)
     }
 
-    pub(super) fn selected_bound(&self) -> bool {
-        self.layout
-            .as_ref()
-            .and_then(|layout| layout.model().workspace())
-            .is_some_and(|space| space.profile_id.is_some())
-    }
-
     pub(super) fn legacy_setup_allowed(&mut self) -> bool {
         let origin = self.selected_navigation_origin();
         let update = self

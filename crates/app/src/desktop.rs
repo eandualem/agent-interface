@@ -871,12 +871,6 @@ impl Browser {
 
     /// Show the tab holding this agent's session: the current tab if it does,
     /// else the first in saved order. Nothing is attached or started.
-    fn go_to_agent(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(target) = self.agent_target(name) {
-            self.go_to_agent_target(&target, window, cx);
-        }
-    }
-
     fn go_to_agent_target(
         &mut self,
         target: &navigation_origin::AgentTarget,
@@ -1840,62 +1834,31 @@ impl Browser {
 
     /// The first-agent setup action already started the session. Open a saved
     /// attachment, preserving every existing pane and applying normal save rules.
+    /// Open the agent first-run setup added, in a workspace bound to that setup's
+    /// profile. A fresh window's untouched workspace takes the binding; reconcile
+    /// then verifies the connection, and the pane attaches once it is.
     fn open_setup_agent(
         &mut self,
         name: &str,
+        profile_id: &str,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        if self.selected_bound() || self.saving || self.save_failed {
+        if self.saving || self.save_failed {
             return false;
         }
         if let Some(update) = self.library.as_ref().and_then(Library::take_update) {
             self.apply(update);
         }
-        if self.selected_bound() {
-            return false;
-        }
-        let Some(source) = self
-            .source
-            .as_ref()
-            .and_then(|source| source.as_ref().ok())
-            .and_then(|path| path.to_str())
-            .map(str::to_owned)
-        else {
+        let Some(layout) = &self.layout else {
             return false;
         };
-        let Some(layout) = &mut self.layout else {
-            return false;
-        };
-        let resolved = crate::library::location::resolve_path(std::path::Path::new(&source)).ok();
-        if agent_destination(layout.model(), name, |socket| match socket {
-            None => resolved.is_some(),
-            Some(socket) => {
-                resolved.is_some()
-                    && crate::library::location::resolve_path(std::path::Path::new(socket)).ok()
-                        == resolved
-            }
-        })
-        .is_some()
-        {
-            self.go_to_agent(name, window, cx);
+        let Some((base, proposed)) = setup_agent_layout(layout, name, profile_id) else {
             window.activate_window();
             return true;
-        }
-        let (base, mut model) = layout.save_snapshot();
-        let cwd = std::env::var_os("HOME")
-            .map(|home| PathBuf::from(home).to_string_lossy().into_owned())
-            .unwrap_or_else(|| "/".into());
-        if !model.add_tab(Some(name.into()), cwd, true)
-            || !model.attach(Some(Attachment {
-                session: name.into(),
-                source_socket: Some(source),
-            }))
-        {
-            return false;
-        }
+        };
         self.creation_from = Some(Selection::capture(layout.model()));
-        self.pending_save = Some((base, model));
+        self.pending_save = Some((base, proposed));
         self.save(cx);
         window.activate_window();
         true
@@ -3051,6 +3014,70 @@ impl Render for Browser {
 
 /// The workspace, tab and pane showing an agent's session from this window's
 /// source: the current tab if it shows one, else the first in saved order.
+/// The saved change that shows `name` in `profile_id`'s workspace, or `None` when
+/// that workspace already shows it.
+fn setup_agent_layout(
+    layout: &WindowLayout,
+    name: &str,
+    profile_id: &str,
+) -> Option<(Document, Layout)> {
+    let bound =
+        |space: &agent_interface_core::Workspace| space.profile_id.as_deref() == Some(profile_id);
+    let shows_agent = layout
+        .model()
+        .workspaces
+        .iter()
+        .filter(|space| bound(space))
+        .any(|space| {
+            space
+                .tabs
+                .iter()
+                .flat_map(|tab| tab.tree.leaves())
+                .any(|leaf| {
+                    leaf.attachment
+                        .as_ref()
+                        .is_some_and(|attachment| attachment.session == name)
+                })
+        });
+    if shows_agent {
+        return None;
+    }
+    let existing = layout
+        .model()
+        .workspaces
+        .iter()
+        .find(|space| bound(space))
+        .map(|space| space.id.clone());
+    let untouched = layout.model().workspaces.len() == 1
+        && layout.model().workspaces[0].profile_id.is_none()
+        && layout.model().workspaces[0]
+            .tabs
+            .iter()
+            .flat_map(|tab| tab.tree.leaves())
+            .all(|leaf| leaf.empty);
+    let (base, mut proposed) = if existing.is_some() || untouched {
+        layout.save_snapshot()
+    } else {
+        workspace::create_profile(layout, "Default")?
+    };
+    if let Some(id) = &existing {
+        proposed.choose_workspace(id);
+    } else {
+        let selected = proposed.selected.clone();
+        let space = proposed
+            .workspaces
+            .iter_mut()
+            .find(|space| space.id == selected)?;
+        space.profile_id = Some(profile_id.to_owned());
+    }
+    let added = proposed.add_tab(Some(name.into()), "/".into(), true)
+        && proposed.attach(Some(Attachment {
+            session: name.into(),
+            source_socket: None,
+        }));
+    added.then_some((base, proposed))
+}
+
 fn agent_destination(
     model: &agent_interface_core::Layout,
     name: &str,
@@ -3592,6 +3619,48 @@ mod tests {
         assert!(model.transfer_tab(&destination));
         assert_eq!(model.tab(), Some(&tab));
         assert!(!menu.current(&model));
+    }
+
+    #[test]
+    fn the_first_setup_agent_opens_in_a_workspace_bound_to_its_profile() {
+        let window = |raw: &str| {
+            WindowLayout::new(
+                Document::parse(raw.into(), std::path::Path::new("layouts.db")).unwrap(),
+            )
+        };
+        // An untouched window's workspace takes the binding.
+        let fresh = window(
+            r#"{"version":2,"workspaces":[{"id":"000000000001","name":"Workspace","tabs":[],"selected":""}],"selected":"000000000001","focus":true}"#,
+        );
+        let (_, opened) = setup_agent_layout(&fresh, "guide", "default-id").unwrap();
+        assert_eq!(opened.workspaces.len(), 1);
+        let space = &opened.workspaces[0];
+        assert_eq!(space.profile_id.as_deref(), Some("default-id"));
+        let attachment = opened.pane().unwrap().attachment.clone().unwrap();
+        assert_eq!(attachment.session, "guide");
+        assert_eq!(attachment.source_socket, None);
+        // A repeat with that workspace saved adds nothing.
+        let with = |model: &Layout| {
+            let path = std::path::Path::new("layouts.db");
+            WindowLayout::new(fresh.save_snapshot().0.with_model(model, path).unwrap())
+        };
+        let saved = with(&opened);
+        assert!(setup_agent_layout(&saved, "guide", "default-id").is_none());
+        // Another agent joins the same workspace.
+        let (_, second) = setup_agent_layout(&saved, "second", "default-id").unwrap();
+        assert_eq!(second.workspaces.len(), 1);
+        assert_eq!(second.workspaces[0].tabs.len(), 2);
+        // Work in an unbound workspace stays put, unbound.
+        let mut busy = opened.clone();
+        busy.workspaces[0].profile_id = None;
+        let busy = with(&busy);
+        let (_, separate) = setup_agent_layout(&busy, "guide", "default-id").unwrap();
+        assert_eq!(separate.workspaces.len(), 2);
+        assert_eq!(separate.workspaces[0].profile_id, None);
+        assert_eq!(
+            separate.workspace().unwrap().profile_id.as_deref(),
+            Some("default-id")
+        );
     }
 
     #[test]
