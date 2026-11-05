@@ -38,6 +38,7 @@ use agent_interface_roster::profiles::Connection;
 use source::Source;
 
 mod activity;
+mod additions;
 mod agent;
 pub(super) mod artifact_web;
 mod artifacts;
@@ -187,6 +188,7 @@ pub(super) struct ViewPane {
     carriers_of: Option<String>,
     selection: RefCell<selection::Selection>,
     reports: reports::State,
+    additions: additions::State,
     backbone: Option<PathBuf>,
     /// Conversations by provider, author and record, kept while the pane exists.
     conversations: HashMap<String, Entity<conversation::Conversation>>,
@@ -300,6 +302,7 @@ impl ViewPane {
             carriers_of: None,
             selection: RefCell::default(),
             reports: reports::State::default(),
+            additions: additions::State::default(),
             backbone: backbone.clone(),
             conversations: HashMap::new(),
             conversation: None,

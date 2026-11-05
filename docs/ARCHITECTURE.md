@@ -1141,7 +1141,10 @@ attaches to it so the person completes the CLI's own sign-in there. A profile it
 has no sign-in; a workspace selects it. A Default profile keeps its existing CLI
 sign-ins, so it does not offer this. An Agent card removes its agent after a
 confirmation: the app stops the session, then deletes the registration, because the
-provider refuses to remove a running agent. Native lifecycle and setup controls use the captured
+provider refuses to remove a running agent. The Skills view and the Documents section
+add a person's own folder or HTML file to the profile through the provider: a skill is
+copied for every agent in the profile and the folder stays in place, and a document is
+published under the reserved `operator` author. Native lifecycle and setup controls use the captured
 operator client and durable recovery controllers. Real-account acceptance remains
 separate; unavailable provider operations are shown explicitly. Existing standalone
 workspaces retain their ordinary shell behavior.

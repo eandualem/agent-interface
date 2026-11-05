@@ -633,3 +633,69 @@ fn credential_source_must_be_the_exact_private_regular_file() {
 }
 
 mod library_snapshots;
+
+#[test]
+fn adding_a_skill_and_a_document_keeps_the_providers_reason() {
+    let (directory, listener, url) = crate::transport::tests::local_listener();
+    let (profile, identity) = profile_at(directory.path(), url.strip_prefix("unix:").unwrap());
+    let contract = fixture();
+    let server = serve(
+        listener,
+        vec![
+            (200, identity.clone()),
+            (
+                200,
+                json!({"name":"my-skill","path":"/s","tags":["all"],"warnings":["not recorded"]}),
+            ),
+            (422, json!({"detail": "no SKILL.md in the folder"})),
+            (201, json!({"record": {"id": 7}, "created": true})),
+            (422, json!({"detail": [{"msg": "HTML exceeds the limit"}]})),
+            (403, json!({})),
+        ],
+    );
+    let connection = profile.connect().unwrap();
+    let folder = Path::new("/absolute/folder/my-skill");
+    assert_eq!(
+        connection.add_skill(folder),
+        Ok(AddedSkill {
+            name: "my-skill".into(),
+            warnings: vec!["not recorded".into()],
+        })
+    );
+    assert_eq!(
+        connection.add_skill(folder),
+        Err(AddError::Refused("no SKILL.md in the folder".into()))
+    );
+    assert_eq!(
+        connection.add_document("Overview", "<h1>Overview</h1>"),
+        Ok(7)
+    );
+    assert_eq!(
+        connection.add_document("Overview", "<h1>Overview</h1>"),
+        Err(AddError::Refused("HTML exceeds the limit".into()))
+    );
+    assert_eq!(
+        connection.add_document("Overview", "<h1>Overview</h1>"),
+        Err(AddError::Connection(Error::Refused(403)))
+    );
+    let requests = server.join().unwrap();
+    let body = |request: &str| -> Value {
+        serde_json::from_str(request.split("\r\n\r\n").nth(1).unwrap()).unwrap()
+    };
+    assert!(requests[1].starts_with("post /api/skills "));
+    assert_eq!(body(&requests[1]), contract["skills_copy"]["request"]);
+    assert!(requests[3].starts_with("post /api/documents "));
+    let document = body(&requests[3]);
+    let expected = &contract["operator_document"]["request"];
+    // The fixture server lowercases what it records.
+    for field in ["author", "title", "html"] {
+        assert_eq!(
+            document[field].as_str().unwrap(),
+            expected[field].as_str().unwrap().to_ascii_lowercase()
+        );
+    }
+    assert_eq!(document["supersedes_id"], expected["supersedes_id"]);
+    let retried = body(&requests[4]);
+    assert_eq!(document["request_id"], retried["request_id"]);
+    assert_eq!(document["request_id"].as_str().unwrap().len(), 68);
+}

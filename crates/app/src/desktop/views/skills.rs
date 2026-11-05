@@ -6,7 +6,7 @@
 use agent_interface_roster::views::{LocalSkill, PREVIEW_LIMIT, Place, Skill, SkillLibrary};
 use gpui::{AnyElement, Context, Div, SharedString, div, prelude::*, px};
 
-use super::{Open, Target, ViewPane, home, line, mono, reader};
+use super::{Open, Target, ViewPane, additions::Kind, home, line, mono, reader};
 use crate::desktop::{
     components::{self as ui, Tone},
     design::{colors, tokens},
@@ -239,7 +239,8 @@ pub(super) fn body(
 fn index(pane: &ViewPane, library: &SkillLibrary, cx: &mut Context<ViewPane>) -> AnyElement {
     let (t, c) = (tokens(), colors());
     let header = ui::view_header("diamond", "Skills")
-        .child("every skill an agent can load, by where it lives");
+        .child("every skill an agent can load, by where it lives")
+        .children(super::additions::button(pane, Kind::Skill, cx));
     let search = div()
         .flex_shrink_0()
         .px(px(t.space.s20))
@@ -333,6 +334,7 @@ fn index(pane: &ViewPane, library: &SkillLibrary, cx: &mut Context<ViewPane>) ->
         .flex_col()
         .child(header)
         .child(search)
+        .children(super::additions::note(pane, Kind::Skill))
         .child(ui::grouped_page("skill-rows", column))
         .child(ui::view_footer(
             &[("click", "read the skill")],

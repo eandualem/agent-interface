@@ -14,6 +14,7 @@ use std::{
 pub mod operations;
 
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 
 pub mod runtime_catalog;
 pub mod runtime_context;
@@ -49,6 +50,31 @@ pub enum Error {
     BindingMismatch,
     /// Another HTTP refusal, retaining only its status.
     Refused(u16),
+}
+
+/// Why a skill or document was not added.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AddError {
+    /// The provider's reason, to show the person.
+    Refused(String),
+    /// The connection failed, or the provider gave no reason.
+    Connection(Error),
+}
+
+impl From<Error> for AddError {
+    fn from(error: Error) -> Self {
+        Self::Connection(error)
+    }
+}
+
+/// A skill now in the profile's store.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct AddedSkill {
+    /// The name it has in the store.
+    pub name: String,
+    /// What did not happen although the skill was added.
+    #[serde(default)]
+    pub warnings: Vec<String>,
 }
 
 /// Registry classification; it does not confer legacy connection eligibility.
@@ -381,6 +407,54 @@ impl Connection {
         successful(&response)
     }
 
+    /// Copy the skill folder at `path` into this profile's store for every agent
+    /// in the profile, leaving the folder in place. Runs on an I/O worker.
+    pub fn add_skill(&self, path: &Path) -> Result<AddedSkill, AddError> {
+        let body = serde_json::to_vec(&serde_json::json!({
+            "path": path.to_str().ok_or(Error::Invalid)?,
+            "name": null,
+            "tags": ["all"],
+            "replace": false,
+            "mode": "copy",
+            "actor": "app",
+        }))
+        .map_err(|_| Error::Invalid)?;
+        let response = self.response("/api/skills", Some(body), RESPONSE_LIMIT)?;
+        added(&response)?;
+        Ok(serde_json::from_slice(&response.body).map_err(|_| Error::Invalid)?)
+    }
+
+    /// Publish a person's own document on this profile and return its revision.
+    /// The request ID comes from the content, so a repeat is the same publication.
+    /// Runs on an I/O worker.
+    pub fn add_document(&self, title: &str, html: &str) -> Result<u64, AddError> {
+        #[derive(Deserialize)]
+        struct Reply {
+            record: Record,
+        }
+        #[derive(Deserialize)]
+        struct Record {
+            id: u64,
+        }
+        let digest = Sha256::new()
+            .chain_update(title)
+            .chain_update([0])
+            .chain_update(html)
+            .finalize();
+        let body = serde_json::to_vec(&serde_json::json!({
+            "author": "operator",
+            "request_id": format!("app:{digest:x}"),
+            "title": title,
+            "html": html,
+            "supersedes_id": null,
+        }))
+        .map_err(|_| Error::Invalid)?;
+        let response = self.response("/api/documents", Some(body), RESPONSE_LIMIT)?;
+        added(&response)?;
+        let reply: Reply = serde_json::from_slice(&response.body).map_err(|_| Error::Invalid)?;
+        Ok(reply.record.id)
+    }
+
     /// Verify again on the same binding, never by re-resolving registry or environment.
     pub fn verify(&self) -> Result<(), Error> {
         #[derive(Deserialize)]
@@ -448,6 +522,25 @@ fn successful(response: &local::Response) -> Result<(), Error> {
         return Ok(());
     }
     Err(binding_refusal(response).unwrap_or(Error::Refused(response.status)))
+}
+
+/// A refused addition keeps the provider's reason, written to be shown to the person.
+fn added(response: &local::Response) -> Result<(), AddError> {
+    if (200..300).contains(&response.status) {
+        return Ok(());
+    }
+    let refusal: serde_json::Value = serde_json::from_slice(&response.body).unwrap_or_default();
+    let detail = match &refusal["detail"] {
+        serde_json::Value::Array(errors) => errors
+            .first()
+            .map_or("", |error| error["msg"].as_str().unwrap_or_default()),
+        detail => detail.as_str().unwrap_or_default(),
+    };
+    Err(if detail.is_empty() {
+        AddError::Connection(Error::Refused(response.status))
+    } else {
+        AddError::Refused(detail.to_owned())
+    })
 }
 
 fn registrations_settling(response: &local::Response) -> bool {

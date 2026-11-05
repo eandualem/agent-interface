@@ -4,7 +4,7 @@
 
 use agent_interface_app::profiles::{Client, lifecycle::Operation, setup::Setup};
 use agent_interface_roster::profiles::{
-    Connection, Error,
+    AddError, Connection, Error,
     operations::{Action as Lifecycle, Prepared},
     setup::{Action, Agent, Brief, Prepared as SetupRequest},
 };
@@ -166,4 +166,34 @@ fn create_start_setup_and_shell_on_a_new_profile() {
         .roster()
         .expect("roster straight after a removal");
     connection.remove_agent("second").expect("remove again");
+
+    // A skill is copied from any folder, which stays in place.
+    let home = PathBuf::from(std::env::var("HOME").unwrap());
+    let folder = home.join(format!("skill-{nonce}"));
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(
+        folder.join("SKILL.md"),
+        format!("---\nname: skill-{nonce}\ndescription: Smoke\n---\nSmoke\n"),
+    )
+    .unwrap();
+    let added = connection.add_skill(&folder).expect("add skill");
+    println!("added skill: {added:?}");
+    assert!(folder.join("SKILL.md").exists());
+    let again = connection.add_skill(&folder).err();
+    println!("added again: {again:?}");
+    assert!(matches!(again, Some(AddError::Refused(_))));
+    assert!(matches!(
+        connection.add_skill(&home.join("no-such-folder")).err(),
+        Some(AddError::Refused(_))
+    ));
+
+    // A person's own document needs no registered agent; a repeat is the same one.
+    let document = connection
+        .add_document("Overview", "<h1>Overview</h1>")
+        .expect("add document");
+    assert_eq!(
+        connection.add_document("Overview", "<h1>Overview</h1>"),
+        Ok(document)
+    );
+    println!("added document: {document}");
 }
