@@ -5,7 +5,7 @@
 use agent_interface_app::profiles::{Client, lifecycle::Operation, setup::Setup};
 use agent_interface_roster::profiles::{
     AddError, Connection, Error,
-    operations::{Action as Lifecycle, Prepared},
+    operations::{Action as Lifecycle, Prepared, Status},
     setup::{Action, Agent, Brief, Prepared as SetupRequest},
 };
 use std::{path::PathBuf, process::Command};
@@ -200,4 +200,15 @@ fn create_start_setup_and_shell_on_a_new_profile() {
         Ok(document)
     );
     println!("added document: {document}");
+
+    // A stop ends the service this client started.
+    let profile = client.show(&id.profile_id, &live).expect("show");
+    let began = std::time::Instant::now();
+    let mut stop = Operation::new(
+        &client,
+        Prepared::stop(&format!("stop-{nonce}"), &profile).unwrap(),
+    );
+    let receipt = stop.apply(&live).expect("stop");
+    println!("stop: {:?} in {:?}", receipt.status, began.elapsed());
+    assert_eq!(receipt.status, Status::Succeeded);
 }

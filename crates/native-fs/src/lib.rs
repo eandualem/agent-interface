@@ -45,3 +45,64 @@ pub fn has_extended_acl(file: &std::fs::File) -> std::io::Result<bool> {
         result
     }
 }
+
+/// Start `command` with no signals blocked. Grand Central Dispatch workers block
+/// every signal, and a child inherits that mask across exec, so a service started
+/// from one would otherwise never see SIGTERM and could not be stopped.
+#[cfg(target_os = "macos")]
+pub fn clear_signal_mask(command: &mut std::process::Command) {
+    use std::os::unix::process::CommandExt;
+    // SAFETY: the closure runs between fork and exec and only calls
+    // async-signal-safe functions on its own stack value.
+    unsafe {
+        command.pre_exec(|| {
+            let mut set: libc::sigset_t = std::mem::zeroed();
+            libc::sigemptyset(&mut set);
+            match libc::pthread_sigmask(libc::SIG_SETMASK, &set, std::ptr::null_mut()) {
+                0 => Ok(()),
+                code => Err(std::io::Error::from_raw_os_error(code)),
+            }
+        });
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod signal_mask_tests {
+    use std::{
+        os::unix::process::ExitStatusExt,
+        process::Command,
+        time::{Duration, Instant},
+    };
+
+    #[test]
+    fn a_child_of_a_thread_blocking_signals_still_receives_sigterm() {
+        let spawned = std::thread::spawn(|| {
+            // SAFETY: changes only this test thread's own mask.
+            unsafe {
+                let mut all: libc::sigset_t = std::mem::zeroed();
+                libc::sigfillset(&mut all);
+                libc::pthread_sigmask(libc::SIG_SETMASK, &all, std::ptr::null_mut());
+            }
+            let mut command = Command::new("/bin/sleep");
+            command.arg("30");
+            super::clear_signal_mask(&mut command);
+            command.spawn().unwrap()
+        });
+        let mut child = spawned.join().unwrap();
+        // SAFETY: signals only the child this test just started.
+        assert_eq!(unsafe { libc::kill(child.id() as i32, libc::SIGTERM) }, 0);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                assert_eq!(status.signal(), Some(libc::SIGTERM));
+                return;
+            }
+            if Instant::now() > deadline {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                panic!("the child never received SIGTERM");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+}

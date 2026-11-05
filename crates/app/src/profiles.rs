@@ -82,6 +82,8 @@ impl Client {
             .env_clear()
             .envs(self.environment.iter().cloned())
             .current_dir(&self.directory);
+        #[cfg(target_os = "macos")]
+        agent_interface_native_fs::clear_signal_mask(&mut command);
         command
     }
 

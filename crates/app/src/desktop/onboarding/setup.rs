@@ -562,7 +562,10 @@ fn run_with_timeout(
         .write_all(&bytes)
         .map_err(|_| "Cannot prepare setup request.")?;
     let output = tempfile::tempfile().map_err(|_| "Cannot capture setup progress.")?;
-    let mut child = Command::new(executable)
+    let mut command = Command::new(executable);
+    #[cfg(target_os = "macos")]
+    agent_interface_native_fs::clear_signal_mask(&mut command);
+    let mut child = command
         .env("PATH", path_env)
         .args(["setup", "--file"])
         .arg(input.path())
