@@ -333,7 +333,9 @@ impl ViewPane {
                     | ViewKind::Team
                     | ViewKind::Tags
                     | ViewKind::Agent
-            ) || !pane.agents.belongs_to(connection.identity()))
+            ) && !(pane.view.kind == ViewKind::Artifacts
+                && super::chooser_source::shows_artifacts(Some(connection.kind())))
+                || !pane.agents.belongs_to(connection.identity()))
         {
             pane.error = Some("This view is unavailable for the original profile.");
             return pane;
