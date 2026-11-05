@@ -650,6 +650,8 @@ struct Browser {
     shell_after_save: Option<Leaf>,
     shell_to_open: Option<Leaf>,
     profile_starting: bool,
+    /// The pane Open terminal asked for, focused once its shell is attached.
+    terminal_to_focus: Option<String>,
     resize: Option<split_resize::Drag>,
     pane_drag: Option<pane_drag::Drag>,
     pane_bounds: Rc<RefCell<HashMap<String, Bounds<gpui::Pixels>>>>,
@@ -1653,6 +1655,7 @@ impl Browser {
             return;
         };
         self.shell_after_save = proposal.1.pane().cloned();
+        self.terminal_to_focus = proposal.1.pane().map(|leaf| leaf.id.clone());
         self.pending_save = Some(proposal);
         self.editing = None;
         self.chooser = None;
@@ -1834,13 +1837,15 @@ impl Browser {
 
     /// The first-agent setup action already started the session. Open a saved
     /// attachment, preserving every existing pane and applying normal save rules.
-    /// Open the agent first-run setup added, in a workspace bound to that setup's
-    /// profile. A fresh window's untouched workspace takes the binding; reconcile
-    /// then verifies the connection, and the pane attaches once it is.
+    /// Open a session setup points at, such as the agent first-run setup added, in
+    /// a workspace bound to that setup's profile. A fresh window's untouched workspace
+    /// takes the binding; reconcile then verifies the connection, and the pane attaches
+    /// once it is. `label` names a workspace this creates.
     fn open_setup_agent(
         &mut self,
         name: &str,
         profile_id: &str,
+        label: &str,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
@@ -1853,7 +1858,7 @@ impl Browser {
         let Some(layout) = &self.layout else {
             return false;
         };
-        let Some((base, proposed)) = setup_agent_layout(layout, name, profile_id) else {
+        let Some((base, proposed)) = setup_agent_layout(layout, name, profile_id, label) else {
             window.activate_window();
             return true;
         };
@@ -2376,6 +2381,26 @@ impl Render for Browser {
                     |browser, terminal, _: &terminal::Detach, window, cx| {
                         let target = terminal.read(cx).target.clone();
                         browser.detach_pane(&target, window, cx);
+                    },
+                )
+                .detach();
+                cx.subscribe_in(
+                    &terminal,
+                    window,
+                    |browser, terminal, _: &terminal::Connected, window, cx| {
+                        let id = terminal.read(cx).target.leaf.id.clone();
+                        if browser.terminal_to_focus.as_ref() == Some(&id) {
+                            browser.terminal_to_focus = None;
+                            let shown = browser
+                                .layout
+                                .as_ref()
+                                .and_then(|layout| layout.model().pane())
+                                .is_some_and(|leaf| leaf.id == id);
+                            if shown && browser.profile_picker.is_none() {
+                                terminal
+                                    .update(cx, |terminal, cx| terminal.focus_terminal(window, cx));
+                            }
+                        }
                     },
                 )
                 .detach();
@@ -3020,6 +3045,7 @@ fn setup_agent_layout(
     layout: &WindowLayout,
     name: &str,
     profile_id: &str,
+    label: &str,
 ) -> Option<(Document, Layout)> {
     let bound =
         |space: &agent_interface_core::Workspace| space.profile_id.as_deref() == Some(profile_id);
@@ -3058,7 +3084,7 @@ fn setup_agent_layout(
     let (base, mut proposed) = if existing.is_some() || untouched {
         layout.save_snapshot()
     } else {
-        workspace::create_profile(layout, "Default")?
+        workspace::create_profile(layout, label)?
     };
     if let Some(id) = &existing {
         proposed.choose_workspace(id);
@@ -3632,7 +3658,7 @@ mod tests {
         let fresh = window(
             r#"{"version":2,"workspaces":[{"id":"000000000001","name":"Workspace","tabs":[],"selected":""}],"selected":"000000000001","focus":true}"#,
         );
-        let (_, opened) = setup_agent_layout(&fresh, "guide", "default-id").unwrap();
+        let (_, opened) = setup_agent_layout(&fresh, "guide", "default-id", "Default").unwrap();
         assert_eq!(opened.workspaces.len(), 1);
         let space = &opened.workspaces[0];
         assert_eq!(space.profile_id.as_deref(), Some("default-id"));
@@ -3645,16 +3671,16 @@ mod tests {
             WindowLayout::new(fresh.save_snapshot().0.with_model(model, path).unwrap())
         };
         let saved = with(&opened);
-        assert!(setup_agent_layout(&saved, "guide", "default-id").is_none());
+        assert!(setup_agent_layout(&saved, "guide", "default-id", "Default").is_none());
         // Another agent joins the same workspace.
-        let (_, second) = setup_agent_layout(&saved, "second", "default-id").unwrap();
+        let (_, second) = setup_agent_layout(&saved, "second", "default-id", "Default").unwrap();
         assert_eq!(second.workspaces.len(), 1);
         assert_eq!(second.workspaces[0].tabs.len(), 2);
         // Work in an unbound workspace stays put, unbound.
         let mut busy = opened.clone();
         busy.workspaces[0].profile_id = None;
         let busy = with(&busy);
-        let (_, separate) = setup_agent_layout(&busy, "guide", "default-id").unwrap();
+        let (_, separate) = setup_agent_layout(&busy, "guide", "default-id", "Default").unwrap();
         assert_eq!(separate.workspaces.len(), 2);
         assert_eq!(separate.workspaces[0].profile_id, None);
         assert_eq!(

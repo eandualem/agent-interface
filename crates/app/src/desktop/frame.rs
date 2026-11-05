@@ -234,8 +234,8 @@ impl Browser {
                     .snap_to_window_with_margin(px(t.space.s8))
                     .child(
                         body.on_mouse_down_out(cx.listener(|browser, _, window, cx| {
-                            // Closing interrupts a running provider command and
-                            // loses a half-filled form; Back and Escape stay explicit.
+                            // Closing would lose a half-filled form or the view of a
+                            // running command; Back and Escape stay explicit.
                             if browser
                                 .profile_picker
                                 .as_ref()

@@ -20,6 +20,7 @@ use std::sync::{
 
 pub(super) enum Choice {
     Selected(Box<Selected>),
+    Open(super::profile_management::Open),
     Cancel,
 }
 
@@ -222,6 +223,10 @@ impl ProfilePicker {
         let pane =
             cx.new(|cx| super::profile_management::Management::new(client, directory, profile, cx));
         window.focus(&pane.read(cx).focus.clone(), cx);
+        cx.subscribe(&pane, |_, _, open: &super::profile_management::Open, cx| {
+            cx.emit(Choice::Open(open.clone()));
+        })
+        .detach();
         let subscription = cx.subscribe_in(
             &pane,
             window,

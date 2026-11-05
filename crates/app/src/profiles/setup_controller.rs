@@ -66,6 +66,8 @@ pub struct Snapshot {
     pub request_id: String,
     /// The agent this request adds.
     pub agent_name: String,
+    /// The runtime that agent uses.
+    pub runtime: Option<String>,
     /// Latest durable first-agent result, absent during an unknown attempt.
     pub first_result: Option<Event>,
     /// Latest durable cancellation result, absent during an unknown cancel attempt.
@@ -135,6 +137,7 @@ impl Stored {
             identity: self.setup.identity().clone(),
             request_id: self.setup.request_id().into(),
             agent_name: self.setup.agent_name().into(),
+            runtime: self.setup.runtime(),
             first_result: self.first.clone(),
             cancellation_result: self.cancel.clone(),
         }
@@ -444,6 +447,7 @@ fn inspect(record: &journal::Record) -> Result<(Envelope, Snapshot), Error> {
         identity: prepared.identity().clone(),
         request_id: prepared.request_id().into(),
         agent_name: prepared.agent_name().into(),
+        runtime: prepared.runtime(),
         first_result: envelope
             .first
             .as_ref()

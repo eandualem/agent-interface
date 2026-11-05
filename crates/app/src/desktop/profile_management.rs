@@ -29,6 +29,13 @@ mod setup;
 const PAGE_SIZE: usize = 16;
 pub(super) struct Back;
 
+/// A session setup leaves waiting for the person, to open in a workspace.
+#[derive(Clone)]
+pub(super) enum Open {
+    Agent { profile_id: String, name: String },
+    SignIn { profile_id: String, runtime: String },
+}
+
 #[derive(Default)]
 struct Ticket(Arc<AtomicBool>);
 impl Ticket {
@@ -78,6 +85,7 @@ pub(super) struct Management {
     pub focus: FocusHandle,
 }
 impl EventEmitter<Back> for Management {}
+impl EventEmitter<Open> for Management {}
 impl Management {
     /// Restore focus to the deepest visible pane, including a creation form.
     pub fn focus_handle(&self, cx: &gpui::App) -> FocusHandle {
@@ -268,6 +276,8 @@ impl Management {
         cx: &mut Context<Self>,
     ) {
         window.focus(&setup.read(cx).focus.clone(), cx);
+        cx.subscribe(&setup, |_, _, open: &Open, cx| cx.emit(open.clone()))
+            .detach();
         let subscription = cx.subscribe_in(&setup, window, |pane, setup, _: &Back, window, cx| {
             if !pane
                 .setup
@@ -648,7 +658,7 @@ impl Render for Management {
                 }
             }
             Page::Operation { key, snapshot } => {
-                body = body.child(ui::group_note("Closing interrupts the local command. The provider outcome may remain unknown; closing does not confirm cancellation or rollback. Recover the original request before retrying."));
+                body = body.child(ui::group_note("Leaving this view does not stop the operation. It finishes on its own, and its receipt can be checked under Saved operations."));
                 body = body.child(format!("Operation {key}"));
                 if let Some(snapshot) = snapshot {
                     body = body

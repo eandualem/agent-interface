@@ -97,7 +97,10 @@ impl Operation {
             input.path().into(),
             "--json".into(),
         ];
-        let (status, bytes) = self.run(&args, live, timeout)?;
+        // A start or stop that loses its command keeps its reservation in the
+        // provider, which then refuses every later one. Leaving a screen or quitting
+        // never stops it: the command finishes and releases the reservation itself.
+        let (status, bytes) = self.run(&args, live, timeout, true)?;
         self.observe(status, &bytes)
     }
 
@@ -111,7 +114,7 @@ impl Operation {
             "--".into(),
             self.request_id().into(),
         ];
-        let (status, bytes) = self.run(&args, live, TIMEOUT)?;
+        let (status, bytes) = self.run(&args, live, TIMEOUT, false)?;
         self.observe(status, &bytes)
     }
 
@@ -134,6 +137,7 @@ impl Operation {
         args: &[OsString],
         live: &dyn Fn() -> bool,
         timeout: Duration,
+        keep_running: bool,
     ) -> Result<(ExitStatus, Vec<u8>), Error> {
         if !live() {
             return Err(Error::Cancelled);
@@ -151,7 +155,10 @@ impl Operation {
             .stderr(Stdio::null())
             .spawn()
             .map_err(|_| Error::Unavailable)?;
-        let mut running = Invocation(child);
+        let mut running = Invocation {
+            child: Some(child),
+            keep_running,
+        };
         let deadline = Instant::now() + timeout;
         let mut bytes = Vec::new();
         loop {
@@ -162,7 +169,7 @@ impl Operation {
                 return Err(Error::TimedOut);
             }
             drain(&output, &mut bytes)?;
-            if let Some(status) = running.0.try_wait().map_err(|_| Error::Unavailable)? {
+            if let Some(status) = running.try_wait().map_err(|_| Error::Unavailable)? {
                 // The provider may start a long-lived service inheriting stdout.
                 // Drain available bytes but do not wait for descendants or kill
                 // their process group. The direct command owns this receipt.
@@ -203,15 +210,34 @@ fn drain(output: &std::fs::File, bytes: &mut Vec<u8>) -> Result<(), Error> {
     Ok(())
 }
 
-struct Invocation(Child);
+struct Invocation {
+    child: Option<Child>,
+    keep_running: bool,
+}
+impl Invocation {
+    fn try_wait(&mut self) -> std::io::Result<Option<ExitStatus>> {
+        self.child.as_mut().map_or(Ok(None), Child::try_wait)
+    }
+}
 impl Drop for Invocation {
     fn drop(&mut self) {
         // Only the original direct child is ours to terminate. Service children
         // and durable provider state must survive unknown outcomes.
-        if self.0.try_wait().ok().flatten().is_none() {
-            let _ = self.0.kill();
+        let Some(mut child) = self.child.take() else {
+            return;
+        };
+        if child.try_wait().ok().flatten().is_some() {
+            return;
         }
-        let _ = self.0.wait();
+        if self.keep_running {
+            // It writes to an anonymous file, so it outlives this process safely.
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+            return;
+        }
+        let _ = child.kill();
+        let _ = child.wait();
     }
 }
 

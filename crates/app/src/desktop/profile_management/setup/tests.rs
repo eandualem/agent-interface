@@ -12,6 +12,7 @@ fn snapshot() -> Snapshot {
             lifecycle_id: "life-a".into(),
         },
         agent_name: "worker".into(),
+        runtime: Some("codex".into()),
         request_id: "request-a".into(),
         first_result: None,
         cancellation_result: None,
@@ -115,6 +116,10 @@ fn readonly_reload_remains_available_when_record_cannot_be_restored() {
             .unwrap()
             .contains("has not reported ready")
     );
+    assert!(agent_waiting(&timeout));
+    assert!(agent_waiting(&retryable("runtime_permission")));
+    assert!(!agent_waiting(&retryable("runtime_missing")));
+    assert!(!agent_waiting(&s));
     assert!(outcome(&retryable("agent_ready")).is_none());
     assert!(
         outcome(&retryable("something_new"))

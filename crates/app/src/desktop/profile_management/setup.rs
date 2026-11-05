@@ -1,5 +1,5 @@
 //! Recovery of original first-agent requests, independent of catalog readiness.
-use super::{Back, PAGE_SIZE, Ticket, ui};
+use super::{Back, Open, PAGE_SIZE, Ticket, ui};
 use crate::{
     desktop::design::{colors, tokens},
     profiles::{
@@ -82,6 +82,17 @@ fn status(s: &Snapshot) -> &'static str {
         "Needs attention"
     }
 }
+/// The agent exists but needs the person, so its terminal is the next step.
+fn agent_waiting(s: &Snapshot) -> bool {
+    !s.closed()
+        && s.phase == Phase::Submitted
+        && s.first_result.as_ref().is_some_and(|event| {
+            matches!(
+                event.code.as_deref(),
+                Some("launch_timeout" | "runtime_permission")
+            )
+        })
+}
 /// What the latest result means for the person, for each code the provider sends.
 fn outcome(s: &Snapshot) -> Option<String> {
     let event = if s.phase == Phase::CancelPending {
@@ -97,11 +108,11 @@ fn outcome(s: &Snapshot) -> Option<String> {
         ),
         "invalid_request" => "The agent name, folder or model was refused. Go back and change it.".into(),
         "launch_timeout" => format!(
-            "{} was added but has not reported ready. Open it from the workspace, sign in if it asks, then retry.",
+            "{} was added but has not reported ready. Open it, or sign in if it asks, then retry.",
             s.agent_name
         ),
         "runtime_permission" => format!(
-            "{} is waiting for you, often for a sign-in or a permission. Continue in its terminal from the workspace, then retry.",
+            "{} is waiting for you, often for a sign-in or a permission. Open it to continue, then retry.",
             s.agent_name
         ),
         "runtime_missing" => "This CLI is not installed where the profile can use it. Install it, then retry.".into(),
@@ -165,6 +176,7 @@ pub(super) struct Pane {
     pub focus: FocusHandle,
 }
 impl EventEmitter<Back> for Pane {}
+impl EventEmitter<Open> for Pane {}
 impl Pane {
     pub fn new(client: Client, directory: PathBuf, cx: &mut Context<Self>) -> Self {
         let mut pane = Self {
@@ -590,6 +602,30 @@ impl Render for Pane {
                     }
                     if let Some(text) = outcome(s) {
                         body = body.child(ui::group_note(text));
+                    }
+                    if !self.busy && agent_waiting(s) {
+                        let (agent, sign_in) = (
+                            Open::Agent {
+                                profile_id: s.identity.profile_id.clone(),
+                                name: s.agent_name.clone(),
+                            },
+                            s.runtime.clone().map(|runtime| Open::SignIn {
+                                profile_id: s.identity.profile_id.clone(),
+                                runtime,
+                            }),
+                        );
+                        body = body.child(
+                            ui::button("setup-open-agent", "Open agent", ui::Button::Primary)
+                                .on_click(cx.listener(move |_, _, _, cx| cx.emit(agent.clone()))),
+                        );
+                        if let Some(sign_in) = sign_in {
+                            body = body.child(
+                                ui::button("setup-sign-in", "Sign in", ui::Button::Secondary)
+                                    .on_click(
+                                        cx.listener(move |_, _, _, cx| cx.emit(sign_in.clone())),
+                                    ),
+                            );
+                        }
                     }
                 }
                 if progress.is_some() {

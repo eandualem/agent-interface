@@ -51,6 +51,11 @@ impl Setup {
         self.prepared.agent_name()
     }
 
+    /// The runtime this request's agent uses.
+    pub fn runtime(&self) -> Option<String> {
+        self.prepared.runtime()
+    }
+
     /// Original expected tuple; readiness never substitutes for a handshake.
     pub fn identity(&self) -> &agent_interface_roster::profiles::Identity {
         self.prepared.identity()

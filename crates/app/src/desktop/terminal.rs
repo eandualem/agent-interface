@@ -246,9 +246,12 @@ pub(super) struct LiveTerminal {
 
 pub(super) struct Detach;
 pub(super) struct OpenTerminal;
+/// The terminal's session is attached and can take the keyboard.
+pub(super) struct Connected;
 
 impl gpui::EventEmitter<Detach> for LiveTerminal {}
 impl gpui::EventEmitter<OpenTerminal> for LiveTerminal {}
+impl gpui::EventEmitter<Connected> for LiveTerminal {}
 impl gpui::EventEmitter<crate::view::Focus> for LiveTerminal {}
 
 impl LiveTerminal {
@@ -537,6 +540,7 @@ impl LiveTerminal {
                         })
                         .detach();
                         terminal.view = Some(view);
+                        cx.emit(Connected);
                     }
                     Err(error) => {
                         // An ordinary shell that is no longer running, such as

@@ -855,7 +855,7 @@ fn show_agent(name: String, cx: &mut App) -> Result<(), &'static str> {
             for _ in 0..50 {
                 let opened = handle
                     .update(cx, |browser, window, cx| {
-                        browser.open_setup_agent(&name, &profile_id, window, cx)
+                        browser.open_setup_agent(&name, &profile_id, "Default", window, cx)
                     })
                     .unwrap_or(true);
                 if opened {

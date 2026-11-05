@@ -332,6 +332,63 @@ impl Browser {
                 .is_some_and(|error| !matches!(error, Error::RegistryAbsent))
     }
 
+    /// Show a session setup left waiting, in that profile's workspace. A sign-in
+    /// session comes from the provider, so it needs a verified connection first.
+    fn open_from_setup(
+        &mut self,
+        open: super::profile_management::Open,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use super::profile_management::Open;
+        let Some(Ok(client)) = &self.profile_client else {
+            return;
+        };
+        let client = client.clone();
+        self.profile_picker = None;
+        let work = cx.background_executor().spawn(async move {
+            let live = || true;
+            let unavailable =
+                "The profile could not be reached. Start its service, then try again.";
+            let profile_id = match &open {
+                Open::Agent { profile_id, .. } | Open::SignIn { profile_id, .. } => {
+                    profile_id.clone()
+                }
+            };
+            let profile = client.show(&profile_id, &live).map_err(|_| unavailable)?;
+            let session = match open {
+                Open::Agent { name, .. } => name,
+                Open::SignIn { runtime, .. } => profile
+                    .connect()
+                    .map_err(|_| unavailable)?
+                    .sign_in_session(&runtime)
+                    .map_err(super::new_pane::sign_in_refusal)?,
+            };
+            Ok::<_, &'static str>((session, profile_id, profile.item().display_name.clone()))
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = work.await;
+            let _ = this.update_in(cx, |browser, window, cx| {
+                let opened = match result {
+                    Ok((session, profile_id, label)) => {
+                        if browser.open_setup_agent(&session, &profile_id, &label, window, cx) {
+                            Ok(())
+                        } else {
+                            Err("The workspace is busy saving. Try again.")
+                        }
+                    }
+                    Err(error) => Err(error),
+                };
+                if let Err(error) = opened {
+                    browser.save_notice = Some(error.into());
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
     /// Start the selected workspace's stopped service, then connect again. Nothing
     /// else starts it after a reboot. Agents stay stopped until their panes start them.
     pub(super) fn start_profile_service(
@@ -666,6 +723,9 @@ impl Browser {
             }
             match choice {
                 profile_picker::Choice::Cancel => browser.profile_picker = None,
+                profile_picker::Choice::Open(open) => {
+                    browser.open_from_setup(open.clone(), window, cx);
+                }
                 profile_picker::Choice::Selected(selected) => {
                     // Selection closes the picker internally. Always retire it,
                     // including when a concurrent save prevents this handoff.
