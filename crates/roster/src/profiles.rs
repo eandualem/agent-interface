@@ -380,12 +380,27 @@ impl Connection {
     /// Start this stopped agent, continuing its saved conversation or opening a new
     /// one. The provider's start route takes the name only, so a replacement under
     /// the same name would start instead. Runs on an I/O worker.
-    pub fn start_agent(&self, name: &str, resume: bool) -> crate::lifecycle::Outcome {
-        use crate::lifecycle::{Outcome, start_outcome};
+    pub fn start_agent(
+        &self,
+        name: &str,
+        resume: bool,
+        defaults: Option<crate::lifecycle::TerminalDefaults>,
+    ) -> crate::lifecycle::Outcome {
+        use crate::lifecycle::{Outcome, start_outcome, supports_defaults_with};
         if !crate::valid_agent(name) {
             return Outcome::Refused("This session is not a registered agent.".into());
         }
-        let body = serde_json::json!({ "resume": resume, "wait": false });
+        let mut body = serde_json::json!({ "resume": resume, "wait": false });
+        let read = |path: &str| {
+            self.response(path, None, RESPONSE_LIMIT)
+                .ok()
+                .filter(|response| (200..300).contains(&response.status))
+                .map(|response| response.body)
+        };
+        if let Some(defaults) = defaults.filter(|_| supports_defaults_with(read, name)) {
+            body["terminal_defaults"] =
+                serde_json::to_value(defaults).expect("terminal colours JSON");
+        }
         let Ok(body) = serde_json::to_vec(&body) else {
             return Outcome::Unknown;
         };
