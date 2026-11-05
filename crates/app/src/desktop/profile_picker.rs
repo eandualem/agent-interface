@@ -270,7 +270,7 @@ fn first_run(
     }
 }
 
-fn message(error: Error) -> &'static str {
+pub(super) fn message(error: &Error) -> &'static str {
     use agent_interface_roster::profiles::Error as ProfileError;
     match error {
         Error::CommandFailed => "Profile discovery was refused or failed.",
@@ -284,13 +284,20 @@ fn message(error: Error) -> &'static str {
             "This provider does not support profile connections."
         }
         Error::Profile(ProfileError::Unavailable | ProfileError::Refused(_)) => {
-            "The selected profile could not be reached or authenticated. If its service is stopped, start it from Manage profiles."
+            "The profile could not be reached or authenticated. Its service may be stopped."
         }
         Error::Unavailable => "The profile discovery command is unavailable.",
         Error::RegistryAbsent => "The profile registry is missing.",
         Error::Invalid | Error::TooLarge | Error::Profile(ProfileError::Invalid) => {
             "The provider returned invalid profile information."
         }
+    }
+}
+
+impl ProfilePicker {
+    /// A management pane may be running a provider command or holding a form.
+    pub fn managing(&self) -> bool {
+        self.management.is_some()
     }
 }
 
@@ -311,7 +318,7 @@ impl Render for ProfilePicker {
             rows = rows.child(ui::group_note("Loading profiles…"));
         }
         if let Some(error) = self.catalog.error {
-            rows = rows.child(ui::group_note(message(error)));
+            rows = rows.child(ui::group_note(message(&error)));
         }
         if !self.catalog.loading && self.catalog.error.is_none() && self.catalog.items.is_empty() {
             rows = rows.child(ui::group_note("No profiles are registered."));
@@ -398,7 +405,7 @@ impl Render for ProfilePicker {
             .child(rows)
             .children(
                 self.selection_error
-                    .map(|error| ui::group_note(message(error))),
+                    .map(|error| ui::group_note(message(&error))),
             )
             .child(
                 ui::view_toolbar()

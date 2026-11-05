@@ -183,10 +183,46 @@ impl Registry {
         }
     }
 
+    /// The saved connection's failure; `None` while it is still being attempted.
+    pub fn failure(&self, space: &Workspace) -> Option<&Error> {
+        self.entries
+            .get(&space.id)
+            .filter(|entry| space.profile_id.as_ref() == Some(&entry.profile_id))?
+            .result
+            .as_ref()?
+            .as_ref()
+            .err()
+    }
+
     /// Retrying affects this workspace only. Retained panes still own their old
     /// connection until desktop reconciliation explicitly closes those panes.
     pub fn retry(&mut self, space: &Workspace) {
         self.entries.remove(&space.id);
+    }
+}
+
+/// Run the provider's start on an I/O worker, with the same journal Manage uses.
+fn start_service(
+    client: Client,
+    directory: Option<std::path::PathBuf>,
+    profile_id: &str,
+) -> Result<(), &'static str> {
+    use crate::profiles::{controller::Controller, journal};
+    use agent_interface_roster::profiles::operations::{Prepared, Status};
+    const FAILED: &str = "This profile's service could not be started.";
+    let live = || true;
+    let profile = client.show(profile_id, &live).map_err(|_| FAILED)?;
+    let directory = crate::library::library_directory(directory.as_deref()).map_err(|_| FAILED)?;
+    let journal =
+        journal::Journal::open(&directory.join("profile-operations")).map_err(|_| FAILED)?;
+    let controller = Controller::new(journal, &client);
+    let prepared = Prepared::start(&uuid::Uuid::new_v4().simple().to_string(), &profile)
+        .map_err(|_| FAILED)?;
+    let key = Controller::key(prepared.request_id());
+    controller.enqueue(prepared).map_err(|_| FAILED)?;
+    match controller.submit(&key, &live).map_err(|_| FAILED)?.status {
+        Status::Failed => Err(FAILED),
+        Status::Pending | Status::Succeeded => Ok(()),
     }
 }
 
@@ -266,11 +302,88 @@ impl Browser {
             .and_then(|layout| layout.model().workspace())
             .is_some_and(|space| {
                 space.profile_id.is_some()
-                    && (matches!(self.workspace_profiles.route(space), Route::Unavailable)
-                        || self
-                            .workspace_agents(space)
-                            .is_none_or(|agents| agents.unavailable()))
+                    && matches!(self.workspace_profiles.route(space), Route::Unavailable)
             })
+    }
+
+    /// A failed roster read loses status, not access: tmux keeps the sessions
+    /// running and the attached panes stay connected while the read retries.
+    pub(super) fn profile_status_unavailable(&self) -> bool {
+        self.active_agents()
+            .is_some_and(|agents| agents.unavailable())
+    }
+
+    /// Why the selected workspace has no connection. `None` while still connecting.
+    pub(super) fn profile_failure(&self) -> Option<&'static str> {
+        if matches!(self.profile_client, Some(Err(_))) {
+            return Some("Agent Backbone could not be found on this computer.");
+        }
+        let space = self.layout.as_ref()?.model().workspace()?;
+        self.workspace_profiles
+            .failure(space)
+            .map(profile_picker::message)
+    }
+
+    /// Whether Start service could help: the provider is there and knows profiles.
+    pub(super) fn profile_can_start(&self) -> bool {
+        matches!(self.profile_client, Some(Ok(_)))
+            && self
+                .layout
+                .as_ref()
+                .and_then(|layout| layout.model().workspace())
+                .and_then(|space| self.workspace_profiles.failure(space))
+                .is_some_and(|error| !matches!(error, Error::RegistryAbsent))
+    }
+
+    /// Start the selected workspace's stopped service, then connect again. Nothing
+    /// else starts it after a reboot. Agents stay stopped until their panes start them.
+    pub(super) fn start_profile_service(
+        &mut self,
+        origin: Option<&super::navigation_origin::Origin>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.profile_starting || !self.selected_origin_is_current(origin) {
+            return;
+        }
+        let Some(Ok(client)) = &self.profile_client else {
+            return;
+        };
+        let Some(space) = self
+            .layout
+            .as_ref()
+            .and_then(|layout| layout.model().workspace())
+        else {
+            return;
+        };
+        let Some(profile_id) = space.profile_id.clone() else {
+            return;
+        };
+        let workspace = space.id.clone();
+        let (client, directory) = (client.clone(), self.directory.clone());
+        self.profile_starting = true;
+        let work = cx
+            .background_executor()
+            .spawn(async move { start_service(client, directory, &profile_id) });
+        cx.spawn(async move |this, cx| {
+            let result = work.await;
+            let _ = this.update(cx, |browser, cx| {
+                browser.profile_starting = false;
+                if let Err(error) = result {
+                    browser.save_notice = Some(error.into());
+                } else if let Some(space) = browser.layout.as_ref().and_then(|layout| {
+                    layout
+                        .model()
+                        .workspaces
+                        .iter()
+                        .find(|space| space.id == workspace)
+                }) {
+                    browser.workspace_profiles.retry(space);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
     }
 
     pub(super) fn keyboard_pane(&self) -> Option<&agent_interface_core::Leaf> {
@@ -290,9 +403,7 @@ impl Browser {
         };
         match self.workspace_profiles.route(space) {
             Route::Legacy => true,
-            Route::Bound(_) => self
-                .workspace_agents(space)
-                .is_some_and(|agents| !agents.unavailable()),
+            Route::Bound(_) => true,
             Route::Unavailable => false,
         }
     }

@@ -55,19 +55,44 @@ impl Browser {
         let model = layout.model();
         if self.profile_content_unavailable() {
             let origin = self.selected_navigation_origin();
+            let start_origin = origin.clone();
+            let failure = self.profile_failure().filter(|_| !self.profile_starting);
+            let (title, note) = match failure {
+                Some(failure) => ("Workspace profile unavailable", failure),
+                None if self.profile_starting => (
+                    "Starting this profile’s service…",
+                    "This can take a moment.",
+                ),
+                None => (
+                    "Connecting to this workspace’s profile…",
+                    "This can take a moment.",
+                ),
+            };
             return area
                 .child(
-                    ui::empty_state(
-                        ui::empty_tile("plug", c.selected, c.text_2),
-                        "Workspace profile unavailable",
-                        "Reconnect to this workspace’s saved profile to continue.",
-                    )
-                    .child(
-                        ui::button("retry-profile", "Retry connection", ui::Button::Secondary)
-                            .on_click(cx.listener(move |browser, _, _, cx| {
-                                browser.retry_profile(origin.as_ref(), cx)
-                            })),
-                    ),
+                    ui::empty_state(ui::empty_tile("plug", c.selected, c.text_2), title, note)
+                        .when(failure.is_some() && self.profile_can_start(), |state| {
+                            state.child(
+                                ui::button("start-profile", "Start service", ui::Button::Primary)
+                                    .on_click(cx.listener(move |browser, _, _, cx| {
+                                        browser.start_profile_service(start_origin.as_ref(), cx)
+                                    })),
+                            )
+                        })
+                        .when(failure.is_some(), |state| {
+                            state.child(
+                                ui::button(
+                                    "retry-profile",
+                                    "Retry connection",
+                                    ui::Button::Secondary,
+                                )
+                                .on_click(cx.listener(
+                                    move |browser, _, _, cx| {
+                                        browser.retry_profile(origin.as_ref(), cx)
+                                    },
+                                )),
+                            )
+                        }),
                 )
                 .into_any_element();
         }
@@ -158,7 +183,13 @@ impl Browser {
             .or_else(|| self.resize.as_ref().map(split_resize::Drag::tree))
             .unwrap_or(&tab.tree);
         let element = Self::tree(node, &cards, cx);
-        area.child(element).into_any_element()
+        area.when(self.profile_status_unavailable(), |area| {
+            area.child(ui::group_note(
+                "Agent status is unavailable right now. Terminals stay connected.",
+            ))
+        })
+        .child(element)
+        .into_any_element()
     }
 
     /// The open menu or jump popover, placed where it was opened.
@@ -199,6 +230,15 @@ impl Browser {
                     .snap_to_window_with_margin(px(t.space.s8))
                     .child(
                         body.on_mouse_down_out(cx.listener(|browser, _, window, cx| {
+                            // Closing interrupts a running provider command and
+                            // loses a half-filled form; Back and Escape stay explicit.
+                            if browser
+                                .profile_picker
+                                .as_ref()
+                                .is_some_and(|(picker, _)| picker.read(cx).managing())
+                            {
+                                return;
+                            }
                             if browser.jump.is_some() {
                                 browser.close_jump(window, cx);
                             }

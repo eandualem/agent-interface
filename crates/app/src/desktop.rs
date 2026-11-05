@@ -649,6 +649,7 @@ struct Browser {
     shell_environment: Option<Result<agent_interface_tmux::shells::Environment, String>>,
     shell_after_save: Option<Leaf>,
     shell_to_open: Option<Leaf>,
+    profile_starting: bool,
     resize: Option<split_resize::Drag>,
     pane_drag: Option<pane_drag::Drag>,
     pane_bounds: Rc<RefCell<HashMap<String, Bounds<gpui::Pixels>>>>,
@@ -2457,8 +2458,12 @@ impl Render for Browser {
             }
             // A stopped Backbone agent's pane offers Resume and Start new.
             let agent = leaf.attachment.as_ref().and_then(|attachment| {
-                if !matches!(self.pane_connection(&leaf.id), Ok(None)) {
-                    return None;
+                let connection = self.pane_connection(&leaf.id).ok()?;
+                if connection.is_some() {
+                    let space = self.layout.as_ref()?.model().workspace_for_pane(&leaf.id)?;
+                    let status = self.workspace_agents(space)?.get(&attachment.session);
+                    return (status.state == components::AgentState::Offline)
+                        .then(|| (None, attachment.session.clone()));
                 }
                 let status = self.roster.as_ref()?.get(&attachment.session);
                 if status.state != components::AgentState::Offline
@@ -2466,7 +2471,7 @@ impl Render for Browser {
                 {
                     return None;
                 }
-                Some((self.backbone.clone()?, attachment.session.clone()))
+                Some((Some(self.backbone.clone()?), attachment.session.clone()))
             });
             if let Some(terminal) = self.terminals.get(&leaf.id) {
                 terminal.update(cx, |terminal, cx| terminal.set_agent(agent, cx));

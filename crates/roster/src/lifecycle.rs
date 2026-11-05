@@ -114,6 +114,16 @@ fn start_at(
         serde_json::to_vec(&body).expect("launch JSON"),
         Duration::from_secs(30),
     );
+    start_outcome(name, resume, reply)
+}
+
+/// What a start reply means. `reply` is the body, or the refusing status if known.
+pub(crate) fn start_outcome(
+    name: &str,
+    resume: bool,
+    reply: Result<Vec<u8>, Option<u16>>,
+) -> Outcome {
+    let refused = |message: &str| Outcome::Refused(message.into());
     // Backbone reports a missing saved conversation like any other refusal.
     let not_resumed = "Backbone could not resume this agent. If it has no saved conversation, \
         Start new opens a new one; otherwise check its saved folder, runtime and model.";

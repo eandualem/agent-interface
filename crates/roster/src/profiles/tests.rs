@@ -503,6 +503,51 @@ fn shared_session_cases_decode_and_refusals_keep_their_status() {
 }
 
 #[test]
+fn starting_a_stopped_agent_uses_the_bound_route_and_reports_the_outcome() {
+    use crate::lifecycle::Outcome;
+    let (directory, listener, url) = crate::transport::tests::local_listener();
+    let (profile, identity) = profile_at(directory.path(), url.strip_prefix("unix:").unwrap());
+    let started = |ok: bool, existed: bool, ready: &str| json!({"ok": ok, "session": "worker", "already_existed": existed, "ready": ready});
+    let server = serve(
+        listener,
+        vec![
+            (200, identity.clone()),
+            (200, started(true, false, "not_waited")),
+            (200, started(true, true, "ready")),
+            (200, started(false, false, "exited")),
+            (400, json!({"detail": "no saved conversation"})),
+        ],
+    );
+    let connection = profile.connect().unwrap();
+    assert!(matches!(
+        connection.start_agent("worker", false),
+        Outcome::Accepted(_)
+    ));
+    assert_eq!(
+        connection.start_agent("worker", true),
+        Outcome::AlreadyRunning
+    );
+    assert!(matches!(
+        connection.start_agent("worker", false),
+        Outcome::Refused(_)
+    ));
+    assert!(matches!(
+        connection.start_agent("worker", true),
+        Outcome::Refused(_)
+    ));
+    assert!(matches!(
+        connection.start_agent("../other", false),
+        Outcome::Refused(_)
+    ));
+    let requests = server.join().unwrap();
+    assert!(requests[1].starts_with("post /api/agents/worker/start "));
+    assert!(requests[1].contains("x-backbone-lifecycle-id: "));
+    let body = requests[2].rsplit("\r\n\r\n").next().unwrap();
+    let sent: Value = serde_json::from_str(body).unwrap();
+    assert_eq!(sent, json!({"resume": true, "wait": false}));
+}
+
+#[test]
 fn removing_an_agent_stops_it_first_and_treats_a_missing_one_as_removed() {
     let (directory, listener, url) = crate::transport::tests::local_listener();
     let (profile, identity) = profile_at(directory.path(), url.strip_prefix("unix:").unwrap());

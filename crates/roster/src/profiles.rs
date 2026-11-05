@@ -377,6 +377,30 @@ impl Connection {
         Ok(reply.session)
     }
 
+    /// Start this stopped agent, continuing its saved conversation or opening a new
+    /// one. The provider's start route takes the name only, so a replacement under
+    /// the same name would start instead. Runs on an I/O worker.
+    pub fn start_agent(&self, name: &str, resume: bool) -> crate::lifecycle::Outcome {
+        use crate::lifecycle::{Outcome, start_outcome};
+        if !crate::valid_agent(name) {
+            return Outcome::Refused("This session is not a registered agent.".into());
+        }
+        let body = serde_json::json!({ "resume": resume, "wait": false });
+        let Ok(body) = serde_json::to_vec(&body) else {
+            return Outcome::Unknown;
+        };
+        let reply = match self.response(
+            &format!("/api/agents/{name}/start"),
+            Some(body),
+            RESPONSE_LIMIT,
+        ) {
+            Ok(response) if (200..300).contains(&response.status) => Ok(response.body),
+            Ok(response) => Err(Some(response.status)),
+            Err(_) => Err(None),
+        };
+        start_outcome(name, resume, reply)
+    }
+
     /// Stop this agent's session and remove it from this profile. The provider
     /// refuses to remove a running agent, so the stop comes first. An agent that
     /// is already gone counts as removed. Runs on an I/O worker.

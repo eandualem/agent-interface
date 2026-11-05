@@ -159,6 +159,10 @@ fn create_start_setup_and_shell_on_a_new_profile() {
     println!("second agent outcome: {outcome:?}");
     println!("sessions: {:?}", sessions(&connection));
 
+    // A stopped agent starts again through the bound route.
+    let response = connection.start_agent("second", false);
+    println!("start while registered: {response:?}");
+
     // Removing stops the session first; removing it again still succeeds.
     connection.remove_agent("second").expect("remove agent");
     assert!(!sessions(&connection).contains(&"second".to_owned()));

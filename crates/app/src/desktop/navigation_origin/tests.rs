@@ -68,7 +68,7 @@ fn profile_retirement_preserves_hidden_focus_and_expires_unavailable_empty_panes
     browser.retire_profile_panes();
     assert!(!browser.reset_focus);
     assert!(browser.keyboard_pane().is_some());
-    browser.workspace_rosters.remove(&spaces[0].id);
+    browser.workspace_profiles.retry(&spaces[0]);
     browser.retire_profile_panes();
     assert!(!browser.reset_focus);
     browser.layout.as_mut().unwrap().model_mut().workspaces[0].profile_id = None;
@@ -76,7 +76,11 @@ fn profile_retirement_preserves_hidden_focus_and_expires_unavailable_empty_panes
     assert!(!browser.reset_focus);
     assert_eq!(selected(&browser), spaces[1].id);
     assert!(browser.keyboard_pane().is_some());
+    // A roster failure loses status only; the panes keep the keyboard.
     browser.workspace_rosters.remove(&spaces[1].id);
+    browser.retire_profile_panes();
+    assert!(browser.keyboard_pane().is_some());
+    browser.workspace_profiles.retry(&spaces[1]);
     browser.retire_profile_panes();
     assert!(browser.reset_focus);
     assert!(browser.keyboard_pane().is_none());
@@ -565,8 +569,13 @@ fn original_unavailable_workspace_accepts_explicit_retry() {
         .unwrap()
         .model_mut()
         .choose_workspace(&spaces[0].id);
-    // An unavailable roster may require retry even with a verified connection.
+    // A missing roster loses status, not access, so nothing needs a retry.
     browser.workspace_rosters.remove(&spaces[0].id);
+    let origin = browser.selected_navigation_origin().unwrap();
+    assert!(!browser.profile_content_unavailable());
+    assert!(!browser.retry_profile_origin(Some(&origin)));
+    let bound_origin = origin;
+    browser.workspace_profiles.retry(&spaces[0]);
     let origin = browser.selected_navigation_origin().unwrap();
     assert!(browser.profile_content_unavailable());
     assert!(browser.retry_profile_origin(Some(&origin)));
@@ -578,8 +587,8 @@ fn original_unavailable_workspace_accepts_explicit_retry() {
     assert!(
         matches!(browser.workspace_profiles.route(&spaces[1]), Route::Bound(connection) if connection.connection_key() == b.connection_key())
     );
-    // A held callback cannot retry again once its connection epoch is retired.
-    assert!(!browser.retry_profile_origin(Some(&origin)));
+    // A held callback cannot retry once its connection epoch is retired.
+    assert!(!browser.retry_profile_origin(Some(&bound_origin)));
 }
 
 #[test]

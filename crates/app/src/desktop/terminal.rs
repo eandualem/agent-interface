@@ -236,8 +236,9 @@ pub(super) struct LiveTerminal {
     /// Starts this ordinary terminal's shell when it is no longer running.
     environment: Option<agent_interface_tmux::shells::Environment>,
     restoring: bool,
-    /// The Backbone data directory and name of the agent this attachment shows.
-    agent: Option<(PathBuf, String)>,
+    /// The name of the stopped agent this attachment shows, with the Backbone data
+    /// directory that starts it. A bound pane starts it through its connection.
+    agent: Option<(Option<PathBuf>, String)>,
     launching: bool,
     launch_result: Option<agent_interface_roster::lifecycle::Outcome>,
     _windows: Task<()>,
@@ -259,7 +260,7 @@ impl LiveTerminal {
     }
 
     /// Only the browser knows whether an attachment is a registered agent.
-    pub fn set_agent(&mut self, agent: Option<(PathBuf, String)>, cx: &mut Context<Self>) {
+    pub fn set_agent(&mut self, agent: Option<(Option<PathBuf>, String)>, cx: &mut Context<Self>) {
         if self.agent != agent {
             self.agent = agent;
             self.launch_result = None;
@@ -276,11 +277,17 @@ impl LiveTerminal {
         self.launching = true;
         self.launch_result = None;
         let target = agent.clone();
+        let connection = self.target.connection.clone();
         let defaults = defaults();
         let work = cx.background_executor().spawn(async move {
-            agent_interface_roster::lifecycle::start_with_defaults(
-                &target.0, &target.1, resume, defaults,
-            )
+            use agent_interface_roster::lifecycle;
+            match (connection, &target.0) {
+                (Some(connection), _) => connection.start_agent(&target.1, resume),
+                (None, Some(data_dir)) => {
+                    lifecycle::start_with_defaults(data_dir, &target.1, resume, defaults)
+                }
+                (None, None) => lifecycle::Outcome::Unknown,
+            }
         });
         cx.spawn(async move |this, cx| {
             let result = work.await;
