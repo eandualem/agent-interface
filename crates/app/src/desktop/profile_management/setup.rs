@@ -172,6 +172,8 @@ pub(super) struct Pane {
     ticket: Ticket,
     busy: bool,
     finished: bool,
+    /// Started from fresh choices: open the agent once it reports ready.
+    open_when_ready: bool,
     error: Option<Error>,
     pub focus: FocusHandle,
 }
@@ -185,6 +187,7 @@ impl Pane {
             ticket: Ticket::default(),
             busy: true,
             finished: false,
+            open_when_ready: false,
             error: None,
             focus: cx.focus_handle(),
         };
@@ -225,6 +228,7 @@ impl Pane {
             ticket: Ticket::default(),
             busy: false,
             finished: false,
+            open_when_ready: false,
             error: None,
             focus: cx.focus_handle(),
         };
@@ -249,9 +253,11 @@ impl Pane {
             ticket: Ticket::default(),
             busy: false,
             finished: false,
+            open_when_ready: false,
             error: None,
             focus: cx.focus_handle(),
         };
+        pane.open_when_ready = true;
         pane.run(Command::Submit, Some(prepared), cx);
         pane
     }
@@ -406,8 +412,18 @@ impl Pane {
                             *progress = None;
                             match *result {
                                 Ok(next) if next.key == *key => {
+                                    let ready = next
+                                        .first_result
+                                        .as_ref()
+                                        .and_then(|e| e.ready_agent.clone())
+                                        .filter(|_| pane.open_when_ready);
+                                    let profile_id = next.identity.profile_id.clone();
                                     *snapshot = Some(Box::new(next));
                                     pane.error = error;
+                                    if let Some(name) = ready {
+                                        pane.open_when_ready = false;
+                                        cx.emit(Open::Agent { profile_id, name });
+                                    }
                                 }
                                 Ok(_) => {
                                     *snapshot = None;
@@ -517,8 +533,15 @@ impl Render for Pane {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (t, c) = (tokens(), colors());
         let ticket = self.ticket.0.clone();
-        let mut body = div().id("setup-recovery-body").flex_1().min_h_0().overflow_y_scroll().p(px(t.space.s12)).flex().flex_col().gap(px(t.space.s8))
-            .child(ui::group_note("Closing interrupts the local setup command. The provider outcome may remain unknown; closing does not confirm safe cancellation. Recovery keeps the original profile, choices and request; confirmed readiness does not connect a workspace."));
+        let mut body = div()
+            .id("setup-recovery-body")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .p(px(t.space.s12))
+            .flex()
+            .flex_col()
+            .gap(px(t.space.s8));
         match &self.page {
             Page::Loading => body = body.child(ui::group_note("Opening saved setup requests…")),
             Page::History { ids, offset, rows } => {
@@ -585,21 +608,27 @@ impl Render for Pane {
                 snapshot,
                 progress,
             } => {
-                body = body.child(format!("Operation {key}"));
+                let _ = key;
                 if let Some(s) = snapshot {
-                    body = body
-                        .child(status(s))
-                        .child(format!("Request {}", s.request_id))
-                        .child(format!(
-                            "Profile {} · installation {} · instance {}",
-                            s.identity.profile_id,
-                            s.identity.installation_id,
-                            s.identity.lifecycle_id
-                        ));
-                    if let Some(name) = s.first_result.as_ref().and_then(|e| e.ready_agent.as_ref())
-                    {
-                        body = body.child(format!("Ready agent: {name}"));
-                    }
+                    body = body.child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(t.space.s8))
+                            .child(if s.closed() || agent_waiting(s) || outcome(s).is_some() {
+                                ui::step_dot(ui::Step::Waits)
+                            } else if s
+                                .first_result
+                                .as_ref()
+                                .is_some_and(|e| e.ready_agent.is_some())
+                            {
+                                ui::step_dot(ui::Step::Done)
+                            } else {
+                                ui::step_dot(ui::Step::Now)
+                            })
+                            .child(div().text_color(c.text).child(s.agent_name.clone()))
+                            .child(div().text_color(c.muted).child(status(s))),
+                    );
                     if let Some(text) = outcome(s) {
                         body = body.child(ui::group_note(text));
                     }
@@ -628,9 +657,9 @@ impl Render for Pane {
                         }
                     }
                 }
-                if progress.is_some() {
+                if progress.is_some() || self.busy {
                     body = body.child(ui::group_note(
-                        "Provider progress received. Waiting for a durable result…",
+                        "Starting… Leaving doesn't stop it; it finishes on its own.",
                     ));
                 }
                 if self.busy {
@@ -683,9 +712,6 @@ impl Render for Pane {
                 }
             }
         }
-        if self.busy {
-            body = body.child(ui::group_note("Working…"));
-        }
         if let Some(error) = self.error {
             body = body.child(ui::group_note(message(error)));
         }
@@ -701,7 +727,6 @@ impl Render for Pane {
                     cx.stop_propagation();
                 }
             }))
-            .child(ui::view_header("layers", "Saved agent setup"))
             .child(body)
             .child(
                 ui::view_toolbar()

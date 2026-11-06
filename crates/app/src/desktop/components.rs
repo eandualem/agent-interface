@@ -168,6 +168,46 @@ pub fn button(
     .child(label.into())
 }
 
+/// A profile's mark: the first letter of its name on a soft tint. Default is
+/// neutral; any other profile takes one of four tints from its stable id, so
+/// the colour never changes with its name.
+pub fn profile_mark(id: &str, name: &str, default: bool, size: f32) -> Div {
+    let (t, c) = (tokens(), colors());
+    let tint = if default {
+        None
+    } else {
+        let hash = id.bytes().fold(0u32, |hash, byte| {
+            hash.wrapping_mul(31).wrapping_add(u32::from(byte))
+        });
+        Some([c.info, c.violet, c.green, c.accent][hash as usize % 4])
+    };
+    let letter = name
+        .trim()
+        .chars()
+        .next()
+        .map_or_else(|| "?".to_owned(), |ch| ch.to_uppercase().collect());
+    let mark = text(
+        div()
+            .flex_shrink_0()
+            .size(px(size))
+            .rounded(px(size * 0.3))
+            .flex()
+            .items_center()
+            .justify_center()
+            .font_weight(t.text.row_selected.weight()),
+        &t.text.meta,
+    );
+    match tint {
+        Some(tint) => mark.bg(Rgba { a: 0.14, ..tint }).text_color(tint),
+        None => mark
+            .bg(c.selected)
+            .border(px(t.size.hairline))
+            .border_color(c.line_strong)
+            .text_color(c.text_2),
+    }
+    .child(letter)
+}
+
 /// A small filled dot, such as the needs-you mark on a tab or slot.
 pub fn dot(color: Rgba) -> Div {
     let t = tokens();
@@ -971,6 +1011,23 @@ pub fn segment(
             .hover(|el| el.text_color(colors().text))
     })
     .child(label.into())
+}
+
+/// An on and off switch: the accent track with the knob at the end when on.
+pub fn switch(id: impl Into<SharedString>, on: bool) -> Stateful<Div> {
+    let (t, c) = (tokens(), colors());
+    div()
+        .id(id.into())
+        .flex_shrink_0()
+        .w(px(t.size.slot + t.space.s4))
+        .h(px(t.space.s20))
+        .p(px(t.space.s2))
+        .rounded_full()
+        .flex()
+        .cursor_pointer()
+        .when(on, |el| el.justify_end().bg(c.accent))
+        .when(!on, |el| el.bg(c.line_strong))
+        .child(div().size(px(t.space.s16)).rounded_full().bg(gpui::white()))
 }
 
 /// A short bar filled to `fraction` of its width.

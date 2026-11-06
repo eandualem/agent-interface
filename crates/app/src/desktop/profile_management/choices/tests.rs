@@ -175,3 +175,12 @@ fn the_default_brief_is_the_fresh_install_template() {
         json!({"template":"orchestrator-v1"})
     );
 }
+
+#[test]
+fn an_agent_is_named_after_its_folder() {
+    assert_eq!(
+        super::folder_name(std::path::Path::new("/work/Acme API")).as_deref(),
+        Some("acme-api")
+    );
+    assert_eq!(super::folder_name(std::path::Path::new("/")), None);
+}

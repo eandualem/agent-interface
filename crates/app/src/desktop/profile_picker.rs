@@ -1,17 +1,20 @@
-//! Native profile picker with explicit service management. Its owner must bind the verified result to
-//! a workspace explicitly; constructing this pane does not change app sources.
+//! The New workspace popover: a name, the profile it joins, or a new profile.
+//! Its owner binds the verified result to a workspace explicitly; constructing
+//! this popover does not change app sources.
 
 use super::{
     components as ui,
     design::{colors, tokens},
+    name::NameField,
 };
 use crate::profiles::{
     Client, Error,
     selection::{Selected, Selection},
 };
-use agent_interface_roster::profiles::{Item, State};
+use agent_interface_roster::profiles::{Item, Kind, State};
 use gpui::{
-    Context, EventEmitter, FocusHandle, ScrollHandle, SharedString, Window, div, prelude::*, px,
+    Context, Entity, EventEmitter, FocusHandle, ScrollHandle, SharedString, Subscription, Window,
+    div, prelude::*, px,
 };
 use std::sync::{
     Arc,
@@ -19,8 +22,19 @@ use std::sync::{
 };
 
 pub(super) enum Choice {
-    Selected(Box<Selected>),
-    Open(super::profile_management::Open),
+    /// A verified profile, and the name the person typed (empty for its own).
+    Selected {
+        selected: Box<Selected>,
+        name: String,
+    },
+    /// Make a profile first; the workspace takes `name`.
+    NewProfile {
+        name: String,
+    },
+    /// Profiles are unavailable: a workspace that runs terminals only.
+    Plain {
+        name: String,
+    },
     Cancel,
 }
 
@@ -79,6 +93,25 @@ impl Catalog {
         let next = at.saturating_add_signed(by).min(ready.len() - 1);
         self.focused = Some(ready[next].profile_id.clone());
     }
+    /// Whether moving down leaves the profiles for the New profile row.
+    fn at_end(&self) -> bool {
+        let ready: Vec<_> = self
+            .items
+            .iter()
+            .filter(|item| item.state == State::Ready)
+            .collect();
+        self.focused
+            .as_ref()
+            .and_then(|id| ready.iter().position(|item| &item.profile_id == id))
+            .is_none_or(|at| at + 1 == ready.len())
+    }
+    fn focus_last(&mut self) {
+        self.focused = self
+            .items
+            .iter()
+            .rfind(|item| item.state == State::Ready)
+            .map(|item| item.profile_id.clone());
+    }
     fn focused_index(&self) -> Option<usize> {
         let id = self.focused.as_ref()?;
         self.items.iter().position(|item| &item.profile_id == id)
@@ -102,47 +135,49 @@ pub(super) struct ProfilePicker {
     client: Client,
     catalog: Catalog,
     selection: Selection,
-    selection_error: Option<Error>,
+    selection_error: Option<(String, Error)>,
+    name: Entity<NameField>,
+    _name: Subscription,
+    /// The New profile row has the keyboard choice instead of a profile.
+    on_new: bool,
     closed: bool,
     pub focus: FocusHandle,
     scroll: ScrollHandle,
-    directory: Option<std::path::PathBuf>,
     has_bound_workspaces: bool,
-    management: Option<(
-        gpui::Entity<super::profile_management::Management>,
-        gpui::Subscription,
-    )>,
 }
 impl EventEmitter<Choice> for ProfilePicker {}
 impl ProfilePicker {
     pub fn focus_handle(&self, cx: &gpui::App) -> FocusHandle {
-        self.management.as_ref().map_or_else(
-            || self.focus.clone(),
-            |(pane, _)| pane.read(cx).focus_handle(cx),
-        )
+        self.name.read(cx).focus.clone()
     }
     /// The caller supplies the already resolved executable and captured caller
     /// context. No ambient provider or Default profile is selected implicitly.
     pub fn new(
         client: Client,
-        directory: Option<std::path::PathBuf>,
         has_bound_workspaces: bool,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let name = cx.new(|cx| NameField::search(window, cx));
+        let observe = cx.observe(&name, |_, _, cx| cx.notify());
         let mut picker = Self {
             client,
             catalog: Catalog::default(),
             selection: Selection::default(),
             selection_error: None,
+            name,
+            _name: observe,
+            on_new: false,
             closed: false,
             focus: cx.focus_handle(),
             scroll: ScrollHandle::new(),
-            directory,
             has_bound_workspaces,
-            management: None,
         };
         picker.refresh(cx);
         picker
+    }
+    fn typed(&self, cx: &gpui::App) -> String {
+        self.name.read(cx).value().trim().to_owned()
     }
     fn refresh(&mut self, cx: &mut Context<Self>) {
         if self.closed {
@@ -150,6 +185,7 @@ impl ProfilePicker {
         }
         self.selection.cancel();
         self.selection_error = None;
+        self.on_new = false;
         self.scroll.scroll_to_item(0);
         let ticket = self.catalog.begin();
         let worker_ticket = ticket.clone();
@@ -162,6 +198,7 @@ impl ProfilePicker {
             let _ = this.update(cx, |picker, cx| {
                 let result = first_run(result, picker.has_bound_workspaces);
                 if !picker.closed && picker.catalog.complete(&ticket, result) {
+                    picker.on_new = picker.catalog.focused.is_none();
                     picker.reveal_focus();
                     cx.notify();
                 }
@@ -172,19 +209,22 @@ impl ProfilePicker {
     }
     fn choose(&mut self, id: &str, cx: &mut Context<Self>) {
         // Recheck the current catalog: a click may belong to an older frame.
-        if self.closed || self.management.is_some() || !self.catalog.can_choose(id) {
+        if self.closed || !self.catalog.can_choose(id) {
             return;
         }
+        self.on_new = false;
+        self.catalog.focused = Some(id.to_owned());
         self.selection_error = None;
         let attempt = match self.selection.begin(&self.client, id) {
             Ok(attempt) => attempt,
             Err(error) => {
-                self.selection_error = Some(error);
+                self.selection_error = Some((id.to_owned(), error));
                 cx.notify();
                 return;
             }
         };
         let work = cx.background_executor().spawn(async move { attempt.run() });
+        let chosen = id.to_owned();
         cx.spawn(async move |this, cx| {
             let completion = work.await;
             let _ = this.update(cx, |picker, cx| {
@@ -196,9 +236,13 @@ impl ProfilePicker {
                         Ok(selected) => {
                             picker.closed = true;
                             picker.catalog.ticket.store(false, Ordering::Release);
-                            cx.emit(Choice::Selected(Box::new(selected)));
+                            let name = picker.typed(cx);
+                            cx.emit(Choice::Selected {
+                                selected: Box::new(selected),
+                                name,
+                            });
                         }
-                        Err(error) => picker.selection_error = Some(error),
+                        Err(error) => picker.selection_error = Some((chosen, error)),
                     }
                     cx.notify();
                 }
@@ -207,44 +251,47 @@ impl ProfilePicker {
         .detach();
         cx.notify();
     }
-    fn manage(&mut self, profile: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
-        if self.closed || self.management.is_some() {
+    fn finish(&mut self, choice: Choice, cx: &mut Context<Self>) {
+        if self.closed {
             return;
         }
-        if let Some(id) = &profile
-            && !self.catalog.can_choose(id)
-        {
-            return;
-        }
+        self.closed = true;
         self.selection.cancel();
-        self.selection_error = None;
-        let client = self.client.clone();
-        let directory = self.directory.clone();
-        let pane =
-            cx.new(|cx| super::profile_management::Management::new(client, directory, profile, cx));
-        window.focus(&pane.read(cx).focus.clone(), cx);
-        cx.subscribe(&pane, |_, _, open: &super::profile_management::Open, cx| {
-            cx.emit(Choice::Open(open.clone()));
-        })
-        .detach();
-        let subscription = cx.subscribe_in(
-            &pane,
-            window,
-            |picker, pane, _: &super::profile_management::Back, window, cx| {
-                if !picker
-                    .management
-                    .as_ref()
-                    .is_some_and(|(active, _)| active == pane)
-                {
-                    return;
-                }
-                picker.management = None;
-                picker.refresh(cx);
-                window.focus(&picker.focus, cx);
-            },
-        );
-        self.management = Some((pane, subscription));
+        self.catalog.ticket.store(false, Ordering::Release);
+        cx.emit(choice);
         cx.notify();
+    }
+    fn new_profile(&mut self, cx: &mut Context<Self>) {
+        let name = self.typed(cx);
+        self.finish(Choice::NewProfile { name }, cx);
+    }
+    /// Enter: the chosen row, or a terminals-only workspace without profiles.
+    fn confirm(&mut self, cx: &mut Context<Self>) {
+        if self.catalog.error.is_some() {
+            let name = self.typed(cx);
+            if !name.is_empty() {
+                self.finish(Choice::Plain { name }, cx);
+            }
+        } else if self.on_new {
+            self.new_profile(cx);
+        } else if let Some(id) = self.catalog.focused.clone() {
+            self.choose(&id, cx);
+        }
+    }
+    fn step(&mut self, by: isize) {
+        if self.catalog.loading || self.catalog.error.is_some() {
+            return;
+        }
+        if self.on_new {
+            if by < 0 {
+                self.catalog.focus_last();
+                self.on_new = self.catalog.focused.is_none();
+            }
+        } else if by > 0 && self.catalog.at_end() {
+            self.on_new = true;
+        } else {
+            self.catalog.navigate(by);
+        }
     }
     fn reveal_focus(&self) {
         if let Some(index) = self.catalog.focused_index() {
@@ -252,14 +299,26 @@ impl ProfilePicker {
         }
     }
     fn cancel(&mut self, cx: &mut Context<Self>) {
-        if self.closed {
-            return;
+        self.finish(Choice::Cancel, cx);
+    }
+    fn row_meta(&self, item: &Item) -> (SharedString, bool) {
+        let id = item.profile_id.as_str();
+        if self.selection.pending() == Some(id) {
+            return ("Connecting…".into(), false);
         }
-        self.closed = true;
-        self.selection.cancel();
-        self.catalog.ticket.store(false, Ordering::Release);
-        cx.emit(Choice::Cancel);
-        cx.notify();
+        if self
+            .selection_error
+            .as_ref()
+            .is_some_and(|(failed, _)| failed == id)
+        {
+            return ("Didn't start".into(), true);
+        }
+        match (&item.state, &item.kind) {
+            (State::Ready, Kind::LegacyDefault) => ("Your own sign-ins".into(), false),
+            (State::Ready, _) => ("".into(), false),
+            (State::Creating, _) => ("Creating…".into(), false),
+            (State::Failed, _) => ("Didn't finish".into(), true),
+        }
     }
 }
 
@@ -299,164 +358,173 @@ pub(super) fn message(error: &Error) -> &'static str {
     }
 }
 
-impl ProfilePicker {
-    /// A management pane may be running a provider command or holding a form.
-    pub fn managing(&self) -> bool {
-        self.management.is_some()
-    }
-}
-
 impl Render for ProfilePicker {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if let Some((pane, _)) = &self.management {
-            return div().size_full().child(pane.clone());
-        }
         let (t, c) = (tokens(), colors());
-        let mut rows = div()
-            .id("profile-rows")
-            .flex_1()
-            .min_h_0()
-            .overflow_y_scroll()
-            .track_scroll(&self.scroll)
-            .p(px(t.space.s12));
-        if self.catalog.loading {
-            rows = rows.child(ui::group_note("Loading profiles…"));
-        }
-        if let Some(error) = self.catalog.error {
-            rows = rows.child(ui::group_note(message(&error)));
-        }
-        if !self.catalog.loading && self.catalog.error.is_none() && self.catalog.items.is_empty() {
-            rows = rows.child(ui::group_note("No profiles are registered."));
-        }
-        for item in &self.catalog.items {
-            let id = item.profile_id.clone();
-            let manage_id = id.clone();
-            let ready = item.state == State::Ready;
-            let pending = self.selection.pending() == Some(id.as_str());
-            let state = match item.state {
-                State::Ready => "Ready to connect",
-                State::Creating => "Creating",
-                State::Failed => "Creation failed",
-            };
-            rows = rows.child(
-                ui::row(
-                    SharedString::from(format!("profile-{id}")),
-                    self.catalog.focused.as_deref() == Some(id.as_str()),
-                )
-                .h(px(t.size.row * 2.0))
-                .when(!ready, |row| row.cursor_default().opacity(0.65))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .child(item.display_name.clone())
-                        .child(
-                            div()
-                                .text_color(c.muted)
-                                .child(format!("{} · {state}", item.profile_id)),
-                        ),
-                )
-                .when(ready, |row| {
-                    row.child(
-                        ui::button(
-                            SharedString::from(format!("manage-{manage_id}")),
-                            "Manage",
-                            ui::Button::Secondary,
-                        )
-                        .on_click(cx.listener(
-                            move |picker, _, window, cx| {
-                                cx.stop_propagation();
-                                picker.manage(Some(manage_id.clone()), window, cx);
-                            },
-                        )),
+        let empty = self.name.read(cx).value().is_empty();
+        let field = div()
+            .relative()
+            .px(px(t.space.s6))
+            .pb(px(t.space.s8))
+            .child(self.name.clone())
+            .when(empty, |el| {
+                el.child(
+                    ui::text(
+                        div()
+                            .absolute()
+                            .top_0()
+                            .left(px(t.space.s6 * 2.0 + t.size.hairline))
+                            .h(px(t.size.jump_field))
+                            .flex()
+                            .items_center()
+                            .text_color(c.faint),
+                        &t.text.body,
                     )
-                })
-                .when(pending, |row| row.child("Connecting…"))
-                .on_click(cx.listener(move |picker, _, _, cx| picker.choose(&id, cx))),
-            );
-        }
-        div()
-            .size_full()
-            .flex()
-            .flex_col()
-            .bg(c.surface)
-            .font_family(t.font.ui.clone())
+                    .child("Workspace name"),
+                )
+            });
+        let mut menu = ui::menu()
+            .w(px(t.size.profile_popover))
             .track_focus(&self.focus)
             .capture_key_down(cx.listener(|picker, event: &gpui::KeyDownEvent, _, cx| {
-                if event.keystroke.modifiers.platform
-                    || event.keystroke.modifiers.control
-                    || event.keystroke.modifiers.alt
+                let keys = &event.keystroke;
+                if keys.modifiers.platform
+                    || keys.modifiers.control
+                    || keys.modifiers.alt
+                    || picker.name.read(cx).composing()
                 {
                     return;
                 }
-                match event.keystroke.key.as_str() {
+                match keys.key.as_str() {
                     "escape" => picker.cancel(cx),
-                    "up" => picker.catalog.navigate(-1),
-                    "down" => picker.catalog.navigate(1),
-                    "enter" => {
-                        if let Some(id) = picker.catalog.focused.clone() {
-                            picker.choose(&id, cx);
-                        }
-                    }
+                    "up" => picker.step(-1),
+                    "down" => picker.step(1),
+                    "enter" => picker.confirm(cx),
                     _ => return,
                 }
                 picker.reveal_focus();
                 cx.stop_propagation();
                 cx.notify();
             }))
-            .child(ui::view_header("layers", "Choose a profile"))
-            .child(rows)
-            .children(
-                self.selection_error
-                    .map(|error| ui::group_note(message(&error))),
-            )
             .child(
-                ui::view_toolbar()
-                    .px(px(t.space.s12))
+                ui::text(
+                    div()
+                        .px(px(t.space.s10))
+                        .pt(px(t.space.s8))
+                        .pb(px(t.space.s6))
+                        .font_weight(t.text.row_selected.weight()),
+                    &t.text.row,
+                )
+                .child("New workspace"),
+            )
+            .child(field);
+        if let Some(error) = self.catalog.error {
+            return menu.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .items_start()
                     .gap(px(t.space.s8))
+                    .px(px(t.space.s10))
+                    .pb(px(t.space.s10))
                     .child(
-                        ui::button("profiles-refresh", "Refresh", ui::Button::Secondary)
-                            .on_click(cx.listener(|picker, _, _, cx| picker.refresh(cx))),
-                    )
-                    .when(
-                        self.catalog
-                            .focused
-                            .as_ref()
-                            .is_some_and(|id| self.catalog.can_choose(id)),
-                        |bar| {
-                            bar.child(
-                                ui::button(
-                                    "profiles-manage",
-                                    "Manage selected",
-                                    ui::Button::Secondary,
-                                )
-                                .on_click(cx.listener(
-                                    |picker, _, window, cx| {
-                                        if let Some(id) = picker.catalog.focused.clone() {
-                                            picker.manage(Some(id), window, cx);
-                                        }
-                                    },
-                                )),
-                            )
-                        },
-                    )
-                    .child(
-                        ui::button(
-                            "profiles-operations",
-                            "Manage profiles",
-                            ui::Button::Secondary,
-                        )
-                        .on_click(
-                            cx.listener(|picker, _, window, cx| picker.manage(None, window, cx)),
+                        ui::text(div().text_color(c.text_2), &t.text.status).child(
+                            "Profiles aren't available right now. This workspace can still run terminals.",
                         ),
                     )
+                    .child(ui::text(div().text_color(c.muted), &t.text.meta).child(message(&error)))
                     .child(
-                        ui::button("profiles-cancel", "Cancel", ui::Button::Secondary)
-                            .on_click(cx.listener(|picker, _, _, cx| picker.cancel(cx))),
+                        ui::button("profiles-refresh", "Check again", ui::Button::Secondary)
+                            .on_click(cx.listener(|picker, _, _, cx| picker.refresh(cx))),
                     ),
-            )
+            );
+        }
+        let mut rows = div()
+            .id("profile-rows")
+            .flex()
+            .flex_col()
+            .gap(px(t.size.hairline * 2.0))
+            .max_h(px(t.size.row * 8.0))
+            .overflow_y_scroll()
+            .track_scroll(&self.scroll);
+        if self.catalog.loading {
+            rows = rows.child(
+                ui::text(
+                    div()
+                        .px(px(t.space.s10))
+                        .h(px(t.size.row))
+                        .flex()
+                        .items_center()
+                        .text_color(c.muted),
+                    &t.text.meta,
+                )
+                .child("Loading profiles…"),
+            );
+        }
+        for item in &self.catalog.items {
+            let id = item.profile_id.clone();
+            let ready = item.state == State::Ready;
+            let (meta, attention) = self.row_meta(item);
+            let selected = !self.on_new && self.catalog.focused.as_deref() == Some(id.as_str());
+            rows = rows.child(
+                ui::row(SharedString::from(format!("profile-{id}")), selected)
+                    .when(!ready, |row| row.cursor_default().opacity(0.65))
+                    .child(ui::profile_mark(
+                        &id,
+                        &item.display_name,
+                        item.kind == Kind::LegacyDefault,
+                        t.size.profile_mark,
+                    ))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .text_color(c.text)
+                            .child(item.display_name.clone()),
+                    )
+                    .when(attention, |row| row.child(ui::step_dot(ui::Step::Waits)))
+                    .child(
+                        ui::text(
+                            div().flex_shrink_0().text_color(if attention {
+                                c.attention_text
+                            } else {
+                                c.muted
+                            }),
+                            &t.text.meta,
+                        )
+                        .child(meta),
+                    )
+                    .on_click(cx.listener(move |picker, _, _, cx| picker.choose(&id, cx))),
+            );
+        }
+        menu = menu.child(ui::menu_heading("PROFILE")).child(rows);
+        if let Some((_, error)) = &self.selection_error {
+            menu = menu.child(
+                ui::text(
+                    div()
+                        .px(px(t.space.s10))
+                        .py(px(t.space.s4))
+                        .text_color(c.attention_text),
+                    &t.text.meta,
+                )
+                .child(message(error)),
+            );
+        }
+        menu.child(ui::menu_rule()).child(
+            ui::row("profiles-new", self.on_new)
+                .text_color(c.text_2)
+                .child(
+                    div()
+                        .w(px(t.size.profile_mark))
+                        .flex()
+                        .justify_center()
+                        .child(ui::icon("plus", t.size.icon, c.muted)),
+                )
+                .child("New profile")
+                .on_click(cx.listener(|picker, _, _, cx| picker.new_profile(cx))),
+        )
     }
 }
 
@@ -472,6 +540,26 @@ mod tests {
             state,
         }
     }
+    #[test]
+    fn moving_down_past_the_last_ready_profile_reaches_new_profile() {
+        let mut catalog = Catalog::default();
+        let ticket = catalog.begin();
+        assert!(catalog.complete(
+            &ticket,
+            Ok(vec![
+                item("a", State::Ready),
+                item("b", State::Ready),
+                item("c", State::Failed)
+            ])
+        ));
+        assert!(!catalog.at_end());
+        catalog.navigate(1);
+        assert!(catalog.at_end());
+        catalog.focused = None;
+        catalog.focus_last();
+        assert_eq!(catalog.focused.as_deref(), Some("b"));
+    }
+
     #[test]
     fn absent_registry_is_first_run_only_without_bound_workspaces() {
         assert!(first_run(Err(Error::RegistryAbsent), false).is_ok_and(|items| items.is_empty()));

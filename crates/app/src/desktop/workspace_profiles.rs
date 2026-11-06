@@ -308,9 +308,10 @@ impl Browser {
 
     /// Show a session setup left waiting, in that profile's workspace. A sign-in
     /// session comes from the provider, so it needs a verified connection first.
-    fn open_from_setup(
+    pub(super) fn open_from_setup(
         &mut self,
         open: super::profile_management::Open,
+        label: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -338,7 +339,10 @@ impl Browser {
                     .sign_in_session(&runtime)
                     .map_err(super::new_pane::sign_in_refusal)?,
             };
-            Ok::<_, &'static str>((session, profile_id, profile.item().display_name.clone()))
+            let label = label
+                .filter(|label| !label.trim().is_empty())
+                .unwrap_or_else(|| profile.item().display_name.clone());
+            Ok::<_, &'static str>((session, profile_id, label))
         });
         cx.spawn_in(window, async move |this, cx| {
             let result = work.await;
@@ -671,11 +675,11 @@ impl Browser {
         };
         self.profile_picker_requested = false;
         let Ok(client) = client else {
-            self.save_notice = Some("Profile discovery is unavailable.".into());
+            // Without Agent Backbone the name is typed in place, as it always was.
+            self.begin_workspace(window, cx);
             return;
         };
         let client = client.clone();
-        let directory = self.directory.clone();
         let has_bound_workspaces = self.layout.as_ref().is_some_and(|layout| {
             layout
                 .model()
@@ -683,9 +687,8 @@ impl Browser {
                 .iter()
                 .any(|space| space.profile_id.is_some())
         });
-        let picker = cx.new(|cx| {
-            profile_picker::ProfilePicker::new(client, directory, has_bound_workspaces, cx)
-        });
+        let picker = cx
+            .new(|cx| profile_picker::ProfilePicker::new(client, has_bound_workspaces, window, cx));
         window.focus(&picker.read(cx).focus_handle(cx), cx);
         let events = cx.subscribe_in(&picker, window, |browser, picker, choice, window, cx| {
             if !browser
@@ -695,52 +698,117 @@ impl Browser {
             {
                 return;
             }
-            match choice {
-                profile_picker::Choice::Cancel => browser.profile_picker = None,
-                profile_picker::Choice::Open(open) => {
-                    browser.open_from_setup(open.clone(), window, cx);
-                }
-                profile_picker::Choice::Selected(selected) => {
-                    // Selection closes the picker internally. Always retire it,
-                    // including when a concurrent save prevents this handoff.
-                    browser.profile_picker = None;
-                    if let Some(focus) = &browser.navigation {
-                        window.focus(focus, cx);
-                    }
-                    cx.notify();
-                    if browser.saving || browser.save_failed {
-                        return;
-                    }
-                    let Some(layout) = &browser.layout else {
-                        return;
-                    };
-                    let Some((base, mut proposed)) =
-                        super::workspace::create_profile(layout, &selected.item().display_name)
-                    else {
-                        return;
-                    };
-                    let selected_id = proposed.selected.clone();
-                    let space = proposed
-                        .workspaces
-                        .iter_mut()
-                        .find(|space| space.id == selected_id)
-                        .expect("created workspace");
-                    space.profile_id = Some(selected.item().profile_id.clone());
-                    browser.pending_profile =
-                        Some((space.id.clone(), selected.connection().clone()));
-                    browser.creation_from =
-                        Some(super::layout_edit::Selection::capture(layout.model()));
-                    browser.pending_save = Some((base, proposed));
-                    browser.profile_picker = None;
-                    browser.save(cx);
-                }
-            }
+            // Every choice retires the popover, including when a concurrent
+            // save prevents its handoff.
+            browser.profile_picker = None;
             if let Some(focus) = &browser.navigation {
                 window.focus(focus, cx);
+            }
+            match choice {
+                profile_picker::Choice::Cancel => {}
+                profile_picker::Choice::Selected { selected, name } => {
+                    browser.bind_new_workspace(selected, name, cx);
+                }
+                profile_picker::Choice::NewProfile { name } => {
+                    browser.open_profile_flow(name.clone(), window, cx);
+                }
+                profile_picker::Choice::Plain { name } => {
+                    if !browser.saving
+                        && !browser.save_failed
+                        && let Some(layout) = &browser.layout
+                        && let Some(proposal) = super::workspace::create(layout, name)
+                    {
+                        browser.creation_from =
+                            Some(super::layout_edit::Selection::capture(layout.model()));
+                        browser.pending_save = Some(proposal);
+                        browser.save(cx);
+                    }
+                }
             }
             cx.notify();
         });
         self.profile_picker = Some((picker, events));
+    }
+
+    /// Make a workspace called `name`, or after the profile when empty, bound
+    /// to a verified profile.
+    fn bind_new_workspace(
+        &mut self,
+        selected: &crate::profiles::selection::Selected,
+        name: &str,
+        cx: &mut Context<Self>,
+    ) {
+        if self.saving || self.save_failed {
+            return;
+        }
+        let Some(layout) = &self.layout else {
+            return;
+        };
+        let label = if name.trim().is_empty() {
+            selected.item().display_name.as_str()
+        } else {
+            name.trim()
+        };
+        let Some((base, mut proposed)) = super::workspace::create_profile(layout, label) else {
+            return;
+        };
+        let selected_id = proposed.selected.clone();
+        let space = proposed
+            .workspaces
+            .iter_mut()
+            .find(|space| space.id == selected_id)
+            .expect("created workspace");
+        space.profile_id = Some(selected.item().profile_id.clone());
+        self.pending_profile = Some((space.id.clone(), selected.connection().clone()));
+        self.creation_from = Some(super::layout_edit::Selection::capture(layout.model()));
+        self.pending_save = Some((base, proposed));
+        self.save(cx);
+    }
+
+    /// Show New profile's steps in the content area, for a workspace called `name`.
+    pub(super) fn open_profile_flow(
+        &mut self,
+        name: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(Ok(client)) = &self.profile_client else {
+            return;
+        };
+        let (client, directory) = (client.clone(), self.directory.clone());
+        let flow = cx.new(|cx| {
+            super::profile_management::flow::Flow::new(client, directory, name, window, cx)
+        });
+        window.focus(&flow.read(cx).focus_handle(cx), cx);
+        let events = cx.subscribe_in(&flow, window, |browser, flow, event, window, cx| {
+            if !browser
+                .profile_flow
+                .as_ref()
+                .is_some_and(|(active, _)| active == flow)
+            {
+                return;
+            }
+            use super::profile_management::flow::Event;
+            match event {
+                Event::Bind(selected) => {
+                    let name = flow.read(cx).workspace.clone();
+                    browser.bind_new_workspace(selected, &name, cx);
+                }
+                Event::Open(open) => {
+                    let label = flow.read(cx).workspace.clone();
+                    browser.open_from_setup(open.clone(), Some(label), window, cx);
+                }
+                Event::Close => {
+                    browser.profile_flow = None;
+                    if let Some(focus) = &browser.navigation {
+                        window.focus(focus, cx);
+                    }
+                }
+            }
+            cx.notify();
+        });
+        self.profile_flow = Some((flow, events));
+        cx.notify();
     }
 }
 

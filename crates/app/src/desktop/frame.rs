@@ -196,6 +196,49 @@ impl Browser {
         area.child(element).into_any_element()
     }
 
+    /// New profile's steps: alone until its workspace shows a pane, then beside it.
+    pub(super) fn beside_profile_flow(
+        &self,
+        content: AnyElement,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let Some((flow, _)) = &self.profile_flow else {
+            return content;
+        };
+        let t = tokens();
+        let profile = flow.read(cx).profile_id();
+        let beside = profile.is_some()
+            && self.layout.as_ref().is_some_and(|layout| {
+                layout.model().workspace().is_some_and(|space| {
+                    space.profile_id.as_deref() == profile
+                        && space
+                            .tabs
+                            .iter()
+                            .flat_map(|tab| tab.tree.leaves())
+                            .any(|leaf| leaf.attachment.is_some())
+                })
+            });
+        div()
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .flex()
+            .bg(colors().ground)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .pt(px(t.size.window_inset))
+                    .pb(px(t.size.pane_gap))
+                    .pl(px(t.size.pane_gap))
+                    .when(!beside, |el| el.pr(px(t.size.window_inset)))
+                    .child(flow.clone()),
+            )
+            .when(beside, |el| el.child(content))
+            .into_any_element()
+    }
+
     /// The open menu or jump popover, placed where it was opened.
     pub(super) fn popover(
         &mut self,
@@ -204,7 +247,7 @@ impl Browser {
     ) -> Option<AnyElement> {
         let t = tokens();
         let body = if let Some((picker, _)) = &self.profile_picker {
-            div().w(px(480.0)).h(px(560.0)).child(picker.clone())
+            div().child(picker.clone())
         } else if let Some(jump) = self.jump_popover(cx) {
             jump
         } else if self.icon_picker {
@@ -234,15 +277,6 @@ impl Browser {
                     .snap_to_window_with_margin(px(t.space.s8))
                     .child(
                         body.on_mouse_down_out(cx.listener(|browser, _, window, cx| {
-                            // Closing would lose a half-filled form or the view of a
-                            // running command; Back and Escape stay explicit.
-                            if browser
-                                .profile_picker
-                                .as_ref()
-                                .is_some_and(|(picker, _)| picker.read(cx).managing())
-                            {
-                                return;
-                            }
                             if browser.jump.is_some() {
                                 browser.close_jump(window, cx);
                             }

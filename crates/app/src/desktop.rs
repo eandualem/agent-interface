@@ -603,6 +603,11 @@ struct Browser {
         gpui::Entity<profile_picker::ProfilePicker>,
         gpui::Subscription,
     )>,
+    /// New profile, shown beside the workspace it is made for.
+    profile_flow: Option<(
+        gpui::Entity<profile_management::flow::Flow>,
+        gpui::Subscription,
+    )>,
     pending_profile: Option<(String, agent_interface_roster::profiles::Connection)>,
     roster_updates: Option<gpui::Subscription>,
     jump: Option<jump::Jump>,
@@ -826,6 +831,7 @@ impl Browser {
         self.pane_owners.clear();
         self.profile_picker = None;
         self.profile_picker_requested = false;
+        self.profile_flow = None;
         self.pending_profile = None;
         self.views.clear();
         self.new_panes.clear();
@@ -969,7 +975,12 @@ impl Browser {
         if let Some(update) = self.library.as_ref().and_then(Library::take_update) {
             self.apply(update);
         }
-        self.edit_name(None, false, window, cx);
+        // Without Agent Backbone the name is typed in place, as it always was.
+        if matches!(self.profile_client, Some(Err(_))) {
+            self.edit_name(None, false, window, cx);
+        } else {
+            self.request_profile_workspace(cx);
+        }
     }
 
     fn edit_name(
@@ -2695,6 +2706,7 @@ impl Render for Browser {
         }
         let sidebar = self.sidebar(window, cx);
         let content = self.content(window, cx);
+        let content = self.beside_profile_flow(content, cx);
         let status = self.status_bar(window, cx);
         let overlay = self.popover(window, cx);
         let t = design::tokens();

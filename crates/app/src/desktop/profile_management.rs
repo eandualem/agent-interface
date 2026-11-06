@@ -23,7 +23,7 @@ use std::{
 };
 
 mod choices;
-mod creation;
+pub(super) mod flow;
 mod setup;
 
 const PAGE_SIZE: usize = 16;
@@ -76,7 +76,6 @@ pub(super) struct Management {
     directory: Option<PathBuf>,
     setup: Option<(gpui::Entity<setup::Pane>, gpui::Subscription)>,
     choices: Option<(gpui::Entity<choices::Form>, gpui::Subscription)>,
-    form: Option<(gpui::Entity<creation::Form>, gpui::Subscription)>,
     controller: Option<Arc<Controller>>,
     page: Page,
     ticket: Ticket,
@@ -95,10 +94,7 @@ impl Management {
         if let Some((form, _)) = &self.choices {
             return form.read(cx).focus.clone();
         }
-        self.form.as_ref().map_or_else(
-            || self.focus.clone(),
-            |(form, _)| form.read(cx).focus.clone(),
-        )
+        self.focus.clone()
     }
     pub fn new(
         client: Client,
@@ -110,7 +106,6 @@ impl Management {
             client: client.clone(),
             directory: None,
             setup: None,
-            form: None,
             choices: None,
             controller: None,
             page: Page::Loading,
@@ -162,7 +157,6 @@ impl Management {
     }
     fn start(&mut self, action: Action, expected: &Arc<AtomicBool>, cx: &mut Context<Self>) {
         if self.busy
-            || self.form.is_some()
             || self.setup.is_some()
             || self.choices.is_some()
             || !self.ticket.accepts(expected)
@@ -217,48 +211,8 @@ impl Management {
         });
         self.observe_operation(ticket, work, cx);
     }
-    fn create(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.busy
-            || self.form.is_some()
-            || self.setup.is_some()
-            || self.choices.is_some()
-            || self.controller.is_none()
-        {
-            return;
-        }
-        self.ticket.begin();
-        let form = cx.new(|cx| creation::Form::new(window, cx));
-        window.focus(&form.read(cx).focus.clone(), cx);
-        let subscription = cx.subscribe_in(
-            &form,
-            window,
-            |pane, form, event: &creation::Event, window, cx| {
-                if !pane.form.as_ref().is_some_and(|(active, _)| active == form) {
-                    return;
-                }
-                match event {
-                    creation::Event::Back => pane.form = None,
-                    creation::Event::Submit => {
-                        let prepared = form.update(cx, |form, _| form.take_prepared());
-                        let Some(prepared) = prepared else {
-                            return;
-                        };
-                        let Some(controller) = pane.controller.clone() else {
-                            return;
-                        };
-                        pane.form = None;
-                        pane.submit_prepared(prepared, controller, cx);
-                    }
-                }
-                window.focus(&pane.focus, cx);
-                cx.notify();
-            },
-        );
-        self.form = Some((form, subscription));
-        cx.notify();
-    }
     fn setup(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.busy || self.form.is_some() || self.setup.is_some() || self.choices.is_some() {
+        if self.busy || self.setup.is_some() || self.choices.is_some() {
             return;
         }
         let Some(directory) = self.directory.clone() else {
@@ -295,7 +249,6 @@ impl Management {
     }
     fn choices(&mut self, expected: &Arc<AtomicBool>, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy
-            || self.form.is_some()
             || self.setup.is_some()
             || self.choices.is_some()
             || !self.ticket.accepts(expected)
@@ -314,7 +267,8 @@ impl Management {
         let profile = profile.clone();
         let client = self.client.clone();
         self.ticket.begin();
-        let form = cx.new(|cx| choices::Form::new(client, directory, profile, window, cx));
+        let form =
+            cx.new(|cx| choices::Form::new(client, directory, profile, "Cancel", window, cx));
         window.focus(&form.read(cx).focus.clone(), cx);
         let subscription = cx.subscribe_in(
             &form,
@@ -401,7 +355,6 @@ impl Management {
     }
     fn recover(&mut self, command: Command, expected: &Arc<AtomicBool>, cx: &mut Context<Self>) {
         if self.busy
-            || self.form.is_some()
             || self.setup.is_some()
             || self.choices.is_some()
             || !self.ticket.accepts(expected)
@@ -435,7 +388,7 @@ impl Management {
         self.observe_operation(ticket, work, cx);
     }
     fn history(&mut self, offset: usize, retain_ids: bool, cx: &mut Context<Self>) {
-        if self.busy || self.form.is_some() || self.setup.is_some() || self.choices.is_some() {
+        if self.busy || self.setup.is_some() || self.choices.is_some() {
             return;
         }
         let Some(controller) = self.controller.clone() else {
@@ -466,7 +419,6 @@ impl Management {
     }
     fn open_record(&mut self, key: &str, expected: &Arc<AtomicBool>, cx: &mut Context<Self>) {
         if self.busy
-            || self.form.is_some()
             || self.setup.is_some()
             || self.choices.is_some()
             || !self.ticket.accepts(expected)
@@ -604,9 +556,6 @@ impl Render for Management {
             return div().size_full().child(setup.clone());
         }
         if let Some((form, _)) = &self.choices {
-            return div().size_full().child(form.clone());
-        }
-        if let Some((form, _)) = &self.form {
             return div().size_full().child(form.clone());
         }
         let (t, c) = (tokens(), colors());
@@ -771,12 +720,6 @@ impl Render for Management {
             body = body.child(
                 ui::button("saved-setup", "Saved agent setup", ui::Button::Secondary)
                     .on_click(cx.listener(|pane, _, window, cx| pane.setup(window, cx))),
-            );
-        }
-        if self.controller.is_some() && !self.busy {
-            body = body.child(
-                ui::button("Create profile", "Create profile", ui::Button::Secondary)
-                    .on_click(cx.listener(|pane, _, window, cx| pane.create(window, cx))),
             );
         }
         if self.busy {
