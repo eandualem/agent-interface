@@ -224,7 +224,8 @@ impl Browser {
         if !here {
             return content;
         }
-        let beside = profile.is_some()
+        let beside = flow_state.beside()
+            && profile.is_some()
             && space
                 .tabs
                 .iter()

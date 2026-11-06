@@ -14,7 +14,7 @@ use crate::{
     },
 };
 use agent_interface_roster::profiles::{
-    Profile,
+    Connection, Profile,
     operations::{Prepared, Status},
     runtime_catalog::{Authentication, Catalog},
 };
@@ -23,19 +23,24 @@ use gpui::{
     prelude::*, px,
 };
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     path::PathBuf,
     sync::atomic::{AtomicBool, Ordering},
+    time::Duration,
 };
 
 /// The only baseline the provider can create today, so nobody has to know it.
 const BASELINE: &str = "core-v1";
+/// How often an open sign-in is checked. The provider's check is local and quick.
+pub(super) const SIGN_IN_CHECK: Duration = Duration::from_secs(2);
 
 pub(in crate::desktop) enum Event {
     /// The new profile is ready: bind the workspace to it.
     Bind(Box<Selected>),
     /// A sign-in or agent session to show in that workspace.
     Open(Open),
+    /// No agent for now: leave the workspace on a terminal.
+    Terminal,
     /// Finish later; whatever was made stays.
     Close,
 }
@@ -81,8 +86,17 @@ pub(in crate::desktop) struct Flow {
     copy_git: bool,
     selection: Selection,
     catalog: Option<Catalog>,
-    /// Sign-ins opened beside the steps.
+    /// The verified connection, once the profile is bound.
+    connection: Option<Connection>,
+    /// What each CLI last reported about its sign-in.
+    accounts: BTreeMap<String, Authentication>,
+    /// Sign-ins opened beside the steps and not yet reported as finished.
     signing: BTreeSet<String>,
+    /// Sign-ins whose session ended since the last read began. One more read
+    /// decides them: an ended session isn't a successful sign-in.
+    ended: BTreeSet<String>,
+    /// A catalog read, or the wait before the next, is under way.
+    reading: bool,
     form: Option<(Entity<choices::Form>, Subscription)>,
     setup: Option<(Entity<setup::Pane>, Subscription)>,
     ticket: Ticket,
@@ -117,7 +131,11 @@ impl Flow {
             copy_git: false,
             selection: Selection::default(),
             catalog: None,
+            connection: None,
+            accounts: BTreeMap::new(),
             signing: BTreeSet::new(),
+            ended: BTreeSet::new(),
+            reading: false,
             form: None,
             setup: None,
             ticket: Ticket::default(),
@@ -137,6 +155,11 @@ impl Flow {
             return self.name.read(cx).focus.clone();
         }
         self.focus.clone()
+    }
+
+    /// Only signing in happens beside a pane. Otherwise the steps have the area.
+    pub fn beside(&self) -> bool {
+        self.step == Step::SignIn
     }
 
     pub fn profile_id(&self) -> Option<&str> {
@@ -240,6 +263,7 @@ impl Flow {
                 flow.busy = None;
                 match result {
                     Ok(selected) => {
+                        flow.connection = Some(selected.connection().clone());
                         cx.emit(Event::Bind(Box::new(selected)));
                         flow.step = Step::SignIn;
                         flow.read_catalog(cx);
@@ -255,8 +279,7 @@ impl Flow {
         .detach();
     }
 
-    /// Read which tools the profile has, once. Discovery does not check accounts,
-    /// so a sign-in's result is never reported and is not waited for.
+    /// Read which tools the profile has, once, then their sign-ins.
     fn read_catalog(&mut self, cx: &mut Context<Self>) {
         let Some(identity) = self
             .profile
@@ -281,6 +304,7 @@ impl Flow {
                     Ok(catalog) => {
                         flow.catalog = Some(catalog);
                         flow.error = None;
+                        flow.read_accounts(cx);
                     }
                     Err(_) => flow.error = Some("This profile's tools could not be read."),
                 }
@@ -288,6 +312,72 @@ impl Flow {
             });
         })
         .detach();
+    }
+
+    /// Read every installed CLI's sign-in once, then only the ones being signed
+    /// in, for as long as that's open. Each read starts the CLI's own check.
+    fn read_accounts(&mut self, cx: &mut Context<Self>) {
+        let (Some(connection), Some(catalog)) = (self.connection.clone(), &self.catalog) else {
+            return;
+        };
+        if self.reading {
+            return;
+        }
+        let ended = std::mem::take(&mut self.ended);
+        let ids: Vec<String> = if self.accounts.is_empty() {
+            catalog
+                .items()
+                .iter()
+                .filter(|runtime| runtime.available && runtime.id != "shell")
+                .map(|runtime| runtime.id.clone())
+                .collect()
+        } else {
+            self.signing.union(&ended).cloned().collect()
+        };
+        if ids.is_empty() {
+            return;
+        }
+        self.reading = true;
+        let ticket = self.ticket.0.clone();
+        let work = cx
+            .background_executor()
+            .spawn(async move { super::read_accounts(&connection, ids) });
+        cx.spawn(async move |this, cx| {
+            let read = work.await;
+            let again = this
+                .update(cx, |flow, cx| {
+                    if !flow.ticket.accepts(&ticket) || flow.step != Step::SignIn {
+                        return false;
+                    }
+                    for (id, authentication) in read {
+                        if authentication == Authentication::Authenticated || ended.contains(&id) {
+                            flow.signing.remove(&id);
+                        }
+                        flow.accounts.insert(id, authentication);
+                    }
+                    cx.notify();
+                    !flow.signing.is_empty() || !flow.ended.is_empty()
+                })
+                .unwrap_or(false);
+            if again {
+                cx.background_executor().timer(SIGN_IN_CHECK).await;
+            }
+            let _ = this.update(cx, |flow, cx| {
+                flow.reading = false;
+                if again && flow.ticket.accepts(&ticket) && flow.step == Step::SignIn {
+                    flow.read_accounts(cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// A sign-in's session is over. Its row shows what the provider then says.
+    pub fn sign_in_ended(&mut self, profile: &str, runtime: &str, cx: &mut Context<Self>) {
+        if self.profile_id() == Some(profile) && self.signing.contains(runtime) {
+            self.ended.insert(runtime.to_owned());
+            self.read_accounts(cx);
+        }
     }
 
     fn sign_in(&mut self, runtime: String, cx: &mut Context<Self>) {
@@ -299,7 +389,23 @@ impl Flow {
             profile_id,
             runtime,
         }));
+        self.read_accounts(cx);
         cx.notify();
+    }
+
+    fn signed_in(
+        &self,
+    ) -> impl Iterator<Item = &agent_interface_roster::profiles::runtime_catalog::Runtime> {
+        self.catalog
+            .iter()
+            .flat_map(|catalog| catalog.items())
+            .filter(|runtime| {
+                self.accounts.get(&runtime.id) == Some(&Authentication::Authenticated)
+            })
+    }
+
+    fn first_signed_in(&self) -> Option<String> {
+        self.signed_in().next().map(|runtime| runtime.id.clone())
     }
 
     fn first_agent(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -310,12 +416,14 @@ impl Flow {
         self.signing.clear();
         self.ticket.begin();
         let client = self.client.clone();
+        let signed_in = self.first_signed_in();
         let form = cx.new(|cx| {
             choices::Form::new(
                 client,
                 library,
                 profile,
                 "Skip, open a terminal",
+                signed_in,
                 window,
                 cx,
             )
@@ -327,6 +435,7 @@ impl Flow {
             }
             let setup = match event {
                 choices::Event::Back => {
+                    cx.emit(Event::Terminal);
                     flow.close(cx);
                     return;
                 }
@@ -342,7 +451,9 @@ impl Flow {
                     else {
                         return;
                     };
-                    cx.new(|cx| setup::Pane::from_prepared(controller, prepared, cx))
+                    cx.new(|cx| {
+                        setup::Pane::from_prepared(controller, prepared, "Open a terminal", cx)
+                    })
                 }
             };
             flow.form = None;
@@ -359,15 +470,22 @@ impl Flow {
         cx: &mut Context<Self>,
     ) {
         window.focus(&setup.read(cx).focus.clone(), cx);
-        cx.subscribe(&setup, |flow, _, open: &Open, cx| {
-            let agent = matches!(open, Open::Agent { .. });
-            cx.emit(Event::Open(open.clone()));
-            if agent {
-                flow.close(cx);
-            }
+        cx.subscribe(&setup, |_, _, open: &Open, cx| {
+            cx.emit(Event::Open(open.clone()))
         })
         .detach();
-        let back = cx.subscribe(&setup, |flow, _, _: &super::Back, cx| flow.close(cx));
+        cx.subscribe_in(&setup, window, |flow, _, _: &setup::Again, window, cx| {
+            flow.setup = None;
+            flow.first_agent(window, cx);
+        })
+        .detach();
+        cx.observe(&setup, |_, _, cx| cx.notify()).detach();
+        let back = cx.subscribe(&setup, |flow, setup, _: &super::Back, cx| {
+            if !setup.read(cx).running() {
+                cx.emit(Event::Terminal);
+            }
+            flow.close(cx);
+        });
         self.setup = Some((setup, back));
         cx.notify();
     }
@@ -504,7 +622,11 @@ impl Render for Flow {
             .unwrap_or(0);
         let mut column = div().flex().flex_col().child(header);
         for (index, (step, label)) in steps.into_iter().enumerate() {
-            let state = if index < at {
+            let finished = self
+                .setup
+                .as_ref()
+                .is_some_and(|(setup, _)| setup.read(cx).running());
+            let state = if index < at || (index == at && finished) {
                 ui::Step::Done
             } else if index == at {
                 if self.error.is_some() && step == Step::Name {
@@ -518,22 +640,18 @@ impl Render for Flow {
             let last = index + 1 == 3;
             let summary: Option<SharedString> = match (state, step) {
                 (ui::Step::Done, Step::Name) => Some(title.clone().into()),
-                (ui::Step::Done, Step::SignIn) => Some(
-                    self.catalog
-                        .as_ref()
-                        .map(|catalog| {
-                            catalog
-                                .items()
-                                .iter()
-                                .filter(|r| r.authentication == Authentication::Authenticated)
-                                .map(|r| r.display_name.clone())
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        })
-                        .filter(|names| !names.is_empty())
-                        .unwrap_or_else(|| "Skipped".into())
-                        .into(),
-                ),
+                (ui::Step::Done, Step::SignIn) => {
+                    let names = self
+                        .signed_in()
+                        .map(|r| r.display_name.clone())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    Some(if names.is_empty() {
+                        "Skipped".into()
+                    } else {
+                        names.into()
+                    })
+                }
                 _ => None,
             };
             let mut content = div()
@@ -583,9 +701,15 @@ impl Render for Flow {
                     .child(content),
             );
         }
+        let running = self
+            .setup
+            .as_ref()
+            .is_some_and(|(setup, _)| setup.read(cx).running());
         let hints: &[(&'static str, &'static str)] = match self.step {
+            Step::Agent if running => &[("↵", "get started")],
             Step::Name => &[("↵", "continue"), ("esc", "cancel")],
             Step::SignIn => &[("esc", "finish later")],
+            Step::Agent if self.setup.is_some() => &[("esc", "finish later")],
             Step::Agent => &[("⌘↵", "start agent"), ("esc", "finish later")],
         };
         div()
@@ -721,19 +845,35 @@ impl Flow {
                             let id = runtime.id.clone();
                             let right = if !runtime.available {
                                 meta("Not installed".into()).into_any_element()
-                            } else if runtime.authentication == Authentication::Authenticated {
-                                meta("Signed in".into()).into_any_element()
-                            } else if runtime.authentication == Authentication::NotApplicable {
-                                meta("No account needed".into()).into_any_element()
+                            } else if self.accounts.get(&id) == Some(&Authentication::Authenticated)
+                            {
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(t.space.s6))
+                                    .child(ui::step_dot(ui::Step::Done))
+                                    .child(meta("Signed in".into()))
+                                    .into_any_element()
                             } else {
-                                // The provider may never report the result, so an
-                                // opened sign-in stays open to retry.
                                 let opened = self.signing.contains(&id);
+                                // Never reported as signed in, and never a dead end:
+                                // the person can sign in again or skip.
+                                let checked_out =
+                                    self.accounts.get(&id) == Some(&Authentication::Unavailable);
                                 div()
                                     .flex()
                                     .items_center()
                                     .gap(px(t.space.s8))
-                                    .when(opened, |el| el.child(meta("Opened beside".into())))
+                                    .when(opened || checked_out, |el| {
+                                        el.child(meta(
+                                            if checked_out {
+                                                "Couldn't check"
+                                            } else {
+                                                "Waiting…"
+                                            }
+                                            .into(),
+                                        ))
+                                    })
                                     .child(
                                         ui::button(
                                             SharedString::from(format!("sign-in-{id}")),
@@ -762,7 +902,7 @@ impl Flow {
                                     .child(
                                         div()
                                             .flex_1()
-                                            .min_w_0()
+                                            .whitespace_nowrap()
                                             .text_color(c.text)
                                             .child(runtime.display_name.clone()),
                                     )
@@ -771,12 +911,7 @@ impl Flow {
                         }
                     }
                 }
-                let any_signed = self.catalog.as_ref().is_some_and(|catalog| {
-                    catalog
-                        .items()
-                        .iter()
-                        .any(|r| r.authentication == Authentication::Authenticated)
-                }) || !self.signing.is_empty();
+                let any_signed = self.signed_in().next().is_some();
                 div()
                     .flex()
                     .flex_col()

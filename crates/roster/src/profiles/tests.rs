@@ -503,6 +503,39 @@ fn shared_session_cases_decode_and_refusals_keep_their_status() {
 }
 
 #[test]
+fn account_status_reads_one_cli_and_refuses_another_answer() {
+    use runtime_catalog::Authentication;
+    let (directory, listener, url) = crate::transport::tests::local_listener();
+    let (profile, identity) = profile_at(directory.path(), url.strip_prefix("unix:").unwrap());
+    let sessions = fixture()["sessions"].clone();
+    let reply = sessions["account_status_response"].clone();
+    let mut other = reply.clone();
+    other["runtime"] = json!("claude");
+    let server = serve(
+        listener,
+        vec![
+            (200, identity.clone()),
+            (200, reply),
+            (200, other),
+            (
+                422,
+                sessions["sign_in_refusals"]["runtime_unavailable"]["body"].clone(),
+            ),
+        ],
+    );
+    let connection = profile.connect().unwrap();
+    assert_eq!(
+        connection.account_status("codex"),
+        Ok(Authentication::Authenticated)
+    );
+    assert_eq!(connection.account_status("codex"), Err(Error::Invalid));
+    assert_eq!(connection.account_status("codex"), Err(Error::Refused(422)));
+    let requests = server.join().unwrap();
+    let query = sessions["account_status_query"].as_str().unwrap();
+    assert!(requests[1].starts_with(&format!("get {query} ")));
+}
+
+#[test]
 fn starting_a_stopped_agent_uses_the_bound_route_and_reports_the_outcome() {
     use crate::lifecycle::Outcome;
     let (directory, listener, url) = crate::transport::tests::local_listener();

@@ -377,6 +377,27 @@ impl Connection {
         Ok(reply.session)
     }
 
+    /// Read whether `runtime` holds a stored sign-in in this profile. A stored
+    /// sign-in doesn't prove the account works. Runs on an I/O worker.
+    pub fn account_status(&self, runtime: &str) -> Result<runtime_catalog::Authentication, Error> {
+        #[derive(Deserialize)]
+        struct Reply {
+            runtime: String,
+            authentication: runtime_catalog::Authentication,
+        }
+        let path = format!("/api/profile/accounts/status?runtime={runtime}");
+        let response = self.response(&path, None, RESPONSE_LIMIT)?;
+        if response.status == 404 {
+            return Err(Error::Unsupported);
+        }
+        successful(&response)?;
+        let reply: Reply = parse(&response.body)?;
+        if reply.runtime != runtime {
+            return Err(Error::Invalid);
+        }
+        Ok(reply.authentication)
+    }
+
     /// Start this stopped agent, continuing its saved conversation or opening a new
     /// one. The provider's start route takes the name only, so a replacement under
     /// the same name would start instead. Runs on an I/O worker.

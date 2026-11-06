@@ -45,6 +45,47 @@ impl Target {
                 .as_ref()
                 .map(|c| c.identity().profile_id.as_str())
     }
+    /// A provider's sign-in session. It does not come back once it ends.
+    pub fn is_sign_in(&self) -> bool {
+        self.connection.is_some()
+            && self
+                .leaf
+                .attachment
+                .as_ref()
+                .is_some_and(|attachment| attachment.session.starts_with("sign-in-"))
+    }
+
+    /// Remove this pane from the selected workspace, keeping the tab in view.
+    pub fn close_from(&self, layout: &mut agent_interface_core::Layout) -> bool {
+        if !layout
+            .workspace()
+            .is_some_and(|space| self.profile_matches(space))
+        {
+            return false;
+        }
+        let shown = layout.tab().map(|tab| tab.id.clone());
+        let Some(tab) = layout.workspace().and_then(|space| {
+            space
+                .tabs
+                .iter()
+                .find(|tab| {
+                    tab.tree
+                        .leaves()
+                        .into_iter()
+                        .any(|leaf| self.matches_leaf(leaf))
+                })
+                .map(|tab| tab.id.clone())
+        }) else {
+            return false;
+        };
+        let closed =
+            layout.choose_tab(&tab) && layout.choose_pane(&self.leaf.id) && layout.close_pane();
+        if let Some(shown) = shown {
+            layout.choose_tab(&shown);
+        }
+        closed
+    }
+
     /// Clear only the pane contents the user acted on, in the selected tab.
     pub fn detach_from(&self, layout: &mut agent_interface_core::Layout) -> bool {
         layout
@@ -245,11 +286,14 @@ pub(super) struct LiveTerminal {
 }
 
 pub(super) struct Detach;
+/// The sign-in session this pane showed is over.
+pub(super) struct SignInEnded;
 pub(super) struct OpenTerminal;
 /// The terminal's session is attached and can take the keyboard.
 pub(super) struct Connected;
 
 impl gpui::EventEmitter<Detach> for LiveTerminal {}
+impl gpui::EventEmitter<SignInEnded> for LiveTerminal {}
 impl gpui::EventEmitter<OpenTerminal> for LiveTerminal {}
 impl gpui::EventEmitter<Connected> for LiveTerminal {}
 impl gpui::EventEmitter<crate::view::Focus> for LiveTerminal {}
@@ -532,6 +576,9 @@ impl LiveTerminal {
                                 if terminal.target.leaf.attachment.is_none() {
                                     terminal.start(cx);
                                 }
+                                if terminal.target.is_sign_in() {
+                                    cx.emit(SignInEnded);
+                                }
                                 cx.notify();
                             },
                         ));
@@ -560,6 +607,9 @@ impl LiveTerminal {
                         } else {
                             terminal.restoring = false;
                             terminal.error = Some(error);
+                            if terminal.target.is_sign_in() {
+                                cx.emit(SignInEnded);
+                            }
                         }
                     }
                 }
@@ -631,7 +681,9 @@ impl Render for LiveTerminal {
             })
             // A stopped agent is not an error; say so and offer its launch.
             .when_some(
-                self.error.clone().filter(|_| self.agent.is_none()),
+                self.error
+                    .clone()
+                    .filter(|_| self.agent.is_none() && !self.target.is_sign_in()),
                 |el, error| el.child(line(error, c.attention_text)),
             )
             .when(self.error.is_some(), |el| {
@@ -640,6 +692,9 @@ impl Render for LiveTerminal {
                 el.child(line(
                     match (&self.agent, attached) {
                         (Some((_, name)), _) => format!("{name} is not running."),
+                        (None, true) if self.target.is_sign_in() => {
+                            "This sign-in has ended.".into()
+                        }
                         (None, true) => {
                             "Waiting for this session. Reconnecting automatically.".into()
                         }
@@ -929,6 +984,41 @@ mod tests {
             .flat_map(|row| (0..screen.cols()).map(move |col| (row, col)))
             .filter_map(|(row, col)| screen.cell(row, col).map(|(text, _)| text))
             .collect()
+    }
+
+    #[test]
+    fn a_finished_pane_closes_from_a_hidden_tab_and_leaves_the_shown_one() {
+        let mut layout = agent_interface_core::Layout::initial("/".into());
+        layout.add_workspace("Work".into());
+        layout.add_tab(Some("kept".into()), "/".into(), true);
+        layout.add_tab(Some("sign-in-codex".into()), "/".into(), true);
+        layout.attach(Some(Attachment {
+            session: "sign-in-codex".into(),
+            source_socket: None,
+        }));
+        let leaf = (*layout.pane().unwrap()).clone();
+        let finished = layout.tab().unwrap().id.clone();
+        let target = Target {
+            connection: None,
+            leaf,
+            directory: None,
+            source: Err("unused".into()),
+        };
+        let kept = layout.workspace().unwrap().tabs[0].id.clone();
+        layout.choose_tab(&kept);
+
+        assert!(target.close_from(&mut layout));
+
+        assert_eq!(layout.tab().unwrap().id, kept);
+        assert!(
+            layout
+                .workspace()
+                .unwrap()
+                .tabs
+                .iter()
+                .all(|tab| tab.id != finished)
+        );
+        assert!(!target.close_from(&mut layout));
     }
 
     #[test]

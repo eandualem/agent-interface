@@ -1359,7 +1359,8 @@ Worker generations reject stale results and controls. Successful receipts remain
 progress metadata: workspace selection still performs the authenticated handshake.
 Fresh first-agent setup choices remain separate from saved-request recovery.
 
-New profile runs as three steps beside its workspace: name, sign in, first agent.
+New profile runs as three steps in its workspace: name, sign in, first agent. Only
+signing in sits beside a pane.
 The name step takes an explicit profile name and the one baseline the provider can
 create today, and records one immutable create request in the same durable
 lifecycle journal. The provider creates a profile without starting it, so the step
@@ -1369,9 +1370,17 @@ again under its original key rather than sent anew. A profile starts clean: the
 person may opt in to `git_identity: "copy"` on the create request, which has the
 provider copy only their Git name and email. Omitting the field keeps the request's
 bytes unchanged, and recovery restores whichever request was saved. The sign-in step reads the
-profile's runtime catalog and opens sign-in sessions in the bound workspace; the
-first-agent step submits the same setup request as Add agent and opens the agent
-once the provider reports it ready.
+profile's runtime catalog and opens sign-in sessions in the bound workspace. It asks
+`GET /api/profile/accounts/status` once for each installed CLI, then only for a CLI
+being signed in, every two seconds while that sign-in is open, because each read
+starts the CLI's own check. Signed in means a stored sign-in, not a working account.
+A sign-in session that ends closes its pane, and one more read decides the row: an
+ended session proves nothing. The first-agent step submits the same setup request as
+Add agent. Setup is complete once the CLI has started, whatever it shows; first-run
+screens are between the CLI and the person. The steps then say so, and leaving them
+opens the agent, so focus lands in its terminal. A CLI that exits right away is a
+failed setup with the provider's explanation; recovery of its saved request stays in
+the profile's Settings page.
 
 Native profile management exposes saved first-agent setup separately from the
 current runtime catalog. It opens a private setup journal from the already

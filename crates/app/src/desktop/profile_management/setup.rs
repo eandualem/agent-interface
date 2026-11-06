@@ -117,7 +117,7 @@ fn outcome(s: &Snapshot) -> Option<String> {
         ),
         "runtime_missing" => "This CLI is not installed where the profile can use it. Install it, then retry.".into(),
         "starter_conflict" => "The profile's starter files or this brief need attention. Fix them, then retry.".into(),
-        "launch_failed" => format!("{} could not start. Check it in the workspace.", s.agent_name),
+        "launch_failed" => "The CLI exited right after starting, so the agent is not running. Run the CLI in a terminal in the agent's folder to see why, then start the agent again.".into(),
         "outcome_unknown" => format!(
             "The result is not known. Check whether {} is in the workspace before adding it again.",
             s.agent_name
@@ -161,6 +161,8 @@ enum Page {
         progress: Option<Box<Progress>>,
     },
 }
+/// Go back to the choices: this request can't be tried again as it was.
+pub(super) struct Again;
 enum Update {
     Saved(Box<Snapshot>),
     Progress(Box<Progress>),
@@ -172,13 +174,15 @@ pub(super) struct Pane {
     ticket: Ticket,
     busy: bool,
     finished: bool,
-    /// Started from fresh choices: open the agent once it reports ready.
-    open_when_ready: bool,
+    /// Started from fresh choices: say only how it's going. Everything else
+    /// stays in the saved requests.
+    fresh: Option<&'static str>,
     error: Option<Error>,
     pub focus: FocusHandle,
 }
 impl EventEmitter<Back> for Pane {}
 impl EventEmitter<Open> for Pane {}
+impl EventEmitter<Again> for Pane {}
 impl Pane {
     pub fn new(client: Client, directory: PathBuf, cx: &mut Context<Self>) -> Self {
         let mut pane = Self {
@@ -187,7 +191,7 @@ impl Pane {
             ticket: Ticket::default(),
             busy: true,
             finished: false,
-            open_when_ready: false,
+            fresh: None,
             error: None,
             focus: cx.focus_handle(),
         };
@@ -228,7 +232,7 @@ impl Pane {
             ticket: Ticket::default(),
             busy: false,
             finished: false,
-            open_when_ready: false,
+            fresh: None,
             error: None,
             focus: cx.focus_handle(),
         };
@@ -236,9 +240,11 @@ impl Pane {
         pane.history(0, &ticket, cx);
         pane
     }
+    /// Start `prepared`. `leave` names the way out when it doesn't start.
     pub fn from_prepared(
         controller: Arc<Controller>,
         prepared: Prepared,
+        leave: &'static str,
         cx: &mut Context<Self>,
     ) -> Self {
         // Keep the original key before persistence: an enqueue sync failure can
@@ -253,11 +259,10 @@ impl Pane {
             ticket: Ticket::default(),
             busy: false,
             finished: false,
-            open_when_ready: false,
+            fresh: Some(leave),
             error: None,
             focus: cx.focus_handle(),
         };
-        pane.open_when_ready = true;
         pane.run(Command::Submit, Some(prepared), cx);
         pane
     }
@@ -412,18 +417,8 @@ impl Pane {
                             *progress = None;
                             match *result {
                                 Ok(next) if next.key == *key => {
-                                    let ready = next
-                                        .first_result
-                                        .as_ref()
-                                        .and_then(|e| e.ready_agent.clone())
-                                        .filter(|_| pane.open_when_ready);
-                                    let profile_id = next.identity.profile_id.clone();
                                     *snapshot = Some(Box::new(next));
                                     pane.error = error;
-                                    if let Some(name) = ready {
-                                        pane.open_when_ready = false;
-                                        cx.emit(Open::Agent { profile_id, name });
-                                    }
                                 }
                                 Ok(_) => {
                                     *snapshot = None;
@@ -529,8 +524,132 @@ fn history(
     }
     Ok(Page::History { ids, offset, rows })
 }
+impl Pane {
+    /// Leave for the running agent.
+    fn get_started(&mut self, cx: &mut Context<Self>) {
+        if let Page::Operation {
+            snapshot: Some(s), ..
+        } = &self.page
+        {
+            let (profile_id, name) = (s.identity.profile_id.clone(), s.agent_name.clone());
+            cx.emit(Open::Agent { profile_id, name });
+        }
+        self.back(cx);
+    }
+
+    /// The agent is up, whatever it's showing.
+    pub fn running(&self) -> bool {
+        let Page::Operation { snapshot, .. } = &self.page else {
+            return false;
+        };
+        snapshot.as_deref().is_some_and(|s| {
+            agent_waiting(s)
+                || s.first_result
+                    .as_ref()
+                    .is_some_and(|e| e.ready_agent.is_some())
+        })
+    }
+
+    /// What a person starting an agent needs: it's starting, it's running, it
+    /// needs them, or it didn't start and what to do next.
+    fn progress(
+        &self,
+        leave: &'static str,
+        snapshot: Option<&Snapshot>,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let (t, c) = (tokens(), colors());
+        let meta = |text: String| ui::text(div().text_color(c.muted), &t.text.meta).child(text);
+        let name = snapshot.map_or("Your agent", |s| s.agent_name.as_str());
+        // The CLI is up, so setup is done. What it shows next is between it and
+        // the person.
+        let running = self.running();
+        let starting = !running && (self.busy || (snapshot.is_none() && self.error.is_none()));
+        let (step, title, note) = if running {
+            (
+                None,
+                "You're all set".to_owned(),
+                Some(format!("{name} is running. Go ahead and talk to it.")),
+            )
+        } else if starting {
+            (
+                Some(ui::Step::Now),
+                format!("Starting {name}…"),
+                Some("This can take a moment. It keeps going if you leave.".to_owned()),
+            )
+        } else {
+            (
+                Some(ui::Step::Waits),
+                format!("{name} didn't start"),
+                snapshot
+                    .and_then(outcome)
+                    .or(self.error.map(|error| message(error).to_owned())),
+            )
+        };
+        let ticket = self.ticket.0.clone();
+        let mut actions = div().flex().items_center().gap(px(t.space.s8));
+        if !starting {
+            if running {
+                actions = actions.child(
+                    ui::button("setup-get-started", "Get started", ui::Button::Primary)
+                        .on_click(cx.listener(|pane, _, _, cx| pane.get_started(cx))),
+                );
+            } else {
+                let again = snapshot.is_some_and(|s| Command::Retry.allowed(Some(s)));
+                actions = actions
+                    .child(
+                        ui::button("setup-try-again", "Try again", ui::Button::Primary).on_click(
+                            cx.listener(move |pane, _, _, cx| {
+                                if again {
+                                    pane.invoke(Command::Retry, &ticket, cx);
+                                } else {
+                                    pane.finished = true;
+                                    cx.emit(Again);
+                                }
+                            }),
+                        ),
+                    )
+                    .child(
+                        ui::button("setup-leave", leave, ui::Button::Secondary)
+                            .on_click(cx.listener(|pane, _, _, cx| pane.back(cx))),
+                    );
+            }
+        }
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .gap(px(t.space.s10))
+            .track_focus(&self.focus)
+            .capture_key_down(cx.listener(move |pane, event: &gpui::KeyDownEvent, _, cx| {
+                let key = event.keystroke.key.as_str();
+                if running && (key == "enter" || key == "escape") {
+                    pane.get_started(cx);
+                    cx.stop_propagation();
+                } else if key == "escape" {
+                    pane.back(cx);
+                    cx.stop_propagation();
+                }
+            }))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(t.space.s8))
+                    .children(step.map(ui::step_dot))
+                    .child(div().text_color(c.text).child(title)),
+            )
+            .children(note.map(meta))
+            .child(actions)
+            .into_any_element()
+    }
+}
 impl Render for Pane {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if let (Some(leave), Page::Operation { snapshot, .. }) = (self.fresh, &self.page) {
+            let snapshot = snapshot.as_deref().cloned();
+            return self.progress(leave, snapshot.as_ref(), cx);
+        }
         let (t, c) = (tokens(), colors());
         let ticket = self.ticket.0.clone();
         let mut body = div()
@@ -749,6 +868,7 @@ impl Render for Pane {
                         )
                     }),
             )
+            .into_any_element()
     }
 }
 

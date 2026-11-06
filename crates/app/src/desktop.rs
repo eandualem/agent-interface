@@ -776,6 +776,32 @@ impl Browser {
         self.save_edit((base, proposed), window, cx);
     }
 
+    /// A finished sign-in has nothing left to show, so its pane goes.
+    fn close_ended_pane(&mut self, target: &Target, window: &mut Window, cx: &mut Context<Self>) {
+        if let (Some((flow, _)), Some(profile), Some(attachment)) = (
+            &self.profile_flow,
+            target.connection.as_ref(),
+            target.leaf.attachment.as_ref(),
+        ) && let Some(runtime) = attachment.session.strip_prefix("sign-in-")
+        {
+            let profile = profile.identity().profile_id.clone();
+            flow.update(cx, |flow, cx| flow.sign_in_ended(&profile, runtime, cx));
+        }
+        if self.saving || self.save_failed {
+            return;
+        }
+        if let Some(update) = self.library.as_ref().and_then(Library::take_update) {
+            self.apply(update);
+        }
+        let Some(layout) = &self.layout else {
+            return;
+        };
+        let (base, mut proposed) = layout.save_snapshot();
+        if target.close_from(&mut proposed) {
+            self.save_edit((base, proposed), window, cx);
+        }
+    }
+
     /// Save a layout edit that removes panes, leaving nothing half-edited
     /// and focus on the navigation.
     fn save_edit(
@@ -1855,6 +1881,7 @@ impl Browser {
             return true;
         };
         self.creation_from = Some(Selection::capture(layout.model()));
+        self.terminal_to_focus = proposed.pane().map(|leaf| leaf.id.clone());
         self.pending_save = Some((base, proposed));
         self.save(cx);
         window.activate_window();
@@ -2373,6 +2400,15 @@ impl Render for Browser {
                     |browser, terminal, _: &terminal::Detach, window, cx| {
                         let target = terminal.read(cx).target.clone();
                         browser.detach_pane(&target, window, cx);
+                    },
+                )
+                .detach();
+                cx.subscribe_in(
+                    &terminal,
+                    window,
+                    |browser, terminal, _: &terminal::SignInEnded, window, cx| {
+                        let target = terminal.read(cx).target.clone();
+                        browser.close_ended_pane(&target, window, cx);
                     },
                 )
                 .detach();

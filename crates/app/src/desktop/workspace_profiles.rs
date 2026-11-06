@@ -803,6 +803,21 @@ impl Browser {
                     let label = flow.read(cx).workspace.clone();
                     browser.open_from_setup(open.clone(), Some(label), window, cx);
                 }
+                Event::Terminal => {
+                    let empty = browser
+                        .layout
+                        .as_ref()
+                        .is_some_and(|layout| layout.model().tab().is_none());
+                    if empty {
+                        let creation = browser.creation_target();
+                        browser.create_from(
+                            super::layout_edit::Create::Tab,
+                            creation.as_ref(),
+                            window,
+                            cx,
+                        );
+                    }
+                }
                 Event::Close => {
                     browser.profile_flow = None;
                     if let Some(focus) = &browser.navigation {

@@ -62,6 +62,8 @@ pub(super) struct Form {
     more: bool,
     /// What leaving the form is called where it is shown.
     skip: &'static str,
+    /// The tool to start on, when one is known to be signed in.
+    prefer: Option<String>,
     pub focus: FocusHandle,
 }
 impl EventEmitter<Event> for Form {}
@@ -71,6 +73,7 @@ impl Form {
         library: PathBuf,
         profile: Profile,
         skip: &'static str,
+        prefer: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -101,6 +104,7 @@ impl Form {
             folder_name: None,
             more: false,
             skip,
+            prefer,
             focus: cx.focus_handle(),
         };
         form.load(cx);
@@ -132,7 +136,15 @@ impl Form {
                     return;
                 }
                 match result {
-                    Ok(state) => form.state = state,
+                    Ok(state) => {
+                        // Start on a tool that's ready to work.
+                        if let State::Ready { catalog, .. } = &state {
+                            form.runtime = form.prefer.clone().filter(|id| {
+                                catalog.items().iter().any(|r| &r.id == id && eligible(r))
+                            });
+                        }
+                        form.state = state;
+                    }
                     Err(error) => {
                         form.state = State::Failed;
                         form.error = Some(error);

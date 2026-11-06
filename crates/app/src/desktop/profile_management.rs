@@ -10,12 +10,13 @@ use crate::profiles::{
     journal,
 };
 use agent_interface_roster::profiles::{
-    Kind, Profile, State,
+    Connection, Kind, Profile, State,
     operations::{Action, Prepared, Status},
     runtime_catalog::{Authentication, Catalog},
 };
 use gpui::{Context, EventEmitter, FocusHandle, SharedString, Window, div, prelude::*, px};
 use std::{
+    collections::{BTreeMap, BTreeSet},
     path::PathBuf,
     sync::{
         Arc,
@@ -28,6 +29,21 @@ pub(super) mod flow;
 mod setup;
 
 const PAGE_SIZE: usize = 16;
+/// How many checks a sign-in opened from Settings gets, about five minutes.
+const SIGN_IN_CHECKS: usize = 150;
+
+/// Each CLI's sign-in, one request each. An unanswered read can't be told from
+/// a signed-out CLI, so it's reported as unavailable. Runs on an I/O worker.
+fn read_accounts(connection: &Connection, ids: Vec<String>) -> Vec<(String, Authentication)> {
+    ids.into_iter()
+        .map(|id| {
+            let status = connection
+                .account_status(&id)
+                .unwrap_or(Authentication::Unavailable);
+            (id, status)
+        })
+        .collect()
+}
 pub(super) struct Back;
 
 /// A session setup leaves waiting for the person, to open in a workspace.
@@ -84,6 +100,13 @@ pub(super) struct Management {
     error: Option<controller::Error>,
     /// The profile's tools and sign-ins, when its service answered.
     accounts: Option<Catalog>,
+    /// The profile's connection, when its service answered.
+    connection: Option<Connection>,
+    /// What each CLI last reported about its sign-in.
+    signed: BTreeMap<String, Authentication>,
+    /// Sign-ins opened from here and not yet reported as finished.
+    signing: BTreeSet<String>,
+    watching: Option<gpui::Task<()>>,
     /// Lifecycle requests for this profile without a confirmed outcome.
     unfinished: usize,
     /// The ⋯ menu is open.
@@ -120,6 +143,10 @@ impl Management {
             busy: true,
             error: None,
             accounts: None,
+            connection: None,
+            signed: BTreeMap::new(),
+            signing: BTreeSet::new(),
+            watching: None,
             unfinished: 0,
             more: false,
             focus: cx.focus_handle(),
@@ -141,6 +168,8 @@ impl Management {
                         pane.directory = Some(opened.directory);
                         pane.controller = opened.controller;
                         pane.accounts = opened.accounts;
+                        pane.connection = opened.connection;
+                        pane.signed = opened.signed;
                         pane.unfinished = opened.unfinished;
                         pane.complete(opened.page);
                     }
@@ -151,6 +180,56 @@ impl Management {
         })
         .detach();
         pane
+    }
+
+    /// Open a sign-in in the profile's workspace and show its result here.
+    fn sign_in(&mut self, runtime: String, cx: &mut Context<Self>) {
+        let Page::Detail(profile) = &self.page else {
+            return;
+        };
+        let Some(connection) = self.connection.clone() else {
+            return;
+        };
+        let profile_id = profile.item().profile_id.clone();
+        self.signing.insert(runtime.clone());
+        cx.emit(Open::SignIn {
+            profile_id,
+            runtime,
+        });
+        if self.watching.is_none() {
+            self.watching = Some(cx.spawn(async move |this, cx| {
+                for _ in 0..SIGN_IN_CHECKS {
+                    cx.background_executor().timer(flow::SIGN_IN_CHECK).await;
+                    let Ok(ids) = this.read_with(cx, |pane, _| pane.signing.clone()) else {
+                        return;
+                    };
+                    let connection = connection.clone();
+                    let read = cx
+                        .background_executor()
+                        .spawn(async move { read_accounts(&connection, ids.into_iter().collect()) })
+                        .await;
+                    let finished = this.update(cx, |pane, cx| {
+                        for (id, authentication) in read {
+                            if authentication == Authentication::Authenticated {
+                                pane.signing.remove(&id);
+                            }
+                            pane.signed.insert(id, authentication);
+                        }
+                        cx.notify();
+                        pane.signing.is_empty()
+                    });
+                    if finished.unwrap_or(true) {
+                        break;
+                    }
+                }
+                let _ = this.update(cx, |pane, cx| {
+                    pane.signing.clear();
+                    pane.watching = None;
+                    cx.notify();
+                });
+            }));
+        }
+        cx.notify();
     }
 
     fn complete(&mut self, result: Result<Page, controller::Error>) {
@@ -244,6 +323,11 @@ impl Management {
         window.focus(&setup.read(cx).focus.clone(), cx);
         cx.subscribe(&setup, |_, _, open: &Open, cx| cx.emit(open.clone()))
             .detach();
+        cx.subscribe(&setup, |pane, _, _: &setup::Again, cx| {
+            pane.setup = None;
+            cx.notify();
+        })
+        .detach();
         let subscription = cx.subscribe_in(&setup, window, |pane, setup, _: &Back, window, cx| {
             if !pane
                 .setup
@@ -279,8 +363,14 @@ impl Management {
         let profile = profile.clone();
         let client = self.client.clone();
         self.ticket.begin();
-        let form =
-            cx.new(|cx| choices::Form::new(client, directory, profile, "Cancel", window, cx));
+        let signed_in = self
+            .signed
+            .iter()
+            .find(|(_, status)| **status == Authentication::Authenticated)
+            .map(|(id, _)| id.clone());
+        let form = cx.new(|cx| {
+            choices::Form::new(client, directory, profile, "Cancel", signed_in, window, cx)
+        });
         window.focus(&form.read(cx).focus.clone(), cx);
         let subscription = cx.subscribe_in(
             &form,
@@ -293,23 +383,26 @@ impl Management {
                 {
                     return;
                 }
-                let setup = match event {
-                    choices::Event::Back => None,
-                    choices::Event::Recover => {
-                        let Some(controller) = form.read(cx).controller() else {
-                            return;
-                        };
-                        Some(cx.new(|cx| setup::Pane::from_controller(controller, cx)))
-                    }
-                    choices::Event::Submit => {
-                        let Some((prepared, controller)) =
-                            form.update(cx, |form, _| form.take_prepared())
-                        else {
-                            return;
-                        };
-                        Some(cx.new(|cx| setup::Pane::from_prepared(controller, prepared, cx)))
-                    }
-                };
+                let setup =
+                    match event {
+                        choices::Event::Back => None,
+                        choices::Event::Recover => {
+                            let Some(controller) = form.read(cx).controller() else {
+                                return;
+                            };
+                            Some(cx.new(|cx| setup::Pane::from_controller(controller, cx)))
+                        }
+                        choices::Event::Submit => {
+                            let Some((prepared, controller)) =
+                                form.update(cx, |form, _| form.take_prepared())
+                            else {
+                                return;
+                            };
+                            Some(cx.new(|cx| {
+                                setup::Pane::from_prepared(controller, prepared, "Back", cx)
+                            }))
+                        }
+                    };
                 pane.choices = None;
                 if let Some(setup) = setup {
                     pane.attach_setup(setup, window, cx);
@@ -478,6 +571,8 @@ struct Opened {
     controller: Option<Arc<Controller>>,
     page: Result<Page, controller::Error>,
     accounts: Option<Catalog>,
+    connection: Option<Connection>,
+    signed: BTreeMap<String, Authentication>,
     unfinished: usize,
 }
 fn open_management(
@@ -505,6 +600,7 @@ fn open_management(
     };
     let live = || live.load(Ordering::Acquire);
     let (mut accounts, mut unfinished) = (None, 0);
+    let (mut connection, mut signed) = (None, BTreeMap::new());
     if let (Ok(Page::Detail(profile)), Ok(controller)) = (&page, &controller) {
         let id = &profile.item().profile_id;
         unfinished = controller
@@ -520,12 +616,26 @@ fn open_management(
             .expected_identity()
             .ok()
             .and_then(|identity| client.runtimes(&identity, &live).ok());
+        if profile.item().kind == Kind::Isolated
+            && let (Some(catalog), Ok(verified)) = (&accounts, profile.connect())
+        {
+            let ids = catalog
+                .items()
+                .iter()
+                .filter(|runtime| runtime.available && runtime.id != "shell")
+                .map(|runtime| runtime.id.clone())
+                .collect();
+            signed = read_accounts(&verified, ids).into_iter().collect();
+            connection = Some(verified);
+        }
     }
     Ok(Opened {
         directory,
         controller: controller.ok(),
         page,
         accounts,
+        connection,
+        signed,
         unfinished,
     })
 }
@@ -726,17 +836,24 @@ impl Render for Management {
                             .filter(|r| r.id != "shell")
                             .enumerate()
                         {
+                            let waiting = self.signing.contains(&runtime.id);
+                            let signed = self.signed.get(&runtime.id).copied();
                             let state = if !runtime.available {
                                 "Not installed"
+                            } else if waiting {
+                                "Waiting for sign-in"
                             } else {
-                                match runtime.authentication {
+                                match signed.unwrap_or(runtime.authentication) {
                                     Authentication::Authenticated => "Signed in",
                                     Authentication::NotAuthenticated => "Not signed in",
                                     Authentication::NotApplicable => "No account needed",
-                                    // Discovery does not check accounts.
-                                    _ => "Installed",
+                                    _ => "Couldn't check",
                                 }
                             };
+                            let can_sign_in = runtime.available
+                                && item.kind == Kind::Isolated
+                                && signed != Some(Authentication::Authenticated);
+                            let id = runtime.id.clone();
                             card = card.child(
                                 div()
                                     .flex()
@@ -754,7 +871,21 @@ impl Render for Management {
                                             .text_color(c.text)
                                             .child(runtime.display_name.clone()),
                                     )
-                                    .child(meta(state.into())),
+                                    .child(meta(state.into()))
+                                    .when(can_sign_in, |el| {
+                                        el.child(
+                                            ui::button(
+                                                SharedString::from(format!("account-{id}")),
+                                                if waiting { "Sign in again" } else { "Sign in" },
+                                                ui::Button::Secondary,
+                                            )
+                                            .on_click(
+                                                cx.listener(move |pane, _, _, cx| {
+                                                    pane.sign_in(id.clone(), cx)
+                                                }),
+                                            ),
+                                        )
+                                    }),
                             );
                         }
                         body = body.child(card);
@@ -791,8 +922,9 @@ impl Render for Management {
                     let ticket = ticket.clone();
                     body = body.child(
                         div().flex().items_center().gap(px(t.space.s12)).pt(px(t.space.s20))
-                            .child(div().flex_1().child(meta("Stopping keeps everything. Start it again from ⋯ or one of its workspaces.".into())))
+                            .child(div().flex_1().min_w_0().child(meta("Stopping keeps everything. Start it again from ⋯ or one of its workspaces.".into())))
                             .child(ui::button("Stop service", "Stop profile", ui::Button::Secondary)
+                                .flex_shrink_0()
                                 .on_click(cx.listener(move |pane, _, _, cx| pane.start(Action::Stop, &ticket, cx)))),
                     );
                 }
