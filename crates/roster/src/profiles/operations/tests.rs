@@ -239,3 +239,17 @@ fn requests_reject_nonready_profiles_and_invalid_or_oversized_input() {
         Err(Error::Invalid)
     ));
 }
+
+#[test]
+fn a_create_copying_git_identity_says_so_and_restores_exactly() {
+    let create =
+        Prepared::create_copying_git_identity("operation-create-g", "Work", "baseline-example-v1")
+            .unwrap();
+    let body: Value = serde_json::from_slice(create.bytes()).unwrap();
+    assert_eq!(body["git_identity"], "copy");
+    let plain = Prepared::create("operation-create-p", "Work", "baseline-example-v1").unwrap();
+    let body: Value = serde_json::from_slice(plain.bytes()).unwrap();
+    assert!(body.get("git_identity").is_none());
+    let restored = Prepared::restore(&create.checkpoint().unwrap()).unwrap();
+    assert_eq!(restored.bytes(), create.bytes());
+}

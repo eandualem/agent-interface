@@ -92,7 +92,14 @@ impl Prepared {
             return Err(Error::Invalid);
         }
         let prepared = match field("action")? {
-            "create" => Self::create(id, field("display_name")?, field("baseline_version")?)?,
+            "create" => {
+                let (name, baseline) = (field("display_name")?, field("baseline_version")?);
+                match body.get("git_identity").map(Value::as_str) {
+                    None => Self::create(id, name, baseline)?,
+                    Some(Some("copy")) => Self::create_copying_git_identity(id, name, baseline)?,
+                    Some(_) => return Err(Error::Invalid),
+                }
+            }
             "start" | "stop" => {
                 let identity = Identity {
                     profile_id: field("profile_id")?.into(),

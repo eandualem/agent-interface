@@ -95,6 +95,25 @@ impl Prepared {
         display_name: &str,
         baseline_version: &str,
     ) -> Result<Self, Error> {
+        Self::create_request(request_id, display_name, baseline_version, false)
+    }
+
+    /// As [`Self::create`], and the provider copies only the person's Git
+    /// user.name and user.email into the new profile; nothing else of theirs.
+    pub fn create_copying_git_identity(
+        request_id: &str,
+        display_name: &str,
+        baseline_version: &str,
+    ) -> Result<Self, Error> {
+        Self::create_request(request_id, display_name, baseline_version, true)
+    }
+
+    fn create_request(
+        request_id: &str,
+        display_name: &str,
+        baseline_version: &str,
+        copy_git_identity: bool,
+    ) -> Result<Self, Error> {
         if !valid_id(request_id)
             || !valid_id(baseline_version)
             || display_name.trim().is_empty()
@@ -102,15 +121,15 @@ impl Prepared {
         {
             return Err(Error::Invalid);
         }
-        Self::prepare(
-            request_id,
-            Action::Create,
-            None,
-            json!({
-                "schema_version":1,"request_id":request_id,"action":"create",
-                "display_name":display_name,"baseline_version":baseline_version,
-            }),
-        )
+        let mut body = json!({
+            "schema_version":1,"request_id":request_id,"action":"create",
+            "display_name":display_name,"baseline_version":baseline_version,
+        });
+        // Omitted means none, so a request without the choice keeps its bytes.
+        if copy_git_identity {
+            body["git_identity"] = json!("copy");
+        }
+        Self::prepare(request_id, Action::Create, None, body)
     }
 
     /// Capture start's expected tuple from an atomic ready registry record.

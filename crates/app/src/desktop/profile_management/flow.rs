@@ -77,6 +77,8 @@ pub(in crate::desktop) struct Flow {
     error: Option<&'static str>,
     library: Option<PathBuf>,
     profile: Option<Profile>,
+    /// Copy the person's Git name and email into the new profile. Off is a clean start.
+    copy_git: bool,
     selection: Selection,
     catalog: Option<Catalog>,
     /// Sign-ins opened beside the steps.
@@ -112,6 +114,7 @@ impl Flow {
             error: None,
             library: None,
             profile: None,
+            copy_git: false,
             selection: Selection::default(),
             catalog: None,
             signing: BTreeSet::new(),
@@ -158,7 +161,11 @@ impl Flow {
         let request = uuid::Uuid::new_v4().simple().to_string();
         let prepared = match &resume {
             Some(Stalled::Unconfirmed(_) | Stalled::NotStarted) => None,
-            _ => match Prepared::create(&request, &display, BASELINE) {
+            _ => match if self.copy_git {
+                Prepared::create_copying_git_identity(&request, &display, BASELINE)
+            } else {
+                Prepared::create(&request, &display, BASELINE)
+            } {
                 Ok(prepared) => Some(prepared),
                 Err(_) => {
                     self.error = Some("Give the profile a name.");
@@ -411,7 +418,11 @@ fn make(
                     return Err((
                         Stalled::Failed,
                         None,
-                        "The profile could not be made. Try again.",
+                        if receipt.error_code.as_deref() == Some("git_identity_unavailable") {
+                            "Your Git name and email aren't both set. Set them, or turn this off."
+                        } else {
+                            "The profile could not be made. Try again."
+                        },
                     ));
                 }
             }
@@ -657,6 +668,29 @@ impl Flow {
                     .child(meta(
                         "Starts with the standard skills and policies. Nothing is copied from your other profiles.".into(),
                     ))
+                    .when(
+                        !matches!(
+                            self.stalled,
+                            Some(Stalled::Unconfirmed(_) | Stalled::NotStarted)
+                        ),
+                        |el| {
+                            el.child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(t.space.s8))
+                                    .child(ui::switch("profile-flow-git", self.copy_git).on_click(
+                                        cx.listener(|flow, _, _, cx| {
+                                            if flow.busy.is_none() {
+                                                flow.copy_git = !flow.copy_git;
+                                                cx.notify();
+                                            }
+                                        }),
+                                    ))
+                                    .child(meta("Use my Git name and email".into())),
+                            )
+                        },
+                    )
                     .children(error)
                     .child(
                         div().flex().child(

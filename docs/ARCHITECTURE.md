@@ -1365,7 +1365,10 @@ create today, and records one immutable create request in the same durable
 lifecycle journal. The provider creates a profile without starting it, so the step
 then records and submits a start request and runs the authenticated selection;
 only that verified selection binds the workspace. An unconfirmed create is checked
-again under its original key rather than sent anew. The sign-in step reads the
+again under its original key rather than sent anew. A profile starts clean: the
+person may opt in to `git_identity: "copy"` on the create request, which has the
+provider copy only their Git name and email. Omitting the field keeps the request's
+bytes unchanged, and recovery restores whichever request was saved. The sign-in step reads the
 profile's runtime catalog and opens sign-in sessions in the bound workspace; the
 first-agent step submits the same setup request as Add agent and opens the agent
 once the provider reports it ready.
