@@ -26,7 +26,6 @@ use std::{
     collections::BTreeSet,
     path::PathBuf,
     sync::atomic::{AtomicBool, Ordering},
-    time::Duration,
 };
 
 /// The only baseline the provider can create today, so nobody has to know it.
@@ -80,10 +79,8 @@ pub(in crate::desktop) struct Flow {
     profile: Option<Profile>,
     selection: Selection,
     catalog: Option<Catalog>,
-    /// Sign-ins opened whose result the profile has not reported.
+    /// Sign-ins opened beside the steps.
     signing: BTreeSet<String>,
-    /// Reads left before rechecking sign-ins stops; the provider may never report one.
-    reads_left: u8,
     form: Option<(Entity<choices::Form>, Subscription)>,
     setup: Option<(Entity<setup::Pane>, Subscription)>,
     ticket: Ticket,
@@ -118,7 +115,6 @@ impl Flow {
             selection: Selection::default(),
             catalog: None,
             signing: BTreeSet::new(),
-            reads_left: 0,
             form: None,
             setup: None,
             ticket: Ticket::default(),
@@ -252,8 +248,8 @@ impl Flow {
         .detach();
     }
 
-    /// Read which tools the profile has and which are signed in. After a
-    /// sign-in opens, read again every few seconds for up to a minute.
+    /// Read which tools the profile has, once. Discovery does not check accounts,
+    /// so a sign-in's result is never reported and is not waited for.
     fn read_catalog(&mut self, cx: &mut Context<Self>) {
         let Some(identity) = self
             .profile
@@ -270,38 +266,19 @@ impl Flow {
             .spawn(async move { client.runtimes(&identity, &|| worker.load(Ordering::Acquire)) });
         cx.spawn(async move |this, cx| {
             let result = work.await;
-            let again = this
-                .update(cx, |flow, cx| {
-                    if !flow.ticket.accepts(&ticket) || flow.step != Step::SignIn {
-                        return false;
+            let _ = this.update(cx, |flow, cx| {
+                if !flow.ticket.accepts(&ticket) || flow.step != Step::SignIn {
+                    return;
+                }
+                match result {
+                    Ok(catalog) => {
+                        flow.catalog = Some(catalog);
+                        flow.error = None;
                     }
-                    match result {
-                        Ok(catalog) => {
-                            flow.signing.retain(|id| {
-                                catalog.items().iter().any(|r| {
-                                    &r.id == id && r.authentication != Authentication::Authenticated
-                                })
-                            });
-                            flow.catalog = Some(catalog);
-                            flow.error = None;
-                        }
-                        Err(_) => {
-                            flow.error = Some("This profile's tools could not be read.");
-                        }
-                    }
-                    cx.notify();
-                    flow.reads_left = flow.reads_left.saturating_sub(1);
-                    !flow.signing.is_empty() && flow.reads_left > 0
-                })
-                .unwrap_or(false);
-            if again {
-                cx.background_executor().timer(Duration::from_secs(3)).await;
-                let _ = this.update(cx, |flow, cx| {
-                    if flow.ticket.accepts(&ticket) {
-                        flow.read_catalog(cx);
-                    }
-                });
-            }
+                    Err(_) => flow.error = Some("This profile's tools could not be read."),
+                }
+                cx.notify();
+            });
         })
         .detach();
     }
@@ -310,16 +287,11 @@ impl Flow {
         let Some(profile_id) = self.profile_id().map(str::to_owned) else {
             return;
         };
-        let polling = !self.signing.is_empty() && self.reads_left > 0;
         self.signing.insert(runtime.clone());
-        self.reads_left = 20;
         cx.emit(Event::Open(Open::SignIn {
             profile_id,
             runtime,
         }));
-        if !polling {
-            self.read_catalog(cx);
-        }
         cx.notify();
     }
 

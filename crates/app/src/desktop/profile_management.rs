@@ -733,7 +733,8 @@ impl Render for Management {
                                     Authentication::Authenticated => "Signed in",
                                     Authentication::NotAuthenticated => "Not signed in",
                                     Authentication::NotApplicable => "No account needed",
-                                    _ => "Unknown",
+                                    // Discovery does not check accounts.
+                                    _ => "Installed",
                                 }
                             };
                             card = card.child(
