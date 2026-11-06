@@ -776,8 +776,13 @@ impl Browser {
             return;
         };
         let (client, directory) = (client.clone(), self.directory.clone());
+        let home = self
+            .layout
+            .as_ref()
+            .and_then(|layout| layout.model().workspace())
+            .map(|space| space.id.clone());
         let flow = cx.new(|cx| {
-            super::profile_management::flow::Flow::new(client, directory, name, window, cx)
+            super::profile_management::flow::Flow::new(client, directory, name, home, window, cx)
         });
         window.focus(&flow.read(cx).focus_handle(cx), cx);
         let events = cx.subscribe_in(&flow, window, |browser, flow, event, window, cx| {

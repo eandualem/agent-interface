@@ -206,18 +206,30 @@ impl Browser {
             return content;
         };
         let t = tokens();
-        let profile = flow.read(cx).profile_id();
+        let flow_state = flow.read(cx);
+        let profile = flow_state.profile_id();
+        let Some(space) = self
+            .layout
+            .as_ref()
+            .and_then(|layout| layout.model().workspace())
+        else {
+            return content;
+        };
+        // It belongs to one workspace: the one bound to its profile, or before
+        // that exists, the one it was opened from. Others show as they are.
+        let here = match profile {
+            Some(profile) => space.profile_id.as_deref() == Some(profile),
+            None => flow_state.home.as_deref() == Some(space.id.as_str()),
+        };
+        if !here {
+            return content;
+        }
         let beside = profile.is_some()
-            && self.layout.as_ref().is_some_and(|layout| {
-                layout.model().workspace().is_some_and(|space| {
-                    space.profile_id.as_deref() == profile
-                        && space
-                            .tabs
-                            .iter()
-                            .flat_map(|tab| tab.tree.leaves())
-                            .any(|leaf| leaf.attachment.is_some())
-                })
-            });
+            && space
+                .tabs
+                .iter()
+                .flat_map(|tab| tab.tree.leaves())
+                .any(|leaf| leaf.attachment.is_some());
         div()
             .flex_1()
             .min_w_0()

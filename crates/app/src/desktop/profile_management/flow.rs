@@ -68,6 +68,8 @@ pub(in crate::desktop) struct Flow {
     directory: Option<PathBuf>,
     /// The name the person gave the workspace, empty for the profile's own.
     pub workspace: String,
+    /// The workspace it was opened from, where it shows until its profile exists.
+    pub home: Option<String>,
     name: Entity<NameField>,
     _name: Subscription,
     step: Step,
@@ -78,7 +80,10 @@ pub(in crate::desktop) struct Flow {
     profile: Option<Profile>,
     selection: Selection,
     catalog: Option<Catalog>,
+    /// Sign-ins opened whose result the profile has not reported.
     signing: BTreeSet<String>,
+    /// Reads left before rechecking sign-ins stops; the provider may never report one.
+    reads_left: u8,
     form: Option<(Entity<choices::Form>, Subscription)>,
     setup: Option<(Entity<setup::Pane>, Subscription)>,
     ticket: Ticket,
@@ -91,6 +96,7 @@ impl Flow {
         client: Client,
         directory: Option<PathBuf>,
         workspace: String,
+        home: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -100,6 +106,7 @@ impl Flow {
             client,
             directory,
             workspace,
+            home,
             name,
             _name: observe,
             step: Step::Name,
@@ -111,6 +118,7 @@ impl Flow {
             selection: Selection::default(),
             catalog: None,
             signing: BTreeSet::new(),
+            reads_left: 0,
             form: None,
             setup: None,
             ticket: Ticket::default(),
@@ -244,8 +252,8 @@ impl Flow {
         .detach();
     }
 
-    /// Read which tools the profile has and which are signed in. While a
-    /// sign-in is open, read again every few seconds.
+    /// Read which tools the profile has and which are signed in. After a
+    /// sign-in opens, read again every few seconds for up to a minute.
     fn read_catalog(&mut self, cx: &mut Context<Self>) {
         let Some(identity) = self
             .profile
@@ -282,7 +290,8 @@ impl Flow {
                         }
                     }
                     cx.notify();
-                    !flow.signing.is_empty()
+                    flow.reads_left = flow.reads_left.saturating_sub(1);
+                    !flow.signing.is_empty() && flow.reads_left > 0
                 })
                 .unwrap_or(false);
             if again {
@@ -301,8 +310,9 @@ impl Flow {
         let Some(profile_id) = self.profile_id().map(str::to_owned) else {
             return;
         };
-        let polling = !self.signing.is_empty();
+        let polling = !self.signing.is_empty() && self.reads_left > 0;
         self.signing.insert(runtime.clone());
+        self.reads_left = 20;
         cx.emit(Event::Open(Open::SignIn {
             profile_id,
             runtime,
@@ -707,20 +717,30 @@ impl Flow {
                                 meta("Not installed".into()).into_any_element()
                             } else if runtime.authentication == Authentication::Authenticated {
                                 meta("Signed in".into()).into_any_element()
-                            } else if self.signing.contains(&id) {
-                                meta("Signing in…".into()).into_any_element()
                             } else if runtime.authentication == Authentication::NotApplicable {
                                 meta("No account needed".into()).into_any_element()
                             } else {
-                                ui::button(
-                                    SharedString::from(format!("sign-in-{id}")),
-                                    "Sign in",
-                                    ui::Button::Secondary,
-                                )
-                                .on_click(
-                                    cx.listener(move |flow, _, _, cx| flow.sign_in(id.clone(), cx)),
-                                )
-                                .into_any_element()
+                                // The provider may never report the result, so an
+                                // opened sign-in stays open to retry.
+                                let opened = self.signing.contains(&id);
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(t.space.s8))
+                                    .when(opened, |el| el.child(meta("Opened beside".into())))
+                                    .child(
+                                        ui::button(
+                                            SharedString::from(format!("sign-in-{id}")),
+                                            if opened { "Sign in again" } else { "Sign in" },
+                                            ui::Button::Secondary,
+                                        )
+                                        .on_click(
+                                            cx.listener(move |flow, _, _, cx| {
+                                                flow.sign_in(id.clone(), cx)
+                                            }),
+                                        ),
+                                    )
+                                    .into_any_element()
                             };
                             card = card.child(
                                 div()
@@ -750,7 +770,7 @@ impl Flow {
                         .items()
                         .iter()
                         .any(|r| r.authentication == Authentication::Authenticated)
-                });
+                }) || !self.signing.is_empty();
                 div()
                     .flex()
                     .flex_col()
