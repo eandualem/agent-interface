@@ -1179,7 +1179,8 @@ updates and reject changed bindings or connection epochs even when tab and pane
 IDs are unchanged. Fresh local closes still work for unavailable profiles.
 The application-menu setup command opens first-run setup from any workspace.
 Setup always adds its agent to the Default profile, never to the selected
-workspace's profile, and Manage offers the same flow as Add agent on Default.
+workspace's profile, and Settings › Profiles offers the same flow as Add agent on
+Default.
 
 Save reconciliation treats a workspace's profile binding and its tab contents as
 an ownership boundary: a concurrent binding change cannot merge with a pane edit,
@@ -1339,8 +1340,13 @@ results are returned only after matching process exit and durable storage.
 Native recovery controls retain the original record key and revision while invoking
 this controller off the UI thread.
 
-Native profile service controls are an explicit branch of the workspace picker.
-Opening them captures the selected library location once and opens a private
+New workspace is one popover: a name, the profiles to bind it to, and New
+profile. Without Agent Backbone the name is typed in place. Choosing a profile runs
+the authenticated selection before the workspace is saved; the workspace takes the
+typed name, or the profile's when none was typed.
+
+Native profile service controls live in Settings › Profiles. Opening one profile
+captures the selected library location once and opens a private
 lifecycle journal; it does not invoke a lifecycle action. Start/Stop controls use
 an atomic registry record loaded before the buttons appear. Submitting switches
 the view to the original operation key before persistence or provider execution,
@@ -1351,14 +1357,18 @@ interrupts the local command; its outcome remains unknown and closing does not
 claim provider cancellation or rollback.
 Worker generations reject stale results and controls. Successful receipts remain
 progress metadata: workspace selection still performs the authenticated handshake.
-Creation uses a child form. Fresh first-agent setup choices
-remain separate from saved-request recovery.
+Fresh first-agent setup choices remain separate from saved-request recovery.
 
-Native creation takes an explicit profile name and uses the one baseline the
-provider can create today. The form emits one immutable request into the same
-durable lifecycle controller and recovery view; later field edits cannot rewrite
-it. Escape/back cancel form observation, and text composition is respected. The
-form neither selects a workspace nor grants connection authority.
+New profile runs as three steps beside its workspace: name, sign in, first agent.
+The name step takes an explicit profile name and the one baseline the provider can
+create today, and records one immutable create request in the same durable
+lifecycle journal. The provider creates a profile without starting it, so the step
+then records and submits a start request and runs the authenticated selection;
+only that verified selection binds the workspace. An unconfirmed create is checked
+again under its original key rather than sent anew. The sign-in step reads the
+profile's runtime catalog and opens sign-in sessions in the bound workspace; the
+first-agent step submits the same setup request as Add agent and opens the agent
+once the provider reports it ready.
 
 Native profile management exposes saved first-agent setup separately from the
 current runtime catalog. It opens a private setup journal from the already
@@ -1390,7 +1400,7 @@ tmux-only use, with no Backbone, stays unbound.
 A profile workspace separates connecting from a failed connection and shows the
 reason. A profile's service does not restart itself after a reboot and its agents
 never return with the service, so the failed state offers Start service (`profiles
-apply` start, recorded in the same journal as Manage) and a stopped agent's pane offers
+apply` start, recorded in the same journal as Settings › Profiles) and a stopped agent's pane offers
 Resume and Start new (`POST /api/agents/{session}/start`, which takes the name only).
 A failed roster read loses status, not access: tmux keeps the sessions and panes stay
 attached, with a status note, while the read retries.

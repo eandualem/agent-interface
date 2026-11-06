@@ -12,6 +12,7 @@ use crate::profiles::{
 use agent_interface_roster::profiles::{
     Kind, Profile, State,
     operations::{Action, Prepared, Status},
+    runtime_catalog::{Authentication, Catalog},
 };
 use gpui::{Context, EventEmitter, FocusHandle, SharedString, Window, div, prelude::*, px};
 use std::{
@@ -81,6 +82,12 @@ pub(super) struct Management {
     ticket: Ticket,
     busy: bool,
     error: Option<controller::Error>,
+    /// The profile's tools and sign-ins, when its service answered.
+    accounts: Option<Catalog>,
+    /// Lifecycle requests for this profile without a confirmed outcome.
+    unfinished: usize,
+    /// The ⋯ menu is open.
+    more: bool,
     pub focus: FocusHandle,
 }
 impl EventEmitter<Back> for Management {}
@@ -112,6 +119,9 @@ impl Management {
             ticket: Ticket::default(),
             busy: true,
             error: None,
+            accounts: None,
+            unfinished: 0,
+            more: false,
             focus: cx.focus_handle(),
         };
         let ticket = pane.ticket.begin();
@@ -130,6 +140,8 @@ impl Management {
                     Ok(opened) => {
                         pane.directory = Some(opened.directory);
                         pane.controller = opened.controller;
+                        pane.accounts = opened.accounts;
+                        pane.unfinished = opened.unfinished;
                         pane.complete(opened.page);
                     }
                     Err(error) => pane.error = Some(error),
@@ -465,6 +477,8 @@ struct Opened {
     directory: PathBuf,
     controller: Option<Arc<Controller>>,
     page: Result<Page, controller::Error>,
+    accounts: Option<Catalog>,
+    unfinished: usize,
 }
 fn open_management(
     client: Client,
@@ -489,10 +503,30 @@ fn open_management(
         },
         Err(error) => Err(*error),
     };
+    let live = || live.load(Ordering::Acquire);
+    let (mut accounts, mut unfinished) = (None, 0);
+    if let (Ok(Page::Detail(profile)), Ok(controller)) = (&page, &controller) {
+        let id = &profile.item().profile_id;
+        unfinished = controller
+            .ids()
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|key| controller.read(key).ok())
+            .filter(|s| {
+                s.terminal.is_none() && s.identity.as_ref().is_some_and(|i| &i.profile_id == id)
+            })
+            .count();
+        accounts = profile
+            .expected_identity()
+            .ok()
+            .and_then(|identity| client.runtimes(&identity, &live).ok());
+    }
     Ok(Opened {
         directory,
         controller: controller.ok(),
         page,
+        accounts,
+        unfinished,
     })
 }
 
@@ -519,8 +553,8 @@ fn history(
 fn action_label(action: Action) -> &'static str {
     match action {
         Action::Create => "Create profile",
-        Action::Start => "Start service",
-        Action::Stop => "Stop service",
+        Action::Start => "Start profile",
+        Action::Stop => "Stop profile",
     }
 }
 fn status(snapshot: &Snapshot) -> &'static str {
@@ -553,95 +587,236 @@ fn message(error: controller::Error) -> &'static str {
 impl Render for Management {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if let Some((setup, _)) = &self.setup {
-            return div().size_full().child(setup.clone());
-        }
-        if let Some((form, _)) = &self.choices {
-            return div().size_full().child(form.clone());
+            return div()
+                .id("profile-management-setup")
+                .size_full()
+                .child(setup.clone());
         }
         let (t, c) = (tokens(), colors());
         let ticket = self.ticket.0.clone();
-        let mut body = div()
-            .id("profile-management-body")
-            .flex_1()
-            .min_h_0()
-            .overflow_y_scroll()
-            .p(px(t.space.s12))
-            .flex()
-            .flex_col()
-            .gap(px(t.space.s8));
+        let meta =
+            |text: SharedString| ui::text(div().text_color(c.muted), &t.text.meta).child(text);
+        let mut body = div().flex().flex_col().gap(px(t.space.s8)).child(
+            div().flex().child(
+                ui::back_button("management-back", "Profiles")
+                    .on_click(cx.listener(|pane, _, _, cx| pane.back(cx))),
+            ),
+        );
         match &self.page {
-            Page::Loading => {
-                body = body.child(ui::group_note("Opening profile controls…"));
-            }
+            Page::Loading => body = body.child(meta("Opening…".into())),
             Page::Detail(profile) => {
-                body = body.child(profile.item().display_name.clone()).child(profile.item().profile_id.clone()).child(ui::group_note("Service controls preserve profile data. Connecting to a workspace is a separate action."));
-                if profile.item().state == State::Ready && !self.busy {
-                    // Default keeps its host environment, so the provider refuses its
-                    // bound setup; first-run setup adds Default's agents instead.
-                    if profile.item().kind == Kind::LegacyDefault {
-                        body = body.child(
-                            ui::button("new-agent-setup", "Add agent", ui::Button::Primary)
-                                .on_click(|_, _, cx| {
+                let item = profile.item();
+                let ready = item.state == State::Ready && !self.busy;
+                body = body.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(t.space.s12))
+                        .py(px(t.space.s8))
+                        .child(ui::profile_mark(
+                            &item.profile_id,
+                            &item.display_name,
+                            item.kind == Kind::LegacyDefault,
+                            t.size.slot,
+                        ))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .child(
+                                    ui::text(div().text_color(c.text), &t.text.group_title)
+                                        .child(item.display_name.clone()),
+                                )
+                                .child(meta(match (&item.state, &item.kind) {
+                                    (State::Creating, _) => "Being created".into(),
+                                    (State::Failed, _) => "Creation didn't finish".into(),
+                                    (_, Kind::LegacyDefault) => "Uses your own sign-ins".into(),
+                                    _ => "Its own accounts, agents, skills and policies".into(),
+                                })),
+                        )
+                        .child(ui::icon_button("management-more", "ellipsis").on_click(
+                            cx.listener(|pane, _, _, cx| {
+                                pane.more = !pane.more;
+                                cx.notify();
+                            }),
+                        )),
+                );
+                if self.more && !self.busy {
+                    let mut menu = ui::menu();
+                    if ready {
+                        let ticket = ticket.clone();
+                        menu = menu.child(
+                            ui::menu_item("management-start", None, "Start profile", None)
+                                .on_click(cx.listener(move |pane, _, _, cx| {
+                                    pane.more = false;
+                                    pane.start(Action::Start, &ticket, cx)
+                                })),
+                        );
+                    }
+                    if self.controller.is_some() {
+                        menu = menu.child(
+                            ui::menu_item("management-history", None, "Saved requests", None)
+                                .on_click(cx.listener(|pane, _, _, cx| {
+                                    pane.more = false;
+                                    pane.history(0, false, cx)
+                                })),
+                        );
+                    }
+                    if self.directory.is_some() {
+                        menu = menu.child(
+                            ui::menu_item("saved-setup", None, "Earlier agent setups", None)
+                                .on_click(cx.listener(|pane, _, window, cx| {
+                                    pane.more = false;
+                                    pane.setup(window, cx)
+                                })),
+                        );
+                    }
+                    body = body.child(div().flex().justify_end().child(menu));
+                }
+                if self.unfinished > 0 {
+                    body = body.child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(t.space.s10))
+                            .p(px(t.space.s12))
+                            .rounded(px(t.radius.popover))
+                            .bg(c.attention_soft)
+                            .child(ui::step_dot(ui::Step::Waits))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .flex()
+                                    .flex_col()
+                                    .child(div().text_color(c.text).child(
+                                        if self.unfinished == 1 {
+                                            "A request for this profile didn't finish".to_owned()
+                                        } else {
+                                            format!(
+                                                "{} requests for this profile didn't finish",
+                                                self.unfinished
+                                            )
+                                        },
+                                    ))
+                                    .child(meta(
+                                        "It may already have worked. Check it to be sure.".into(),
+                                    )),
+                            )
+                            .child(
+                                ui::button("management-check", "Check", ui::Button::Secondary)
+                                    .on_click(
+                                        cx.listener(|pane, _, _, cx| pane.history(0, false, cx)),
+                                    ),
+                            ),
+                    );
+                }
+                body = body.child(ui::group_title("Accounts", ""));
+                match &self.accounts {
+                    None => {
+                        body = body.child(ui::group_note("Start the profile to see its accounts."))
+                    }
+                    Some(catalog) => {
+                        let mut card = ui::group_card();
+                        for (index, runtime) in catalog
+                            .items()
+                            .iter()
+                            .filter(|r| r.id != "shell")
+                            .enumerate()
+                        {
+                            let state = if !runtime.available {
+                                "Not installed"
+                            } else {
+                                match runtime.authentication {
+                                    Authentication::Authenticated => "Signed in",
+                                    Authentication::NotAuthenticated => "Not signed in",
+                                    Authentication::NotApplicable => "No account needed",
+                                    _ => "Unknown",
+                                }
+                            };
+                            card = card.child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(t.space.s10))
+                                    .h(px(t.size.group_row))
+                                    .px(px(t.space.s14))
+                                    .when(index > 0, |el| {
+                                        el.border_t(px(t.size.hairline)).border_color(c.line)
+                                    })
+                                    .when(!runtime.available, |el| el.opacity(0.6))
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .text_color(c.text)
+                                            .child(runtime.display_name.clone()),
+                                    )
+                                    .child(meta(state.into())),
+                            );
+                        }
+                        body = body.child(card);
+                    }
+                }
+                if ready
+                    && (item.kind == Kind::LegacyDefault
+                        || (self.directory.is_some() && item.kind == Kind::Isolated))
+                {
+                    let expected = ticket.clone();
+                    let default = item.kind == Kind::LegacyDefault;
+                    body = body.child(
+                        div().flex().items_center().justify_between()
+                            .child(ui::group_title("Agents", ""))
+                            .child(ui::button("new-agent-setup", "Add agent", ui::Button::Secondary).on_click(cx.listener(move |pane, _, window, cx| {
+                                // Default keeps its host environment, so the provider refuses its
+                                // bound setup; first-run setup adds Default's agents instead.
+                                if default {
                                     cx.defer(|cx| {
                                         if let Err(error) = super::onboarding::show(false, cx) {
                                             tracing::error!(event = "setup_window_failed", %error, "Cannot open setup");
                                         }
-                                    })
-                                }),
-                        );
-                    } else if self.directory.is_some() && profile.item().kind == Kind::Isolated {
-                        let expected = ticket.clone();
-                        body = body.child(
-                            ui::button("new-agent-setup", "Add agent", ui::Button::Primary)
-                                .on_click(cx.listener(move |pane, _, window, cx| {
-                                    pane.choices(&expected, window, cx)
-                                })),
-                        );
-                    }
-                    for action in [Action::Start, Action::Stop] {
-                        let ticket = ticket.clone();
-                        body = body.child(
-                            ui::button(
-                                action_label(action),
-                                action_label(action),
-                                if action == Action::Stop {
-                                    ui::Button::Danger
+                                    });
                                 } else {
-                                    ui::Button::Secondary
-                                },
-                            )
-                            .on_click(
-                                cx.listener(move |pane, _, _, cx| pane.start(action, &ticket, cx)),
-                            ),
-                        );
+                                    pane.choices(&expected, window, cx)
+                                }
+                            }))),
+                    );
+                    if let Some((form, _)) = &self.choices {
+                        body = body.child(form.clone());
                     }
+                }
+                if ready {
+                    let ticket = ticket.clone();
+                    body = body.child(
+                        div().flex().items_center().gap(px(t.space.s12)).pt(px(t.space.s20))
+                            .child(div().flex_1().child(meta("Stopping keeps everything. Start it again from ⋯ or one of its workspaces.".into())))
+                            .child(ui::button("Stop service", "Stop profile", ui::Button::Secondary)
+                                .on_click(cx.listener(move |pane, _, _, cx| pane.start(Action::Stop, &ticket, cx)))),
+                    );
                 }
             }
-            Page::Operation { key, snapshot } => {
-                body = body.child(ui::group_note("Leaving this view does not stop the operation. It finishes on its own, and its receipt can be checked under Saved operations."));
-                body = body.child(format!("Operation {key}"));
+            Page::Operation { snapshot, .. } => {
+                body = body.child(ui::group_title(
+                    snapshot
+                        .as_ref()
+                        .map_or("Request", |s| action_label(s.action)),
+                    "Leaving doesn't stop it. It finishes on its own.",
+                ));
                 if let Some(snapshot) = snapshot {
-                    body = body
-                        .child(action_label(snapshot.action))
-                        .child(status(snapshot))
-                        .child(format!("Request {}", snapshot.request_id));
-                    if let Some(identity) = &snapshot.identity {
-                        body = body.child(format!(
-                            "Profile {} · instance {}",
-                            identity.profile_id, identity.lifecycle_id
-                        ));
-                    }
+                    body = body.child(meta(status(snapshot).into()));
                 }
                 if !self.busy {
+                    let mut row = div().flex().flex_wrap().gap(px(t.space.s8));
                     for (command, label) in [
-                        (Command::Read, "Reload saved state"),
-                        (Command::Refresh, "Check original receipt"),
-                        (Command::Submit, "Submit prepared request"),
-                        (Command::Retry, "Retry identical request"),
+                        (Command::Refresh, "Check again"),
+                        (Command::Submit, "Send it"),
+                        (Command::Retry, "Try the same request again"),
+                        (Command::Read, "Reload"),
                     ] {
                         if command.allowed(snapshot.as_ref()) {
                             let ticket = ticket.clone();
-                            body = body.child(
+                            row = row.child(
                                 ui::button(label, label, ui::Button::Secondary).on_click(
                                     cx.listener(move |pane, _, _, cx| {
                                         pane.recover(command, &ticket, cx)
@@ -650,52 +825,46 @@ impl Render for Management {
                             );
                         }
                     }
+                    body = body.child(row);
                 }
             }
             Page::History { ids, offset, rows } => {
+                body = body.child(ui::group_title(
+                    "Saved requests",
+                    "Creating, starting and stopping profiles.",
+                ));
                 if rows.is_empty() {
-                    body = body.child(ui::group_note("No saved lifecycle operations."));
+                    body = body.child(ui::group_note("No saved requests."));
                 }
-                for (key, result) in rows {
+                let mut card = ui::group_card();
+                for (index, (key, result)) in rows.iter().enumerate() {
                     let (label, detail) = match result {
                         Ok(snapshot) => (
-                            format!("{} · {}", action_label(snapshot.action), status(snapshot)),
-                            format!("Request {}", snapshot.request_id),
+                            action_label(snapshot.action).to_owned(),
+                            status(snapshot).to_owned(),
                         ),
-                        Err(error) => (message(*error).to_owned(), format!("Operation {key}")),
+                        Err(error) => (message(*error).to_owned(), String::new()),
                     };
                     let key = key.clone();
                     let ticket = ticket.clone();
-                    body = body.child(
-                        div()
-                            .id(SharedString::from(format!("operation-{key}")))
-                            .w_full()
-                            .min_w_0()
-                            .flex_shrink_0()
-                            .flex()
-                            .flex_col()
-                            .gap(px(t.space.s8))
-                            .p(px(t.space.s12))
-                            .rounded(px(t.radius.row))
-                            .bg(c.field)
-                            .border(px(t.size.hairline))
-                            .border_color(c.line_strong)
-                            .cursor_pointer()
-                            .hover(|row| row.bg(colors().hover))
-                            .child(div().w_full().whitespace_normal().child(label))
-                            .child(
-                                div()
-                                    .w_full()
-                                    .overflow_hidden()
-                                    .text_ellipsis()
-                                    .child(detail),
-                            )
-                            .on_click(cx.listener(move |pane, _, _, cx| {
-                                pane.open_record(&key, &ticket, cx)
-                            })),
+                    card = card.child(
+                        ui::group_row(
+                            SharedString::from(format!("operation-{key}")),
+                            index == 0,
+                            None,
+                            label,
+                            detail,
+                        )
+                        .on_click(
+                            cx.listener(move |pane, _, _, cx| pane.open_record(&key, &ticket, cx)),
+                        ),
                     );
                 }
+                if !rows.is_empty() {
+                    body = body.child(card);
+                }
                 if !self.busy {
+                    let mut pages = div().flex().gap(px(t.space.s8));
                     for (offset, label) in [
                         (offset.checked_sub(PAGE_SIZE), "Previous"),
                         (
@@ -704,7 +873,7 @@ impl Render for Management {
                         ),
                     ] {
                         if let Some(offset) = offset {
-                            body = body.child(
+                            pages = pages.child(
                                 ui::button(label, label, ui::Button::Secondary).on_click(
                                     cx.listener(move |pane, _, _, cx| {
                                         pane.history(offset, true, cx)
@@ -713,54 +882,31 @@ impl Render for Management {
                             );
                         }
                     }
+                    body = body.child(pages);
                 }
             }
         }
-        if self.directory.is_some() && !self.busy {
-            body = body.child(
-                ui::button("saved-setup", "Saved agent setup", ui::Button::Secondary)
-                    .on_click(cx.listener(|pane, _, window, cx| pane.setup(window, cx))),
-            );
-        }
-        if self.busy {
-            body = body.child(ui::group_note("Working…"));
+        if self.busy && !matches!(self.page, Page::Loading) {
+            body = body.child(meta("Working…".into()));
         }
         if let Some(error) = self.error {
-            body = body.child(ui::group_note(message(error)));
+            body = body.child(
+                ui::text(div().text_color(c.attention_text), &t.text.meta).child(message(error)),
+            );
         }
         div()
+            .id("profile-management-body")
             .size_full()
-            .flex()
-            .flex_col()
-            .bg(c.surface)
+            .overflow_y_scroll()
+            .pb(px(t.space.s24))
             .track_focus(&self.focus)
             .capture_key_down(cx.listener(|pane, event: &gpui::KeyDownEvent, _, cx| {
-                if event.keystroke.key == "escape" {
+                if event.keystroke.key == "escape" && pane.choices.is_none() {
                     pane.back(cx);
                     cx.stop_propagation();
                 }
             }))
-            .child(ui::view_header("layers", "Profile service controls"))
             .child(body)
-            .child(
-                ui::view_toolbar()
-                    .px(px(t.space.s12))
-                    .gap(px(t.space.s8))
-                    .child(
-                        ui::button("management-back", "Back to profiles", ui::Button::Secondary)
-                            .on_click(cx.listener(|pane, _, _, cx| pane.back(cx))),
-                    )
-                    .when(self.controller.is_some() && !self.busy, |row| {
-                        row.child(
-                            ui::button(
-                                "management-history",
-                                "Saved operations",
-                                ui::Button::Secondary,
-                            )
-                            .on_click(cx.listener(|pane, _, _, cx| pane.history(0, false, cx))),
-                        )
-                    }),
-            )
     }
 }
 

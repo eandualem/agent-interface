@@ -37,6 +37,7 @@ mod pane_drag;
 mod profile_management;
 mod profile_picker;
 mod settings;
+mod settings_profiles;
 mod settings_window;
 mod shortcuts;
 mod sidebar;
