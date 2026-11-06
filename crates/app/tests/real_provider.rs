@@ -212,3 +212,51 @@ fn create_start_setup_and_shell_on_a_new_profile() {
     println!("stop: {:?} in {:?}", receipt.status, began.elapsed());
     assert_eq!(receipt.status, Status::Succeeded);
 }
+
+#[test]
+#[ignore = "needs a disposable real provider"]
+fn a_new_profile_copies_only_the_git_name_and_email() {
+    let home = PathBuf::from(std::env::var_os("HOME").unwrap());
+    assert!(home.starts_with("/private/tmp"), "writes $HOME/.gitconfig");
+    let config = home.join(".gitconfig");
+    let client = client();
+    let nonce = std::process::id();
+    let create = |id: String| {
+        let mut create = Operation::new(
+            &client,
+            Prepared::create_copying_git_identity(&id, &format!("G{nonce}"), "core-v1").unwrap(),
+        );
+        let receipt = create.apply(&live).expect("create");
+        println!("create: {receipt:?}");
+        receipt
+    };
+
+    let _ = std::fs::remove_file(&config);
+    let refused = create(format!("git-unset-{nonce}"));
+    assert_eq!(refused.status, Status::Failed);
+    assert_eq!(
+        refused.error_code.as_deref(),
+        Some("git_identity_unavailable")
+    );
+
+    std::fs::write(
+        &config,
+        "[user]\n\tname = Example\n\temail = example@example.invalid\n[alias]\n\tco = checkout\n",
+    )
+    .unwrap();
+    let made = create(format!("git-set-{nonce}"));
+    assert_eq!(made.status, Status::Succeeded);
+    let id = made.identity.expect("identity").profile_id;
+    let shown = Command::new("backbone")
+        .args(["profiles", "show", "--json", "--", &id])
+        .output()
+        .unwrap();
+    let shown: serde_json::Value = serde_json::from_slice(&shown.stdout).unwrap();
+    assert_eq!(shown["git_identity"], "copied");
+    let socket = PathBuf::from(shown["binding"]["tmux"]["socket_path"].as_str().unwrap());
+    let root = socket.parent().unwrap().parent().unwrap();
+    let copied = std::fs::read_to_string(root.join("home/.gitconfig")).unwrap();
+    println!("copied: {copied}");
+    assert!(copied.contains("Example") && copied.contains("example@example.invalid"));
+    assert!(!copied.contains("checkout"));
+}
