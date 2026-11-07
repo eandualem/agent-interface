@@ -187,5 +187,5 @@ fn an_agent_is_named_after_its_folder() {
 
 #[test]
 fn a_typed_name_with_spaces_becomes_hyphens() {
-    assert_eq!(super::agent_name(" new  leo "), "new-leo");
+    assert_eq!(super::agent_name(" new  agent "), "new-agent");
 }
