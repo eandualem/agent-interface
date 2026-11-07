@@ -184,3 +184,8 @@ fn an_agent_is_named_after_its_folder() {
     );
     assert_eq!(super::folder_name(std::path::Path::new("/")), None);
 }
+
+#[test]
+fn a_typed_name_with_spaces_becomes_hyphens() {
+    assert_eq!(super::agent_name(" new  leo "), "new-leo");
+}

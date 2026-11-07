@@ -188,7 +188,7 @@ impl Form {
             &self.profile,
             catalog,
             Selection {
-                name: self.name.read(cx).value().trim(),
+                name: &agent_name(self.name.read(cx).value()),
                 project: self.project.as_deref()?,
                 runtime: self.runtime.as_deref()?,
                 model: self.model.as_deref(),
@@ -337,6 +337,10 @@ fn freeze(
     )
     .ok()
 }
+/// A typed name as an agent name: spaces as hyphens.
+fn agent_name(typed: &str) -> String {
+    typed.split_whitespace().collect::<Vec<_>>().join("-")
+}
 /// A folder's name as an agent name: lower case, spaces as hyphens.
 fn folder_name(path: &std::path::Path) -> Option<String> {
     let name = path
@@ -435,7 +439,21 @@ impl Render for Form {
                     "Name",
                     div().flex().flex_1().min_w_0().items_center().gap(px(t.space.s8))
                         .child(div().flex_1().min_w_0().child(self.name.clone()))
-                        .when(from_folder, |el| el.child(note("From the folder".into())))
+                        .map(|el| {
+                            let typed = self.name.read(cx).value();
+                            let name = agent_name(typed);
+                            if from_folder {
+                                el.child(note("From the folder".into()))
+                            } else if name.is_empty() {
+                                el
+                            } else if !agent_interface_roster::valid_agent(&name) {
+                                el.child(ui::text(div().text_color(c.attention_text), &t.text.meta).child("Use letters, numbers, - _ or ."))
+                            } else if name != typed {
+                                el.child(note(format!("Named {name}").into()))
+                            } else {
+                                el
+                            }
+                        })
                         .into_any_element(),
                 ));
                 let mut tools = ui::segments();

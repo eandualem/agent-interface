@@ -193,7 +193,9 @@ fn within_depth(response: &[u8]) -> bool {
     true
 }
 
-fn valid_agent(name: &str) -> bool {
+/// Whether `name` can name an agent: letters, digits, `_`, `.` and `-`,
+/// starting with a letter or digit.
+pub fn valid_agent(name: &str) -> bool {
     name.as_bytes()
         .first()
         .is_some_and(u8::is_ascii_alphanumeric)
