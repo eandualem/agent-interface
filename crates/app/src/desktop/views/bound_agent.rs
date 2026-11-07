@@ -78,8 +78,9 @@ fn removal_refusal(error: ProfileError) -> &'static str {
     }
 }
 
-/// Remove the agent only while it is still the registration the card shows,
-/// never a newer agent that took the name since.
+/// Remove the agent only if it is still the registration the card shows. Stop
+/// and delete still go by name, so a replacement made between this check and
+/// the delete could be removed until the provider checks the registration too.
 fn remove_checked(
     connection: &Connection,
     name: &str,
