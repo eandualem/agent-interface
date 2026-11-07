@@ -147,3 +147,17 @@ fn removal_leaves_a_newer_agent_with_the_same_name_alone() {
     );
     server.join().unwrap();
 }
+
+#[test]
+fn removing_an_agent_that_is_already_gone_succeeds() {
+    let inspect_path = format!("/api/agents/worker/inspect?expected_registration_id={REG}");
+    let (_a, a, server) = provider(
+        "a",
+        vec![Reply {
+            status: 404,
+            ..Reply::ok(&inspect_path, json!({"detail":"not found"}))
+        }],
+    );
+    assert_eq!(remove_checked(&a, "worker", REG), Ok(()));
+    server.join().unwrap();
+}

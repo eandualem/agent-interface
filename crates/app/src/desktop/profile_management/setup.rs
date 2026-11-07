@@ -178,15 +178,23 @@ pub(super) struct Pane {
     /// stays in the saved requests.
     fresh: Option<&'static str>,
     error: Option<Error>,
+    /// The one profile whose setups this lists, when shown for one profile.
+    profile: Option<String>,
     pub focus: FocusHandle,
 }
 impl EventEmitter<Back> for Pane {}
 impl EventEmitter<Open> for Pane {}
 impl EventEmitter<Again> for Pane {}
 impl Pane {
-    pub fn new(client: Client, directory: PathBuf, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        client: Client,
+        directory: PathBuf,
+        profile: Option<String>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let mut pane = Self {
             controller: None,
+            profile: profile.clone(),
             page: Page::Loading,
             ticket: Ticket::default(),
             busy: true,
@@ -202,7 +210,7 @@ impl Pane {
                 journal::Journal::open(&directory.join("profile-setup"))?,
                 &client,
             ));
-            let page = history(&controller, None, 0, &worker);
+            let page = history(&controller, profile.as_deref(), None, 0, &worker);
             Ok::<_, Error>((controller, page))
         });
         cx.spawn(async move |this, cx| {
@@ -225,9 +233,14 @@ impl Pane {
         .detach();
         pane
     }
-    pub fn from_controller(controller: Arc<Controller>, cx: &mut Context<Self>) -> Self {
+    pub fn from_controller(
+        controller: Arc<Controller>,
+        profile: Option<String>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let mut pane = Self {
             controller: Some(controller),
+            profile,
             page: Page::Loading,
             ticket: Ticket::default(),
             busy: false,
@@ -251,6 +264,7 @@ impl Pane {
         // already have saved intent, and must never allocate a replacement.
         let mut pane = Self {
             controller: Some(controller),
+            profile: None,
             page: Page::Operation {
                 key: Controller::key(prepared.request_id()),
                 snapshot: None,
@@ -301,9 +315,10 @@ impl Pane {
         self.busy = true;
         let ticket = self.ticket.begin();
         let worker = ticket.clone();
+        let profile = self.profile.clone();
         let work = cx
             .background_executor()
-            .spawn(async move { history(&controller, ids, offset, &worker) });
+            .spawn(async move { history(&controller, profile.as_deref(), ids, offset, &worker) });
         cx.spawn(async move |this, cx| {
             let result = work.await;
             let _ = this.update(cx, |pane, cx| {
@@ -457,9 +472,10 @@ impl Pane {
         self.error = None;
         let ticket = self.ticket.begin();
         let worker = ticket.clone();
+        let profile = self.profile.clone();
         let work = cx.background_executor().spawn(async move {
             controller.forget(&key, revision)?;
-            history(&controller, None, 0, &worker)
+            history(&controller, profile.as_deref(), None, 0, &worker)
         });
         cx.spawn(async move |this, cx| {
             let result = work.await;
@@ -504,13 +520,24 @@ fn progress_matches(
 }
 fn history(
     controller: &Controller,
+    profile: Option<&str>,
     ids: Option<Vec<String>>,
     offset: usize,
     live: &AtomicBool,
 ) -> Result<Page, Error> {
     let ids = match ids {
         Some(ids) => ids,
-        None => controller.ids()?,
+        None => controller
+            .ids()?
+            .into_iter()
+            .filter(|key| {
+                profile.is_none_or(|id| {
+                    controller
+                        .read(key)
+                        .is_ok_and(|s| s.identity.profile_id == id)
+                })
+            })
+            .collect(),
     };
     if offset > ids.len() {
         return Err(Error::Invalid);

@@ -605,7 +605,14 @@ struct Browser {
         gpui::Entity<profile_management::flow::Flow>,
         gpui::Subscription,
     )>,
-    pending_profile: Option<(String, agent_interface_roster::profiles::Connection)>,
+    /// The workspace a new profile's binding saved, with what made it, so a
+    /// save that loses the workspace can make it again.
+    pending_profile: Option<(
+        String,
+        agent_interface_roster::profiles::Connection,
+        agent_interface_roster::profiles::Item,
+        String,
+    )>,
     /// A new profile's workspace, made once the save in progress finishes.
     bind_after_save: Option<(
         agent_interface_roster::profiles::Item,
@@ -798,9 +805,20 @@ impl Browser {
         let Some(layout) = &self.layout else {
             return;
         };
+        let shown = layout
+            .model()
+            .pane()
+            .is_some_and(|leaf| leaf.id == target.leaf.id);
         let (base, mut proposed) = layout.save_snapshot();
-        if target.close_from(&mut proposed) {
+        if !target.close_from(&mut proposed) {
+            return;
+        }
+        if shown {
             self.save_edit((base, proposed), window, cx);
+        } else {
+            // A pane out of view closes without disturbing what the person is doing.
+            self.pending_save = Some((base, proposed));
+            self.save(cx);
         }
     }
 
@@ -1306,9 +1324,13 @@ impl Browser {
         if !self.save_failed || self.saving {
             return;
         }
-        self.pending_profile = None;
+        // Discarding the binding's own save makes its workspace again.
+        let bind = self.bind_after_save.take().or_else(|| {
+            self.pending_profile
+                .take()
+                .map(|(_, connection, item, name)| (item, connection, name))
+        });
         self.pending_save = None;
-        let bind = self.bind_after_save.take();
         if let Some(pane) = self.section_saving.take() {
             self.opening_sections.remove(&pane);
         }

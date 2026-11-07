@@ -176,6 +176,10 @@ impl Form {
             .iter()
             .find(|r| Some(&r.id) == self.runtime.as_ref() && eligible(r))
     }
+    /// The profile this form adds an agent to.
+    pub fn profile_id(&self) -> &str {
+        &self.profile.item().profile_id
+    }
     fn prepare(&self, request_id: &str, cx: &Context<Self>) -> Option<Prepared> {
         if self.finished || self.name.read(cx).composing() || self.brief.read(cx).composing() {
             return None;

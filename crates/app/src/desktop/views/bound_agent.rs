@@ -85,15 +85,15 @@ fn remove_checked(
     name: &str,
     registration: &str,
 ) -> Result<(), &'static str> {
-    runtime_context::inspect(connection.clone(), name, Some(registration)).map_err(|error| {
-        match error {
-            runtime_context::Error::RegistrationChanged => {
-                "This agent registration changed. Reopen it from Team."
-            }
-            _ => "The workspace profile connection is unavailable.",
+    match runtime_context::inspect(connection.clone(), name, Some(registration)) {
+        Ok(_) => connection.remove_agent(name).map_err(removal_refusal),
+        // No agent has this name any more, so there is nothing to remove.
+        Err(runtime_context::Error::Unsupported) => Ok(()),
+        Err(runtime_context::Error::RegistrationChanged) => {
+            Err("This agent registration changed. Reopen it from Team.")
         }
-    })?;
-    connection.remove_agent(name).map_err(removal_refusal)
+        Err(_) => Err("Couldn't confirm this is the same agent. Try again."),
+    }
 }
 
 pub(super) struct Card {

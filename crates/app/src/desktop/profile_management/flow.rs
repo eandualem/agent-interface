@@ -95,6 +95,8 @@ pub(in crate::desktop) struct Flow {
     /// Sign-ins whose session ended since the last read began. One more read
     /// decides them: an ended session isn't a successful sign-in.
     ended: BTreeSet<String>,
+    /// Reads left before an open sign-in stops waiting, as in Settings.
+    checks_left: usize,
     /// A catalog read, or the wait before the next, is under way.
     reading: bool,
     form: Option<(Entity<choices::Form>, Subscription)>,
@@ -135,6 +137,7 @@ impl Flow {
             accounts: BTreeMap::new(),
             signing: BTreeSet::new(),
             ended: BTreeSet::new(),
+            checks_left: 0,
             reading: false,
             form: None,
             setup: None,
@@ -355,6 +358,11 @@ impl Flow {
                         }
                         flow.accounts.insert(id, authentication);
                     }
+                    // A sign-in that never opened, or was left, stops waiting.
+                    flow.checks_left = flow.checks_left.saturating_sub(1);
+                    if flow.checks_left == 0 {
+                        flow.signing.clear();
+                    }
                     cx.notify();
                     !flow.signing.is_empty() || !flow.ended.is_empty()
                 })
@@ -385,6 +393,7 @@ impl Flow {
             return;
         };
         self.signing.insert(runtime.clone());
+        self.checks_left = super::SIGN_IN_CHECKS;
         cx.emit(Event::Open(Open::SignIn {
             profile_id,
             runtime,
@@ -443,7 +452,8 @@ impl Flow {
                     let Some(controller) = form.read(cx).controller() else {
                         return;
                     };
-                    cx.new(|cx| setup::Pane::from_controller(controller, cx))
+                    let profile = Some(form.read(cx).profile_id().to_owned());
+                    cx.new(|cx| setup::Pane::from_controller(controller, profile, cx))
                 }
                 choices::Event::Submit => {
                     let Some((prepared, controller)) =

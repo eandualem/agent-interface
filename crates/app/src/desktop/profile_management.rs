@@ -30,7 +30,7 @@ mod setup;
 
 const PAGE_SIZE: usize = 16;
 /// How many checks a sign-in opened from Settings gets, about five minutes.
-const SIGN_IN_CHECKS: usize = 150;
+pub(super) const SIGN_IN_CHECKS: usize = 150;
 
 /// Each CLI's sign-in, one request each. An unanswered read can't be told from
 /// a signed-out CLI, so it's reported as unavailable. Runs on an I/O worker.
@@ -90,6 +90,8 @@ enum Page {
 
 pub(super) struct Management {
     client: Client,
+    /// The one profile this page is for; its lists show only that profile's requests.
+    profile_id: Option<String>,
     directory: Option<PathBuf>,
     setup: Option<(gpui::Entity<setup::Pane>, gpui::Subscription)>,
     choices: Option<(gpui::Entity<choices::Form>, gpui::Subscription)>,
@@ -124,6 +126,7 @@ impl Management {
     ) -> Self {
         let mut pane = Self {
             client: client.clone(),
+            profile_id: profile.clone(),
             directory: None,
             setup: None,
             choices: None,
@@ -301,7 +304,8 @@ impl Management {
         };
         self.ticket.begin();
         let client = self.client.clone();
-        let setup = cx.new(|cx| setup::Pane::new(client, directory, cx));
+        let profile = self.profile_id.clone();
+        let setup = cx.new(|cx| setup::Pane::new(client, directory, profile, cx));
         self.attach_setup(setup, window, cx);
     }
     fn attach_setup(
@@ -380,7 +384,8 @@ impl Management {
                             let Some(controller) = form.read(cx).controller() else {
                                 return;
                             };
-                            Some(cx.new(|cx| setup::Pane::from_controller(controller, cx)))
+                            let profile = Some(form.read(cx).profile_id().to_owned());
+                            Some(cx.new(|cx| setup::Pane::from_controller(controller, profile, cx)))
                         }
                         choices::Event::Submit => {
                             let Some((prepared, controller)) =
@@ -497,9 +502,10 @@ impl Management {
         self.error = None;
         let ticket = self.ticket.begin();
         let worker = ticket.clone();
+        let profile = self.profile_id.clone();
         let work = cx
             .background_executor()
-            .spawn(async move { history(&controller, ids, offset, &worker) });
+            .spawn(async move { history(&controller, profile.as_deref(), ids, offset, &worker) });
         cx.spawn(async move |this, cx| {
             let result = work.await;
             let _ = this.update(cx, |pane, cx| {
@@ -584,7 +590,7 @@ fn open_management(
                 .show(&id, &|| live.load(Ordering::Acquire))
                 .map(Page::Detail)
                 .map_err(controller::Error::Client),
-            None => history(controller, None, 0, live),
+            None => history(controller, None, None, 0, live),
         },
         Err(error) => Err(*error),
     };
@@ -632,13 +638,25 @@ fn open_management(
 
 fn history(
     controller: &Controller,
+    profile: Option<&str>,
     ids: Option<Vec<String>>,
     offset: usize,
     live: &AtomicBool,
 ) -> Result<Page, controller::Error> {
     let ids = match ids {
         Some(ids) => ids,
-        None => controller.ids()?,
+        None => controller
+            .ids()?
+            .into_iter()
+            .filter(|key| {
+                profile.is_none_or(|id| {
+                    controller
+                        .read(key)
+                        .ok()
+                        .is_some_and(|s| s.identity.as_ref().is_some_and(|i| i.profile_id == id))
+                })
+            })
+            .collect(),
     };
     let offset = offset.min(ids.len().saturating_sub(1) / PAGE_SIZE * PAGE_SIZE);
     let mut rows = Vec::new();

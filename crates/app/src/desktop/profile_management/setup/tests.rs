@@ -142,7 +142,8 @@ fn bounded_history_keeps_invalid_records_visible_and_never_invokes_provider() {
     let client = Client::new(directory.join("absent-provider"), "/usr/bin:/bin".into()).unwrap();
     let controller = Controller::new(journal, &client);
     let live = AtomicBool::new(true);
-    let Page::History { ids, offset, rows } = history(&controller, None, 0, &live).unwrap() else {
+    let Page::History { ids, offset, rows } = history(&controller, None, None, 0, &live).unwrap()
+    else {
         panic!("history expected")
     };
     assert_eq!(offset, 0);
@@ -152,14 +153,21 @@ fn bounded_history_keeps_invalid_records_visible_and_never_invokes_provider() {
         rows.iter()
             .all(|(_, result)| *result == Err(Error::Invalid))
     );
-    let Page::History { rows, .. } = history(&controller, Some(ids), PAGE_SIZE, &live).unwrap()
+    let Page::History { rows, .. } =
+        history(&controller, None, Some(ids), PAGE_SIZE, &live).unwrap()
     else {
         panic!("history expected")
     };
     assert_eq!(rows.len(), 1);
+    // A page for one profile lists only requests it can show are that profile's.
+    let Page::History { ids, .. } = history(&controller, Some("other"), None, 0, &live).unwrap()
+    else {
+        panic!("history expected")
+    };
+    assert!(ids.is_empty());
     live.store(false, Ordering::Release);
     assert!(matches!(
-        history(&controller, None, 0, &live),
+        history(&controller, None, None, 0, &live),
         Err(Error::Client(crate::profiles::Error::Cancelled))
     ));
 }

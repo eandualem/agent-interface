@@ -529,18 +529,28 @@ impl Browser {
             })
             .detach();
         }
-        let Some(layout) = &self.layout else { return };
         if !self.saving
             && !self.save_failed
-            && let Some((id, connection)) = self.pending_profile.take()
-            && let Some(space) = layout
+            && let Some((id, connection, item, name)) = self.pending_profile.take()
+        {
+            let Some(layout) = &self.layout else { return };
+            match layout
                 .model()
                 .workspaces
                 .iter()
                 .find(|space| space.id == id)
-        {
-            self.workspace_profiles.bind(space, connection);
+            {
+                Some(space) => {
+                    self.workspace_profiles.bind(space, connection);
+                }
+                // A conflicting save dropped the new workspace: make it again.
+                None => {
+                    self.bind_workspace(item, connection, &name, cx);
+                    return;
+                }
+            }
         }
+        let Some(layout) = &self.layout else { return };
         let work = self.workspace_profiles.reconcile(
             layout.model(),
             self.profile_client
@@ -763,7 +773,7 @@ impl Browser {
             .find(|space| space.id == selected_id)
             .expect("created workspace");
         space.profile_id = Some(item.profile_id.clone());
-        self.pending_profile = Some((space.id.clone(), connection));
+        self.pending_profile = Some((space.id.clone(), connection, item.clone(), name.to_owned()));
         self.creation_from = Some(super::layout_edit::Selection::capture(layout.model()));
         self.pending_save = Some((base, proposed));
         self.save(cx);
