@@ -606,6 +606,12 @@ struct Browser {
         gpui::Subscription,
     )>,
     pending_profile: Option<(String, agent_interface_roster::profiles::Connection)>,
+    /// A new profile's workspace, made once the save in progress finishes.
+    bind_after_save: Option<(
+        agent_interface_roster::profiles::Item,
+        agent_interface_roster::profiles::Connection,
+        String,
+    )>,
     roster_updates: Option<gpui::Subscription>,
     jump: Option<jump::Jump>,
     /// A navigation panel drag: where it started and the width then.
@@ -856,6 +862,7 @@ impl Browser {
         self.profile_picker_requested = false;
         self.profile_flow = None;
         self.pending_profile = None;
+        self.bind_after_save = None;
         self.views.clear();
         self.new_panes.clear();
         self.editing = None;
@@ -1279,6 +1286,9 @@ impl Browser {
                             browser.save_notice = Some("The library changed. Your edit was not saved; repeat it on the latest layout to retry.".into());
                         }
                         browser.section_saving = None;
+                        if let Some((item, connection, name)) = browser.bind_after_save.take() {
+                            browser.bind_workspace(item, connection, &name, cx);
+                        }
                     }
                     Err(error) => {
                         browser.save_failed = true;
@@ -1298,6 +1308,7 @@ impl Browser {
         }
         self.pending_profile = None;
         self.pending_save = None;
+        let bind = self.bind_after_save.take();
         if let Some(pane) = self.section_saving.take() {
             self.opening_sections.remove(&pane);
         }
@@ -1314,6 +1325,9 @@ impl Browser {
             self.reset_focus |= layout.discard_edits();
         }
         self.start_reader(cx);
+        if let Some((item, connection, name)) = bind {
+            self.bind_workspace(item, connection, &name, cx);
+        }
         cx.notify();
     }
 
@@ -1873,6 +1887,40 @@ impl Browser {
             return false;
         };
         let Some((base, proposed)) = setup_agent_layout(layout, name, profile_id, label) else {
+            // Already shown: go to it.
+            let shown = layout
+                .model()
+                .workspaces
+                .iter()
+                .filter(|space| space.profile_id.as_deref() == Some(profile_id))
+                .find_map(|space| {
+                    space.tabs.iter().find_map(|tab| {
+                        tab.tree
+                            .leaves()
+                            .into_iter()
+                            .find(|leaf| {
+                                leaf.attachment
+                                    .as_ref()
+                                    .is_some_and(|attachment| attachment.session == name)
+                            })
+                            .map(|leaf| (space.id.clone(), tab.id.clone(), leaf.id.clone()))
+                    })
+                });
+            if let Some((space, tab, pane)) = shown
+                && let Some(layout) = self.layout.as_mut()
+            {
+                let model = layout.model_mut();
+                if model.choose_workspace(&space) && model.choose_tab(&tab) {
+                    model.choose_pane(&pane);
+                    match self.terminals.get(&pane) {
+                        Some(terminal) => {
+                            terminal.update(cx, |terminal, cx| terminal.focus_terminal(window, cx))
+                        }
+                        None => self.terminal_to_focus = Some(pane),
+                    }
+                }
+                cx.notify();
+            }
             window.activate_window();
             return true;
         };

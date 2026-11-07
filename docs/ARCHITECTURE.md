@@ -1351,10 +1351,10 @@ lifecycle journal; it does not invoke a lifecycle action. Start/Stop controls us
 an atomic registry record loaded before the buttons appear. Submitting switches
 the view to the original operation key before persistence or provider execution,
 so ambiguous writes and replies retain recovery identity. Reopening enumerates
-bounded record IDs and validates one page of durable, caller-bound snapshots at
-a time. Receipt lookup and identical retry are distinct explicit actions. Closing
-interrupts the local command; its outcome remains unknown and closing does not
-claim provider cancellation or rollback.
+bounded record IDs and validates one page of durable snapshots at a time.
+Receipt lookup and identical retry are distinct explicit actions. Closing the
+view does not stop a start or stop already running; it finishes in the
+background, and its receipt is read the next time the profile is opened.
 Worker generations reject stale results and controls. Successful receipts remain
 progress metadata: workspace selection still performs the authenticated handshake.
 Fresh first-agent setup choices remain separate from saved-request recovery.

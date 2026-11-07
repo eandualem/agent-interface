@@ -75,9 +75,9 @@ impl Profiles {
             page.detail = None;
             page.refresh(cx);
         });
-        let open = cx.subscribe(&pane, |_, _, open: &Open, cx| {
-            let open = open.clone();
-            cx.defer(move |cx| show_in_browser(open, cx));
+        let open = cx.subscribe(&pane, |page, _, open: &Open, cx| {
+            let (open, client) = (open.clone(), page.client.clone());
+            cx.defer(move |cx| show_in_browser(open, client, cx));
         });
         self.detail = Some((pane, vec![back, open]));
         cx.notify();
@@ -92,17 +92,23 @@ fn library_directory(cx: &App) -> Option<std::path::PathBuf> {
         .find_map(|window| window.read(cx).ok().and_then(|b| b.directory.clone()))
 }
 
-fn show_in_browser(open: Open, cx: &mut App) {
+fn show_in_browser(open: Open, client: Option<Client>, cx: &mut App) {
     if let Some(handle) = super::browser_window(cx) {
         let _ = handle.update(cx, |browser, window, cx| {
+            if let Some(client) = client {
+                browser.use_profile_client(client);
+            }
             browser.open_from_setup(open, None, window, cx);
         });
     }
 }
 
-fn new_profile(cx: &mut App) {
+fn new_profile(client: Option<Client>, cx: &mut App) {
     if let Some(handle) = super::browser_window(cx) {
         let _ = handle.update(cx, |browser, window, cx| {
+            if let Some(client) = client {
+                browser.use_profile_client(client);
+            }
             window.activate_window();
             browser.open_profile_flow(String::new(), window, cx);
         });
@@ -176,7 +182,10 @@ impl Render for Profiles {
                 page = page.child(
                     div().flex().pt(px(t.space.s8)).child(
                         ui::button("settings-new-profile", "New profile", ui::Button::Secondary)
-                            .on_click(|_, _, cx| cx.defer(new_profile)),
+                            .on_click(cx.listener(|page, _, _, cx| {
+                                let client = page.client.clone();
+                                cx.defer(move |cx| new_profile(client, cx));
+                            })),
                     ),
                 );
             }

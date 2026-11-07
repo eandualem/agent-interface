@@ -484,10 +484,10 @@ mod tests {
 
     #[test]
     fn folders_and_coordinators_come_from_the_workspace_path() {
-        assert_eq!(parent("/home/me/ws/career/desk"), "/home/me/ws/career");
-        assert_eq!(name_of("/home/me/ws/career/"), "career");
+        assert_eq!(parent("/home/me/ws/product/desk"), "/home/me/ws/product");
+        assert_eq!(name_of("/home/me/ws/product/"), "product");
         let lead = Member {
-            dir: "/home/me/ws/career/coordinator".into(),
+            dir: "/home/me/ws/product/coordinator".into(),
             ..Member::default()
         };
         assert!(coordinates(&lead));
@@ -496,11 +496,11 @@ mod tests {
             name: "lead".into(),
             ..lead
         };
-        let leads = BTreeMap::from([("/home/me/ws/learning", &lead)]);
+        let leads = BTreeMap::from([("/home/me/ws/docs", &lead)]);
         assert_eq!(
-            led_from(&leads, "/home/me/ws/learning/rust").map(|m| m.name.as_str()),
+            led_from(&leads, "/home/me/ws/docs/rust").map(|m| m.name.as_str()),
             Some("lead")
         );
-        assert!(led_from(&leads, "/home/me/ws/career").is_none());
+        assert!(led_from(&leads, "/home/me/ws/product").is_none());
     }
 }

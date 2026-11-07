@@ -498,6 +498,13 @@ impl Browser {
         self.reset_focus |= focused || choosing;
     }
 
+    /// Use a client found elsewhere, such as Settings, when this window has none.
+    pub(super) fn use_profile_client(&mut self, client: Client) {
+        if !matches!(self.profile_client, Some(Ok(_))) {
+            self.profile_client = Some(Ok(client));
+        }
+    }
+
     pub(super) fn refresh_profiles(&mut self, cx: &mut Context<Self>) {
         let needed = self.profile_picker_requested
             || self.layout.as_ref().is_some_and(|layout| {
@@ -717,14 +724,32 @@ impl Browser {
         name: &str,
         cx: &mut Context<Self>,
     ) {
+        self.bind_workspace(
+            selected.item().clone(),
+            selected.connection().clone(),
+            name,
+            cx,
+        );
+    }
+
+    /// A save in progress, or one waiting for Retry or Discard, delays the
+    /// binding instead of dropping it.
+    pub(super) fn bind_workspace(
+        &mut self,
+        item: agent_interface_roster::profiles::Item,
+        connection: Connection,
+        name: &str,
+        cx: &mut Context<Self>,
+    ) {
         if self.saving || self.save_failed {
+            self.bind_after_save = Some((item, connection, name.to_owned()));
             return;
         }
         let Some(layout) = &self.layout else {
             return;
         };
         let label = if name.trim().is_empty() {
-            selected.item().display_name.as_str()
+            item.display_name.as_str()
         } else {
             name.trim()
         };
@@ -737,8 +762,8 @@ impl Browser {
             .iter_mut()
             .find(|space| space.id == selected_id)
             .expect("created workspace");
-        space.profile_id = Some(selected.item().profile_id.clone());
-        self.pending_profile = Some((space.id.clone(), selected.connection().clone()));
+        space.profile_id = Some(item.profile_id.clone());
+        self.pending_profile = Some((space.id.clone(), connection));
         self.creation_from = Some(super::layout_edit::Selection::capture(layout.model()));
         self.pending_save = Some((base, proposed));
         self.save(cx);

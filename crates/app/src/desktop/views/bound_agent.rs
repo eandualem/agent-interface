@@ -78,8 +78,28 @@ fn removal_refusal(error: ProfileError) -> &'static str {
     }
 }
 
+/// Remove the agent only while it is still the registration the card shows,
+/// never a newer agent that took the name since.
+fn remove_checked(
+    connection: &Connection,
+    name: &str,
+    registration: &str,
+) -> Result<(), &'static str> {
+    runtime_context::inspect(connection.clone(), name, Some(registration)).map_err(|error| {
+        match error {
+            runtime_context::Error::RegistrationChanged => {
+                "This agent registration changed. Reopen it from Team."
+            }
+            _ => "The workspace profile connection is unavailable.",
+        }
+    })?;
+    connection.remove_agent(name).map_err(removal_refusal)
+}
+
 pub(super) struct Card {
     connection: Connection,
+    /// The registration this card shows; removal checks it first.
+    registration: String,
     removal: Removal,
     removal_error: Option<&'static str>,
     reader: Option<Reader>,
@@ -113,6 +133,7 @@ impl Card {
         });
         Self {
             connection: connection.clone(),
+            registration: registration.clone(),
             removal: Removal::None,
             removal_error: None,
             reader: Some(Reader {
@@ -140,9 +161,10 @@ impl Card {
         self.removal_error = None;
         let connection = self.connection.clone();
         let name = self.name.clone();
+        let registration = self.registration.clone();
         let work = cx
             .background_executor()
-            .spawn(async move { connection.remove_agent(&name) });
+            .spawn(async move { remove_checked(&connection, &name, &registration) });
         cx.spawn(async move |this, cx| {
             let result = work.await;
             let _ = this.update(cx, |card, cx| {
@@ -152,9 +174,9 @@ impl Card {
                         card.snapshot = None;
                         card.error = None;
                     }
-                    Err(error) => {
+                    Err(message) => {
                         card.removal = Removal::None;
-                        card.removal_error = Some(removal_refusal(error));
+                        card.removal_error = Some(message);
                     }
                 }
                 cx.notify();

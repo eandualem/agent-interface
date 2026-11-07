@@ -55,33 +55,40 @@ impl Target {
                 .is_some_and(|attachment| attachment.session.starts_with("sign-in-"))
     }
 
-    /// Remove this pane from the selected workspace, keeping the tab in view.
+    /// Remove this pane from whichever workspace of its profile holds it,
+    /// keeping the workspace and tab in view.
     pub fn close_from(&self, layout: &mut agent_interface_core::Layout) -> bool {
-        if !layout
-            .workspace()
-            .is_some_and(|space| self.profile_matches(space))
-        {
-            return false;
-        }
-        let shown = layout.tab().map(|tab| tab.id.clone());
-        let Some(tab) = layout.workspace().and_then(|space| {
-            space
-                .tabs
-                .iter()
-                .find(|tab| {
-                    tab.tree
-                        .leaves()
-                        .into_iter()
-                        .any(|leaf| self.matches_leaf(leaf))
-                })
-                .map(|tab| tab.id.clone())
-        }) else {
+        let Some((space, tab)) = layout
+            .workspaces
+            .iter()
+            .filter(|space| self.profile_matches(space))
+            .find_map(|space| {
+                space
+                    .tabs
+                    .iter()
+                    .find(|tab| {
+                        tab.tree
+                            .leaves()
+                            .into_iter()
+                            .any(|leaf| self.matches_leaf(leaf))
+                    })
+                    .map(|tab| (space.id.clone(), tab.id.clone()))
+            })
+        else {
             return false;
         };
+        let shown_space = layout.workspace().map(|space| space.id.clone());
+        if !layout.choose_workspace(&space) {
+            return false;
+        }
+        let shown_tab = layout.tab().map(|tab| tab.id.clone());
         let closed =
             layout.choose_tab(&tab) && layout.choose_pane(&self.leaf.id) && layout.close_pane();
-        if let Some(shown) = shown {
+        if let Some(shown) = shown_tab {
             layout.choose_tab(&shown);
+        }
+        if let Some(shown) = shown_space {
+            layout.choose_workspace(&shown);
         }
         closed
     }
@@ -168,6 +175,9 @@ fn bound_shell_folder(leaf: &Leaf) -> Option<&str> {
     leaf.cwd.as_deref().filter(|cwd| *cwd != "/")
 }
 
+const PROFILE_UNAVAILABLE: &str = "The workspace profile connection is unavailable.";
+const PROFILE_CHANGED: &str = "The workspace profile connection changed while attaching.";
+
 fn connect(target: Target) -> Result<Ready, String> {
     connect_selected(target, None, false)
 }
@@ -181,7 +191,7 @@ fn connect_selected(
     if let Some(connection) = &bound {
         connection
             .verify()
-            .map_err(|_| "The workspace profile connection is unavailable.".to_owned())?;
+            .map_err(|_| PROFILE_UNAVAILABLE.to_owned())?;
     }
     let (socket, session) = if let Some(connection) = &bound {
         let session = match &target.leaf.attachment {
@@ -259,7 +269,7 @@ fn connect_selected(
     if let Some(connection) = &bound {
         connection
             .verify()
-            .map_err(|_| "The workspace profile connection changed while attaching.".to_owned())?;
+            .map_err(|_| PROFILE_CHANGED.to_owned())?;
     }
     Ok(ready)
 }
@@ -606,8 +616,12 @@ impl LiveTerminal {
                             );
                         } else {
                             terminal.restoring = false;
+                            // Only tmux can say the session is gone; a profile
+                            // connection that failed to verify may come back.
+                            let session_gone =
+                                error != PROFILE_UNAVAILABLE && error != PROFILE_CHANGED;
                             terminal.error = Some(error);
-                            if terminal.target.is_sign_in() {
+                            if session_gone && terminal.target.is_sign_in() {
                                 cx.emit(SignInEnded);
                             }
                         }
@@ -987,7 +1001,7 @@ mod tests {
     }
 
     #[test]
-    fn a_finished_pane_closes_from_a_hidden_tab_and_leaves_the_shown_one() {
+    fn a_finished_pane_closes_from_a_hidden_workspace_and_leaves_the_shown_one() {
         let mut layout = agent_interface_core::Layout::initial("/".into());
         layout.add_workspace("Work".into());
         layout.add_tab(Some("kept".into()), "/".into(), true);
@@ -1006,9 +1020,15 @@ mod tests {
         };
         let kept = layout.workspace().unwrap().tabs[0].id.clone();
         layout.choose_tab(&kept);
+        let work = layout.workspace().unwrap().id.clone();
+        layout.add_workspace("Elsewhere".into());
+        let elsewhere = layout.workspace().unwrap().id.clone();
+        assert_ne!(work, elsewhere);
 
         assert!(target.close_from(&mut layout));
 
+        assert_eq!(layout.workspace().unwrap().id, elsewhere);
+        layout.choose_workspace(&work);
         assert_eq!(layout.tab().unwrap().id, kept);
         assert!(
             layout

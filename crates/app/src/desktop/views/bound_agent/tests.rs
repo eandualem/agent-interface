@@ -127,3 +127,23 @@ fn a_section_reads_on_the_card_connection_and_missing_parts_keep_the_card() {
     assert!(matches!(snapshot.agent.skills, Some(Err(_))));
     server.join().unwrap();
 }
+
+#[test]
+fn removal_leaves_a_newer_agent_with_the_same_name_alone() {
+    let inspect_path = format!("/api/agents/worker/inspect?expected_registration_id={REG}");
+    let (_a, a, server) = provider(
+        "a",
+        vec![Reply {
+            status: 409,
+            ..Reply::ok(
+                &inspect_path,
+                json!({"detail":{"code":"registration_changed"}}),
+            )
+        }],
+    );
+    assert_eq!(
+        remove_checked(&a, "worker", REG),
+        Err("This agent registration changed. Reopen it from Team.")
+    );
+    server.join().unwrap();
+}
