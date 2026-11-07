@@ -1324,12 +1324,10 @@ impl Browser {
         if !self.save_failed || self.saving {
             return;
         }
-        // Discarding the binding's own save makes its workspace again.
-        let bind = self.bind_after_save.take().or_else(|| {
-            self.pending_profile
-                .take()
-                .map(|(_, connection, item, name)| (item, connection, name))
-        });
+        // Discarding the binding's own save drops it; saving it again could
+        // fail the same way and leave nothing else to do.
+        self.pending_profile = None;
+        let bind = self.bind_after_save.take();
         self.pending_save = None;
         if let Some(pane) = self.section_saving.take() {
             self.opening_sections.remove(&pane);
