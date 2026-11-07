@@ -116,16 +116,6 @@ pub(super) struct Management {
 impl EventEmitter<Back> for Management {}
 impl EventEmitter<Open> for Management {}
 impl Management {
-    /// Restore focus to the deepest visible pane, including a creation form.
-    pub fn focus_handle(&self, cx: &gpui::App) -> FocusHandle {
-        if let Some((pane, _)) = &self.setup {
-            return pane.read(cx).focus.clone();
-        }
-        if let Some((form, _)) = &self.choices {
-            return form.read(cx).focus.clone();
-        }
-        self.focus.clone()
-    }
     pub fn new(
         client: Client,
         directory: Option<PathBuf>,

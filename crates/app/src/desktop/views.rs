@@ -261,7 +261,6 @@ impl ViewPane {
     }
 
     /// An explicit bound reader; startup does not enable profile selection yet.
-    #[allow(dead_code)] // Used when workspace profile binding is enabled.
     pub fn new_bound(
         view: View,
         connection: Connection,
@@ -323,18 +322,8 @@ impl ViewPane {
             return pane;
         }
         if let Some(connection) = &pane.connection
-            && (!matches!(
-                pane.view.kind,
-                ViewKind::Reports
-                    | ViewKind::Usage
-                    | ViewKind::Activity
-                    | ViewKind::Skills
-                    | ViewKind::Policies
-                    | ViewKind::Team
-                    | ViewKind::Tags
-                    | ViewKind::Agent
-            ) && !(pane.view.kind == ViewKind::Artifacts
-                && super::chooser_source::shows_artifacts(Some(connection.kind())))
+            && (pane.view.kind == ViewKind::Artifacts
+                && !super::chooser_source::shows_artifacts(Some(connection.kind()))
                 || !pane.agents.belongs_to(connection.identity()))
         {
             pane.error = Some("This view is unavailable for the original profile.");

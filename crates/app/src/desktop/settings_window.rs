@@ -799,7 +799,7 @@ impl SettingsWindow {
 
     fn agents(&self, cx: &mut Context<Self>) -> gpui::Div {
         let (t, c) = (tokens(), colors());
-        let (connected, detail) = match crate::roster::provider_directory(None, None, None, false) {
+        let (connected, detail) = match crate::roster::provider_directory(false) {
             Ok(Some(path)) => (true, path.display().to_string()),
             Ok(None) => (
                 false,

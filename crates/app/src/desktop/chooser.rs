@@ -28,7 +28,6 @@ pub(super) struct SessionChooser {
     error: Option<String>,
     scroll: ScrollHandle,
     source: Option<Sessions>,
-    origin: Origin,
     _updates: Task<()>,
     _input: Subscription,
 }
@@ -47,14 +46,8 @@ impl SessionChooser {
         )
     }
 
-    #[allow(dead_code)] // Used by the following workspace routing integration.
     pub fn new_bound(connection: Connection, window: &mut Window, cx: &mut Context<Self>) -> Self {
         Self::new_with(Origin::Bound(connection), window, cx)
-    }
-
-    #[allow(dead_code)] // The event owner retains this binding when attaching.
-    pub fn connection(&self) -> Option<&Connection> {
-        self.origin.connection()
     }
 
     fn new_with(origin: Origin, window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -98,7 +91,6 @@ impl SessionChooser {
             error,
             scroll: ScrollHandle::new(),
             source,
-            origin,
             _updates: updates,
             _input: input,
         }

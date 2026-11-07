@@ -279,7 +279,6 @@ impl NewPane {
     }
 
     /// The workspace owner must retain this connection when accepting events.
-    #[allow(dead_code)] // Used by the following workspace routing integration.
     pub fn new_bound(
         pane: String,
         connection: Connection,
@@ -299,7 +298,6 @@ impl NewPane {
         ))
     }
 
-    #[allow(dead_code)] // The event owner validates this before routing bound choices.
     pub fn connection(&self) -> Option<&Connection> {
         self.origin.connection()
     }
@@ -610,9 +608,7 @@ impl NewPane {
     }
 
     fn choose(&mut self, row: Row, cx: &mut Context<Self>) {
-        if matches!(&row, Row::View(index) if !self.origin.allows_view(VIEWS[*index].kind))
-            || (matches!(&row, Row::Pick(_)) && !self.origin.allows_view(ViewKind::Agent))
-        {
+        if matches!(&row, Row::View(index) if !self.origin.allows_view(VIEWS[*index].kind)) {
             return;
         }
         match row {

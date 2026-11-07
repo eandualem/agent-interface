@@ -313,7 +313,6 @@ pub(super) fn start_legacy(directory: PathBuf, cx: &mut App) -> Option<LiveAgent
 
 /// Only an already-verified connection can start a bound source. Selection and
 /// workspace persistence are not enabled by this ownership primitive.
-#[allow(dead_code)] // Used when workspace profile binding is enabled.
 pub(super) fn start_bound(connection: Connection, cx: &mut App) -> Option<LiveAgents> {
     let origin = Origin::Bound(connection.identity().clone());
     start(origin, Some(connection.connection_key()), cx, move |wake| {

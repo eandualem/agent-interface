@@ -65,15 +65,6 @@ impl Outcome {
     }
 }
 
-/// Start an agent with its saved runtime and model, resuming its saved
-/// conversation or opening a new one. Runs on an I/O worker.
-pub fn start(data_dir: &Path, name: &str, resume: bool) -> Outcome {
-    let Some((url, key)) = configured(data_dir, None) else {
-        return Outcome::Refused("Backbone is unavailable. No launch was requested.".into());
-    };
-    start_at(&url, &key, name, resume, None)
-}
-
 /// Start with the current appearance when the saved runtime advertises support.
 /// Older or unavailable capability endpoints retain the legacy launch request.
 pub fn start_with_defaults(

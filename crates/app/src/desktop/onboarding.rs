@@ -629,8 +629,7 @@ impl Render for Onboarding {
         if index == 2
             && self.first.is_none()
             && let Some(probe) = &self.probe
-            && let Ok(Some(directory)) =
-                crate::roster::provider_directory(Some(true), None, None, false)
+            && let Ok(Some(directory)) = crate::roster::provider_directory(true)
         {
             let executable =
                 setup::active_engine(&directory).or_else(|| probe.path("backbone").cloned());

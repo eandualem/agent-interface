@@ -464,32 +464,11 @@ impl Browser {
             })
             .map(|(id, _)| id.clone())
             .collect();
-        let allowed_terminals: std::collections::HashSet<_> = owners
-            .keys()
-            .filter(|id| self.terminal_available(id))
-            .cloned()
-            .collect();
-        let unavailable: std::collections::HashSet<_> = owners
-            .keys()
-            .filter(|id| !allowed_terminals.contains(*id))
-            .cloned()
-            .collect();
-        let mut invalidated: Vec<_> = unavailable
-            .difference(&self.unavailable_profile_panes)
-            .cloned()
-            .collect();
-        if let Some(chooser) = &self.chooser
-            && unavailable.contains(&chooser.destination.pane)
-        {
-            invalidated.push(chooser.destination.pane.clone());
-        }
-        self.unavailable_profile_panes = unavailable;
-        for id in invalidated.iter().chain(&changed) {
+        for id in &changed {
             self.invalidate_profile_pane(id);
         }
-        self.terminals.retain(|id, _| {
-            self.pane_owners.get(id) == owners.get(id) && allowed_terminals.contains(id)
-        });
+        self.terminals
+            .retain(|id, _| self.pane_owners.get(id) == owners.get(id) && owners.contains_key(id));
         self.window_choices
             .retain(|id, _| self.pane_owners.get(id) == owners.get(id) && owners.contains_key(id));
         self.views

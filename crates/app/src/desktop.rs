@@ -33,7 +33,6 @@ mod navigation_origin;
 mod onboarding;
 mod pane_cards;
 mod pane_drag;
-#[allow(dead_code)] // Connected when workspace profile ownership is integrated.
 mod profile_management;
 mod profile_picker;
 mod settings;
@@ -310,9 +309,7 @@ fn open_browser(
     source: Result<PathBuf, String>,
     cx: &mut App,
 ) -> Result<(), String> {
-    let backbone = crate::roster::provider_directory(None, None, None, false)
-        .ok()
-        .flatten();
+    let backbone = crate::roster::provider_directory(false).ok().flatten();
     let roster = backbone
         .as_ref()
         .and_then(|directory| agent_status::start_legacy(directory.clone(), cx));
@@ -596,7 +593,6 @@ struct Browser {
         ),
     >,
     pane_owners: HashMap<String, workspace_profiles::Owner>,
-    unavailable_profile_panes: std::collections::HashSet<String>,
     profile_client: Option<Result<crate::profiles::Client, ()>>,
     profile_client_loading: bool,
     profile_picker_requested: bool,
@@ -2351,9 +2347,6 @@ impl Render for Browser {
             }
         }
         for leaf in &leaves {
-            if !self.terminal_available(&leaf.id) {
-                continue;
-            }
             let Ok(connection) = self.pane_connection(&leaf.id) else {
                 continue;
             };
