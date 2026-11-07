@@ -14,6 +14,19 @@ fn live() -> bool {
     true
 }
 
+/// These tests write into `$HOME`, so it must be a disposable temporary folder.
+fn disposable_home() -> PathBuf {
+    let home = PathBuf::from(std::env::var_os("HOME").unwrap())
+        .canonicalize()
+        .unwrap();
+    let temp = std::env::temp_dir().canonicalize().unwrap();
+    assert!(
+        home.starts_with(&temp) || home.starts_with("/tmp") || home.starts_with("/private/tmp"),
+        "HOME must be a disposable temporary folder"
+    );
+    home
+}
+
 fn client() -> Client {
     let path = std::env::var_os("PATH").unwrap();
     let executable = std::env::split_paths(&path)
@@ -39,6 +52,7 @@ fn sessions(connection: &Connection) -> Vec<String> {
 #[test]
 #[ignore = "needs a disposable real provider"]
 fn create_start_setup_and_shell_on_a_new_profile() {
+    disposable_home();
     let client = client();
     let nonce = std::process::id();
 
@@ -216,8 +230,7 @@ fn create_start_setup_and_shell_on_a_new_profile() {
 #[test]
 #[ignore = "needs a disposable real provider"]
 fn a_new_profile_copies_only_the_git_name_and_email() {
-    let home = PathBuf::from(std::env::var_os("HOME").unwrap());
-    assert!(home.starts_with("/private/tmp"), "writes $HOME/.gitconfig");
+    let home = disposable_home();
     let config = home.join(".gitconfig");
     let client = client();
     let nonce = std::process::id();

@@ -1926,9 +1926,11 @@ impl Browser {
                             .map(|leaf| (space.id.clone(), tab.id.clone(), leaf.id.clone()))
                     })
                 });
-            if let Some((space, tab, pane)) = shown
-                && let Some(layout) = self.layout.as_mut()
-            {
+            // Not shown either: the layout could not be made, so say it failed.
+            let Some((space, tab, pane)) = shown else {
+                return false;
+            };
+            if let Some(layout) = self.layout.as_mut() {
                 let model = layout.model_mut();
                 if model.choose_workspace(&space) && model.choose_tab(&tab) {
                     model.choose_pane(&pane);

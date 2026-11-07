@@ -223,7 +223,7 @@ fn start_service(
     let receipt = controller.submit(&key, &live).map_err(|_| FAILED)?;
     match receipt.status {
         Status::Failed if receipt.error_code.as_deref() == Some("operation_busy") => Err(
-            "An earlier start or stop of this profile has not finished. Check it under Manage, Saved operations.",
+            "An earlier start or stop of this profile has not finished. Check it in Settings › Profiles, under Saved requests.",
         ),
         Status::Failed => Err(FAILED),
         Status::Pending | Status::Succeeded => Ok(()),
@@ -352,7 +352,7 @@ impl Browser {
                         if browser.open_setup_agent(&session, &profile_id, &label, window, cx) {
                             Ok(())
                         } else {
-                            Err("The workspace is busy saving. Try again.")
+                            Err("Couldn't open it in a workspace. Try again.")
                         }
                     }
                     Err(error) => Err(error),

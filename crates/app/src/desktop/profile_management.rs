@@ -649,11 +649,10 @@ fn history(
             .ids()?
             .into_iter()
             .filter(|key| {
-                profile.is_none_or(|id| {
-                    controller
-                        .read(key)
-                        .ok()
-                        .is_some_and(|s| s.identity.as_ref().is_some_and(|i| i.profile_id == id))
+                // A record that can't be read may be this profile's, so it stays.
+                profile.is_none_or(|id| match controller.read(key) {
+                    Ok(s) => s.identity.as_ref().is_some_and(|i| i.profile_id == id),
+                    Err(_) => true,
                 })
             })
             .collect(),

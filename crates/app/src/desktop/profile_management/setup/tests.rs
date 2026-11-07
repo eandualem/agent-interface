@@ -159,12 +159,12 @@ fn bounded_history_keeps_invalid_records_visible_and_never_invokes_provider() {
         panic!("history expected")
     };
     assert_eq!(rows.len(), 1);
-    // A page for one profile lists only requests it can show are that profile's.
+    // A record that can't be read stays listed for every profile, so it can be forgotten.
     let Page::History { ids, .. } = history(&controller, Some("other"), None, 0, &live).unwrap()
     else {
         panic!("history expected")
     };
-    assert!(ids.is_empty());
+    assert_eq!(ids.len(), PAGE_SIZE + 1);
     live.store(false, Ordering::Release);
     assert!(matches!(
         history(&controller, None, None, 0, &live),

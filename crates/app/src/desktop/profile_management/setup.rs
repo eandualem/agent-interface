@@ -531,10 +531,11 @@ fn history(
             .ids()?
             .into_iter()
             .filter(|key| {
-                profile.is_none_or(|id| {
-                    controller
-                        .read(key)
-                        .is_ok_and(|s| s.identity.profile_id == id)
+                // A record that can't be read may be any profile's, and only
+                // forgetting it unblocks setup, so every profile lists it.
+                profile.is_none_or(|id| match controller.read(key) {
+                    Ok(s) => s.identity.profile_id == id,
+                    Err(_) => true,
                 })
             })
             .collect(),

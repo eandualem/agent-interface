@@ -256,11 +256,14 @@ impl Controller {
     /// request already created stays. `revision` is what the person was shown;
     /// `None` applies only to a record that cannot be read.
     pub fn forget(&self, key: &str, revision: Option<u64>) -> Result<(), Error> {
-        if revision.is_none()
-            && let Ok(Some(record)) = self.journal.read_durable(key)
-            && inspect(&record).is_ok()
-        {
-            return Err(Error::WrongPhase);
+        if revision.is_none() {
+            // Skip the revision check only for a record proven damaged; a busy
+            // or failing journal says nothing about the record.
+            match self.journal.read_durable(key) {
+                Ok(Some(record)) if inspect(&record).is_ok() => return Err(Error::WrongPhase),
+                Ok(_) | Err(journal::Error::Invalid | journal::Error::TooLarge) => {}
+                Err(error) => return Err(Error::Storage(error)),
+            }
         }
         self.journal.delete(key, revision).map_err(Error::Storage)
     }

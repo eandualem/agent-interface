@@ -224,8 +224,10 @@ fn backbone() -> Backbone {
     let Some(client) = profile_client() else {
         return Backbone::NotSetUp;
     };
-    let Ok(items) = client.list(&live) else {
-        return Backbone::NotSetUp;
+    let items = match client.list(&live) {
+        Ok(items) => items,
+        Err(crate::profiles::Error::RegistryAbsent) => return Backbone::NotSetUp,
+        Err(_) => return Backbone::Unreachable("Backbone did not list its profiles"),
     };
     let Some(default) = items.iter().find(|item| item.kind == Kind::LegacyDefault) else {
         return Backbone::NotSetUp;
