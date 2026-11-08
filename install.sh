@@ -376,6 +376,7 @@ if [ "$platform" = apple-darwin ]; then
     codesign --verify --strict "$prepared" || fail 'App signature verification failed.'
 fi
 backbone_data=${BACKBONE_DATA_DIR:-$HOME/.local/share/agent-backbone}
+case $backbone_data in "~/"*) backbone_data=$HOME/${backbone_data#\~/} ;; esac
 if [ -f "$prepared/$(dirname "$marker")/setup_backbone.py" ] && [ -e "$backbone_data/backbone.db" ]; then
     # This release's Backbone serves profiles. An installation from before
     # them can't start on it, so check before changing anything at all.
@@ -404,15 +405,16 @@ try:
                 " WHERE p.state = ?", ("creating",)).fetchall()
         finally:
             db.close()
-except sqlite3.Error:
+    found = any(Path(row[0]).resolve() == data for row in rows)
+except Exception:
     raise SystemExit(2)
-raise SystemExit(0 if any(Path(row[0]).resolve() == data for row in rows) else 1)
+raise SystemExit(0 if found else 1)
 '; then
         :
     else
         case $? in
-            1) fail 'This Agent Backbone installation predates profiles, and this installer does not upgrade it in place. Nothing was changed. To upgrade it: stop its service, back up its data directory, update the agent-backbone package, run "backbone init" with the new version, then run this installer again.' ;;
-            *) fail 'The Agent Backbone profile registry could not be read. Nothing was changed; try again.' ;;
+            1) fail 'This Agent Backbone installation predates profiles, and this installer does not upgrade it in place. Nothing was changed. To upgrade it: stop its service, back up its data directory, update the agent-backbone package, run "backbone init" with the new version, start its service again, then run this installer again.' ;;
+            *) fail 'The Agent Backbone profile registry could not be checked. Nothing was changed; try again.' ;;
         esac
     fi
 fi

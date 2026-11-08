@@ -688,7 +688,7 @@ esac
         data.mkdir(parents=True)
         (data / "backbone.db").write_bytes(b"fixture database")
         archive = self.package(extra={"agent-interface/setup_backbone.py": "fixture helper", "agent-interface/upgrade_backbone.py": "fixture guard"})
-        for code, message in (("1", "predates profiles"), ("2", "registry could not be read")):
+        for code, message in (("1", "predates profiles"), ("2", "registry could not be checked")):
             with self.subTest(code=code):
                 self.env["FIXTURE_UPGRADE_CHECK"] = code
                 log = Path(self.env["FIXTURE_LOG"])
