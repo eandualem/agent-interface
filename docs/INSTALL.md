@@ -292,14 +292,12 @@ It refuses to overwrite an installation
 it does not recognize; move that installation yourself if you want to replace it.
 
 Agent Backbone 0.5.0 and later run every installation as a profile. When the
-installer finds a Backbone installation from before profiles, it stops the
-Backbone service, copies the data directory beside itself (named
-`agent-backbone.before-profiles-<date>`), installs the new release, runs
-`backbone init` once to record the installation as the Default profile, and
-starts the service again. It prints the backup's location and what `init`
-reported. If `init` fails, the service stays stopped and the backup stays in
-place; fix the reported problem, run `backbone init`, start the service and run
-the installer again.
+installer finds a Backbone installation from before profiles, it stops Backbone
+and any agents it runs, installs the new release, runs `backbone init` once to
+record the installation as the Default profile, and starts Backbone again,
+printing what `init` reported. If `init` fails, Backbone stays stopped; fix the
+reported problem, run `backbone init`, start Backbone and run the installer
+again.
 
 The installer retains one archive in a hidden download cache so interrupted
 installs and repeated attempts can reuse it. Include that cache when removing

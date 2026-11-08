@@ -635,6 +635,7 @@ case "$*" in *'--phase before'*) exit "${FIXTURE_PREFLIGHT:-0}";; *'--phase afte
 case "$*" in *--resume-pending*) exit "${FIXTURE_RESUME:-0}";; esac
 case "$*" in *'importlib.metadata import version'*) exit "${FIXTURE_VERSION_FAIL:-0}";; esac
 case "$*" in *'default_profiles'*) exit "${FIXTURE_UPGRADE_CHECK:-0}";; esac
+case "$*" in *--check-stopped*) exit "${FIXTURE_STILL_RUNNING:-0}";; esac
 case "$*" in *--init-profiles*) exit "${FIXTURE_INIT_FAIL:-0}";; esac
 case ":$PATH:" in *":$FIXTURE_BIN:"*) :;; *) exit 89;; esac
 if [ "${FIXTURE_SETUP_DELAY:-0}" != 0 ]; then sleep "$FIXTURE_SETUP_DELAY"; fi
@@ -688,31 +689,59 @@ esac
         data = self.home / ".local/share/agent-backbone"
         data.mkdir(parents=True)
         (data / "backbone.db").write_bytes(b"fixture database")
-        archive = self.package(extra={"agent-interface/setup_backbone.py": "fixture helper", "agent-interface/upgrade_backbone.py": "fixture guard"})
+        for manager in ("launchctl", "systemctl"):
+            self.command(manager, 'printf "%s %s\\n" "$(basename "$0")" "$*" >> "$FIXTURE_LOG"')
+        plist = self.home / "Library/LaunchAgents/dev.agent-backbone.plist"
+        unit = self.home / ".config/systemd/user/agent-backbone.service"
+        for path in (plist, unit):
+            path.parent.mkdir(parents=True)
+            path.write_text("fixture service")
+        helper = "agent-interface/setup_backbone.py"
+        archive = self.package(extra={helper: "fixture helper --init-profiles", "agent-interface/upgrade_backbone.py": "fixture guard"})
         log = Path(self.env["FIXTURE_LOG"])
+
+        def steps():
+            lines = log.read_text().splitlines()
+            order = []
+            for line in lines:
+                for name, mark in (("stop", ("bootout", "stop agent-backbone")), ("check", ("--check-stopped",)),
+                                   ("install", ("tool install",)), ("init", ("--init-profiles",)),
+                                   ("start", ("bootstrap", "start agent-backbone"))):
+                    if any(m in line for m in mark):
+                        order.append(name)
+            return order
 
         self.env["FIXTURE_UPGRADE_CHECK"] = "2"
         log.write_text("")
         result = self.install(archive, success=False)
         self.assertIn("registry could not be checked", result.stderr)
-        self.assertNotIn("tool install", log.read_text())
-        self.assertIn("0.1.1", subprocess.check_output([self.link, "--version"], text=True))
+        self.assertEqual(steps(), [])
 
-        self.env.update(FIXTURE_UPGRADE_CHECK="1", FIXTURE_INIT_FAIL="1")
+        self.env.update(FIXTURE_UPGRADE_CHECK="1", FIXTURE_STILL_RUNNING="1")
+        log.write_text("")
+        result = self.install(archive, success=False)
+        self.assertIn("still running, so it was not upgraded", result.stderr)
+        self.assertEqual(steps(), ["stop", "check"])
+
+        self.env.update(FIXTURE_STILL_RUNNING="0", FIXTURE_INIT_FAIL="1")
         log.write_text("")
         result = self.install(archive, success=False)
         self.assertIn("was not started again", result.stderr)
-        lines = log.read_text().splitlines()
-        self.assertFalse(any("--resume-pending" in line for line in lines))
-        install = next(i for i, line in enumerate(lines) if line.startswith("tool install"))
-        init = next(i for i, line in enumerate(lines) if "--init-profiles" in line)
-        self.assertLess(install, init)
-        self.assertFalse(any(line.endswith("setup_backbone.py --executable " + str(tool.parent / "backbone")) for line in lines[init:]))
+        self.assertEqual(steps(), ["stop", "check", "install", "init"])
+        self.assertFalse(any("--resume-pending" in line for line in log.read_text().splitlines()))
         self.assertIn("0.1.1", subprocess.check_output([self.link, "--version"], text=True))
 
         self.env["FIXTURE_INIT_FAIL"] = "0"
+        log.write_text("")
         result = self.install(archive)
-        self.assertIn("predates profiles. It will be backed up", result.stdout)
+        self.assertIn("will stop while", result.stdout)
+        self.assertEqual(steps(), ["stop", "check", "install", "init", "start"])
+
+        old = self.package(extra={helper: "fixture helper", "agent-interface/upgrade_backbone.py": "fixture guard"})
+        log.write_text("")
+        result = self.install(old, success=False)
+        self.assertIn("this app release cannot upgrade it. Nothing was changed", result.stderr)
+        self.assertEqual(steps(), [])
 
     def test_recovered_old_provider_keeps_previous_app_until_upgrade(self):
         self.install(self.package("0.1.1"))

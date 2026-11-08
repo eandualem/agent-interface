@@ -415,8 +415,10 @@ raise SystemExit(0 if found else 1)
     else
         case $? in
             1)
+                grep -q -- '--init-profiles' "$prepared/$(dirname "$marker")/setup_backbone.py" ||
+                    fail 'This Agent Backbone installation predates profiles, and this app release cannot upgrade it. Nothing was changed; install the latest release.'
                 backbone_needs_init=true
-                printf '%s\n' 'This Agent Backbone installation predates profiles. It will be backed up, recorded as the Default profile with "backbone init", and started again.' ;;
+                printf '%s\n' 'This Agent Backbone installation predates profiles. Agent Backbone, and any agents it runs, will stop while "backbone init" records it as the Default profile, then start again.' ;;
             *) fail 'The Agent Backbone profile registry could not be checked. Nothing was changed; try again.' ;;
         esac
     fi
@@ -559,6 +561,9 @@ if [ -f "$resources/setup_backbone.py" ]; then
     if [ "$backbone_needs_init" = true ]; then
         run_step 'Stopping Agent Backbone' stop_backbone_service ||
             fail 'Could not stop Agent Backbone. Nothing else was changed.'
+        run_step 'Checking that Agent Backbone stopped' "$tools/agent-backbone/bin/python" -I -B "$resources/setup_backbone.py" \
+            --executable "$tools/agent-backbone/bin/backbone" --check-stopped ||
+            fail 'Agent Backbone is still running, so it was not upgraded.'
     elif [ -x "$tools/agent-backbone/bin/python" ]; then
         run_step 'Checking saved Backbone setup' resume_backbone ||
             fail 'Interrupted Backbone setup needs attention. Its installed version was preserved.'
@@ -586,7 +591,7 @@ if [ -f "$resources/setup_backbone.py" ]; then
         export PATH
         tools=$("$uv" tool dir) || fail 'Could not locate the installed Agent Backbone.'
         if [ "$backbone_needs_init" = true ]; then
-            run_step 'Backing up and recording Agent Backbone as the Default profile' \
+            run_step 'Recording Agent Backbone as the Default profile' \
                 "$tools/agent-backbone/bin/python" -I -B "$resources/setup_backbone.py" \
                 --executable "$tools/agent-backbone/bin/backbone" --init-profiles ||
                 fail 'Agent Backbone was not started again. The app was not replaced.'

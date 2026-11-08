@@ -12,7 +12,6 @@ import json
 import os
 from pathlib import Path
 import re
-import shutil
 import stat
 import subprocess
 import tempfile
@@ -232,51 +231,68 @@ def service_identity(home, data_dir, executable, env):
 PROFILES_RELEASE = (0, 5, 0)
 
 
-def back_up(data_dir):
-    """Copy the data directory beside itself, leaving out sockets. Returns the copy."""
-    target = data_dir.with_name(f"{data_dir.name}.before-profiles-{time.strftime('%Y%m%d-%H%M%S')}")
+def backbone_port(data_dir, env):
+    """The port this installation listens on: its environment, its .env, or the default."""
+    value = env.get("BACKBONE_PORT")
+    try:
+        for line in (data_dir / ".env").read_text().splitlines():
+            key, _, found = line.partition("=")
+            if key.strip() == "BACKBONE_PORT" and found.strip():
+                value = value or found.strip().strip("'\"")
+    except OSError:
+        pass
+    try:
+        return int(value or 7120)
+    except ValueError:
+        return 7120
 
-    def sockets(directory, names):
-        return [name for name in names
-                if stat.S_ISSOCK(os.lstat(os.path.join(directory, name)).st_mode)]
 
-    shutil.copytree(data_dir, target, symlinks=True, ignore=sockets)
-    target.chmod(0o700)
-    return target
+def still_running(data_dir, env):
+    """What is still answering for this installation, or None once it has stopped."""
+    import socket
+
+    for name in ("run/backbone.sock", "run/api.sock"):
+        path = data_dir / name
+        try:
+            with socket.socket(socket.AF_UNIX) as client:
+                client.settimeout(1)
+                client.connect(str(path))
+            return str(path)
+        except OSError:
+            pass
+    port = backbone_port(data_dir, env)
+    try:
+        socket.create_connection(("127.0.0.1", port), timeout=1).close()
+        return f"port {port}"
+    except OSError:
+        return None
+
+
+def ensure_stopped(data_dir, env):
+    for _ in range(20):  # a stopped service can take a moment to let go of its socket
+        running = still_running(data_dir, env)
+        if running is None:
+            return
+        time.sleep(0.5)
+    raise ValueError(f"Agent Backbone is still answering on {running}. Stop it, then run this installer "
+                     "again. Nothing else was changed")
 
 
 def init_profiles(executable, data_dir, env):
-    """Back up an installation from before profiles and record it as the Default
-    profile with `backbone init`. Its service must already be stopped."""
-    def running():
-        import socket
-        if any(socket_healthy(data_dir / name) for name in ("run/backbone.sock", "run/api.sock")):
-            return True
-        try:  # an installation without a private socket still holds its port
-            socket.create_connection(("127.0.0.1", int(env.get("BACKBONE_PORT") or 7120)), timeout=1).close()
-            return True
-        except (OSError, ValueError):
-            return False
-
-    for _ in range(20):  # a stopped service can take a moment to let go of its socket
-        if not running():
-            break
-        time.sleep(0.5)
-    else:
-        raise ValueError("Agent Backbone is still running. Stop it, then run this installer again")
-    backup = back_up(data_dir)
-    print(f"Backed up {data_dir} to {backup}")
+    """Record an installation from before profiles as the Default profile with
+    `backbone init`. Its service must already be stopped."""
+    ensure_stopped(data_dir, env)
     try:
         result = subprocess.run([str(executable), "init"], env=env, stdin=subprocess.DEVNULL,
-                                capture_output=True, text=True, timeout=120)
+                                capture_output=True, text=True, timeout=600)
     except (OSError, subprocess.TimeoutExpired):
         result = None
     output = "" if result is None else (result.stdout + result.stderr).strip()[-2000:]
+    output = json.dumps(output, ensure_ascii=True)[1:-1].replace("\\n", "\n")
     if result is None or result.returncode:
-        raise ValueError(f"`backbone init` failed, so its service was not started again. "
-                         f"{output or 'It reported nothing.'} The data from before is in {backup}; "
-                         "fix the reported problem, run `backbone init`, start the service, "
-                         "then run this installer again")
+        raise ValueError("`backbone init` failed, so Agent Backbone was not started again. "
+                         f"{output or 'It reported nothing.'} Fix the reported problem, run "
+                         "`backbone init`, start Agent Backbone, then run this installer again")
     print(output)
 
 
@@ -538,12 +554,16 @@ if __name__ == "__main__":
     parser.add_argument("--executable", required=True, type=Path)
     parser.add_argument("--resume-pending", action="store_true")
     parser.add_argument("--init-profiles", action="store_true")
+    parser.add_argument("--check-stopped", action="store_true")
     args = parser.parse_args()
     try:
         home = Path(os.environ["HOME"])
         if not home.is_absolute() or not args.executable.is_absolute():
             raise ValueError("Installation paths must be absolute")
         data = Path(os.environ.get("BACKBONE_DATA_DIR") or home / ".local/share/agent-backbone").expanduser().resolve()
+        if args.check_stopped:
+            ensure_stopped(data, dict(os.environ, BACKBONE_DATA_DIR=str(data)))
+            raise SystemExit(0)
         if args.init_profiles:
             init_profiles(args.executable, data, dict(os.environ, BACKBONE_DATA_DIR=str(data)))
             raise SystemExit(0)
