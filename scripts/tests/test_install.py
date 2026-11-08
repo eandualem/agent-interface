@@ -634,6 +634,7 @@ printf '%s\\n' "$*" >> "$FIXTURE_LOG"
 case "$*" in *'--phase before'*) exit "${FIXTURE_PREFLIGHT:-0}";; *'--phase after'*) exit "${FIXTURE_RELEASE:-0}";; *'--phase verify'*) exit "${FIXTURE_VERIFY:-0}";; esac
 case "$*" in *--resume-pending*) exit "${FIXTURE_RESUME:-0}";; esac
 case "$*" in *'importlib.metadata import version'*) exit "${FIXTURE_VERSION_FAIL:-0}";; esac
+case "$*" in *'default_profiles'*) exit "${FIXTURE_UPGRADE_CHECK:-0}";; esac
 case ":$PATH:" in *":$FIXTURE_BIN:"*) :;; *) exit 89;; esac
 if [ "${FIXTURE_SETUP_DELAY:-0}" != 0 ]; then sleep "$FIXTURE_SETUP_DELAY"; fi
 exit "${FIXTURE_SETUP_FAIL:-0}"
@@ -649,7 +650,6 @@ case "$1 $2" in
         mkdir -p "$FIXTURE_TOOLS/agent-backbone/bin"
         cp "$FIXTURE_PYTHON" "$FIXTURE_TOOLS/agent-backbone/bin/python"
         chmod 755 "$FIXTURE_TOOLS/agent-backbone/bin/python";;
-    "run --no-project") exit "${FIXTURE_UPGRADE_CHECK:-0}";;
     "tool update-shell")
         if [ "${FIXTURE_SHELL_FAIL:-0}" != 0 ]; then
             echo 'error: PATH is stale but the Bash configuration files are already up-to-date' >&2
@@ -668,7 +668,7 @@ esac
         self.assertIn("Restart your shell to apply changes", first.stderr)
         log = Path(self.env["FIXTURE_LOG"])
         lines = log.read_text().splitlines()
-        self.assertIn("tool install --upgrade --prerelease disallow --python >=3.11,<3.14 agent-backbone>=0.4.5", lines)
+        self.assertIn("tool install --upgrade --prerelease disallow --python >=3.11,<3.14 agent-backbone>=0.5.0,<2", lines)
         self.assertTrue(any(line.startswith("-I -B -c") for line in lines))
         self.env["FIXTURE_RESUME"] = "3"
         log.write_text("")
@@ -681,14 +681,27 @@ esac
     def test_installation_from_before_profiles_stops_before_any_change(self):
         self.install(self.package("0.1.1"))
         self.backbone_tools()
-        self.env["FIXTURE_UPGRADE_CHECK"] = "1"
+        tool = Path(self.env["FIXTURE_TOOLS"]) / "agent-backbone/bin/python"
+        tool.parent.mkdir(parents=True)
+        shutil.copy(self.env["FIXTURE_PYTHON"], tool)
+        data = self.home / ".local/share/agent-backbone"
+        data.mkdir(parents=True)
+        (data / "backbone.db").write_bytes(b"fixture database")
         archive = self.package(extra={"agent-interface/setup_backbone.py": "fixture helper", "agent-interface/upgrade_backbone.py": "fixture guard"})
-        result = self.install(archive, success=False)
-        self.assertIn("Agent Backbone and the app were not changed.", result.stderr)
-        log = Path(self.env["FIXTURE_LOG"]).read_text()
-        self.assertIn("--check-upgrade", log)
-        self.assertNotIn("tool install", log)
-        self.assertIn("0.1.1", subprocess.check_output([self.link, "--version"], text=True))
+        for code, message in (("1", "predates profiles"), ("2", "registry could not be read")):
+            with self.subTest(code=code):
+                self.env["FIXTURE_UPGRADE_CHECK"] = code
+                log = Path(self.env["FIXTURE_LOG"])
+                log.write_text("")
+                result = self.install(archive, success=False)
+                self.assertIn(message, result.stderr)
+                self.assertIn("Nothing was changed", result.stderr)
+                lines = log.read_text().splitlines()
+                self.assertTrue(any("default_profiles" in line for line in lines))
+                self.assertFalse(any(line.startswith("tool install") or "--resume-pending" in line for line in lines))
+                self.assertIn("0.1.1", subprocess.check_output([self.link, "--version"], text=True))
+        self.env["FIXTURE_UPGRADE_CHECK"] = "0"
+        self.install(archive)
 
     def test_recovered_old_provider_keeps_previous_app_until_upgrade(self):
         self.install(self.package("0.1.1"))
@@ -700,7 +713,7 @@ esac
         log = Path(self.env["FIXTURE_LOG"])
         log.write_text("")
         result = self.install(archive, success=False)
-        self.assertIn("requires Backbone 0.4.5 or newer", result.stderr)
+        self.assertIn("requires Backbone 0.5.0 or newer", result.stderr)
         self.assertNotIn("tool install", log.read_text())
         self.assertIn("0.1.1", subprocess.check_output([self.link, "--version"], text=True))
         self.env.update(FIXTURE_RESUME="0", FIXTURE_VERSION_FAIL="0")

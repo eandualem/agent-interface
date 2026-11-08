@@ -375,6 +375,47 @@ esac
 if [ "$platform" = apple-darwin ]; then
     codesign --verify --strict "$prepared" || fail 'App signature verification failed.'
 fi
+backbone_data=${BACKBONE_DATA_DIR:-$HOME/.local/share/agent-backbone}
+if [ -f "$prepared/$(dirname "$marker")/setup_backbone.py" ] && [ -e "$backbone_data/backbone.db" ]; then
+    # This release's Backbone serves profiles. An installation from before
+    # them can't start on it, so check before changing anything at all.
+    check_uv=$(command -v uv || true)
+    [ -n "$check_uv" ] || check_uv=$HOME/.local/bin/uv
+    check_python=
+    if [ -x "$check_uv" ] && check_tools=$("$check_uv" tool dir 2>/dev/null); then
+        check_python=$check_tools/agent-backbone/bin/python
+    fi
+    [ -x "$check_python" ] || fail 'An existing Agent Backbone installation could not be checked. Nothing was changed.'
+    if BACKBONE_DATA_DIR=$backbone_data "$check_python" -I -B -c '
+import os, sqlite3
+from pathlib import Path
+home = Path(os.environ["HOME"])
+data = Path(os.environ["BACKBONE_DATA_DIR"]).expanduser().resolve()
+registry = home / ".local/share/agent-backbone-profiles/registry.db"
+rows = []
+try:
+    if registry.is_file():
+        db = sqlite3.connect(registry.as_uri() + "?mode=ro", uri=True, timeout=30)
+        try:
+            rows = db.execute(
+                "SELECT p.data_dir FROM profiles p"
+                " JOIN default_profiles d ON d.profile_id = p.profile_id"
+                " JOIN profile_bindings b ON b.profile_id = p.profile_id"
+                " WHERE p.state = ?", ("creating",)).fetchall()
+        finally:
+            db.close()
+except sqlite3.Error:
+    raise SystemExit(2)
+raise SystemExit(0 if any(Path(row[0]).resolve() == data for row in rows) else 1)
+'; then
+        :
+    else
+        case $? in
+            1) fail 'This Agent Backbone installation predates profiles, and this installer does not upgrade it in place. Nothing was changed. To upgrade it: stop its service, back up its data directory, update the agent-backbone package, run "backbone init" with the new version, then run this installer again.' ;;
+            *) fail 'The Agent Backbone profile registry could not be read. Nothing was changed; try again.' ;;
+        esac
+    fi
+fi
 if [ -n "$wsl_launcher" ]; then
     printf '%s\n' 'Preparing WSL runtime packages and Windows Start menu entry. sudo may ask for your Linux password.'
     sudo -v || fail 'Could not authorize WSL runtime and launcher installation.'
@@ -456,13 +497,6 @@ if [ -f "$resources/setup_backbone.py" ]; then
         uv=$HOME/.local/bin/uv
     fi
     tools=$("$uv" tool dir) || fail 'Could not locate the Agent Backbone installation directory.'
-    # This release serves profiles. An installation from before them can't
-    # start on it, so stop before any package or service changes.
-    check_profiles_upgrade() {
-        "$uv" run --no-project --quiet --python '>=3.11,<3.14' -- python -I -B "$resources/setup_backbone.py" --check-upgrade
-    }
-    run_step 'Checking the existing Backbone installation' check_profiles_upgrade ||
-        fail 'Agent Backbone and the app were not changed.'
     backbone_upgrade_held=false
     backbone_fixed_setup=false
     if [ "$platform" = unknown-linux-gnu ]; then
@@ -505,7 +539,7 @@ if [ -f "$resources/setup_backbone.py" ]; then
     fi
     if [ "$backbone_resumed" = false ]; then
         if [ "$backbone_fixed_setup" = false ]; then
-            run_step 'Installing Agent Backbone' "$uv" tool install --upgrade --prerelease disallow --python '>=3.11,<3.14' 'agent-backbone>=0.4.5' ||
+            run_step 'Installing Agent Backbone' "$uv" tool install --upgrade --prerelease disallow --python '>=3.11,<3.14' 'agent-backbone>=0.5.0,<2' ||
                 fail 'Could not install a compatible published Agent Backbone release. The app was not replaced.'
         fi
         if [ "$backbone_upgrade_held" = true ]; then
@@ -555,9 +589,9 @@ match = re.fullmatch(r"v?(?:(?P<epoch>[0-9]+)!)?(?P<release>[0-9]+(?:\.[0-9]+)*)
 if match is None:
     raise SystemExit(1)
 release = tuple(map(int, match["release"].split(".")))
-raise SystemExit(0 if (int(match["epoch"] or 0), release + (0,) * max(0, 3 - len(release))) >= (0, (0, 4, 5)) else 1)
+raise SystemExit(0 if (int(match["epoch"] or 0), release + (0,) * max(0, 3 - len(release))) >= (0, (0, 5, 0)) else 1)
 ' ||
-        fail 'Agent Interface requires Backbone 0.4.5 or newer. Saved setup was preserved; after recovery completes, rerun the installer to upgrade Backbone. The app was not replaced.'
+        fail 'Agent Interface requires Backbone 0.5.0 or newer. Saved setup was preserved; after recovery completes, rerun the installer to upgrade Backbone. The app was not replaced.'
 fi
 printf '%s\n' 'Installing the app and its launcher...'
 if [ "$platform" = unknown-linux-gnu ]; then

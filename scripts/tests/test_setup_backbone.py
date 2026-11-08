@@ -29,8 +29,15 @@ class VersionTests(unittest.TestCase):
     def test_installer_checks_versions_without_new_archive_helper_arguments(self):
         installer = (Path(__file__).parents[2] / "install.sh").read_text()
         source = re.search(r"(?s)-c '(\nfrom importlib.metadata import version.*?)\n'", installer)[1]
-        for value in STABLE_VERSIONS + REJECTED_VERSIONS:
-            accepted = value in STABLE_VERSIONS
+
+        def at_profiles_release(value):
+            # The installer's floor is the first profiles release, 0.5.0.
+            return (value.replace("0.4.4.post99", "0.4.99.post99").replace("0.4.10", "0.5.10")
+                    .replace("0.4.5", "0.5.0").replace("00.04.005", "00.05.000"))
+
+        for original in STABLE_VERSIONS + REJECTED_VERSIONS:
+            accepted = original in STABLE_VERSIONS
+            value = at_profiles_release(original)
             with self.subTest(value=value), patch("importlib.metadata.version", return_value=value):
                 with self.assertRaises(SystemExit) as result:
                     exec(source, {})
@@ -90,7 +97,7 @@ class SetupTests(unittest.TestCase):
             self.fail(arguments)
         return b""
 
-    def install(self, version="0.4.0", resume=False):
+    def install(self, version="0.5.0", resume=False):
         return setup.install(self.executable, self.home, self.data, version, "fixture installation", resume)
 
     def test_fresh_setup_and_repeat_preserve_completed_choices(self):
@@ -98,8 +105,8 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(sum(call == ("service", "restart") for call in self.calls), 1)
         self.assertNotIn("config", [call[0] for call in self.calls])
         before = list(self.calls)
-        with patch.object(setup, "socket_version", return_value="0.4.1"):
-            self.install("0.4.1")
+        with patch.object(setup, "socket_version", return_value="0.5.1"):
+            self.install("0.5.1")
         self.assertEqual(self.calls, before)
 
     def test_a_healthy_socket_needs_no_restart(self):
@@ -117,9 +124,9 @@ class SetupTests(unittest.TestCase):
         root = self.home / ".local/state/agent-interface/backbone"
         saved = {path: path.read_bytes() for path in root.glob("*.json")}
         before = list(self.calls)
-        with patch.object(setup, "socket_version", side_effect=["0.4.1", None, "0.4.2"]) as health, \
+        with patch.object(setup, "socket_version", side_effect=["0.5.1", None, "0.5.2"]) as health, \
                 patch.object(setup.time, "sleep"):
-            self.install("0.4.2")
+            self.install("0.5.2")
         self.assertEqual(health.call_count, 3)
         self.assertEqual(self.calls, before)
         self.assertEqual(saved, {path: path.read_bytes() for path in root.glob("*.json")})
@@ -134,9 +141,9 @@ class SetupTests(unittest.TestCase):
         state = json.loads(saved)["result"]
         before = list(self.calls)
         with self.assertRaisesRegex(ValueError, "automatic reload may be disabled or held"):
-            setup.wait_for_installed_service(self.executable, self.home, self.data, state, "0.4.2", {}, timeout=0)
+            setup.wait_for_installed_service(self.executable, self.home, self.data, state, "0.5.2", {}, timeout=0)
         with patch.object(setup, "socket_version") as health:
-            self.install("0.4.2", resume=True)
+            self.install("0.5.2", resume=True)
             health.assert_not_called()
         self.assertEqual(self.calls, before)
         self.assertEqual(outcome.read_bytes(), saved)
@@ -148,7 +155,7 @@ class SetupTests(unittest.TestCase):
             with self.subTest(error=type(error).__name__), \
                     patch.object(setup, "service_identity", side_effect=error), \
                     patch.object(setup, "socket_version") as health:
-                self.install("0.4.2")
+                self.install("0.5.2")
                 health.assert_not_called()
         self.assertEqual(self.calls, before)
 
@@ -158,7 +165,7 @@ class SetupTests(unittest.TestCase):
             self.install()
         original = self.calls[0][1]
         with self.assertRaisesRegex(ValueError, "installation changed"):
-            self.install("0.4.1", resume=True)
+            self.install("0.5.1", resume=True)
         self.fail_restart = False
         self.install(resume=True)
         self.assertEqual([call[0] for call in self.calls].count("initialize"), 1)
@@ -213,6 +220,29 @@ class SetupTests(unittest.TestCase):
         result["message"] = "control\x1b[2J"
         self.assertNotIn("\x1b", str(setup.initialization_error(result)))
 
+
+    def test_a_release_before_profiles_is_refused_before_initialize(self):
+        with self.assertRaisesRegex(ValueError, "needs Agent Backbone 0.5.0 or newer, and 0.4.5 is installed"):
+            self.install("0.4.5")
+        self.assertEqual(self.calls, [])
+
+    def test_a_request_saved_before_profiles_is_set_aside(self):
+        root = self.home / ".local/state/agent-interface/backbone"
+        self.fail_restart = True
+        with self.assertRaises(ValueError):
+            self.install()
+        import hashlib
+        import json
+        identity = hashlib.sha256(str(self.data).encode()).hexdigest()
+        record = json.loads((root / (identity + ".json")).read_text())
+        record["version"] = "0.4.5"
+        (root / (identity + ".json")).write_text(json.dumps(record))
+        (root / (identity + ".result.json")).unlink()
+        self.fail_restart = False
+        self.assertEqual(self.install(resume=True), ("No interrupted Backbone setup.", False))
+        self.install()
+        self.assertEqual([call[0] for call in self.calls].count("initialize"), 2)
+        self.assertEqual(len(list(root.glob("previous-*.json"))), 1)
 
 class SchemaTests(unittest.TestCase):
     def test_old_provider_is_rejected_before_initialize(self):
@@ -347,26 +377,40 @@ class ServiceIdentityTests(unittest.TestCase):
 
 class UpgradeCheckTests(unittest.TestCase):
     def test_only_an_installation_without_its_default_profile_is_refused(self):
+        import os
         import sqlite3
+
+        installer = (Path(__file__).parents[2] / "install.sh").read_text()
+        source = re.search(r"(?s)-c '(\nimport os, sqlite3.*?)\n'", installer)[1]
+
+        def check(home, data):
+            with patch.dict(os.environ, {"HOME": str(home), "BACKBONE_DATA_DIR": str(data)}):
+                with self.assertRaises(SystemExit) as result:
+                    exec(source, {})
+            return result.exception.code
 
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory).resolve()
             data = home / ".local/share/agent-backbone"
-            setup.check_upgrade(home, data)  # nothing installed yet
             data.mkdir(parents=True)
-            (data / "backbone.db").write_bytes(b"fixture database")
-            with self.assertRaisesRegex(ValueError, "predates profiles"):
-                setup.check_upgrade(home, data)
-            registry = home / setup.PROFILE_REGISTRY
+            self.assertEqual(check(home, data), 1)  # no registry
+            registry = home / ".local/share/agent-backbone-profiles/registry.db"
             registry.parent.mkdir(parents=True)
             with sqlite3.connect(registry) as db:
                 db.execute("CREATE TABLE profiles (profile_id TEXT, data_dir TEXT, state TEXT)")
                 db.execute("CREATE TABLE default_profiles (profile_id TEXT)")
                 db.execute("CREATE TABLE profile_bindings (profile_id TEXT)")
                 db.execute("INSERT INTO profiles VALUES ('p', ?, 'creating')", (str(data),))
-                db.execute("INSERT INTO profile_bindings VALUES ('p')")
-            with self.assertRaisesRegex(ValueError, "predates profiles"):
-                setup.check_upgrade(home, data)  # a profile, but not Default
-            with sqlite3.connect(registry) as db:
                 db.execute("INSERT INTO default_profiles VALUES ('p')")
-            setup.check_upgrade(home, data)
+            self.assertEqual(check(home, data), 1)  # Default without a binding is not ready
+            with sqlite3.connect(registry) as db:
+                db.execute("INSERT INTO profile_bindings VALUES ('p')")
+            self.assertEqual(check(home, data), 0)
+            link = home / "linked-data"
+            link.symlink_to(data)
+            self.assertEqual(check(home, link), 0)
+            with sqlite3.connect(registry) as db:
+                db.execute("UPDATE profiles SET state = 'failed'")
+            self.assertEqual(check(home, data), 1)
+            registry.write_bytes(b"not a database")
+            self.assertEqual(check(home, data), 2)

@@ -12,7 +12,6 @@ import json
 import os
 from pathlib import Path
 import re
-import sqlite3
 import stat
 import subprocess
 import tempfile
@@ -228,33 +227,8 @@ def service_identity(home, data_dir, executable, env):
     return hashlib.sha256(content).hexdigest()
 
 
-PROFILE_REGISTRY = ".local/share/agent-backbone-profiles/registry.db"
-UNSUPPORTED_UPGRADE = ("This Agent Backbone installation predates profiles, and this installer "
-                       "doesn't upgrade it in place. Nothing was changed. To upgrade it: stop its "
-                       "service, back up its data directory, update the agent-backbone package, "
-                       "run `backbone init` with the new version, then run this installer again.")
-
-
-def has_default_profile(home, data_dir):
-    """Whether the profile registry serves this data directory as its Default profile."""
-    from contextlib import closing
-
-    registry = home / PROFILE_REGISTRY
-    if not registry.is_file():
-        return False
-    with closing(sqlite3.connect(registry.as_uri() + "?mode=ro", uri=True)) as db:
-        rows = db.execute(
-            "SELECT p.data_dir FROM profiles p"
-            " JOIN default_profiles d ON d.profile_id = p.profile_id"
-            " JOIN profile_bindings b ON b.profile_id = p.profile_id"
-            " WHERE p.state = 'creating'").fetchall()
-    return any(Path(row[0]).resolve() == data_dir for row in rows)
-
-
-def check_upgrade(home, data_dir):
-    """Refuse, before any package changes, an installation this release can't start."""
-    if (data_dir / "backbone.db").exists() and not has_default_profile(home, data_dir):
-        raise ValueError(UNSUPPORTED_UPGRADE)
+# The first release whose provider serves profiles; earlier ones can't serve this app.
+PROFILES_RELEASE = (0, 5, 0)
 
 
 def provider_socket(data_dir):
@@ -459,15 +433,23 @@ def install(executable, home, data_dir, version, provider_identity, resume_only=
                 check_schema(executable, env)
                 wait_for_installed_service(executable, home, data_dir, state, version, env)
             return "Existing Backbone configuration and service preserved.", False
-        if state.get("status") in {"failed", "action_required"} and state.get("retry") == "none":
+        # A request saved for a release before profiles can never finish on one.
+        if record and not stable_version_at_least(record.get("version"), PROFILES_RELEASE):
+            reset = True
+        elif state.get("status") in {"failed", "action_required"} and state.get("retry") == "none":
             raise initialization_error(state)
         if reset or can_start_new(state):
             archive = root / ("previous-" + uuid.uuid4().hex)
             request_path.rename(archive.with_suffix(".json"))
-            outcome_path.rename(archive.with_suffix(".result.json"))
+            if outcome_path.exists() or outcome_path.is_symlink():
+                outcome_path.rename(archive.with_suffix(".result.json"))
             record, state = None, {}
         if record is None and resume_only:
             return "No interrupted Backbone setup.", False
+        if not stable_version_at_least(version, PROFILES_RELEASE):
+            raise ValueError(f"This app needs Agent Backbone {'.'.join(map(str, PROFILES_RELEASE))} "
+                             f"or newer, and {version} is installed. Update the agent-backbone "
+                             "package, then run this installer again")
         if record is None:
             record = {"version": version, "provider_identity": provider_identity, "executable": str(executable),
                       "path_env": os.environ.get("PATH", "/usr/bin:/bin"),
@@ -504,18 +486,14 @@ if __name__ == "__main__":
     from importlib.metadata import distributions, version as package_version
 
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--executable", type=Path)
+    parser.add_argument("--executable", required=True, type=Path)
     parser.add_argument("--resume-pending", action="store_true")
-    parser.add_argument("--check-upgrade", action="store_true")
     args = parser.parse_args()
     try:
         home = Path(os.environ["HOME"])
-        data = Path(os.environ.get("BACKBONE_DATA_DIR") or home / ".local/share/agent-backbone").expanduser().resolve()
-        if args.check_upgrade:
-            check_upgrade(home, data)
-            raise SystemExit(0)
-        if not home.is_absolute() or args.executable is None or not args.executable.is_absolute():
+        if not home.is_absolute() or not args.executable.is_absolute():
             raise ValueError("Installation paths must be absolute")
+        data = Path(os.environ.get("BACKBONE_DATA_DIR") or home / ".local/share/agent-backbone").expanduser().resolve()
         # Tool upgrades replace distribution metadata, including dependency
         # versions. Bind pending setup to that installation and its launcher.
         metadata = sorted((distribution.metadata["Name"], distribution.version,
@@ -525,5 +503,5 @@ if __name__ == "__main__":
         print(message)
         if resumed:
             raise SystemExit(3)
-    except (OSError, ValueError, KeyError, TypeError, sqlite3.Error) as error:
+    except (OSError, ValueError, KeyError, TypeError) as error:
         raise SystemExit("Agent Interface setup: " + str(error)) from None
