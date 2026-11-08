@@ -690,7 +690,8 @@ esac
         data.mkdir(parents=True)
         (data / "backbone.db").write_bytes(b"fixture database")
         for manager in ("launchctl", "systemctl"):
-            self.command(manager, 'printf "%s %s\\n" "$(basename "$0")" "$*" >> "$FIXTURE_LOG"')
+            self.command(manager, 'printf "%s %s\\n" "$(basename "$0")" "$*" >> "$FIXTURE_LOG"\n'
+                         'case "$*" in *bootstrap*|*" start "*) exit "${FIXTURE_START_FAIL:-0}";; esac')
         plist = self.home / "Library/LaunchAgents/dev.agent-backbone.plist"
         unit = self.home / ".config/systemd/user/agent-backbone.service"
         for path in (plist, unit):
@@ -720,7 +721,8 @@ esac
         self.env.update(FIXTURE_UPGRADE_CHECK="1", FIXTURE_STILL_RUNNING="1")
         log.write_text("")
         result = self.install(archive, success=False)
-        self.assertIn("did not stop, so it was not upgraded and was started again", result.stderr)
+        self.assertIn("did not stop, so it was not upgraded", result.stderr)
+        self.assertNotIn("could not be started again", result.stderr)
         self.assertEqual(steps(), ["stop", "check", "start"])
 
         self.env.update(FIXTURE_STILL_RUNNING="0", FIXTURE_INSTALL_FAIL="1")
@@ -728,6 +730,10 @@ esac
         result = self.install(archive, success=False)
         self.assertIn("Could not install a compatible published Agent Backbone release", result.stderr)
         self.assertEqual(steps(), ["stop", "check", "install", "start"])
+        self.env["FIXTURE_START_FAIL"] = "1"
+        result = self.install(archive, success=False)
+        self.assertIn("could not be started again and is stopped", result.stderr)
+        self.env["FIXTURE_START_FAIL"] = "0"
 
         self.env.update(FIXTURE_INSTALL_FAIL="0", FIXTURE_INIT_FAIL="1")
         log.write_text("")

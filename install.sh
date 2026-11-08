@@ -517,6 +517,12 @@ if [ -f "$resources/setup_backbone.py" ]; then
             systemctl --user stop agent-backbone.service
         fi
     }
+    # After a failure that leaves the old package in place, run Backbone again
+    # as it was, and say so if that doesn't work either.
+    restart_backbone_service() {
+        start_backbone_service ||
+            printf '%s\n' 'Agent Backbone could not be started again and is stopped. Start it with "launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.agent-backbone.plist" on macOS or "systemctl --user start agent-backbone.service" on Linux.' >&2
+    }
     start_backbone_service() {
         if [ "$platform" = apple-darwin ]; then
             [ ! -f "$backbone_plist" ] || launchctl bootstrap "gui/$(id -u)" "$backbone_plist"
@@ -566,8 +572,8 @@ if [ -f "$resources/setup_backbone.py" ]; then
         run_step 'Checking that Agent Backbone stopped' "$tools/agent-backbone/bin/python" -I -B "$resources/setup_backbone.py" \
             --executable "$tools/agent-backbone/bin/backbone" --check-stopped || {
             # Its package is unchanged, so starting it again is safe.
-            start_backbone_service || :
-            fail 'Agent Backbone did not stop, so it was not upgraded and was started again.'
+            restart_backbone_service
+            fail 'Agent Backbone did not stop, so it was not upgraded.'
         }
     elif [ -x "$tools/agent-backbone/bin/python" ]; then
         run_step 'Checking saved Backbone setup' resume_backbone ||
@@ -578,7 +584,7 @@ if [ -f "$resources/setup_backbone.py" ]; then
             run_step 'Installing Agent Backbone' "$uv" tool install --upgrade --prerelease disallow --python '>=3.11,<3.14' 'agent-backbone>=0.5.0,<2' || {
                 # uv keeps the previous package when an install fails, so a
                 # Backbone stopped for this upgrade can run again as it was.
-                [ "$backbone_needs_init" = false ] || start_backbone_service || :
+                [ "$backbone_needs_init" = false ] || restart_backbone_service
                 fail 'Could not install a compatible published Agent Backbone release. The app was not replaced.'
             }
         fi
