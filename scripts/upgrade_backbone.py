@@ -107,8 +107,7 @@ def owned_state(home, data, executable):
     env = dict(os.environ, BACKBONE_DATA_DIR=str(data))
     if (outcome.get("record") != record or state.get("status") != "completed"
             or state.get("installation_identity") != setup.installation_identity(data)
-            or state.get("service_identity") != setup.service_identity(home, data, executable, env)
-            or not state.get("socket") or state["socket"] != setup.socket_setting(executable, env)):
+            or state.get("service_identity") != setup.service_identity(home, data, executable, env)):
         raise ValueError(DEFERRED)
     state["main_pid"] = int(setup.command("systemctl", ["--user", "show", "agent-backbone.service",
                                                       "--property=MainPID", "--value"], env).strip())
@@ -168,7 +167,7 @@ def guard(home, data, executable, phase):
         print("No prior service or installation state: continue first setup with the installed fixed provider; skip package changes.")
         return "first_setup"
     path, state = owned_state(home, data, executable)
-    endpoint = Path(state["socket"])
+    endpoint = setup.provider_socket(data)
     health, process = exchange(endpoint, "GET", "/health")
     if process[0] != state["main_pid"]:
         raise ValueError(DEFERRED)

@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import re
+import sqlite3
 import stat
 import subprocess
 import tempfile
@@ -227,12 +228,38 @@ def service_identity(home, data_dir, executable, env):
     return hashlib.sha256(content).hexdigest()
 
 
-def socket_setting(executable, env):
-    output = command(executable, ["config", "get", "backbone.socket_path"], env)
-    value = json.loads(output.splitlines()[0])
-    if not isinstance(value, str):
-        raise ValueError("Backbone returned an invalid socket setting")
-    return value
+PROFILE_REGISTRY = ".local/share/agent-backbone-profiles/registry.db"
+UNSUPPORTED_UPGRADE = ("This Agent Backbone installation predates profiles, and this installer "
+                       "doesn't upgrade it in place. Nothing was changed. To upgrade it: back up "
+                       "its data directory, update the agent-backbone package, run `backbone init`, "
+                       "then run this installer again.")
+
+
+def has_default_profile(home, data_dir):
+    """Whether the profile registry serves this data directory as its Default profile."""
+    from contextlib import closing
+
+    registry = home / PROFILE_REGISTRY
+    if not registry.is_file():
+        return False
+    with closing(sqlite3.connect(registry.as_uri() + "?mode=ro", uri=True)) as db:
+        rows = db.execute(
+            "SELECT p.data_dir FROM profiles p"
+            " JOIN default_profiles d ON d.profile_id = p.profile_id"
+            " JOIN profile_bindings b ON b.profile_id = p.profile_id"
+            " WHERE p.state = 'creating'").fetchall()
+    return any(Path(row[0]).resolve() == data_dir for row in rows)
+
+
+def check_upgrade(home, data_dir):
+    """Refuse, before any package changes, an installation this release can't start."""
+    if (data_dir / "backbone.db").exists() and not has_default_profile(home, data_dir):
+        raise ValueError(UNSUPPORTED_UPGRADE)
+
+
+def provider_socket(data_dir):
+    """Backbone serves its private API here; there is no setting to choose it."""
+    return data_dir / "run/api.sock"
 
 
 def installation_identity(data_dir):
@@ -338,13 +365,12 @@ def socket_version(path):
 
 def wait_for_installed_service(executable, home, data_dir, state, version, env, timeout=120):
     """Let Backbone's upgrade watcher reload; never restart an existing service."""
-    if not all(key in state for key in ("installation_identity", "service_identity", "socket")):
+    if not all(key in state for key in ("installation_identity", "service_identity")):
         return  # An independently managed installation keeps its own lifecycle.
 
     def unchanged():
         return (installation_identity(data_dir) == state["installation_identity"]
-                and service_identity(home, data_dir, executable, env) == state["service_identity"]
-                and socket_setting(executable, env) == state["socket"])
+                and service_identity(home, data_dir, executable, env) == state["service_identity"])
 
     try:
         if not unchanged():
@@ -353,7 +379,7 @@ def wait_for_installed_service(executable, home, data_dir, state, version, env, 
         return  # A removed/replaced service is now managed independently.
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if socket_version(Path(state["socket"])) == version:
+        if socket_version(provider_socket(data_dir)) == version:
             if not unchanged():
                 raise ValueError("The Backbone installation changed while waiting for its update; it was preserved")
             return
@@ -366,28 +392,12 @@ def finish_socket(executable, home, data_dir, record, state, outcome_path, env):
     if installation_identity(data_dir) != state["installation_identity"]:
         raise ValueError("The installation changed during setup; it was preserved")
     identity = service_identity(home, data_dir, executable, env)
-    current = socket_setting(executable, env)
-    if "socket" not in state:
-        if current:
-            raise ValueError("A socket choice appeared during setup; it was preserved")
-        state.update(socket=str(data_dir / "run/backbone.sock"), service_identity=identity)
+    if "service_identity" not in state:
+        state.update(service_identity=identity)
         save_outcome(outcome_path, record, state)
-    if identity != state["service_identity"] or current not in ("", state["socket"]):
-        raise ValueError("The service or socket choice changed during setup; it was preserved")
-    if state.get("socket_configured") and current != state["socket"]:
-        raise ValueError("The saved socket choice changed; it was preserved")
-    path = Path(state["socket"])
-    path.parent.mkdir(mode=0o700, exist_ok=True)
-    parent = path.parent.lstat()
-    if (not stat.S_ISDIR(parent.st_mode) or parent.st_uid != os.getuid()
-            or stat.S_IMODE(parent.st_mode) != 0o700):
-        raise ValueError("The socket directory must be private and owned by this user")
-    if current != state["socket"]:
-        command(executable, ["config", "set", "backbone.socket_path", state["socket"]], env)
-    if socket_setting(executable, env) != state["socket"]:
-        raise ValueError("The socket setting could not be confirmed")
-    state["socket_configured"] = True
-    save_outcome(outcome_path, record, state)
+    if identity != state["service_identity"]:
+        raise ValueError("The service changed during setup; it was preserved")
+    path = provider_socket(data_dir)
     if not socket_healthy(path):
         if service_identity(home, data_dir, executable, env) != state["service_identity"]:
             raise ValueError("The service changed before restart; it was preserved")
@@ -494,14 +504,18 @@ if __name__ == "__main__":
     from importlib.metadata import distributions, version as package_version
 
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--executable", required=True, type=Path)
+    parser.add_argument("--executable", type=Path)
     parser.add_argument("--resume-pending", action="store_true")
+    parser.add_argument("--check-upgrade", action="store_true")
     args = parser.parse_args()
     try:
         home = Path(os.environ["HOME"])
-        if not home.is_absolute() or not args.executable.is_absolute():
-            raise ValueError("Installation paths must be absolute")
         data = Path(os.environ.get("BACKBONE_DATA_DIR") or home / ".local/share/agent-backbone").expanduser().resolve()
+        if args.check_upgrade:
+            check_upgrade(home, data)
+            raise SystemExit(0)
+        if not home.is_absolute() or args.executable is None or not args.executable.is_absolute():
+            raise ValueError("Installation paths must be absolute")
         # Tool upgrades replace distribution metadata, including dependency
         # versions. Bind pending setup to that installation and its launcher.
         metadata = sorted((distribution.metadata["Name"], distribution.version,
@@ -511,5 +525,5 @@ if __name__ == "__main__":
         print(message)
         if resumed:
             raise SystemExit(3)
-    except (OSError, ValueError, KeyError, TypeError) as error:
+    except (OSError, ValueError, KeyError, TypeError, sqlite3.Error) as error:
         raise SystemExit("Agent Interface setup: " + str(error)) from None

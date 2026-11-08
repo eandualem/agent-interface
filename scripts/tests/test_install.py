@@ -649,6 +649,7 @@ case "$1 $2" in
         mkdir -p "$FIXTURE_TOOLS/agent-backbone/bin"
         cp "$FIXTURE_PYTHON" "$FIXTURE_TOOLS/agent-backbone/bin/python"
         chmod 755 "$FIXTURE_TOOLS/agent-backbone/bin/python";;
+    "run --no-project") exit "${FIXTURE_UPGRADE_CHECK:-0}";;
     "tool update-shell")
         if [ "${FIXTURE_SHELL_FAIL:-0}" != 0 ]; then
             echo 'error: PATH is stale but the Bash configuration files are already up-to-date' >&2
@@ -676,6 +677,18 @@ esac
         self.assertTrue(any("--resume-pending" in line for line in lines))
         self.assertFalse(any(line.startswith("tool install") for line in lines))
         self.assertNotIn(": failed.", result.stderr)
+
+    def test_installation_from_before_profiles_stops_before_any_change(self):
+        self.install(self.package("0.1.1"))
+        self.backbone_tools()
+        self.env["FIXTURE_UPGRADE_CHECK"] = "1"
+        archive = self.package(extra={"agent-interface/setup_backbone.py": "fixture helper", "agent-interface/upgrade_backbone.py": "fixture guard"})
+        result = self.install(archive, success=False)
+        self.assertIn("Agent Backbone and the app were not changed.", result.stderr)
+        log = Path(self.env["FIXTURE_LOG"]).read_text()
+        self.assertIn("--check-upgrade", log)
+        self.assertNotIn("tool install", log)
+        self.assertIn("0.1.1", subprocess.check_output([self.link, "--version"], text=True))
 
     def test_recovered_old_provider_keeps_previous_app_until_upgrade(self):
         self.install(self.package("0.1.1"))

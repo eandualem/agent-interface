@@ -456,6 +456,13 @@ if [ -f "$resources/setup_backbone.py" ]; then
         uv=$HOME/.local/bin/uv
     fi
     tools=$("$uv" tool dir) || fail 'Could not locate the Agent Backbone installation directory.'
+    # This release serves profiles. An installation from before them can't
+    # start on it, so stop before any package or service changes.
+    check_profiles_upgrade() {
+        "$uv" run --no-project --quiet --python '>=3.11,<3.14' -- python -I -B "$resources/setup_backbone.py" --check-upgrade
+    }
+    run_step 'Checking the existing Backbone installation' check_profiles_upgrade ||
+        fail 'Agent Backbone and the app were not changed.'
     backbone_upgrade_held=false
     backbone_fixed_setup=false
     if [ "$platform" = unknown-linux-gnu ]; then

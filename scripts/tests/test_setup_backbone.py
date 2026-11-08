@@ -56,16 +56,14 @@ class SetupTests(unittest.TestCase):
         self.home.mkdir()
         self.data = self.home / ".local/share/agent-backbone"
         self.executable = self.home / "tools/agent-backbone/bin/backbone"
-        self.setting = ""
         self.healthy = False
         self.calls = []
-        self.fail_after_config = False
+        self.fail_restart = False
         self.service = "original-service"
         self.existing = False
         for name, implementation in (("check_schema", lambda *_: None),
                                      ("initialize", self.initialize),
                                      ("service_identity", lambda *_: self.service),
-                                     ("socket_setting", lambda *_: self.setting),
                                      ("socket_healthy", lambda *_: self.healthy),
                                      ("command", self.command)):
             mock = patch.object(setup, name, side_effect=implementation)
@@ -84,11 +82,9 @@ class SetupTests(unittest.TestCase):
     def command(self, executable, arguments, env):
         self.calls.append(tuple(arguments))
         self.assertEqual(env["BACKBONE_DATA_DIR"], str(self.data))
-        if arguments[:2] == ["config", "set"]:
-            self.setting = arguments[3]
-            if self.fail_after_config:
-                raise ValueError("lost reply after config commit")
-        elif arguments == ["service", "restart"]:
+        if arguments == ["service", "restart"]:
+            if self.fail_restart:
+                raise ValueError("lost reply from restart")
             self.healthy = True
         else:
             self.fail(arguments)
@@ -99,19 +95,22 @@ class SetupTests(unittest.TestCase):
 
     def test_fresh_setup_and_repeat_preserve_completed_choices(self):
         self.install()
-        self.assertEqual(self.setting, str(self.data / "run/backbone.sock"))
         self.assertEqual(sum(call == ("service", "restart") for call in self.calls), 1)
-        self.setting = "a later user choice"
+        self.assertNotIn("config", [call[0] for call in self.calls])
         before = list(self.calls)
-        self.install("0.4.1")
+        with patch.object(setup, "socket_version", return_value="0.4.1"):
+            self.install("0.4.1")
         self.assertEqual(self.calls, before)
-        self.assertEqual(self.setting, "a later user choice")
+
+    def test_a_healthy_socket_needs_no_restart(self):
+        self.healthy = True
+        self.install()
+        self.assertEqual([call[0] for call in self.calls], ["initialize"])
 
     def test_existing_installation_does_not_configure_or_restart(self):
         self.existing = True
         self.install()
         self.assertEqual([call[0] for call in self.calls], ["initialize"])
-        self.assertEqual(self.setting, "")
 
     def test_upgrade_waits_for_reload_without_replaying_or_restarting(self):
         self.install()
@@ -153,41 +152,39 @@ class SetupTests(unittest.TestCase):
                 health.assert_not_called()
         self.assertEqual(self.calls, before)
 
-    def test_lost_config_reply_resumes_without_rewriting_and_before_upgrade(self):
-        self.fail_after_config = True
+    def test_lost_restart_reply_resumes_without_replaying_and_before_upgrade(self):
+        self.fail_restart = True
         with self.assertRaisesRegex(ValueError, "lost reply"):
             self.install()
         original = self.calls[0][1]
         with self.assertRaisesRegex(ValueError, "installation changed"):
             self.install("0.4.1", resume=True)
-        self.fail_after_config = False
+        self.fail_restart = False
         self.install(resume=True)
-        self.assertEqual(sum(call[:2] == ("config", "set") for call in self.calls), 1)
+        self.assertEqual([call[0] for call in self.calls].count("initialize"), 1)
         self.assertEqual(self.calls[0][1], original)
-        self.assertEqual(sum(call == ("service", "restart") for call in self.calls), 1)
+        self.assertTrue(self.healthy)
 
-    def test_changed_service_or_socket_is_preserved_on_retry(self):
-        self.fail_after_config = True
+    def test_changed_service_is_preserved_on_retry(self):
+        self.fail_restart = True
         with self.assertRaises(ValueError):
             self.install()
-        self.fail_after_config = False
+        self.fail_restart = False
+        restarts = self.calls.count(("service", "restart"))
         self.service = "replacement-service"
-        with self.assertRaisesRegex(ValueError, "service or socket choice changed"):
+        with self.assertRaisesRegex(ValueError, "service changed"):
             self.install(resume=True)
-        self.service = "original-service"
-        self.setting = "another socket"
-        with self.assertRaisesRegex(ValueError, "service or socket choice changed"):
-            self.install(resume=True)
-        self.assertNotIn(("service", "restart"), self.calls)
+        self.assertEqual(self.calls.count(("service", "restart")), restarts)
 
     def test_replaced_credentials_are_not_used_for_setup_retry(self):
-        self.fail_after_config = True
+        self.fail_restart = True
         with self.assertRaises(ValueError):
             self.install()
+        restarts = self.calls.count(("service", "restart"))
         (self.data / ".env").write_text("replacement credential")
         with self.assertRaisesRegex(ValueError, "installation changed"):
             self.install(resume=True)
-        self.assertNotIn(("service", "restart"), self.calls)
+        self.assertEqual(self.calls.count(("service", "restart")), restarts)
 
 
     def test_completed_receipt_does_not_prevent_clean_reinstall(self):
@@ -196,7 +193,7 @@ class SetupTests(unittest.TestCase):
         self.install()
         original = self.calls[0][1]["request_id"]
         shutil.rmtree(self.data)
-        self.setting, self.healthy = "", False
+        self.healthy = False
         self.assertFalse(self.install(resume=True)[1])
         self.install()
         requests = [call[1] for call in self.calls if call[0] == "initialize"]
@@ -346,3 +343,30 @@ class ServiceIdentityTests(unittest.TestCase):
                 self.assertEqual(requests, [b"GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"])
                 path.chmod(0o666)
                 self.assertFalse(setup.socket_healthy(path))
+
+
+class UpgradeCheckTests(unittest.TestCase):
+    def test_only_an_installation_without_its_default_profile_is_refused(self):
+        import sqlite3
+
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory).resolve()
+            data = home / ".local/share/agent-backbone"
+            setup.check_upgrade(home, data)  # nothing installed yet
+            data.mkdir(parents=True)
+            (data / "backbone.db").write_bytes(b"fixture database")
+            with self.assertRaisesRegex(ValueError, "predates profiles"):
+                setup.check_upgrade(home, data)
+            registry = home / setup.PROFILE_REGISTRY
+            registry.parent.mkdir(parents=True)
+            with sqlite3.connect(registry) as db:
+                db.execute("CREATE TABLE profiles (profile_id TEXT, data_dir TEXT, state TEXT)")
+                db.execute("CREATE TABLE default_profiles (profile_id TEXT)")
+                db.execute("CREATE TABLE profile_bindings (profile_id TEXT)")
+                db.execute("INSERT INTO profiles VALUES ('p', ?, 'creating')", (str(data),))
+                db.execute("INSERT INTO profile_bindings VALUES ('p')")
+            with self.assertRaisesRegex(ValueError, "predates profiles"):
+                setup.check_upgrade(home, data)  # a profile, but not Default
+            with sqlite3.connect(registry) as db:
+                db.execute("INSERT INTO default_profiles VALUES ('p')")
+            setup.check_upgrade(home, data)
