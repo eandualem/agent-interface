@@ -72,6 +72,25 @@ esac
 }
 
 #[test]
+fn only_a_valid_absent_registry_refusal_is_distinguished() {
+    let refusal = |code: &str| {
+        format!(
+            r#"echo '{{"schema_version":1,"error":{{"code":"{code}","message":"x"}}}}'; exit 1"#
+        )
+    };
+    let list = |script: &str| stub(script).1.list(&|| true).err();
+    assert_eq!(
+        list(&refusal("registry_absent")),
+        Some(Error::RegistryAbsent)
+    );
+    assert_eq!(
+        list(&refusal("registry_unavailable")),
+        Some(Error::CommandFailed)
+    );
+    assert_eq!(list("exit 1"), Some(Error::CommandFailed));
+}
+
+#[test]
 fn runtime_observations_use_original_tuple_and_never_fall_back_to_legacy() {
     let wire = &fixture()["runtime_catalog"]["catalog"];
     let identity = profiles::Identity {
@@ -249,92 +268,4 @@ fn an_unbounded_writer_hits_the_pipe_collection_limit() {
         ),
         Err(Error::TooLarge)
     );
-}
-
-#[test]
-fn adoption_preflight_keeps_caller_and_directory_without_rewriting_prior_intent() {
-    use profiles::operations::Prepared;
-    let (directory, mut client) = stub(
-        r#"
-test "$*" = 'profiles adoption-preview --json' || exit 8
-test "$BACKBONE_AGENT" = original || exit 9
-test -f marker || exit 10
-printf '%s\n' "$*" >> "$CAPTURE"
-/bin/cat "$CAPTURE.reply"
-"#,
-    );
-    client.directory = directory.path().canonicalize().unwrap();
-    client
-        .environment
-        .push(("BACKBONE_AGENT".into(), "original".into()));
-    fs::write(directory.path().join("marker"), b"fixture").unwrap();
-    let mut value = fixture()["adoption"]["preview"].clone();
-    fs::write(
-        directory.path().join("calls.reply"),
-        serde_json::to_vec(&value).unwrap(),
-    )
-    .unwrap();
-    let captured = client.clone();
-    client
-        .environment
-        .push(("BACKBONE_AGENT".into(), "changed".into()));
-    let other = tempfile::tempdir().unwrap();
-    client.directory = other.path().canonicalize().unwrap();
-    let preview = captured.adoption_preview(&|| true).unwrap();
-    assert_eq!(preview.installation_id(), "installation-default");
-    assert_eq!(
-        preview.data_directory(),
-        std::path::Path::new("/example/default")
-    );
-    let original = Prepared::adopt_default("adopt-default-1", &preview).unwrap();
-    assert_eq!(
-        serde_json::from_slice::<Value>(original.bytes()).unwrap(),
-        fixture()["adoption"]["request"]
-    );
-    value["adoption_token"] = "fresh-preflight-token".into();
-    fs::write(
-        directory.path().join("calls.reply"),
-        serde_json::to_vec(&value).unwrap(),
-    )
-    .unwrap();
-    let fresh = captured.adoption_preview(&|| true).unwrap();
-    let next = Prepared::adopt_default("new-adoption", &fresh).unwrap();
-    assert_eq!(
-        serde_json::from_slice::<Value>(original.bytes()).unwrap(),
-        fixture()["adoption"]["request"]
-    );
-    assert_eq!(
-        serde_json::from_slice::<Value>(next.bytes()).unwrap()["adoption_token"],
-        "fresh-preflight-token"
-    );
-    assert_eq!(
-        fs::read_to_string(directory.path().join("calls")).unwrap(),
-        "profiles adoption-preview --json\nprofiles adoption-preview --json\n"
-    );
-}
-
-#[test]
-fn adoption_preflight_refuses_cancelled_failed_and_invalid_observations() {
-    let value = fixture()["adoption"]["preview"].clone();
-    let (directory, client) = stub(&format!(
-        "printf called > \"$CAPTURE\"\n/bin/cat <<'FIXTURE'\n{value}\nFIXTURE\nexit 2"
-    ));
-    assert!(matches!(
-        client.adoption_preview(&|| false),
-        Err(Error::Cancelled)
-    ));
-    assert!(!directory.path().join("calls").exists());
-    assert!(matches!(
-        client.adoption_preview(&|| true),
-        Err(Error::CommandFailed)
-    ));
-    for field in ["data_dir", "adoption_token", "installation_id"] {
-        let mut invalid = value.clone();
-        invalid[field] = "".into();
-        let (_directory, client) = stub(&format!("/bin/cat <<'FIXTURE'\n{invalid}\nFIXTURE"));
-        assert!(matches!(
-            client.adoption_preview(&|| true),
-            Err(Error::Profile(profiles::Error::Invalid))
-        ));
-    }
 }

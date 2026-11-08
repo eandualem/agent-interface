@@ -49,8 +49,7 @@ fn bounded_groups(entries: impl Iterator<Item = (usize, usize)>) -> bool {
 }
 
 /// Why a view has no data. The text is fixed and contains no response content.
-pub const UNAVAILABLE: &str =
-    "Backbone is unavailable. Check BACKBONE_SOCKET_PATH and its private socket.";
+pub const UNAVAILABLE: &str = "Backbone is unavailable. Check that its service is running.";
 /// Backbone answered that it does not serve this read.
 pub const NOT_SERVED: &str = "This Backbone does not serve policies yet; it needs updating.";
 /// A response this version cannot read.
@@ -306,24 +305,7 @@ fn read_using(api: &Api<'_>, request: &Request) -> Result<Data, &'static str> {
                 .into_iter()
                 .find(|launch| &launch.name == name);
             agent.permissions = read_permissions(&agent.runtime, &agent.dir);
-            // A section's own read failing leaves the card; the section says why.
-            match part {
-                Part::Card => {}
-                Part::Skills => {
-                    agent.skills = Some(
-                        api.get(&format!("/api/skills/preview/{name}"))
-                            .and_then(|body| Loadout::decode(&body)),
-                    );
-                }
-                Part::Policies => agent.brief = Some(instructions(api, name)),
-                Part::Usage(range) => {
-                    agent.usage = Some(
-                        api.get(&usage_path(*range))
-                            .and_then(|body| Usage::decode(&body))
-                            .map(|usage| usage.of(name)),
-                    );
-                }
-            }
+            read_part(api, name, part, &mut agent);
             Ok(Data::Agent(Box::new(agent)))
         }
     };
@@ -336,6 +318,27 @@ fn read_using(api: &Api<'_>, request: &Request) -> Result<Data, &'static str> {
         }
     }
     Ok(data)
+}
+
+/// A section's own read failing leaves the card; the section says why.
+fn read_part(api: &Api<'_>, name: &str, part: &Part, agent: &mut Agent) {
+    match part {
+        Part::Card => {}
+        Part::Skills => {
+            agent.skills = Some(
+                api.get(&format!("/api/skills/preview/{name}"))
+                    .and_then(|body| Loadout::decode(&body)),
+            );
+        }
+        Part::Policies => agent.brief = Some(instructions(api, name)),
+        Part::Usage(range) => {
+            agent.usage = Some(
+                api.get(&usage_path(*range))
+                    .and_then(|body| Usage::decode(&body))
+                    .map(|usage| usage.of(name)),
+            );
+        }
+    }
 }
 
 /// Agents and the swarms they work in.

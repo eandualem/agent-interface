@@ -1,5 +1,5 @@
 use super::*;
-use crate::profiles::{lifecycle::Operation, setup::Setup};
+use crate::profiles::{Client, lifecycle::Operation, setup::Setup};
 use agent_interface_roster::profiles::{Profile, operations, setup};
 use serde_json::{Value, json};
 use std::{fs, os::unix::fs::PermissionsExt};
@@ -51,7 +51,7 @@ fn client() -> (tempfile::TempDir, Client) {
 }
 
 #[test]
-fn lifecycle_and_setup_recovery_match_kind_and_context_without_running_commands() {
+fn lifecycle_and_setup_recovery_match_kind_without_running_commands() {
     let (dir, client) = client();
     let operation = Operation::new(
         &client,
@@ -83,7 +83,7 @@ fn lifecycle_and_setup_recovery_match_kind_and_context_without_running_commands(
 }
 
 #[test]
-fn any_effective_caller_context_change_refuses_recovery_before_execution() {
+fn recovery_survives_a_relaunch_from_another_environment() {
     let (dir, client) = client();
     let checkpoint = Operation::new(
         &client,
@@ -92,57 +92,12 @@ fn any_effective_caller_context_change_refuses_recovery_before_execution() {
     .checkpoint()
     .unwrap();
     let setup = Setup::new(&client, prepared_setup()).checkpoint().unwrap();
-    let mut variants = Vec::new();
-    for key in [
-        "HOME",
-        "PATH",
-        "BACKBONE_AGENT",
-        "BACKBONE_API_KEY",
-        "SESSION_METADATA",
-    ] {
-        let mut changed = client.clone();
-        changed.environment.push((key.into(), "changed".into()));
-        variants.push(changed);
-    }
     let mut changed = client.clone();
+    changed.environment.push(("HOME".into(), "changed".into()));
     changed.directory = dir.path().join("another");
-    variants.push(changed);
-    let mut changed = client.clone();
-    changed.executable = dir.path().join("another");
-    variants.push(changed);
-    for changed in variants {
-        assert!(matches!(
-            Operation::restore(&changed, &checkpoint),
-            Err(Error::ContextChanged)
-        ));
-        assert!(matches!(
-            Setup::restore(&changed, &setup),
-            Err(Error::ContextChanged)
-        ));
-    }
+    assert!(Operation::restore(&changed, &checkpoint).is_ok());
+    assert!(Setup::restore(&changed, &setup).is_ok());
     assert!(!dir.path().join("calls").exists());
-}
-
-#[test]
-fn fingerprint_uses_effective_values_and_unambiguous_raw_fields() {
-    let (_dir, mut client) = client();
-    client.environment = vec![
-        ("B".into(), "first".into()),
-        ("A".into(), "one".into()),
-        ("B".into(), "two".into()),
-    ];
-    let first = client.context_fingerprint();
-    client.environment = vec![("B".into(), "two".into()), ("A".into(), "one".into())];
-    assert_eq!(client.context_fingerprint(), first);
-    client.environment = vec![("AB".into(), "C".into())];
-    let joined = client.context_fingerprint();
-    client.environment = vec![("A".into(), "BC".into())];
-    assert_ne!(client.context_fingerprint(), joined);
-    use std::os::unix::ffi::OsStringExt;
-    client.environment = vec![("RAW".into(), std::ffi::OsString::from_vec(vec![0xff]))];
-    let raw = client.context_fingerprint();
-    client.environment = vec![("RAW".into(), "�".into())];
-    assert_ne!(client.context_fingerprint(), raw);
 }
 
 #[test]
@@ -157,7 +112,6 @@ fn malformed_and_oversized_capsules_are_rejected() {
     for (key, value) in [
         ("version", json!(2)),
         ("kind", json!("unknown")),
-        ("context", json!(null)),
         ("extra", json!(true)),
         ("state", json!("{}")),
     ] {

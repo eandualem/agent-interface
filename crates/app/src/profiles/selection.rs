@@ -92,7 +92,7 @@ pub struct Attempt {
 impl Attempt {
     /// Run on an I/O worker. Discovery cancellation stops its command; a started
     /// local handshake has the transport's bounded deadline and is discarded if
-    /// cancelled before completion. No service or login commands are run.
+    /// cancelled before completion. No service or account sign-in commands are run.
     pub fn run(self) -> Completion {
         let live = || self.live.load(Ordering::Acquire);
         let result = self

@@ -1,5 +1,5 @@
 use super::*;
-use crate::profiles::{Profile, operations::AdoptionPreview};
+use crate::profiles::Profile;
 
 fn fixture() -> Value {
     serde_json::from_str(include_str!(concat!(
@@ -27,12 +27,10 @@ fn restored(prepared: &Prepared) -> Prepared {
 fn all_actions_round_trip_original_bytes_without_discovery() {
     let fixture = fixture();
     let profile = Profile::parse(&bytes(&fixture["discovery"]["show_ready"])).unwrap();
-    let preview = AdoptionPreview::parse(&bytes(&fixture["adoption"]["preview"])).unwrap();
     for prepared in [
         create(),
         Prepared::start("operation-start-a", &profile).unwrap(),
         Prepared::stop("operation-stop-a", &profile).unwrap(),
-        Prepared::adopt_default("adopt-default-1", &preview).unwrap(),
     ] {
         restored(&prepared);
     }
@@ -70,28 +68,6 @@ fn recovery_retains_first_reservation_and_terminal_nonregression() {
         prepared.observe(&bytes(&lifecycle["create_reserved_pending"])),
         Err(Error::Invalid)
     );
-}
-
-#[test]
-fn failed_adoption_preserves_token_failure_and_signing_audience() {
-    let fixture = fixture();
-    let adoption = &fixture["adoption"];
-    let preview = AdoptionPreview::parse(&bytes(&adoption["preview"])).unwrap();
-    let mut prepared = restored(&Prepared::adopt_default("adopt-default-1", &preview).unwrap());
-    let mut foreign = adoption["succeeded"].clone();
-    foreign["installation_id"] = json!("replacement");
-    assert_eq!(
-        prepared.observe(&bytes(&foreign)),
-        Err(Error::BindingMismatch)
-    );
-    let mut failure = adoption["changed"].clone();
-    failure["error"]["message"] = json!("private provider diagnostic");
-    let terminal = prepared.observe(&bytes(&failure)).unwrap();
-    let checkpoint = prepared.checkpoint().unwrap();
-    assert!(!String::from_utf8_lossy(&checkpoint).contains("private provider diagnostic"));
-    let mut prepared = restored(&prepared);
-    assert_eq!(prepared.observe(&bytes(&failure)).unwrap(), terminal);
-    assert!(prepared.observe(&bytes(&adoption["succeeded"])).is_err());
 }
 
 #[test]

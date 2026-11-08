@@ -41,7 +41,7 @@ pub struct Inspection {
 
 /// Inspect an explicitly selected name, optionally pinned by a list observation.
 /// Omit the registration only for fresh navigation, never a retained card refresh.
-/// Runs on an I/O worker and does not start, discover or adopt a provider.
+/// Runs on an I/O worker and does not start or discover a provider.
 pub fn inspect(
     connection: Connection,
     name: &str,
@@ -274,6 +274,19 @@ pub struct Permissions {
 }
 
 impl Permissions {
+    /// What a provider without permission inspection supplies: nothing.
+    pub fn unsupported() -> Self {
+        Self {
+            status: Status::Unsupported,
+            files: Vec::new(),
+            allow: Vec::new(),
+            deny: Vec::new(),
+            ask: Vec::new(),
+            modes: Vec::new(),
+            error: None,
+        }
+    }
+
     /// Fixed status explanation; raw provider diagnostic text is never displayed.
     pub fn message(&self) -> Option<&'static str> {
         match self.status {

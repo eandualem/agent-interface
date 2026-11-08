@@ -183,10 +183,50 @@ impl Registry {
         }
     }
 
+    /// The saved connection's failure; `None` while it is still being attempted.
+    pub fn failure(&self, space: &Workspace) -> Option<&Error> {
+        self.entries
+            .get(&space.id)
+            .filter(|entry| space.profile_id.as_ref() == Some(&entry.profile_id))?
+            .result
+            .as_ref()?
+            .as_ref()
+            .err()
+    }
+
     /// Retrying affects this workspace only. Retained panes still own their old
     /// connection until desktop reconciliation explicitly closes those panes.
     pub fn retry(&mut self, space: &Workspace) {
         self.entries.remove(&space.id);
+    }
+}
+
+/// Run the provider's start on an I/O worker, with the same journal Manage uses.
+fn start_service(
+    client: Client,
+    directory: Option<std::path::PathBuf>,
+    profile_id: &str,
+) -> Result<(), &'static str> {
+    use crate::profiles::{controller::Controller, journal};
+    use agent_interface_roster::profiles::operations::{Prepared, Status};
+    const FAILED: &str = "This profile's service could not be started.";
+    let live = || true;
+    let profile = client.show(profile_id, &live).map_err(|_| FAILED)?;
+    let directory = crate::library::library_directory(directory.as_deref()).map_err(|_| FAILED)?;
+    let journal =
+        journal::Journal::open(&directory.join("profile-operations")).map_err(|_| FAILED)?;
+    let controller = Controller::new(journal, &client);
+    let prepared = Prepared::start(&uuid::Uuid::new_v4().simple().to_string(), &profile)
+        .map_err(|_| FAILED)?;
+    let key = Controller::key(prepared.request_id());
+    controller.enqueue(prepared).map_err(|_| FAILED)?;
+    let receipt = controller.submit(&key, &live).map_err(|_| FAILED)?;
+    match receipt.status {
+        Status::Failed if receipt.error_code.as_deref() == Some("operation_busy") => Err(
+            "An earlier start or stop of this profile has not finished. Check it in Settings › Profiles, under Saved requests.",
+        ),
+        Status::Failed => Err(FAILED),
+        Status::Pending | Status::Succeeded => Ok(()),
     }
 }
 
@@ -226,39 +266,6 @@ impl Browser {
         self.workspace_agents(self.layout.as_ref()?.model().workspace()?)
     }
 
-    pub(super) fn selected_bound(&self) -> bool {
-        self.layout
-            .as_ref()
-            .and_then(|layout| layout.model().workspace())
-            .is_some_and(|space| space.profile_id.is_some())
-    }
-
-    pub(super) fn legacy_setup_allowed(&mut self) -> bool {
-        let origin = self.selected_navigation_origin();
-        let update = self
-            .library
-            .as_ref()
-            .and_then(crate::library::Library::take_update);
-        self.legacy_setup_after_update(origin.as_ref(), update)
-    }
-
-    /// A pending peer edit cannot turn a setup request into another profile's flow.
-    pub(super) fn legacy_setup_after_update(
-        &mut self,
-        origin: Option<&super::navigation_origin::Origin>,
-        update: Option<crate::library::Update>,
-    ) -> bool {
-        if let Some(update) = update {
-            self.apply(update);
-        }
-        self.selected_origin_is_current(origin)
-            && self
-                .layout
-                .as_ref()
-                .and_then(|layout| layout.model().workspace())
-                .is_some_and(|space| space.profile_id.is_none())
-    }
-
     /// Whether the selected workspace's connection state replaces its panes.
     pub(super) fn profile_content_unavailable(&self) -> bool {
         self.layout
@@ -266,11 +273,149 @@ impl Browser {
             .and_then(|layout| layout.model().workspace())
             .is_some_and(|space| {
                 space.profile_id.is_some()
-                    && (matches!(self.workspace_profiles.route(space), Route::Unavailable)
-                        || self
-                            .workspace_agents(space)
-                            .is_none_or(|agents| agents.unavailable()))
+                    && matches!(self.workspace_profiles.route(space), Route::Unavailable)
             })
+    }
+
+    /// A failed roster read loses status, not access: tmux keeps the sessions
+    /// running and the attached panes stay connected while the read retries.
+    pub(super) fn profile_status_unavailable(&self) -> bool {
+        self.active_agents()
+            .is_some_and(|agents| agents.unavailable())
+    }
+
+    /// Why the selected workspace has no connection. `None` while still connecting.
+    pub(super) fn profile_failure(&self) -> Option<&'static str> {
+        if matches!(self.profile_client, Some(Err(_))) {
+            return Some("Agent Backbone could not be found on this computer.");
+        }
+        let space = self.layout.as_ref()?.model().workspace()?;
+        self.workspace_profiles
+            .failure(space)
+            .map(profile_picker::message)
+    }
+
+    /// Whether Start service could help: the provider is there and knows profiles.
+    pub(super) fn profile_can_start(&self) -> bool {
+        matches!(self.profile_client, Some(Ok(_)))
+            && self
+                .layout
+                .as_ref()
+                .and_then(|layout| layout.model().workspace())
+                .and_then(|space| self.workspace_profiles.failure(space))
+                .is_some_and(|error| !matches!(error, Error::RegistryAbsent))
+    }
+
+    /// Show a session setup left waiting, in that profile's workspace. A sign-in
+    /// session comes from the provider, so it needs a verified connection first.
+    pub(super) fn open_from_setup(
+        &mut self,
+        open: super::profile_management::Open,
+        label: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use super::profile_management::Open;
+        let Some(Ok(client)) = &self.profile_client else {
+            return;
+        };
+        let client = client.clone();
+        self.profile_picker = None;
+        let work = cx.background_executor().spawn(async move {
+            let live = || true;
+            let unavailable =
+                "The profile could not be reached. Start its service, then try again.";
+            let profile_id = match &open {
+                Open::Agent { profile_id, .. } | Open::SignIn { profile_id, .. } => {
+                    profile_id.clone()
+                }
+            };
+            let profile = client.show(&profile_id, &live).map_err(|_| unavailable)?;
+            let session = match open {
+                Open::Agent { name, .. } => name,
+                Open::SignIn { runtime, .. } => profile
+                    .connect()
+                    .map_err(|_| unavailable)?
+                    .sign_in_session(&runtime)
+                    .map_err(super::new_pane::sign_in_refusal)?,
+            };
+            let label = label
+                .filter(|label| !label.trim().is_empty())
+                .unwrap_or_else(|| profile.item().display_name.clone());
+            Ok::<_, &'static str>((session, profile_id, label))
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = work.await;
+            let _ = this.update_in(cx, |browser, window, cx| {
+                let opened = match result {
+                    Ok((session, profile_id, label)) => {
+                        if browser.open_setup_agent(&session, &profile_id, &label, window, cx) {
+                            Ok(())
+                        } else {
+                            Err("Couldn't open it in a workspace. Try again.")
+                        }
+                    }
+                    Err(error) => Err(error),
+                };
+                if let Err(error) = opened {
+                    browser.save_notice = Some(error.into());
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// Start the selected workspace's stopped service, then connect again. Nothing
+    /// else starts it after a reboot. Agents stay stopped until their panes start them.
+    pub(super) fn start_profile_service(
+        &mut self,
+        origin: Option<&super::navigation_origin::Origin>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.profile_starting || !self.selected_origin_is_current(origin) {
+            return;
+        }
+        let Some(Ok(client)) = &self.profile_client else {
+            return;
+        };
+        let Some(space) = self
+            .layout
+            .as_ref()
+            .and_then(|layout| layout.model().workspace())
+        else {
+            return;
+        };
+        let Some(profile_id) = space.profile_id.clone() else {
+            return;
+        };
+        let workspace = space.id.clone();
+        let (client, directory) = (client.clone(), self.directory.clone());
+        self.profile_starting = true;
+        let work = cx
+            .background_executor()
+            .spawn(async move { start_service(client, directory, &profile_id) });
+        cx.spawn(async move |this, cx| {
+            let result = work.await;
+            let _ = this.update(cx, |browser, cx| {
+                browser.profile_starting = false;
+                if let Err(error) = result {
+                    browser.save_notice = Some(error.into());
+                } else if let Some(space) = browser.layout.as_ref().and_then(|layout| {
+                    layout
+                        .model()
+                        .workspaces
+                        .iter()
+                        .find(|space| space.id == workspace)
+                }) {
+                    browser.workspace_profiles.retry(space);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
     }
 
     pub(super) fn keyboard_pane(&self) -> Option<&agent_interface_core::Leaf> {
@@ -290,9 +435,7 @@ impl Browser {
         };
         match self.workspace_profiles.route(space) {
             Route::Legacy => true,
-            Route::Bound(_) => self
-                .workspace_agents(space)
-                .is_some_and(|agents| !agents.unavailable()),
+            Route::Bound(_) => true,
             Route::Unavailable => false,
         }
     }
@@ -321,32 +464,11 @@ impl Browser {
             })
             .map(|(id, _)| id.clone())
             .collect();
-        let allowed_terminals: std::collections::HashSet<_> = owners
-            .keys()
-            .filter(|id| self.terminal_available(id))
-            .cloned()
-            .collect();
-        let unavailable: std::collections::HashSet<_> = owners
-            .keys()
-            .filter(|id| !allowed_terminals.contains(*id))
-            .cloned()
-            .collect();
-        let mut invalidated: Vec<_> = unavailable
-            .difference(&self.unavailable_profile_panes)
-            .cloned()
-            .collect();
-        if let Some(chooser) = &self.chooser
-            && unavailable.contains(&chooser.destination.pane)
-        {
-            invalidated.push(chooser.destination.pane.clone());
-        }
-        self.unavailable_profile_panes = unavailable;
-        for id in invalidated.iter().chain(&changed) {
+        for id in &changed {
             self.invalidate_profile_pane(id);
         }
-        self.terminals.retain(|id, _| {
-            self.pane_owners.get(id) == owners.get(id) && allowed_terminals.contains(id)
-        });
+        self.terminals
+            .retain(|id, _| self.pane_owners.get(id) == owners.get(id) && owners.contains_key(id));
         self.window_choices
             .retain(|id, _| self.pane_owners.get(id) == owners.get(id) && owners.contains_key(id));
         self.views
@@ -376,6 +498,13 @@ impl Browser {
         self.reset_focus |= focused || choosing;
     }
 
+    /// Use a client found elsewhere, such as Settings, when this window has none.
+    pub(super) fn use_profile_client(&mut self, client: Client) {
+        if !matches!(self.profile_client, Some(Ok(_))) {
+            self.profile_client = Some(Ok(client));
+        }
+    }
+
     pub(super) fn refresh_profiles(&mut self, cx: &mut Context<Self>) {
         let needed = self.profile_picker_requested
             || self.layout.as_ref().is_some_and(|layout| {
@@ -400,18 +529,28 @@ impl Browser {
             })
             .detach();
         }
-        let Some(layout) = &self.layout else { return };
         if !self.saving
             && !self.save_failed
-            && let Some((id, connection)) = self.pending_profile.take()
-            && let Some(space) = layout
+            && let Some((id, connection, item, name)) = self.pending_profile.take()
+        {
+            let Some(layout) = &self.layout else { return };
+            match layout
                 .model()
                 .workspaces
                 .iter()
                 .find(|space| space.id == id)
-        {
-            self.workspace_profiles.bind(space, connection);
+            {
+                Some(space) => {
+                    self.workspace_profiles.bind(space, connection);
+                }
+                // A conflicting save dropped the new workspace: make it again.
+                None => {
+                    self.bind_workspace(item, connection, &name, cx);
+                    return;
+                }
+            }
         }
+        let Some(layout) = &self.layout else { return };
         let work = self.workspace_profiles.reconcile(
             layout.model(),
             self.profile_client
@@ -532,12 +671,20 @@ impl Browser {
         };
         self.profile_picker_requested = false;
         let Ok(client) = client else {
-            self.save_notice = Some("Profile discovery is unavailable.".into());
+            // Without Agent Backbone the name is typed in place, as it always was.
+            self.begin_workspace(window, cx);
             return;
         };
         let client = client.clone();
-        let directory = self.directory.clone();
-        let picker = cx.new(|cx| profile_picker::ProfilePicker::new(client, directory, cx));
+        let has_bound_workspaces = self.layout.as_ref().is_some_and(|layout| {
+            layout
+                .model()
+                .workspaces
+                .iter()
+                .any(|space| space.profile_id.is_some())
+        });
+        let picker = cx
+            .new(|cx| profile_picker::ProfilePicker::new(client, has_bound_workspaces, window, cx));
         window.focus(&picker.read(cx).focus_handle(cx), cx);
         let events = cx.subscribe_in(&picker, window, |browser, picker, choice, window, cx| {
             if !browser
@@ -547,49 +694,155 @@ impl Browser {
             {
                 return;
             }
-            match choice {
-                profile_picker::Choice::Cancel => browser.profile_picker = None,
-                profile_picker::Choice::Selected(selected) => {
-                    // Selection closes the picker internally. Always retire it,
-                    // including when a concurrent save prevents this handoff.
-                    browser.profile_picker = None;
-                    if let Some(focus) = &browser.navigation {
-                        window.focus(focus, cx);
-                    }
-                    cx.notify();
-                    if browser.saving || browser.save_failed {
-                        return;
-                    }
-                    let Some(layout) = &browser.layout else {
-                        return;
-                    };
-                    let Some((base, mut proposed)) =
-                        super::workspace::create_profile(layout, &selected.item().display_name)
-                    else {
-                        return;
-                    };
-                    let selected_id = proposed.selected.clone();
-                    let space = proposed
-                        .workspaces
-                        .iter_mut()
-                        .find(|space| space.id == selected_id)
-                        .expect("created workspace");
-                    space.profile_id = Some(selected.item().profile_id.clone());
-                    browser.pending_profile =
-                        Some((space.id.clone(), selected.connection().clone()));
-                    browser.creation_from =
-                        Some(super::layout_edit::Selection::capture(layout.model()));
-                    browser.pending_save = Some((base, proposed));
-                    browser.profile_picker = None;
-                    browser.save(cx);
-                }
-            }
+            // Every choice retires the popover, including when a concurrent
+            // save prevents its handoff.
+            browser.profile_picker = None;
             if let Some(focus) = &browser.navigation {
                 window.focus(focus, cx);
+            }
+            match choice {
+                profile_picker::Choice::Cancel => {}
+                profile_picker::Choice::Selected { selected, name } => {
+                    browser.bind_new_workspace(selected, name, cx);
+                }
+                profile_picker::Choice::NewProfile { name } => {
+                    browser.open_profile_flow(name.clone(), window, cx);
+                }
+                profile_picker::Choice::Plain { name } => {
+                    if !browser.saving
+                        && !browser.save_failed
+                        && let Some(layout) = &browser.layout
+                        && let Some(proposal) = super::workspace::create(layout, name)
+                    {
+                        browser.creation_from =
+                            Some(super::layout_edit::Selection::capture(layout.model()));
+                        browser.pending_save = Some(proposal);
+                        browser.save(cx);
+                    }
+                }
             }
             cx.notify();
         });
         self.profile_picker = Some((picker, events));
+    }
+
+    /// Make a workspace called `name`, or after the profile when empty, bound
+    /// to a verified profile.
+    fn bind_new_workspace(
+        &mut self,
+        selected: &crate::profiles::selection::Selected,
+        name: &str,
+        cx: &mut Context<Self>,
+    ) {
+        self.bind_workspace(
+            selected.item().clone(),
+            selected.connection().clone(),
+            name,
+            cx,
+        );
+    }
+
+    /// A save in progress, or one waiting for Retry or Discard, delays the
+    /// binding instead of dropping it.
+    pub(super) fn bind_workspace(
+        &mut self,
+        item: agent_interface_roster::profiles::Item,
+        connection: Connection,
+        name: &str,
+        cx: &mut Context<Self>,
+    ) {
+        if self.saving || self.save_failed {
+            self.bind_after_save = Some((item, connection, name.to_owned()));
+            return;
+        }
+        let Some(layout) = &self.layout else {
+            return;
+        };
+        let label = if name.trim().is_empty() {
+            item.display_name.as_str()
+        } else {
+            name.trim()
+        };
+        let Some((base, mut proposed)) = super::workspace::create_profile(layout, label) else {
+            return;
+        };
+        let selected_id = proposed.selected.clone();
+        let space = proposed
+            .workspaces
+            .iter_mut()
+            .find(|space| space.id == selected_id)
+            .expect("created workspace");
+        space.profile_id = Some(item.profile_id.clone());
+        self.pending_profile = Some((space.id.clone(), connection, item.clone(), name.to_owned()));
+        self.creation_from = Some(super::layout_edit::Selection::capture(layout.model()));
+        self.pending_save = Some((base, proposed));
+        self.save(cx);
+    }
+
+    /// Show New profile's steps in the content area, for a workspace called `name`.
+    pub(super) fn open_profile_flow(
+        &mut self,
+        name: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(Ok(client)) = &self.profile_client else {
+            return;
+        };
+        let (client, directory) = (client.clone(), self.directory.clone());
+        let home = self
+            .layout
+            .as_ref()
+            .and_then(|layout| layout.model().workspace())
+            .map(|space| space.id.clone());
+        let flow = cx.new(|cx| {
+            super::profile_management::flow::Flow::new(client, directory, name, home, window, cx)
+        });
+        window.focus(&flow.read(cx).focus_handle(cx), cx);
+        let events = cx.subscribe_in(&flow, window, |browser, flow, event, window, cx| {
+            if !browser
+                .profile_flow
+                .as_ref()
+                .is_some_and(|(active, _)| active == flow)
+            {
+                return;
+            }
+            use super::profile_management::flow::Event;
+            match event {
+                Event::Bind(selected) => {
+                    let name = flow.read(cx).workspace.clone();
+                    browser.bind_new_workspace(selected, &name, cx);
+                }
+                Event::Open(open) => {
+                    let label = flow.read(cx).workspace.clone();
+                    browser.open_from_setup(open.clone(), Some(label), window, cx);
+                }
+                Event::Terminal => {
+                    let empty = browser
+                        .layout
+                        .as_ref()
+                        .is_some_and(|layout| layout.model().tab().is_none());
+                    if empty {
+                        let creation = browser.creation_target();
+                        browser.create_from(
+                            super::layout_edit::Create::Tab,
+                            creation.as_ref(),
+                            window,
+                            cx,
+                        );
+                    }
+                }
+                Event::Close => {
+                    browser.profile_flow = None;
+                    if let Some(focus) = &browser.navigation {
+                        window.focus(focus, cx);
+                    }
+                }
+            }
+            cx.notify();
+        });
+        self.profile_flow = Some((flow, events));
+        cx.notify();
     }
 }
 
@@ -622,12 +875,6 @@ mod tests {
             roster: Some(agent_status::LiveAgents::default()),
             ..Browser::default()
         };
-        assert!(!Browser::default().legacy_setup_allowed());
-        assert!(!browser.legacy_setup_allowed());
-        browser.layout.as_mut().unwrap().model_mut().workspaces[1].profile_id = None;
-        assert!(browser.legacy_setup_allowed());
-        browser.layout.as_mut().unwrap().model_mut().workspaces[1].profile_id =
-            Some("profile-b".into());
         assert!(browser.pane_connection(&pane_a).is_err());
         assert!(browser.active_agents().is_none());
         browser

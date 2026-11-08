@@ -14,6 +14,7 @@ use std::{
 pub mod operations;
 
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 
 pub mod runtime_catalog;
 pub mod runtime_context;
@@ -51,11 +52,36 @@ pub enum Error {
     Refused(u16),
 }
 
+/// Why a skill or document was not added.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AddError {
+    /// The provider's reason, to show the person.
+    Refused(String),
+    /// The connection failed, or the provider gave no reason.
+    Connection(Error),
+}
+
+impl From<Error> for AddError {
+    fn from(error: Error) -> Self {
+        Self::Connection(error)
+    }
+}
+
+/// A skill now in the profile's store.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct AddedSkill {
+    /// The name it has in the store.
+    pub name: String,
+    /// What did not happen although the skill was added.
+    #[serde(default)]
+    pub warnings: Vec<String>,
+}
+
 /// Registry classification; it does not confer legacy connection eligibility.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
-    /// The installation adopted in place.
+    /// The original installation, registered in place.
     LegacyDefault,
     /// A separately provisioned profile.
     Isolated,
@@ -194,7 +220,7 @@ impl Profile {
     }
 
     /// Read only the named credential, then authenticate and verify the exact provider.
-    /// Runs on an I/O worker; does not discover, start or adopt a service.
+    /// Runs on an I/O worker; does not discover or start a service.
     pub fn connect(&self) -> Result<Connection, Error> {
         let binding = self.binding.as_ref().ok_or(Error::NotReady)?;
         let Credential::Dotenv { path, .. } = &binding.credential_reference;
@@ -206,6 +232,7 @@ impl Profile {
                 installation_id: binding.installation_id.clone(),
                 lifecycle_id: binding.lifecycle_id.clone(),
             },
+            kind: self.item.kind.clone(),
             socket: socket.clone(),
             tmux: binding.tmux.clone(),
             credential_reference: path.clone(),
@@ -240,6 +267,7 @@ impl Hash for ConnectionKey {
 #[derive(Clone)]
 pub struct Connection {
     identity: Identity,
+    kind: Kind,
     socket: PathBuf,
     tmux: Tmux,
     credential_reference: PathBuf,
@@ -257,6 +285,10 @@ impl Connection {
     /// The authenticated identity retained by every operation on this connection.
     pub fn identity(&self) -> &Identity {
         &self.identity
+    }
+    /// How this profile was provisioned, from the record that was connected.
+    pub fn kind(&self) -> &Kind {
+        &self.kind
     }
     /// The tmux socket confirmed by the provider handshake.
     pub fn tmux_socket(&self) -> &Path {
@@ -279,6 +311,193 @@ impl Connection {
             return Err(Error::Invalid);
         }
         Ok(snapshot)
+    }
+
+    /// Ask the provider to ensure this pane's shell and return its session name,
+    /// which lives on this connection's tmux socket. The provider owns the shell's
+    /// environment and tmux server; the name is opaque. Runs on an I/O worker.
+    pub fn ensure_shell(&self, shell_id: &str, cwd: Option<&str>) -> Result<String, Error> {
+        #[derive(Deserialize)]
+        struct Reply {
+            #[serde(flatten)]
+            identity: Identity,
+            shell_id: String,
+            session: String,
+        }
+        let body = serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1,
+            "shell_id": shell_id,
+            "cwd": cwd,
+        }))
+        .map_err(|_| Error::Invalid)?;
+        let response = self.response("/api/profile/shells", Some(body), RESPONSE_LIMIT)?;
+        if response.status == 404 {
+            return Err(Error::Unsupported);
+        }
+        successful(&response)?;
+        let reply: Reply = parse(&response.body)?;
+        if reply.identity != self.identity {
+            return Err(Error::BindingMismatch);
+        }
+        if reply.shell_id != shell_id || reply.session.is_empty() {
+            return Err(Error::Invalid);
+        }
+        Ok(reply.session)
+    }
+
+    /// Ask the provider for a session that signs a CLI account in for `runtime`
+    /// inside this profile, and return its name on this connection's tmux socket.
+    /// A repeat reuses the session while it is live. Runs on an I/O worker.
+    pub fn sign_in_session(&self, runtime: &str) -> Result<String, Error> {
+        #[derive(Deserialize)]
+        struct Reply {
+            #[serde(flatten)]
+            identity: Identity,
+            runtime: String,
+            session: String,
+        }
+        let body = serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1,
+            "runtime": runtime,
+        }))
+        .map_err(|_| Error::Invalid)?;
+        let response =
+            self.response("/api/profile/accounts/sign-in", Some(body), RESPONSE_LIMIT)?;
+        if response.status == 404 {
+            return Err(Error::Unsupported);
+        }
+        successful(&response)?;
+        let reply: Reply = parse(&response.body)?;
+        if reply.identity != self.identity {
+            return Err(Error::BindingMismatch);
+        }
+        if reply.runtime != runtime || reply.session.is_empty() {
+            return Err(Error::Invalid);
+        }
+        Ok(reply.session)
+    }
+
+    /// Read whether `runtime` holds a stored sign-in in this profile. A stored
+    /// sign-in doesn't prove the account works. Runs on an I/O worker.
+    pub fn account_status(&self, runtime: &str) -> Result<runtime_catalog::Authentication, Error> {
+        #[derive(Deserialize)]
+        struct Reply {
+            runtime: String,
+            authentication: runtime_catalog::Authentication,
+        }
+        let path = format!("/api/profile/accounts/status?runtime={runtime}");
+        let response = self.response(&path, None, RESPONSE_LIMIT)?;
+        if response.status == 404 {
+            return Err(Error::Unsupported);
+        }
+        successful(&response)?;
+        let reply: Reply = parse(&response.body)?;
+        if reply.runtime != runtime {
+            return Err(Error::Invalid);
+        }
+        Ok(reply.authentication)
+    }
+
+    /// Start this stopped agent, continuing its saved conversation or opening a new
+    /// one. The provider's start route takes the name only, so a replacement under
+    /// the same name would start instead. Runs on an I/O worker.
+    pub fn start_agent(&self, name: &str, resume: bool) -> crate::lifecycle::Outcome {
+        use crate::lifecycle::{Outcome, start_outcome};
+        if !crate::valid_agent(name) {
+            return Outcome::Refused("This session is not a registered agent.".into());
+        }
+        let body = serde_json::json!({ "resume": resume, "wait": false });
+        let Ok(body) = serde_json::to_vec(&body) else {
+            return Outcome::Unknown;
+        };
+        let reply = match self.response(
+            &format!("/api/agents/{name}/start"),
+            Some(body),
+            RESPONSE_LIMIT,
+        ) {
+            Ok(response) if (200..300).contains(&response.status) => Ok(response.body),
+            Ok(response) => Err(Some(response.status)),
+            Err(_) => Err(None),
+        };
+        start_outcome(name, resume, reply)
+    }
+
+    /// Stop this agent's session and remove it from this profile. The provider
+    /// refuses to remove a running agent, so the stop comes first. An agent that
+    /// is already gone counts as removed. Runs on an I/O worker.
+    pub fn remove_agent(&self, name: &str) -> Result<(), Error> {
+        if !crate::valid_agent(name) {
+            return Err(Error::Invalid);
+        }
+        let response = self.response(
+            &format!("/api/agents/{name}/stop"),
+            Some(Vec::new()),
+            RESPONSE_LIMIT,
+        )?;
+        if response.status == 404 {
+            return Ok(());
+        }
+        successful(&response)?;
+        let response = local::profile_delete(
+            self.socket.to_str().ok_or(Error::Invalid)?,
+            &format!("/api/agents/{name}"),
+            (&self.key, &self.identity),
+            RESPONSE_LIMIT,
+            Duration::from_secs(15),
+        )
+        .map_err(|_| Error::Unavailable)?;
+        if response.status == 404 {
+            return Ok(());
+        }
+        successful(&response)
+    }
+
+    /// Copy the skill folder at `path` into this profile's store for every agent
+    /// in the profile, leaving the folder in place. Runs on an I/O worker.
+    pub fn add_skill(&self, path: &Path) -> Result<AddedSkill, AddError> {
+        let body = serde_json::to_vec(&serde_json::json!({
+            "path": path.to_str().ok_or(Error::Invalid)?,
+            "name": null,
+            "tags": ["all"],
+            "replace": false,
+            "mode": "copy",
+            "actor": "app",
+        }))
+        .map_err(|_| Error::Invalid)?;
+        let response = self.response("/api/skills", Some(body), RESPONSE_LIMIT)?;
+        added(&response)?;
+        Ok(serde_json::from_slice(&response.body).map_err(|_| Error::Invalid)?)
+    }
+
+    /// Publish a person's own document on this profile and return its revision.
+    /// The request ID comes from the content, so a repeat is the same publication.
+    /// Runs on an I/O worker.
+    pub fn add_document(&self, title: &str, html: &str) -> Result<u64, AddError> {
+        #[derive(Deserialize)]
+        struct Reply {
+            record: Record,
+        }
+        #[derive(Deserialize)]
+        struct Record {
+            id: u64,
+        }
+        let digest = Sha256::new()
+            .chain_update(title)
+            .chain_update([0])
+            .chain_update(html)
+            .finalize();
+        let body = serde_json::to_vec(&serde_json::json!({
+            "author": "operator",
+            "request_id": format!("app:{digest:x}"),
+            "title": title,
+            "html": html,
+            "supersedes_id": null,
+        }))
+        .map_err(|_| Error::Invalid)?;
+        let response = self.response("/api/documents", Some(body), RESPONSE_LIMIT)?;
+        added(&response)?;
+        let reply: Reply = serde_json::from_slice(&response.body).map_err(|_| Error::Invalid)?;
+        Ok(reply.record.id)
     }
 
     /// Verify again on the same binding, never by re-resolving registry or environment.
@@ -313,15 +532,26 @@ impl Connection {
         body: Option<Vec<u8>>,
         limit: usize,
     ) -> Result<local::Response, Error> {
-        let response = local::profile_response(
-            self.socket.to_str().ok_or(Error::Invalid)?,
-            path,
-            (&self.key, &self.identity),
-            body,
-            limit,
-            Duration::from_secs(15),
-        )
-        .map_err(|_| Error::Unavailable)?;
+        // The agent list refuses a read until its next refresh after an agent is
+        // removed. That is a moment to read again, not a failure to show anyone.
+        // Callers are I/O workers, so waiting here holds no interface thread.
+        let mut retries = if path == "/api/agents" { 40 } else { 0 };
+        let response = loop {
+            let response = local::profile_response(
+                self.socket.to_str().ok_or(Error::Invalid)?,
+                path,
+                (&self.key, &self.identity),
+                body.clone(),
+                limit,
+                Duration::from_secs(15),
+            )
+            .map_err(|_| Error::Unavailable)?;
+            if retries == 0 || !registrations_settling(&response) {
+                break response;
+            }
+            retries -= 1;
+            std::thread::sleep(Duration::from_millis(250));
+        };
         if response.body.len() > limit {
             return Err(Error::Invalid);
         }
@@ -337,6 +567,31 @@ fn successful(response: &local::Response) -> Result<(), Error> {
         return Ok(());
     }
     Err(binding_refusal(response).unwrap_or(Error::Refused(response.status)))
+}
+
+/// A refused addition keeps the provider's reason, written to be shown to the person.
+fn added(response: &local::Response) -> Result<(), AddError> {
+    if (200..300).contains(&response.status) {
+        return Ok(());
+    }
+    let refusal: serde_json::Value = serde_json::from_slice(&response.body).unwrap_or_default();
+    let detail = match &refusal["detail"] {
+        serde_json::Value::Array(errors) => errors
+            .first()
+            .map_or("", |error| error["msg"].as_str().unwrap_or_default()),
+        detail => detail.as_str().unwrap_or_default(),
+    };
+    Err(if detail.is_empty() {
+        AddError::Connection(Error::Refused(response.status))
+    } else {
+        AddError::Refused(detail.to_owned())
+    })
+}
+
+fn registrations_settling(response: &local::Response) -> bool {
+    response.status == 409
+        && serde_json::from_slice::<serde_json::Value>(&response.body)
+            .is_ok_and(|refusal| refusal["detail"]["code"] == "registration_changed")
 }
 
 fn binding_refusal(response: &local::Response) -> Option<Error> {

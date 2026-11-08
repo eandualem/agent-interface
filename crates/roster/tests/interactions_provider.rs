@@ -20,7 +20,6 @@ fn original_and_discussion_are_separate_and_an_exact_retry_is_idempotent() {
     }
     let socket = receipt["socket"].as_str().unwrap();
     assert!(std::path::Path::new(socket).starts_with(directory.canonicalize().unwrap()));
-    assert_eq!(std::env::var("BACKBONE_SOCKET_PATH").unwrap(), socket);
     let provider = chat::provider(&directory).unwrap();
     assert_eq!(provider, format!("unix:{socket}"));
     let id = receipt["interaction"].as_str().unwrap();
@@ -96,10 +95,6 @@ fn sampled_states_and_source_entries_remain_distinct_from_message_coverage() {
     for field in ["real_agents", "model_calls", "service_manager"] {
         assert_eq!(receipt[field], false);
     }
-    assert_eq!(
-        std::env::var("BACKBONE_SOCKET_PATH").unwrap(),
-        receipt["socket"].as_str().unwrap()
-    );
     let since = receipt["illustrative_window"]["since"].as_str().unwrap();
     let until = receipt["illustrative_window"]["until"].as_str().unwrap();
     let all = interactions::read(&directory, since, until, None).unwrap();

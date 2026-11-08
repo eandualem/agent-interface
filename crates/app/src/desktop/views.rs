@@ -38,6 +38,7 @@ use agent_interface_roster::profiles::Connection;
 use source::Source;
 
 mod activity;
+mod additions;
 mod agent;
 pub(super) mod artifact_web;
 mod artifacts;
@@ -187,6 +188,7 @@ pub(super) struct ViewPane {
     carriers_of: Option<String>,
     selection: RefCell<selection::Selection>,
     reports: reports::State,
+    additions: additions::State,
     backbone: Option<PathBuf>,
     /// Conversations by provider, author and record, kept while the pane exists.
     conversations: HashMap<String, Entity<conversation::Conversation>>,
@@ -259,7 +261,6 @@ impl ViewPane {
     }
 
     /// An explicit bound reader; startup does not enable profile selection yet.
-    #[allow(dead_code)] // Used when workspace profile binding is enabled.
     pub fn new_bound(
         view: View,
         connection: Connection,
@@ -300,6 +301,7 @@ impl ViewPane {
             carriers_of: None,
             selection: RefCell::default(),
             reports: reports::State::default(),
+            additions: additions::State::default(),
             backbone: backbone.clone(),
             conversations: HashMap::new(),
             conversation: None,
@@ -320,17 +322,9 @@ impl ViewPane {
             return pane;
         }
         if let Some(connection) = &pane.connection
-            && (!matches!(
-                pane.view.kind,
-                ViewKind::Reports
-                    | ViewKind::Usage
-                    | ViewKind::Activity
-                    | ViewKind::Skills
-                    | ViewKind::Policies
-                    | ViewKind::Team
-                    | ViewKind::Tags
-                    | ViewKind::Agent
-            ) || !pane.agents.belongs_to(connection.identity()))
+            && (pane.view.kind == ViewKind::Artifacts
+                && !super::chooser_source::shows_artifacts(Some(connection.kind()))
+                || !pane.agents.belongs_to(connection.identity()))
         {
             pane.error = Some("This view is unavailable for the original profile.");
             return pane;
@@ -340,13 +334,6 @@ impl ViewPane {
         {
             if !pane.view.is_valid() || pane.view.registration_id.is_none() {
                 pane.error = Some("Reopen this agent from the profile's Team view.");
-                return pane;
-            }
-            if !matches!(
-                pane.view.section,
-                None | Some(AgentSection::Overview | AgentSection::Permissions)
-            ) {
-                pane.error = Some("This agent section is unavailable for the original profile.");
                 return pane;
             }
             let connection = connection.clone();

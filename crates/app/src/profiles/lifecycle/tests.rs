@@ -172,6 +172,25 @@ FIXTURE
 }
 
 #[test]
+fn leaving_a_running_start_lets_its_command_finish() {
+    let (dir, client) = stub("sleep 1; printf finished > \"$CAPTURE\"");
+    let capture = dir.path().join("calls");
+    let mut operation = Operation::new(&client, start());
+    let checks = std::cell::Cell::new(0);
+    let live = || {
+        checks.set(checks.get() + 1);
+        checks.get() < 5
+    };
+    assert_eq!(operation.apply(&live), Err(Error::Cancelled));
+    assert!(!capture.exists());
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !capture.exists() {
+        assert!(Instant::now() < deadline, "the command did not finish");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
 fn cancelled_and_oversized_invocations_preserve_original_request() {
     let (dir, client) =
         stub("printf called > \"$CAPTURE\"; exec /usr/bin/head -c 1048577 /dev/zero");

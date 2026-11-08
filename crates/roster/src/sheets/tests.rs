@@ -90,7 +90,8 @@ fn explicit_types_patch_semantics_and_dates_are_preserved() {
 
 #[test]
 fn private_http_fixture_checks_lost_reply_retry_and_stale_drafts() {
-    let (directory, listener, url) = crate::transport::tests::local_listener();
+    let directory = tempfile::tempdir().unwrap();
+    let (listener, _) = crate::transport::tests::listener_in_data_dir(directory.path());
     let worker = thread::spawn(move || {
         let (mut first, _) = listener.accept().unwrap();
         let (headers, original) = request(&mut first);
@@ -182,7 +183,6 @@ fn private_http_fixture_checks_lost_reply_retry_and_stale_drafts() {
             "--nocapture",
         ])
         .env("SHEETS_FIXTURE_DIRECTORY", directory.path())
-        .env("BACKBONE_SOCKET_PATH", url.strip_prefix("unix:").unwrap())
         .env("BACKBONE_API_KEY", "fixture-token")
         .status()
         .unwrap();

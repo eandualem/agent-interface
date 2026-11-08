@@ -5,7 +5,12 @@ use agent_interface_roster::views::{
 };
 use gpui::{AnyElement, Context, SharedString, div, prelude::*, px};
 
-use super::{Shown, ViewPane, clock::Local, line, markdown, seen, since};
+use super::{
+    Shown, ViewPane,
+    additions::{self, Kind},
+    clock::Local,
+    line, markdown, seen, since,
+};
 use crate::desktop::{
     components as ui,
     design::{colors, tokens},
@@ -772,6 +777,7 @@ pub(super) fn body(pane: &ViewPane, page: &ReportPage, cx: &mut Context<ViewPane
             )),
         );
     }
+    let documents = matches!(pane.reports.query, ReportQuery::Documents(..));
     let note = match pane.reports.query {
         ReportQuery::Latest(_) => "latest authored owner blockers · age is not resolution",
         ReportQuery::Recent(_) => "authored progress reports · newest first · unread in bold",
@@ -784,6 +790,9 @@ pub(super) fn body(pane: &ViewPane, page: &ReportPage, cx: &mut Context<ViewPane
         .flex_col()
         .child(header(true))
         .child(controls(pane, &page.agents, cx))
+        .when(documents, |list| {
+            list.children(additions::note(pane, Kind::Document))
+        })
         .child(ui::grouped_page("reports-rows", column.child(paging)))
         .child(ui::view_footer(&[], note))
         .into_any_element()
@@ -891,6 +900,10 @@ fn controls(pane: &ViewPane, agents: &[String], cx: &mut Context<ViewPane>) -> g
                     }),
                 ))
             })
+            .when(
+                records && matches!(pane.reports.query, ReportQuery::Documents(..)),
+                |toolbar| toolbar.children(additions::button(pane, Kind::Document, cx)),
+            )
             .when(records, |toolbar| {
                 toolbar.child(ui::icon_button("reports-refresh", "refresh-cw").on_click(
                     cx.listener(|pane, _, _, cx| {

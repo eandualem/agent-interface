@@ -147,6 +147,15 @@ impl Prepared {
     pub fn identity(&self) -> &Identity {
         &self.identity
     }
+    /// The agent this request adds.
+    pub fn agent_name(&self) -> &str {
+        &self.name
+    }
+    /// The runtime this request's agent uses.
+    pub fn runtime(&self) -> Option<String> {
+        let body: Value = serde_json::from_slice(&self.first).ok()?;
+        body["agent"]["runtime"].as_str().map(str::to_owned)
+    }
     /// Original durable operation ID.
     pub fn request_id(&self) -> &str {
         &self.request_id

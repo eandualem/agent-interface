@@ -11,6 +11,8 @@ fn snapshot() -> Snapshot {
             installation_id: "install-a".into(),
             lifecycle_id: "life-a".into(),
         },
+        agent_name: "worker".into(),
+        runtime: Some("codex".into()),
         request_id: "request-a".into(),
         first_result: None,
         cancellation_result: None,
@@ -95,7 +97,35 @@ fn readonly_reload_remains_available_when_record_cannot_be_restored() {
     failure.retry = Some("new_request".into());
     s.first_result = Some(failure);
     assert!(!Command::Retry.allowed(Some(&s)));
-    assert!(Command::Cancel.allowed(Some(&s)));
+    // Nothing further can happen on this request, so it offers no provider action.
+    assert!(!Command::Cancel.allowed(Some(&s)));
+    assert_eq!(status(&s), "Agent not added");
+    let retryable = |code: &str| {
+        let mut s = snapshot();
+        let mut result = event(&s);
+        result.code = Some(code.into());
+        result.retry = Some("same_request".into());
+        s.first_result = Some(result);
+        s
+    };
+    let timeout = retryable("launch_timeout");
+    assert_eq!(status(&timeout), "Needs attention");
+    assert!(Command::Retry.allowed(Some(&timeout)));
+    assert!(
+        outcome(&timeout)
+            .unwrap()
+            .contains("has not reported ready")
+    );
+    assert!(agent_waiting(&timeout));
+    assert!(agent_waiting(&retryable("runtime_permission")));
+    assert!(!agent_waiting(&retryable("runtime_missing")));
+    assert!(!agent_waiting(&s));
+    assert!(outcome(&retryable("agent_ready")).is_none());
+    assert!(
+        outcome(&retryable("something_new"))
+            .unwrap()
+            .contains("something_new")
+    );
 }
 
 #[test]
@@ -112,7 +142,8 @@ fn bounded_history_keeps_invalid_records_visible_and_never_invokes_provider() {
     let client = Client::new(directory.join("absent-provider"), "/usr/bin:/bin".into()).unwrap();
     let controller = Controller::new(journal, &client);
     let live = AtomicBool::new(true);
-    let Page::History { ids, offset, rows } = history(&controller, None, 0, &live).unwrap() else {
+    let Page::History { ids, offset, rows } = history(&controller, None, None, 0, &live).unwrap()
+    else {
         panic!("history expected")
     };
     assert_eq!(offset, 0);
@@ -122,14 +153,21 @@ fn bounded_history_keeps_invalid_records_visible_and_never_invokes_provider() {
         rows.iter()
             .all(|(_, result)| *result == Err(Error::Invalid))
     );
-    let Page::History { rows, .. } = history(&controller, Some(ids), PAGE_SIZE, &live).unwrap()
+    let Page::History { rows, .. } =
+        history(&controller, None, Some(ids), PAGE_SIZE, &live).unwrap()
     else {
         panic!("history expected")
     };
     assert_eq!(rows.len(), 1);
+    // A record that can't be read stays listed for every profile, so it can be forgotten.
+    let Page::History { ids, .. } = history(&controller, Some("other"), None, 0, &live).unwrap()
+    else {
+        panic!("history expected")
+    };
+    assert_eq!(ids.len(), PAGE_SIZE + 1);
     live.store(false, Ordering::Release);
     assert!(matches!(
-        history(&controller, None, 0, &live),
+        history(&controller, None, None, 0, &live),
         Err(Error::Client(crate::profiles::Error::Cancelled))
     ));
 }

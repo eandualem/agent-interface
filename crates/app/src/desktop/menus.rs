@@ -292,19 +292,6 @@ impl Browser {
                     browser.begin_workspace(window, cx)
                 })),
             )
-            .child(
-                ui::menu_item(
-                    "new-profile-workspace",
-                    mark("plus", c.muted),
-                    "New profile workspace…",
-                    None,
-                )
-                .on_click(cx.listener(move |browser, _, _, cx| {
-                    if browser.workspace_menu_is_current(&ticket) {
-                        browser.request_profile_workspace(cx);
-                    }
-                })),
-            )
     }
 
     /// A grid of icons for the current workspace, and the plain number.

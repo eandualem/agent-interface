@@ -29,7 +29,16 @@ pub(super) fn request(
         key,
         identity: None,
     };
-    let response = exchange(socket, path, auth, body, limit, timeout, false)?;
+    let response = exchange(
+        socket,
+        method(&body),
+        path,
+        auth,
+        body,
+        limit,
+        timeout,
+        false,
+    )?;
     if (200..300).contains(&response.status) {
         Ok(response.body)
     } else {
@@ -56,7 +65,16 @@ pub(crate) fn response(
         key,
         identity: None,
     };
-    exchange(socket, path, auth, body, limit, timeout, true)
+    exchange(
+        socket,
+        method(&body),
+        path,
+        auth,
+        body,
+        limit,
+        timeout,
+        true,
+    )
 }
 
 pub(crate) fn profile_response(
@@ -71,11 +89,41 @@ pub(crate) fn profile_response(
         key: credentials.0,
         identity: Some(credentials.1),
     };
-    exchange(socket, path, auth, body, limit, timeout, true)
+    exchange(
+        socket,
+        method(&body),
+        path,
+        auth,
+        body,
+        limit,
+        timeout,
+        true,
+    )
 }
 
+/// Remove a resource on a verified profile connection.
+pub(crate) fn profile_delete(
+    socket: &str,
+    path: &str,
+    credentials: (&str, &crate::profiles::Identity),
+    limit: usize,
+    timeout: Duration,
+) -> Result<Response, Option<u16>> {
+    let auth = Authentication {
+        key: credentials.0,
+        identity: Some(credentials.1),
+    };
+    exchange(socket, "DELETE", path, auth, None, limit, timeout, true)
+}
+
+fn method(body: &Option<Vec<u8>>) -> &'static str {
+    if body.is_some() { "POST" } else { "GET" }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn exchange(
     socket: &str,
+    method: &'static str,
     path: &str,
     auth: Authentication<'_>,
     body: Option<Vec<u8>>,
@@ -122,7 +170,7 @@ fn exchange(
             }
             // Check the connected peer before constructing/sending credentials.
             let mut request = Request::builder()
-                .method(if body.is_some() { "POST" } else { "GET" })
+                .method(method)
                 .uri(path)
                 .header("Host", "localhost")
                 .header("Connection", "close");

@@ -116,8 +116,8 @@ pub(super) fn body(pane: &ViewPane, agent: &Agent, cx: &mut Context<ViewPane>) -
         AgentSection::Overview => overview(agent, &status),
         AgentSection::Permissions => permissions(agent),
         AgentSection::Connections => connections(agent),
-        AgentSection::Skills => skills_section(agent, cx),
-        AgentSection::Policies => policies_section(agent, cx),
+        AgentSection::Skills => skills_section(agent, cx, Some(ViewPane::open)),
+        AgentSection::Policies => policies_section(agent, cx, Some(ViewPane::open)),
         AgentSection::Usage => usage_section(agent),
     };
     div()
@@ -130,7 +130,7 @@ pub(super) fn body(pane: &ViewPane, agent: &Agent, cx: &mut Context<ViewPane>) -
         .into_any_element()
 }
 
-fn label(section: AgentSection) -> &'static str {
+pub(super) fn label(section: AgentSection) -> &'static str {
     match section {
         AgentSection::Overview => "Overview",
         AgentSection::Permissions => "Permissions",
@@ -352,7 +352,12 @@ fn failed(error: &'static str) -> AnyElement {
         .into_any_element()
 }
 
-fn skills_section(agent: &Agent, cx: &mut Context<ViewPane>) -> AnyElement {
+/// Rows open in the reader through `open`; without it they only list.
+pub(super) fn skills_section<V: 'static>(
+    agent: &Agent,
+    cx: &mut Context<V>,
+    open: Option<fn(&mut V, Target, &mut Context<V>)>,
+) -> AnyElement {
     let loadout = match &agent.skills {
         None => return waiting("Reading the skills its next launch links…"),
         Some(Err(error)) => return failed(error),
@@ -411,7 +416,9 @@ fn skills_section(agent: &Agent, cx: &mut Context<ViewPane>) -> AnyElement {
                         None => div().child(self::why(&why)),
                     },
                 )
-                .on_click(cx.listener(move |pane, _, _, cx| pane.open(target.clone(), cx))),
+                .when_some(open, |row, open| {
+                    row.on_click(cx.listener(move |host, _, _, cx| open(host, target.clone(), cx)))
+                }),
             );
         }
         column = column.child(card);
@@ -443,7 +450,12 @@ fn group(scope: &str) -> (&'static str, &'static str) {
     }
 }
 
-fn policies_section(agent: &Agent, cx: &mut Context<ViewPane>) -> AnyElement {
+/// Rows open in the reader through `open`; without it they only list.
+pub(super) fn policies_section<V: 'static>(
+    agent: &Agent,
+    cx: &mut Context<V>,
+    open: Option<fn(&mut V, Target, &mut Context<V>)>,
+) -> AnyElement {
     let brief: &Instructions = match &agent.brief {
         None => return waiting("Reading what it receives at its next start…"),
         Some(Err(error)) => return failed(error),
@@ -492,9 +504,11 @@ fn policies_section(agent: &Agent, cx: &mut Context<ViewPane>) -> AnyElement {
                     .child(policies::scope(source)),
             )
             .when(!source.applied, |el| el.opacity(0.45))
-            .on_click(
-                cx.listener(move |pane, _, _, cx| pane.open(Target::Policy(path.clone()), cx)),
-            ),
+            .when_some(open, |row, open| {
+                row.on_click(
+                    cx.listener(move |host, _, _, cx| open(host, Target::Policy(path.clone()), cx)),
+                )
+            }),
         );
         card = Some((current, false));
     }
@@ -507,7 +521,7 @@ fn policies_section(agent: &Agent, cx: &mut Context<ViewPane>) -> AnyElement {
     ui::grouped_page("agent-policies", column).into_any_element()
 }
 
-fn usage_section(agent: &Agent) -> AnyElement {
+pub(super) fn usage_section(agent: &Agent) -> AnyElement {
     let usage: &Usage = match &agent.usage {
         None => return waiting("Reading its usage…"),
         Some(Err(error)) => return failed(error),
@@ -608,7 +622,12 @@ fn usage_section(agent: &Agent) -> AnyElement {
     list.into_any_element()
 }
 
-fn tab(id: SharedString, label: &'static str, mark: String, on: bool) -> gpui::Stateful<gpui::Div> {
+pub(super) fn tab(
+    id: SharedString,
+    label: &'static str,
+    mark: String,
+    on: bool,
+) -> gpui::Stateful<gpui::Div> {
     let (t, c) = (tokens(), colors());
     ui::text(
         div()
@@ -789,7 +808,7 @@ fn messages(label: &str, note: &'static str, messages: &[&Received]) -> gpui::Di
     section
 }
 
-fn connections(agent: &Agent) -> AnyElement {
+pub(super) fn connections(agent: &Agent) -> AnyElement {
     let (t, c) = (tokens(), colors());
     let card = |title: &'static str, state: String, main: String, sub: String| {
         div()

@@ -1,5 +1,5 @@
 //! Recovery of original first-agent requests, independent of catalog readiness.
-use super::{Back, PAGE_SIZE, Ticket, ui};
+use super::{Back, Open, PAGE_SIZE, Ticket, ui};
 use crate::{
     desktop::design::{colors, tokens},
     profiles::{
@@ -34,7 +34,7 @@ impl Command {
         let Some(s) = snapshot else {
             return false;
         };
-        if closed(s) {
+        if s.closed() {
             return false;
         }
         let retry = |event: Option<&Event>| {
@@ -61,12 +61,6 @@ impl Command {
         }
     }
 }
-fn closed(s: &Snapshot) -> bool {
-    s.first_result
-        .as_ref()
-        .is_some_and(|e| e.ready_agent.is_some())
-        || s.cancellation_result.as_ref().is_some_and(|e| e.cancelled)
-}
 fn status(s: &Snapshot) -> &'static str {
     if s.cancellation_result.as_ref().is_some_and(|e| e.cancelled) {
         "Safely cancelled"
@@ -82,9 +76,55 @@ fn status(s: &Snapshot) -> &'static str {
         "Cancellation outcome not confirmed"
     } else if s.first_result.is_none() && s.cancellation_result.is_none() {
         "Setup outcome not confirmed"
+    } else if s.closed() {
+        "Agent not added"
     } else {
-        "Provider action required"
+        "Needs attention"
     }
+}
+/// The agent exists but needs the person, so its terminal is the next step.
+fn agent_waiting(s: &Snapshot) -> bool {
+    !s.closed()
+        && s.phase == Phase::Submitted
+        && s.first_result.as_ref().is_some_and(|event| {
+            matches!(
+                event.code.as_deref(),
+                Some("launch_timeout" | "runtime_permission")
+            )
+        })
+}
+/// What the latest result means for the person, for each code the provider sends.
+fn outcome(s: &Snapshot) -> Option<String> {
+    let event = if s.phase == Phase::CancelPending {
+        s.cancellation_result.as_ref()
+    } else {
+        s.first_result.as_ref()
+    }?;
+    Some(match event.code.as_deref()? {
+        "agent_ready" | "request_cancelled" => return None,
+        "agent_conflict" => format!(
+            "An agent or terminal in this profile already uses the name {} or its folder. Go back and choose another.",
+            s.agent_name
+        ),
+        "invalid_request" => "The agent name, folder or model was refused. Go back and change it.".into(),
+        "launch_timeout" => format!(
+            "{} was added but has not reported ready. Open it, or sign in if it asks, then retry.",
+            s.agent_name
+        ),
+        "runtime_permission" => format!(
+            "{} is waiting for you, often for a sign-in or a permission. Open it to continue, then retry.",
+            s.agent_name
+        ),
+        "runtime_missing" => "This CLI is not installed where the profile can use it. Install it, then retry.".into(),
+        "starter_conflict" => "The profile's starter files or this brief need attention. Fix them, then retry.".into(),
+        "launch_failed" => "The CLI exited right after starting, so the agent is not running. Run the CLI in a terminal in the agent's folder to see why, then start the agent again.".into(),
+        "outcome_unknown" => format!(
+            "The result is not known. Check whether {} is in the workspace before adding it again.",
+            s.agent_name
+        ),
+        "cancellation_unsafe" => "Setup may already have made changes, so it could not be cancelled. The request and any agent were kept.".into(),
+        code => format!("The profile answered: {code}."),
+    })
 }
 fn message(error: Error) -> &'static str {
     match error {
@@ -94,12 +134,9 @@ fn message(error: Error) -> &'static str {
             "The saved request changed. Reload its original state."
         }
         Error::Pending => {
-            "An original setup request is still pending. Recover it before changing choices."
+            "A saved request for this agent name is still open. Open Saved setup requests to finish or forget it, or use another name."
         }
         Error::RetryRefused => "The retained provider result does not allow this retry.",
-        Error::Client(crate::profiles::Error::ContextChanged) => {
-            "Open this request from its original operator context."
-        }
         Error::Storage(journal::Error::Unsafe) => "Setup storage is not private or safe to use.",
         Error::Storage(journal::Error::Busy | journal::Error::Conflict) => {
             "Another update won. Reload the original request."
@@ -124,6 +161,8 @@ enum Page {
         progress: Option<Box<Progress>>,
     },
 }
+/// Go back to the choices: this request can't be tried again as it was.
+pub(super) struct Again;
 enum Update {
     Saved(Box<Snapshot>),
     Progress(Box<Progress>),
@@ -135,18 +174,32 @@ pub(super) struct Pane {
     ticket: Ticket,
     busy: bool,
     finished: bool,
+    /// Started from fresh choices: say only how it's going. Everything else
+    /// stays in the saved requests.
+    fresh: Option<&'static str>,
     error: Option<Error>,
+    /// The one profile whose setups this lists, when shown for one profile.
+    profile: Option<String>,
     pub focus: FocusHandle,
 }
 impl EventEmitter<Back> for Pane {}
+impl EventEmitter<Open> for Pane {}
+impl EventEmitter<Again> for Pane {}
 impl Pane {
-    pub fn new(client: Client, directory: PathBuf, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        client: Client,
+        directory: PathBuf,
+        profile: Option<String>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let mut pane = Self {
             controller: None,
+            profile: profile.clone(),
             page: Page::Loading,
             ticket: Ticket::default(),
             busy: true,
             finished: false,
+            fresh: None,
             error: None,
             focus: cx.focus_handle(),
         };
@@ -157,7 +210,7 @@ impl Pane {
                 journal::Journal::open(&directory.join("profile-setup"))?,
                 &client,
             ));
-            let page = history(&controller, None, 0, &worker);
+            let page = history(&controller, profile.as_deref(), None, 0, &worker);
             Ok::<_, Error>((controller, page))
         });
         cx.spawn(async move |this, cx| {
@@ -180,13 +233,19 @@ impl Pane {
         .detach();
         pane
     }
-    pub fn from_controller(controller: Arc<Controller>, cx: &mut Context<Self>) -> Self {
+    pub fn from_controller(
+        controller: Arc<Controller>,
+        profile: Option<String>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let mut pane = Self {
             controller: Some(controller),
+            profile,
             page: Page::Loading,
             ticket: Ticket::default(),
             busy: false,
             finished: false,
+            fresh: None,
             error: None,
             focus: cx.focus_handle(),
         };
@@ -194,15 +253,18 @@ impl Pane {
         pane.history(0, &ticket, cx);
         pane
     }
+    /// Start `prepared`. `leave` names the way out when it doesn't start.
     pub fn from_prepared(
         controller: Arc<Controller>,
         prepared: Prepared,
+        leave: &'static str,
         cx: &mut Context<Self>,
     ) -> Self {
         // Keep the original key before persistence: an enqueue sync failure can
         // already have saved intent, and must never allocate a replacement.
         let mut pane = Self {
             controller: Some(controller),
+            profile: None,
             page: Page::Operation {
                 key: Controller::key(prepared.request_id()),
                 snapshot: None,
@@ -211,6 +273,7 @@ impl Pane {
             ticket: Ticket::default(),
             busy: false,
             finished: false,
+            fresh: Some(leave),
             error: None,
             focus: cx.focus_handle(),
         };
@@ -252,9 +315,10 @@ impl Pane {
         self.busy = true;
         let ticket = self.ticket.begin();
         let worker = ticket.clone();
+        let profile = self.profile.clone();
         let work = cx
             .background_executor()
-            .spawn(async move { history(&controller, ids, offset, &worker) });
+            .spawn(async move { history(&controller, profile.as_deref(), ids, offset, &worker) });
         cx.spawn(async move |this, cx| {
             let result = work.await;
             let _ = this.update(cx, |pane, cx| {
@@ -393,6 +457,38 @@ impl Pane {
         .detach();
         cx.notify();
     }
+    fn forget(&mut self, expected: &Arc<AtomicBool>, cx: &mut Context<Self>) {
+        if self.busy || !self.accepts(expected) {
+            return;
+        }
+        let Page::Operation { key, snapshot, .. } = &self.page else {
+            return;
+        };
+        let Some(controller) = self.controller.clone() else {
+            return;
+        };
+        let (key, revision) = (key.clone(), snapshot.as_ref().map(|s| s.revision));
+        self.busy = true;
+        self.error = None;
+        let ticket = self.ticket.begin();
+        let worker = ticket.clone();
+        let profile = self.profile.clone();
+        let work = cx.background_executor().spawn(async move {
+            controller.forget(&key, revision)?;
+            history(&controller, profile.as_deref(), None, 0, &worker)
+        });
+        cx.spawn(async move |this, cx| {
+            let result = work.await;
+            let _ = this.update(cx, |pane, cx| {
+                if pane.accepts(&ticket) {
+                    pane.complete(result);
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+        cx.notify();
+    }
     fn stop_observing(&mut self, expected: &Arc<AtomicBool>, cx: &mut Context<Self>) {
         if !self.busy || !self.accepts(expected) || !matches!(self.page, Page::Operation { .. }) {
             return;
@@ -424,13 +520,25 @@ fn progress_matches(
 }
 fn history(
     controller: &Controller,
+    profile: Option<&str>,
     ids: Option<Vec<String>>,
     offset: usize,
     live: &AtomicBool,
 ) -> Result<Page, Error> {
     let ids = match ids {
         Some(ids) => ids,
-        None => controller.ids()?,
+        None => controller
+            .ids()?
+            .into_iter()
+            .filter(|key| {
+                // A record that can't be read may be any profile's, and only
+                // forgetting it unblocks setup, so every profile lists it.
+                profile.is_none_or(|id| match controller.read(key) {
+                    Ok(s) => s.identity.profile_id == id,
+                    Err(_) => true,
+                })
+            })
+            .collect(),
     };
     if offset > ids.len() {
         return Err(Error::Invalid);
@@ -444,12 +552,143 @@ fn history(
     }
     Ok(Page::History { ids, offset, rows })
 }
+impl Pane {
+    /// Leave for the running agent.
+    fn get_started(&mut self, cx: &mut Context<Self>) {
+        if let Page::Operation {
+            snapshot: Some(s), ..
+        } = &self.page
+        {
+            let (profile_id, name) = (s.identity.profile_id.clone(), s.agent_name.clone());
+            cx.emit(Open::Agent { profile_id, name });
+        }
+        self.back(cx);
+    }
+
+    /// The agent is up, whatever it's showing.
+    pub fn running(&self) -> bool {
+        let Page::Operation { snapshot, .. } = &self.page else {
+            return false;
+        };
+        snapshot.as_deref().is_some_and(|s| {
+            agent_waiting(s)
+                || s.first_result
+                    .as_ref()
+                    .is_some_and(|e| e.ready_agent.is_some())
+        })
+    }
+
+    /// What a person starting an agent needs: it's starting, it's running, it
+    /// needs them, or it didn't start and what to do next.
+    fn progress(
+        &self,
+        leave: &'static str,
+        snapshot: Option<&Snapshot>,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let (t, c) = (tokens(), colors());
+        let meta = |text: String| ui::text(div().text_color(c.muted), &t.text.meta).child(text);
+        let name = snapshot.map_or("Your agent", |s| s.agent_name.as_str());
+        // The CLI is up, so setup is done. What it shows next is between it and
+        // the person.
+        let running = self.running();
+        let starting = !running && (self.busy || (snapshot.is_none() && self.error.is_none()));
+        let (step, title, note) = if running {
+            (
+                None,
+                "You're all set".to_owned(),
+                Some(format!("{name} is running. Go ahead and talk to it.")),
+            )
+        } else if starting {
+            (
+                Some(ui::Step::Now),
+                format!("Starting {name}…"),
+                Some("This can take a moment. It keeps going if you leave.".to_owned()),
+            )
+        } else {
+            (
+                Some(ui::Step::Waits),
+                format!("{name} didn't start"),
+                snapshot
+                    .and_then(outcome)
+                    .or(self.error.map(|error| message(error).to_owned())),
+            )
+        };
+        let ticket = self.ticket.0.clone();
+        let mut actions = div().flex().items_center().gap(px(t.space.s8));
+        if !starting {
+            if running {
+                actions = actions.child(
+                    ui::button("setup-get-started", "Get started", ui::Button::Primary)
+                        .on_click(cx.listener(|pane, _, _, cx| pane.get_started(cx))),
+                );
+            } else {
+                let again = snapshot.is_some_and(|s| Command::Retry.allowed(Some(s)));
+                actions = actions
+                    .child(
+                        ui::button("setup-try-again", "Try again", ui::Button::Primary).on_click(
+                            cx.listener(move |pane, _, _, cx| {
+                                if again {
+                                    pane.invoke(Command::Retry, &ticket, cx);
+                                } else {
+                                    pane.finished = true;
+                                    cx.emit(Again);
+                                }
+                            }),
+                        ),
+                    )
+                    .child(
+                        ui::button("setup-leave", leave, ui::Button::Secondary)
+                            .on_click(cx.listener(|pane, _, _, cx| pane.back(cx))),
+                    );
+            }
+        }
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .gap(px(t.space.s10))
+            .track_focus(&self.focus)
+            .capture_key_down(cx.listener(move |pane, event: &gpui::KeyDownEvent, _, cx| {
+                let key = event.keystroke.key.as_str();
+                if running && (key == "enter" || key == "escape") {
+                    pane.get_started(cx);
+                    cx.stop_propagation();
+                } else if key == "escape" {
+                    pane.back(cx);
+                    cx.stop_propagation();
+                }
+            }))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(t.space.s8))
+                    .children(step.map(ui::step_dot))
+                    .child(div().text_color(c.text).child(title)),
+            )
+            .children(note.map(meta))
+            .child(actions)
+            .into_any_element()
+    }
+}
 impl Render for Pane {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if let (Some(leave), Page::Operation { snapshot, .. }) = (self.fresh, &self.page) {
+            let snapshot = snapshot.as_deref().cloned();
+            return self.progress(leave, snapshot.as_ref(), cx);
+        }
         let (t, c) = (tokens(), colors());
         let ticket = self.ticket.0.clone();
-        let mut body = div().id("setup-recovery-body").flex_1().min_h_0().overflow_y_scroll().p(px(t.space.s12)).flex().flex_col().gap(px(t.space.s8))
-            .child(ui::group_note("Closing interrupts the local setup command. The provider outcome may remain unknown; closing does not confirm safe cancellation. Recovery keeps the original profile, choices and request; confirmed readiness does not connect a workspace."));
+        let mut body = div()
+            .id("setup-recovery-body")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .p(px(t.space.s12))
+            .flex()
+            .flex_col()
+            .gap(px(t.space.s8));
         match &self.page {
             Page::Loading => body = body.child(ui::group_note("Opening saved setup requests…")),
             Page::History { ids, offset, rows } => {
@@ -458,7 +697,7 @@ impl Render for Pane {
                 }
                 for (key, result) in rows {
                     let label = match result {
-                        Ok(s) => format!("{} · {}", s.identity.profile_id, status(s)),
+                        Ok(s) => format!("{} · {}", s.agent_name, status(s)),
                         Err(e) => message(*e).into(),
                     };
                     let key = key.clone();
@@ -516,25 +755,58 @@ impl Render for Pane {
                 snapshot,
                 progress,
             } => {
-                body = body.child(format!("Operation {key}"));
+                let _ = key;
                 if let Some(s) = snapshot {
-                    body = body
-                        .child(status(s))
-                        .child(format!("Request {}", s.request_id))
-                        .child(format!(
-                            "Profile {} · installation {} · instance {}",
-                            s.identity.profile_id,
-                            s.identity.installation_id,
-                            s.identity.lifecycle_id
-                        ));
-                    if let Some(name) = s.first_result.as_ref().and_then(|e| e.ready_agent.as_ref())
-                    {
-                        body = body.child(format!("Ready agent: {name}"));
+                    body = body.child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(t.space.s8))
+                            .child(if s.closed() || agent_waiting(s) || outcome(s).is_some() {
+                                ui::step_dot(ui::Step::Waits)
+                            } else if s
+                                .first_result
+                                .as_ref()
+                                .is_some_and(|e| e.ready_agent.is_some())
+                            {
+                                ui::step_dot(ui::Step::Done)
+                            } else {
+                                ui::step_dot(ui::Step::Now)
+                            })
+                            .child(div().text_color(c.text).child(s.agent_name.clone()))
+                            .child(div().text_color(c.muted).child(status(s))),
+                    );
+                    if let Some(text) = outcome(s) {
+                        body = body.child(ui::group_note(text));
+                    }
+                    if !self.busy && agent_waiting(s) {
+                        let (agent, sign_in) = (
+                            Open::Agent {
+                                profile_id: s.identity.profile_id.clone(),
+                                name: s.agent_name.clone(),
+                            },
+                            s.runtime.clone().map(|runtime| Open::SignIn {
+                                profile_id: s.identity.profile_id.clone(),
+                                runtime,
+                            }),
+                        );
+                        body = body.child(
+                            ui::button("setup-open-agent", "Open agent", ui::Button::Primary)
+                                .on_click(cx.listener(move |_, _, _, cx| cx.emit(agent.clone()))),
+                        );
+                        if let Some(sign_in) = sign_in {
+                            body = body.child(
+                                ui::button("setup-sign-in", "Sign in", ui::Button::Secondary)
+                                    .on_click(
+                                        cx.listener(move |_, _, _, cx| cx.emit(sign_in.clone())),
+                                    ),
+                            );
+                        }
                     }
                 }
-                if progress.is_some() {
+                if progress.is_some() || self.busy {
                     body = body.child(ui::group_note(
-                        "Provider progress received. Waiting for a durable result…",
+                        "Starting… Leaving doesn't stop it; it finishes on its own.",
                     ));
                 }
                 if self.busy {
@@ -575,11 +847,17 @@ impl Render for Pane {
                             );
                         }
                     }
+                    if snapshot.is_some() || self.error == Some(Error::Invalid) {
+                        let ticket = ticket.clone();
+                        body = body
+                            .child(ui::group_note("Forgetting removes this saved request from the app. It does not stop or remove an agent."))
+                            .child(
+                                ui::button("setup-forget", "Forget this request", ui::Button::Secondary)
+                                    .on_click(cx.listener(move |pane, _, _, cx| pane.forget(&ticket, cx))),
+                            );
+                    }
                 }
             }
-        }
-        if self.busy {
-            body = body.child(ui::group_note("Working…"));
         }
         if let Some(error) = self.error {
             body = body.child(ui::group_note(message(error)));
@@ -596,7 +874,6 @@ impl Render for Pane {
                     cx.stop_propagation();
                 }
             }))
-            .child(ui::view_header("layers", "Saved agent setup"))
             .child(body)
             .child(
                 ui::view_toolbar()
@@ -619,6 +896,7 @@ impl Render for Pane {
                         )
                     }),
             )
+            .into_any_element()
     }
 }
 

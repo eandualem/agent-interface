@@ -17,6 +17,12 @@ fn intent() -> Prepared {
     intent_for("setup-a1", "lifecycle-a1")
 }
 fn intent_for(request_id: &str, lifecycle: &str) -> Prepared {
+    prepared(request_id, lifecycle, "worker")
+}
+fn named(request_id: &str, name: &str) -> Prepared {
+    prepared(request_id, "lifecycle-a1", name)
+}
+fn prepared(request_id: &str, lifecycle: &str, name: &str) -> Prepared {
     let mut wire = fixtures()["discovery"]["show_ready"].clone();
     wire["binding"]["lifecycle_id"] = lifecycle.into();
     let profile = Profile::parse(&serde_json::to_vec(&wire).unwrap()).unwrap();
@@ -25,7 +31,7 @@ fn intent_for(request_id: &str, lifecycle: &str) -> Prepared {
         &profile,
         vec!["codex".into()],
         Agent {
-            name: "worker".into(),
+            name: name.into(),
             directory: "/example/project".into(),
             create_directory: false,
             runtime: "codex".into(),
@@ -252,7 +258,7 @@ fn new_request_and_none_policies_never_implicitly_retry_or_allocate() {
         controller.submit(&key, &|| true, |_| {}).unwrap();
         assert_eq!(
             fixture.controller().retry(&key, &|| true, |_| {}),
-            Err(Error::RetryRefused)
+            Err(Error::Completed)
         );
         assert_eq!(fixture.calls(), "first\n");
         assert_eq!(controller.read(&key).unwrap().request_id, "setup-a1");
@@ -260,19 +266,10 @@ fn new_request_and_none_policies_never_implicitly_retry_or_allocate() {
 }
 
 #[test]
-fn changed_context_and_foreign_checkpoint_kinds_execute_no_command() {
+fn foreign_checkpoint_kinds_execute_no_command() {
     let fixture = Fixture::new("");
     let controller = fixture.controller();
     let key = controller.enqueue(intent()).unwrap().key;
-    let mut changed = fixture.client.clone();
-    changed
-        .environment
-        .push(("BACKBONE_AGENT".into(), "changed".into()));
-    let other = Controller::new(journal::Journal::open(&fixture.journal).unwrap(), &changed);
-    assert_eq!(
-        other.submit(&key, &|| true, |_| {}),
-        Err(Error::Client(super::super::Error::ContextChanged))
-    );
     let journal = journal::Journal::open(&fixture.journal).unwrap();
     let record = journal.read(&key).unwrap().unwrap();
     let mut envelope: Envelope = serde_json::from_slice(record.payload()).unwrap();
@@ -433,29 +430,30 @@ fn concurrent_fresh_choices_admit_only_one_request_for_the_instance() {
 }
 
 #[test]
-fn admission_inspects_other_contexts_but_never_ignores_invalid_records() {
+fn admission_blocks_the_same_agent_name_only_and_never_ignores_invalid_records() {
     let fixture = Fixture::new("");
     let controller = fixture.controller();
     let original = controller.enqueue(intent()).unwrap();
-    controller
-        .enqueue(intent_for("other-life", "lifecycle-a2"))
-        .unwrap();
-    let mut changed = fixture.client.clone();
-    changed
-        .environment
-        .push(("CONTEXT_VERSION".into(), "changed".into()));
-    let foreign = Controller::new(journal::Journal::open(&fixture.journal).unwrap(), &changed);
+    assert_eq!(original.agent_name, "worker");
     assert_eq!(
-        foreign.enqueue(intent_for("same-instance", "lifecycle-a1")),
+        controller.enqueue(intent_for("same-name", "lifecycle-a1")),
         Err(Error::Pending)
     );
     assert_eq!(
-        foreign.pending(&original.identity, &|| true).unwrap(),
-        vec![original]
+        controller.enqueue(named("same-name", "WORKER")),
+        Err(Error::Pending)
     );
-    foreign
-        .enqueue(intent_for("other-caller", "lifecycle-a3"))
+    controller.enqueue(named("other-name", "second")).unwrap();
+    controller
+        .enqueue(intent_for("other-life", "lifecycle-a2"))
         .unwrap();
+    assert_eq!(
+        controller
+            .pending(&original.identity, &|| true)
+            .unwrap()
+            .len(),
+        2
+    );
     let journal = journal::Journal::open(&fixture.journal).unwrap();
     journal
         .save("00000000000000000000000000000000", None, b"malformed")
@@ -464,39 +462,93 @@ fn admission_inspects_other_contexts_but_never_ignores_invalid_records() {
         controller.enqueue(intent_for("another", "lifecycle-a4")),
         Err(Error::Invalid)
     );
-    assert_eq!(controller.ids().unwrap().len(), 4);
+    // Only the damaged record can be forgotten without a revision.
+    assert_eq!(
+        controller.forget(&original.key, None),
+        Err(Error::WrongPhase)
+    );
+    controller
+        .forget("00000000000000000000000000000000", None)
+        .unwrap();
+    controller
+        .enqueue(intent_for("another", "lifecycle-a4"))
+        .unwrap();
     assert_eq!(fixture.calls(), "");
 }
 
 #[test]
-fn closed_format_one_records_do_not_block_admission_after_context_change() {
+fn a_result_this_request_cannot_retry_closes_it_and_a_retryable_one_blocks_only_its_name() {
+    let fixture = Fixture::new("");
+    let controller = fixture.controller();
+    let result = |request: &str, code: &str, retry: &str| {
+        let mut wire = fixtures()["setup"]["result"].clone();
+        wire["request_id"] = request.into();
+        wire["status"] = "action_required".into();
+        wire["code"] = code.into();
+        wire["retry"] = retry.into();
+        wire["data"] = json!({});
+        wire
+    };
+    // Name taken: the same request can go no further, so it no longer blocks.
+    fixture.reply(
+        Action::FirstAgent,
+        &result("setup-a1", "agent_conflict", "new_request"),
+        3,
+    );
+    let taken = controller.enqueue(intent()).unwrap();
+    controller.submit(&taken.key, &|| true, |_| {}).unwrap();
+    let taken = controller.read(&taken.key).unwrap();
+    assert!(taken.closed());
+    assert_eq!(taken.first_result.unwrap().code.unwrap(), "agent_conflict");
+    assert!(
+        controller
+            .pending(&taken.identity, &|| true)
+            .unwrap()
+            .is_empty()
+    );
+    // Not ready yet: the request stays open for this name, others are free.
+    fixture.reply(
+        Action::FirstAgent,
+        &result("setup-a2", "launch_timeout", "same_request"),
+        3,
+    );
+    let slow = controller
+        .enqueue(intent_for("setup-a2", "lifecycle-a1"))
+        .unwrap();
+    controller.submit(&slow.key, &|| true, |_| {}).unwrap();
+    let slow = controller.read(&slow.key).unwrap();
+    assert!(!slow.closed());
+    assert_eq!(
+        controller.enqueue(intent_for("setup-a3", "lifecycle-a1")),
+        Err(Error::Pending)
+    );
+    controller.enqueue(named("setup-a4", "second")).unwrap();
+    // Forgetting needs the revision shown, and frees the name.
+    assert_eq!(
+        controller.forget(&slow.key, Some(slow.revision + 1)),
+        Err(Error::Storage(journal::Error::Conflict))
+    );
+    controller.forget(&slow.key, Some(slow.revision)).unwrap();
+    assert_eq!(controller.read(&slow.key), Err(Error::Missing));
+    controller
+        .enqueue(intent_for("setup-a5", "lifecycle-a1"))
+        .unwrap();
+}
+
+#[test]
+fn an_open_request_can_be_read_and_retried_after_the_environment_changes() {
     let fixture = Fixture::new("");
     fixture.reply(Action::FirstAgent, &fixtures()["setup"]["result"], 0);
     let controller = fixture.controller();
     let original = controller.enqueue(intent()).unwrap();
-    controller.submit(&original.key, &|| true, |_| {}).unwrap();
     let mut changed = fixture.client.clone();
     changed
         .environment
-        .push(("SESSION_VERSION".into(), "new".into()));
+        .push(("TERM_SESSION_ID".into(), "new".into()));
     let other = Controller::new(journal::Journal::open(&fixture.journal).unwrap(), &changed);
-    assert!(
-        other
-            .pending(&original.identity, &|| true)
-            .unwrap()
-            .is_empty()
-    );
-    other
-        .enqueue(intent_for("setup-a2", "lifecycle-a1"))
-        .unwrap();
-    assert_eq!(
-        other.read(&original.key),
-        Err(Error::Client(super::super::Error::ContextChanged))
-    );
-    assert_eq!(
-        other.retry(&original.key, &|| true, |_| {}),
-        Err(Error::Client(super::super::Error::ContextChanged))
-    );
+    assert_eq!(other.read(&original.key).unwrap().request_id, "setup-a1");
+    other.submit(&original.key, &|| true, |_| {}).unwrap();
+    assert!(other.read(&original.key).unwrap().closed());
     assert_eq!(fixture.calls(), "first\n");
 }
 

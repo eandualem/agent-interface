@@ -4,7 +4,7 @@ use std::{io, path::PathBuf, time::Duration};
 
 use agent_interface_core::{View, ViewKind};
 use agent_interface_roster::{
-    profiles::Connection,
+    profiles::{Connection, Kind},
     views::{Member, Request},
 };
 
@@ -38,12 +38,8 @@ impl Origin {
         )
     }
 
-    pub fn allows_terminal(&self) -> bool {
-        self.connection().is_none()
-    }
-
     pub fn allows_view(&self, kind: ViewKind) -> bool {
-        self.connection().is_none() || kind != ViewKind::Artifacts
+        kind != ViewKind::Artifacts || shows_artifacts(self.connection().map(Connection::kind))
     }
 
     /// Bind navigation to the registration in the displayed profile list.
@@ -106,6 +102,12 @@ impl Sessions {
     }
 }
 
+/// Artifacts live in the app-wide library, so an isolated profile never shows
+/// them: a demo profile must not reveal the person's own content.
+pub(super) fn shows_artifacts(kind: Option<&Kind>) -> bool {
+    kind.is_none_or(|kind| *kind == Kind::LegacyDefault)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -134,10 +136,12 @@ mod tests {
             Some(socket),
         );
         let origin = Origin::Bound(connection.clone());
-        assert!(!origin.allows_terminal());
         assert!(origin.allows_view(ViewKind::Agent));
         assert!(!origin.allows_view(ViewKind::Artifacts));
         assert!(origin.allows_view(ViewKind::Reports));
+        assert!(super::shows_artifacts(None));
+        assert!(super::shows_artifacts(Some(&Kind::LegacyDefault)));
+        assert!(!super::shows_artifacts(Some(&Kind::Isolated)));
         let (wake, ready) = mpsc::channel();
         let source = origin
             .sessions(move || {
@@ -184,6 +188,6 @@ mod tests {
         };
         assert!(legacy.sessions(|| {}).unwrap().is_none());
         assert!(legacy.team(|| {}).unwrap().is_none());
-        assert!(legacy.allows_terminal() && legacy.allows_view(ViewKind::Agent));
+        assert!(legacy.allows_view(ViewKind::Agent));
     }
 }

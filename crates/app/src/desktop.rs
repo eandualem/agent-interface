@@ -33,10 +33,10 @@ mod navigation_origin;
 mod onboarding;
 mod pane_cards;
 mod pane_drag;
-#[allow(dead_code)] // Connected when workspace profile ownership is integrated.
 mod profile_management;
 mod profile_picker;
 mod settings;
+mod settings_profiles;
 mod settings_window;
 mod shortcuts;
 mod sidebar;
@@ -122,30 +122,10 @@ pub fn run(directory: Option<PathBuf>) -> Result<(), String> {
             // Defer: a window that is dispatching this action cannot be updated
             // until dispatch returns.
             cx.on_action(|_: &OpenSettings, cx| cx.defer(settings_window::show));
+            // Setup always adds its agent to Default, whichever workspace is
+            // selected, so any window may open it.
             cx.on_action(|_: &RunSetup, cx| {
-                let window = cx.active_window();
-                cx.defer(move |cx| {
-                    // A Settings or other auxiliary window carries no workspace
-                    // authority. Never infer one from an arbitrary open browser.
-                    let Some(browser) = window.and_then(|window| window.downcast::<Browser>())
-                    else {
-                        return;
-                    };
-                    if browser
-                        .update(cx, |browser, _, cx| {
-                            if !browser.legacy_setup_allowed() {
-                                browser.save_notice =
-                                    Some("Setup for this profile is unavailable.".into());
-                                cx.notify();
-                                true
-                            } else {
-                                false
-                            }
-                        })
-                        .unwrap_or(true)
-                    {
-                        return;
-                    }
+                cx.defer(|cx| {
                     if let Err(error) = onboarding::show(false, cx) {
                         tracing::error!(event = "setup_window_failed", %error, "Cannot open setup");
                     }
@@ -329,9 +309,7 @@ fn open_browser(
     source: Result<PathBuf, String>,
     cx: &mut App,
 ) -> Result<(), String> {
-    let backbone = crate::roster::provider_directory(None, None, None, false)
-        .ok()
-        .flatten();
+    let backbone = crate::roster::provider_directory(false).ok().flatten();
     let roster = backbone
         .as_ref()
         .and_then(|directory| agent_status::start_legacy(directory.clone(), cx));
@@ -615,7 +593,6 @@ struct Browser {
         ),
     >,
     pane_owners: HashMap<String, workspace_profiles::Owner>,
-    unavailable_profile_panes: std::collections::HashSet<String>,
     profile_client: Option<Result<crate::profiles::Client, ()>>,
     profile_client_loading: bool,
     profile_picker_requested: bool,
@@ -623,7 +600,25 @@ struct Browser {
         gpui::Entity<profile_picker::ProfilePicker>,
         gpui::Subscription,
     )>,
-    pending_profile: Option<(String, agent_interface_roster::profiles::Connection)>,
+    /// New profile, shown beside the workspace it is made for.
+    profile_flow: Option<(
+        gpui::Entity<profile_management::flow::Flow>,
+        gpui::Subscription,
+    )>,
+    /// The workspace a new profile's binding saved, with what made it, so a
+    /// save that loses the workspace can make it again.
+    pending_profile: Option<(
+        String,
+        agent_interface_roster::profiles::Connection,
+        agent_interface_roster::profiles::Item,
+        String,
+    )>,
+    /// A new profile's workspace, made once the save in progress finishes.
+    bind_after_save: Option<(
+        agent_interface_roster::profiles::Item,
+        agent_interface_roster::profiles::Connection,
+        String,
+    )>,
     roster_updates: Option<gpui::Subscription>,
     jump: Option<jump::Jump>,
     /// A navigation panel drag: where it started and the width then.
@@ -649,6 +644,9 @@ struct Browser {
     shell_environment: Option<Result<agent_interface_tmux::shells::Environment, String>>,
     shell_after_save: Option<Leaf>,
     shell_to_open: Option<Leaf>,
+    profile_starting: bool,
+    /// The pane Open terminal asked for, focused once its shell is attached.
+    terminal_to_focus: Option<String>,
     resize: Option<split_resize::Drag>,
     pane_drag: Option<pane_drag::Drag>,
     pane_bounds: Rc<RefCell<HashMap<String, Bounds<gpui::Pixels>>>>,
@@ -787,6 +785,43 @@ impl Browser {
         self.save_edit((base, proposed), window, cx);
     }
 
+    /// A finished sign-in has nothing left to show, so its pane goes.
+    fn close_ended_pane(&mut self, target: &Target, window: &mut Window, cx: &mut Context<Self>) {
+        if let (Some((flow, _)), Some(profile), Some(attachment)) = (
+            &self.profile_flow,
+            target.connection.as_ref(),
+            target.leaf.attachment.as_ref(),
+        ) && let Some(runtime) = attachment.session.strip_prefix("sign-in-")
+        {
+            let profile = profile.identity().profile_id.clone();
+            flow.update(cx, |flow, cx| flow.sign_in_ended(&profile, runtime, cx));
+        }
+        if self.saving || self.save_failed {
+            return;
+        }
+        if let Some(update) = self.library.as_ref().and_then(Library::take_update) {
+            self.apply(update);
+        }
+        let Some(layout) = &self.layout else {
+            return;
+        };
+        let shown = layout
+            .model()
+            .pane()
+            .is_some_and(|leaf| leaf.id == target.leaf.id);
+        let (base, mut proposed) = layout.save_snapshot();
+        if !target.close_from(&mut proposed) {
+            return;
+        }
+        if shown {
+            self.save_edit((base, proposed), window, cx);
+        } else {
+            // A pane out of view closes without disturbing what the person is doing.
+            self.pending_save = Some((base, proposed));
+            self.save(cx);
+        }
+    }
+
     /// Save a layout edit that removes panes, leaving nothing half-edited
     /// and focus on the navigation.
     fn save_edit(
@@ -843,7 +878,9 @@ impl Browser {
         self.pane_owners.clear();
         self.profile_picker = None;
         self.profile_picker_requested = false;
+        self.profile_flow = None;
         self.pending_profile = None;
+        self.bind_after_save = None;
         self.views.clear();
         self.new_panes.clear();
         self.editing = None;
@@ -870,12 +907,6 @@ impl Browser {
 
     /// Show the tab holding this agent's session: the current tab if it does,
     /// else the first in saved order. Nothing is attached or started.
-    fn go_to_agent(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(target) = self.agent_target(name) {
-            self.go_to_agent_target(&target, window, cx);
-        }
-    }
-
     fn go_to_agent_target(
         &mut self,
         target: &navigation_origin::AgentTarget,
@@ -992,7 +1023,12 @@ impl Browser {
         if let Some(update) = self.library.as_ref().and_then(Library::take_update) {
             self.apply(update);
         }
-        self.edit_name(None, false, window, cx);
+        // Without Agent Backbone the name is typed in place, as it always was.
+        if matches!(self.profile_client, Some(Err(_))) {
+            self.edit_name(None, false, window, cx);
+        } else {
+            self.request_profile_workspace(cx);
+        }
     }
 
     fn edit_name(
@@ -1268,6 +1304,9 @@ impl Browser {
                             browser.save_notice = Some("The library changed. Your edit was not saved; repeat it on the latest layout to retry.".into());
                         }
                         browser.section_saving = None;
+                        if let Some((item, connection, name)) = browser.bind_after_save.take() {
+                            browser.bind_workspace(item, connection, &name, cx);
+                        }
                     }
                     Err(error) => {
                         browser.save_failed = true;
@@ -1285,7 +1324,10 @@ impl Browser {
         if !self.save_failed || self.saving {
             return;
         }
+        // Discarding the binding's own save drops it; saving it again could
+        // fail the same way and leave nothing else to do.
         self.pending_profile = None;
+        let bind = self.bind_after_save.take();
         self.pending_save = None;
         if let Some(pane) = self.section_saving.take() {
             self.opening_sections.remove(&pane);
@@ -1303,6 +1345,9 @@ impl Browser {
             self.reset_focus |= layout.discard_edits();
         }
         self.start_reader(cx);
+        if let Some((item, connection, name)) = bind {
+            self.bind_workspace(item, connection, &name, cx);
+        }
         cx.notify();
     }
 
@@ -1395,12 +1440,14 @@ impl Browser {
             return;
         };
         if matches!(action, TabAction::ReturnToShell)
-            && layout
-                .model()
-                .workspace()
-                .is_some_and(|space| space.profile_id.is_some())
+            && layout.model().workspace().is_some_and(|space| {
+                matches!(
+                    self.workspace_profiles.route(space),
+                    workspace_profiles::Route::Unavailable
+                )
+            })
         {
-            self.save_notice = Some("Profile-owned shell creation is unavailable.".into());
+            self.save_notice = Some("The workspace profile is unavailable.".into());
             cx.notify();
             return;
         }
@@ -1604,7 +1651,10 @@ impl Browser {
         if self.saving || self.save_failed {
             return;
         }
-        if let Some(Err(error)) = &self.shell_environment {
+        // Bound shells use the provider's environment, never this captured one.
+        if let Some(Err(error)) = &self.shell_environment
+            && matches!(self.pane_connection(pane), Ok(None))
+        {
             self.save_notice = Some(format!("Cannot open terminal: {error}"));
             cx.notify();
             return;
@@ -1618,8 +1668,8 @@ impl Browser {
             cx.notify();
             return;
         }
-        if !matches!(self.pane_connection(pane), Ok(None)) {
-            self.save_notice = Some("Profile-owned shell creation is unavailable.".into());
+        if self.pane_connection(pane).is_err() {
+            self.save_notice = Some("The workspace profile is unavailable.".into());
             cx.notify();
             return;
         }
@@ -1653,6 +1703,7 @@ impl Browser {
             return;
         };
         self.shell_after_save = proposal.1.pane().cloned();
+        self.terminal_to_focus = proposal.1.pane().map(|leaf| leaf.id.clone());
         self.pending_save = Some(proposal);
         self.editing = None;
         self.chooser = None;
@@ -1834,62 +1885,70 @@ impl Browser {
 
     /// The first-agent setup action already started the session. Open a saved
     /// attachment, preserving every existing pane and applying normal save rules.
+    /// Open a session setup points at, such as the agent first-run setup added, in
+    /// a workspace bound to that setup's profile. A fresh window's untouched workspace
+    /// takes the binding; reconcile then verifies the connection, and the pane attaches
+    /// once it is. `label` names a workspace this creates.
     fn open_setup_agent(
         &mut self,
         name: &str,
+        profile_id: &str,
+        label: &str,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        if self.selected_bound() || self.saving || self.save_failed {
+        if self.saving || self.save_failed {
             return false;
         }
         if let Some(update) = self.library.as_ref().and_then(Library::take_update) {
             self.apply(update);
         }
-        if self.selected_bound() {
-            return false;
-        }
-        let Some(source) = self
-            .source
-            .as_ref()
-            .and_then(|source| source.as_ref().ok())
-            .and_then(|path| path.to_str())
-            .map(str::to_owned)
-        else {
+        let Some(layout) = &self.layout else {
             return false;
         };
-        let Some(layout) = &mut self.layout else {
-            return false;
-        };
-        let resolved = crate::library::location::resolve_path(std::path::Path::new(&source)).ok();
-        if agent_destination(layout.model(), name, |socket| match socket {
-            None => resolved.is_some(),
-            Some(socket) => {
-                resolved.is_some()
-                    && crate::library::location::resolve_path(std::path::Path::new(socket)).ok()
-                        == resolved
+        let Some((base, proposed)) = setup_agent_layout(layout, name, profile_id, label) else {
+            // Already shown: go to it.
+            let shown = layout
+                .model()
+                .workspaces
+                .iter()
+                .filter(|space| space.profile_id.as_deref() == Some(profile_id))
+                .find_map(|space| {
+                    space.tabs.iter().find_map(|tab| {
+                        tab.tree
+                            .leaves()
+                            .into_iter()
+                            .find(|leaf| {
+                                leaf.attachment
+                                    .as_ref()
+                                    .is_some_and(|attachment| attachment.session == name)
+                            })
+                            .map(|leaf| (space.id.clone(), tab.id.clone(), leaf.id.clone()))
+                    })
+                });
+            // Not shown either: the layout could not be made, so say it failed.
+            let Some((space, tab, pane)) = shown else {
+                return false;
+            };
+            if let Some(layout) = self.layout.as_mut() {
+                let model = layout.model_mut();
+                if model.choose_workspace(&space) && model.choose_tab(&tab) {
+                    model.choose_pane(&pane);
+                    match self.terminals.get(&pane) {
+                        Some(terminal) => {
+                            terminal.update(cx, |terminal, cx| terminal.focus_terminal(window, cx))
+                        }
+                        None => self.terminal_to_focus = Some(pane),
+                    }
+                }
+                cx.notify();
             }
-        })
-        .is_some()
-        {
-            self.go_to_agent(name, window, cx);
             window.activate_window();
             return true;
-        }
-        let (base, mut model) = layout.save_snapshot();
-        let cwd = std::env::var_os("HOME")
-            .map(|home| PathBuf::from(home).to_string_lossy().into_owned())
-            .unwrap_or_else(|| "/".into());
-        if !model.add_tab(Some(name.into()), cwd, true)
-            || !model.attach(Some(Attachment {
-                session: name.into(),
-                source_socket: Some(source),
-            }))
-        {
-            return false;
-        }
+        };
         self.creation_from = Some(Selection::capture(layout.model()));
-        self.pending_save = Some((base, model));
+        self.terminal_to_focus = proposed.pane().map(|leaf| leaf.id.clone());
+        self.pending_save = Some((base, proposed));
         self.save(cx);
         window.activate_window();
         true
@@ -2358,15 +2417,9 @@ impl Render for Browser {
             }
         }
         for leaf in &leaves {
-            if !self.terminal_available(&leaf.id) {
-                continue;
-            }
             let Ok(connection) = self.pane_connection(&leaf.id) else {
                 continue;
             };
-            if connection.is_some() && leaf.attachment.is_none() {
-                continue;
-            }
             let target = Target {
                 directory: connection
                     .is_none()
@@ -2416,6 +2469,35 @@ impl Render for Browser {
                 cx.subscribe_in(
                     &terminal,
                     window,
+                    |browser, terminal, _: &terminal::SignInEnded, window, cx| {
+                        let target = terminal.read(cx).target.clone();
+                        browser.close_ended_pane(&target, window, cx);
+                    },
+                )
+                .detach();
+                cx.subscribe_in(
+                    &terminal,
+                    window,
+                    |browser, terminal, _: &terminal::Connected, window, cx| {
+                        let id = terminal.read(cx).target.leaf.id.clone();
+                        if browser.terminal_to_focus.as_ref() == Some(&id) {
+                            browser.terminal_to_focus = None;
+                            let shown = browser
+                                .layout
+                                .as_ref()
+                                .and_then(|layout| layout.model().pane())
+                                .is_some_and(|leaf| leaf.id == id);
+                            if shown && browser.profile_picker.is_none() {
+                                terminal
+                                    .update(cx, |terminal, cx| terminal.focus_terminal(window, cx));
+                            }
+                        }
+                    },
+                )
+                .detach();
+                cx.subscribe_in(
+                    &terminal,
+                    window,
                     |browser, terminal, _: &terminal::OpenTerminal, window, cx| {
                         let target = terminal.read(cx).target.clone();
                         browser.open_terminal(&target.leaf.id, Some(&target), window, cx);
@@ -2455,8 +2537,12 @@ impl Render for Browser {
             }
             // A stopped Backbone agent's pane offers Resume and Start new.
             let agent = leaf.attachment.as_ref().and_then(|attachment| {
-                if !matches!(self.pane_connection(&leaf.id), Ok(None)) {
-                    return None;
+                let connection = self.pane_connection(&leaf.id).ok()?;
+                if connection.is_some() {
+                    let space = self.layout.as_ref()?.model().workspace_for_pane(&leaf.id)?;
+                    let status = self.workspace_agents(space)?.get(&attachment.session);
+                    return (status.state == components::AgentState::Offline)
+                        .then(|| (None, attachment.session.clone()));
                 }
                 let status = self.roster.as_ref()?.get(&attachment.session);
                 if status.state != components::AgentState::Offline
@@ -2464,7 +2550,7 @@ impl Render for Browser {
                 {
                     return None;
                 }
-                Some((self.backbone.clone()?, attachment.session.clone()))
+                Some((Some(self.backbone.clone()?), attachment.session.clone()))
             });
             if let Some(terminal) = self.terminals.get(&leaf.id) {
                 terminal.update(cx, |terminal, cx| terminal.set_agent(agent, cx));
@@ -2720,6 +2806,7 @@ impl Render for Browser {
         }
         let sidebar = self.sidebar(window, cx);
         let content = self.content(window, cx);
+        let content = self.beside_profile_flow(content, cx);
         let status = self.status_bar(window, cx);
         let overlay = self.popover(window, cx);
         let t = design::tokens();
@@ -3044,6 +3131,71 @@ impl Render for Browser {
 
 /// The workspace, tab and pane showing an agent's session from this window's
 /// source: the current tab if it shows one, else the first in saved order.
+/// The saved change that shows `name` in `profile_id`'s workspace, or `None` when
+/// that workspace already shows it.
+fn setup_agent_layout(
+    layout: &WindowLayout,
+    name: &str,
+    profile_id: &str,
+    label: &str,
+) -> Option<(Document, Layout)> {
+    let bound =
+        |space: &agent_interface_core::Workspace| space.profile_id.as_deref() == Some(profile_id);
+    let shows_agent = layout
+        .model()
+        .workspaces
+        .iter()
+        .filter(|space| bound(space))
+        .any(|space| {
+            space
+                .tabs
+                .iter()
+                .flat_map(|tab| tab.tree.leaves())
+                .any(|leaf| {
+                    leaf.attachment
+                        .as_ref()
+                        .is_some_and(|attachment| attachment.session == name)
+                })
+        });
+    if shows_agent {
+        return None;
+    }
+    let existing = layout
+        .model()
+        .workspaces
+        .iter()
+        .find(|space| bound(space))
+        .map(|space| space.id.clone());
+    let untouched = layout.model().workspaces.len() == 1
+        && layout.model().workspaces[0].profile_id.is_none()
+        && layout.model().workspaces[0]
+            .tabs
+            .iter()
+            .flat_map(|tab| tab.tree.leaves())
+            .all(|leaf| leaf.empty);
+    let (base, mut proposed) = if existing.is_some() || untouched {
+        layout.save_snapshot()
+    } else {
+        workspace::create_profile(layout, label)?
+    };
+    if let Some(id) = &existing {
+        proposed.choose_workspace(id);
+    } else {
+        let selected = proposed.selected.clone();
+        let space = proposed
+            .workspaces
+            .iter_mut()
+            .find(|space| space.id == selected)?;
+        space.profile_id = Some(profile_id.to_owned());
+    }
+    let added = proposed.add_tab(Some(name.into()), "/".into(), true)
+        && proposed.attach(Some(Attachment {
+            session: name.into(),
+            source_socket: None,
+        }));
+    added.then_some((base, proposed))
+}
+
 fn agent_destination(
     model: &agent_interface_core::Layout,
     name: &str,
@@ -3585,6 +3737,48 @@ mod tests {
         assert!(model.transfer_tab(&destination));
         assert_eq!(model.tab(), Some(&tab));
         assert!(!menu.current(&model));
+    }
+
+    #[test]
+    fn the_first_setup_agent_opens_in_a_workspace_bound_to_its_profile() {
+        let window = |raw: &str| {
+            WindowLayout::new(
+                Document::parse(raw.into(), std::path::Path::new("layouts.db")).unwrap(),
+            )
+        };
+        // An untouched window's workspace takes the binding.
+        let fresh = window(
+            r#"{"version":2,"workspaces":[{"id":"000000000001","name":"Workspace","tabs":[],"selected":""}],"selected":"000000000001","focus":true}"#,
+        );
+        let (_, opened) = setup_agent_layout(&fresh, "guide", "default-id", "Default").unwrap();
+        assert_eq!(opened.workspaces.len(), 1);
+        let space = &opened.workspaces[0];
+        assert_eq!(space.profile_id.as_deref(), Some("default-id"));
+        let attachment = opened.pane().unwrap().attachment.clone().unwrap();
+        assert_eq!(attachment.session, "guide");
+        assert_eq!(attachment.source_socket, None);
+        // A repeat with that workspace saved adds nothing.
+        let with = |model: &Layout| {
+            let path = std::path::Path::new("layouts.db");
+            WindowLayout::new(fresh.save_snapshot().0.with_model(model, path).unwrap())
+        };
+        let saved = with(&opened);
+        assert!(setup_agent_layout(&saved, "guide", "default-id", "Default").is_none());
+        // Another agent joins the same workspace.
+        let (_, second) = setup_agent_layout(&saved, "second", "default-id", "Default").unwrap();
+        assert_eq!(second.workspaces.len(), 1);
+        assert_eq!(second.workspaces[0].tabs.len(), 2);
+        // Work in an unbound workspace stays put, unbound.
+        let mut busy = opened.clone();
+        busy.workspaces[0].profile_id = None;
+        let busy = with(&busy);
+        let (_, separate) = setup_agent_layout(&busy, "guide", "default-id", "Default").unwrap();
+        assert_eq!(separate.workspaces.len(), 2);
+        assert_eq!(separate.workspaces[0].profile_id, None);
+        assert_eq!(
+            separate.workspace().unwrap().profile_id.as_deref(),
+            Some("default-id")
+        );
     }
 
     #[test]

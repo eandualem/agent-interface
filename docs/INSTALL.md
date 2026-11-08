@@ -275,22 +275,8 @@ the installer reports that the update is not yet running and retains the saved
 setup; resolve the service update through Backbone and rerun the installer.
 Independently managed installations retain their own service lifecycle.
 
-For an independently managed installation without a private socket, its operator
-can enable the connection through Backbone's configuration:
-
-```sh
-mkdir -p "$HOME/.local/share/agent-backbone/run"
-chmod 700 "$HOME/.local/share/agent-backbone/run"
-backbone config set backbone.socket_path "$HOME/.local/share/agent-backbone/run/backbone.sock"
-backbone service restart
-```
-
-If Agent Interface was already open, quit and reopen it after changing the
-connection.
-
-The app reads the saved `backbone.socket_path` setting. To use another socket,
-set `BACKBONE_SOCKET_PATH` in the app's launch environment. The path must be
-absolute. The socket must be owned by your user with permissions 0600, in a
+The app connects to `run/api.sock` in Backbone's data directory, which Backbone
+creates itself. The socket must be owned by your user with permissions 0600, in a
 directory owned by your user with permissions 0700. The app does not send
 credentials over TCP.
 

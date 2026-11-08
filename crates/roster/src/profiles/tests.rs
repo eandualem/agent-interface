@@ -344,7 +344,16 @@ fn serve_with_hook(
                 header.push(byte[0]);
                 assert!(header.len() < 8192);
             }
-            requests.push(String::from_utf8(header).unwrap().to_ascii_lowercase());
+            let mut request = String::from_utf8(header).unwrap().to_ascii_lowercase();
+            if let Some(length) = request
+                .lines()
+                .find_map(|line| line.strip_prefix("content-length: "))
+            {
+                let mut body = vec![0; length.trim().parse().unwrap()];
+                stream.read_exact(&mut body).unwrap();
+                request.push_str(&String::from_utf8(body).unwrap().to_ascii_lowercase());
+            }
+            requests.push(request);
             hook(at);
             let body = body.to_string();
             write!(stream, "HTTP/1.1 {status} Fixture\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
@@ -390,6 +399,242 @@ fn connection_pins_credentials_and_identity_through_followup_and_replacement() {
         assert!(request.contains("x-backbone-installation-id: installation-a\r\n"));
         assert!(request.contains("x-backbone-lifecycle-id: lifecycle-a1\r\n"));
     }
+}
+
+#[test]
+fn bound_shell_request_carries_no_environment_and_checks_its_reply() {
+    let (directory, listener, url) = crate::transport::tests::local_listener();
+    let (profile, identity) = profile_at(directory.path(), url.strip_prefix("unix:").unwrap());
+    let reply = |shell_id: &str, lifecycle: &str| {
+        json!({"schema_version": 1, "profile_id": identity["profile_id"],
+            "installation_id": identity["installation_id"], "lifecycle_id": lifecycle,
+            "shell_id": shell_id, "session": "opaque-session", "created": true})
+    };
+    let lifecycle = identity["lifecycle_id"].as_str().unwrap();
+    let server = serve(
+        listener,
+        vec![
+            (200, identity.clone()),
+            (200, reply("123456abcdef", lifecycle)),
+            (200, reply("123456abcdef", "lifecycle-other")),
+            (200, reply("foreign000000", lifecycle)),
+            (503, json!({"detail": {"code": "shell_unavailable"}})),
+            (404, json!({})),
+        ],
+    );
+    let connection = profile.connect().unwrap();
+    let ensure = |cwd| connection.ensure_shell("123456abcdef", cwd);
+    assert_eq!(ensure(Some("/work")).as_deref(), Ok("opaque-session"));
+    assert_eq!(ensure(None).err(), Some(Error::BindingMismatch));
+    assert_eq!(ensure(None).err(), Some(Error::Invalid));
+    assert_eq!(ensure(None).err(), Some(Error::Refused(503)));
+    assert_eq!(ensure(None).err(), Some(Error::Unsupported));
+    let requests = server.join().unwrap();
+    assert!(requests[1].starts_with("post /api/profile/shells "));
+    assert!(requests[1].contains("x-backbone-lifecycle-id: "));
+    let body = requests[1].rsplit("\r\n\r\n").next().unwrap();
+    let keys: Value = serde_json::from_str(body).unwrap();
+    assert_eq!(
+        keys,
+        json!({"schema_version": 1, "shell_id": "123456abcdef", "cwd": "/work"})
+    );
+}
+
+#[test]
+fn shared_session_cases_decode_and_refusals_keep_their_status() {
+    let (directory, listener, url) = crate::transport::tests::local_listener();
+    let (profile, identity) = profile_at(directory.path(), url.strip_prefix("unix:").unwrap());
+    let sessions = fixture()["sessions"].clone();
+    let tuple = |mut reply: Value| {
+        for key in ["profile_id", "installation_id", "lifecycle_id"] {
+            reply[key] = identity[key].clone();
+        }
+        reply
+    };
+    let refusal = |case: &Value| {
+        (
+            case["status"].as_u64().unwrap() as u16,
+            case["body"].clone(),
+        )
+    };
+    let mut foreign = tuple(sessions["sign_in_response"].clone());
+    foreign["lifecycle_id"] = json!("lifecycle-other");
+    let server = serve(
+        listener,
+        vec![
+            (200, identity.clone()),
+            (200, tuple(sessions["shell_response"].clone())),
+            (200, tuple(sessions["shell_reused"].clone())),
+            refusal(&sessions["shell_refusals"]["invalid_cwd"]),
+            refusal(&sessions["shell_refusals"]["shell_unavailable"]),
+            (200, tuple(sessions["sign_in_response"].clone())),
+            (200, tuple(sessions["sign_in_reused"].clone())),
+            refusal(&sessions["sign_in_refusals"]["runtime_unavailable"]),
+            refusal(&sessions["sign_in_refusals"]["shell_unavailable"]),
+            (200, foreign),
+            (404, json!({})),
+        ],
+    );
+    let connection = profile.connect().unwrap();
+    assert_eq!(connection.kind(), &Kind::Isolated);
+    let shell_id = sessions["shell_request"]["shell_id"].as_str().unwrap();
+    let shell = |cwd| connection.ensure_shell(shell_id, cwd);
+    let session = sessions["shell_response"]["session"].as_str().unwrap();
+    assert_eq!(shell(Some("/work")).as_deref(), Ok(session));
+    assert_eq!(shell(None).as_deref(), Ok(session));
+    assert_eq!(shell(None).err(), Some(Error::Refused(422)));
+    assert_eq!(shell(None).err(), Some(Error::Refused(503)));
+
+    let runtime = sessions["sign_in_request"]["runtime"].as_str().unwrap();
+    let session = sessions["sign_in_response"]["session"].as_str().unwrap();
+    let sign_in = || connection.sign_in_session(runtime);
+    assert_eq!(sign_in().as_deref(), Ok(session));
+    assert_eq!(sign_in().as_deref(), Ok(session));
+    assert_eq!(sign_in().err(), Some(Error::Refused(422)));
+    assert_eq!(sign_in().err(), Some(Error::Refused(503)));
+    assert_eq!(sign_in().err(), Some(Error::BindingMismatch));
+    assert_eq!(sign_in().err(), Some(Error::Unsupported));
+
+    let requests = server.join().unwrap();
+    assert!(requests[5].starts_with("post /api/profile/accounts/sign-in "));
+    let body = requests[5].rsplit("\r\n\r\n").next().unwrap();
+    let sent: Value = serde_json::from_str(body).unwrap();
+    assert_eq!(sent, sessions["sign_in_request"]);
+}
+
+#[test]
+fn account_status_reads_one_cli_and_refuses_another_answer() {
+    use runtime_catalog::Authentication;
+    let (directory, listener, url) = crate::transport::tests::local_listener();
+    let (profile, identity) = profile_at(directory.path(), url.strip_prefix("unix:").unwrap());
+    let sessions = fixture()["sessions"].clone();
+    let reply = sessions["account_status_response"].clone();
+    let mut other = reply.clone();
+    other["runtime"] = json!("claude");
+    let server = serve(
+        listener,
+        vec![
+            (200, identity.clone()),
+            (200, reply),
+            (200, other),
+            (
+                422,
+                sessions["sign_in_refusals"]["runtime_unavailable"]["body"].clone(),
+            ),
+        ],
+    );
+    let connection = profile.connect().unwrap();
+    assert_eq!(
+        connection.account_status("codex"),
+        Ok(Authentication::Authenticated)
+    );
+    assert_eq!(connection.account_status("codex"), Err(Error::Invalid));
+    assert_eq!(connection.account_status("codex"), Err(Error::Refused(422)));
+    let requests = server.join().unwrap();
+    let query = sessions["account_status_query"].as_str().unwrap();
+    assert!(requests[1].starts_with(&format!("get {query} ")));
+}
+
+#[test]
+fn starting_a_stopped_agent_uses_the_bound_route_and_reports_the_outcome() {
+    use crate::lifecycle::Outcome;
+    let (directory, listener, url) = crate::transport::tests::local_listener();
+    let (profile, identity) = profile_at(directory.path(), url.strip_prefix("unix:").unwrap());
+    let started = |ok: bool, existed: bool, ready: &str| json!({"ok": ok, "session": "worker", "already_existed": existed, "ready": ready});
+    let server = serve(
+        listener,
+        vec![
+            (200, identity.clone()),
+            (200, started(true, false, "not_waited")),
+            (200, started(true, true, "ready")),
+            (200, started(false, false, "exited")),
+            (400, json!({"detail": "no saved conversation"})),
+        ],
+    );
+    let connection = profile.connect().unwrap();
+    assert!(matches!(
+        connection.start_agent("worker", false),
+        Outcome::Accepted(_)
+    ));
+    assert_eq!(
+        connection.start_agent("worker", true),
+        Outcome::AlreadyRunning
+    );
+    assert!(matches!(
+        connection.start_agent("worker", false),
+        Outcome::Refused(_)
+    ));
+    assert!(matches!(
+        connection.start_agent("worker", true),
+        Outcome::Refused(_)
+    ));
+    assert!(matches!(
+        connection.start_agent("../other", false),
+        Outcome::Refused(_)
+    ));
+    let requests = server.join().unwrap();
+    assert!(requests[1].starts_with("post /api/agents/worker/start "));
+    assert!(requests[1].contains("x-backbone-lifecycle-id: "));
+    let body = requests[2].rsplit("\r\n\r\n").next().unwrap();
+    let sent: Value = serde_json::from_str(body).unwrap();
+    assert_eq!(sent, json!({"resume": true, "wait": false}));
+}
+
+#[test]
+fn removing_an_agent_stops_it_first_and_treats_a_missing_one_as_removed() {
+    let (directory, listener, url) = crate::transport::tests::local_listener();
+    let (profile, identity) = profile_at(directory.path(), url.strip_prefix("unix:").unwrap());
+    let stopped = json!({"ok": true, "session": "worker"});
+    let server = serve(
+        listener,
+        vec![
+            (200, identity.clone()),
+            (200, stopped.clone()),
+            (200, json!({"ok": true, "name": "worker"})),
+            (404, json!({})),
+            (200, stopped.clone()),
+            (404, json!({})),
+            (200, stopped),
+            (409, json!({"detail": "'worker' is running"})),
+        ],
+    );
+    let connection = profile.connect().unwrap();
+    assert_eq!(connection.remove_agent("worker"), Ok(()));
+    assert_eq!(connection.remove_agent("worker"), Ok(()));
+    assert_eq!(connection.remove_agent("worker"), Ok(()));
+    assert_eq!(
+        connection.remove_agent("worker").err(),
+        Some(Error::Refused(409))
+    );
+    assert_eq!(
+        connection.remove_agent("../other").err(),
+        Some(Error::Invalid)
+    );
+    let requests = server.join().unwrap();
+    assert!(requests[1].starts_with("post /api/agents/worker/stop "));
+    assert!(requests[2].starts_with("delete /api/agents/worker "));
+    assert!(requests[2].contains("x-backbone-lifecycle-id: "));
+}
+
+#[test]
+fn agent_list_reads_again_while_registrations_settle_but_not_forever() {
+    let (directory, listener, url) = crate::transport::tests::local_listener();
+    let (profile, identity) = profile_at(directory.path(), url.strip_prefix("unix:").unwrap());
+    let settling = (
+        409,
+        json!({"detail": {"code": "registration_changed", "message": "Changed."}}),
+    );
+    let mut replies = vec![
+        (200, identity.clone()),
+        settling.clone(),
+        (200, json!({"items": [], "total": 0})),
+    ];
+    replies.extend(std::iter::repeat_n(settling, 41));
+    let server = serve(listener, replies);
+    let connection = profile.connect().unwrap();
+    assert!(connection.roster().is_ok());
+    assert_eq!(connection.roster().err(), Some(Error::Refused(409)));
+    assert_eq!(server.join().unwrap().len(), 44);
 }
 
 #[test]
@@ -466,3 +711,69 @@ fn credential_source_must_be_the_exact_private_regular_file() {
 }
 
 mod library_snapshots;
+
+#[test]
+fn adding_a_skill_and_a_document_keeps_the_providers_reason() {
+    let (directory, listener, url) = crate::transport::tests::local_listener();
+    let (profile, identity) = profile_at(directory.path(), url.strip_prefix("unix:").unwrap());
+    let contract = fixture();
+    let server = serve(
+        listener,
+        vec![
+            (200, identity.clone()),
+            (
+                200,
+                json!({"name":"my-skill","path":"/s","tags":["all"],"warnings":["not recorded"]}),
+            ),
+            (422, json!({"detail": "no SKILL.md in the folder"})),
+            (201, json!({"record": {"id": 7}, "created": true})),
+            (422, json!({"detail": [{"msg": "HTML exceeds the limit"}]})),
+            (403, json!({})),
+        ],
+    );
+    let connection = profile.connect().unwrap();
+    let folder = Path::new("/absolute/folder/my-skill");
+    assert_eq!(
+        connection.add_skill(folder),
+        Ok(AddedSkill {
+            name: "my-skill".into(),
+            warnings: vec!["not recorded".into()],
+        })
+    );
+    assert_eq!(
+        connection.add_skill(folder),
+        Err(AddError::Refused("no SKILL.md in the folder".into()))
+    );
+    assert_eq!(
+        connection.add_document("Overview", "<h1>Overview</h1>"),
+        Ok(7)
+    );
+    assert_eq!(
+        connection.add_document("Overview", "<h1>Overview</h1>"),
+        Err(AddError::Refused("HTML exceeds the limit".into()))
+    );
+    assert_eq!(
+        connection.add_document("Overview", "<h1>Overview</h1>"),
+        Err(AddError::Connection(Error::Refused(403)))
+    );
+    let requests = server.join().unwrap();
+    let body = |request: &str| -> Value {
+        serde_json::from_str(request.split("\r\n\r\n").nth(1).unwrap()).unwrap()
+    };
+    assert!(requests[1].starts_with("post /api/skills "));
+    assert_eq!(body(&requests[1]), contract["skills_copy"]["request"]);
+    assert!(requests[3].starts_with("post /api/documents "));
+    let document = body(&requests[3]);
+    let expected = &contract["operator_document"]["request"];
+    // The fixture server lowercases what it records.
+    for field in ["author", "title", "html"] {
+        assert_eq!(
+            document[field].as_str().unwrap(),
+            expected[field].as_str().unwrap().to_ascii_lowercase()
+        );
+    }
+    assert_eq!(document["supersedes_id"], expected["supersedes_id"]);
+    let retried = body(&requests[4]);
+    assert_eq!(document["request_id"], retried["request_id"]);
+    assert_eq!(document["request_id"].as_str().unwrap().len(), 68);
+}

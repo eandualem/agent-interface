@@ -47,10 +47,13 @@ enum Page {
     Appearance,
     Shortcuts,
     Agents,
+    Profiles,
 }
 
 pub struct SettingsWindow {
     page: Page,
+    /// Built when Profiles is first chosen, so other pages never ask Agent Backbone.
+    profiles: Option<gpui::Entity<super::settings_profiles::Profiles>>,
     error: Option<String>,
     focus: gpui::FocusHandle,
     /// The command waiting for its new keys, and why the last keys were refused.
@@ -116,6 +119,7 @@ pub fn show(cx: &mut App) {
             });
             SettingsWindow {
                 page: Page::Appearance,
+                profiles: None,
                 error: None,
                 focus: cx.focus_handle(),
                 recording: None,
@@ -795,7 +799,7 @@ impl SettingsWindow {
 
     fn agents(&self, cx: &mut Context<Self>) -> gpui::Div {
         let (t, c) = (tokens(), colors());
-        let (connected, detail) = match crate::roster::provider_directory(None, None, None, false) {
+        let (connected, detail) = match crate::roster::provider_directory(false) {
             Ok(Some(path)) => (true, path.display().to_string()),
             Ok(None) => (
                 false,
@@ -913,6 +917,7 @@ impl Render for SettingsWindow {
             (Page::Appearance, "Appearance", "palette"),
             (Page::Shortcuts, "Shortcuts", "keyboard"),
             (Page::Agents, "Agents", "bot"),
+            (Page::Profiles, "Profiles", "layers"),
         ];
         let mut nav = div()
             .w(px(t.size.settings_nav))
@@ -959,6 +964,13 @@ impl Render for SettingsWindow {
             Page::Appearance => self.appearance(cx),
             Page::Shortcuts => self.shortcuts(cx),
             Page::Agents => self.agents(cx),
+            Page::Profiles => {
+                let profiles = self
+                    .profiles
+                    .get_or_insert_with(|| cx.new(super::settings_profiles::Profiles::new))
+                    .clone();
+                div().flex().flex_col().pt(px(t.space.s12)).child(profiles)
+            }
         };
         let body = ui::text(
             div()

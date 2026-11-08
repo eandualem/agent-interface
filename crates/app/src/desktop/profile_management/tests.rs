@@ -80,7 +80,7 @@ fn history_reads_one_page_and_preserves_individual_invalid_record_failures() {
         ids: first_ids,
         rows,
         offset,
-    } = history(&controller, None, 0, &live).unwrap()
+    } = history(&controller, None, None, 0, &live).unwrap()
     else {
         panic!("history");
     };
@@ -88,7 +88,7 @@ fn history_reads_one_page_and_preserves_individual_invalid_record_failures() {
     assert_eq!(rows.len(), PAGE_SIZE);
     assert!(rows.iter().all(|(_, result)| result.is_ok()));
     let Page::History { rows, offset, .. } =
-        history(&controller, Some(first_ids.clone()), PAGE_SIZE, &live).unwrap()
+        history(&controller, None, Some(first_ids.clone()), PAGE_SIZE, &live).unwrap()
     else {
         panic!("history");
     };
@@ -98,7 +98,7 @@ fn history_reads_one_page_and_preserves_individual_invalid_record_failures() {
     assert_eq!(rows[1].1, Err(controller::Error::Invalid));
     assert!(rows[0].1.is_ok());
     let Page::History { rows, offset, .. } =
-        history(&controller, Some(first_ids), usize::MAX, &live).unwrap()
+        history(&controller, None, Some(first_ids), usize::MAX, &live).unwrap()
     else {
         panic!("history");
     };
@@ -106,7 +106,7 @@ fn history_reads_one_page_and_preserves_individual_invalid_record_failures() {
     assert_eq!(rows.len(), 3);
     live.store(false, Ordering::Release);
     assert!(matches!(
-        history(&controller, None, 0, &live),
+        history(&controller, None, None, 0, &live),
         Err(controller::Error::Client(crate::profiles::Error::Cancelled))
     ));
 }

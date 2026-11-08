@@ -68,7 +68,7 @@ fn profile_retirement_preserves_hidden_focus_and_expires_unavailable_empty_panes
     browser.retire_profile_panes();
     assert!(!browser.reset_focus);
     assert!(browser.keyboard_pane().is_some());
-    browser.workspace_rosters.remove(&spaces[0].id);
+    browser.workspace_profiles.retry(&spaces[0]);
     browser.retire_profile_panes();
     assert!(!browser.reset_focus);
     browser.layout.as_mut().unwrap().model_mut().workspaces[0].profile_id = None;
@@ -76,7 +76,11 @@ fn profile_retirement_preserves_hidden_focus_and_expires_unavailable_empty_panes
     assert!(!browser.reset_focus);
     assert_eq!(selected(&browser), spaces[1].id);
     assert!(browser.keyboard_pane().is_some());
+    // A roster failure loses status only; the panes keep the keyboard.
     browser.workspace_rosters.remove(&spaces[1].id);
+    browser.retire_profile_panes();
+    assert!(browser.keyboard_pane().is_some());
+    browser.workspace_profiles.retry(&spaces[1]);
     browser.retire_profile_panes();
     assert!(browser.reset_focus);
     assert!(browser.keyboard_pane().is_none());
@@ -565,8 +569,13 @@ fn original_unavailable_workspace_accepts_explicit_retry() {
         .unwrap()
         .model_mut()
         .choose_workspace(&spaces[0].id);
-    // An unavailable roster may require retry even with a verified connection.
+    // A missing roster loses status, not access, so nothing needs a retry.
     browser.workspace_rosters.remove(&spaces[0].id);
+    let origin = browser.selected_navigation_origin().unwrap();
+    assert!(!browser.profile_content_unavailable());
+    assert!(!browser.retry_profile_origin(Some(&origin)));
+    let bound_origin = origin;
+    browser.workspace_profiles.retry(&spaces[0]);
     let origin = browser.selected_navigation_origin().unwrap();
     assert!(browser.profile_content_unavailable());
     assert!(browser.retry_profile_origin(Some(&origin)));
@@ -578,8 +587,8 @@ fn original_unavailable_workspace_accepts_explicit_retry() {
     assert!(
         matches!(browser.workspace_profiles.route(&spaces[1]), Route::Bound(connection) if connection.connection_key() == b.connection_key())
     );
-    // A held callback cannot retry again once its connection epoch is retired.
-    assert!(!browser.retry_profile_origin(Some(&origin)));
+    // A held callback cannot retry once its connection epoch is retired.
+    assert!(!browser.retry_profile_origin(Some(&bound_origin)));
 }
 
 #[test]
@@ -677,95 +686,4 @@ fn close_actions_expire_on_selection_reconnect_and_library_replacement() {
     assert!(browser.close_tab_for(&fresh, &tab).is_none());
     assert!(browser.close_pane_for(&fresh, &tab, &pane).is_none());
     assert_eq!(browser.layout.as_ref().unwrap().model().pane(), Some(&pane));
-}
-
-#[test]
-fn legacy_setup_consumes_peer_binding_updates_before_admission() {
-    let (_a, a, a_server) = provider("a", vec![]);
-    let (_b, b, b_server) = provider("b", vec![]);
-    a_server.join().unwrap();
-    b_server.join().unwrap();
-    // Exercise both directions with unchanged workspace/tab/pane IDs: an old
-    // legacy request cannot open setup after binding, and an old bound request
-    // cannot become authority for legacy setup after binding removal.
-    for was_bound in [false, true] {
-        let mut browser = browser(&a, &b);
-        if !was_bound {
-            browser.layout.as_mut().unwrap().model_mut().workspaces[1].profile_id = None;
-        }
-        // Start from a saved binding, rather than an unsaved local edit that
-        // reconciliation should preserve against an unchanged peer document.
-        let (base, saved) = browser.layout.as_ref().unwrap().save_snapshot();
-        browser.layout = Some(WindowLayout::new(
-            base.with_model(&saved, std::path::Path::new("layouts.db"))
-                .unwrap(),
-        ));
-        assert_eq!(browser.legacy_setup_allowed(), !was_bound);
-        let origin = browser.selected_navigation_origin().unwrap();
-        let (base, mut peer) = browser.layout.as_ref().unwrap().save_snapshot();
-        let tab = peer.tab().unwrap().id.clone();
-        let pane = peer.pane().unwrap().clone();
-        peer.workspaces[1].profile_id = (!was_bound).then(|| b.identity().profile_id.clone());
-        let update = crate::library::Update {
-            document: Some(
-                base.with_model(&peer, std::path::Path::new("layouts.db"))
-                    .unwrap(),
-            ),
-            error: None,
-        };
-        assert!(!browser.legacy_setup_after_update(Some(&origin), Some(update)));
-        let model = browser.layout.as_ref().unwrap().model();
-        assert_eq!(
-            model.workspace().unwrap().profile_id,
-            peer.workspaces[1].profile_id
-        );
-        assert_eq!(model.tab().unwrap().id, tab);
-        assert_eq!(model.pane(), Some(&pane));
-        assert_eq!(browser.legacy_setup_allowed(), was_bound);
-    }
-}
-
-#[test]
-fn legacy_setup_requires_the_original_selected_library_and_explicit_legacy_workspace() {
-    let (_a, a, a_server) = provider("a", vec![]);
-    let (_b, b, b_server) = provider("b", vec![]);
-    a_server.join().unwrap();
-    b_server.join().unwrap();
-    let mut browser = browser(&a, &b);
-    // Readiness and a retained verified connection do not authorize legacy setup.
-    assert!(!browser.legacy_setup_allowed());
-    let space = browser
-        .layout
-        .as_ref()
-        .unwrap()
-        .model()
-        .workspace()
-        .unwrap()
-        .clone();
-    browser.workspace_profiles.retry(&space);
-    assert!(!browser.legacy_setup_allowed());
-    for space in &mut browser.layout.as_mut().unwrap().model_mut().workspaces {
-        space.profile_id = None;
-    }
-    let origin = browser.selected_navigation_origin().unwrap();
-    let spaces = browser.layout.as_ref().unwrap().model().workspaces.clone();
-    assert!(browser.legacy_setup_after_update(Some(&origin), None));
-    browser
-        .layout
-        .as_mut()
-        .unwrap()
-        .model_mut()
-        .choose_workspace(&spaces[0].id);
-    assert!(!browser.legacy_setup_after_update(Some(&origin), None));
-    browser
-        .layout
-        .as_mut()
-        .unwrap()
-        .model_mut()
-        .choose_workspace(&spaces[1].id);
-    browser.directory = Some("/another-library".into());
-    assert!(!browser.legacy_setup_after_update(Some(&origin), None));
-    assert!(browser.legacy_setup_allowed());
-    assert!(!browser.legacy_setup_after_update(None, None));
-    assert!(!Browser::default().legacy_setup_allowed());
 }

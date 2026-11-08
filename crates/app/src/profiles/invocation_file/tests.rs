@@ -51,7 +51,7 @@ fn inheritable_acls_are_rejected_before_sensitive_bytes_are_written() {
             .unwrap()
             .success()
     );
-    let result = InvocationFile::in_directory(parent.path(), b"private adoption token");
+    let result = InvocationFile::in_directory(parent.path(), b"private request bytes");
     assert!(
         Command::new("/bin/chmod")
             .arg("-N")

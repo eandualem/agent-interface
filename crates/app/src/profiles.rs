@@ -39,10 +39,10 @@ pub enum Error {
     TooLarge,
     /// The caller no longer wants this observation.
     Cancelled,
-    /// A stored request belongs to a different captured caller context.
-    ContextChanged,
     /// The provider record was malformed, unsupported or for another profile.
     Profile(profiles::Error),
+    /// The provider reports that no profile registry exists on this machine.
+    RegistryAbsent,
 }
 
 /// A discovery operation's executable and operator context, captured together.
@@ -82,6 +82,8 @@ impl Client {
             .env_clear()
             .envs(self.environment.iter().cloned())
             .current_dir(&self.directory);
+        #[cfg(target_os = "macos")]
+        agent_interface_native_fs::clear_signal_mask(&mut command);
         command
     }
 
@@ -140,17 +142,6 @@ impl Client {
             TIMEOUT,
         )?;
         profiles::runtime_catalog::Catalog::parse(&bytes, identity).map_err(Error::Profile)
-    }
-
-    /// Read the provider's explicit Default-adoption preflight in this captured
-    /// caller context. Returned paths are display metadata, never read here.
-    /// This does not migrate data, select a profile or submit an adoption.
-    pub fn adoption_preview(
-        &self,
-        live: &dyn Fn() -> bool,
-    ) -> Result<profiles::operations::AdoptionPreview, Error> {
-        let bytes = self.read(&["profiles", "adoption-preview", "--json"], live, TIMEOUT)?;
-        profiles::operations::AdoptionPreview::parse(&bytes).map_err(Error::Profile)
     }
 
     fn read(
@@ -222,7 +213,19 @@ impl Client {
                 .map_err(|_| Error::Unavailable)?;
                 if let Some(status) = status {
                     if status.exit_status() != Some(0) {
-                        return Err(Error::CommandFailed);
+                        // A refusal written before exit is already in the pipe.
+                        let mut chunk = [0; 4096];
+                        while bytes.len() < OUTPUT_LIMIT {
+                            match output.read(&mut chunk) {
+                                Ok(read) if read > 0 => bytes.extend_from_slice(&chunk[..read]),
+                                _ => break,
+                            }
+                        }
+                        return Err(if registry_absent(&bytes) {
+                            Error::RegistryAbsent
+                        } else {
+                            Error::CommandFailed
+                        });
                     }
                     exited = true;
                     // A completed wrapper may leave descendants holding stdout.
@@ -240,6 +243,12 @@ impl Client {
             std::thread::sleep(Duration::from_millis(10));
         }
     }
+}
+
+fn registry_absent(bytes: &[u8]) -> bool {
+    serde_json::from_slice::<serde_json::Value>(bytes).is_ok_and(|value| {
+        value["schema_version"] == 1 && value["error"]["code"] == "registry_absent"
+    })
 }
 
 fn validate_id(profile_id: &str) -> Result<(), Error> {

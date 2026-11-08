@@ -123,6 +123,7 @@ group!(
         settings_nav: f32 = number, theme_card: f32 = number,
         empty_icon: f32 = number, empty_width: f32 = number,
         menu_heading: f32 = number, keycap: f32 = number, hairline: f32 = number,
+        profile_popover: f32 = number, profile_mark: f32 = number, profile_flow: f32 = number,
         minimap_stroke: f32 = number, workspace_block_padding: f32 = number,
         pane_number_width: f32 = number, view_toolbar: f32 = number,
         view_footer: f32 = number, view_choice: f32 = number, view_tile: f32 = number,
