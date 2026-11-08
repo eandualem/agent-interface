@@ -14,6 +14,7 @@ from pathlib import Path
 import re
 import stat
 import subprocess
+import sys
 import tempfile
 import time
 import uuid
@@ -233,14 +234,16 @@ PROFILES_RELEASE = (0, 5, 0)
 
 def backbone_port(data_dir, env):
     """The port this installation listens on: its environment, its .env, or the default."""
-    value = env.get("BACKBONE_PORT")
-    try:
+    value = None
+    try:  # the service reads .env, not the installer's shell
         for line in (data_dir / ".env").read_text().splitlines():
-            key, _, found = line.partition("=")
-            if key.strip() == "BACKBONE_PORT" and found.strip():
-                value = value or found.strip().strip("'\"")
+            key, _, found = line.removeprefix("export ").partition("=")
+            found = found.split("#")[0].strip().strip("'\"")
+            if key.strip() == "BACKBONE_PORT" and found:
+                value = found
     except OSError:
         pass
+    value = value or env.get("BACKBONE_PORT")
     try:
         return int(value or 7120)
     except ValueError:
@@ -285,14 +288,22 @@ def init_profiles(executable, data_dir, env):
     try:
         result = subprocess.run([str(executable), "init"], env=env, stdin=subprocess.DEVNULL,
                                 capture_output=True, text=True, timeout=600)
-    except (OSError, subprocess.TimeoutExpired):
-        result = None
-    output = "" if result is None else (result.stdout + result.stderr).strip()[-2000:]
+    except subprocess.TimeoutExpired as expired:
+        result, partial = None, [expired.stdout, expired.stderr]
+    except OSError:
+        result, partial = None, []
+    if result is not None:
+        partial = [result.stdout, result.stderr]
+    output = "".join(part if isinstance(part, str) else (part or b"").decode(errors="replace")
+                     for part in partial).strip()[-2000:]
     output = json.dumps(output, ensure_ascii=True)[1:-1].replace("\\n", "\n")
     if result is None or result.returncode:
+        start = ("launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.agent-backbone.plist"
+                 if sys.platform == "darwin" else "systemctl --user start agent-backbone.service")
         raise ValueError("`backbone init` failed, so Agent Backbone was not started again. "
                          f"{output or 'It reported nothing.'} Fix the reported problem, run "
-                         "`backbone init`, start Agent Backbone, then run this installer again")
+                         f"`backbone init`, start Agent Backbone with `{start}`, then run this "
+                         "installer again")
     print(output)
 
 

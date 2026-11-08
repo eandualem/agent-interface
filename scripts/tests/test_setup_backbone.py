@@ -449,7 +449,7 @@ class InitProfilesTests(unittest.TestCase):
 
     def test_failed_init_says_it_was_not_started_and_what_to_run(self):
         self.fake('echo "error: The installation has no identity yet \033[2J"; exit 1')
-        with self.assertRaisesRegex(ValueError, "not started again.*no identity yet.*run `backbone init`") as caught:
+        with self.assertRaisesRegex(ValueError, "not started again.*no identity yet.*run `backbone init`.*start Agent Backbone with `(launchctl|systemctl)") as caught:
             setup.init_profiles(self.executable, self.data, self.env)
         self.assertNotIn("\x1b", str(caught.exception))
 
@@ -469,8 +469,7 @@ class InitProfilesTests(unittest.TestCase):
         self.addCleanup(port.close)
         port.bind(("127.0.0.1", 0))
         port.listen()
-        (self.data / ".env").write_text(f"BACKBONE_PORT={port.getsockname()[1]}\n")
-        del self.env["BACKBONE_PORT"]
+        (self.data / ".env").write_text(f"export BACKBONE_PORT={port.getsockname()[1]} # service port\n")
         with patch.object(setup.time, "sleep"):
             with self.assertRaisesRegex(ValueError, f"still answering on port {port.getsockname()[1]}"):
                 setup.ensure_stopped(self.data, self.env)

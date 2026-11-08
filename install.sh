@@ -415,7 +415,7 @@ raise SystemExit(0 if found else 1)
     else
         case $? in
             1)
-                grep -q -- '--init-profiles' "$prepared/$(dirname "$marker")/setup_backbone.py" ||
+                grep -q -- '--check-stopped' "$prepared/$(dirname "$marker")/setup_backbone.py" ||
                     fail 'This Agent Backbone installation predates profiles, and this app release cannot upgrade it. Nothing was changed; install the latest release.'
                 backbone_needs_init=true
                 printf '%s\n' 'This Agent Backbone installation predates profiles. Agent Backbone, and any agents it runs, will stop while "backbone init" records it as the Default profile, then start again.' ;;
@@ -562,8 +562,11 @@ if [ -f "$resources/setup_backbone.py" ]; then
         run_step 'Stopping Agent Backbone' stop_backbone_service ||
             fail 'Could not stop Agent Backbone. Nothing else was changed.'
         run_step 'Checking that Agent Backbone stopped' "$tools/agent-backbone/bin/python" -I -B "$resources/setup_backbone.py" \
-            --executable "$tools/agent-backbone/bin/backbone" --check-stopped ||
-            fail 'Agent Backbone is still running, so it was not upgraded.'
+            --executable "$tools/agent-backbone/bin/backbone" --check-stopped || {
+            # Its package is unchanged, so starting it again is safe.
+            start_backbone_service || :
+            fail 'Agent Backbone did not stop, so it was not upgraded and was started again.'
+        }
     elif [ -x "$tools/agent-backbone/bin/python" ]; then
         run_step 'Checking saved Backbone setup' resume_backbone ||
             fail 'Interrupted Backbone setup needs attention. Its installed version was preserved.'

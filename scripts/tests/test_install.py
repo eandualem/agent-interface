@@ -697,7 +697,7 @@ esac
             path.parent.mkdir(parents=True)
             path.write_text("fixture service")
         helper = "agent-interface/setup_backbone.py"
-        archive = self.package(extra={helper: "fixture helper --init-profiles", "agent-interface/upgrade_backbone.py": "fixture guard"})
+        archive = self.package(extra={helper: "fixture helper --check-stopped --init-profiles", "agent-interface/upgrade_backbone.py": "fixture guard"})
         log = Path(self.env["FIXTURE_LOG"])
 
         def steps():
@@ -720,8 +720,8 @@ esac
         self.env.update(FIXTURE_UPGRADE_CHECK="1", FIXTURE_STILL_RUNNING="1")
         log.write_text("")
         result = self.install(archive, success=False)
-        self.assertIn("still running, so it was not upgraded", result.stderr)
-        self.assertEqual(steps(), ["stop", "check"])
+        self.assertIn("did not stop, so it was not upgraded and was started again", result.stderr)
+        self.assertEqual(steps(), ["stop", "check", "start"])
 
         self.env.update(FIXTURE_STILL_RUNNING="0", FIXTURE_INIT_FAIL="1")
         log.write_text("")
@@ -737,7 +737,7 @@ esac
         self.assertIn("will stop while", result.stdout)
         self.assertEqual(steps(), ["stop", "check", "install", "init", "start"])
 
-        old = self.package(extra={helper: "fixture helper", "agent-interface/upgrade_backbone.py": "fixture guard"})
+        old = self.package(extra={helper: "fixture helper --init-profiles", "agent-interface/upgrade_backbone.py": "fixture guard"})
         log.write_text("")
         result = self.install(old, success=False)
         self.assertIn("this app release cannot upgrade it. Nothing was changed", result.stderr)
