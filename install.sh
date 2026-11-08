@@ -558,7 +558,9 @@ if [ -f "$resources/setup_backbone.py" ]; then
             backbone_resumed=true
         fi
     }
+    backbone_stopped=
     if [ "$backbone_needs_init" = true ]; then
+        backbone_stopped=' Agent Backbone is stopped; after fixing this, run the installer again to finish its upgrade.'
         run_step 'Stopping Agent Backbone' stop_backbone_service ||
             fail 'Could not stop Agent Backbone. Nothing else was changed.'
         run_step 'Checking that Agent Backbone stopped' "$tools/agent-backbone/bin/python" -I -B "$resources/setup_backbone.py" \
@@ -573,15 +575,19 @@ if [ -f "$resources/setup_backbone.py" ]; then
     fi
     if [ "$backbone_resumed" = false ]; then
         if [ "$backbone_fixed_setup" = false ]; then
-            run_step 'Installing Agent Backbone' "$uv" tool install --upgrade --prerelease disallow --python '>=3.11,<3.14' 'agent-backbone>=0.5.0,<2' ||
+            run_step 'Installing Agent Backbone' "$uv" tool install --upgrade --prerelease disallow --python '>=3.11,<3.14' 'agent-backbone>=0.5.0,<2' || {
+                # uv keeps the previous package when an install fails, so a
+                # Backbone stopped for this upgrade can run again as it was.
+                [ "$backbone_needs_init" = false ] || start_backbone_service || :
                 fail 'Could not install a compatible published Agent Backbone release. The app was not replaced.'
+            }
         fi
         if [ "$backbone_upgrade_held" = true ]; then
             run_step 'Completing Linux package update' "$tools/agent-backbone/bin/python" -I -B "$resources/upgrade_backbone.py" \
                 --executable "$tools/agent-backbone/bin/backbone" --phase after ||
                 fail 'Backbone upgrade coordination is incomplete; its saved operation was retained. Resolve through Backbone; do not restart active sessions automatically.'
         fi
-        tool_bin=$("$uv" tool dir --bin) || fail 'Could not locate Agent Backbone commands.'
+        tool_bin=$("$uv" tool dir --bin) || fail "Could not locate Agent Backbone commands.$backbone_stopped"
         # Shell integration is optional: uv can return nonzero when startup
         # files are already correct but this terminal still has its old PATH.
         # App setup uses absolute executables regardless of shell configuration.
@@ -592,7 +598,7 @@ if [ -f "$resources/setup_backbone.py" ]; then
         printf 'Backbone command: "%s/backbone"\n' "$tool_bin"
         PATH="$tool_bin:$PATH"
         export PATH
-        tools=$("$uv" tool dir) || fail 'Could not locate the installed Agent Backbone.'
+        tools=$("$uv" tool dir) || fail "Could not locate the installed Agent Backbone.$backbone_stopped"
         if [ "$backbone_needs_init" = true ]; then
             run_step 'Recording Agent Backbone as the Default profile' \
                 "$tools/agent-backbone/bin/python" -I -B "$resources/setup_backbone.py" \

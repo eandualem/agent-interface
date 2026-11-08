@@ -723,7 +723,13 @@ esac
         self.assertIn("did not stop, so it was not upgraded and was started again", result.stderr)
         self.assertEqual(steps(), ["stop", "check", "start"])
 
-        self.env.update(FIXTURE_STILL_RUNNING="0", FIXTURE_INIT_FAIL="1")
+        self.env.update(FIXTURE_STILL_RUNNING="0", FIXTURE_INSTALL_FAIL="1")
+        log.write_text("")
+        result = self.install(archive, success=False)
+        self.assertIn("Could not install a compatible published Agent Backbone release", result.stderr)
+        self.assertEqual(steps(), ["stop", "check", "install", "start"])
+
+        self.env.update(FIXTURE_INSTALL_FAIL="0", FIXTURE_INIT_FAIL="1")
         log.write_text("")
         result = self.install(archive, success=False)
         self.assertIn("was not started again", result.stderr)
