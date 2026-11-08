@@ -230,9 +230,9 @@ def service_identity(home, data_dir, executable, env):
 
 PROFILE_REGISTRY = ".local/share/agent-backbone-profiles/registry.db"
 UNSUPPORTED_UPGRADE = ("This Agent Backbone installation predates profiles, and this installer "
-                       "doesn't upgrade it in place. Nothing was changed. To upgrade it: back up "
-                       "its data directory, update the agent-backbone package, run `backbone init`, "
-                       "then run this installer again.")
+                       "doesn't upgrade it in place. Nothing was changed. To upgrade it: stop its "
+                       "service, back up its data directory, update the agent-backbone package, "
+                       "run `backbone init` with the new version, then run this installer again.")
 
 
 def has_default_profile(home, data_dir):
