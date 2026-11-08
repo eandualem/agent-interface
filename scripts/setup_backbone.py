@@ -14,6 +14,7 @@ from pathlib import Path
 import re
 import stat
 import subprocess
+import sys
 import tempfile
 import time
 import uuid
@@ -227,12 +228,88 @@ def service_identity(home, data_dir, executable, env):
     return hashlib.sha256(content).hexdigest()
 
 
-def socket_setting(executable, env):
-    output = command(executable, ["config", "get", "backbone.socket_path"], env)
-    value = json.loads(output.splitlines()[0])
-    if not isinstance(value, str):
-        raise ValueError("Backbone returned an invalid socket setting")
-    return value
+# The first release whose provider serves profiles; earlier ones can't serve this app.
+PROFILES_RELEASE = (0, 5, 0)
+
+
+def backbone_port(data_dir, env):
+    """The port this installation listens on: its environment, its .env, or the default."""
+    value = None
+    try:  # the service reads .env, not the installer's shell
+        for line in (data_dir / ".env").read_text().splitlines():
+            key, _, found = line.removeprefix("export ").partition("=")
+            found = found.split("#")[0].strip().strip("'\"")
+            if key.strip() == "BACKBONE_PORT" and found:
+                value = found
+    except OSError:
+        pass
+    value = value or env.get("BACKBONE_PORT")
+    try:
+        return int(value or 7120)
+    except ValueError:
+        return 7120
+
+
+def still_running(data_dir, env):
+    """What is still answering for this installation, or None once it has stopped."""
+    import socket
+
+    for name in ("run/backbone.sock", "run/api.sock"):
+        path = data_dir / name
+        try:
+            with socket.socket(socket.AF_UNIX) as client:
+                client.settimeout(1)
+                client.connect(str(path))
+            return str(path)
+        except OSError:
+            pass
+    port = backbone_port(data_dir, env)
+    try:
+        socket.create_connection(("127.0.0.1", port), timeout=1).close()
+        return f"port {port}"
+    except OSError:
+        return None
+
+
+def ensure_stopped(data_dir, env):
+    for _ in range(20):  # a stopped service can take a moment to let go of its socket
+        running = still_running(data_dir, env)
+        if running is None:
+            return
+        time.sleep(0.5)
+    raise ValueError(f"Agent Backbone is still answering on {running}. Stop it, then run this installer "
+                     "again. Nothing else was changed")
+
+
+def init_profiles(executable, data_dir, env):
+    """Record an installation from before profiles as the Default profile with
+    `backbone init`. Its service must already be stopped."""
+    ensure_stopped(data_dir, env)
+    try:
+        result = subprocess.run([str(executable), "init"], env=env, stdin=subprocess.DEVNULL,
+                                capture_output=True, text=True, timeout=600)
+    except subprocess.TimeoutExpired as expired:
+        result, partial = None, [expired.stdout, expired.stderr]
+    except OSError:
+        result, partial = None, []
+    if result is not None:
+        partial = [result.stdout, result.stderr]
+    output = "".join(part if isinstance(part, str) else (part or b"").decode(errors="replace")
+                     for part in partial).strip()[-2000:]
+    output = json.dumps(output, ensure_ascii=True)[1:-1].replace("\\n", "\n")
+    if result is None or result.returncode:
+        start = ("launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.agent-backbone.plist"
+                 if sys.platform == "darwin" else "systemctl --user start agent-backbone.service")
+        raise ValueError("`backbone init` failed, so Agent Backbone was not started again. "
+                         f"{output or 'It reported nothing.'} Fix the reported problem, run "
+                         f"`backbone init`, start Agent Backbone with `{start}`, then run this "
+                         "installer again")
+    print(output)
+
+
+def provider_socket(data_dir):
+    """Backbone serves its private API here; there is no setting to choose it."""
+    return data_dir / "run/api.sock"
 
 
 def installation_identity(data_dir):
@@ -338,13 +415,12 @@ def socket_version(path):
 
 def wait_for_installed_service(executable, home, data_dir, state, version, env, timeout=120):
     """Let Backbone's upgrade watcher reload; never restart an existing service."""
-    if not all(key in state for key in ("installation_identity", "service_identity", "socket")):
+    if not all(key in state for key in ("installation_identity", "service_identity")):
         return  # An independently managed installation keeps its own lifecycle.
 
     def unchanged():
         return (installation_identity(data_dir) == state["installation_identity"]
-                and service_identity(home, data_dir, executable, env) == state["service_identity"]
-                and socket_setting(executable, env) == state["socket"])
+                and service_identity(home, data_dir, executable, env) == state["service_identity"])
 
     try:
         if not unchanged():
@@ -353,7 +429,7 @@ def wait_for_installed_service(executable, home, data_dir, state, version, env, 
         return  # A removed/replaced service is now managed independently.
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if socket_version(Path(state["socket"])) == version:
+        if socket_version(provider_socket(data_dir)) == version:
             if not unchanged():
                 raise ValueError("The Backbone installation changed while waiting for its update; it was preserved")
             return
@@ -366,28 +442,12 @@ def finish_socket(executable, home, data_dir, record, state, outcome_path, env):
     if installation_identity(data_dir) != state["installation_identity"]:
         raise ValueError("The installation changed during setup; it was preserved")
     identity = service_identity(home, data_dir, executable, env)
-    current = socket_setting(executable, env)
-    if "socket" not in state:
-        if current:
-            raise ValueError("A socket choice appeared during setup; it was preserved")
-        state.update(socket=str(data_dir / "run/backbone.sock"), service_identity=identity)
+    if "service_identity" not in state:
+        state.update(service_identity=identity)
         save_outcome(outcome_path, record, state)
-    if identity != state["service_identity"] or current not in ("", state["socket"]):
-        raise ValueError("The service or socket choice changed during setup; it was preserved")
-    if state.get("socket_configured") and current != state["socket"]:
-        raise ValueError("The saved socket choice changed; it was preserved")
-    path = Path(state["socket"])
-    path.parent.mkdir(mode=0o700, exist_ok=True)
-    parent = path.parent.lstat()
-    if (not stat.S_ISDIR(parent.st_mode) or parent.st_uid != os.getuid()
-            or stat.S_IMODE(parent.st_mode) != 0o700):
-        raise ValueError("The socket directory must be private and owned by this user")
-    if current != state["socket"]:
-        command(executable, ["config", "set", "backbone.socket_path", state["socket"]], env)
-    if socket_setting(executable, env) != state["socket"]:
-        raise ValueError("The socket setting could not be confirmed")
-    state["socket_configured"] = True
-    save_outcome(outcome_path, record, state)
+    if identity != state["service_identity"]:
+        raise ValueError("The service changed during setup; it was preserved")
+    path = provider_socket(data_dir)
     if not socket_healthy(path):
         if service_identity(home, data_dir, executable, env) != state["service_identity"]:
             raise ValueError("The service changed before restart; it was preserved")
@@ -449,15 +509,23 @@ def install(executable, home, data_dir, version, provider_identity, resume_only=
                 check_schema(executable, env)
                 wait_for_installed_service(executable, home, data_dir, state, version, env)
             return "Existing Backbone configuration and service preserved.", False
-        if state.get("status") in {"failed", "action_required"} and state.get("retry") == "none":
+        # A request saved for a release before profiles can never finish on one.
+        if record and not stable_version_at_least(record.get("version"), PROFILES_RELEASE):
+            reset = True
+        elif state.get("status") in {"failed", "action_required"} and state.get("retry") == "none":
             raise initialization_error(state)
         if reset or can_start_new(state):
             archive = root / ("previous-" + uuid.uuid4().hex)
             request_path.rename(archive.with_suffix(".json"))
-            outcome_path.rename(archive.with_suffix(".result.json"))
+            if outcome_path.exists() or outcome_path.is_symlink():
+                outcome_path.rename(archive.with_suffix(".result.json"))
             record, state = None, {}
         if record is None and resume_only:
             return "No interrupted Backbone setup.", False
+        if not stable_version_at_least(version, PROFILES_RELEASE):
+            raise ValueError(f"This app needs Agent Backbone {'.'.join(map(str, PROFILES_RELEASE))} "
+                             f"or newer, and {version} is installed. Update the agent-backbone "
+                             "package, then run this installer again")
         if record is None:
             record = {"version": version, "provider_identity": provider_identity, "executable": str(executable),
                       "path_env": os.environ.get("PATH", "/usr/bin:/bin"),
@@ -496,12 +564,20 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--executable", required=True, type=Path)
     parser.add_argument("--resume-pending", action="store_true")
+    parser.add_argument("--init-profiles", action="store_true")
+    parser.add_argument("--check-stopped", action="store_true")
     args = parser.parse_args()
     try:
         home = Path(os.environ["HOME"])
         if not home.is_absolute() or not args.executable.is_absolute():
             raise ValueError("Installation paths must be absolute")
         data = Path(os.environ.get("BACKBONE_DATA_DIR") or home / ".local/share/agent-backbone").expanduser().resolve()
+        if args.check_stopped:
+            ensure_stopped(data, dict(os.environ, BACKBONE_DATA_DIR=str(data)))
+            raise SystemExit(0)
+        if args.init_profiles:
+            init_profiles(args.executable, data, dict(os.environ, BACKBONE_DATA_DIR=str(data)))
+            raise SystemExit(0)
         # Tool upgrades replace distribution metadata, including dependency
         # versions. Bind pending setup to that installation and its launcher.
         metadata = sorted((distribution.metadata["Name"], distribution.version,
