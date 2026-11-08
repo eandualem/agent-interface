@@ -375,6 +375,7 @@ esac
 if [ "$platform" = apple-darwin ]; then
     codesign --verify --strict "$prepared" || fail 'App signature verification failed.'
 fi
+backbone_needs_init=false
 backbone_data=${BACKBONE_DATA_DIR:-$HOME/.local/share/agent-backbone}
 case $backbone_data in "~/"*) backbone_data=$HOME/${backbone_data#\~/} ;; esac
 if [ -f "$prepared/$(dirname "$marker")/setup_backbone.py" ] && [ -e "$backbone_data/backbone.db" ]; then
@@ -413,7 +414,9 @@ raise SystemExit(0 if found else 1)
         :
     else
         case $? in
-            1) fail 'This Agent Backbone installation predates profiles, and this installer does not upgrade it in place. Nothing was changed. To upgrade it: stop its service, back up its data directory, update the agent-backbone package, run "backbone init" with the new version, start its service again, then run this installer again.' ;;
+            1)
+                backbone_needs_init=true
+                printf '%s\n' 'This Agent Backbone installation predates profiles. It will be backed up, recorded as the Default profile with "backbone init", and started again.' ;;
             *) fail 'The Agent Backbone profile registry could not be checked. Nothing was changed; try again.' ;;
         esac
     fi
@@ -501,7 +504,25 @@ if [ -f "$resources/setup_backbone.py" ]; then
     tools=$("$uv" tool dir) || fail 'Could not locate the Agent Backbone installation directory.'
     backbone_upgrade_held=false
     backbone_fixed_setup=false
-    if [ "$platform" = unknown-linux-gnu ]; then
+    backbone_plist=$HOME/Library/LaunchAgents/dev.agent-backbone.plist
+    backbone_unit=$HOME/.config/systemd/user/agent-backbone.service
+    # An installation from before profiles is stopped before its package
+    # changes, so its upgrade watch can't reload into a version that refuses it.
+    stop_backbone_service() {
+        if [ "$platform" = apple-darwin ]; then
+            [ ! -f "$backbone_plist" ] || launchctl bootout "gui/$(id -u)" "$backbone_plist" 2>/dev/null || :
+        elif [ -f "$backbone_unit" ]; then
+            systemctl --user stop agent-backbone.service
+        fi
+    }
+    start_backbone_service() {
+        if [ "$platform" = apple-darwin ]; then
+            [ ! -f "$backbone_plist" ] || launchctl bootstrap "gui/$(id -u)" "$backbone_plist"
+        elif [ -f "$backbone_unit" ]; then
+            systemctl --user start agent-backbone.service
+        fi
+    }
+    if [ "$platform" = unknown-linux-gnu ] && [ "$backbone_needs_init" = false ]; then
         if [ -x "$tools/agent-backbone/bin/python" ]; then
             [ -f "$resources/upgrade_backbone.py" ] ||
                 fail 'This app archive cannot safely upgrade an existing Linux Backbone service. Keep current sessions running and use a release with upgrade preflight support.'
@@ -535,7 +556,10 @@ if [ -f "$resources/setup_backbone.py" ]; then
             backbone_resumed=true
         fi
     }
-    if [ -x "$tools/agent-backbone/bin/python" ]; then
+    if [ "$backbone_needs_init" = true ]; then
+        run_step 'Stopping Agent Backbone' stop_backbone_service ||
+            fail 'Could not stop Agent Backbone. Nothing else was changed.'
+    elif [ -x "$tools/agent-backbone/bin/python" ]; then
         run_step 'Checking saved Backbone setup' resume_backbone ||
             fail 'Interrupted Backbone setup needs attention. Its installed version was preserved.'
     fi
@@ -561,6 +585,14 @@ if [ -f "$resources/setup_backbone.py" ]; then
         PATH="$tool_bin:$PATH"
         export PATH
         tools=$("$uv" tool dir) || fail 'Could not locate the installed Agent Backbone.'
+        if [ "$backbone_needs_init" = true ]; then
+            run_step 'Backing up and recording Agent Backbone as the Default profile' \
+                "$tools/agent-backbone/bin/python" -I -B "$resources/setup_backbone.py" \
+                --executable "$tools/agent-backbone/bin/backbone" --init-profiles ||
+                fail 'Agent Backbone was not started again. The app was not replaced.'
+            run_step 'Starting Agent Backbone' start_backbone_service ||
+                fail 'Agent Backbone could not be started again. The app was not replaced; start it with "backbone service install", then run this installer again.'
+        fi
         run_backbone_setup() (
             PATH="$tools/agent-backbone/bin:$(dirname "$uv"):$PATH"
             export PATH

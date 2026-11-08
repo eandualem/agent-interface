@@ -635,6 +635,7 @@ case "$*" in *'--phase before'*) exit "${FIXTURE_PREFLIGHT:-0}";; *'--phase afte
 case "$*" in *--resume-pending*) exit "${FIXTURE_RESUME:-0}";; esac
 case "$*" in *'importlib.metadata import version'*) exit "${FIXTURE_VERSION_FAIL:-0}";; esac
 case "$*" in *'default_profiles'*) exit "${FIXTURE_UPGRADE_CHECK:-0}";; esac
+case "$*" in *--init-profiles*) exit "${FIXTURE_INIT_FAIL:-0}";; esac
 case ":$PATH:" in *":$FIXTURE_BIN:"*) :;; *) exit 89;; esac
 if [ "${FIXTURE_SETUP_DELAY:-0}" != 0 ]; then sleep "$FIXTURE_SETUP_DELAY"; fi
 exit "${FIXTURE_SETUP_FAIL:-0}"
@@ -678,7 +679,7 @@ esac
         self.assertFalse(any(line.startswith("tool install") for line in lines))
         self.assertNotIn(": failed.", result.stderr)
 
-    def test_installation_from_before_profiles_stops_before_any_change(self):
+    def test_installation_from_before_profiles_is_recorded_as_default_after_the_upgrade(self):
         self.install(self.package("0.1.1"))
         self.backbone_tools()
         tool = Path(self.env["FIXTURE_TOOLS"]) / "agent-backbone/bin/python"
@@ -688,20 +689,30 @@ esac
         data.mkdir(parents=True)
         (data / "backbone.db").write_bytes(b"fixture database")
         archive = self.package(extra={"agent-interface/setup_backbone.py": "fixture helper", "agent-interface/upgrade_backbone.py": "fixture guard"})
-        for code, message in (("1", "predates profiles"), ("2", "registry could not be checked")):
-            with self.subTest(code=code):
-                self.env["FIXTURE_UPGRADE_CHECK"] = code
-                log = Path(self.env["FIXTURE_LOG"])
-                log.write_text("")
-                result = self.install(archive, success=False)
-                self.assertIn(message, result.stderr)
-                self.assertIn("Nothing was changed", result.stderr)
-                lines = log.read_text().splitlines()
-                self.assertTrue(any("default_profiles" in line for line in lines))
-                self.assertFalse(any(line.startswith("tool install") or "--resume-pending" in line for line in lines))
-                self.assertIn("0.1.1", subprocess.check_output([self.link, "--version"], text=True))
-        self.env["FIXTURE_UPGRADE_CHECK"] = "0"
-        self.install(archive)
+        log = Path(self.env["FIXTURE_LOG"])
+
+        self.env["FIXTURE_UPGRADE_CHECK"] = "2"
+        log.write_text("")
+        result = self.install(archive, success=False)
+        self.assertIn("registry could not be checked", result.stderr)
+        self.assertNotIn("tool install", log.read_text())
+        self.assertIn("0.1.1", subprocess.check_output([self.link, "--version"], text=True))
+
+        self.env.update(FIXTURE_UPGRADE_CHECK="1", FIXTURE_INIT_FAIL="1")
+        log.write_text("")
+        result = self.install(archive, success=False)
+        self.assertIn("was not started again", result.stderr)
+        lines = log.read_text().splitlines()
+        self.assertFalse(any("--resume-pending" in line for line in lines))
+        install = next(i for i, line in enumerate(lines) if line.startswith("tool install"))
+        init = next(i for i, line in enumerate(lines) if "--init-profiles" in line)
+        self.assertLess(install, init)
+        self.assertFalse(any(line.endswith("setup_backbone.py --executable " + str(tool.parent / "backbone")) for line in lines[init:]))
+        self.assertIn("0.1.1", subprocess.check_output([self.link, "--version"], text=True))
+
+        self.env["FIXTURE_INIT_FAIL"] = "0"
+        result = self.install(archive)
+        self.assertIn("predates profiles. It will be backed up", result.stdout)
 
     def test_recovered_old_provider_keeps_previous_app_until_upgrade(self):
         self.install(self.package("0.1.1"))

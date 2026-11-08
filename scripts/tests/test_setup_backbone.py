@@ -414,3 +414,71 @@ class UpgradeCheckTests(unittest.TestCase):
             self.assertEqual(check(home, data), 1)
             registry.write_bytes(b"not a database")
             self.assertEqual(check(home, data), 2)
+
+
+class InitProfilesTests(unittest.TestCase):
+    def setUp(self):
+        import os
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name).resolve()
+        self.data = self.root / "agent-backbone"
+        (self.data / "run").mkdir(parents=True)
+        (self.data / "backbone.db").write_bytes(b"fixture database")
+        self.executable = self.root / "backbone"
+        import socket
+        probe = socket.socket()
+        probe.bind(("127.0.0.1", 0))
+        free = probe.getsockname()[1]
+        probe.close()
+        self.env = dict(os.environ, BACKBONE_DATA_DIR=str(self.data), BACKBONE_PORT=str(free))
+
+    def fake(self, body):
+        self.executable.write_text("#!/bin/sh\n" + body + "\n")
+        self.executable.chmod(0o755)
+
+    def test_backs_up_without_sockets_then_runs_init(self):
+        import socket
+        import io
+        from contextlib import redirect_stdout
+        self.fake('[ "$1" = init ] && echo "profile ready: Default (abc123)"')
+        listener = socket.socket(socket.AF_UNIX)
+        self.addCleanup(listener.close)
+        listener.bind(str(self.data / "run/backbone.sock"))
+        printed = io.StringIO()
+        with patch.object(setup, "socket_healthy", return_value=False), redirect_stdout(printed):
+            setup.init_profiles(self.executable, self.data, self.env)
+        backups = list(self.root.glob("agent-backbone.before-profiles-*"))
+        self.assertEqual(len(backups), 1)
+        self.assertEqual((backups[0] / "backbone.db").read_bytes(), b"fixture database")
+        self.assertFalse((backups[0] / "run/backbone.sock").exists())
+        self.assertIn(f"Backed up {self.data} to {backups[0]}", printed.getvalue())
+        self.assertIn("profile ready: Default", printed.getvalue())
+
+    def test_failed_init_names_the_backup_and_the_reported_problem(self):
+        import io
+        from contextlib import redirect_stdout
+        self.fake('echo "error: The installation has no identity yet"; exit 1')
+        with patch.object(setup, "socket_healthy", return_value=False), redirect_stdout(io.StringIO()):
+            with self.assertRaisesRegex(ValueError, "not started again.*no identity yet.*before-profiles-"):
+                setup.init_profiles(self.executable, self.data, self.env)
+
+    def test_a_backbone_holding_only_its_port_counts_as_running(self):
+        import socket
+        listener = socket.socket()
+        self.addCleanup(listener.close)
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        self.env["BACKBONE_PORT"] = str(listener.getsockname()[1])
+        self.fake("exit 0")
+        with patch.object(setup, "socket_healthy", return_value=False), patch.object(setup.time, "sleep"):
+            with self.assertRaisesRegex(ValueError, "still running"):
+                setup.init_profiles(self.executable, self.data, self.env)
+
+    def test_a_running_backbone_is_neither_backed_up_nor_initialized(self):
+        self.fake("touch \"$0.ran\"")
+        with patch.object(setup, "socket_healthy", return_value=True), patch.object(setup.time, "sleep"):
+            with self.assertRaisesRegex(ValueError, "still running"):
+                setup.init_profiles(self.executable, self.data, self.env)
+        self.assertEqual(list(self.root.glob("*.before-profiles-*")), [])
+        self.assertFalse(Path(str(self.executable) + ".ran").exists())
