@@ -1,6 +1,6 @@
 //! The opening scene. The app's face laughs, looks right, looks left and then
 //! winks into the icon, exactly as the website's hero does; its open amber eye
-//! then flies into the setup rail and becomes the first step's marker.
+//! then flies to the person's first profile and becomes its mark.
 //!
 //! Every part is a pure function of time ([`Face::at`], [`Scene::at`]), so the
 //! window redraws it each frame and tests can check any moment.
@@ -22,7 +22,7 @@ use crate::desktop::{
 };
 
 /// Where an element was laid out in the last frame, for the eye's flight.
-pub(super) type Place = Rc<Cell<Option<Bounds<Pixels>>>>;
+pub(in crate::desktop) type Place = Rc<Cell<Option<Bounds<Pixels>>>>;
 
 /// The scene's clock. It starts on the second frame the scene paints, once
 /// the window is on screen, so a slow first frame (GPUI compiles its shaders
@@ -399,8 +399,8 @@ fn glow(scale: f32, strength: f32) -> BoxShadow {
     }
 }
 
-/// The open eye between its place in the face and the first step's marker:
-/// it shrinks into a circle, takes the theme's accent and loses its glow.
+/// The open eye between its place in the face and the profile's mark: it
+/// takes the mark's shape and the theme's accent, and loses its glow.
 fn paint_flight(from: Bounds<Pixels>, to: Bounds<Pixels>, progress: f32, window: &mut Window) {
     let c = colors();
     let lerp = |a: Pixels, b: Pixels, t: f32| px(f32::from(a) + (f32::from(b) - f32::from(a)) * t);
@@ -419,7 +419,7 @@ fn paint_flight(from: Bounds<Pixels>, to: Bounds<Pixels>, progress: f32, window:
     let scale = f32::from(from.size.width) / EYE[2];
     let radius = lerp(
         px(EYE[4] * scale),
-        px(f32::from(to.size.width) / 2.0),
+        px(f32::from(to.size.width) * ui::PROFILE_MARK_ROUND),
         progress,
     );
     window.paint_drop_shadows(bounds, Corners::all(radius), &[glow(scale, 1.0 - progress)]);
@@ -428,12 +428,13 @@ fn paint_flight(from: Bounds<Pixels>, to: Bounds<Pixels>, progress: f32, window:
 
 /// The face, its name and line, and the flying eye, laid over setup. The
 /// caller adds the click that skips. Painting it runs `clock`; `tile` records
-/// where the face was laid out; `marker` is where the first step's marker sits.
+/// where the face was laid out; `marker`, when the page has one, is where the
+/// eye lands. Without it the eye stays in the face as the face leaves.
 pub(super) fn overlay(
     scene: &Scene,
     clock: Clock,
     tile: Place,
-    marker: Place,
+    marker: Option<Place>,
     tagline: &'static str,
 ) -> Div {
     let (t, c) = (tokens(), colors());
@@ -443,7 +444,8 @@ pub(super) fn overlay(
     let inset = (mark - grown) / 2.0;
     let drift = -RISE_PX * scene.leave;
     let face = scene.face;
-    let flight = scene.flight;
+    let lands = marker.as_ref().is_some_and(|marker| marker.get().is_some());
+    let flight = if lands { scene.flight } else { 0.0 };
     let laid_out = tile.clone();
     let tile_element = div()
         .absolute()
@@ -514,7 +516,9 @@ pub(super) fn overlay(
                     if flight <= 0.0 || flight >= 1.0 {
                         return;
                     }
-                    if let (Some(tile), Some(target)) = (tile.get(), marker.get()) {
+                    if let (Some(tile), Some(target)) =
+                        (tile.get(), marker.as_ref().and_then(|marker| marker.get()))
+                    {
                         paint_flight(eye_bounds(tile, &face), target, flight, window);
                     }
                 },
@@ -525,7 +529,7 @@ pub(super) fn overlay(
 }
 
 /// Records where the first step's marker is laid out, for the eye to land on.
-pub(super) fn marker_place(marker: Place) -> impl IntoElement {
+pub(in crate::desktop) fn marker_place(marker: Place) -> impl IntoElement {
     canvas(
         move |bounds, _, _| marker.set(Some(bounds)),
         |_, (), _, _| (),

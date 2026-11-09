@@ -4,6 +4,7 @@ use crate::{
     desktop::{
         design::{colors, tokens},
         name::NameField,
+        onboarding::install::home_relative,
     },
     profiles::{Client, journal, setup_controller::Controller},
 };
@@ -64,6 +65,9 @@ pub(super) struct Form {
     skip: &'static str,
     /// The tool to start on, when one is known to be signed in.
     prefer: Option<String>,
+    /// This is a profile's first agent: its guide, which starts named and
+    /// with a folder made for it, both shown and editable in place.
+    guide: bool,
     pub focus: FocusHandle,
 }
 impl EventEmitter<Event> for Form {}
@@ -105,6 +109,7 @@ impl Form {
             more: false,
             skip,
             prefer,
+            guide: false,
             focus: cx.focus_handle(),
         };
         form.load(cx);
@@ -176,6 +181,26 @@ impl Form {
             .iter()
             .find(|r| Some(&r.id) == self.runtime.as_ref() && eligible(r))
     }
+    /// Make this a profile's first agent, its guide: named "guide", with a
+    /// folder of its own, both shown and editable in place.
+    pub fn as_guide(&mut self, cx: &mut Context<Self>) {
+        self.guide = true;
+        self.name.update(cx, |field, cx| field.set_value(GUIDE, cx));
+    }
+
+    /// Where the agent works, and whether setup makes that folder: the one
+    /// chosen, or for a guide, a folder of its own under ~/Agents.
+    fn folder(&self, cx: &gpui::App) -> Option<(PathBuf, bool)> {
+        if let Some(project) = &self.project {
+            return Some((project.clone(), false));
+        }
+        let name = agent_name(self.name.read(cx).value());
+        (self.guide && agent_interface_roster::valid_agent(&name))
+            .then(|| std::env::var_os("HOME"))
+            .flatten()
+            .map(|home| (PathBuf::from(home).join("Agents").join(name), true))
+    }
+
     /// The profile this form adds an agent to.
     pub fn profile_id(&self) -> &str {
         &self.profile.item().profile_id
@@ -187,13 +212,15 @@ impl Form {
         let State::Ready { catalog, .. } = &self.state else {
             return None;
         };
+        let (project, create) = self.folder(cx)?;
         freeze(
             request_id,
             &self.profile,
             catalog,
             Selection {
                 name: &agent_name(self.name.read(cx).value()),
-                project: self.project.as_deref()?,
+                project: &project,
+                create,
                 runtime: self.runtime.as_deref()?,
                 model: self.model.as_deref(),
                 brief: self
@@ -290,6 +317,8 @@ fn load_choices(
 struct Selection<'a> {
     name: &'a str,
     project: &'a std::path::Path,
+    /// Setup makes the folder: a guide's own, which doesn't exist yet.
+    create: bool,
     runtime: &'a str,
     model: Option<&'a str>,
     /// Own instructions; `None` is the coordinating brief a fresh install starts with.
@@ -327,7 +356,7 @@ fn freeze(
         Agent {
             name: choice.name.into(),
             directory: choice.project.into(),
-            create_directory: false,
+            create_directory: choice.create,
             runtime: runtime.id.clone(),
             model: choice.model.map(str::to_owned),
             brief: match choice.brief {
@@ -341,6 +370,8 @@ fn freeze(
     )
     .ok()
 }
+/// The name a profile's first agent starts with.
+const GUIDE: &str = "guide";
 /// A typed name as an agent name: spaces as hyphens.
 fn agent_name(typed: &str) -> String {
     typed.split_whitespace().collect::<Vec<_>>().join("-")
@@ -424,42 +455,90 @@ impl Render for Form {
                             .child(ui::button("recover-pending-setup", "Open", ui::Button::Secondary).on_click(cx.listener(|form, _, _, cx| form.finish(Event::Recover, cx)))),
                     );
                 }
-                let folder = self.project.as_ref().map(|p| p.display().to_string());
-                body = body.child(line(
-                    "Folder",
-                    div().flex().flex_1().min_w_0().items_center().gap(px(t.space.s8))
-                        .child(
-                            ui::field_frame(false).flex_1().min_w_0()
-                                .child(ui::icon("folder", t.size.icon, c.muted))
-                                .child(div().flex_1().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap()
-                                    .text_color(if folder.is_some() { c.text } else { c.faint })
-                                    .child(folder.unwrap_or_else(|| "Choose a project folder".into()))),
-                        )
-                        .child(ui::button("setup-folder", "Choose…", ui::Button::Secondary).on_click(cx.listener(|form, _, _, cx| form.choose_folder(cx))))
-                        .into_any_element(),
-                ));
-                let from_folder = self.folder_name.as_deref().is_some_and(|name| name == self.name.read(cx).value());
-                body = body.child(line(
-                    "Name",
-                    div().flex().flex_1().min_w_0().items_center().gap(px(t.space.s8))
-                        .child(div().flex_1().min_w_0().child(self.name.clone()))
-                        .map(|el| {
-                            let typed = self.name.read(cx).value();
-                            let name = agent_name(typed);
-                            if from_folder {
-                                el.child(note("From the folder".into()))
-                            } else if name.is_empty() {
-                                el
-                            } else if !agent_interface_roster::valid_agent(&name) {
-                                el.child(ui::text(div().text_color(c.attention_text), &t.text.meta).child("Use letters, numbers, - _ or ."))
-                            } else if name != typed {
-                                el.child(note(format!("Named {name}").into()))
-                            } else {
-                                el
-                            }
-                        })
-                        .into_any_element(),
-                ));
+                let typed = self.name.read(cx).value().to_owned();
+                let name = agent_name(&typed);
+                let from_folder = self.folder_name.as_deref().is_some_and(|name| name == typed);
+                // The agent as it will be: its name, what it does, where it works.
+                let folder = self.folder(cx);
+                let card = div()
+                    .flex()
+                    .gap(px(t.space.s14))
+                    .p(px(t.space.s14))
+                    .rounded(px(t.radius.popover))
+                    .bg(c.panel)
+                    .border(px(t.size.hairline))
+                    .border_color(c.line)
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .size(px(t.size.view_tile + t.space.s8))
+                            .rounded(px(t.radius.slot))
+                            .bg(c.accent_soft)
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(ui::icon("bot", t.size.icon_large, c.accent_text)),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .gap(px(t.space.s8))
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .child(ui::text(div().text_color(c.text), &t.text.card_title).child(
+                                        if self.guide && !self.custom_brief { "Your guide" } else { "Your agent" },
+                                    ))
+                                    .child(note(
+                                        if self.custom_brief {
+                                            "Follows the instructions you give it below."
+                                        } else {
+                                            "Coordinates your other agents: it learns your goals and proposes project agents for you to approve."
+                                        }
+                                        .into(),
+                                    )),
+                            )
+                            .child(line(
+                                "Name",
+                                div().flex().flex_1().min_w_0().items_center().gap(px(t.space.s8))
+                                    .child(div().flex_1().min_w_0().child(self.name.clone()))
+                                    .map(|el| {
+                                        if from_folder {
+                                            el.child(note("From the folder".into()))
+                                        } else if name.is_empty() {
+                                            el
+                                        } else if !agent_interface_roster::valid_agent(&name) {
+                                            el.child(ui::text(div().text_color(c.attention_text), &t.text.meta).child("Use letters, numbers, - _ or ."))
+                                        } else if name != typed {
+                                            el.child(note(format!("Named {name}").into()))
+                                        } else {
+                                            el
+                                        }
+                                    })
+                                    .into_any_element(),
+                            ))
+                            .child(line(
+                                "Folder",
+                                div().flex().flex_1().min_w_0().items_center().gap(px(t.space.s8))
+                                    .child(ui::icon("folder", t.size.icon, c.muted))
+                                    .child(
+                                        div().flex_1().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap()
+                                            .text_color(if folder.is_some() { c.code } else { c.faint })
+                                            .child(match &folder {
+                                                Some((path, true)) => format!("{} · made for it", home_relative(path)),
+                                                Some((path, false)) => home_relative(path),
+                                                None => "Choose the folder it works in".into(),
+                                            }),
+                                    )
+                                    .child(ui::button("setup-folder", if self.project.is_some() || folder.is_some() { "Change…" } else { "Choose…" }, ui::Button::Secondary).on_click(cx.listener(|form, _, _, cx| form.choose_folder(cx))))
+                                    .into_any_element(),
+                            )),
+                    );
+                body = body.child(card);
                 // The same cards onboarding's first agent uses.
                 let mut tools = div().w_full().grid().grid_cols(2).gap(px(t.space.s8));
                 for runtime in catalog.items().iter().filter(|r| eligible(r)) {
@@ -475,7 +554,7 @@ impl Render for Form {
                     );
                 }
                 body = body.child(line(
-                    "Tool",
+                    "Runs in",
                     if catalog.items().iter().any(eligible) {
                         tools.into_any_element()
                     } else {
@@ -485,10 +564,20 @@ impl Render for Form {
                 if let Some(text) = self.runtime().and_then(|r| authentication(r.authentication)) {
                     body = body.child(line("", note(text.into()).into_any_element()));
                 }
+                body = body.child(line(
+                    "Role",
+                    ui::segments()
+                        .child(ui::segment("brief-coordinating", "Coordinating agent", !self.custom_brief).on_click(cx.listener(|form, _, _, cx| { form.custom_brief = false; cx.notify(); })))
+                        .child(ui::segment("brief-own", "My own instructions", self.custom_brief).on_click(cx.listener(|form, _, _, cx| { form.custom_brief = true; cx.notify(); })))
+                        .into_any_element(),
+                ));
+                if self.custom_brief {
+                    body = body.child(line("", self.brief.clone().into_any_element()));
+                }
                 body = body.child(
                     div().id("setup-more").flex().items_center().gap(px(t.space.s6)).cursor_pointer().text_color(c.muted)
                         .child(ui::icon(if self.more { "chevron-down" } else { "chevron-right" }, t.size.icon, c.muted))
-                        .child(ui::text(div(), &t.text.meta).child("Model, instructions and hooks"))
+                        .child(ui::text(div(), &t.text.meta).child("Model, hooks and greeting"))
                         .on_click(cx.listener(|form, _, _, cx| { form.more = !form.more; cx.notify(); })),
                 );
                 if self.more {
@@ -507,16 +596,6 @@ impl Render for Form {
                                 })));
                         }
                         body = body.child(line("Model", models.into_any_element()));
-                    }
-                    body = body.child(line(
-                        "Brief",
-                        ui::segments()
-                            .child(ui::segment("brief-coordinating", "Coordinating agent", !self.custom_brief).on_click(cx.listener(|form, _, _, cx| { form.custom_brief = false; cx.notify(); })))
-                            .child(ui::segment("brief-own", "My own", self.custom_brief).on_click(cx.listener(|form, _, _, cx| { form.custom_brief = true; cx.notify(); })))
-                            .into_any_element(),
-                    ));
-                    if self.custom_brief {
-                        body = body.child(line("", self.brief.clone().into_any_element()));
                     }
                     for (hooks, value, label, words) in [(true, self.hooks, "Hooks", "Install this tool's hooks"), (false, self.greeting, "Greeting", "Send the agent's greeting")] {
                         let expected = ticket.clone();
@@ -539,6 +618,11 @@ impl Render for Form {
                 body.child(ui::text(div().text_color(c.attention_text), &t.text.meta).child(error));
         }
         let ready = self.prepare("validation", cx).is_some();
+        // The button says which agent it starts.
+        let start = match agent_name(self.name.read(cx).value()) {
+            name if agent_interface_roster::valid_agent(&name) => format!("Start {name}"),
+            _ => "Start agent".to_owned(),
+        };
         body.track_focus(&self.focus)
             .capture_key_down(cx.listener(|form, event: &gpui::KeyDownEvent, window, cx| {
                 if form.name.read(cx).composing() || form.brief.read(cx).composing() {
@@ -578,7 +662,7 @@ impl Render for Form {
                     .gap(px(t.space.s12))
                     .pt(px(t.space.s6))
                     .child(
-                        ui::button("setup-choice-submit", "Start agent", ui::Button::Primary)
+                        ui::button("setup-choice-submit", start, ui::Button::Primary)
                             .when(!ready, |el| el.opacity(0.5).cursor_default())
                             .on_click(cx.listener(move |form, _, _, cx| form.submit(&ticket, cx))),
                     )

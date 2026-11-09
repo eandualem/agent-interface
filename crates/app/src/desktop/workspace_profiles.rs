@@ -13,7 +13,7 @@ use crate::profiles::{
     Client, Error,
     selection::{Attempt, Completion, Selection},
 };
-use gpui::{Context, Window, prelude::*};
+use gpui::{Context, Entity, Window, prelude::*};
 
 #[derive(Clone, PartialEq, Eq)]
 pub(super) enum Owner {
@@ -798,6 +798,38 @@ impl Browser {
         let flow = cx.new(|cx| {
             super::profile_management::flow::Flow::new(client, directory, name, home, window, cx)
         });
+        self.attach_profile_flow(flow, window, cx);
+    }
+
+    /// Take over first run's profile steps once its profile exists: bind a
+    /// new workspace to it and carry on there, beside its panes. Returns false
+    /// while this window's library is still loading, to be asked again.
+    pub(super) fn adopt_profile_flow(
+        &mut self,
+        flow: Entity<super::profile_management::flow::Flow>,
+        item: agent_interface_roster::profiles::Item,
+        connection: Connection,
+        client: Client,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.layout.is_none() {
+            return false;
+        }
+        self.use_profile_client(client);
+        self.bind_workspace(item, connection, "", cx);
+        self.attach_profile_flow(flow, window, cx);
+        window.activate_window();
+        true
+    }
+
+    /// Show a profile flow's steps in the content area and follow its events.
+    fn attach_profile_flow(
+        &mut self,
+        flow: Entity<super::profile_management::flow::Flow>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         window.focus(&flow.read(cx).focus_handle(cx), cx);
         let events = cx.subscribe_in(&flow, window, |browser, flow, event, window, cx| {
             if !browser
