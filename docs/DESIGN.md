@@ -174,7 +174,7 @@ All in `components.rs`; each takes its look from the tokens.
 | `badge` | Small mono label, such as an agent's CLI |
 | `view_choice` | A row of the new-pane views list: icon tile, label, description, scope |
 | `fact` | A label and value, one line of an agent's card |
-| `tool_card` | An agent tool to pick, in onboarding's first agent and New profile alike: a radio mark (a turning arc while it installs), the name in `row_selected` and its state in `meta`, `attention` when it needs the person; selected, the accent tint and ring. Callers add the click and any Install or Update |
+| `tool_card` | An agent tool to pick, for a profile's first agent and for Add agent alike: a radio mark (a turning arc while it installs), the name in `row_selected` and its state in `meta`, `attention` when it needs the person; selected, the accent tint and ring. Callers add the click and any Install or Update |
 | `choice_button`, `filter_frame`, `choice_frame`, `choice_key`, `hint_bar` | The chooser's two buttons, filter, selectable row with its ring, number key and centred key row |
 | `view_header`, `back_button`, `pill`, `info_card` | A view's 28 px header; the reading view's way back; a tag; a summary panel |
 | `tag` with `Tone` | How something is delivered: `Plain` for `all` and plain facts, `Tag` in the accent tint for a tag, `Quiet` outline for a direct assignment; a record's state: `Tag` for active, `Attention` for waiting on the person, `Done` for complete |
@@ -278,8 +278,9 @@ hero does: it laughs with both eyes open, looks right, looks left, and only
 then winks, the left eye closing from an amber stroke into the white `>` while
 the mouth lifts into the icon's smile. The wink is the last beat, never the
 first. The name and its line rise while the face looks around. The open amber
-eye then flies into the setup rail and becomes the first step's marker, so
-setup carries on from the face instead of cutting to it.
+eye then flies to the person's first profile and becomes its mark, so setup
+carries on from the face instead of cutting to it. When this computer is missing
+something, the eye stays in the face as it leaves and Before you start appears.
 
 `desktop/onboarding/scene.rs` holds the face's keyframes, which are the
 website's (five seconds, `cubic-bezier(.45, 0, .2, 1)`, the bob in
@@ -295,28 +296,28 @@ in the bar below, whose rule appears with setup.
 
 ## Setup window
 
-Setup's steps share one frame (`desktop/onboarding.rs`). The rail lists the
-steps under a SETUP label on one hairline track: the current step's number on
-an `accent` circle (where the face's eye lands), upcoming numbers in a
-`line_strong` ring in `muted`, and finished steps in an `ok` check ring with one
-`meta` line of what they found, such as "All ready" or the tools installed.
-Each page opens with "STEP N OF 4" in the `label` style above its title.
+First run is the person's first profile (`desktop/onboarding.rs`). After the
+opening scene the setup window shows New profile's own steps, the same `Flow`
+the workspace uses, under "Your first profile" with the name Personal suggested.
+Once the profile exists the workspace window takes those steps over, where
+signing in sits beside a pane, and setup closes. A page appears before them only
+when something is missing.
 
-A page leads with one summary line, marked like its rows (`step_dot`: done,
-turning while checking, `!` when something needs the person), then a
-`group_card` of rows: the mark, the name, a `meta` note, and the fix the row
-offers as a secondary button. Nothing asks the person to copy a command.
+Before you start lists just what is missing on a `group_card`: a `step_dot`
+mark (`!` while it needs the person, turning while a fix runs), the name, a
+`meta` note, and the fix as a secondary button. Nothing asks the person to copy
+a command. A summary line leads it, marked the same way. Continue stays
+legible but inactive (`field` with a `line_strong` border and `muted` label)
+until everything is ready.
 
-The footer keeps Back and Check again on the left and the main button on the
-right. While the main button waits it stays legible but inactive (`field` with a
-`line_strong` border and `muted` label), and the reason sits beside it, with a
-turning arc while something runs. After Continue or Back the next page rises
-`s6` into place over `page_ms`.
-
-The first-agent step shows the agent tools as cards (`choice_row` + `s16`
-tall): a radio mark, the name in `row_selected`, its state in `meta`, and an
-Install or Update button for a tool that needs one. The agent's name, folder
-and instructions keep their defaults in one line with Edit.
+New profile's sign-in step offers Install beside a tool that isn't installed,
+with a turning arc while it runs and the failure's reason under the tool's name.
+A profile's first agent is its guide, shown as one card on `panel`: an
+`accent_soft` tile with the bot icon, "Your guide" in `card_title` and what it
+does, then its Name field and its Folder, both editable in place. "Runs in"
+lists the agent tools as `tool_card`s, Role picks the coordinating brief or the
+person's own instructions, and Model, hooks and greeting stay behind one
+disclosure. The main button names the agent: Start guide.
 
 ## Interaction patterns
 

@@ -178,6 +178,9 @@ pub fn button(
     .child(label.into())
 }
 
+/// How round a profile's mark is: its corner radius as a share of its size.
+pub const PROFILE_MARK_ROUND: f32 = 0.3;
+
 /// A profile's mark: the first letter of its name on a soft tint. Default is
 /// neutral; any other profile takes one of four tints from its stable id, so
 /// the colour never changes with its name.
@@ -200,7 +203,7 @@ pub fn profile_mark(id: &str, name: &str, default: bool, size: f32) -> Div {
         div()
             .flex_shrink_0()
             .size(px(size))
-            .rounded(px(size * 0.3))
+            .rounded(px(size * PROFILE_MARK_ROUND))
             .flex()
             .items_center()
             .justify_center()

@@ -175,7 +175,7 @@ group!(
     Motion {
         spinner_ms: f32 = number, scene_ms: f32 = number, scene_face_ms: f32 = number,
         scene_words_ms: f32 = number, scene_handoff_ms: f32 = number,
-        scene_flight_ms: f32 = number, page_ms: f32 = number,
+        scene_flight_ms: f32 = number,
     }
 );
 

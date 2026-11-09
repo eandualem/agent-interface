@@ -78,6 +78,12 @@ impl Probe {
         }
     }
 
+    /// A profile client for the Backbone this check found, with its PATH.
+    pub fn client(&self) -> Option<crate::profiles::Client> {
+        let executable = self.path("backbone")?.clone();
+        crate::profiles::Client::new(executable, self.path_env.clone().into()).ok()
+    }
+
     /// Where a terminal finds this command, if it does.
     pub fn path(&self, command: &str) -> Option<&PathBuf> {
         self.found
@@ -241,6 +247,16 @@ fn backbone() -> Backbone {
         },
         None => Backbone::Unreachable(UNANSWERED),
     }
+}
+
+/// The PATH a new terminal has: the login shell's, plus the usual install
+/// folders. Blocks for up to a few seconds; call off the UI thread.
+pub fn login_path() -> String {
+    let path_env = shell_lookup()
+        .map(|(_, path_env)| path_env)
+        .unwrap_or_else(|| std::env::var("PATH").unwrap_or_default());
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    path_lookup(&path_env, home.as_deref()).1
 }
 
 /// Resolve only the provider executable; never probe ambient provider content.
