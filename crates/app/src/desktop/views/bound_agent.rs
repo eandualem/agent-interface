@@ -72,7 +72,7 @@ enum Removal {
 fn removal_refusal(error: ProfileError) -> &'static str {
     match error {
         ProfileError::RegistrationChanged => {
-            "This agent registration changed. Reopen it from Team."
+            "This agent was removed or replaced. Reopen it from Team if it is still listed."
         }
         ProfileError::Refused(409) => "This agent is still running. Try again in a moment.",
         ProfileError::Refused(401 | 403) => "This profile refused to remove the agent.",

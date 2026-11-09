@@ -427,8 +427,9 @@ impl Connection {
     /// Stop this agent's session and remove it from this profile, only while
     /// `registration` is still its durable registration. The provider checks it
     /// under the agent's lifecycle lock and refuses to remove a running agent, so
-    /// the stop comes first. An agent that is already gone counts as removed.
-    /// Runs on an I/O worker.
+    /// the stop comes first. A forgotten agent is refused as `RegistrationChanged`;
+    /// a 404 from an older provider, which doesn't check the registration, counts
+    /// as removed. Runs on an I/O worker.
     pub fn remove_agent(&self, name: &str, registration: &str) -> Result<(), Error> {
         if !crate::valid_agent(name) || !runtime_context::valid_registration(registration) {
             return Err(Error::Invalid);
@@ -439,6 +440,9 @@ impl Connection {
             Some(Vec::new()),
             RESPONSE_LIMIT,
         )?;
+        if response.status == 404 {
+            return Ok(());
+        }
         removal_step(&response)?;
         let response = local::profile_delete(
             self.socket.to_str().ok_or(Error::Invalid)?,
@@ -593,7 +597,7 @@ fn registrations_settling(response: &local::Response) -> bool {
             .is_ok_and(|refusal| refusal["detail"]["code"] == "registration_changed")
 }
 
-/// A missing agent counts as removed; a replaced registration is refused.
+/// A 404 counts as removed; a replaced or forgotten registration is refused.
 fn removal_step(response: &local::Response) -> Result<(), Error> {
     if response.status == 404 {
         return Ok(());

@@ -604,13 +604,16 @@ fn removing_an_agent_stops_it_first_and_treats_a_missing_one_as_removed() {
         ],
     );
     let connection = profile.connect().unwrap();
+    // Removed; a 404 on stop ends there; a 404 on delete counts as removed.
     assert_eq!(connection.remove_agent("worker", REG), Ok(()));
     assert_eq!(connection.remove_agent("worker", REG), Ok(()));
     assert_eq!(connection.remove_agent("worker", REG), Ok(()));
+    // The delete is refused while the agent runs.
     assert_eq!(
         connection.remove_agent("worker", REG).err(),
         Some(Error::Refused(409))
     );
+    // The registration changed before the stop, then between stop and delete.
     assert_eq!(
         connection.remove_agent("worker", REG).err(),
         Some(Error::RegistrationChanged)
@@ -632,6 +635,9 @@ fn removing_an_agent_stops_it_first_and_treats_a_missing_one_as_removed() {
     assert!(requests[1].starts_with(&format!("post /api/agents/worker/stop{query}")));
     assert!(requests[2].starts_with(&format!("delete /api/agents/worker{query}")));
     assert!(requests[2].contains("x-backbone-lifecycle-id: "));
+    assert!(requests[3].starts_with("post /api/agents/worker/stop"));
+    assert!(requests[5].starts_with("delete /api/agents/worker"));
+    assert!(requests[7].starts_with("delete /api/agents/worker"));
     assert_eq!(requests.len(), 11);
 }
 
