@@ -17,6 +17,20 @@ pub(super) fn create_profile(window: &WindowLayout, label: &str) -> Option<(Docu
     create(window, label).or_else(|| create(window, "Profile workspace"))
 }
 
+/// First run's library holds only the empty workspace it starts with: give
+/// that one to the first profile instead of leaving it beside a new one.
+pub(super) fn claim_first(window: &WindowLayout, label: &str) -> Option<(Document, Layout)> {
+    let (base, mut proposed) = window.save_snapshot();
+    let [only] = proposed.workspaces.as_slice() else {
+        return None;
+    };
+    if !only.tabs.is_empty() || only.profile_id.is_some() || proposed.selected != only.id {
+        return None;
+    }
+    let edit = proposed.edit_workspace_name()?;
+    (edit.apply(&mut proposed, label) == RenameOutcome::Applied).then_some((base, proposed))
+}
+
 pub(super) fn delete(window: &WindowLayout, expected: &str) -> Option<(Document, Layout)> {
     let (base, mut proposed) = window.save_snapshot();
     (proposed.selected == expected && proposed.delete_workspace()).then_some((base, proposed))
@@ -30,6 +44,23 @@ mod tests {
     fn window() -> WindowLayout {
         let raw = r#"{"version":2,"workspaces":[{"id":"000000000001","name":"Workspace","tabs":[],"selected":""}],"selected":"000000000001","focus":true}"#;
         WindowLayout::new(Document::parse(raw.into(), Path::new("layouts.db")).unwrap())
+    }
+
+    #[test]
+    fn first_profile_claims_only_the_untouched_starting_workspace() {
+        let window = window();
+        let (_, claimed) = claim_first(&window, "Personal").unwrap();
+        assert_eq!(claimed.workspaces.len(), 1);
+        assert_eq!(claimed.workspace().unwrap().id, "000000000001");
+        assert_eq!(claimed.workspace().unwrap().name, "Personal");
+        assert!(claim_first(&window, "  ").is_none());
+        let raw = r#"{"version":2,"workspaces":[{"id":"000000000001","name":"Workspace","tabs":[],"selected":""},{"id":"000000000002","name":"Other","tabs":[],"selected":""}],"selected":"000000000001","focus":true}"#;
+        let two = WindowLayout::new(Document::parse(raw.into(), Path::new("layouts.db")).unwrap());
+        assert!(claim_first(&two, "Personal").is_none());
+        let raw = r#"{"version":2,"workspaces":[{"id":"000000000001","name":"Workspace","tabs":[],"selected":"","profile_id":"p1"}],"selected":"000000000001","focus":true}"#;
+        let bound =
+            WindowLayout::new(Document::parse(raw.into(), Path::new("layouts.db")).unwrap());
+        assert!(claim_first(&bound, "Personal").is_none());
     }
 
     #[test]

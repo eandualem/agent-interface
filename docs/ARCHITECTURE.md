@@ -242,11 +242,15 @@ depends on it.
 The first profile's steps are New profile's `Flow` in first-run mode: it says
 "Your first profile", suggests the name Personal, and has no way back from the
 name, since there is nothing to go back to. Continue creates and starts the
-profile and runs the authenticated selection, as New profile does. When that
-selection succeeds, setup opens the workspace window, which binds a new
-workspace to the profile and takes over the same `Flow` entity
-(`Browser::adopt_profile_flow`, asked again until its library has loaded);
-setup then records completion and closes. Signing in happens beside a pane, as
+profile and runs the authenticated selection, as New profile does. Profile
+requests keep their journal in the library folder, so creation makes that
+folder (0700, as the library does) when first run reaches it before any
+workspace window has. When the selection succeeds, setup opens the workspace
+window, which binds the library's untouched starting workspace to the profile
+(a new workspace when the library already holds more) and takes over the same
+`Flow` entity (`Browser::adopt_profile_flow`, asked again until its library has
+loaded). Setup records completion and closes once the workspace has taken over,
+so there is no moment with neither window. Signing in happens beside a pane, as
 in New profile, and an agent tool that isn't installed offers Install there,
 which runs its official installer with the login shell's PATH and reads the
 profile's tools again. A profile's first agent is its guide: its name, role and

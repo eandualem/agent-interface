@@ -597,7 +597,15 @@ impl Pane {
             (
                 None,
                 "You're all set".to_owned(),
-                Some(format!("{name} is running. Go ahead and talk to it.")),
+                // Agent names are usually lower case: keep the name off the
+                // start of the sentence.
+                Some(match snapshot {
+                    Some(s) => format!(
+                        "Your agent {} is running. Go ahead and talk to it.",
+                        s.agent_name
+                    ),
+                    None => "Your agent is running. Go ahead and talk to it.".to_owned(),
+                }),
             )
         } else if starting {
             (
