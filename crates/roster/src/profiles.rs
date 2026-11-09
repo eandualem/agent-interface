@@ -48,6 +48,8 @@ pub enum Error {
     BindingRequired,
     /// The expected instance or tmux source does not match.
     BindingMismatch,
+    /// The agent's durable registration is no longer the expected one.
+    RegistrationChanged,
     /// Another HTTP refusal, retaining only its status.
     Refused(u16),
 }
@@ -422,34 +424,31 @@ impl Connection {
         start_outcome(name, resume, reply)
     }
 
-    /// Stop this agent's session and remove it from this profile. The provider
-    /// refuses to remove a running agent, so the stop comes first. An agent that
-    /// is already gone counts as removed. Runs on an I/O worker.
-    pub fn remove_agent(&self, name: &str) -> Result<(), Error> {
-        if !crate::valid_agent(name) {
+    /// Stop this agent's session and remove it from this profile, only while
+    /// `registration` is still its durable registration. The provider checks it
+    /// under the agent's lifecycle lock and refuses to remove a running agent, so
+    /// the stop comes first. An agent that is already gone counts as removed.
+    /// Runs on an I/O worker.
+    pub fn remove_agent(&self, name: &str, registration: &str) -> Result<(), Error> {
+        if !crate::valid_agent(name) || !runtime_context::valid_registration(registration) {
             return Err(Error::Invalid);
         }
+        let query = format!("expected_registration_id={registration}");
         let response = self.response(
-            &format!("/api/agents/{name}/stop"),
+            &format!("/api/agents/{name}/stop?{query}"),
             Some(Vec::new()),
             RESPONSE_LIMIT,
         )?;
-        if response.status == 404 {
-            return Ok(());
-        }
-        successful(&response)?;
+        removal_step(&response)?;
         let response = local::profile_delete(
             self.socket.to_str().ok_or(Error::Invalid)?,
-            &format!("/api/agents/{name}"),
+            &format!("/api/agents/{name}?{query}"),
             (&self.key, &self.identity),
             RESPONSE_LIMIT,
             Duration::from_secs(15),
         )
         .map_err(|_| Error::Unavailable)?;
-        if response.status == 404 {
-            return Ok(());
-        }
-        successful(&response)
+        removal_step(&response)
     }
 
     /// Copy the skill folder at `path` into this profile's store for every agent
@@ -592,6 +591,17 @@ fn registrations_settling(response: &local::Response) -> bool {
     response.status == 409
         && serde_json::from_slice::<serde_json::Value>(&response.body)
             .is_ok_and(|refusal| refusal["detail"]["code"] == "registration_changed")
+}
+
+/// A missing agent counts as removed; a replaced registration is refused.
+fn removal_step(response: &local::Response) -> Result<(), Error> {
+    if response.status == 404 {
+        return Ok(());
+    }
+    if registrations_settling(response) {
+        return Err(Error::RegistrationChanged);
+    }
+    successful(response)
 }
 
 fn binding_refusal(response: &local::Response) -> Option<Error> {

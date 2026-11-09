@@ -347,9 +347,11 @@ pub(super) fn message(error: &Error) -> &'static str {
         Error::Profile(ProfileError::Unsupported) => {
             "This provider does not support profile connections."
         }
-        Error::Profile(ProfileError::Unavailable | ProfileError::Refused(_)) => {
-            "The profile could not be reached or authenticated. Its service may be stopped."
-        }
+        Error::Profile(
+            ProfileError::Unavailable
+            | ProfileError::Refused(_)
+            | ProfileError::RegistrationChanged,
+        ) => "The profile could not be reached or authenticated. Its service may be stopped.",
         Error::Unavailable => "The profile discovery command is unavailable.",
         Error::RegistryAbsent => "The profile registry is missing.",
         Error::Invalid | Error::TooLarge | Error::Profile(ProfileError::Invalid) => {

@@ -71,6 +71,9 @@ enum Removal {
 
 fn removal_refusal(error: ProfileError) -> &'static str {
     match error {
+        ProfileError::RegistrationChanged => {
+            "This agent registration changed. Reopen it from Team."
+        }
         ProfileError::Refused(409) => "This agent is still running. Try again in a moment.",
         ProfileError::Refused(401 | 403) => "This profile refused to remove the agent.",
         ProfileError::Refused(_) => "The profile could not remove this agent.",
@@ -78,16 +81,18 @@ fn removal_refusal(error: ProfileError) -> &'static str {
     }
 }
 
-/// Remove the agent only if it is still the registration the card shows. Stop
-/// and delete still go by name, so a replacement made between this check and
-/// the delete could be removed until the provider checks the registration too.
+/// Remove the agent only if it is still the registration the card shows. The
+/// provider checks the registration again on stop and delete, so a replacement
+/// made after this check is refused rather than removed.
 fn remove_checked(
     connection: &Connection,
     name: &str,
     registration: &str,
 ) -> Result<(), &'static str> {
     match runtime_context::inspect(connection.clone(), name, Some(registration)) {
-        Ok(_) => connection.remove_agent(name).map_err(removal_refusal),
+        Ok(_) => connection
+            .remove_agent(name, registration)
+            .map_err(removal_refusal),
         // No agent has this name any more, so there is nothing to remove.
         Err(runtime_context::Error::Unsupported) => Ok(()),
         Err(runtime_context::Error::RegistrationChanged) => {

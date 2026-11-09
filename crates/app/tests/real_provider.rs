@@ -6,6 +6,7 @@ use agent_interface_app::profiles::{Client, lifecycle::Operation, setup::Setup};
 use agent_interface_roster::profiles::{
     AddError, Connection, Error,
     operations::{Action as Lifecycle, Prepared, Status},
+    runtime_context,
     setup::{Action, Agent, Brief, Prepared as SetupRequest},
 };
 use std::{path::PathBuf, process::Command};
@@ -177,13 +178,24 @@ fn create_start_setup_and_shell_on_a_new_profile() {
     let response = connection.start_agent("second", false);
     println!("start while registered: {response:?}");
 
-    // Removing stops the session first; removing it again still succeeds.
-    connection.remove_agent("second").expect("remove agent");
+    // Removing stops the session first, only for the registration inspected.
+    // Once removed, that registration is gone, so removing it again is refused.
+    let registration = runtime_context::inspect(connection.clone(), "second", None)
+        .expect("inspect second")
+        .target
+        .registration_id()
+        .to_owned();
+    connection
+        .remove_agent("second", &registration)
+        .expect("remove agent");
     assert!(!sessions(&connection).contains(&"second".to_owned()));
     connection
         .roster()
         .expect("roster straight after a removal");
-    connection.remove_agent("second").expect("remove again");
+    assert_eq!(
+        connection.remove_agent("second", &registration).err(),
+        Some(Error::RegistrationChanged)
+    );
 
     // A skill is copied from any folder, which stays in place.
     let home = PathBuf::from(std::env::var("HOME").unwrap());
