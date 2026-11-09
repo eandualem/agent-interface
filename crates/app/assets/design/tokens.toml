@@ -343,3 +343,4 @@ scene_face_ms = 300         # when the face starts, while its tile rises
 scene_words_ms = 1700       # when the name rises; the line follows 200 ms later
 scene_handoff_ms = 4500     # when setup takes over; Skip jumps here
 scene_flight_ms = 600       # the open eye's flight to the first step's marker
+page_ms = 220               # a setup page rising into place after Continue or Back

@@ -460,12 +460,13 @@ impl Render for Form {
                         })
                         .into_any_element(),
                 ));
-                let mut tools = ui::segments();
+                // The same cards onboarding's first agent uses.
+                let mut tools = div().w_full().grid().grid_cols(2).gap(px(t.space.s8));
                 for runtime in catalog.items().iter().filter(|r| eligible(r)) {
                     let id = runtime.id.clone();
                     let expected = ticket.clone();
                     tools = tools.child(
-                        ui::segment(SharedString::from(format!("runtime-{id}")), runtime.display_name.clone(), self.runtime.as_ref() == Some(&id))
+                        ui::tool_card(format!("runtime-{id}"), runtime.display_name.clone(), "Ready", false, self.runtime.as_ref() == Some(&id), false)
                             .on_click(cx.listener(move |form, _, _, cx| {
                                 if form.finished || !form.ticket.accepts(&expected) { return; }
                                 let State::Ready { catalog, .. } = &form.state else { return; };

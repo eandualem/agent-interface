@@ -200,9 +200,17 @@ print(json.dumps(e));sys.exit(code)
             def text():
                 return " ".join(w["text"] for w in words())
 
-            def click(label, last=False):
+            def click(label, last=False, page=False):
+                # The page starts right of the rail, whose width is a design token.
+                rail = TOKENS["size"]["settings_nav"] * SCALE / 100
+
                 def find():
-                    found = [w for w in words() if w["text"].strip(".,:;‘’“”\"\'") == label]
+                    current = [w for w in words() if not page or int(w["left"]) > rail]
+                    found = [w for w in current if w["text"].strip(".,:;‘’“”\"\'") == label]
+                    if not found:
+                        # OCR can drop a capital from a semibold title, such as a tool card's.
+                        found = [w for w in current
+                                 if w["text"].strip(".,:;‘’“”\"\'").lower() == label.lower()]
                     found.sort(key=lambda w: (int(w["top"]), int(w["left"])))
                     return (found[-1] if last else found[0]) if found else None
                 word = wait_for(find, label)
@@ -235,13 +243,19 @@ print(json.dumps(e));sys.exit(code)
                 time.sleep(0.2)
                 command("xdotool", "click", "1")
 
-            def enter_first_agent():
+            def enter_first_agent(record=False):
+                wait_for(lambda: "Continue" in text(), "Check")
+                if record:
+                    capture("check")
                 click("Continue")
-                wait_for(lambda: "Copy" in text(), "Agent tools")
+                # The tool the fixture leaves out offers to install itself.
+                wait_for(lambda: "Install" in text(), "Agent tools")
+                if record:
+                    capture("tools")
                 click("Continue")
 
             launch()
-            enter_first_agent()
+            enter_first_agent(record=True)
             wait_for(lambda: "Choose an agent tool" in text(), "explicit selection")
             initial = capture("unselected")
             assert "Old OpenCode fixture" not in initial and "Plain shell" not in initial
@@ -253,11 +267,11 @@ print(json.dumps(e));sys.exit(code)
             wait_for(lambda: "Choose an agent tool" in text(), "agent choice after returning from skip")
             capture("returned-from-skip")
             assert not requests()
-            click("OpenCode")
+            click("OpenCode", page=True)  # The card, not the rail's summary of tools.
             wait_for(lambda: "Old OpenCode fixture" in text(), "selected tool diagnosis")
-            click("Choose", last=True)  # The incompatible choice must not submit anything.
+            click("Start", last=True)  # The quiet button for an incompatible choice submits nothing.
             assert not requests()
-            click("Codex")
+            click("Codex", page=True)  # The card, not the rail's summary of tools.
             wait_for(lambda: "Start with Codex" in text(), "Codex choice")
             selected = capture("codex-selected")
             assert "Old OpenCode fixture" not in selected and "Plain shell" not in selected
@@ -284,7 +298,7 @@ print(json.dumps(e));sys.exit(code)
             assert cancelled["action"] == "cancel_first_agent"
             assert cancelled["request_id"] == first["request_id"]
             assert cancelled["agent"] == first["agent"]
-            click("Claude")
+            click("Claude", page=True)  # The card, not the rail's summary of tools.
             wait_for(lambda: "Start with Claude Code" in text(), "replacement tool")
             discoveries = len((root / "discovery.jsonl").read_text().splitlines())
             refresh_tools()
