@@ -79,7 +79,11 @@ The CI workflow defines the same checks with `--locked` for macOS
 (`macos-15`, arm64) and Linux (`ubuntu-24.04`, x86-64 and
 `ubuntu-24.04-arm`, arm64). Linux graphical checks include Documents under
 software Mesa and Xvfb, with interface zoom, display DPI, keyboard input,
-window teardown and process-isolation checks. Record local verification in the
+window teardown and process-isolation checks. The first-run check
+(`scripts/test-linux-onboarding.py`) clicks a fresh install through its first
+profile and guide at 100 % and 150 % against a stand-in Agent Backbone
+(`scripts/tests/fixtures/fake_backbone.py`), in a private home with its own
+tmux server. Record local verification in the
 pull request alongside hosted CI.
 
 ## The terminal engine's native build
