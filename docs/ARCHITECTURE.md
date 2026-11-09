@@ -742,7 +742,7 @@ binary linked to the system desktop libraries. Neither package includes a
 Python runtime, build toolchain, tmux server or application daemon.
 
 The archive includes `setup_backbone.py`, a standard-library installer helper.
-`install.sh` installs the latest stable published `agent-backbone>=0.4.5` with
+`install.sh` installs the latest stable published `agent-backbone>=0.5.1,<2` with
 uv, independently of the app archive. Backbone (MIT) owns its package, dependency
 testing and publication. uv (MIT OR Apache-2.0) installs the Python environment;
 when uv is absent, its 0.13.6 installer is version- and SHA-256-pinned. No Backbone

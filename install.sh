@@ -581,7 +581,7 @@ if [ -f "$resources/setup_backbone.py" ]; then
     fi
     if [ "$backbone_resumed" = false ]; then
         if [ "$backbone_fixed_setup" = false ]; then
-            run_step 'Installing Agent Backbone' "$uv" tool install --upgrade --prerelease disallow --python '>=3.11,<3.14' 'agent-backbone>=0.5.0,<2' || {
+            run_step 'Installing Agent Backbone' "$uv" tool install --upgrade --prerelease disallow --python '>=3.11,<3.14' 'agent-backbone>=0.5.1,<2' || {
                 # uv keeps the previous package when an install fails, so a
                 # Backbone stopped for this upgrade can run again as it was.
                 [ "$backbone_needs_init" = false ] || restart_backbone_service
@@ -643,9 +643,9 @@ match = re.fullmatch(r"v?(?:(?P<epoch>[0-9]+)!)?(?P<release>[0-9]+(?:\.[0-9]+)*)
 if match is None:
     raise SystemExit(1)
 release = tuple(map(int, match["release"].split(".")))
-raise SystemExit(0 if (int(match["epoch"] or 0), release + (0,) * max(0, 3 - len(release))) >= (0, (0, 5, 0)) else 1)
+raise SystemExit(0 if (int(match["epoch"] or 0), release + (0,) * max(0, 3 - len(release))) >= (0, (0, 5, 1)) else 1)
 ' ||
-        fail 'Agent Interface requires Backbone 0.5.0 or newer. Saved setup was preserved; after recovery completes, rerun the installer to upgrade Backbone. The app was not replaced.'
+        fail 'Agent Interface requires Backbone 0.5.1 or newer. Saved setup was preserved; after recovery completes, rerun the installer to upgrade Backbone. The app was not replaced.'
 fi
 printf '%s\n' 'Installing the app and its launcher...'
 if [ "$platform" = unknown-linux-gnu ]; then
