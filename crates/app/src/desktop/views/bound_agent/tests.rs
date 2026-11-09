@@ -122,10 +122,7 @@ fn removal_refuses_a_registration_replaced_after_the_check() {
             },
         ],
     );
-    assert_eq!(
-        remove_checked(&a, "worker", REG),
-        Err("This agent was removed or replaced. Reopen it from Team if it is still listed.")
-    );
+    assert_eq!(remove_checked(&a, "worker", REG), Err(REPLACED));
     server.join().unwrap();
 }
 
@@ -167,10 +164,7 @@ fn removal_leaves_a_newer_agent_with_the_same_name_alone() {
             )
         }],
     );
-    assert_eq!(
-        remove_checked(&a, "worker", REG),
-        Err("This agent registration changed. Reopen it from Team.")
-    );
+    assert_eq!(remove_checked(&a, "worker", REG), Err(REPLACED));
     server.join().unwrap();
 }
 
