@@ -194,7 +194,13 @@ session-termination commands; navigation keeps them attached.
 Until setup is explicitly completed, an ordinary launch opens a setup window
 instead of the workspace window. Existing libraries and preferences, including
 pre-rename data, are preserved and do not count as completed setup. An explicit
-`--data-dir` launch opens that library directly. Setup has an eight-second opening scene, played once, then steps
+`--data-dir` launch opens that library directly. Setup opens with a scene of
+about five seconds, played once: the app's face laughs, looks around and winks
+into the icon, with the same keyframes as the website, and its open eye then
+flies into the setup rail as the first step's marker. Any key, a click or Skip
+jumps to that handoff, and a system that asks for reduced motion opens on the
+first step. The scene is a pure function of time, redrawn every frame, so tests
+check its beats and that its last frame is the app icon. Then come steps
 that check tmux, Agent Backbone, Git and the agent tools, create a first agent,
 and show the main shortcuts. tmux uses the terminal pane's `tmux_binary` resolver. Git, GitHub CLI,
 Backbone and agent tools are looked up after the user's interactive login shell
