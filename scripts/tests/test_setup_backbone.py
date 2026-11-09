@@ -31,9 +31,11 @@ class VersionTests(unittest.TestCase):
         source = re.search(r"(?s)-c '(\nfrom importlib.metadata import version.*?)\n'", installer)[1]
 
         def at_profiles_release(value):
-            # The installer's floor is the first profiles release, 0.5.0.
-            return (value.replace("0.4.4.post99", "0.4.99.post99").replace("0.4.10", "0.5.10")
-                    .replace("0.4.5", "0.5.0").replace("00.04.005", "00.05.000"))
+            # The installer's floor is 0.5.1, so a bare "0.5" (0.5.0) is below it.
+            if value == "0.5":
+                return "0.6"
+            return (value.replace("0.4.4.post99", "0.5.0.post99").replace("0.4.10", "0.5.10")
+                    .replace("0.4.5", "0.5.1").replace("00.04.005", "00.05.001"))
 
         for original in STABLE_VERSIONS + REJECTED_VERSIONS:
             accepted = original in STABLE_VERSIONS
