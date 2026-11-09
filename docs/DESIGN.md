@@ -174,6 +174,7 @@ All in `components.rs`; each takes its look from the tokens.
 | `badge` | Small mono label, such as an agent's CLI |
 | `view_choice` | A row of the new-pane views list: icon tile, label, description, scope |
 | `fact` | A label and value, one line of an agent's card |
+| `tool_card` | An agent tool to pick, in onboarding's first agent and New profile alike: a radio mark (a turning arc while it installs), the name in `row_selected` and its state in `meta`, `attention` when it needs the person; selected, the accent tint and ring. Callers add the click and any Install or Update |
 | `choice_button`, `filter_frame`, `choice_frame`, `choice_key`, `hint_bar` | The chooser's two buttons, filter, selectable row with its ring, number key and centred key row |
 | `view_header`, `back_button`, `pill`, `info_card` | A view's 28 px header; the reading view's way back; a tag; a summary panel |
 | `tag` with `Tone` | How something is delivered: `Plain` for `all` and plain facts, `Tag` in the accent tint for a tag, `Quiet` outline for a direct assignment; a record's state: `Tag` for active, `Attention` for waiting on the person, `Done` for complete |
@@ -291,6 +292,31 @@ that its last frame is `packaging/icon/agent-interface.svg`.
 
 Any key, a click or Skip jumps to the handoff. Interface size stays available
 in the bar below, whose rule appears with setup.
+
+## Setup window
+
+Setup's steps share one frame (`desktop/onboarding.rs`). The rail lists the
+steps under a SETUP label on one hairline track: the current step's number on
+an `accent` circle (where the face's eye lands), upcoming numbers in a
+`line_strong` ring in `muted`, and finished steps in an `ok` check ring with one
+`meta` line of what they found, such as "All ready" or the tools installed.
+Each page opens with "STEP N OF 4" in the `label` style above its title.
+
+A page leads with one summary line, marked like its rows (`step_dot`: done,
+turning while checking, `!` when something needs the person), then a
+`group_card` of rows: the mark, the name, a `meta` note, and the fix the row
+offers as a secondary button. Nothing asks the person to copy a command.
+
+The footer keeps Back and Check again on the left and the main button on the
+right. While the main button waits it stays legible but inactive (`field` with a
+`line_strong` border and `muted` label), and the reason sits beside it, with a
+turning arc while something runs. After Continue or Back the next page rises
+`s6` into place over `page_ms`.
+
+The first-agent step shows the agent tools as cards (`choice_row` + `s16`
+tall): a radio mark, the name in `row_selected`, its state in `meta`, and an
+Install or Update button for a tool that needs one. The agent's name, folder
+and instructions keep their defaults in one line with Edit.
 
 ## Interaction patterns
 

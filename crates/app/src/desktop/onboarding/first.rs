@@ -9,7 +9,7 @@ use gpui::{
     prelude::*, px,
 };
 
-use super::{heading, setup};
+use super::{heading, install::home_relative, probe::TOOLS, setup};
 use crate::desktop::{
     components::{self as ui, Button},
     design::{colors, tokens},
@@ -18,6 +18,8 @@ use crate::desktop::{
 
 pub enum FirstEvent {
     RefreshTools,
+    /// Install or update this agent tool for the person.
+    Install(String),
     Pending,
     /// The agent is ready, or running and waiting for the person in its
     /// terminal; either way setup can move on and open that terminal.
@@ -34,6 +36,9 @@ const STAGES: [(&str, &str); 5] = [
     ("launch", "Open your agent"),
     ("greeting", "Submit the introduction"),
 ];
+
+/// Why a start is refused before a tool is chosen.
+const NO_TOOL: &str = "Choose an installed agent tool.";
 
 const WAITING: &str = "Your agent is waiting for you. Approve its prompt in the terminal, then check again, or continue and it keeps waiting.";
 
@@ -108,6 +113,11 @@ pub struct FirstAgent {
     error: Option<String>,
     progress: String,
     steps: HashMap<String, String>,
+    /// Tools the setup window is installing, and those whose install failed.
+    installing: Vec<&'static str>,
+    install_failed: Vec<(&'static str, String)>,
+    /// Whether the name, folder and instructions are open for editing.
+    details: bool,
     _fields: Vec<Subscription>,
 }
 
@@ -172,12 +182,29 @@ impl FirstAgent {
             error,
             progress: String::new(),
             steps: HashMap::new(),
+            installing: Vec::new(),
+            install_failed: Vec::new(),
+            details: false,
             _fields: fields,
         };
         if first.saved.is_none() {
             first.discover(cx);
         }
         first
+    }
+
+    /// Which tools the setup window is installing, and which failed.
+    pub fn set_installs(
+        &mut self,
+        installing: Vec<&'static str>,
+        failed: Vec<(&'static str, String)>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.installing != installing || self.install_failed != failed {
+            self.installing = installing;
+            self.install_failed = failed;
+            cx.notify();
+        }
     }
 
     fn has_pending_request(&self) -> bool {
@@ -299,10 +326,7 @@ impl FirstAgent {
                 "Use up to 80 letters, numbers, dots, dashes or underscores, starting with a letter or number.",
             );
         }
-        let runtime = self
-            .tools
-            .start_runtime()
-            .ok_or("Choose an installed agent tool.")?;
+        let runtime = self.tools.start_runtime().ok_or(NO_TOOL)?;
         let directory = self
             .folder(cx)
             .filter(|path| path.is_absolute())
@@ -362,6 +386,8 @@ impl FirstAgent {
             match prepared {
                 Ok(saved) => self.saved = Some(saved),
                 Err(error) => {
+                    // A name, folder or brief to fix is shown, not hidden.
+                    self.details |= error != NO_TOOL;
                     self.error = Some(error.into());
                     cx.notify();
                     return;
@@ -567,39 +593,47 @@ impl FirstAgent {
         }
     }
 
-    /// The choices, all visible at once: the tool first, then the name,
-    /// folder and instructions.
+    /// The one choice a first agent needs: the tool it runs in. Its name,
+    /// folder and instructions have defaults, summarised in a line until the
+    /// person chooses to edit them.
     fn form(&self, cx: &mut Context<Self>) -> gpui::Div {
         let (t, c) = (tokens(), colors());
         let mut tools = div().grid().grid_cols(2).gap(px(t.space.s8));
         for runtime in self.tools.rows.iter().filter(|row| row.id != "shell") {
             let id = runtime.id.clone();
             tools = tools.child(
-                tool_card(runtime, self.tools.selected.as_ref() == Some(&id)).on_click(
-                    cx.listener(move |first, _, _, cx| {
+                self.tool_card(runtime, self.tools.selected.as_ref() == Some(&id), cx)
+                    .on_click(cx.listener(move |first, _, _, cx| {
                         if !first.busy && first.saved.is_none() && !first.discovering {
                             first.tools.select(&id);
                             first.error = None;
                             first.progress.clear();
                             cx.notify();
                         }
-                    }),
-                ),
+                    })),
             );
         }
         let (note, attention) = match self.tools.current() {
             _ if self.discovering => ("Checking agent tools…".into(), false),
             None => ("Pick the tool your agent runs in.".into(), false),
+            Some(runtime) if self.installing.contains(&runtime.id.as_str()) => {
+                (format!("Installing {}…", runtime.display_name), false)
+            }
             Some(runtime) if !runtime.available => (
-                format!(
-                    "Install {} from the Agent tools step, then check again, or pick another tool.",
-                    runtime.display_name
-                ),
+                match self.failure(&runtime.id) {
+                    Some(reason) => {
+                        format!("{} couldn't be installed. {reason}", runtime.display_name)
+                    }
+                    None => format!(
+                        "{} isn't installed yet. Install it here, or pick another tool.",
+                        runtime.display_name
+                    ),
+                },
                 true,
             ),
             Some(runtime) if !runtime.setup_supported => (
                 format!(
-                    "{} does not support first-agent setup. Pick another tool, or use terminals for now.",
+                    "{} can't set up a first agent. Pick another tool, or use terminals for now.",
                     runtime.display_name
                 ),
                 true,
@@ -638,6 +672,105 @@ impl FirstAgent {
             .folder(cx)
             .map(|path| home_relative(&path))
             .unwrap_or_else(|| "Choose a folder".into());
+        let details = if self.details {
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(t.space.s8))
+                .child(field_row(
+                    "Name",
+                    div()
+                        .flex_1()
+                        .h(px(t.size.action))
+                        .bg(c.field)
+                        .child(self.name.clone()),
+                ))
+                .child(field_row(
+                    "Folder",
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .items_center()
+                        .gap(px(t.space.s8))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_ellipsis()
+                                .text_color(c.code)
+                                .child(folder),
+                        )
+                        .child(
+                            ui::button("agent-folder", "Change", Button::Secondary)
+                                .on_click(cx.listener(|first, _, _, cx| first.choose_folder(cx))),
+                        ),
+                ))
+                .child(field_row(
+                    "Instructions",
+                    ui::segments()
+                        .child(
+                            ui::segment(
+                                "brief-coordinating",
+                                "Coordinating agent",
+                                !self.custom_brief,
+                            )
+                            .on_click(
+                                cx.listener(|first, _, _, cx| first.use_custom_brief(false, cx)),
+                            ),
+                        )
+                        .child(
+                            ui::segment("brief-own", "My own", self.custom_brief).on_click(
+                                cx.listener(|first, _, _, cx| first.use_custom_brief(true, cx)),
+                            ),
+                        ),
+                ))
+                .when(self.custom_brief, |form| {
+                    form.child(
+                        div()
+                            .px(px(t.space.s8))
+                            .py(px(t.space.s6))
+                            .rounded(px(t.radius.row))
+                            .bg(c.field)
+                            .border(px(t.size.hairline))
+                            .border_color(c.line_strong)
+                            .child(self.brief.clone()),
+                    )
+                })
+        } else {
+            let name = self.name.read(cx).value().trim().to_owned();
+            let brief = if self.custom_brief {
+                "your own instructions"
+            } else {
+                "coordinates your other agents"
+            };
+            div()
+                .flex()
+                .items_center()
+                .gap(px(t.space.s10))
+                .px(px(t.space.s12))
+                .py(px(t.space.s8))
+                .rounded(px(t.radius.slot))
+                .bg(c.panel)
+                .child(ui::icon("bot", t.size.icon, c.muted))
+                .child(
+                    ui::text(
+                        div().flex_1().min_w_0().text_color(c.text_2),
+                        &t.text.status,
+                    )
+                    .child(format!("Named {name}, works in {folder} and {brief}.")),
+                )
+                .child(
+                    ui::button("agent-details", "Edit", Button::Secondary).on_click(cx.listener(
+                        |first, _, _, cx| {
+                            first.details = true;
+                            cx.notify();
+                        },
+                    )),
+                )
+        };
         div()
             .flex()
             .flex_col()
@@ -664,66 +797,70 @@ impl FirstAgent {
                             .on_click(cx.listener(|_, _, _, cx| cx.emit(FirstEvent::RefreshTools))),
                     ),
             )
-            .child(field_row(
-                "Name",
-                div()
-                    .flex_1()
-                    .h(px(t.size.action))
-                    .bg(c.field)
-                    .child(self.name.clone()),
-            ))
-            .child(field_row(
-                "Folder",
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .flex()
-                    .items_center()
-                    .gap(px(t.space.s8))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .overflow_hidden()
-                            .whitespace_nowrap()
-                            .text_ellipsis()
-                            .text_color(c.code)
-                            .child(folder),
-                    )
-                    .child(
-                        ui::button("agent-folder", "Change", Button::Secondary)
-                            .on_click(cx.listener(|first, _, _, cx| first.choose_folder(cx))),
-                    ),
-            ))
-            .child(field_row(
-                "Instructions",
-                ui::segments()
-                    .child(
-                        ui::segment(
-                            "brief-coordinating",
-                            "Coordinating brief",
-                            !self.custom_brief,
-                        )
-                        .on_click(cx.listener(|first, _, _, cx| first.use_custom_brief(false, cx))),
-                    )
-                    .child(
-                        ui::segment("brief-own", "My own", self.custom_brief).on_click(
-                            cx.listener(|first, _, _, cx| first.use_custom_brief(true, cx)),
-                        ),
-                    ),
-            ))
-            .when(self.custom_brief, |form| {
-                form.child(
-                    div()
-                        .px(px(t.space.s8))
-                        .py(px(t.space.s6))
-                        .rounded(px(t.radius.row))
-                        .bg(c.field)
-                        .border(px(t.size.hairline))
-                        .border_color(c.line_strong)
-                        .child(self.brief.clone()),
+            .child(div().pt(px(t.space.s4)).child(details))
+    }
+
+    /// Why installing this tool failed, if it did.
+    fn failure(&self, id: &str) -> Option<&str> {
+        self.install_failed
+            .iter()
+            .find(|(each, _)| *each == id)
+            .map(|(_, reason)| reason.as_str())
+    }
+
+    /// A tool to pick, on the shared card, with the install or update it
+    /// offers when it isn't ready.
+    fn tool_card(
+        &self,
+        runtime: &setup::Runtime,
+        selected: bool,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let id = runtime.id.as_str();
+        let installable = TOOLS.iter().any(|(command, ..)| *command == id);
+        let installing = self.installing.contains(&id);
+        let outdated = runtime
+            .setup_compatibility
+            .as_ref()
+            .is_some_and(|check| !check.compatible);
+        let (state, attention, action) = if installing {
+            ("Installing…", false, None)
+        } else if !runtime.setup_supported {
+            ("Can't make an agent", true, None)
+        } else if !runtime.available {
+            match (self.failure(id), installable) {
+                (Some(_), true) => ("Couldn't install", true, Some("Try again")),
+                (None, true) => ("Not installed", false, Some("Install")),
+                (_, false) => ("Not installed", false, None),
+            }
+        } else if outdated {
+            ("Needs an update", true, installable.then_some("Update"))
+        } else {
+            ("Ready", false, None)
+        };
+        let key = runtime.id.clone();
+        ui::tool_card(
+            format!("runtime-{id}"),
+            runtime.display_name.clone(),
+            state,
+            attention,
+            selected,
+            installing,
+        )
+        .when_some(action, |card, label| {
+            card.child(
+                ui::button(
+                    SharedString::from(format!("install-{id}")),
+                    label,
+                    Button::Secondary,
                 )
-            })
+                .on_click(cx.listener(move |_, _, _, cx| {
+                    // Installing is its own action; it does not pick the tool.
+                    cx.stop_propagation();
+                    cx.emit(FirstEvent::Install(key.clone()));
+                })),
+            )
+        })
     }
 
     fn use_custom_brief(&mut self, custom: bool, cx: &mut Context<Self>) {
@@ -743,8 +880,14 @@ impl FirstAgent {
         let mut stopped = self.result.as_ref().is_some_and(|result| {
             result.status != "completed" && !self.steps.values().any(|status| status == "failed")
         }) && !self.busy;
-        for (step, label) in STAGES {
+        // The stages share one track, as New profile's steps do.
+        let row = t.size.action - t.space.s2;
+        let dot = t.size.plan_dot;
+        // A ready agent finished every stage, whether or not each was reported.
+        let finished = self.is_ready();
+        for (index, (step, label)) in STAGES.into_iter().enumerate() {
             let mark = match self.steps.get(step).map(String::as_str) {
+                _ if finished => ui::Step::Done,
                 Some("completed" | "skipped") => ui::Step::Done,
                 Some("running") if self.busy => ui::Step::Now,
                 Some("failed") => ui::Step::Waits,
@@ -756,14 +899,27 @@ impl FirstAgent {
             };
             stages = stages.child(
                 div()
+                    .relative()
                     .flex()
                     .items_center()
                     .gap(px(t.space.s10))
-                    .h(px(t.size.action - t.space.s2))
+                    .h(px(row))
                     .text_color(if mark == ui::Step::Ahead {
                         c.muted
                     } else {
                         c.text
+                    })
+                    .when(index + 1 < STAGES.len(), |stage| {
+                        stage.child(
+                            div()
+                                .absolute()
+                                .left(px((dot - t.size.hairline) / 2.0))
+                                .top(px((row + dot) / 2.0 + t.space.s2))
+                                // Ends a little above the next stage's dot.
+                                .bottom(px(-(row - dot) / 2.0))
+                                .w(px(t.size.hairline))
+                                .bg(c.line_strong),
+                        )
                     })
                     .child(ui::step_dot(mark))
                     .child(label),
@@ -869,76 +1025,6 @@ fn waiting(result: &setup::Event, expected: Option<&str>) -> bool {
             .get("launch_id")
             .and_then(|id| id.as_str())
             .is_some()
-}
-
-/// A path with the home directory shortened to `~`.
-fn home_relative(path: &std::path::Path) -> String {
-    std::env::var_os("HOME")
-        .and_then(|home| path.strip_prefix(home).ok())
-        .map(|rest| format!("~/{}", rest.display()))
-        .unwrap_or_else(|| path.display().to_string())
-}
-
-/// A tool to pick, on one line: a radio mark, its name and whether it can
-/// run setup.
-fn tool_card(runtime: &setup::Runtime, selected: bool) -> gpui::Stateful<gpui::Div> {
-    let (t, c) = (tokens(), colors());
-    let ready = runtime.can_setup();
-    let state = if !runtime.setup_supported {
-        "Setup unavailable"
-    } else if !runtime.available {
-        "Not installed"
-    } else if !ready {
-        "Needs attention"
-    } else {
-        "Ready"
-    };
-    div()
-        .id(SharedString::from(format!("runtime-{}", runtime.id)))
-        .relative()
-        .min_w_0()
-        .flex()
-        .items_center()
-        .gap(px(t.space.s8))
-        .h(px(t.size.choice_row))
-        .px(px(t.space.s10))
-        .rounded(px(t.radius.slot))
-        .border(px(t.size.hairline))
-        .cursor_pointer()
-        .when(selected, |card| {
-            card.bg(c.accent_soft)
-                .border_color(c.focus)
-                .child(ui::selection_ring(t.radius.slot, t.size.hairline))
-        })
-        .when(!selected, |card| {
-            card.bg(c.field)
-                .border_color(c.line_strong)
-                .hover(|card| card.bg(colors().hover))
-        })
-        .child(ui::icon(
-            if selected { "circle-check" } else { "circle" },
-            t.size.icon + 2.0,
-            if selected { c.accent_text } else { c.muted },
-        ))
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .overflow_hidden()
-                .whitespace_nowrap()
-                .text_ellipsis()
-                .text_color(c.text)
-                .child(runtime.display_name.clone()),
-        )
-        .child(
-            ui::text(
-                div()
-                    .flex_shrink_0()
-                    .text_color(if ready { c.muted } else { c.attention_text }),
-                &t.text.meta,
-            )
-            .child(state),
-        )
 }
 
 /// A labelled row of the form: the label column, then its control.

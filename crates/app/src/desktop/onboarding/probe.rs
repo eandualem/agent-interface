@@ -1,5 +1,5 @@
 //! What first-run setup checks on this computer: the tools a terminal finds
-//! and whether Agent Backbone answers. Read-only; nothing is installed here.
+//! and whether Agent Backbone answers. Read-only; `install` holds the fixes.
 
 use std::{
     os::unix::{fs::FileExt, process::CommandExt},
@@ -10,9 +10,7 @@ use std::{
 
 /// Commands looked up through the user's own shell. tmux is not among them:
 /// terminals use the app's own resolver, so setup checks with that.
-const COMMANDS: &[&str] = &[
-    "git", "gh", "backbone", "claude", "codex", "gemini", "opencode",
-];
+const COMMANDS: &[&str] = &["git", "backbone", "claude", "codex", "gemini", "opencode"];
 
 /// Agent tools Backbone can run: command, name, official install command.
 pub const TOOLS: &[(&str, &str, &str)] = &[

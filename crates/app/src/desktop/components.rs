@@ -1830,6 +1830,79 @@ pub fn plan_card(id: impl Into<SharedString>, selected: bool) -> Stateful<Div> {
         })
 }
 
+/// An agent tool to pick, on a card: a radio mark, or a turning arc while it
+/// installs; its name; and its state in a line under it, in `attention` when
+/// it needs the person. Selected, it takes the accent tint and ring. The
+/// caller adds its click and any action, such as Install.
+pub fn tool_card(
+    id: impl Into<SharedString>,
+    name: impl Into<SharedString>,
+    state: impl Into<SharedString>,
+    attention: bool,
+    selected: bool,
+    busy: bool,
+) -> Stateful<Div> {
+    let (t, c) = (tokens(), colors());
+    div()
+        .id(id.into())
+        .relative()
+        .min_w_0()
+        .flex()
+        .items_center()
+        .gap(px(t.space.s10))
+        .h(px(t.size.choice_row + t.space.s16))
+        .pl(px(t.space.s12))
+        .pr(px(t.space.s8))
+        .rounded(px(t.radius.slot))
+        .border(px(t.size.hairline))
+        .cursor_pointer()
+        .when(selected, |card| {
+            card.bg(c.accent_soft)
+                .border_color(c.focus)
+                .child(selection_ring(t.radius.slot, t.size.hairline))
+        })
+        .when(!selected, |card| {
+            card.bg(c.field)
+                .border_color(c.line_strong)
+                .hover(|card| card.bg(colors().hover))
+        })
+        .child(if busy {
+            step_dot(Step::Now).into_any_element()
+        } else {
+            icon(
+                if selected { "circle-check" } else { "circle" },
+                t.size.icon_large,
+                if selected { c.accent_text } else { c.muted },
+            )
+            .into_any_element()
+        })
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .child(
+                    text(
+                        div()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .text_color(c.text),
+                        &t.text.row_selected,
+                    )
+                    .child(name.into()),
+                )
+                .child(
+                    text(
+                        div().text_color(if attention { c.attention_text } else { c.muted }),
+                        &t.text.meta,
+                    )
+                    .child(state.into()),
+                ),
+        )
+}
+
 /// The ring around a selected row, card or node, drawn as an outline over
 /// its `edge`-wide border: a shadow would show through a translucent fill,
 /// and anything outside its bounds is clipped by a scrolling list.
