@@ -174,7 +174,7 @@ class UpgradeTests(unittest.TestCase):
     def test_changed_process_or_reexec_does_not_release_hold(self):
         self.guard()
         saved = self.path.read_bytes()
-        for change in ("process", "started", "service_identity", "socket"):
+        for change in ("process", "started", "service_identity"):
             with self.subTest(change=change):
                 process, health, state = list(self.process), dict(self.health), dict(self.state)
                 if change == "process":

@@ -106,7 +106,7 @@ pub(super) fn read_list(
     }
     if let Some(agent) = agent {
         path.push_str("&agent=");
-        path.push_str(&super::reports::encode(agent));
+        path.push_str(&super::encode(agent));
     }
     let body = fetch(api, &path, super::VIEW_LIMIT, false)?;
     let mut page = decode_list(&body, author_id)?;
@@ -189,7 +189,7 @@ fn fetch(api: &Api<'_>, path: &str, limit: usize, detail: bool) -> Result<Vec<u8
     if !api.live() {
         return Err(UNAVAILABLE);
     }
-    match crate::transport::fetch(&api.url, path, &api.key, limit) {
+    match api.fetch(path, limit) {
         Ok(bytes) if bytes.len() <= limit => Ok(bytes),
         Ok(_) => Err(UNREADABLE),
         Err(Some(404)) if detail => Err(NOT_FOUND),

@@ -6,27 +6,88 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use agent_interface_roster::profiles::{Connection, Error as ProfileError, Identity};
 use agent_interface_tmux::discovery::read_sessions;
 
 pub use crate::library::location::source_socket;
 
-mod attachment;
-pub use attachment::{AttachmentStatus, attachment_status};
-
-mod metadata;
-pub use metadata::{CombinedObservation, Origin, Session, with_roster};
-mod navigation;
-pub use navigation::choose_attached_session;
-
 /// A complete replacement for the source's previous availability.
 #[derive(Debug)]
 pub struct Observation {
+    /// Captured profile origin, absent only for explicit legacy socket discovery.
+    pub identity: Option<Identity>,
+    /// Typed profile verification failure; failed observations contain no sessions.
+    pub profile_error: Option<ProfileError>,
     /// Exact names from the latest successful query; empty on failure.
     pub sessions: Vec<String>,
     /// None for a successful query, including an absent server.
     pub error: Option<String>,
     /// When this successful query completed; none on failure.
     pub observed_at: Option<Instant>,
+}
+
+enum Source {
+    Legacy(PathBuf),
+    Bound(Connection),
+}
+impl Source {
+    fn observe(&self, live: &dyn Fn() -> bool) -> Option<Observation> {
+        if !live() {
+            return None;
+        }
+        let identity = match self {
+            Self::Legacy(_) => None,
+            Self::Bound(connection) => Some(connection.identity().clone()),
+        };
+        let refused = |error| Observation {
+            identity: identity.clone(),
+            profile_error: Some(error),
+            sessions: Vec::new(),
+            error: Some("The original profile could not verify its session source.".into()),
+            observed_at: None,
+        };
+        let socket = match self {
+            Self::Legacy(socket) => socket.as_path(),
+            Self::Bound(connection) => {
+                if let Err(error) = connection.verify() {
+                    return live().then(|| refused(error));
+                }
+                connection.tmux_socket()
+            }
+        };
+        if !live() {
+            return None;
+        }
+        let result = read_sessions(socket);
+        if !live() {
+            return None;
+        }
+        if let Self::Bound(connection) = self {
+            // Reject data if the provider changed while the tmux query ran.
+            if let Err(error) = connection.verify() {
+                return live().then(|| refused(error));
+            }
+        }
+        if !live() {
+            return None;
+        }
+        Some(match result {
+            Ok(sessions) => Observation {
+                identity,
+                profile_error: None,
+                sessions,
+                error: None,
+                observed_at: Some(Instant::now()),
+            },
+            Err(error) => Observation {
+                identity,
+                profile_error: None,
+                sessions: Vec::new(),
+                error: Some(error.to_string()),
+                observed_at: None,
+            },
+        })
+    }
 }
 
 /// One explicit source socket polled on a dedicated worker.
@@ -51,6 +112,20 @@ impl SessionSource {
     /// resolves `socket` first. No default-server lookup or attachment occurs.
     /// `wake` runs on the worker after each complete observation is published.
     pub fn start(socket: PathBuf, wake: impl Fn() + Send + 'static) -> io::Result<Self> {
+        Self::start_source(Source::Legacy(socket), wake)
+    }
+
+    /// Poll only the captured profile's authenticated tmux socket. Verify the
+    /// full binding before and after each query; never resolve a fallback source.
+    /// This is read-only and never starts a server or attaches a client.
+    pub fn start_bound(
+        connection: Connection,
+        wake: impl Fn() + Send + 'static,
+    ) -> io::Result<Self> {
+        Self::start_source(Source::Bound(connection), wake)
+    }
+
+    fn start_source(source: Source, wake: impl Fn() + Send + 'static) -> io::Result<Self> {
         let state = Arc::new(Mutex::new(PollState {
             active: true,
             generation: 0,
@@ -79,17 +154,12 @@ impl SessionSource {
                         }
                         continue;
                     }
-                    let observation = match read_sessions(&socket) {
-                        Ok(sessions) => Observation {
-                            sessions,
-                            error: None,
-                            observed_at: Some(Instant::now()),
-                        },
-                        Err(error) => Observation {
-                            sessions: Vec::new(),
-                            error: Some(error.to_string()),
-                            observed_at: None,
-                        },
+                    let live = || {
+                        let state = pending.lock().unwrap_or_else(|error| error.into_inner());
+                        state.active && state.generation == generation
+                    };
+                    let Some(observation) = source.observe(&live) else {
+                        continue;
                     };
                     let published = {
                         let mut state = pending.lock().unwrap_or_else(|e| e.into_inner());
@@ -145,7 +215,7 @@ impl Drop for SessionSource {
         let (stop, _) = mpsc::channel();
         drop(std::mem::replace(&mut self.stop, stop));
         if let Some(worker) = self.worker.take() {
-            // A running query has its own three-second deadline. No child or
+            // A query is bounded; bound mode also waits for its current identity probe. No child or
             // polling thread outlives this handle after the join completes.
             let _ = worker.join();
         }
@@ -238,3 +308,7 @@ mod tests {
         assert!(server.run(&["list-clients"]).unwrap().is_empty());
     }
 }
+
+#[cfg(test)]
+#[path = "sessions/bound_tests.rs"]
+mod bound_tests;

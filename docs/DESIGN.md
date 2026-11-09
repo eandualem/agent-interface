@@ -158,6 +158,8 @@ All in `components.rs`; each takes its look from the tokens.
 | `keycap`, `key_hint` | A key in a cap (status row, Jump field); a key at a row's end |
 | `button` | `Primary` (accent fill), `Secondary` (field with border), `Danger` (attention text) |
 | `dot` | Small filled mark: needs you on tabs and slots, the saved light |
+| `switch` | On and off: an `accent` track with the knob at its end when on, `line_strong` when off |
+| `profile_mark` | A profile's first letter on a rounded square: neutral for Default, otherwise an `info`, `violet`, `green` or `accent` tint chosen from the profile id |
 | `menu`, `menu_item`, `menu_heading`, `menu_rule` | Popover frame on `field` with shadow; item with mark slot, label and key; uppercase heading; rule |
 | `agent_symbol` | Needs you: filled `attention` circle with "!". Working/starting: rotating `accent` arc with a play mark (`motion.spinner_ms` per turn). Idle: `faint` ring. Unknown: dashed `muted` ring with "?" |
 | `minimap` | A tab's layout thumbnail: one frame, split once, or split twice |

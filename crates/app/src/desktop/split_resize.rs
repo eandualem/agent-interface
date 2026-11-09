@@ -11,6 +11,8 @@ pub(super) fn divider() -> f32 {
 }
 
 pub(super) struct Drag {
+    pub origin: Option<super::navigation_origin::Origin>,
+    profile: Option<String>,
     pub split: String,
     pub bounds: Bounds<Pixels>,
     pub dragging: bool,
@@ -64,6 +66,8 @@ impl Drag {
         let tab = model.tab()?;
         let (direction, initial_ratio) = split(&tab.tree, id)?;
         let mut drag = Self {
+            origin: None,
+            profile: model.workspace()?.profile_id.clone(),
             split: id.into(),
             bounds,
             dragging: true,
@@ -108,6 +112,9 @@ impl Drag {
     pub fn valid(&self, model: &Layout) -> bool {
         !model.focus_mode()
             && model.selected == self.workspace
+            && model
+                .workspace()
+                .is_some_and(|space| space.profile_id == self.profile)
             && model
                 .tab()
                 .is_some_and(|tab| tab.id == self.tab && tab.tree == self.original)
@@ -195,5 +202,20 @@ mod tests {
             assert!(drag.proposal(&window).is_none());
             window.model_mut().attach(None);
         }
+    }
+    #[test]
+    fn a_binding_change_invalidates_a_gesture_with_an_unchanged_tree() {
+        let mut model = Layout::initial("/".into());
+        model.split(Direction::Right, "/".into(), true);
+        let bounds = Bounds::new(point(px(0.), px(0.)), size(px(400.), px(200.)));
+        let Node::Split { id, .. } = &model.tab().unwrap().tree else {
+            panic!("split")
+        };
+        let drag = Drag::begin(&model, id, bounds, point(px(100.), px(100.))).unwrap();
+        assert!(drag.valid(&model));
+        let tree = model.tab().unwrap().tree.clone();
+        model.workspaces[0].profile_id = Some("profile-a".into());
+        assert_eq!(model.tab().unwrap().tree, tree);
+        assert!(!drag.valid(&model));
     }
 }

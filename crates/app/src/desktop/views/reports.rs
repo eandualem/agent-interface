@@ -5,7 +5,12 @@ use agent_interface_roster::views::{
 };
 use gpui::{AnyElement, Context, SharedString, div, prelude::*, px};
 
-use super::{Shown, ViewPane, clock::Local, line, markdown, seen, since};
+use super::{
+    Shown, ViewPane,
+    additions::{self, Kind},
+    clock::Local,
+    line, markdown, seen, since,
+};
 use crate::desktop::{
     components as ui,
     design::{colors, tokens},
@@ -159,50 +164,40 @@ pub(super) fn refresh_toolbar(pane: &ViewPane, cx: &mut Context<ViewPane>) -> gp
     controls(pane, &pane.reports.agents, cx)
 }
 
-fn label(item: &ReportItem) -> String {
-    match &item.content {
-        ReportContent::Document(_) => "document".into(),
-        ReportContent::Progress { status, .. } => status.clone(),
-        ReportContent::Response {
-            superseded_by: Some(id),
-            ..
-        } => format!("corrected by #{id}"),
-        ReportContent::Response { .. } => "response".into(),
-    }
-}
-
-/// A report's authored state as a mark: shape first, colour second.
-pub(super) fn mark(item: &ReportItem) -> Option<gpui::Div> {
-    let ReportContent::Progress { status, .. } = &item.content else {
+/// The author's current runtime state, separate from the report's authored tag.
+pub(super) fn mark(
+    item: &ReportItem,
+    agents: &crate::desktop::agent_status::LiveAgents,
+) -> Option<gpui::Div> {
+    let ReportContent::Progress { .. } = &item.content else {
         return None;
     };
-    Some(if item.needs_owner() || status == "blocked" {
-        ui::agent_symbol(ui::AgentState::NeedsYou)
+    Some(ui::agent_symbol(current_state(item, agents)))
+}
+
+fn current_state(
+    item: &ReportItem,
+    agents: &crate::desktop::agent_status::LiveAgents,
+) -> ui::AgentState {
+    if item.registered {
+        agents.get(&item.author).state
     } else {
-        match status.as_str() {
-            "active" => ui::agent_symbol(ui::AgentState::Working),
-            "complete" => ui::done_symbol(),
-            "inactive" => ui::agent_symbol(ui::AgentState::Idle),
-            _ => ui::agent_symbol(ui::AgentState::Unknown),
-        }
-    })
+        ui::AgentState::Unknown
+    }
 }
 
 /// A report's authored state as a tag.
-fn state_tag(item: &ReportItem) -> gpui::Div {
-    let ReportContent::Progress { status, .. } = &item.content else {
-        return ui::tag(label(item), ui::Tone::Quiet);
-    };
+fn state_tag(item: &ReportItem, status: &str) -> gpui::Div {
     if item.needs_owner() {
-        return ui::tag("blocked · you", ui::Tone::Attention);
+        return ui::tag("report: blocked · you", ui::Tone::Attention);
     }
-    let tone = match status.as_str() {
+    let tone = match status {
         "active" => ui::Tone::Tag,
         "blocked" => ui::Tone::Attention,
         "complete" => ui::Tone::Done,
         _ => ui::Tone::Quiet,
     };
-    ui::tag(status.clone(), tone)
+    ui::tag(format!("report: {status}"), tone)
 }
 
 /// "Today 14:32", "Mon 27 Oct 09:05".
@@ -267,7 +262,12 @@ fn plural(count: usize, one: &'static str, many: &'static str) -> &'static str {
 }
 
 fn open_record(pane: &mut ViewPane, item: ReportItem, cx: &mut Context<ViewPane>) {
-    seen::mark(&item);
+    seen::mark(
+        &item,
+        pane.connection
+            .as_ref()
+            .map(|connection| connection.identity()),
+    );
     pane.documents.clear();
     pane.reports.open = Some(item);
     pane.refetch(false, cx);
@@ -417,17 +417,17 @@ fn reader(
     let mut column = ui::reader_column().gap(px(t.space.s16));
     match &item.content {
         ReportContent::Document(_) => unreachable!("document has an isolated reader"),
-        ReportContent::Progress { sections, .. } => {
+        ReportContent::Progress { status, sections } => {
             column = column.gap_0().child(
                 div()
                     .flex()
                     .items_center()
                     .gap(px(t.space.s8))
                     .pb(px(t.space.s10))
-                    .children(mark(item))
+                    .children(mark(item, &pane.agents))
                     .child(super::mono(item.author.clone()).text_color(c.text))
                     .children(runtime(pane, item))
-                    .child(state_tag(item))
+                    .child(state_tag(item, status))
                     .child(div().flex_1())
                     .child(
                         ui::text(div().text_color(c.muted), &t.text.meta).child(format!(
@@ -594,7 +594,7 @@ pub(super) fn body(pane: &ViewPane, page: &ReportPage, cx: &mut Context<ViewPane
             let ago = since(epoch_seconds(&item.created_at));
             let id = SharedString::from(format!("report-{}", item.id));
             let row = match &item.content {
-                ReportContent::Progress { sections, .. } => {
+                ReportContent::Progress { status, sections } => {
                     let summary = if item.needs_owner() {
                         sections
                             .iter()
@@ -606,12 +606,16 @@ pub(super) fn body(pane: &ViewPane, page: &ReportPage, cx: &mut Context<ViewPane
                     ui::record_row(
                         id,
                         index == 0,
-                        false,
-                        !seen::is_seen(item),
-                        mark(item).unwrap_or_else(|| div()),
+                        !seen::is_seen(
+                            item,
+                            pane.connection
+                                .as_ref()
+                                .map(|connection| connection.identity()),
+                        ),
+                        mark(item, &pane.agents).unwrap_or_else(|| div()),
                         item.author.clone(),
                         line(summary),
-                        state_tag(item),
+                        state_tag(item, status),
                         ago,
                     )
                 }
@@ -623,8 +627,12 @@ pub(super) fn body(pane: &ViewPane, page: &ReportPage, cx: &mut Context<ViewPane
                 } => ui::question_row(
                     id,
                     index == 0,
-                    false,
-                    !seen::is_seen(item),
+                    !seen::is_seen(
+                        item,
+                        pane.connection
+                            .as_ref()
+                            .map(|connection| connection.identity()),
+                    ),
                     item.author.clone(),
                     line(question),
                     line(answer),
@@ -688,8 +696,18 @@ pub(super) fn body(pane: &ViewPane, page: &ReportPage, cx: &mut Context<ViewPane
                     };
                     let open = (*item).clone();
                     let mut tags = Vec::new();
-                    if !seen::is_seen(item) {
-                        let label = if seen::is_update(item) {
+                    if !seen::is_seen(
+                        item,
+                        pane.connection
+                            .as_ref()
+                            .map(|connection| connection.identity()),
+                    ) {
+                        let label = if seen::is_update(
+                            item,
+                            pane.connection
+                                .as_ref()
+                                .map(|connection| connection.identity()),
+                        ) {
                             "updated"
                         } else {
                             "new"
@@ -700,7 +718,6 @@ pub(super) fn body(pane: &ViewPane, page: &ReportPage, cx: &mut Context<ViewPane
                         ui::shelf_card(
                             SharedString::from(format!("document-{}", item.id)),
                             "file-text",
-                            false,
                             tags,
                             metadata.title.clone(),
                             metadata.author().to_owned(),
@@ -760,6 +777,7 @@ pub(super) fn body(pane: &ViewPane, page: &ReportPage, cx: &mut Context<ViewPane
             )),
         );
     }
+    let documents = matches!(pane.reports.query, ReportQuery::Documents(..));
     let note = match pane.reports.query {
         ReportQuery::Latest(_) => "latest authored owner blockers · age is not resolution",
         ReportQuery::Recent(_) => "authored progress reports · newest first · unread in bold",
@@ -772,6 +790,9 @@ pub(super) fn body(pane: &ViewPane, page: &ReportPage, cx: &mut Context<ViewPane
         .flex_col()
         .child(header(true))
         .child(controls(pane, &page.agents, cx))
+        .when(documents, |list| {
+            list.children(additions::note(pane, Kind::Document))
+        })
         .child(ui::grouped_page("reports-rows", column.child(paging)))
         .child(ui::view_footer(&[], note))
         .into_any_element()
@@ -782,26 +803,37 @@ fn controls(pane: &ViewPane, agents: &[String], cx: &mut Context<ViewPane>) -> g
     let (t, c) = (tokens(), colors());
     let mut sections = ui::segments();
     for (index, (name, make)) in SECTIONS.into_iter().enumerate() {
-        if index == 1 && pane.backbone.is_some() {
-            sections = sections
-                .child(
-                    ui::segment(
-                        "reports-Current plans",
-                        "Current plans",
-                        pane.shown == Shown::Plans,
-                    )
-                    .on_click(cx.listener(|pane, _, _, cx| pane.show_plans(cx))),
+        if index == 1
+            && (pane.backbone.is_some()
+                || pane
+                    .connection
+                    .as_ref()
+                    .is_some_and(|connection| pane.agents.belongs_to(connection.identity())))
+        {
+            sections = sections.child(
+                ui::segment(
+                    "reports-Current plans",
+                    "Current plans",
+                    pane.shown == Shown::Plans,
                 )
-                .child(
-                    ui::segment(
-                        "reports-Interactions",
-                        "Interactions",
-                        pane.shown == Shown::Interactions,
-                    )
-                    .on_click(
-                        cx.listener(|pane, _, window, cx| pane.show_interactions(window, cx)),
-                    ),
-                );
+                .on_click(cx.listener(|pane, _, _, cx| pane.show_plans(cx))),
+            );
+        }
+        if index == 1
+            && (pane.backbone.is_some()
+                || pane
+                    .connection
+                    .as_ref()
+                    .is_some_and(|connection| pane.agents.belongs_to(connection.identity())))
+        {
+            sections = sections.child(
+                ui::segment(
+                    "reports-Interactions",
+                    "Interactions",
+                    pane.shown == Shown::Interactions,
+                )
+                .on_click(cx.listener(|pane, _, window, cx| pane.show_interactions(window, cx))),
+            );
         }
         let query = make();
         sections = sections.child(
@@ -815,7 +847,12 @@ fn controls(pane: &ViewPane, agents: &[String], cx: &mut Context<ViewPane>) -> g
             .on_click(cx.listener(move |pane, _, _, cx| pane.show_records(make(), cx))),
         );
     }
-    if pane.backbone.is_some() {
+    if pane.backbone.is_some()
+        || pane
+            .connection
+            .as_ref()
+            .is_some_and(|connection| pane.agents.belongs_to(connection.identity()))
+    {
         sections = sections.child(
             ui::segment("reports-Sheets", "Sheets", pane.shown == Shown::Sheets)
                 .on_click(cx.listener(|pane, _, window, cx| pane.show_sheets(window, cx))),
@@ -863,6 +900,10 @@ fn controls(pane: &ViewPane, agents: &[String], cx: &mut Context<ViewPane>) -> g
                     }),
                 ))
             })
+            .when(
+                records && matches!(pane.reports.query, ReportQuery::Documents(..)),
+                |toolbar| toolbar.children(additions::button(pane, Kind::Document, cx)),
+            )
             .when(records, |toolbar| {
                 toolbar.child(ui::icon_button("reports-refresh", "refresh-cw").on_click(
                     cx.listener(|pane, _, _, cx| {
@@ -930,6 +971,39 @@ mod tests {
     use super::*;
 
     #[test]
+    fn active_report_uses_live_agent_state_even_while_the_record_stays_open() {
+        let mut item = ReportItem {
+            id: 1,
+            author: "worker".into(),
+            author_id: None,
+            registered: true,
+            provider_url: String::new(),
+            created_at: String::new(),
+            conversation_id: None,
+            content: ReportContent::Progress {
+                status: "active".into(),
+                sections: vec![],
+            },
+        };
+        let agents = crate::desktop::agent_status::LiveAgents::default();
+        let mut snapshot = agent_interface_roster::Snapshot::default();
+        snapshot.update(br#"{"items":[{"name":"worker","state":"busy"}]}"#);
+        agents.update(snapshot.clone());
+        assert_eq!(current_state(&item, &agents), ui::AgentState::Working);
+        snapshot.update(br#"{"items":[{"name":"worker","state":"offline"}]}"#);
+        agents.update(snapshot.clone());
+        assert_eq!(current_state(&item, &agents), ui::AgentState::Offline);
+        assert!(
+            matches!(&item.content, ReportContent::Progress { status, .. } if status == "active")
+        );
+        snapshot.unavailable();
+        agents.update(snapshot);
+        assert_eq!(current_state(&item, &agents), ui::AgentState::Unavailable);
+        item.registered = false;
+        assert_eq!(current_state(&item, &agents), ui::AgentState::Unknown);
+    }
+
+    #[test]
     fn an_open_answer_keeps_its_text_but_observes_a_correction() {
         let item = |answer: &str, superseded_by| ReportItem {
             id: 7,
@@ -957,7 +1031,13 @@ mod tests {
             runtimes: Default::default(),
         });
         let open = state.open.unwrap();
-        assert_eq!(label(&open), "corrected by #9");
+        assert!(matches!(
+            open.content,
+            ReportContent::Response {
+                superseded_by: Some(9),
+                ..
+            }
+        ));
         assert!(
             matches!(open.content, ReportContent::Response { answer, .. } if answer == "Original answer")
         );

@@ -277,7 +277,7 @@ pub fn path() -> Option<PathBuf> {
 }
 
 /// The settings path from these variables; the account's home directory is
-/// used only when HOME is unset, as the library, theme and keymap lookups do.
+/// used only when HOME is unset, as the library and keymap lookups do.
 fn path_from(
     xdg: Option<std::ffi::OsString>,
     home: Option<std::ffi::OsString>,

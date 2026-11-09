@@ -9,7 +9,7 @@ use std::{
 use gpui::{AnyElement, Context, EntityId, SharedString, Window, div, prelude::*, px};
 
 use super::{
-    Browser, Popover, components as ui,
+    Browser, components as ui,
     design::{colors, tokens},
     icons, settings,
 };
@@ -18,6 +18,7 @@ use ui::AgentState;
 
 #[derive(Clone)]
 struct TabDrag {
+    origin: Option<super::navigation_origin::Origin>,
     browser: EntityId,
     workspace: String,
     tab: String,
@@ -58,7 +59,7 @@ fn reorder_tab_proposal(
 }
 
 /// Socket identities resolved by a background worker, never while drawing.
-#[derive(Default)]
+#[derive(Default, PartialEq, Eq)]
 pub(super) struct SourceMatches {
     inherited: bool,
     explicit: HashSet<String>,
@@ -94,6 +95,9 @@ impl Browser {
         {
             self.apply(update);
         }
+        if !self.selected_origin_is_current(dragged.origin.as_ref()) {
+            return;
+        }
         let Some(layout) = &self.layout else {
             return;
         };
@@ -109,19 +113,8 @@ impl Browser {
     }
 
     /// Each agent's state, or none while Agent Backbone is unreachable.
-    pub(super) fn agent_states(&self) -> Option<HashMap<String, AgentState>> {
-        let snapshot = self.agents.as_ref()?;
-        if snapshot.error.is_some() {
-            return None;
-        }
-        Some(
-            snapshot
-                .states
-                .iter()
-                .filter(|(_, state)| state.as_str() != "offline")
-                .map(|(name, state)| (name.to_owned(), AgentState::from_report(state)))
-                .collect(),
-        )
+    pub(super) fn agent_states(&self) -> Option<std::rc::Rc<HashMap<String, AgentState>>> {
+        self.active_agents()?.active()
     }
 
     /// Refresh identities after library or roster updates. Keep at most one
@@ -139,6 +132,7 @@ impl Browser {
             .layout
             .iter()
             .flat_map(|layout| &layout.model().workspaces)
+            .filter(|space| space.profile_id.is_none())
             .flat_map(|space| &space.tabs)
             .flat_map(|tab| tab.tree.leaves())
             .filter_map(|leaf| leaf.attachment.as_ref()?.source_socket.clone())
@@ -149,15 +143,30 @@ impl Browser {
         self.source_match_updates = Some(cx.spawn(async move |this, cx| {
             let matches = work.await;
             let _ = this.update(cx, |browser, cx| {
-                browser.source_matches = matches;
                 browser.source_match_updates = None;
-                cx.notify();
+                if browser.source_matches != matches {
+                    browser.source_matches = matches;
+                    cx.notify();
+                }
             });
         }));
     }
 
     /// Both sockets must have resolved successfully to the same path.
     pub(super) fn is_window_source(&self, socket: Option<&str>) -> bool {
+        if let Some(space) = self
+            .layout
+            .as_ref()
+            .and_then(|layout| layout.model().workspace())
+            && space.profile_id.is_some()
+        {
+            return match self.workspace_profiles.route(space) {
+                super::workspace_profiles::Route::Bound(connection) => {
+                    socket.is_none_or(|path| std::path::Path::new(path) == connection.tmux_socket())
+                }
+                _ => false,
+            };
+        }
         self.source_matches.contains(socket)
     }
 
@@ -174,17 +183,46 @@ impl Browser {
             .then_some(state)
     }
 
-    /// Whether any pane of this tab shows an agent that needs you.
+    pub(super) fn attachment_state_in(
+        &self,
+        space: &agent_interface_core::Workspace,
+        attachment: &agent_interface_core::Attachment,
+    ) -> Option<AgentState> {
+        let states = self.workspace_agents(space)?.active()?;
+        let matches = match self.workspace_profiles.route(space) {
+            super::workspace_profiles::Route::Legacy => self
+                .source_matches
+                .contains(attachment.source_socket.as_deref()),
+            super::workspace_profiles::Route::Bound(connection) => attachment
+                .source_socket
+                .as_deref()
+                .is_none_or(|path| std::path::Path::new(path) == connection.tmux_socket()),
+            super::workspace_profiles::Route::Unavailable => false,
+        };
+        matches
+            .then(|| states.get(&attachment.session).copied())
+            .flatten()
+    }
+
     pub(super) fn tab_needs_you(
         &self,
         tab: &agent_interface_core::Tab,
-        states: Option<&HashMap<String, AgentState>>,
+        _states: Option<&HashMap<String, AgentState>>,
     ) -> bool {
-        tab.tree.leaves().into_iter().any(|leaf| {
-            leaf.attachment.as_ref().is_some_and(|attachment| {
-                self.attachment_state(attachment, states)
-                    .is_some_and(AgentState::needs_you)
-            })
+        let Some(space) = self.layout.as_ref().and_then(|layout| {
+            layout
+                .model()
+                .workspaces
+                .iter()
+                .find(|space| space.tabs.iter().any(|candidate| candidate.id == tab.id))
+        }) else {
+            return false;
+        };
+        tab.tree.leaves().iter().any(|leaf| {
+            leaf.attachment
+                .as_ref()
+                .and_then(|attachment| self.attachment_state_in(space, attachment))
+                .is_some_and(AgentState::needs_you)
         })
     }
 
@@ -207,6 +245,7 @@ impl Browser {
     }
 
     pub(super) fn sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let creation = self.creation_target();
         let (t, c) = (tokens(), colors());
         let width = self.sidebar_width(window);
         let states = self.agent_states();
@@ -241,12 +280,14 @@ impl Browser {
             .child(self.jump_field(cx))
             .child(
                 ui::section("TABS").child(ui::icon_button("new-tab", "plus").on_click(
-                    cx.listener(|browser, _, window, cx| browser.create(Create::Tab, window, cx)),
+                    cx.listener(move |browser, _, window, cx| {
+                        browser.create_from(Create::Tab, creation.as_ref(), window, cx)
+                    }),
                 )),
             )
-            .child(self.tab_list(states.as_ref(), cx))
+            .child(self.tab_list(states.as_deref(), cx))
             .children(self.agents_block(window, cx))
-            .child(self.switcher(states.as_ref(), width, cx))
+            .child(self.switcher(states.as_deref(), width, cx))
             .child(
                 // The right edge resizes the panel.
                 div()
@@ -270,6 +311,8 @@ impl Browser {
 
     /// The current workspace: icon tile, name and tab count, and a chooser.
     fn workspace_block(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let origin = self.selected_navigation_origin();
+        let menu_origin = origin.clone();
         let (t, c) = (tokens(), colors());
         let space = self
             .layout
@@ -348,23 +391,29 @@ impl Browser {
             })
             .on_mouse_down(
                 gpui::MouseButton::Right,
-                cx.listener(|browser, event: &gpui::MouseDownEvent, window, cx| {
-                    browser.open_menu(Popover::Workspace, event.position, window, cx);
+                cx.listener(move |browser, event: &gpui::MouseDownEvent, window, cx| {
+                    if !browser.selected_origin_is_current(menu_origin.as_ref()) {
+                        return;
+                    }
+                    browser.open_workspace_menu(event.position, window, cx);
                     cx.stop_propagation();
                 }),
             )
             .on_click(
-                cx.listener(|browser, event: &gpui::ClickEvent, window, cx| {
+                cx.listener(move |browser, event: &gpui::ClickEvent, window, cx| {
+                    if !browser.selected_origin_is_current(origin.as_ref()) {
+                        return;
+                    }
                     if browser.editing.is_some() {
                         return;
                     }
                     if event.click_count() == 2 {
                         browser.close_menus();
-                        browser.begin_name(false, window, cx);
+                        browser.begin_name_from(false, origin.as_ref(), window, cx);
                     } else if browser.workspace_menu {
                         browser.close_menus();
                     } else {
-                        browser.open_menu(Popover::Workspace, event.position(), window, cx);
+                        browser.open_workspace_menu(event.position(), window, cx);
                     }
                     cx.notify();
                 }),
@@ -408,6 +457,7 @@ impl Browser {
         states: Option<&HashMap<String, AgentState>>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let creation = self.creation_target();
         let (t, c) = (tokens(), colors());
         let mut list = div()
             .id("tabs")
@@ -427,7 +477,10 @@ impl Browser {
         else {
             return list.into_any_element();
         };
+        let origin = self.navigation_origin(&space.id);
         for (index, tab) in space.tabs.iter().enumerate() {
+            let origin = origin.clone();
+            let options_origin = origin.clone();
             let id = tab.id.clone();
             let selected = space.selected == id;
             let editing = selected && self.editing.as_ref().is_some_and(|edit| edit.tab);
@@ -441,6 +494,7 @@ impl Browser {
                     .into_any_element()
             } else {
                 let tab_id = id.clone();
+                let origin = origin.clone();
                 ui::text(
                     div()
                         .id(SharedString::from(format!("tab-name-{id}")))
@@ -462,6 +516,12 @@ impl Browser {
                         let active = browser.layout.as_ref().is_some_and(|layout| {
                             layout.model().tab().is_some_and(|tab| tab.id == tab_id)
                         });
+                        if !origin
+                            .as_ref()
+                            .is_some_and(|origin| browser.select_navigation(origin, &tab_id, None))
+                        {
+                            return;
+                        }
                         if event.click_count() == 1 {
                             browser.name_click = Some((tab_id.clone(), active));
                         }
@@ -470,11 +530,8 @@ impl Browser {
                                 .name_click
                                 .as_ref()
                                 .is_some_and(|(id, active)| id == &tab_id && *active);
-                        if let Some(layout) = &mut browser.layout {
-                            layout.model_mut().choose_tab(&tab_id);
-                        }
                         if edit {
-                            browser.begin_name(true, window, cx);
+                            browser.begin_name_from(true, origin.as_ref(), window, cx);
                         } else if let Some(focus) = &browser.navigation {
                             window.focus(focus, cx);
                         }
@@ -485,6 +542,7 @@ impl Browser {
             };
             let options_id = id.clone();
             let dragged = TabDrag {
+                origin: origin.clone(),
                 browser: cx.entity_id(),
                 workspace: space.id.clone(),
                 tab: id.clone(),
@@ -503,9 +561,9 @@ impl Browser {
                     })
                     .on_mouse_down(gpui::MouseButton::Right, cx.listener({
                         let id = id.clone();
+                        let origin = origin.clone();
                         move |browser, event: &gpui::MouseDownEvent, window, cx| {
-                            browser.menu_at = Some(event.position);
-                            browser.open_tab_menu(&id, window, cx)
+                            browser.open_tab_menu(origin.as_ref(), &id, event.position, window, cx)
                         }
                     }))
                     .child(
@@ -549,16 +607,15 @@ impl Browser {
                                             ui::icon_button(SharedString::from(format!("tab-options-{id}")), "ellipsis")
                                                 .on_click(cx.listener(move |browser, event: &gpui::ClickEvent, window, cx| {
                                                     cx.stop_propagation();
-                                                    browser.menu_at = Some(event.position());
-                                                    browser.open_tab_menu(&options_id, window, cx);
+                                                    browser.open_tab_menu(options_origin.as_ref(), &options_id, event.position(), window, cx);
                                                 })),
                                         ),
                                 ),
                         )
                     })
                     .on_click(cx.listener(move |browser, _, window, cx| {
-                        if let Some(layout) = &mut browser.layout {
-                            layout.model_mut().choose_tab(&id);
+                        if !origin.as_ref().is_some_and(|origin| browser.select_navigation(origin, &id, None)) {
+                            return;
                         }
                         if let Some(focus) = &browser.navigation {
                             window.focus(focus, cx);
@@ -578,8 +635,8 @@ impl Browser {
                     .child(ui::key_hint(super::shortcuts::label(
                         super::shortcuts::Command::NewTab,
                     )))
-                    .on_click(cx.listener(|browser, _, window, cx| {
-                        browser.create(Create::Tab, window, cx)
+                    .on_click(cx.listener(move |browser, _, window, cx| {
+                        browser.create_from(Create::Tab, creation.as_ref(), window, cx)
                     })),
             );
         }
@@ -592,21 +649,26 @@ impl Browser {
             .layout
             .as_ref()
             .is_some_and(|layout| layout.model().show_agents);
-        if self.roster.is_none() || !show {
+        if self.active_agents().is_none() || !show {
             return None;
         }
         let (t, c) = (tokens(), colors());
-        let entries: Option<Vec<(String, AgentState)>> =
-            self.agents.as_ref().and_then(|snapshot| {
-                snapshot.active_entries().map(|entries| {
-                    let mut entries: Vec<_> = entries
-                        .into_iter()
-                        .map(|(name, state)| (name.to_owned(), AgentState::from_report(state)))
-                        .collect();
-                    entries.sort_by_key(|(_, state)| !state.working());
-                    entries
-                })
+        let entries = self.agent_states().map(|states| {
+            let mut entries: Vec<_> = states
+                .iter()
+                .map(|(name, state)| (name.clone(), *state))
+                .collect();
+            entries.sort_by_key(|(name, state)| {
+                (
+                    !state.needs_you(),
+                    !state.working(),
+                    name.to_ascii_lowercase(),
+                    name.clone(),
+                )
             });
+            entries
+        });
+        let observed = self.active_agents().is_some_and(|roster| roster.observed());
         let needing = entries.as_ref().map_or(0, |entries| {
             entries
                 .iter()
@@ -617,7 +679,7 @@ impl Browser {
             entries.iter().filter(|(_, state)| state.working()).count()
         });
         let (summary, summary_color) = match &entries {
-            None if self.agents.is_some() => ("unavailable".to_owned(), c.attention_text),
+            None if observed => ("unavailable".to_owned(), c.attention_text),
             None => (String::new(), c.muted),
             Some(_) if needing > 0 => (format!("{needing} need you"), c.attention_text),
             Some(_) if working > 0 => (format!("{working} active"), c.accent_text),
@@ -656,7 +718,7 @@ impl Browser {
             )
             .overflow_y_scroll();
         match &entries {
-            None if self.agents.is_some() => {
+            None if observed => {
                 rows = rows.child(quiet("Agent Backbone unavailable", Some("unplug")))
             }
             None => rows = rows.child(quiet("Loading agents…", None)),
@@ -665,7 +727,7 @@ impl Browser {
             }
             Some(entries) => {
                 for (name, state) in entries {
-                    let agent = name.clone();
+                    let target = self.agent_target(name);
                     let calm = matches!(state, AgentState::Idle | AgentState::Unknown);
                     rows = rows.child(
                         ui::row(SharedString::from(format!("agent-{name}")), false)
@@ -680,7 +742,9 @@ impl Browser {
                                     .child(name.clone()),
                             )
                             .on_click(cx.listener(move |browser, _, window, cx| {
-                                browser.go_to_agent(&agent, window, cx)
+                                if let Some(target) = &target {
+                                    browser.go_to_agent_target(target, window, cx);
+                                }
                             })),
                     );
                 }
@@ -757,6 +821,7 @@ impl Browser {
                 self.shown_workspace = Some(selection);
             }
             for (index, space) in model.workspaces.iter().enumerate() {
+                let origin = self.navigation_origin(&space.id);
                 let id = space.id.clone();
                 let current = model.selected == id;
                 let needs_you = space.tabs.iter().any(|tab| self.tab_needs_you(tab, states));
@@ -788,24 +853,24 @@ impl Browser {
                         .on_mouse_down(
                             gpui::MouseButton::Right,
                             cx.listener({
-                                let id = id.clone();
+                                let origin = origin.clone();
                                 move |browser, event: &gpui::MouseDownEvent, window, cx| {
-                                    if let Some(layout) = &mut browser.layout {
-                                        layout.model_mut().choose_workspace(&id);
+                                    if !origin.as_ref().is_some_and(|origin| {
+                                        browser.select_workspace_origin(origin)
+                                    }) {
+                                        return;
                                     }
-                                    browser.open_menu(
-                                        Popover::Workspace,
-                                        event.position,
-                                        window,
-                                        cx,
-                                    );
+                                    browser.open_workspace_menu(event.position, window, cx);
                                     cx.stop_propagation();
                                 }
                             }),
                         )
                         .on_click(cx.listener(move |browser, _, window, cx| {
-                            if let Some(layout) = &mut browser.layout {
-                                layout.model_mut().choose_workspace(&id);
+                            if !origin
+                                .as_ref()
+                                .is_some_and(|origin| browser.select_workspace_origin(origin))
+                            {
+                                return;
                             }
                             browser.close_menus();
                             if let Some(focus) = &browser.navigation {
@@ -879,9 +944,17 @@ mod tests {
         let alias = alias.to_str().unwrap().to_owned();
         let invalid = "invalid\0socket".to_owned();
         let paths = [alias.clone(), invalid.clone(), "/other/socket".into()].into();
-        let matches = SourceMatches::resolve(Some(socket), paths);
+        let matches = SourceMatches::resolve(Some(socket.clone()), paths);
+        assert!(
+            matches
+                == SourceMatches::resolve(
+                    Some(socket.clone()),
+                    [alias.clone(), invalid.clone(), "/other/socket".into()].into(),
+                )
+        );
         // Rendering needs only the snapshot, even if the alias is gone later.
         std::fs::remove_file(&alias).unwrap();
+        assert!(matches != SourceMatches::resolve(Some(socket), [alias.clone()].into()));
         assert!(matches.contains(None));
         assert!(matches.contains(Some(&alias)));
         assert!(!matches.contains(Some(&invalid)));

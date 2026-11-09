@@ -133,47 +133,45 @@ pub(super) fn body(pane: &ViewPane, usage: &Usage, cx: &mut Context<ViewPane>) -
 
     let mut groups: BTreeMap<String, Row<'_>> = BTreeMap::new();
     for session in &usage.sessions {
-        let keys: Vec<String> = match pane.usage_by {
-            UsageBy::Agent => vec![session.agent.clone()],
-            UsageBy::Cli => vec![session.runtime.clone()],
-            UsageBy::Model if session.models.is_empty() => vec!["unknown model".into()],
+        let key = match pane.usage_by {
+            UsageBy::Agent => session.agent.clone(),
+            UsageBy::Cli => session.runtime.clone(),
+            UsageBy::Model if session.models.is_empty() => "unknown model".into(),
             // Backbone counts a session's tokens as a whole, so a session that
             // used several models is its own group rather than counted twice.
-            UsageBy::Model => vec![session.models.join(" + ")],
+            UsageBy::Model => session.models.join(" + "),
         };
-        for key in keys {
-            let row = groups.entry(key.clone()).or_insert_with(|| Row {
-                key,
-                runtimes: Vec::new(),
-                models: Vec::new(),
-                sessions: Vec::new(),
-                tokens: Tokens::default(),
-                usd: 0.0,
-                priced: false,
-                coverage: &session.coverage,
-            });
-            row.sessions.push(session);
-            row.tokens += session.tokens;
-            if let Some(usd) = session
-                .estimated_usd
-                .as_deref()
-                .and_then(|usd| usd.parse::<f64>().ok())
-            {
-                row.usd += usd;
-                row.priced = true;
+        let row = groups.entry(key.clone()).or_insert_with(|| Row {
+            key,
+            runtimes: Vec::new(),
+            models: Vec::new(),
+            sessions: Vec::new(),
+            tokens: Tokens::default(),
+            usd: 0.0,
+            priced: false,
+            coverage: &session.coverage,
+        });
+        row.sessions.push(session);
+        row.tokens += session.tokens;
+        if let Some(usd) = session
+            .estimated_usd
+            .as_deref()
+            .and_then(|usd| usd.parse::<f64>().ok())
+        {
+            row.usd += usd;
+            row.priced = true;
+        }
+        if !row.runtimes.contains(&session.runtime.as_str()) {
+            row.runtimes.push(&session.runtime);
+        }
+        for model in &session.models {
+            if !row.models.contains(&model.as_str()) {
+                row.models.push(model);
             }
-            if !row.runtimes.contains(&session.runtime.as_str()) {
-                row.runtimes.push(&session.runtime);
-            }
-            for model in &session.models {
-                if !row.models.contains(&model.as_str()) {
-                    row.models.push(model);
-                }
-            }
-            // The weakest coverage of a group's sessions is its coverage.
-            if rank(&session.coverage) > rank(row.coverage) {
-                row.coverage = &session.coverage;
-            }
+        }
+        // The weakest coverage of a group's sessions is its coverage.
+        if rank(&session.coverage) > rank(row.coverage) {
+            row.coverage = &session.coverage;
         }
     }
     let mut rows: Vec<_> = groups.into_values().collect();

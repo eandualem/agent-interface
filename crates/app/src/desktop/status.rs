@@ -86,6 +86,13 @@ impl Browser {
         } else if let Some(model) = self.layout.as_ref().map(|layout| layout.model()) {
             if let Some(space) = model.workspace() {
                 left = left.child(div().text_color(c.text).child(space.name.clone()));
+                if let Some(profile_id) = &space.profile_id {
+                    left = left.child(
+                        div()
+                            .text_color(c.text_2)
+                            .child(format!("profile: {profile_id}")),
+                    );
+                }
                 match model.tab() {
                     Some(tab) => {
                         let panes = tab.tree.leaves();
@@ -134,7 +141,7 @@ impl Browser {
         }
         // Right: the agents toggle and the saved state or a message.
         let mut right = div().flex().items_center().gap(px(t.space.s18));
-        if self.roster.is_some() {
+        if self.active_agents().is_some() {
             let shown = self
                 .layout
                 .as_ref()

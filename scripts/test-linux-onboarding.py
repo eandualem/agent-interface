@@ -58,8 +58,8 @@ with tempfile.TemporaryDirectory(prefix="onboarding-smoke-") as directory:
     provider = root / "provider"
     provider.mkdir(mode=0o700)
     (provider / "backbone.db").touch()
-    env.update(BACKBONE_DATA_DIR=str(provider), BACKBONE_API_KEY="fixture-only",
-               BACKBONE_SOCKET_PATH=str(provider / "api.sock"))
+    (provider / "run").mkdir(mode=0o700)
+    env.update(BACKBONE_DATA_DIR=str(provider), BACKBONE_API_KEY="fixture-only")
     bin_dir = root / ".local/bin"
     bin_dir.mkdir(parents=True)
     env["PATH"] = f"{bin_dir}:/usr/bin:/bin"
@@ -127,8 +127,8 @@ print(json.dumps(e));sys.exit(code)
     class Server(socketserver.ThreadingUnixStreamServer):
         daemon_threads = True
 
-    server = Server(str(provider / "api.sock"), Provider)
-    (provider / "api.sock").chmod(0o600)
+    server = Server(str(provider / "run/api.sock"), Provider)
+    (provider / "run/api.sock").chmod(0o600)
     threading.Thread(target=server.serve_forever, daemon=True).start()
 
     def command(*args, check=True):

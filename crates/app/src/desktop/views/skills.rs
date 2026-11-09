@@ -6,7 +6,7 @@
 use agent_interface_roster::views::{LocalSkill, PREVIEW_LIMIT, Place, Skill, SkillLibrary};
 use gpui::{AnyElement, Context, Div, SharedString, div, prelude::*, px};
 
-use super::{Open, Target, ViewPane, home, line, mono, reader};
+use super::{Open, Target, ViewPane, additions::Kind, home, line, mono, reader};
 use crate::desktop::{
     components::{self as ui, Tone},
     design::{colors, tokens},
@@ -239,7 +239,8 @@ pub(super) fn body(
 fn index(pane: &ViewPane, library: &SkillLibrary, cx: &mut Context<ViewPane>) -> AnyElement {
     let (t, c) = (tokens(), colors());
     let header = ui::view_header("diamond", "Skills")
-        .child("every skill an agent can load, by where it lives");
+        .child("every skill an agent can load, by where it lives")
+        .children(super::additions::button(pane, Kind::Skill, cx));
     let search = div()
         .flex_shrink_0()
         .px(px(t.space.s20))
@@ -253,6 +254,12 @@ fn index(pane: &ViewPane, library: &SkillLibrary, cx: &mut Context<ViewPane>) ->
                 .h(px(t.size.jump_field))
                 .child(div().flex_1().min_w_0().child(field))
         }));
+    let candidates: std::sync::Arc<[String]> = library
+        .agents
+        .iter()
+        .map(|agent| agent.name.clone())
+        .collect::<Vec<_>>()
+        .into();
     let mut column = div();
     let mut shown = 0;
     for section in sections(pane, library) {
@@ -280,6 +287,14 @@ fn index(pane: &ViewPane, library: &SkillLibrary, cx: &mut Context<ViewPane>) ->
                     Row::Local(skill) => (&skill.name, skill.error.as_deref(), String::new()),
                 };
                 let target = Target::Skill(row.path().to_owned());
+                // Capture the rendered catalog row, not a path lookup after a refresh.
+                let captured = (
+                    match row {
+                        Row::Store(skill) => Some((*skill).clone()),
+                        Row::Local(_) => None,
+                    },
+                    candidates.clone(),
+                );
                 card = card.child(
                     ui::group_row(
                         SharedString::from(format!("skill-{}-{at}-{index}", section.title)),
@@ -291,7 +306,9 @@ fn index(pane: &ViewPane, library: &SkillLibrary, cx: &mut Context<ViewPane>) ->
                             None => div().child(trailing),
                         },
                     )
-                    .on_click(cx.listener(move |pane, _, _, cx| pane.open(target.clone(), cx))),
+                    .on_click(cx.listener(move |pane, _, _, cx| {
+                        pane.open_with_skill(target.clone(), Some(captured.clone()), cx)
+                    })),
                 );
             }
             column = column.child(card);
@@ -317,6 +334,7 @@ fn index(pane: &ViewPane, library: &SkillLibrary, cx: &mut Context<ViewPane>) ->
         .flex_col()
         .child(header)
         .child(search)
+        .children(super::additions::note(pane, Kind::Skill))
         .child(ui::grouped_page("skill-rows", column))
         .child(ui::view_footer(
             &[("click", "read the skill")],
@@ -339,11 +357,14 @@ fn detail(
     let header = ui::view_header("diamond", "Skills").child("reading SKILL.md");
     let targets = targets(pane, library);
     let at = targets.iter().position(|target| *target == open.target);
-    let store = library
-        .store
-        .items
-        .iter()
-        .find(|skill| &skill.path == folder);
+    let store = match &open.bound_skill {
+        Some(bound) => bound.record.as_ref(),
+        None => library
+            .store
+            .items
+            .iter()
+            .find(|skill| &skill.path == folder),
+    };
     let local = [&library.repositories, &library.user]
         .into_iter()
         .flatten()

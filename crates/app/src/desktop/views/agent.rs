@@ -40,34 +40,12 @@ pub(super) fn body(pane: &ViewPane, agent: &Agent, cx: &mut Context<ViewPane>) -
             ))
             .into_any_element();
     }
-    let state = AgentState::from_report(&agent.state);
-    let (word, color) = match (agent.online, state) {
-        (false, _) => ("offline".to_owned(), c.muted),
-        (true, AgentState::NeedsYou | AgentState::Blocked) => (
-            match &agent.reason {
-                Some(reason) => format!("{} · {reason}", state.word()),
-                None => state.word().to_owned(),
-            },
-            c.attention_text,
-        ),
-        (true, AgentState::Working | AgentState::Starting) => {
-            (state.word().to_owned(), c.accent_text)
-        }
-        (true, state) => (state.word().to_owned(), c.muted),
-    };
+    let status = pane.agents.get(&agent.name);
     let name = agent.name.clone();
     let header = ui::view_header("user", agent.name.clone())
         .pr(px(t.space.s6))
         .child(ui::badge(agent.runtime.clone()))
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(t.space.s4 + 1.0))
-                .text_color(color)
-                .when(agent.online, |el| el.child(ui::agent_symbol(state)))
-                .child(word),
-        )
+        .child(ui::agent_status(&status))
         .child(div().flex_1())
         .child(
             ui::text(
@@ -135,11 +113,11 @@ pub(super) fn body(pane: &ViewPane, agent: &Agent, cx: &mut Context<ViewPane>) -
     }
 
     let content = match pane.section {
-        AgentSection::Overview => overview(agent, state),
+        AgentSection::Overview => overview(agent, &status),
         AgentSection::Permissions => permissions(agent),
         AgentSection::Connections => connections(agent),
-        AgentSection::Skills => skills_section(agent, cx),
-        AgentSection::Policies => policies_section(agent, cx),
+        AgentSection::Skills => skills_section(agent, cx, Some(ViewPane::open)),
+        AgentSection::Policies => policies_section(agent, cx, Some(ViewPane::open)),
         AgentSection::Usage => usage_section(agent),
     };
     div()
@@ -152,7 +130,7 @@ pub(super) fn body(pane: &ViewPane, agent: &Agent, cx: &mut Context<ViewPane>) -
         .into_any_element()
 }
 
-fn label(section: AgentSection) -> &'static str {
+pub(super) fn label(section: AgentSection) -> &'static str {
     match section {
         AgentSection::Overview => "Overview",
         AgentSection::Permissions => "Permissions",
@@ -374,7 +352,12 @@ fn failed(error: &'static str) -> AnyElement {
         .into_any_element()
 }
 
-fn skills_section(agent: &Agent, cx: &mut Context<ViewPane>) -> AnyElement {
+/// Rows open in the reader through `open`; without it they only list.
+pub(super) fn skills_section<V: 'static>(
+    agent: &Agent,
+    cx: &mut Context<V>,
+    open: Option<fn(&mut V, Target, &mut Context<V>)>,
+) -> AnyElement {
     let loadout = match &agent.skills {
         None => return waiting("Reading the skills its next launch links…"),
         Some(Err(error)) => return failed(error),
@@ -433,7 +416,9 @@ fn skills_section(agent: &Agent, cx: &mut Context<ViewPane>) -> AnyElement {
                         None => div().child(self::why(&why)),
                     },
                 )
-                .on_click(cx.listener(move |pane, _, _, cx| pane.open(target.clone(), cx))),
+                .when_some(open, |row, open| {
+                    row.on_click(cx.listener(move |host, _, _, cx| open(host, target.clone(), cx)))
+                }),
             );
         }
         column = column.child(card);
@@ -465,7 +450,12 @@ fn group(scope: &str) -> (&'static str, &'static str) {
     }
 }
 
-fn policies_section(agent: &Agent, cx: &mut Context<ViewPane>) -> AnyElement {
+/// Rows open in the reader through `open`; without it they only list.
+pub(super) fn policies_section<V: 'static>(
+    agent: &Agent,
+    cx: &mut Context<V>,
+    open: Option<fn(&mut V, Target, &mut Context<V>)>,
+) -> AnyElement {
     let brief: &Instructions = match &agent.brief {
         None => return waiting("Reading what it receives at its next start…"),
         Some(Err(error)) => return failed(error),
@@ -514,9 +504,11 @@ fn policies_section(agent: &Agent, cx: &mut Context<ViewPane>) -> AnyElement {
                     .child(policies::scope(source)),
             )
             .when(!source.applied, |el| el.opacity(0.45))
-            .on_click(
-                cx.listener(move |pane, _, _, cx| pane.open(Target::Policy(path.clone()), cx)),
-            ),
+            .when_some(open, |row, open| {
+                row.on_click(
+                    cx.listener(move |host, _, _, cx| open(host, Target::Policy(path.clone()), cx)),
+                )
+            }),
         );
         card = Some((current, false));
     }
@@ -529,7 +521,7 @@ fn policies_section(agent: &Agent, cx: &mut Context<ViewPane>) -> AnyElement {
     ui::grouped_page("agent-policies", column).into_any_element()
 }
 
-fn usage_section(agent: &Agent) -> AnyElement {
+pub(super) fn usage_section(agent: &Agent) -> AnyElement {
     let usage: &Usage = match &agent.usage {
         None => return waiting("Reading its usage…"),
         Some(Err(error)) => return failed(error),
@@ -630,7 +622,12 @@ fn usage_section(agent: &Agent) -> AnyElement {
     list.into_any_element()
 }
 
-fn tab(id: SharedString, label: &'static str, mark: String, on: bool) -> gpui::Stateful<gpui::Div> {
+pub(super) fn tab(
+    id: SharedString,
+    label: &'static str,
+    mark: String,
+    on: bool,
+) -> gpui::Stateful<gpui::Div> {
     let (t, c) = (tokens(), colors());
     ui::text(
         div()
@@ -659,13 +656,15 @@ fn tab(id: SharedString, label: &'static str, mark: String, on: bool) -> gpui::S
     })
 }
 
-fn overview(agent: &Agent, state: AgentState) -> AnyElement {
+fn overview(agent: &Agent, status: &crate::desktop::agent_status::Status) -> AnyElement {
     let (t, c) = (tokens(), colors());
+    let matching = status.state == AgentState::from_runtime(&agent.state);
+    let age = matching.then_some(agent.state_age_seconds).flatten();
     let mut body = list("agent-overview")
         .px(px(t.space.s18))
         .py(px(t.space.s16))
         .gap(px(t.space.s16));
-    if agent.online && state.needs_you() {
+    if status.state.needs_you() && matching {
         body = body.child(
             div()
                 .flex_shrink_0()
@@ -687,7 +686,7 @@ fn overview(agent: &Agent, state: AgentState) -> AnyElement {
                         )
                         .child(div().text_color(c.muted).child(format!(
                             "{} ago · it does nothing more until someone answers in its terminal",
-                            agent.state_age_seconds.map(ago).unwrap_or_default()
+                            age.map(ago).unwrap_or_default()
                         ))),
                 )
                 .children(agent.last_message.as_ref().map(|message| {
@@ -698,7 +697,7 @@ fn overview(agent: &Agent, state: AgentState) -> AnyElement {
                         .child("From its last reply, as its hook reported it."),
                 ),
         );
-    } else if let Some(detail) = &agent.detail {
+    } else if matching && let Some(detail) = &agent.detail {
         body = body
             .child(ui::text(div().text_color(c.attention_text), &t.text.body).child(line(detail)));
     }
@@ -743,9 +742,7 @@ fn overview(agent: &Agent, state: AgentState) -> AnyElement {
             .child(ui::fact(
                 "In this state",
                 div().child(
-                    agent
-                        .state_age_seconds
-                        .map(ago)
+                    age.map(ago)
                         .map(|age| format!("for {age}"))
                         .unwrap_or_else(|| "unknown".into()),
                 ),
@@ -811,7 +808,7 @@ fn messages(label: &str, note: &'static str, messages: &[&Received]) -> gpui::Di
     section
 }
 
-fn connections(agent: &Agent) -> AnyElement {
+pub(super) fn connections(agent: &Agent) -> AnyElement {
     let (t, c) = (tokens(), colors());
     let card = |title: &'static str, state: String, main: String, sub: String| {
         div()

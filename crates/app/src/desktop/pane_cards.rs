@@ -15,18 +15,19 @@ use super::{
     new_pane::NewPane,
     settings::{self, PaneHeaders},
     terminal::LiveTerminal,
-    views::{self, ViewPane},
+    views::ViewPane,
 };
 use ui::AgentState;
 
 /// What every card in one tree needs to know.
 pub(super) struct Cards<'a> {
+    pub origin: Option<super::navigation_origin::Origin>,
     pub focus: &'a str,
     pub focus_changed: bool,
     pub accessibility_active: bool,
     pub numbers: &'a [String],
     pub terminals: &'a HashMap<String, Entity<LiveTerminal>>,
-    pub views: &'a HashMap<String, (Entity<ViewPane>, gpui::Subscription)>,
+    pub views: &'a HashMap<String, (Entity<ViewPane>, super::navigation_origin::ViewEvents)>,
     pub new_panes: &'a HashMap<String, (Entity<NewPane>, gpui::Subscription)>,
     pub chooser: Option<&'a Attaching>,
     pub split_bounds: &'a Rc<RefCell<HashMap<String, Bounds<Pixels>>>>,
@@ -34,6 +35,7 @@ pub(super) struct Cards<'a> {
     pub drop_target: Option<&'a (String, super::pane_drag::Edge)>,
     /// The agent state shown in each pane, by leaf.
     pub leaf_states: HashMap<String, AgentState>,
+    pub unavailable: HashMap<String, &'static str>,
 }
 
 impl Browser {
@@ -83,8 +85,15 @@ impl Browser {
                                 gpui::MouseButton::Left,
                                 cx.listener({
                                     let id = id.clone();
+                                    let origin = cards.origin.clone();
                                     move |browser, event: &gpui::MouseDownEvent, window, cx| {
-                                        browser.begin_resize(&id, event.position, window, cx);
+                                        browser.begin_resize(
+                                            origin.as_ref(),
+                                            &id,
+                                            event.position,
+                                            window,
+                                            cx,
+                                        );
                                     }
                                 }),
                             ),
@@ -140,7 +149,15 @@ impl Browser {
             ),
             PaneHeaders::Off => (None, None),
         };
-        let body = if let Some(chooser) = cards
+        let body = if let Some(message) = cards.unavailable.get(&leaf.id) {
+            div()
+                .size_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(*message)
+                .into_any_element()
+        } else if let Some(chooser) = cards
             .chooser
             .filter(|chooser| chooser.destination.pane == leaf.id)
         {
@@ -198,10 +215,18 @@ impl Browser {
             // accepts those clicks), so pane commands follow the typing.
             .capture_any_mouse_down(cx.listener({
                 let id = id.clone();
+                let origin = cards.origin.clone();
                 move |browser, event: &gpui::MouseDownEvent, window, cx| {
+                    if !browser.selected_origin_is_current(origin.as_ref()) {
+                        return;
+                    }
+                    let selection_origin = origin.clone();
                     let leaf = id.clone();
                     let id = id.clone();
                     let select = move |browser: &mut Self, cx: &mut Context<Self>| {
+                        if !browser.selected_origin_is_current(selection_origin.as_ref()) {
+                            return;
+                        }
                         if let Some(layout) = &mut browser.layout
                             && layout.model().tab().is_some_and(|tab| tab.focus != id)
                         {
@@ -236,7 +261,7 @@ impl Browser {
                             cx.stop_propagation();
                             cx.notify();
                         } else if in_header {
-                            browser.begin_pane_drag(&leaf, event.position);
+                            browser.begin_pane_drag(origin.as_ref(), &leaf, event.position);
                         }
                         // A view takes no keys: stop a terminal beside it
                         // from receiving them once the view is selected.
@@ -388,6 +413,8 @@ impl Browser {
                 .overflow_x_scroll();
             for (window, current) in windows {
                 let terminal = terminal.cloned();
+                let origin = cards.origin.clone();
+                let pane = leaf.id.clone();
                 choices = choices.child(
                     div()
                         .id(SharedString::from(format!(
@@ -404,13 +431,18 @@ impl Browser {
                                 .map(|ch| if ch.is_control() { ' ' } else { ch })
                                 .collect::<String>(),
                         )
-                        .on_click(move |_, _, cx| {
-                            if let Some(terminal) = &terminal {
+                        .on_click(cx.listener(move |browser, _, _, cx| {
+                            if !browser.selected_origin_is_current(origin.as_ref()) {
+                                return;
+                            }
+                            if let Some(terminal) = &terminal
+                                && browser.terminals.get(&pane) == Some(terminal)
+                            {
                                 terminal.update(cx, |terminal, cx| {
                                     terminal.select_window(window.clone(), cx)
                                 });
                             }
-                        }),
+                        })),
                 );
             }
             row = row.child(choices);
@@ -468,27 +500,6 @@ impl Browser {
                     .as_deref()
                     .map(|path| home_relative(path, std::env::var("HOME").ok().as_deref()))
                     .unwrap_or_default();
-                if let Some(view) = &leaf.view {
-                    return row
-                        .child(ui::icon(
-                            views::about(view.kind).icon,
-                            t.size.icon - t.space.s2 / 2.0,
-                            icon_color,
-                        ))
-                        .child(div().text_color(title_color).child(ViewPane::title(view)))
-                        .when(view.agent.is_some(), |row| {
-                            row.child(div().child(views::about(view.kind).label))
-                        })
-                        .child(div().flex_1())
-                        .child(
-                            div()
-                                .w(px(t.size.pane_number_width))
-                                .flex_shrink_0()
-                                .font_family(t.font.mono.clone())
-                                .text_size(t.text.key.size())
-                                .child(number.to_string()),
-                        );
-                }
                 row = row
                     .child(ui::icon(
                         "terminal",

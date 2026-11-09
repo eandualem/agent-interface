@@ -16,6 +16,8 @@ use serde_json::value::RawValue;
 
 use crate::{configuration::configured, transport, valid_agent, within_depth};
 
+pub mod bound;
+pub mod content;
 mod documents;
 mod library;
 mod reports;
@@ -47,8 +49,7 @@ fn bounded_groups(entries: impl Iterator<Item = (usize, usize)>) -> bool {
 }
 
 /// Why a view has no data. The text is fixed and contains no response content.
-pub const UNAVAILABLE: &str =
-    "Backbone is unavailable. Check BACKBONE_SOCKET_PATH and its private socket.";
+pub const UNAVAILABLE: &str = "Backbone is unavailable. Check that its service is running.";
 /// Backbone answered that it does not serve this read.
 pub const NOT_SERVED: &str = "This Backbone does not serve policies yet; it needs updating.";
 /// A response this version cannot read.
@@ -152,30 +153,62 @@ pub enum Data {
     Agent(Box<Agent>),
 }
 
-/// An enabled provider's address and key, and whether the read is still
-/// wanted.
+/// The transport for one read chain. Bound reads record transport failures so
+/// optional roster enrichment cannot hide a rejected connection binding.
+enum Provider<'a> {
+    Legacy {
+        url: String,
+        key: String,
+    },
+    Bound {
+        connection: &'a crate::profiles::Connection,
+        error: std::cell::Cell<Option<crate::profiles::Error>>,
+    },
+}
+
 pub(crate) struct Api<'a> {
-    url: String,
-    key: String,
+    provider: Provider<'a>,
     live: &'a dyn Fn() -> bool,
 }
 
 impl<'a> Api<'a> {
-    #[cfg(test)]
     pub(crate) fn new(url: String, key: String, live: &'a dyn Fn() -> bool) -> Self {
-        Self { url, key, live }
+        Self {
+            provider: Provider::Legacy { url, key },
+            live,
+        }
     }
 
     fn live(&self) -> bool {
         (self.live)()
     }
 
-    fn get(&self, path: &str) -> Result<Vec<u8>, &'static str> {
+    fn fetch(&self, path: &str, limit: usize) -> Result<Vec<u8>, Option<u16>> {
         // A read nobody is waiting for any more starts no further request.
         if !self.live() {
-            return Err(UNAVAILABLE);
+            return Err(None);
         }
-        transport::get(&self.url, path, &self.key, VIEW_LIMIT).ok_or(UNAVAILABLE)
+        match &self.provider {
+            Provider::Legacy { url, key } => transport::fetch(url, path, key, limit),
+            Provider::Bound { connection, error } => {
+                // Once a chain loses its binding, never start another request.
+                if error.get().is_some() {
+                    return Err(None);
+                }
+                match connection.response(path, None, limit) {
+                    Ok(response) if (200..300).contains(&response.status) => Ok(response.body),
+                    Ok(response) => Err(Some(response.status)),
+                    Err(failure) => {
+                        error.set(Some(failure));
+                        Err(None)
+                    }
+                }
+            }
+        }
+    }
+
+    fn get(&self, path: &str) -> Result<Vec<u8>, &'static str> {
+        self.fetch(path, VIEW_LIMIT).map_err(|_| UNAVAILABLE)
     }
 }
 
@@ -185,7 +218,7 @@ fn instructions(api: &Api<'_>, name: &str) -> Result<Instructions, &'static str>
         return Err(UNAVAILABLE);
     }
     let path = format!("/api/agents/{name}/instructions");
-    match transport::fetch(&api.url, &path, &api.key, VIEW_LIMIT) {
+    match api.fetch(&path, VIEW_LIMIT) {
         Ok(body) => Instructions::decode(&body),
         Err(Some(404 | 405)) => Err(NOT_SERVED),
         Err(_) => Err(UNAVAILABLE),
@@ -203,11 +236,7 @@ fn usage_path(range: Range) -> String {
 pub fn members(data_dir: &Path) -> Option<std::collections::BTreeMap<String, Member>> {
     let (url, key) = configured(data_dir, None)?;
     let live = || true;
-    let api = Api {
-        url,
-        key,
-        live: &live,
-    };
+    let api = Api::new(url, key, &live);
     library::agents(&api)
         .map(|agents| {
             agents
@@ -229,7 +258,11 @@ pub fn read(
     live: &dyn Fn() -> bool,
 ) -> Result<Data, &'static str> {
     let (url, key) = configured(data_dir, url).ok_or(UNAVAILABLE)?;
-    let api = Api { url, key, live };
+    let api = Api::new(url, key, live);
+    read_using(&api, request)
+}
+
+fn read_using(api: &Api<'_>, request: &Request) -> Result<Data, &'static str> {
     let data: Result<Data, &'static str> = match request {
         Request::Team => Ok(Data::Team(Team::decode(
             &api.get("/api/agents")?,
@@ -237,15 +270,15 @@ pub fn read(
         )?)),
         Request::Usage(range) => Ok(Data::Usage(Usage::decode(&api.get(&usage_path(*range))?)?)),
         Request::Reports(query, agent) => {
-            Ok(Data::Reports(reports::read(&api, query, agent.as_deref())?))
+            Ok(Data::Reports(reports::read(api, query, agent.as_deref())?))
         }
-        Request::Document(id) => Ok(Data::Document(documents::read(&api, *id)?)),
-        Request::Response(id) => Ok(Data::Reports(reports::read_response(&api, *id)?)),
-        Request::Report(id) => Ok(Data::Reports(reports::read_report(&api, *id)?)),
+        Request::Document(id) => Ok(Data::Document(documents::read(api, *id)?)),
+        Request::Response(id) => Ok(Data::Reports(reports::read_response(api, *id)?)),
+        Request::Report(id) => Ok(Data::Reports(reports::read_report(api, *id)?)),
         Request::Activity => {
             // History is an addition: when it cannot be read, the timeline
             // still shows deliveries and states now, and says why.
-            let changes = history(&api, now().saturating_sub(3_600 + HISTORY_LOOKBACK));
+            let changes = history(api, now().saturating_sub(3_600 + HISTORY_LOOKBACK));
             if !api.live() {
                 return Err(UNAVAILABLE);
             }
@@ -256,14 +289,12 @@ pub fn read(
                 changes,
             )?))
         }
-        Request::Skills => Ok(Data::Skills(Box::new(SkillLibrary::read(&api)?))),
+        Request::Skills => Ok(Data::Skills(Box::new(SkillLibrary::read(api)?))),
         Request::Policies => {
-            let agents = library::agents(&api)?;
-            Ok(Data::Policies(Box::new(PolicyLibrary::read(
-                &api, &agents,
-            )?)))
+            let agents = library::agents(api)?;
+            Ok(Data::Policies(Box::new(PolicyLibrary::read(api, &agents)?)))
         }
-        Request::Tags => Ok(Data::Tags(Box::new(TagLibrary::read(&api)?))),
+        Request::Tags => Ok(Data::Tags(Box::new(TagLibrary::read(api)?))),
         Request::Agent(name, part) => {
             if !valid_agent(name) {
                 return Err(UNREADABLE);
@@ -274,34 +305,40 @@ pub fn read(
                 .into_iter()
                 .find(|launch| &launch.name == name);
             agent.permissions = read_permissions(&agent.runtime, &agent.dir);
-            // A section's own read failing leaves the card; the section says why.
-            match part {
-                Part::Card => {}
-                Part::Skills => {
-                    agent.skills = Some(
-                        api.get(&format!("/api/skills/preview/{name}"))
-                            .and_then(|body| Loadout::decode(&body)),
-                    );
-                }
-                Part::Policies => agent.brief = Some(instructions(&api, name)),
-                Part::Usage(range) => {
-                    agent.usage = Some(
-                        api.get(&usage_path(*range))
-                            .and_then(|body| Usage::decode(&body))
-                            .map(|usage| usage.of(name)),
-                    );
-                }
-            }
+            read_part(api, name, part, &mut agent);
             Ok(Data::Agent(Box::new(agent)))
         }
     };
     let mut data = data?;
-    if let Data::Reports(page) = &mut data {
+    if let Data::Reports(page) = &mut data
+        && let Provider::Legacy { url, .. } = &api.provider
+    {
         for item in &mut page.items {
-            item.provider_url = api.url.clone();
+            item.provider_url = url.clone();
         }
     }
     Ok(data)
+}
+
+/// A section's own read failing leaves the card; the section says why.
+fn read_part(api: &Api<'_>, name: &str, part: &Part, agent: &mut Agent) {
+    match part {
+        Part::Card => {}
+        Part::Skills => {
+            agent.skills = Some(
+                api.get(&format!("/api/skills/preview/{name}"))
+                    .and_then(|body| Loadout::decode(&body)),
+            );
+        }
+        Part::Policies => agent.brief = Some(instructions(api, name)),
+        Part::Usage(range) => {
+            agent.usage = Some(
+                api.get(&usage_path(*range))
+                    .and_then(|body| Usage::decode(&body))
+                    .map(|usage| usage.of(name)),
+            );
+        }
+    }
 }
 
 /// Agents and the swarms they work in.
@@ -319,6 +356,8 @@ pub struct Team {
 pub struct Member {
     /// Agent name.
     pub name: String,
+    /// Durable registration from a bound list, absent for unregistered rows.
+    pub registration_id: Option<String>,
     /// The CLI it runs in.
     pub runtime: String,
     /// The repository it owns, or empty.
@@ -673,7 +712,7 @@ fn history(api: &Api<'_>, since: u64) -> History {
             .map(|id| format!("&before_id={id}"))
             .unwrap_or_default();
         let path = format!("/api/agents/states?since={}&limit=500{cursor}", iso(since));
-        let body = match transport::fetch(&api.url, &path, &api.key, VIEW_LIMIT) {
+        let body = match api.fetch(&path, VIEW_LIMIT) {
             Ok(body) => body,
             Err(Some(404 | 405)) => return History::NotServed,
             Err(_) => return History::Failed(UNAVAILABLE),
@@ -797,6 +836,8 @@ impl Activity {
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct Skill {
+    /// Stable shared artifact identity observed with this catalog row.
+    pub artifact_id: Option<String>,
     /// Skill name.
     pub name: String,
     /// Its folder in the store, as Backbone reports it.
@@ -845,6 +886,7 @@ impl Skills {
             (
                 skill.tags.len().max(1),
                 skill.name.len()
+                    + skill.artifact_id.as_ref().map_or(0, String::len)
                     + skill.path.len()
                     + skill.description.len()
                     + skill.error.as_ref().map_or(0, String::len)
@@ -1131,6 +1173,9 @@ fn rules(runtime: &str, dir: &str, home: Option<std::path::PathBuf>) -> Permissi
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct Source {
+    /// Shared catalog identity attached by a bound library read, never a path lookup at open.
+    #[serde(skip)]
+    pub artifact_id: Option<String>,
     /// The policy's name, or `base` or `swarm`.
     pub name: std::sync::Arc<str>,
     /// Its file.
@@ -1270,7 +1315,7 @@ pub fn read_skill(folder: &str) -> Result<(String, bool), &'static str> {
 }
 
 impl Agent {
-    fn decode(body: &[u8]) -> Result<Self, &'static str> {
+    pub(crate) fn decode(body: &[u8]) -> Result<Self, &'static str> {
         let document = document(body)?;
         let raw = std::str::from_utf8(body).map_err(|_| UNREADABLE)?;
         let mut agent: Self = serde_json::from_str(raw).map_err(|_| UNREADABLE)?;
@@ -1288,6 +1333,20 @@ impl Agent {
 }
 
 type Document<'a> = BTreeMap<String, &'a RawValue>;
+
+/// Percent-encode a query value, keeping only RFC 3986 unreserved bytes.
+pub(crate) fn encode(value: &str) -> String {
+    let mut encoded = String::new();
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || b"-._~".contains(&byte) {
+            encoded.push(char::from(byte));
+        } else {
+            use std::fmt::Write;
+            let _ = write!(encoded, "%{byte:02X}");
+        }
+    }
+    encoded
+}
 
 fn document(body: &[u8]) -> Result<Document<'_>, &'static str> {
     if body.len() > VIEW_LIMIT || !within_depth(body) {

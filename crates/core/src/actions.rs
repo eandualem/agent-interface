@@ -5,23 +5,6 @@
 use crate::{Attachment, Direction, Layout, Leaf, Node, Tab, View, Workspace};
 use unicode_properties::{GeneralCategoryGroup, UnicodeGeneralCategory};
 
-/// Workspace icon picker choices as (glyph, label), in the Python tool's order.
-/// Choosing Number clears the icon instead of storing a numeric glyph.
-pub const WORKSPACE_ICONS: &[(&str, &str)] = &[
-    ("◆", "Diamond"),
-    ("●", "Circle"),
-    ("▲", "Triangle"),
-    ("■", "Square"),
-    ("★", "Star"),
-    ("✦", "Spark"),
-    ("◈", "Gem"),
-    ("⚑", "Flag"),
-    ("⌂", "House"),
-    ("✎", "Pencil"),
-    ("⚙", "Gear"),
-    ("♪", "Note"),
-];
-
 /// The destination, attachment and view captured when a session chooser opens.
 #[derive(Clone, Debug)]
 pub struct AttachmentTarget {
@@ -164,6 +147,7 @@ impl Layout {
             name: "Workspace 1".into(),
             icon: None,
             symbol: None,
+            profile_id: None,
             selected: tab.id.clone(),
             tabs: vec![tab],
         };
@@ -363,17 +347,6 @@ impl Layout {
         true
     }
 
-    /// Set the current workspace's icon, even when it has no tabs. None selects
-    /// Number. A supplied value must be a validated one- or two-character icon;
-    /// the picker uses [`WORKSPACE_ICONS`]. This changes no selection or shell.
-    pub fn set_workspace_icon(&mut self, icon: Option<&str>) -> bool {
-        let Some(space) = self.workspace_mut() else {
-            return false;
-        };
-        space.icon = icon.map(str::to_owned);
-        true
-    }
-
     /// Select a workspace by its one-based position in saved order. Zero or a
     /// missing position does nothing. Each workspace keeps its tab and pane focus.
     pub fn choose_workspace_number(&mut self, number: usize) -> bool {
@@ -490,12 +463,17 @@ impl Layout {
 
     /// Move the selected tab to another workspace and select it there. Retain
     /// its complete tree and focus; the source selects its first remaining tab.
-    /// Missing or current destinations, and empty sources, do nothing.
+    /// Missing/current destinations, different profile bindings and empty sources do nothing.
+    /// Desktop routing must also check the retained authenticated connection.
     pub fn transfer_tab(&mut self, destination: &str) -> bool {
         let Some(source) = self.workspace() else {
             return false;
         };
-        if source.id == destination || !self.workspaces.iter().any(|space| space.id == destination)
+        if source.id == destination
+            || !self
+                .workspaces
+                .iter()
+                .any(|space| space.id == destination && space.profile_id == source.profile_id)
         {
             return false;
         }
@@ -533,6 +511,7 @@ impl Layout {
             name,
             icon: None,
             symbol: None,
+            profile_id: None,
             tabs: vec![],
             selected: String::new(),
         };
@@ -1160,13 +1139,13 @@ mod tests {
             assert!(!model.choose_tab_number(number));
         }
         assert_eq!(model, before);
-        for &(glyph, _) in WORKSPACE_ICONS {
-            assert!(model.set_workspace_icon(Some(glyph)));
-            assert_eq!(model.workspace().unwrap().icon.as_deref(), Some(glyph));
-        }
-        assert!(model.set_workspace_icon(None));
-        assert_eq!(model, before);
-        assert!(model.set_workspace_icon(Some("◆")));
+        // A legacy glyph stays with its workspace across navigation.
+        let selected = model.selected.clone();
+        let space = model
+            .workspaces
+            .iter_mut()
+            .find(|space| space.id == selected);
+        space.unwrap().icon = Some("◆".into());
         assert!(model.choose_workspace_number(1));
         assert_eq!(model.tab().unwrap(), &second_tab);
         assert!(model.workspace().unwrap().icon.is_none());
@@ -1184,7 +1163,6 @@ mod tests {
         assert_eq!(model.tab().unwrap(), &first_tab);
         model.workspaces.clear();
         let empty = model.clone();
-        assert!(!model.set_workspace_icon(None));
         assert!(!model.choose_workspace_number(1));
         assert!(!model.choose_tab_number(1));
         assert_eq!(model, empty);

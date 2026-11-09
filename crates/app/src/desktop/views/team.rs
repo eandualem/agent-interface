@@ -14,23 +14,22 @@ use crate::desktop::{
     design::{colors, tokens},
 };
 
-fn state(member: &Member) -> Option<AgentState> {
-    (member.state != "offline").then(|| AgentState::from_report(&member.state))
+fn state(member: &Member, pane: &ViewPane) -> AgentState {
+    pane.agents.get(&member.name).state
 }
 
-fn rank(member: &Member) -> (u8, String) {
-    let rank = match state(member) {
-        Some(AgentState::NeedsYou | AgentState::Blocked) => 0,
-        Some(AgentState::Working | AgentState::Starting) => 1,
-        Some(_) => 2,
-        None => 3,
-    };
-    (rank, member.name.to_ascii_lowercase())
+fn rank(member: &Member, pane: &ViewPane) -> (u8, String) {
+    let status = pane.agents.get(&member.name);
+    (status.rank(), member.name.to_ascii_lowercase())
 }
 
 pub(super) fn body(pane: &ViewPane, team: &Team, cx: &mut Context<ViewPane>) -> AnyElement {
     let (t, c) = (tokens(), colors());
-    let online = team.members.iter().filter(|m| state(m).is_some()).count();
+    let online = team
+        .members
+        .iter()
+        .filter(|m| pane.agents.get(&m.name).online)
+        .count();
     let mut grouping = ui::segments();
     for (choice, label) in [
         (Grouping::Folder, "Folder"),
@@ -55,17 +54,21 @@ pub(super) fn body(pane: &ViewPane, team: &Team, cx: &mut Context<ViewPane>) -> 
         .child(div().flex_1())
         .child(grouping);
 
-    let tally =
-        |wanted: Option<AgentState>| team.members.iter().filter(|m| state(m) == wanted).count();
+    let tally = |wanted: AgentState| {
+        team.members
+            .iter()
+            .filter(|m| state(m, pane) == wanted)
+            .count()
+    };
     let needing = team
         .members
         .iter()
-        .filter(|m| state(m).is_some_and(AgentState::needs_you))
+        .filter(|m| state(m, pane).needs_you())
         .count();
     let working = team
         .members
         .iter()
-        .filter(|m| state(m).is_some_and(AgentState::working))
+        .filter(|m| state(m, pane).working())
         .count();
     let summary = ui::text(
         div()
@@ -108,14 +111,23 @@ pub(super) fn body(pane: &ViewPane, team: &Team, cx: &mut Context<ViewPane>) -> 
             .items_center()
             .gap(px(t.space.s6))
             .child(ui::agent_symbol(AgentState::Idle))
-            .child(format!("{} idle", tally(Some(AgentState::Idle)))),
+            .child(format!("{} idle", tally(AgentState::Idle))),
     )
-    .child(format!("{} offline", tally(None)));
+    .child(format!("{} offline", tally(AgentState::Offline)))
+    .when(tally(AgentState::Unknown) > 0, |el| {
+        el.child(format!("{} status unknown", tally(AgentState::Unknown)))
+    })
+    .when(tally(AgentState::Unavailable) > 0, |el| {
+        el.child(format!(
+            "{} status unavailable",
+            tally(AgentState::Unavailable)
+        ))
+    });
 
     let column = match pane.grouping {
-        Grouping::Folder => folders(team, cx),
-        Grouping::Tag => by_tag(team, cx),
-        Grouping::Swarm => swarms(team, cx),
+        Grouping::Folder => folders(pane, team, cx),
+        Grouping::Tag => by_tag(pane, team, cx),
+        Grouping::Swarm => swarms(pane, team, cx),
     };
     div()
         .size_full()
@@ -125,10 +137,14 @@ pub(super) fn body(pane: &ViewPane, team: &Team, cx: &mut Context<ViewPane>) -> 
         .child(summary)
         .child(ui::grouped_page("team-rows", column))
         .child(ui::view_footer(
-            &[
-                ("click", "show its terminal"),
-                ("⌥ click", "agent card beside"),
-            ],
+            if pane.connection.is_some() {
+                &[("⌥ click", "agent card beside")]
+            } else {
+                &[
+                    ("click", "show its terminal"),
+                    ("⌥ click", "agent card beside"),
+                ]
+            },
             "updates every 3 s",
         ))
         .into_any_element()
@@ -157,6 +173,7 @@ fn coordinates(member: &Member) -> bool {
 
 /// One card of agents, with tree guides for the agents a coordinator leads.
 fn card(
+    pane: &ViewPane,
     members: &[&Member],
     group: &str,
     lead: Option<&Member>,
@@ -165,7 +182,7 @@ fn card(
     let mut card = ui::group_card();
     let mut first = true;
     if let Some(lead) = lead {
-        card = card.child(agent_row(lead, "", group, true, cx));
+        card = card.child(agent_row(pane, lead, "", group, true, cx));
         first = false;
     }
     // A coordinator leads the agents in its own folder; others on the card
@@ -181,11 +198,11 @@ fn card(
         } else {
             "├ "
         };
-        card = card.child(agent_row(member, guide, group, first, cx));
+        card = card.child(agent_row(pane, member, guide, group, first, cx));
         first = false;
     }
     for member in rest {
-        card = card.child(agent_row(member, "", group, first, cx));
+        card = card.child(agent_row(pane, member, "", group, first, cx));
         first = false;
     }
     card
@@ -194,7 +211,7 @@ fn card(
 /// Agents by the folder they work in, ordered by path so a folder's
 /// subfolders follow it, lone folders last. A folder's coordinator comes first and leads the
 /// others; a subfolder without one says which coordinator above leads it.
-fn folders(team: &Team, cx: &mut Context<ViewPane>) -> gpui::Div {
+fn folders(pane: &ViewPane, team: &Team, cx: &mut Context<ViewPane>) -> gpui::Div {
     let mut groups: BTreeMap<(bool, String), Vec<&Member>> = BTreeMap::new();
     for member in &team.members {
         let folder = parent(&member.dir).to_owned();
@@ -223,7 +240,7 @@ fn folders(team: &Team, cx: &mut Context<ViewPane>) -> gpui::Div {
     let mut column = div();
     for ((_, folder), members) in order {
         let mut members = members.clone();
-        members.sort_by_key(|member| rank(member));
+        members.sort_by_key(|member| rank(member, pane));
         let lead = leads.get(folder.as_str()).copied();
         let above = lead.is_none().then(|| led_from(&leads, folder)).flatten();
         let (title, mut note) = if folder.is_empty() {
@@ -239,7 +256,7 @@ fn folders(team: &Team, cx: &mut Context<ViewPane>) -> gpui::Div {
         }
         column = column
             .child(ui::group_title(title, note))
-            .child(card(&members, folder, lead, cx));
+            .child(card(pane, &members, folder, lead, cx));
     }
     column
 }
@@ -256,7 +273,7 @@ fn led_from<'a>(leads: &BTreeMap<&str, &'a Member>, folder: &str) -> Option<&'a 
     None
 }
 
-fn by_tag(team: &Team, cx: &mut Context<ViewPane>) -> gpui::Div {
+fn by_tag(pane: &ViewPane, team: &Team, cx: &mut Context<ViewPane>) -> gpui::Div {
     let mut groups: BTreeMap<(bool, String), Vec<&Member>> = BTreeMap::new();
     for member in &team.members {
         if member.tags.is_empty() {
@@ -271,7 +288,7 @@ fn by_tag(team: &Team, cx: &mut Context<ViewPane>) -> gpui::Div {
     }
     let mut column = div();
     for ((_, tag), mut members) in groups {
-        members.sort_by_key(|member| rank(member));
+        members.sort_by_key(|member| rank(member, pane));
         let label = if tag.is_empty() {
             ui::tag("no tag", Tone::Quiet)
         } else {
@@ -279,12 +296,12 @@ fn by_tag(team: &Team, cx: &mut Context<ViewPane>) -> gpui::Div {
         };
         column = column
             .child(ui::group_label(label, plural(members.len())))
-            .child(card(&members, &tag, None, cx));
+            .child(card(pane, &members, &tag, None, cx));
     }
     column
 }
 
-fn swarms(team: &Team, cx: &mut Context<ViewPane>) -> gpui::Div {
+fn swarms(pane: &ViewPane, team: &Team, cx: &mut Context<ViewPane>) -> gpui::Div {
     let mut column = div();
     if team.swarms.is_empty() {
         column = column.child(ui::group_note("No swarm is running."));
@@ -304,7 +321,7 @@ fn swarms(team: &Team, cx: &mut Context<ViewPane>) -> gpui::Div {
                 swarm.name.clone(),
                 format!("{}{issue} · {}", swarm.repo, plural(members.len())),
             ))
-            .child(card(&members, &swarm.name, None, cx));
+            .child(card(pane, &members, &swarm.name, None, cx));
     }
     let outside: Vec<&Member> = team
         .members
@@ -319,7 +336,7 @@ fn swarms(team: &Team, cx: &mut Context<ViewPane>) -> gpui::Div {
     if !outside.is_empty() {
         column = column
             .child(ui::group_title("Not in a swarm", plural(outside.len())))
-            .child(card(&outside, "", None, cx));
+            .child(card(pane, &outside, "", None, cx));
     }
     column
 }
@@ -327,6 +344,7 @@ fn swarms(team: &Team, cx: &mut Context<ViewPane>) -> gpui::Div {
 /// One agent on a card: its state, name, CLI and tags, what it is doing and
 /// for how long. `guide` draws its place under a coordinator.
 pub(super) fn agent_row(
+    pane: &ViewPane,
     member: &Member,
     guide: &'static str,
     group: &str,
@@ -334,28 +352,12 @@ pub(super) fn agent_row(
     cx: &mut Context<ViewPane>,
 ) -> AnyElement {
     let (t, c) = (tokens(), colors());
-    let state = state(member);
+    let status = pane.agents.get(&member.name);
+    let state = state(member, pane);
     let name = member.name.clone();
+    let registration = member.registration_id.clone();
     // An agent can appear in several groups; each row needs its own identity.
     let id = SharedString::from(format!("team-{group}-{name}-{}", guide.len()));
-    let word = match (state, &member.reason) {
-        (None, _) => "offline".to_owned(),
-        (Some(state @ (AgentState::NeedsYou | AgentState::Blocked)), Some(reason)) => {
-            format!("{} · {reason}", state.word())
-        }
-        (Some(state @ (AgentState::Working | AgentState::Starting)), _) => {
-            match member.current_issue {
-                Some(issue) => format!("{} · #{issue}", state.word()),
-                None => state.word().to_owned(),
-            }
-        }
-        (Some(state), _) => state.word().to_owned(),
-    };
-    let word_color = match state {
-        Some(AgentState::NeedsYou | AgentState::Blocked) => c.attention_text,
-        Some(AgentState::Working | AgentState::Starting) => c.accent_text,
-        _ => c.muted,
-    };
     div()
         .id(id.clone())
         .flex()
@@ -367,30 +369,17 @@ pub(super) fn agent_row(
         .when(!first, |el| {
             el.border_t(px(t.size.hairline)).border_color(c.line)
         })
-        .cursor_pointer()
-        .hover(|el| el.bg(colors().hover))
-        .when(state.is_none(), |el| el.opacity(0.7))
+        .when(pane.connection.is_none() || registration.is_some(), |el| {
+            el.cursor_pointer().hover(|el| el.bg(colors().hover))
+        })
+        .when(state == AgentState::Offline, |el| el.opacity(0.7))
         .when(!guide.is_empty(), |el| {
             el.child(mono(guide).text_color(c.faint))
         })
-        .child(match state {
-            Some(state) => ui::agent_symbol(state),
-            None => div()
-                .size(px(t.size.agent_symbol))
-                .flex_shrink_0()
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(
-                    div()
-                        .w(px(t.space.s8))
-                        .h(px(t.size.hairline + 0.5))
-                        .bg(c.faint),
-                ),
-        })
+        .child(ui::agent_symbol(status.state))
         .child(
             ui::text(div().flex_shrink_0(), &t.text.row)
-                .text_color(if state.is_some_and(|s| s != AgentState::Idle) {
+                .text_color(if state.working() || state.needs_you() {
                     c.text
                 } else {
                     c.muted
@@ -414,7 +403,10 @@ pub(super) fn agent_row(
             )
             .child(member.tags.join(" · ")),
         )
-        .child(ui::text(div().flex_shrink_0().text_color(word_color), &t.text.meta).child(word))
+        .child(ui::text(
+            ui::agent_status_text(&status).flex_shrink_0(),
+            &t.text.meta,
+        ))
         .child(
             ui::text(
                 div()
@@ -426,20 +418,46 @@ pub(super) fn agent_row(
             )
             // Backbone's time for a live agent is when it was last read, not
             // when its state began; only an offline agent's says something.
-            .child(if state.is_none() {
-                since(member.state_since)
+            .child(if state == AgentState::Offline {
+                since(status.since)
             } else {
                 String::new()
             }),
         )
-        .on_click(cx.listener(move |_, event: &gpui::ClickEvent, _, cx| {
-            if event.modifiers().alt {
-                cx.emit(ViewEvent::OpenBeside(View::agent(name.clone(), None)));
-            } else {
-                cx.emit(ViewEvent::ShowAgent(name.clone()));
+        .on_click(cx.listener(move |pane, event: &gpui::ClickEvent, _, cx| {
+            if let Some(event) = row_event(
+                pane.connection.as_ref(),
+                &name,
+                registration.as_deref(),
+                event.modifiers().alt,
+            ) {
+                cx.emit(event);
             }
         }))
         .into_any_element()
+}
+
+// Bound agent cards capture the observed registration before emitting navigation.
+// Name-only terminal navigation remains unavailable from these rows.
+fn row_event(
+    connection: Option<&agent_interface_roster::profiles::Connection>,
+    name: &str,
+    registration: Option<&str>,
+    card: bool,
+) -> Option<ViewEvent> {
+    if connection.is_some() {
+        if !card {
+            return None;
+        }
+        let mut view = View::agent(name.to_owned(), None);
+        view.registration_id = Some(registration?.to_owned());
+        return view.is_valid().then_some(ViewEvent::OpenBeside(view));
+    }
+    Some(if card {
+        ViewEvent::OpenBeside(View::agent(name.to_owned(), None))
+    } else {
+        ViewEvent::ShowAgent(name.to_owned())
+    })
 }
 
 #[cfg(test)]
@@ -447,11 +465,29 @@ mod tests {
     use super::*;
 
     #[test]
+    fn bound_rows_cannot_route_same_name_to_legacy_terminal_or_card() {
+        let (_dir, connection, server) = crate::roster::content::tests::provider("a", vec![]);
+        for card in [false, true] {
+            assert!(row_event(Some(&connection), "worker", None, card).is_none());
+            assert!(row_event(None, "worker", None, card).is_some());
+        }
+        let registration = "1234567890abcdef1234567890abcdef";
+        assert!(row_event(Some(&connection), "worker", Some("bad"), true).is_none());
+        let Some(ViewEvent::OpenBeside(view)) =
+            row_event(Some(&connection), "worker", Some(registration), true)
+        else {
+            panic!("missing registered card")
+        };
+        assert_eq!(view.registration_id.as_deref(), Some(registration));
+        server.join().unwrap();
+    }
+
+    #[test]
     fn folders_and_coordinators_come_from_the_workspace_path() {
-        assert_eq!(parent("/home/me/ws/career/desk"), "/home/me/ws/career");
-        assert_eq!(name_of("/home/me/ws/career/"), "career");
+        assert_eq!(parent("/home/me/ws/product/desk"), "/home/me/ws/product");
+        assert_eq!(name_of("/home/me/ws/product/"), "product");
         let lead = Member {
-            dir: "/home/me/ws/career/coordinator".into(),
+            dir: "/home/me/ws/product/coordinator".into(),
             ..Member::default()
         };
         assert!(coordinates(&lead));
@@ -460,11 +496,11 @@ mod tests {
             name: "lead".into(),
             ..lead
         };
-        let leads = BTreeMap::from([("/home/me/ws/learning", &lead)]);
+        let leads = BTreeMap::from([("/home/me/ws/docs", &lead)]);
         assert_eq!(
-            led_from(&leads, "/home/me/ws/learning/rust").map(|m| m.name.as_str()),
+            led_from(&leads, "/home/me/ws/docs/rust").map(|m| m.name.as_str()),
             Some("lead")
         );
-        assert!(led_from(&leads, "/home/me/ws/career").is_none());
+        assert!(led_from(&leads, "/home/me/ws/product").is_none());
     }
 }

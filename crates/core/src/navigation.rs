@@ -20,60 +20,15 @@ impl Node {
 }
 
 impl Layout {
-    /// Select an existing attachment without creating or attaching a session.
-    ///
-    /// Prefer the current tab, then the tab with the highest window-local use
-    /// counter, then its focused matching pane. Unvisited tabs rank below any
-    /// visited tab; remaining ties keep workspace, tab and split order.
-    /// `source_matches` compares the attachment's source with this window's
-    /// canonical source socket, treating an absent source as the window default.
-    /// Path resolution belongs to the caller; this model performs no I/O.
-    ///
-    /// The caller refreshes the shared arrangement before this operation and
-    /// confirms the selected attachment again before handing off keyboard input.
-    /// False means no match and leaves the layout unchanged, so the caller can
-    /// show session status. Recency is owned by the window and is not persisted.
-    pub fn choose_attached_session(
-        &mut self,
-        name: &str,
-        tab_uses: &HashMap<String, u64>,
-        source_matches: impl Fn(Option<&str>) -> bool,
-    ) -> bool {
-        let current = self.tab().map(|tab| &tab.id);
-        let mut best_rank = None;
-        let mut target = None;
-        for (space_index, space) in self.workspaces.iter().enumerate() {
-            for (tab_index, tab) in space.tabs.iter().enumerate() {
-                for pane in tab.tree.leaves() {
-                    let Some(attachment) = &pane.attachment else {
-                        continue;
-                    };
-                    if attachment.session != name
-                        || !source_matches(attachment.source_socket.as_deref())
-                    {
-                        continue;
-                    }
-                    let rank = (
-                        Some(&tab.id) == current,
-                        tab_uses.get(&tab.id).copied(),
-                        pane.id == tab.focus,
-                    );
-                    if best_rank.is_none_or(|best| rank > best) {
-                        best_rank = Some(rank);
-                        target = Some((space_index, tab_index, pane.id.clone()));
-                    }
-                }
-            }
-        }
-        let Some((space_index, tab_index, pane)) = target else {
-            return false;
-        };
-        let space = &mut self.workspaces[space_index];
-        let tab = &mut space.tabs[tab_index];
-        self.selected = space.id.clone();
-        space.selected = tab.id.clone();
-        tab.focus = pane;
-        true
+    /// Find a pane's owning workspace, including panes in hidden tabs.
+    /// The profile ID is a persisted lookup key, not authority to perform I/O.
+    pub fn workspace_for_pane(&self, pane: &str) -> Option<&crate::Workspace> {
+        self.workspaces.iter().find(|space| {
+            space
+                .tabs
+                .iter()
+                .any(|tab| tab.tree.leaves().iter().any(|leaf| leaf.id == pane))
+        })
     }
 
     /// Keep this window's navigation when loading a newer shared arrangement.
@@ -83,7 +38,7 @@ impl Layout {
     /// the first available item; an empty workspace selects no tab. Shared
     /// names, trees, attachments and roster visibility come from `self`.
     /// Returns true when the active tab's tree changed, including a change of
-    /// attachment or removal of the active tab. The caller must then move input
+    /// attachment, workspace profile binding or removal of the active tab. The caller must then move input
     /// focus to navigation and require a fresh pane selection. Renaming alone
     /// or changing saved working directories does not require that handoff.
     /// This does not dispatch input, write either
@@ -129,6 +84,13 @@ impl Layout {
             .or_else(|| self.workspaces.first())
             .map(|space| space.id.clone())
             .unwrap_or_default();
+        if self.workspace().and_then(|space| space.profile_id.as_ref())
+            != previous
+                .workspace()
+                .and_then(|space| space.profile_id.as_ref())
+        {
+            return true;
+        }
         match (self.tab(), previous.tab()) {
             (Some(current), Some(old)) => {
                 current.id != old.id || !same_input_tree(&current.tree, &old.tree)
@@ -187,69 +149,6 @@ mod tests {
     }
 
     #[test]
-    fn session_navigation_prefers_current_recent_and_focused_matches_on_its_source() {
-        let mut model = Layout::initial("/tmp".into());
-        let first_space = model.selected.clone();
-        let first_tab = model.tab().unwrap().id.clone();
-        let first_pane = model.pane().unwrap().id.clone();
-        let local = Attachment {
-            session: "worker".into(),
-            source_socket: None,
-        };
-        model.attach(Some(local.clone()));
-        model.split(Direction::Right, "/tmp".into(), true);
-        model.attach(Some(Attachment {
-            source_socket: Some("/fixture/source".into()),
-            ..local.clone()
-        }));
-        let focused_pane = model.pane().unwrap().id.clone();
-        model.add_workspace("Other workspace".into());
-        model.add_tab(None, "/tmp".into(), true);
-        model.attach(Some(local.clone()));
-        let older_tab = model.tab().unwrap().id.clone();
-        model.add_tab(None, "/tmp".into(), true);
-        model.attach(Some(local.clone()));
-        let recent_tab = model.tab().unwrap().id.clone();
-        let uses = HashMap::from([(older_tab.clone(), 0), (recent_tab.clone(), 1)]);
-        let source_matches =
-            |source: Option<&str>| source.is_none() || source == Some("/fixture/source");
-
-        model.choose_workspace(&first_space);
-        assert!(model.choose_attached_session("worker", &uses, source_matches));
-        assert_eq!(model.tab().unwrap().id, first_tab);
-        assert_eq!(model.pane().unwrap().id, focused_pane);
-
-        // A matching name on another server cannot win, even when focused.
-        model.attach(Some(Attachment {
-            source_socket: Some("/fixture/other".into()),
-            ..local
-        }));
-        assert!(model.choose_attached_session("worker", &uses, source_matches));
-        assert_eq!(model.pane().unwrap().id, first_pane);
-        model.attach(None);
-        assert!(model.choose_attached_session("worker", &uses, source_matches));
-        assert_eq!(model.tab().unwrap().id, recent_tab);
-        assert_ne!(model.selected, first_space);
-
-        // A visited tab with counter zero outranks an unvisited tab.
-        model.choose_workspace(&first_space);
-        let uses = HashMap::from([(recent_tab.clone(), 0)]);
-        assert!(model.choose_attached_session("worker", &uses, source_matches));
-        assert_eq!(model.tab().unwrap().id, recent_tab);
-
-        // Equal unvisited ranks retain saved order across tabs.
-        model.choose_workspace(&first_space);
-        assert!(model.choose_attached_session("worker", &HashMap::new(), source_matches));
-        assert_eq!(model.tab().unwrap().id, older_tab);
-
-        let before = model.clone();
-        assert!(!model.choose_attached_session("missing", &uses, source_matches));
-        assert_eq!(model, before);
-        assert!(!model.choose_attached_session("worker", &uses, |_| false));
-        assert_eq!(model, before);
-    }
-
-    #[test]
     fn pane_expansion_stays_with_its_tab_across_navigation() {
         let mut model = Layout::initial("/tmp".into());
         model.split(Direction::Right, "/tmp".into(), true);
@@ -260,14 +159,7 @@ mod tests {
         model.add_tab(None, "/tmp".into(), true);
         model.split(Direction::Below, "/tmp".into(), true);
         let second = model.tab().unwrap().id.clone();
-        assert_eq!(
-            model
-                .tab()
-                .unwrap()
-                .pane_rectangles(200, 100, model.focus_mode())
-                .len(),
-            2
-        );
+        assert!(!model.focus_mode()); // A new tab starts unexpanded.
         model.set_focus_mode(true);
         model.choose_tab(&first);
         assert!(model.focus_mode());
@@ -309,6 +201,7 @@ mod tests {
                     name: "First".into(),
                     icon: None,
                     symbol: None,
+                    profile_id: None,
                     selected: tab.id.clone(),
                     tabs: vec![tab],
                 },
@@ -317,6 +210,7 @@ mod tests {
                     name: "Second".into(),
                     icon: None,
                     symbol: None,
+                    profile_id: None,
                     selected: String::new(),
                     tabs: vec![],
                 },

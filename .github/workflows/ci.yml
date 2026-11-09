@@ -39,6 +39,15 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Reserve space for native build caches (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          df -h .
+          # These preinstalled SDKs are not used by this Rust/Zig desktop build.
+          # Free them before restoring the expanded Cargo cache and its archive.
+          sudo rm -rf -- /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          df -h .
+
       - name: Install Rust from rust-toolchain.toml
         run: rustup toolchain install
 

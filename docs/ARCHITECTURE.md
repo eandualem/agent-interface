@@ -34,11 +34,12 @@ another client's selected window.
 
 | Crate | Responsibility |
 | --- | --- |
-| `core` | Workspace, tab and split models; validation; local navigation; three-way merge rules; compatibility keymap and theme data |
+| `core` | Workspace, tab and split models; validation; local navigation; three-way merge rules; compatibility keymap data |
 | `store` | Initializing, reading and transactionally saving schema-v2 `layouts.db` files |
 | `tmux` | Server discovery and validation, control-mode protocol, pane capture, recovery and input commands |
 | `term` | Terminal engine ownership, input encoding and owned display snapshots |
 | `roster` | Agent Backbone roster and pane-view reads, plus explicit user feedback through bounded local requests |
+| `native-fs` | Safe descriptor-based native filesystem checks; narrowly scoped Darwin ACL FFI, no paths or application state |
 | `webview-host` | Borrowed XCB-to-Xlib window-handle adaptation for Linux document embedding; no application state or process ownership |
 | `app` | Native windows, input routing, storage and terminal workers, and integration between the other crates |
 
@@ -283,15 +284,14 @@ two seconds for settings writes, including writes from already-closed windows.
 The wait tracks file workers, independently of their UI result handlers. A
 write still blocked beyond that shutdown allowance may remain unfinished.
 
-The compatibility theme reader validates the legacy theme format but does not
-control native appearance. Likewise, the legacy keymap inspection commands do
-not replace native Settings shortcuts.
+The legacy keymap inspection commands do not replace native Settings
+shortcuts.
 
-The Agent Backbone adapter resolves configuration lazily and uses
+The active Agent Backbone adapter resolves configuration lazily and uses
 bounded, read-only requests to a local endpoint. Credential-bearing requests
-require an absolute Unix socket path from `BACKBONE_SOCKET_PATH` or the provider's
-saved `backbone.socket_path` setting. An explicit endpoint overrides the saved
-setting, which is re-read on each request. The socket must
+require the Unix socket at `run/api.sock` in the provider's data directory, or an
+explicit endpoint. A bound profile takes its endpoint from `profiles show` instead.
+The socket must
 be owned by the app's effective user with mode 0600, inside a directory owned
 by that user with mode 0700. The connected peer's UID must match before HTTP
 or credentials are sent. This authenticates the OS account, not an individual
@@ -314,6 +314,59 @@ permission files reject input beyond 1 MiB and skill previews retain their
 256 KiB limit. Permission inspection distinguishes missing optional files from
 read, size and parse failures, showing incomplete results explicitly. Rule
 deduplication preserves file order and first occurrence with set membership.
+
+The separate `roster::profiles` adapter implements the initial profile connection
+contract. It validates registry list/show records, rejects non-ready bindings,
+reads only the exact private dotenv credential reference, and verifies
+`/api/profile` against the expected profile, installation and lifecycle IDs and
+tmux socket. Its connection retains that credential and identity; every request
+carries all three identity headers, including the handshake and subsequent
+requests. Replacement or an unsupported provider fails explicitly without legacy
+fallback. `Connection::roster` reads the agents endpoint on that same binding.
+The explicit `app::roster::BoundRosterSource` owns one connection for its entire
+worker lifetime, with a private coalescing cache. Every update carries its
+verified identity and typed failure; a failed read retains only that worker's
+previous metadata and observation time, marked stale. A running worker cannot
+be rebound. Dropping it interrupts the polling wait and joins its bounded
+in-flight request, so UI owners must dispose of it off the UI thread.
+Desktop status observations are owned by explicit `LiveAgents` handles passed
+from each window to its views and child readers. A weak source registry shares
+one live poller per full profile/installation/lifecycle identity; explicit legacy
+sources are keyed separately by provider directory. Closing the last owner
+releases its cache and disposes of the poller off the UI thread. Deferred wakes
+refer weakly to their original source, and bound updates must match that source's
+identity. Failed reads hide its active rows and show unavailable status without
+changing another source's attention state. No global selected source supplies
+status to readers. Authored reports and historical events never update this model.
+`roster::views::content` reads only retained Reports, Responses and Documents
+through a captured connection, including pagination and roster enrichment.
+Document fetches keep their larger wire limit and digest validation. Transport
+failures remain typed and invalidate the whole read even during optional
+metadata enrichment. Each observation retains its full identity and request;
+legacy provider URL fields stay empty and do not authorize actions. Bound reads
+use the credential and socket captured by their connection; they do not re-read
+configuration or credentials per request.
+`app::roster::BoundContentSource` owns that connection for its lifetime. Selection
+and visibility changes invalidate pending results and in-flight generations;
+Documents wait for explicit refresh. Its wake callback belongs to the original
+owner. Dropping the source waits for its bounded in-flight request, so UI owners
+must drop it off the UI thread.
+They do not start services, migrate Default or configure runtime accounts.
+
+`roster::library_snapshots` reads shared Skill and Policy catalogs using one
+verified connection. Each selectable artifact retains its catalog identity and
+credential snapshot; opening it selects a version and fetches that exact revision,
+checking the revision ID and SHA-256 digest before exposing text. Source paths are
+display metadata and never authorize local file reads. Cancellation and binding
+refusals stop the chain. Repository and runtime-local skills are excluded, and
+native library navigation remains separate from this reader.
+
+The JSON fixture in `crates/roster/tests/fixtures/profiles-v1.json` comes from
+Agent Backbone's [profile contract](https://github.com/eandualem/agent-backbone/blob/4848c6dc3b247781ea4ab4beb19f4a5b7922c2b4/docs/contracts/profiles-v1.json).
+Contract revision 2 uses wire schema 1. Disposable Unix-socket checks cover the
+handshake, pinned credentials, follow-up request headers, independent roster
+workers with delayed responses, stale-cache ownership and replacement refusal;
+these checks do not establish complete runtime or application profile isolation.
 
 Native document readers share selection state across styled text blocks and source
 text. GPUI text layouts map pointer positions to UTF-8 offsets, snapped to grapheme
@@ -356,10 +409,17 @@ read. This is invoked only by a user drag, with no screenshot monitoring.
 Agent views cache unchanged render trees; data, size, focus and appearance
 changes invalidate them. Visible working and starting indicators animate using GPUI; other states are
 static. State labels retain the distinction between starting and busy, and
-between blocked and waiting for a person. The roster reads immediately and then
-two seconds after each completed request; Team and agent-card views poll every
-three seconds after a read. Requests have a three-second deadline, and failures
-mark cached observations stale.
+between blocked and waiting for a person. Each connection-owned roster worker reads
+immediately and then two seconds after each completed request. Its live model
+constructs each agent's status, label and ordering once per observation; windows,
+navigation badges, choosers and information views retain that connection's model.
+Shared UI components render its symbol, colour and label. Roster changes
+invalidate retained view painting even when an authored record or plan is held
+open. Offline stays distinct from idle; an unavailable roster suppresses working
+indicators rather than presenting cached observations as current. Requests have
+a three-second deadline. Team and agent-card metadata still poll every three
+seconds; these reads do not supply live status. Activity's historical spans
+remain separate from its current-state labels.
 Team-wide libraries (`roster::views::library`) are gathered from per-agent
 reads, the store, each agent's skill preview and its brief, for at most 32
 agents per refresh, merged by file path so no row names an agent. Skill paths and
@@ -392,7 +452,9 @@ roster is unavailable. Each row opens the complete authored record, including
 its sections and links. An open record keeps its contents through background refreshes.
 An open Response is polled by ID so its correction metadata stays current even
 after newer publications move it off its former list page.
-Authored status and blocker text do not change runtime state or grant approval.
+Report tags explicitly identify the authored report status; the adjacent agent
+symbol comes from the shared live model. Authored status and blocker text do not
+change runtime state or grant approval.
 
 Every reader places one native conversation (`views/conversation.rs`) beside
 the authored content: a rail while closed, a thread and composer while open.
@@ -433,6 +495,69 @@ no record, so its conversation finds its identity on the first read: the
 current provider, then the `artifact_id` that `/api/skills` or `/api/policies`
 lists for its source path. Without a maintainer, a message names the agent the
 person chose.
+
+Profile-bound action adapters are separate from these legacy desktop callers.
+`roster::conversations::Client` owns a verified connection and one artifact's
+kind and ID; `roster::feedback::Client` owns a connection and the original
+record. Both compare the record's full profile, installation and lifecycle
+identity before construction. Clones retain the original credential snapshot;
+reads, pagination, read markers, sends and redelivery never resolve the current
+selection. Callers retain the message's request ID, recipient and anchor when
+retrying an uncertain conversation send. Feedback verifies the author and
+submits on that same binding, with no automatic retry after an unknown result.
+Binding refusals remain explicit. Native retained-content readers can use these adapters while keeping their
+connection for the pane's lifetime. Deferred operations capture that pane's
+client; they never look up the selected profile. The record's conversation
+entity keeps its draft, pending sends and retry identities across hiding and
+navigation. Bound read workers check origin and selection generation before
+applying an update. Document revision navigation retains the same pane origin.
+
+Bound seen-state and discussion keys include profile, installation and lifecycle.
+Legacy URL keys remain separate, and the legacy installation timestamp does not
+mark another profile's older records as seen. A bound reader has no legacy data
+directory, so general views, Plans, Interactions and Sheets cannot fall back to
+ambient configuration. The explicit constructor currently supports Reports,
+Responses, Documents, Usage, Activity and Skills and requires matching live-status
+ownership. Usage range changes and Activity refreshes share the bound content
+worker, including generation checks, hidden-pane cancellation and original
+credential retention. General Agent, Policy and terminal navigation remain
+unavailable through this constructor.
+
+Native bound Skills retain the rendered catalog row, stable artifact ID and
+verified connection when opened. Preview reads select an immutable provider
+revision and verify its digest; provider paths never become local file reads.
+Closing or reopening uses a new completion ticket, so an obsolete response cannot
+populate the next opening. The reader keeps its original metadata through catalog
+refreshes. Discussions are keyed by full origin, artifact and displayed revision,
+and retain that revision in outgoing message anchors and retries. Missing IDs and
+repository/runtime-local previews show unavailable; they do not fall back to local
+SKILL.md files. Profile selection and the Policy library remain separate work.
+
+The general read-only adapter in `roster::views::bound` captures the same
+verified connection for Team, Usage, Activity, Skills, Policies and Tags. Its
+closed request set excludes Agent inspection and local runtime or skill-file
+reads. Optional history or per-agent enrichment cannot hide a connection
+refusal; cancellation discards the complete observation. Native navigation and
+actions are wired separately, so this adapter does not enable ambient fallback
+or permission inspection.
+
+The app's `profiles` discovery client invokes only the provider's local
+`profiles list/show` commands using an explicit executable and captured operator
+environment. It preserves managed-agent identity so the provider's operator
+boundary still applies. A nonblocking pipe bounds retained output and supplies backpressure; duration
+and cancellation are bounded. Each command owns a process group, cleaned before
+reaping its leader so wrappers cannot leave background writers behind.
+Nonzero exits stay errors, and `show` must return the requested profile ID.
+Discovery does not connect, start or repair a provider. Returned records require the normal authenticated
+handshake before content use.
+
+`roster::profiles::operations` prepares immutable create/start/stop bodies from
+the existing lifecycle contract and validates receipts against the original
+request ID, action and full tuple. Create pins the first reserved identity;
+terminal observations cannot regress or change. Provider error prose is dropped.
+These models execute no command and grant no content authority: a successful
+start still needs the authenticated identity handshake. Bound first-agent setup
+remains a separate contract.
 
 Durable Documents use Backbone's metadata-only `/api/documents` list and exact
 `/api/documents/{revision_id}` JSON reads. Backbone owns immutable revisions,
@@ -495,6 +620,9 @@ system WebKit on macOS and GTK/WebKitGTK on Linux; unused Android dependencies
 are not part of a supported build. The GTK compatibility patch and narrow
 build-time advisory exception are described below.
 
+- **`async-executor` 1.14.1:** MIT OR Apache-2.0, locked for the Linux
+  accessibility and asynchronous service stack. This replaces yanked 1.14.0
+  and fixes its executor-teardown use-after-free regression.
 - **GPUI (`gpui-pre` and platform packages):** native windowing and GPU drawing,
   pinned as one package family. Apache-2.0. The macOS 0.3.9 backend is
   [vendored with a narrow native focus correction](../native/gpui-macos/README.md):
@@ -549,7 +677,8 @@ build-time advisory exception are described below.
   MIT HTTP/runtime dependencies, pinned exactly, for HTTP over a connected
   Unix socket after the peer identity check.
 - **`rustix` 1.1.5:** effective-UID access for that check. MIT OR Apache-2.0
-  OR Apache-2.0 WITH LLVM-exception.
+  OR Apache-2.0 WITH LLVM-exception. The app also uses this pinned workspace
+  dependency for safe nonblocking pipes and owned discovery-process cleanup.
 - **`objc2-web-kit` 0.3.2:** MIT-licensed bindings, pinned exactly, used by the
   macOS bridge to configure WebKit peer connections and its
   ephemeral data store before document execution. The app calls a safe bridge
@@ -568,8 +697,12 @@ build-time advisory exception are described below.
   strikethrough and task lists; the app draws the parsed blocks natively.
   Its transitive `unicase` 2.10.0 dependency (MIT OR Apache-2.0) supplies
   case-insensitive matching for Markdown reference labels.
-- **`alacritty_terminal` and `rio-vt`:** development-only comparison engines.
-  Apache-2.0 and MIT respectively.
+- **`alacritty_terminal` and `rio-vt` 0.5.29:** development-only comparison engines.
+  Apache-2.0 and MIT respectively. The exact Rio pin includes its Kitty graphics
+  file-path validation fix; the desktop terminal uses Ghostty. Its benchmark-only
+  support crates are `rio-graphics` and `rio-grapheme-width` (MIT), plus
+  `rio-unicode` (MIT OR Apache-2.0), all locked at 0.5.29 for graphics data,
+  grapheme widths and Unicode classification.
 - **`tracing` 0.1.44:** MIT-licensed structured diagnostic events in app, tmux
   and roster; pinned exactly. **`tracing-subscriber` 0.3.23** and
   **`tracing-appender` 0.2.5** (MIT, exact pins) provide the app-owned JSON
@@ -704,8 +837,8 @@ and saved working-directory refresh select the server containing the exact
 ordinary session across the current and legacy sockets. A verified current owner
 is used without inspecting unused legacy metadata. When no owner is verified,
 a metadata or discovery failure does not authorize creating a replacement shell
-on another server. Settings,
-themes and keymaps fall back to the old configuration directory when the new file is absent; settings writes
+on another server. Settings
+and keymaps fall back to the old configuration directory when the new file is absent; settings writes
 use the new directory. Legacy environment overrides remain supported, with the new
 `AGENT_INTERFACE_*` names taking precedence. No database or running server is moved.
 The Linux launcher uses the packaged Agent Interface icon.
@@ -747,6 +880,12 @@ revision or discovery/history cursor. Other failures do not trigger automatic re
 Agent Backbone owns canonical data, calculated results, engine versions, storage
 admission and atomic updates. The app does not calculate formulas.
 
+An explicitly bound Sheets client retains its verified profile identity and
+credential snapshot through pagination, range reads, exports and mutations.
+Prepared mutations retain that client for exact retries, even after credential
+rotation; another profile or lifecycle cannot submit them. Binding refusals
+preserve drafts without legacy fallback. Native bound Sheets wiring is separate.
+
 `desktop::views::sheets` supplies a read-only native GPUI grid beside Documents and
 Responses in Reports & updates. Agents manage workbook creation, cell and structural
 edits, saved views and imports through Backbone. The native UI exposes inspection,
@@ -757,15 +896,35 @@ cursor cycles, and orders unread revisions first, newest updates first within ea
 group. It has no separate page controls. Grid navigation appears only when more
 rows or columns exist. Copy uses selected cells or the displayed range; the label
 states its scope. Export uses an occluding deferred menu above the grid.
-No spreadsheet widget or formula engine is added.
+No spreadsheet widget or formula engine is added. An explicitly bound Reports
+pane opens Sheets with the same verified connection. Shelf refreshes, navigation,
+exports and prepared feedback keep that original source and credential snapshot.
+Read markers and retained workbook conversations include the full profile,
+installation and lifecycle identity. Bound workbooks do not inherit the legacy
+installation's initial read timestamp. Workspace routing supplies the verified connection when a profile workspace opens.
+
+`roster::plans::Client` and `roster::interactions::Client` retain a verified
+profile connection for all list, history and detail pages. Bound interaction
+snapshots retain that client for later detail reads, including its original
+credentials; their legacy provider URL is empty. Every bound request carries the
+full identity. Binding refusal from optional state-history enrichment invalidates
+the whole snapshot, while unsupported state history remains an optional error.
+Legacy plan pagination also captures its connection once per complete read.
+Native profile panes consume these clients through their retained connection.
 
 `roster::plans` reads Backbone's `/api/current-plans` list over the same
 authenticated local transport as Sheets, on a worker, every 20 seconds while
 the Current plans section is open. It is read-only: it publishes, approves and
 changes nothing. A missing endpoint is reported as unsupported, and a failed
-reread keeps the plans last read. Each refresh also reads the agents' runtimes
-and working states; failure of either read preserves the last complete snapshot
-and shows the read-error notice in both the list and opened plan.
+reread keeps the plans last read. Each refresh also reads the agents' runtime
+metadata; failure of either read preserves the last complete snapshot and shows
+the read-error notice in both the list and opened plan. Working states
+come from the shared live roster, independently of the plan refresh.
+Explicitly bound panes read plans and runtime metadata through the same captured
+connection. Plan frames reject another profile's deferred result, and discussions
+retain the connection, author, observed revision and step. Their draft keys include
+the full profile, installation and lifecycle identity; refreshing or switching
+sections cannot redirect an existing discussion. Workspace selection supplies the connection without rewriting an existing pane.
 The section draws through the pane, like the record readers, so
 an opened plan's text can be selected and copied. Its selected step uses the shared
 conversation panel, addressed by the plan author's stable identity. Drafts are
@@ -784,6 +943,13 @@ Summary and history share the provider's snapshot token. Stable registration IDs
 identify participants, including retired registrations; an unknown sender remains
 unknown. A reverse relation keeps its recorded source ID. Full-body retention is
 separate from the start of retained history.
+
+Explicitly bound interaction panes retain one verified connection for summary,
+state/history reads, detail navigation and linked reports or responses. Deferred
+snapshots and link requests check the full origin. Interaction and referenced
+artifact discussions retain the same connection and profile-scoped draft keys;
+unsupported or refused bound reads never use a legacy directory or open the
+legacy Activity fallback.
 
 `desktop::views::interactions` owns the visible window, filters, selected original,
 peer-navigation stack and discussions. Reads run on a worker every 20 seconds
@@ -901,3 +1067,383 @@ policy and without changing global sysctls or granting userns to writable app
 paths. Its child profile restricts capabilities. This optional system setup
 requires sudo; refusal or failure does not block installing native views. `LIBGL_ALWAYS_SOFTWARE=1` selects
 WebKitGTK's nonaccelerated drawing policy for headless/software environments.
+
+### Bound native Policies
+
+Bound native Policies retain shared catalog IDs with the displayed instruction layers. Shared bodies come from the exact immutable provider revision, and discussions retain that artifact, revision and connection. Base and swarm briefs remain provider-owned read-only previews without artifact discussion authority. Catalog binding refusals invalidate the whole library; missing IDs cannot fall back to preview text or local paths. Reader completion tickets cancel closed openings and reject results after reopening the same path.
+
+### Bound native Team and Tags
+
+`roster::views::content` owns Team and Tags reads, and `desktop::views` owns their native panes. Bound Team and Tags panes use the same captured content connection and generation checks as other observations, with live status from a matching `LiveAgents` origin. Tag membership drill-down stays within the pane. Bound Team rows can open registration-pinned Agent cards; name-only terminal navigation and ambient tag-mutation commands remain unavailable.
+
+### Verified profile selection
+
+Profile selection uses an explicit cancellable handoff in the app crate. Each attempt retains its discovery client and requested profile ID, reads one atomic registry record and authenticates its connection before exposing a selected result. Per-owner tickets reject superseded or cancelled completions, including repeated choices of the same ID. Registry labels/readiness confer no connection authority, and a failed choice supplies no replacement for existing workspace connections. This handoff performs no service or account changes; workspace activation consumes only that authenticated result.
+
+The native `ProfilePicker` component consumes an explicit discovery client and the selection handoff. Catalog tickets invalidate stale refreshes and rows; only currently ready IDs can start verification. Selection emits an authenticated connection or a fixed error, never a registry-only binding. Closing cancels pending work, and committed/closed pickers reject further interaction. The workspace menu opens this picker to create a workspace bound to an existing ready profile.
+
+Profile-bound session discovery retains a verified connection and queries only its authenticated tmux socket. It verifies the original provider binding before and after each read-only session listing; refusal clears session names and returns a typed profile error with the full origin. Visibility generations and cancellation discard obsolete reads. This path neither starts servers nor attaches clients, and does not fall back to legacy socket resolution. Workspace choosers supply their own verified connection.
+
+Verified connections also carry an opaque, process-local cache key. Clones share
+that key; each fresh authenticated handshake gets a new one even if its full
+provider identity is unchanged. The desktop roster registry deduplicates by both
+origin and this key, so retained panes keep their old credential worker while a
+fresh connection can recover after credential rotation. The key is neither
+serialized nor used as request authority; wire validation still uses the full
+profile, installation and lifecycle identity. Legacy directory sharing is unchanged.
+
+`roster::profiles::runtime_context` acquires an agent registration from a bound
+inspection and retains that registration, runtime and verified connection for
+refreshes and permission reads. List-derived navigation supplies its observed
+registration immediately. Retained requests always include `expected_registration_id`;
+replacement or removal invalidates the target. Permission responses must match
+the full profile identity, name, runtime and registration. Typed provider-parsed
+permissions expose only relative display labels and fixed unavailable/unsupported
+messages; no local runtime files or home directories are read. Native Agent cards
+consume this retained context. The shared profiles fixture includes contract
+revision 2 extension 1 for setup schema 2 and registered runtime context.
+
+Native pane and attachment choosers retain an explicit discovery origin. Bound
+constructors use the verified connection for both session and team observations;
+legacy constructors keep their explicit directory/socket behavior. Session replies
+must match the retained full identity, and worker visibility generations discard
+hidden reads. Event owners can retrieve the retained connection and must validate
+it against their workspace before accepting a choice. Bound new-pane choosers
+retain registrations for Agent cards. Desktop routing constructs them from the owning workspace connection.
+
+Workspace records may carry an optional stable `profile_id`. Schema-v2 projection
+and ordinary three-way conflict handling preserve it; endpoints, lifecycles and
+credentials are never persisted in the layout. Missing or null IDs retain explicit
+legacy/standalone meaning. A native picker can create a workspace for an existing
+ready profile. Restored bindings resolve through read-only registry discovery and
+an authenticated handshake, with bounded concurrent attempts and explicit retry.
+Unavailable bindings display a connection state instead of opening legacy content.
+
+Each workspace retains its verified connection and status source. Pane entities,
+attachment choosers, attention markers and new native windows inherit that authority.
+Changing a saved binding or explicitly reconnecting invalidates old pane owners;
+delayed callbacks cannot apply to their replacements. Cross-workspace tab transfers
+require the same connection instance, including its credential snapshot. Bound
+terminal attachments use only the verified tmux socket, recheck the provider before
+and after attachment, and release the owned client if that final check fails.
+Bound panes never resume agents or create ordinary shells through legacy paths.
+A bound shell comes from the provider: when a pane with no attachment connects,
+`POST /api/profile/shells` ensures a session for the pane on the verified tmux socket,
+and the app then attaches to it. A new pane sends no folder, so the shell starts in the
+profile's home. The app
+sends no environment and never starts a bound tmux server, so the app's launch
+context cannot reach the shell. Signing a CLI account in works the same way:
+`POST /api/profile/accounts/sign-in` returns a session on that socket, and the pane
+attaches to it so the person completes the CLI's own sign-in there. A profile itself
+has no sign-in; a workspace selects it. A Default profile keeps its existing CLI
+sign-ins, so it does not offer this. An Agent card removes its agent after a
+confirmation: the app stops the session, then deletes the registration, because the
+provider refuses to remove a running agent. Both requests carry the registration the
+card shows as `expected_registration_id`, so a provider that checks it refuses to stop
+or remove a replacement made under the same name; older providers ignore it. The Skills view and the Documents section
+add a person's own folder or HTML file to the profile through the provider: a skill is
+copied for every agent in the profile and the folder stays in place, and a document is
+published under the reserved `operator` author. Native lifecycle and setup controls use the captured
+operator client and durable recovery controllers. Real-account acceptance remains
+separate; unavailable provider operations are shown explicitly. Existing standalone
+workspaces retain their ordinary shell behavior.
+
+Sidebar attention actions, retained view events and Jump results capture their
+workspace, connection epoch and library origin before dispatch. Navigation validates
+that origin and selects the original workspace; a removed, rebound or reconnected
+workspace rejects the old callback. Jump activates the displayed target rather than
+looking up its old list index again. Closed view entities and replaced popovers
+cannot dispatch into their successors. Moving a retained view renews its event
+subscription for the destination workspace; events from the previous subscription
+generation expire while the view and its conversation state remain intact.
+
+New Tab and Split controls capture the displayed workspace, selection and connection
+epoch. They refuse stale callbacks and recheck after consuming a pending library
+update, before creating a save intent. Keyboard commands capture at dispatch;
+rendered buttons, Jump commands and tab options retain their displayed destination.
+Tab-menu listeners also retain the menu generation, so a retired listener cannot
+consume a replacement menu or its creation target. Name editors and inline pane
+choosers accept events only from their active entity. Tab operations, name commits
+and icon changes recheck the selected workspace origin after pending library
+updates, while focus changes within the same workspace remain valid. Attachment
+and terminal openers also capture the pane origin before their own refresh; a
+nested refresh cannot turn an earlier bound action into a legacy-source lookup.
+Sidebar workspace/tab choices, menu openers, pane focus and tmux window controls
+retain their rendered origin. Reorder and resize gestures reject binding or
+connection changes even when saved IDs and tree contents remain unchanged;
+retired terminal entities cannot receive window-selection callbacks. Workspace
+menus also retain an opening generation, so an old action cannot consume or
+replace a newer menu. The unavailable-profile retry button retains its displayed
+origin and rechecks pending library updates before resetting connection state;
+delayed retries cannot discard a different or already recovered connection.
+Close Pane and Close Tab capture the selected origin before consuming library
+updates and reject changed bindings or connection epochs even when tab and pane
+IDs are unchanged. Fresh local closes still work for unavailable profiles.
+The application-menu setup command opens first-run setup from any workspace.
+Setup always adds its agent to the Default profile, never to the selected
+workspace's profile, and Settings › Profiles offers the same flow as Add agent on
+Default.
+
+Save reconciliation treats a workspace's profile binding and its tab contents as
+an ownership boundary: a concurrent binding change cannot merge with a pane edit,
+tab addition or transfer in that workspace. The transaction rechecks this against
+the latest stored layout, so a pre-save UI check alone cannot authorize a stale
+edit. Connection-unavailable content also hides retained native web surfaces, and
+background focus resets preserve an open profile picker's keyboard ownership.
+
+Profile-bound Team cards retain a listed agent registration on Alt-click and save
+it as `view_registration_id` in the schema-v2 pane. Bound agent overview and
+permission reads require this registration and the owning workspace connection;
+restoring a saved card cannot reacquire a same-name replacement. A separate native
+card uses provider-parsed runtime context, never legacy host-file permission
+inspection or default launch-policy claims. Refusals clear the card. Name-only
+saved cards require reopening from Team, and removing a workspace binding does
+not convert a registration-pinned card into a legacy read. The card's other
+sections (Connections, Skills, Policies and Usage) read on the same connection
+after that registration check; their skill and policy rows list without opening
+the reader. Name-only terminal navigation is unavailable.
+
+The new-pane Agent chooser carries the same observed registration as Team
+navigation. Bound choices omit unregistered or malformed targets. Row keys include
+registration identity, so a refreshed same-name replacement disarms selection and
+cannot inherit a previously rendered number key or click target. The chooser
+exposes only the supported bound overview and permission card; it never builds a
+name-only bound Agent view.
+
+Profile first-agent setup uses an independent schema-2 request model. Preparation
+captures the full expected profile tuple and immutable agent/hook choices; the
+cancellation body changes only the action and keeps the original request ID.
+Bounded JSON-lines decoding checks every progress and final event against that
+origin and action, enforces monotonic sequence numbers and refuses incomplete or
+contradictory streams. Only a precise provider cancellation acknowledgement allows
+new choices; unsafe cancellation preserves the original operation. These models
+invoke no process and do not activate the legacy setup UI for a bound workspace.
+
+Profile runtime catalogs use the captured discovery executable and caller context,
+with all three expected identity fields sent explicitly. Only successful schema-2
+responses for that tuple are retained; unsupported flags, command failures and
+foreign results never fall back to legacy discovery. Catalogs keep authentication
+observations separate from executable availability and setup compatibility.
+Provider paths and unattended argument examples are discarded; these reads cannot
+launch runtimes or authorize an account operation. Discovery remains bounded and
+cancellable, and retained catalogs carry their full origin for deferred consumers.
+
+Local lifecycle `Operation` owns a prepared request together with the discovery
+client's captured executable and caller environment. Apply writes the exact bytes
+to a private temporary file; receipt lookup uses the original request ID without
+resubmitting. Bounded receipt reads and deadlines leave uncertain outcomes attached to
+that request. Nonzero exits may yield validated durable failure receipts, never
+success. Cleanup terminates only the direct command, since a provider may launch
+long-lived service children; it does not kill the service process group. Callers
+must persist original request state before exposing lifecycle actions in the UI.
+No lifecycle control is automatically invoked by discovery or selection.
+The receipt sink is an anonymous regular file, so inherited service writers do
+not receive SIGPIPE when the consumer finishes or exits. Receipt reads reject an
+observed file above the output limit during invocation; the provider owns the
+logging destination and lifetime of any service that inherits the descriptor.
+
+Profile setup execution owns immutable schema-2 requests and the captured provider
+client. It emits only validated progress steps before exit; terminal readiness or
+cancellation is returned only when the full-origin result matches the process exit
+contract. Timeouts and loss of observation terminate and reap only the direct
+command, leaving the same request with an unknown outcome for explicit recovery.
+Neither cleanup nor closing confirms provider cancellation or rollback. The
+consumer does not detach a setup command and allow a concurrent retry.
+Private request files and anonymous regular output files preserve inherited service
+writers, while observed receipt bytes and stream events remain bounded. The provider
+owns long-lived service logging. No setup executor is invoked by discovery or
+selection; native recovery controls persist the exact request before execution.
+
+Lifecycle request checkpoints use a private consumer format, separate from the
+provider protocol. They preserve exact generated request bytes, the first reserved
+identity and terminal non-regression across restoration. Restoring validates the
+original request and saved observation without discovery, new IDs or command
+execution. Provider diagnostic
+prose is discarded. A restored record supplies expectations only. Durable storage
+and verification of the original operator/registry context are required before
+any restored request may execute; these model APIs do not activate lifecycle UI.
+
+Setup request checkpoints retain both generated schema-2 bodies byte for byte,
+including cancellation's original ID, profile tuple, hooks, project and brief.
+Restoration validates all choices and rejects changed or noncanonical bodies
+without discovery or allocation. The private format records request intent only:
+interrupted output streams and successful readiness/cancellation are not inferred
+from it. Durable storage remains required before recovery can submit either body. No setup UI is activated by restoration.
+
+Profile control-plane clients capture the working directory with their executable
+and environment; all discovery, lifecycle and setup commands use that snapshot.
+Private executor recovery records wrap model checkpoints with an operation kind.
+Environment values are not persisted. A record reopens however the app was launched,
+because launching from another terminal or after a reboot changes the environment
+without changing the operation: the profile tuple and request ID pin it, and the
+provider refuses a tuple that no longer matches. This is not authentication of an
+executable or protection against malicious same-user record replacement. The durable
+controllers and native recovery panes described below build on these records.
+
+Private operation journals use an owned 0700 directory and 0600 records. Directory
+components and record opens reject symbolic links; file descriptors pin the root
+for subsequent access. A stable advisory lock serializes independent windows and
+processes. The lock guard explicitly unlocks before closing its descriptor, so a
+concurrently spawned child cannot prolong a completed operation's lock before exec.
+Compare-and-swap revisions prevent stale observations from replacing
+newer ones. Writes use exclusive temporary files, file sync, atomic rename and
+directory sync; a write error may follow replacement, so callers reread before
+retrying. Bounded binary records retain exact opaque capsules with identity,
+revision and checksum validation. The existing `rustix` and `sha2` dependencies
+provide descriptor-relative filesystem operations/locking and corruption checks.
+The journal grants no operation authority and invokes no provider; controllers
+must validate capsule context and state, persist before submission and reconcile
+uncertain writes before native recovery actions can be enabled.
+On macOS, the journal also refuses extended ACLs through the open descriptors:
+mode bits alone cannot establish privacy there. This deliberately includes
+otherwise restrictive ACLs. Opening an existing journal syncs its parent too,
+so an interrupted directory initialization cannot bypass that durability step.
+
+The MIT `native-fs` workspace crate keeps Darwin ACL FFI outside the safe app
+crate. It uses the existing MIT/Apache-2.0 `libc` dependency for system types; no
+additional third-party dependency or service is introduced.
+
+The app's lifecycle controller stores exact request intent before submission and
+syncs a `Submitted` phase before invoking the provider. Recovery reads the
+original request receipt by default; resending requires an explicit identical
+retry. Journal keys derive from the original request ID, so duplicate enqueue
+attempts cannot silently replace intent. Each invocation claims a revision and
+may publish its validated receipt only after the updated capsule is durably
+stored at that revision. Competing observations fail closed; the caller rereads
+the same key after errors. Terminal receipts disable further controller commands.
+These receipts remain lifecycle progress, never authenticated content access.
+Native action controls invoke the controller off the UI thread. First-agent setup
+uses its own controller and journal with the same durable recovery boundary.
+
+Recovered controller state crosses a fresh directory-sync barrier before it is
+returned or treated as terminal. A visible record alone cannot establish durable
+completion after an earlier post-rename sync failure. The journal's ordinary
+read remains a storage inspection; `read_durable` provides this recovery barrier.
+
+Setup terminal observations have a separate private checkpoint from request
+intent. They retain the original tuple, request, action, sequence and bounded
+outcome/retry fields, including the actual launch ID for confirmed readiness.
+Normalization removes provider prose and unneeded result details; restoration
+revalidates the result through the existing schema-2 stream rules and requires
+canonical encoding for the original prepared request and explicit action.
+Progress is never reconstructed as terminal authority. The executor must still
+verify the matching process exit before a controller durably saves an outcome;
+these model checkpoints neither prove that exit nor grant content/account access.
+
+The setup controller persists both exact request bodies before execution and
+records cancellation intent before invoking it. An unknown cancellation outcome
+permits only an explicit retry of that same cancellation; it never resumes
+first-agent work. Confirmed unsafe cancellation preserves the original setup
+request, while validated retry policies govern subsequent explicit attempts.
+Readiness and successful cancellation close the request. Every claim and result
+uses journal revision checks, and recovered state crosses the durability barrier.
+Progress carries the record key and revision for deferred UI checks; terminal
+results are returned only after matching process exit and durable storage.
+Native recovery controls retain the original record key and revision while invoking
+this controller off the UI thread.
+
+New workspace is one popover: a name, the profiles to bind it to, and New
+profile. Without Agent Backbone the name is typed in place. Choosing a profile runs
+the authenticated selection before the workspace is saved; the workspace takes the
+typed name, or the profile's when none was typed.
+
+Native profile service controls live in Settings › Profiles. Opening one profile
+captures the selected library location once and opens a private
+lifecycle journal; it does not invoke a lifecycle action. Start/Stop controls use
+an atomic registry record loaded before the buttons appear. Submitting switches
+the view to the original operation key before persistence or provider execution,
+so ambiguous writes and replies retain recovery identity. Reopening enumerates
+bounded record IDs and validates one page of durable snapshots at a time.
+Receipt lookup and identical retry are distinct explicit actions. Closing the
+view does not stop a start or stop already running; it finishes in the
+background, and its receipt is read the next time the profile is opened.
+Worker generations reject stale results and controls. Successful receipts remain
+progress metadata: workspace selection still performs the authenticated handshake.
+Fresh first-agent setup choices remain separate from saved-request recovery.
+
+New profile runs as three steps in its workspace: name, sign in, first agent. Only
+signing in sits beside a pane.
+The name step takes an explicit profile name and the one baseline the provider can
+create today, and records one immutable create request in the same durable
+lifecycle journal. The provider creates a profile without starting it, so the step
+then records and submits a start request and runs the authenticated selection;
+only that verified selection binds the workspace. An unconfirmed create is checked
+again under its original key rather than sent anew. A profile starts clean: the
+person may opt in to `git_identity: "copy"` on the create request, which has the
+provider copy only their Git name and email. Omitting the field keeps the request's
+bytes unchanged, and recovery restores whichever request was saved. The sign-in step reads the
+profile's runtime catalog and opens sign-in sessions in the bound workspace. It asks
+`GET /api/profile/accounts/status` once for each installed CLI, then only for a CLI
+being signed in, every two seconds while that sign-in is open, because each read
+starts the CLI's own check. Signed in means a stored sign-in, not a working account.
+A sign-in session that ends closes its pane, and one more read decides the row: an
+ended session proves nothing. The first-agent step submits the same setup request as
+Add agent. Setup is complete once the CLI has started, whatever it shows; first-run
+screens are between the CLI and the person. The steps then say so, and leaving them
+opens the agent, so focus lands in its terminal. A CLI that exits right away is a
+failed setup with the provider's explanation; recovery of its saved request stays in
+the profile's Settings page.
+
+Native profile management exposes saved first-agent setup separately from the
+current runtime catalog. It opens a private setup journal from the already
+resolved library directory and renders validated records in bounded pages.
+Retries and cancellation retain the original profile tuple and request bytes. Progress is checked against its journal key, request, tuple and
+revision; superseded pane tasks cannot publish results. Stopping observation
+reloads the same record and never reports safe cancellation. Confirmed setup
+readiness does not authorize account access or open an ambient terminal.
+
+Fresh setup admission validates existing durable setup records and inserts the
+new intent under one journal lock. An open request blocks only the same agent name
+in the same full profile instance, so a second agent can be added while another
+needs attention. A request closes on confirmed readiness, safe cancellation, or a
+result whose retry policy says this same request can go no further (a name already
+in use answers `new_request`, for example). A result the provider says can be retried
+(`launch_timeout`, `runtime_permission`) stays open, and the recovery view shows fixed
+text for its code. Forgetting a request removes only the app's saved record; it runs
+no command and keeps any agent the request created. Malformed records fail closed
+until they are forgotten; unsafe storage always fails closed. A directory durability barrier precedes the
+check, and the bounded scan has a read budget. Catalog-facing pending reads are
+observations only: actual admission repeats the check atomically. This local
+journal rule does not replace the provider's own request serialization.
+
+First run stays with the installer's Default profile: the installer initializes it,
+onboarding adds the first agent through schema-1 setup, and the app then opens that
+agent in a workspace bound to Default, through the same handshake as any profile.
+tmux-only use, with no Backbone, stays unbound.
+
+A profile workspace separates connecting from a failed connection and shows the
+reason. A profile's service does not restart itself after a reboot and its agents
+never return with the service, so the failed state offers Start service (`profiles
+apply` start, recorded in the same journal as Settings › Profiles) and a stopped agent's pane offers
+Resume and Start new (`POST /api/agents/{session}/start`, which takes the name only).
+A failed roster read loses status, not access: tmux keeps the sessions and panes stay
+attached, with a status note, while the read retries.
+
+Native first-agent setup captures one atomic registry profile and the operator
+client before loading choices. It checks the independent private setup journal
+for open requests, which it points to without blocking other agent names, and then
+reads that instance's schema-2 runtime catalog.
+An explicit project folder, name, brief, runtime and optional catalog model are
+frozen with hook and greeting choices into one original request. Compatibility
+and authentication observations remain separate; neither opens a terminal or
+connects a workspace. Confirmation hands the retained controller and prepared
+request to recovery with its original key established before admission or I/O.
+Admission repeats the pending check atomically. Failed or interrupted submission
+keeps recovery on the original key; queued form callbacks cannot create a second
+request after the form closes.
+
+Provider request files are created inside fresh private directories only after
+checking the temporary path's ancestors, ownership, mode and macOS ACLs. Open
+directory and file descriptors must pass the same privacy checks as the journal
+before any request bytes are written. Receipt sinks use this preparation too,
+then become anonymous regular files so inherited service writers can survive
+consumer cleanup. Unsafe temporary locations fail before provider invocation.
+The journal capacity includes the worst-case JSON escaping of a complete
+client recovery capsule and its envelope, including terminal observations; an
+accepted large request cannot exhaust that capacity merely by gaining a receipt.
+
+Consumer-generated lifecycle request IDs are limited to 1 KiB before intent is
+accepted or restored. Submission uses a file, but receipt lookup passes the ID
+as a command argument; the bound keeps accepted IDs well below native argument
+limits. Large request content and terminal metadata retain their separate wire
+and journal bounds, and lost-reply recovery still looks up the original ID.

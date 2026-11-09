@@ -1,5 +1,8 @@
 //! Connect each saved leaf to its actual existing tmux session.
 
+#[cfg(test)]
+mod profile_isolation_tests;
+
 use super::{components as ui, design};
 use crate::{
     library,
@@ -15,34 +18,106 @@ use std::{path::PathBuf, sync::Arc};
 
 static CONNECTION_ATTEMPTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone)]
 pub(super) struct Target {
+    pub connection: Option<agent_interface_roster::profiles::Connection>,
     pub leaf: Leaf,
     pub directory: Option<PathBuf>,
     pub source: Result<PathBuf, String>,
 }
 
+impl PartialEq for Target {
+    fn eq(&self, other: &Self) -> bool {
+        self.leaf == other.leaf
+            && self.directory == other.directory
+            && self.source == other.source
+            && self.connection.as_ref().map(|c| c.connection_key())
+                == other.connection.as_ref().map(|c| c.connection_key())
+    }
+}
+impl Eq for Target {}
+
 impl Target {
+    fn profile_matches(&self, space: &agent_interface_core::Workspace) -> bool {
+        space.profile_id.as_deref()
+            == self
+                .connection
+                .as_ref()
+                .map(|c| c.identity().profile_id.as_str())
+    }
+    /// A provider's sign-in session. It does not come back once it ends.
+    pub fn is_sign_in(&self) -> bool {
+        self.connection.is_some()
+            && self
+                .leaf
+                .attachment
+                .as_ref()
+                .is_some_and(|attachment| attachment.session.starts_with("sign-in-"))
+    }
+
+    /// Remove this pane from whichever workspace of its profile holds it,
+    /// keeping the workspace and tab in view.
+    pub fn close_from(&self, layout: &mut agent_interface_core::Layout) -> bool {
+        let Some((space, tab)) = layout
+            .workspaces
+            .iter()
+            .filter(|space| self.profile_matches(space))
+            .find_map(|space| {
+                space
+                    .tabs
+                    .iter()
+                    .find(|tab| {
+                        tab.tree
+                            .leaves()
+                            .into_iter()
+                            .any(|leaf| self.matches_leaf(leaf))
+                    })
+                    .map(|tab| (space.id.clone(), tab.id.clone()))
+            })
+        else {
+            return false;
+        };
+        let shown_space = layout.workspace().map(|space| space.id.clone());
+        if !layout.choose_workspace(&space) {
+            return false;
+        }
+        let shown_tab = layout.tab().map(|tab| tab.id.clone());
+        let closed =
+            layout.choose_tab(&tab) && layout.choose_pane(&self.leaf.id) && layout.close_pane();
+        if let Some(shown) = shown_tab {
+            layout.choose_tab(&shown);
+        }
+        if let Some(shown) = shown_space {
+            layout.choose_workspace(&shown);
+        }
+        closed
+    }
+
     /// Clear only the pane contents the user acted on, in the selected tab.
     pub fn detach_from(&self, layout: &mut agent_interface_core::Layout) -> bool {
-        layout.tab().is_some_and(|tab| {
-            tab.tree
-                .leaves()
-                .into_iter()
-                .any(|leaf| self.matches_leaf(leaf))
-        }) && layout.choose_pane(&self.leaf.id)
+        layout
+            .workspace()
+            .is_some_and(|space| self.profile_matches(space))
+            && layout.tab().is_some_and(|tab| {
+                tab.tree
+                    .leaves()
+                    .into_iter()
+                    .any(|leaf| self.matches_leaf(leaf))
+            })
+            && layout.choose_pane(&self.leaf.id)
             && layout.detach_pane()
     }
 
     /// A hidden tab still owns its connection until the saved target changes.
     pub fn exists_in(&self, layout: &agent_interface_core::Layout) -> bool {
         layout.workspaces.iter().any(|workspace| {
-            workspace.tabs.iter().any(|tab| {
-                tab.tree
-                    .leaves()
-                    .into_iter()
-                    .any(|leaf| self.matches_leaf(leaf))
-            })
+            self.profile_matches(workspace)
+                && workspace.tabs.iter().any(|tab| {
+                    tab.tree
+                        .leaves()
+                        .into_iter()
+                        .any(|leaf| self.matches_leaf(leaf))
+                })
         })
     }
 
@@ -57,6 +132,8 @@ impl Target {
         self.matches_leaf(&other.leaf)
             && self.directory == other.directory
             && self.source == other.source
+            && self.connection.as_ref().map(|c| c.connection_key())
+                == other.connection.as_ref().map(|c| c.connection_key())
     }
 }
 
@@ -80,6 +157,27 @@ impl Drop for Ready {
     }
 }
 
+fn shell_refusal(error: agent_interface_roster::profiles::Error) -> String {
+    use agent_interface_roster::profiles::Error;
+    match error {
+        Error::Unsupported => "This provider does not support profile shells.",
+        Error::Refused(422) => "This folder is not available to the profile.",
+        Error::Refused(503) => "The profile could not start this shell.",
+        Error::Refused(_) => "The profile refused this shell.",
+        _ => "The workspace profile connection is unavailable.",
+    }
+    .to_owned()
+}
+
+/// "/" is what a new bound pane saves as a placeholder; the provider starts that
+/// shell in the profile's home.
+fn bound_shell_folder(leaf: &Leaf) -> Option<&str> {
+    leaf.cwd.as_deref().filter(|cwd| *cwd != "/")
+}
+
+const PROFILE_UNAVAILABLE: &str = "The workspace profile connection is unavailable.";
+const PROFILE_CHANGED: &str = "The workspace profile connection changed while attaching.";
+
 fn connect(target: Target) -> Result<Ready, String> {
     connect_selected(target, None, false)
 }
@@ -89,7 +187,31 @@ fn connect_selected(
     selected: Option<SessionWindow>,
     reopened: bool,
 ) -> Result<Ready, String> {
-    let (socket, session) = if let Some(attachment) = &target.leaf.attachment {
+    let bound = target.connection.clone();
+    if let Some(connection) = &bound {
+        connection
+            .verify()
+            .map_err(|_| PROFILE_UNAVAILABLE.to_owned())?;
+    }
+    let (socket, session) = if let Some(connection) = &bound {
+        let session = match &target.leaf.attachment {
+            Some(attachment) => {
+                if attachment
+                    .source_socket
+                    .as_deref()
+                    .is_some_and(|path| std::path::Path::new(path) != connection.tmux_socket())
+                {
+                    return Err("The saved session belongs to a different profile socket.".into());
+                }
+                attachment.session.clone()
+            }
+            // The provider creates the shell; the app never starts a bound server.
+            None => connection
+                .ensure_shell(&target.leaf.id, bound_shell_folder(&target.leaf))
+                .map_err(shell_refusal)?,
+        };
+        (connection.tmux_socket().to_owned(), session)
+    } else if let Some(attachment) = &target.leaf.attachment {
         let socket = match &attachment.source_socket {
             Some(path) => {
                 sessions::source_socket(Some(path.as_ref())).map_err(|e| e.to_string())?
@@ -135,7 +257,7 @@ fn connect_selected(
         },
     )
     .map_err(|e| e.to_string())?;
-    Ok(Ready {
+    let ready = Ready {
         socket,
         panes: Some(Arc::new(panes)),
         window: connection.layout.window,
@@ -143,7 +265,13 @@ fn connect_selected(
         layout: Some(connection.layout),
         input: connection.input,
         updates: Some(updates),
-    })
+    };
+    if let Some(connection) = &bound {
+        connection
+            .verify()
+            .map_err(|_| PROFILE_CHANGED.to_owned())?;
+    }
+    Ok(ready)
 }
 
 pub(super) struct LiveTerminal {
@@ -159,18 +287,25 @@ pub(super) struct LiveTerminal {
     /// Starts this ordinary terminal's shell when it is no longer running.
     environment: Option<agent_interface_tmux::shells::Environment>,
     restoring: bool,
-    /// The Backbone data directory and name of the agent this attachment shows.
-    agent: Option<(PathBuf, String)>,
+    /// The name of the stopped agent this attachment shows, with the Backbone data
+    /// directory that starts it. A bound pane starts it through its connection.
+    agent: Option<(Option<PathBuf>, String)>,
     launching: bool,
     launch_result: Option<agent_interface_roster::lifecycle::Outcome>,
     _windows: Task<()>,
 }
 
 pub(super) struct Detach;
+/// The sign-in session this pane showed is over.
+pub(super) struct SignInEnded;
 pub(super) struct OpenTerminal;
+/// The terminal's session is attached and can take the keyboard.
+pub(super) struct Connected;
 
 impl gpui::EventEmitter<Detach> for LiveTerminal {}
+impl gpui::EventEmitter<SignInEnded> for LiveTerminal {}
 impl gpui::EventEmitter<OpenTerminal> for LiveTerminal {}
+impl gpui::EventEmitter<Connected> for LiveTerminal {}
 impl gpui::EventEmitter<crate::view::Focus> for LiveTerminal {}
 
 impl LiveTerminal {
@@ -182,7 +317,7 @@ impl LiveTerminal {
     }
 
     /// Only the browser knows whether an attachment is a registered agent.
-    pub fn set_agent(&mut self, agent: Option<(PathBuf, String)>, cx: &mut Context<Self>) {
+    pub fn set_agent(&mut self, agent: Option<(Option<PathBuf>, String)>, cx: &mut Context<Self>) {
         if self.agent != agent {
             self.agent = agent;
             self.launch_result = None;
@@ -199,11 +334,17 @@ impl LiveTerminal {
         self.launching = true;
         self.launch_result = None;
         let target = agent.clone();
+        let connection = self.target.connection.clone();
         let defaults = defaults();
         let work = cx.background_executor().spawn(async move {
-            agent_interface_roster::lifecycle::start_with_defaults(
-                &target.0, &target.1, resume, defaults,
-            )
+            use agent_interface_roster::lifecycle;
+            match (connection, &target.0) {
+                (Some(connection), _) => connection.start_agent(&target.1, resume),
+                (None, Some(data_dir)) => {
+                    lifecycle::start_with_defaults(data_dir, &target.1, resume, defaults)
+                }
+                (None, None) => lifecycle::Outcome::Unknown,
+            }
         });
         cx.spawn(async move |this, cx| {
             let result = work.await;
@@ -445,6 +586,9 @@ impl LiveTerminal {
                                 if terminal.target.leaf.attachment.is_none() {
                                     terminal.start(cx);
                                 }
+                                if terminal.target.is_sign_in() {
+                                    cx.emit(SignInEnded);
+                                }
                                 cx.notify();
                             },
                         ));
@@ -453,6 +597,7 @@ impl LiveTerminal {
                         })
                         .detach();
                         terminal.view = Some(view);
+                        cx.emit(Connected);
                     }
                     Err(error) => {
                         // An ordinary shell that is no longer running, such as
@@ -471,7 +616,14 @@ impl LiveTerminal {
                             );
                         } else {
                             terminal.restoring = false;
+                            // Only tmux can say the session is gone; a profile
+                            // connection that failed to verify may come back.
+                            let session_gone =
+                                error != PROFILE_UNAVAILABLE && error != PROFILE_CHANGED;
                             terminal.error = Some(error);
+                            if session_gone && terminal.target.is_sign_in() {
+                                cx.emit(SignInEnded);
+                            }
                         }
                     }
                 }
@@ -543,7 +695,9 @@ impl Render for LiveTerminal {
             })
             // A stopped agent is not an error; say so and offer its launch.
             .when_some(
-                self.error.clone().filter(|_| self.agent.is_none()),
+                self.error
+                    .clone()
+                    .filter(|_| self.agent.is_none() && !self.target.is_sign_in()),
                 |el, error| el.child(line(error, c.attention_text)),
             )
             .when(self.error.is_some(), |el| {
@@ -552,6 +706,9 @@ impl Render for LiveTerminal {
                 el.child(line(
                     match (&self.agent, attached) {
                         (Some((_, name)), _) => format!("{name} is not running."),
+                        (None, true) if self.target.is_sign_in() => {
+                            "This sign-in has ended.".into()
+                        }
                         (None, true) => {
                             "Waiting for this session. Reconnecting automatically.".into()
                         }
@@ -585,7 +742,14 @@ impl Render for LiveTerminal {
                         .when(!attached, |el| {
                             el.child(
                                 ui::button("open-terminal", "Open terminal", ui::Button::Secondary)
-                                    .on_click(cx.listener(|_, _, _, cx| cx.emit(OpenTerminal))),
+                                    .on_click(cx.listener(|terminal, _, _, cx| {
+                                        // The provider starts a bound shell; connect asks it again.
+                                        if terminal.target.connection.is_some() {
+                                            terminal.start(cx);
+                                        } else {
+                                            cx.emit(OpenTerminal);
+                                        }
+                                    })),
                             )
                         })
                         .when(attached, |el| {
@@ -671,6 +835,114 @@ mod tests {
     };
 
     #[test]
+    fn bound_attachment_ignores_legacy_source_and_refuses_foreign_targets() {
+        use crate::roster::content::tests::{Reply, provider_with_tmux};
+        use serde_json::json;
+        let a = TmuxServer::start().unwrap();
+        let b = TmuxServer::start().unwrap();
+        for server in [&a, &b] {
+            server
+                .run(&["new-session", "-d", "-s", "same-name", "cat"])
+                .unwrap();
+        }
+        let socket: PathBuf = a
+            .run(&["display-message", "-p", "#{socket_path}"])
+            .unwrap()
+            .trim()
+            .into();
+        let other: PathBuf = b
+            .run(&["display-message", "-p", "#{socket_path}"])
+            .unwrap()
+            .trim()
+            .into();
+        let identity = json!({"schema_version":1,"profile_id":"profile-a","installation_id":"installation-a","lifecycle_id":"lifecycle-a","baseline_version":"fixture","tmux":{"socket_path":socket}});
+        let (_dir, connection, server) = provider_with_tmux(
+            "a",
+            (0..3)
+                .map(|_| Reply::ok("/api/profile", identity.clone()))
+                .collect(),
+            Some(socket.clone()),
+        );
+        let mut model = agent_interface_core::Layout::initial("/tmp".into());
+        model.workspaces[0].profile_id = Some("profile-a".into());
+        model.attach(Some(Attachment {
+            session: "same-name".into(),
+            source_socket: None,
+        }));
+        let mut target = Target {
+            connection: Some(connection),
+            leaf: model.pane().unwrap().clone(),
+            directory: None,
+            source: Ok(other.clone()),
+        };
+        assert!(target.exists_in(&model));
+        let ready = connect(target.clone()).unwrap();
+        assert_eq!(ready.socket, socket);
+        assert!(b.run(&["list-clients"]).unwrap().is_empty());
+        drop(ready);
+        target.leaf.attachment.as_mut().unwrap().source_socket =
+            Some(other.to_str().unwrap().into());
+        assert!(
+            connect(target.clone())
+                .err()
+                .expect("attachment must fail")
+                .contains("different profile socket")
+        );
+        assert!(b.run(&["list-clients"]).unwrap().is_empty());
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn changed_binding_during_attachment_releases_the_owned_client() {
+        use crate::roster::content::tests::{Reply, provider_with_tmux};
+        use serde_json::json;
+        let tmux = TmuxServer::start().unwrap();
+        let socket: PathBuf = tmux
+            .run(&["display-message", "-p", "#{socket_path}"])
+            .unwrap()
+            .trim()
+            .into();
+        let identity = json!({"schema_version":1,"profile_id":"profile-a","installation_id":"installation-a","lifecycle_id":"lifecycle-a","baseline_version":"fixture","tmux":{"socket_path":socket}});
+        let (_dir, connection, server) = provider_with_tmux(
+            "a",
+            vec![
+                Reply::ok("/api/profile", identity),
+                Reply {
+                    status: 409,
+                    ..Reply::ok(
+                        "/api/profile",
+                        json!({"detail":{"code":"binding_mismatch"}}),
+                    )
+                },
+            ],
+            Some(socket),
+        );
+        let mut model = agent_interface_core::Layout::initial("/tmp".into());
+        model.attach(Some(Attachment {
+            session: "fixture".into(),
+            source_socket: None,
+        }));
+        let target = Target {
+            connection: Some(connection),
+            leaf: model.pane().unwrap().clone(),
+            directory: None,
+            source: Err("no legacy source".into()),
+        };
+        assert!(
+            connect(target)
+                .err()
+                .expect("attachment must fail")
+                .contains("changed while attaching")
+        );
+        server.join().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !tmux.run(&["list-clients"]).unwrap().is_empty() {
+            assert!(Instant::now() < deadline, "bound client was not released");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
     fn attachment_survives_navigation_and_detach_returns_the_same_pane_to_its_chooser() {
         let mut model = agent_interface_core::Layout::initial("/work".into());
         model.attach(Some(Attachment {
@@ -678,6 +950,7 @@ mod tests {
             source_socket: Some("/fixture/source".into()),
         }));
         let target = Target {
+            connection: None,
             leaf: model.pane().unwrap().clone(),
             directory: None,
             source: Ok("/fixture/source".into()),
@@ -728,12 +1001,54 @@ mod tests {
     }
 
     #[test]
+    fn a_finished_pane_closes_from_a_hidden_workspace_and_leaves_the_shown_one() {
+        let mut layout = agent_interface_core::Layout::initial("/".into());
+        layout.add_workspace("Work".into());
+        layout.add_tab(Some("kept".into()), "/".into(), true);
+        layout.add_tab(Some("sign-in-codex".into()), "/".into(), true);
+        layout.attach(Some(Attachment {
+            session: "sign-in-codex".into(),
+            source_socket: None,
+        }));
+        let leaf = (*layout.pane().unwrap()).clone();
+        let finished = layout.tab().unwrap().id.clone();
+        let target = Target {
+            connection: None,
+            leaf,
+            directory: None,
+            source: Err("unused".into()),
+        };
+        let kept = layout.workspace().unwrap().tabs[0].id.clone();
+        layout.choose_tab(&kept);
+        let work = layout.workspace().unwrap().id.clone();
+        layout.add_workspace("Elsewhere".into());
+        let elsewhere = layout.workspace().unwrap().id.clone();
+        assert_ne!(work, elsewhere);
+
+        assert!(target.close_from(&mut layout));
+
+        assert_eq!(layout.workspace().unwrap().id, elsewhere);
+        layout.choose_workspace(&work);
+        assert_eq!(layout.tab().unwrap().id, kept);
+        assert!(
+            layout
+                .workspace()
+                .unwrap()
+                .tabs
+                .iter()
+                .all(|tab| tab.id != finished)
+        );
+        assert!(!target.close_from(&mut layout));
+    }
+
+    #[test]
     fn retry_waits_for_the_exact_saved_session_without_creating_it() {
         let server = TmuxServer::start().unwrap();
         let socket = server
             .run(&["display-message", "-p", "#{socket_path}"])
             .unwrap();
         let target = Target {
+            connection: None,
             leaf: Leaf {
                 id: "123456abcdef".into(),
                 cwd: None,
@@ -858,6 +1173,7 @@ mod tests {
         };
         let original = current();
         let target = Target {
+            connection: None,
             leaf: Leaf {
                 id: "123456abcdef".into(),
                 cwd: None,
@@ -1006,6 +1322,7 @@ mod tests {
                 .unwrap()
         };
         let target = Target {
+            connection: None,
             leaf: Leaf {
                 id: "abcdef123456".into(),
                 cwd: None,
@@ -1161,6 +1478,7 @@ mod tests {
             .run(&["show-environment", "-t", &target_name])
             .unwrap();
         let mut target = Target {
+            connection: None,
             leaf: Leaf {
                 id: "123456abcdef".into(),
                 cwd: None,

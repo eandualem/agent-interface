@@ -65,15 +65,6 @@ impl Outcome {
     }
 }
 
-/// Start an agent with its saved runtime and model, resuming its saved
-/// conversation or opening a new one. Runs on an I/O worker.
-pub fn start(data_dir: &Path, name: &str, resume: bool) -> Outcome {
-    let Some((url, key)) = configured(data_dir, None) else {
-        return Outcome::Refused("Backbone is unavailable. No launch was requested.".into());
-    };
-    start_at(&url, &key, name, resume, None)
-}
-
 /// Start with the current appearance when the saved runtime advertises support.
 /// Older or unavailable capability endpoints retain the legacy launch request.
 pub fn start_with_defaults(
@@ -114,6 +105,16 @@ fn start_at(
         serde_json::to_vec(&body).expect("launch JSON"),
         Duration::from_secs(30),
     );
+    start_outcome(name, resume, reply)
+}
+
+/// What a start reply means. `reply` is the body, or the refusing status if known.
+pub(crate) fn start_outcome(
+    name: &str,
+    resume: bool,
+    reply: Result<Vec<u8>, Option<u16>>,
+) -> Outcome {
+    let refused = |message: &str| Outcome::Refused(message.into());
     // Backbone reports a missing saved conversation like any other refusal.
     let not_resumed = "Backbone could not resume this agent. If it has no saved conversation, \
         Start new opens a new one; otherwise check its saved folder, runtime and model.";

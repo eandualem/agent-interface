@@ -15,8 +15,10 @@ mod configuration;
 pub mod conversations;
 pub mod feedback;
 pub mod interactions;
+pub mod library_snapshots;
 pub mod lifecycle;
 pub mod plans;
+pub mod profiles;
 pub mod sheets;
 mod transport;
 pub mod views;
@@ -24,15 +26,31 @@ pub mod views;
 const RESPONSE_LIMIT: usize = 1024 * 1024;
 const UNAVAILABLE: &str = "Backbone unavailable; states stale";
 
+/// Presentation metadata from the same observation as an agent's state.
+#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize)]
+#[serde(default)]
+pub struct AgentDetails {
+    /// Whether the provider observes an online agent, including unknown states.
+    pub online: Option<bool>,
+    /// Why the agent is waiting or blocked.
+    pub reason: Option<String>,
+    /// The issue currently being worked on.
+    pub current_issue: Option<u64>,
+    /// Provider timestamp of the state observation.
+    pub state_since: Option<f64>,
+}
+
 /// Cached metadata, separate from tmux attachment availability.
 ///
-/// Only names and states are retained. In particular, an API `online` value
+/// Names, states and their presentation details are retained. An API `online` value
 /// cannot establish that a tmux session exists. A failed response preserves
 /// cached states and their timestamp, but the error marks those states stale.
 #[derive(Clone, Debug, Default)]
 pub struct Snapshot {
     /// Validated agent names and their reported states, including offline names.
     pub states: BTreeMap<String, String>,
+    /// Details observed together with `states`.
+    pub details: BTreeMap<String, AgentDetails>,
     /// A fixed diagnostic when cached states are stale; none after success.
     pub error: Option<&'static str>,
     /// Last successful response time, or none before any successful response.
@@ -40,47 +58,14 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
-    /// Active `(name, state)` entries in Python's roster order. None means the
-    /// roster is unavailable, distinct from a successful empty list. Cached
-    /// states remain available in `states`, but must not appear as current rows.
-    ///
-    /// Waiting/blocked agents precede working/starting agents, then everyone
-    /// else. Each group sorts by case-insensitive name, then exact name. Names
-    /// are validated ASCII, so ASCII folding matches Python's case folding.
-    /// Offline entries are omitted; empty states are presented as `unknown`.
-    pub fn active_entries(&self) -> Option<Vec<(&str, &str)>> {
-        if self.error.is_some() {
-            return None;
-        }
-        let mut entries: Vec<_> = self
-            .states
-            .iter()
-            .filter(|(_, state)| state.as_str() != "offline")
-            .map(|(name, state)| {
-                (
-                    name.as_str(),
-                    if state.is_empty() { "unknown" } else { state },
-                )
-            })
-            .collect();
-        entries.sort_by_cached_key(|&(name, state)| {
-            let priority = match state {
-                "waiting_for_human" | "blocked" => 0,
-                "busy" | "starting" => 1,
-                _ => 2,
-            };
-            (priority, name.to_ascii_lowercase(), name)
-        });
-        Some(entries)
-    }
-
     /// Apply one response from the agents endpoint. Invalid or oversized JSON
     /// marks the previous snapshot stale without exposing response contents.
     /// A successful empty list clears old names and any earlier error.
     pub fn update(&mut self, response: &[u8]) {
         match decode(response) {
-            Some(states) => {
+            Some((states, details)) => {
                 self.states = states;
+                self.details = details;
                 self.error = None;
                 self.observed_at = Some(Instant::now());
             }
@@ -95,7 +80,9 @@ impl Snapshot {
     }
 }
 
-fn decode(response: &[u8]) -> Option<BTreeMap<String, String>> {
+type Decoded = (BTreeMap<String, String>, BTreeMap<String, AgentDetails>);
+
+fn decode(response: &[u8]) -> Option<Decoded> {
     if response.len() > RESPONSE_LIMIT || !within_depth(response) {
         return None;
     }
@@ -104,8 +91,9 @@ fn decode(response: &[u8]) -> Option<BTreeMap<String, String>> {
     let document: BTreeMap<String, &RawValue> = serde_json::from_slice(response).ok()?;
     let items: Vec<&RawValue> = serde_json::from_str(document.get("items")?.get()).ok()?;
     let mut states = BTreeMap::new();
-    for item in items {
-        let Ok(item) = serde_json::from_str::<BTreeMap<String, &RawValue>>(item.get()) else {
+    let mut details = BTreeMap::new();
+    for raw in items {
+        let Ok(item) = serde_json::from_str::<BTreeMap<String, &RawValue>>(raw.get()) else {
             continue;
         };
         let Some(name) = item
@@ -122,9 +110,21 @@ fn decode(response: &[u8]) -> Option<BTreeMap<String, String>> {
             .and_then(|v| serde_json::from_str::<String>(v.get()).ok())
             .unwrap_or_else(|| "unknown".into());
         // Last valid occurrence wins, matching the Python provider's map.
+        let field = |key: &str| item.get(key).map(|value| value.get());
+        details.insert(
+            name.clone(),
+            AgentDetails {
+                online: field("online").and_then(|value| serde_json::from_str(value).ok()),
+                reason: field("reason").and_then(|value| serde_json::from_str(value).ok()),
+                current_issue: field("current_issue")
+                    .and_then(|value| serde_json::from_str(value).ok()),
+                state_since: field("state_since")
+                    .and_then(|value| serde_json::from_str(value).ok()),
+            },
+        );
         states.insert(name, state);
     }
-    Some(states)
+    Some((states, details))
 }
 
 // RawValue skips nested data without the normal Value recursion limit. Bound
@@ -159,7 +159,9 @@ fn within_depth(response: &[u8]) -> bool {
     true
 }
 
-fn valid_agent(name: &str) -> bool {
+/// Whether `name` can name an agent: letters, digits, `_`, `.` and `-`,
+/// starting with a letter or digit.
+pub fn valid_agent(name: &str) -> bool {
     name.as_bytes()
         .first()
         .is_some_and(u8::is_ascii_alphanumeric)
@@ -190,49 +192,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn active_entries_follow_attention_order_and_hide_stale_rows_without_losing_cache() {
+    fn malformed_details_do_not_discard_valid_fields() {
         let mut snapshot = Snapshot::default();
         snapshot.update(
-            br#"{"items":[
-            {"name":"z-worker","state":"busy"},
-            {"name":"a-starting","state":"starting"},
-            {"name":"z-waiting","state":"waiting_for_human"},
-            {"name":"a-blocked","state":"blocked"},
-            {"name":"alpha","state":"idle"},
-            {"name":"Alpha","state":"unknown"},
-            {"name":"empty","state":""},
-            {"name":"unlisted","state":"new-state"},
-            {"name":"offline","state":"offline"}
-        ]}"#,
+            br#"{"items":[{"name":"worker","state":"future","online":true,"reason":7,"current_issue":42,"state_since":"invalid"}]}"#,
         );
-        assert_eq!(
-            snapshot.active_entries().unwrap(),
-            [
-                ("a-blocked", "blocked"),
-                ("z-waiting", "waiting_for_human"),
-                ("a-starting", "starting"),
-                ("z-worker", "busy"),
-                ("Alpha", "unknown"),
-                ("alpha", "idle"),
-                ("empty", "unknown"),
-                ("unlisted", "new-state"),
-            ]
-        );
-        let cached = snapshot.states.clone();
-        let observed = snapshot.observed_at;
-        snapshot.unavailable();
-        assert!(snapshot.active_entries().is_none());
-        assert_eq!(snapshot.states, cached);
-        assert_eq!(snapshot.observed_at, observed);
-        snapshot.update(
-            br#"{"items":[{"name":"alpha","state":"blocked"},{"name":"Alpha","state":"idle"}]}"#,
-        );
-        assert_eq!(
-            snapshot.active_entries().unwrap(),
-            [("alpha", "blocked"), ("Alpha", "idle")]
-        );
-        snapshot.update(br#"{"items":[]}"#);
-        assert_eq!(snapshot.active_entries(), Some(Vec::new()));
+        let details = &snapshot.details["worker"];
+        assert_eq!(details.online, Some(true));
+        assert_eq!(details.reason, None);
+        assert_eq!(details.current_issue, Some(42));
+        assert_eq!(details.state_since, None);
     }
 
     #[test]

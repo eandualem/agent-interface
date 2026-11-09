@@ -23,6 +23,135 @@ fn parse(text: &str) -> Result<Document, agent_interface_store::Error> {
     Document::parse(text.to_owned(), Path::new("layouts.db"))
 }
 
+#[test]
+fn saved_agent_cards_keep_their_observed_registration() {
+    let base = parse(RECORD).unwrap();
+    let mut model = base.model().clone();
+    let mut view = View::agent("worker".into(), None);
+    view.registration_id = Some("1234567890abcdef1234567890abcdef".into());
+    assert!(model.show_view("000000000002", "000000000005", view.clone()));
+    let saved = base.with_model(&model, Path::new("layouts.db")).unwrap();
+    let restored = parse(saved.raw_json()).unwrap();
+    assert_eq!(
+        restored.model().workspaces[0].tabs[0].tree.leaves()[1].view,
+        Some(view)
+    );
+    let mut raw: serde_json::Value = serde_json::from_str(saved.raw_json()).unwrap();
+    raw["workspaces"][0]["tabs"][0]["tree"]["second"]["view_registration_id"] =
+        serde_json::json!("replacement-name");
+    assert!(parse(&raw.to_string()).is_err());
+}
+
+#[test]
+fn workspace_profile_ids_round_trip_without_changing_legacy_records() {
+    let path = Path::new("layouts.db");
+    for field in [
+        None,
+        Some(serde_json::Value::Null),
+        Some(serde_json::json!("-profile/a:1")),
+    ] {
+        let mut raw: serde_json::Value = serde_json::from_str(RECORD).unwrap();
+        if let Some(value) = &field {
+            raw["workspaces"][0]["profile_id"] = value.clone();
+        }
+        let document = parse(&raw.to_string()).unwrap();
+        assert_eq!(
+            document.model().workspaces[0].profile_id.as_deref(),
+            field.as_ref().and_then(serde_json::Value::as_str)
+        );
+        let saved = document.with_model(document.model(), path).unwrap();
+        let value: serde_json::Value = serde_json::from_str(saved.raw_json()).unwrap();
+        assert_eq!(value["workspaces"][0].get("profile_id"), field.as_ref());
+    }
+    for invalid in [
+        serde_json::json!(""),
+        serde_json::json!("a b"),
+        serde_json::json!("a\nb"),
+        serde_json::json!("é"),
+        serde_json::json!(7),
+        serde_json::json!({}),
+    ] {
+        let mut raw: serde_json::Value = serde_json::from_str(RECORD).unwrap();
+        raw["workspaces"][0]["profile_id"] = invalid;
+        assert!(parse(&raw.to_string()).is_err());
+    }
+    let document = parse(RECORD).unwrap();
+    let mut model = document.model().clone();
+    model.workspaces[0].profile_id = Some("profile-a".into());
+    let bound = document.with_model(&model, path).unwrap();
+    assert_eq!(
+        bound.model().workspaces[0].profile_id.as_deref(),
+        Some("profile-a")
+    );
+    model.workspaces[0].profile_id = None;
+    let cleared = bound.with_model(&model, path).unwrap();
+    assert!(cleared.model().workspaces[0].profile_id.is_none());
+    assert_eq!(document.raw_json(), RECORD);
+}
+
+#[test]
+fn workspace_profile_edits_merge_or_conflict_and_invalidate_input() {
+    let path = Path::new("layouts.db");
+    let base = parse(RECORD).unwrap();
+    let mut local = base.model().clone();
+    local.rename_tab("Retained local title");
+    let mut peer = base.model().clone();
+    peer.workspaces[0].profile_id = Some("profile-a".into());
+    let incoming = base.with_model(&peer, path).unwrap();
+    let merged = base.reconcile(&local, &incoming, path).unwrap();
+    assert!(!merged.conflict && merged.active_tree_changed);
+    assert_eq!(
+        merged.document.model().tab().unwrap().name,
+        "Retained local title"
+    );
+    assert_eq!(
+        merged
+            .document
+            .model()
+            .workspace()
+            .unwrap()
+            .profile_id
+            .as_deref(),
+        Some("profile-a")
+    );
+    local.workspaces[0].profile_id = Some("profile-b".into());
+    let conflict = base.reconcile(&local, &incoming, path).unwrap();
+    assert!(conflict.conflict && conflict.active_tree_changed);
+    assert_eq!(
+        conflict
+            .document
+            .model()
+            .workspace()
+            .unwrap()
+            .profile_id
+            .as_deref(),
+        Some("profile-a")
+    );
+    assert_eq!(
+        local.workspace().unwrap().profile_id.as_deref(),
+        Some("profile-b")
+    );
+}
+
+#[test]
+fn tab_transfer_cannot_silently_cross_workspace_profile_bindings() {
+    let mut model = parse(RECORD).unwrap().model().clone();
+    let pane = model.pane().unwrap().id.clone();
+    let destination = model.workspaces[1].id.clone();
+    model.workspaces[0].profile_id = Some("profile-a".into());
+    let unchanged = model.clone();
+    assert!(!model.transfer_tab(&destination));
+    assert_eq!(model, unchanged);
+    model.workspaces[1].profile_id = Some("profile-b".into());
+    assert!(!model.transfer_tab(&destination));
+    model.workspaces[1].profile_id = Some("profile-a".into());
+    assert!(model.transfer_tab(&destination));
+    let owner = model.workspace_for_pane(&pane).unwrap();
+    assert_eq!(owner.id, destination);
+    assert_eq!(owner.profile_id.as_deref(), Some("profile-a"));
+    assert!(model.workspace_for_pane("missing").is_none());
+}
+
 fn database(directory: &Path, record: &str) -> Connection {
     let db = Connection::open(directory.join("layouts.db")).unwrap();
     db.execute_batch("CREATE TABLE terminal_layout (id INTEGER PRIMARY KEY, value TEXT)")
@@ -929,4 +1058,81 @@ fn generated_values_and_executable_write_constraints_are_not_evaluated() {
         RECORD
     );
     assert!(Store::open_existing_writable(directory.path()).is_err());
+}
+
+#[test]
+fn concurrent_profile_changes_cannot_retarget_tab_transfers_or_view_edits() {
+    let path = Path::new("layouts.db");
+    let source = parse(RECORD).unwrap();
+    let mut initial = source.model().clone();
+    let first = initial.selected.clone();
+    initial.add_workspace("Destination".into());
+    let destination = initial.selected.clone();
+    initial.choose_workspace(&first);
+    let base = source.with_model(&initial, path).unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let db = database(directory.path(), base.raw_json());
+    let mut writer = Store::open_existing_writable(directory.path()).unwrap();
+    let mut held_base = writer.load().unwrap();
+    let mut transfer = held_base.model().clone();
+    assert!(transfer.transfer_tab(&destination));
+    let mut remote = held_base.model().clone();
+    remote
+        .workspaces
+        .iter_mut()
+        .find(|space| space.id == destination)
+        .unwrap()
+        .profile_id = Some("profile-a".into());
+    let latest = held_base.with_model(&remote, path).unwrap();
+    db.execute(
+        "UPDATE terminal_layout SET value=?1 WHERE id=1",
+        [latest.raw_json()],
+    )
+    .unwrap();
+    let saved = writer.save(&mut held_base, &transfer).unwrap();
+    assert!(saved.conflict);
+    assert!(
+        writer
+            .load()
+            .unwrap()
+            .model()
+            .workspaces
+            .iter()
+            .find(|space| space.id == destination)
+            .unwrap()
+            .tabs
+            .is_empty()
+    );
+
+    // Conversely, an A-owned view edit cannot merge with removal of A's binding.
+    let mut bound = initial.clone();
+    bound.workspaces[0].profile_id = Some("profile-a".into());
+    let base = source.with_model(&bound, path).unwrap();
+    let mut view = bound.clone();
+    let tab = view.tab().unwrap().id.clone();
+    let pane = view
+        .tab()
+        .unwrap()
+        .tree
+        .leaves()
+        .into_iter()
+        .find(|leaf| leaf.empty)
+        .unwrap()
+        .id
+        .clone();
+    assert!(view.show_view(&tab, &pane, View::of(ViewKind::Reports)));
+    let latest = base.with_model(&initial, path).unwrap();
+    assert!(base.reconcile(&view, &latest, path).unwrap().conflict);
+    // Reverse writer order is equally unsafe.
+    let latest = base.with_model(&view, path).unwrap();
+    assert!(base.reconcile(&initial, &latest, path).unwrap().conflict);
+    // Binding-only changes still merge with unrelated workspace naming.
+    let mut rename = bound.clone();
+    rename.workspaces[1].name = "Renamed".into();
+    assert!(
+        !base
+            .reconcile(&rename, &base.with_model(&initial, path).unwrap(), path)
+            .unwrap()
+            .conflict
+    );
 }

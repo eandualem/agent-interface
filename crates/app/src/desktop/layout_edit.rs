@@ -74,6 +74,9 @@ pub(super) fn save(
     let directory = library::library_directory(directory);
     if let Ok(directory) = &directory
         && let Some(previous) = previous
+        && local.workspaces.iter().any(|space| {
+            space.profile_id.is_none() && space.tabs.iter().any(|tab| tab.id == previous.id)
+        })
     {
         remember_directories(local, previous, |leaf| {
             let socket = library::existing_shell_socket(directory, &leaf.id)?
@@ -107,7 +110,7 @@ pub(super) fn save(
 }
 
 /// The visible selection before creation, used to respect navigation during save.
-#[derive(PartialEq)]
+#[derive(Clone, PartialEq)]
 pub(super) struct Selection {
     workspace: String,
     tab: Option<String>,

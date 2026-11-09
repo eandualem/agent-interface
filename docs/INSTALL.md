@@ -233,7 +233,7 @@ the private Unix socket used by the app. Open Agent Interface to continue
 onboarding; no separate Backbone installation command is needed. Agent tools
 still need to be installed and signed in before creating an agent.
 
-New installations and permitted upgrades select Backbone 0.4.5 or newer. If a compatible published
+New installations and permitted upgrades select Backbone 0.5.0 or newer. If a compatible published
 release is unavailable, installation stops before replacing the app. Setup
 failures show Backbone's diagnostic and recovery guidance. When retry is allowed,
 rerun the same installer: it retains the request and resumes pending steps using
@@ -243,7 +243,7 @@ If a fixed provider was installed but setup has not created data, a service,
 or a saved outcome, setup can continue using that exact installed provider
 without changing packages. Existing saved requests remain subject to identity checks.
 Recovery with an older provider may finish, but the app is not replaced until
-Backbone meets the 0.4.5 minimum. Once recovery completes, rerun the installer
+Backbone meets the 0.5.0 minimum. Once recovery completes, rerun the installer
 to upgrade Backbone before installing the app.
 It refuses automatic recovery if that
 pending installation or its saved service/socket choices have changed.
@@ -275,22 +275,8 @@ the installer reports that the update is not yet running and retains the saved
 setup; resolve the service update through Backbone and rerun the installer.
 Independently managed installations retain their own service lifecycle.
 
-For an independently managed installation without a private socket, its operator
-can enable the connection through Backbone's configuration:
-
-```sh
-mkdir -p "$HOME/.local/share/agent-backbone/run"
-chmod 700 "$HOME/.local/share/agent-backbone/run"
-backbone config set backbone.socket_path "$HOME/.local/share/agent-backbone/run/backbone.sock"
-backbone service restart
-```
-
-If Agent Interface was already open, quit and reopen it after changing the
-connection.
-
-The app reads the saved `backbone.socket_path` setting. To use another socket,
-set `BACKBONE_SOCKET_PATH` in the app's launch environment. The path must be
-absolute. The socket must be owned by your user with permissions 0600, in a
+The app connects to `run/api.sock` in Backbone's data directory, which Backbone
+creates itself. The socket must be owned by your user with permissions 0600, in a
 directory owned by your user with permissions 0700. The app does not send
 credentials over TCP.
 
@@ -304,6 +290,14 @@ and settings are preserved; preserving a service definition is not a guarantee
 that running sessions survive a daemon failure or manager restart.
 It refuses to overwrite an installation
 it does not recognize; move that installation yourself if you want to replace it.
+
+Agent Backbone 0.5.0 and later run every installation as a profile. When the
+installer finds a Backbone installation from before profiles, it stops Backbone
+and any agents it runs, installs the new release, runs `backbone init` once to
+record the installation as the Default profile, and starts Backbone again,
+printing what `init` reported. If `init` fails, Backbone stays stopped; fix the
+reported problem, run `backbone init`, start Backbone and run the installer
+again.
 
 The installer retains one archive in a hidden download cache so interrupted
 installs and repeated attempts can reuse it. Include that cache when removing

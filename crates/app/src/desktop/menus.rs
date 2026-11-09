@@ -14,6 +14,9 @@ impl Browser {
     /// A tab's options, opened from its ⋯ or a right-click.
     pub(super) fn tab_options(&self, cx: &mut Context<Self>) -> Div {
         let mut menu = ui::menu();
+        let Some(ticket) = self.tab_menu.as_ref().map(|menu| menu.ticket.clone()) else {
+            return menu;
+        };
         let bindings = shortcuts::current();
         let key = |command| bindings.chord(command).map(shortcuts::Chord::label);
         // Naming and pane actions, then reordering, then moving elsewhere.
@@ -42,11 +45,16 @@ impl Browser {
         let mut destinations = Vec::new();
         if let (Some(tab_menu), Some(layout)) = (&self.tab_menu, &self.layout) {
             let model = layout.model();
-            items.push(Some(if tab_menu.shell.is_some() {
-                ("Return to shell".into(), TabAction::ReturnToShell, None)
-            } else {
-                ("Open terminal".into(), TabAction::OpenTerminal, None)
-            }));
+            if model
+                .workspace()
+                .is_some_and(|space| space.profile_id.is_none())
+            {
+                items.push(Some(if tab_menu.shell.is_some() {
+                    ("Return to shell".into(), TabAction::ReturnToShell, None)
+                } else {
+                    ("Open terminal".into(), TabAction::OpenTerminal, None)
+                }));
+            }
             if model.pane().is_some_and(|pane| !pane.empty) {
                 items.push(Some((
                     "Detach".into(),
@@ -83,6 +91,11 @@ impl Browser {
                 .workspaces
                 .iter()
                 .filter(|space| space.id != tab_menu.workspace)
+                .filter(|space| {
+                    model
+                        .workspace()
+                        .is_some_and(|source| self.workspace_profiles.can_transfer(source, space))
+                })
                 .map(|space| (space.name.clone(), space.id.clone()))
                 .collect();
         }
@@ -91,6 +104,7 @@ impl Browser {
                 menu = menu.child(ui::menu_rule());
                 continue;
             };
+            let ticket = ticket.clone();
             menu = menu.child(
                 ui::menu_item(
                     SharedString::from(format!("tab-action-{index}")),
@@ -99,7 +113,7 @@ impl Browser {
                     key,
                 )
                 .on_click(cx.listener(move |browser, _, window, cx| {
-                    browser.tab_action(action.clone(), window, cx)
+                    browser.tab_action(&ticket, action.clone(), window, cx)
                 })),
             );
         }
@@ -108,6 +122,7 @@ impl Browser {
                 .child(ui::menu_rule())
                 .child(ui::menu_heading("MOVE TO"));
             for (name, id) in destinations {
+                let ticket = ticket.clone();
                 menu = menu.child(
                     ui::menu_item(
                         SharedString::from(format!("tab-move-{id}")),
@@ -116,7 +131,7 @@ impl Browser {
                         None,
                     )
                     .on_click(cx.listener(move |browser, _, window, cx| {
-                        browser.tab_action(TabAction::Transfer(id.clone()), window, cx)
+                        browser.tab_action(&ticket, TabAction::Transfer(id.clone()), window, cx)
                     })),
                 );
             }
@@ -131,14 +146,17 @@ impl Browser {
         let Some(model) = self.layout.as_ref().map(|layout| layout.model()) else {
             return menu;
         };
+        let ticket = self.workspace_menu_ticket.clone();
         let states = self.agent_states();
         for (index, space) in model.workspaces.iter().enumerate() {
+            let ticket = ticket.clone();
+            let origin = self.navigation_origin(&space.id);
             let id = space.id.clone();
             let current = model.selected == id;
             let needs_you = space
                 .tabs
                 .iter()
-                .any(|tab| self.tab_needs_you(tab, states.as_ref()));
+                .any(|tab| self.tab_needs_you(tab, states.as_deref()));
             let key = (index < 9).then(|| {
                 if cfg!(target_os = "macos") {
                     format!("⌥⌘{}", index + 1)
@@ -156,8 +174,14 @@ impl Browser {
                 .text_color(if current { c.text } else { c.text_2 })
                 .when(needs_you, |el| el.child(ui::dot(c.attention)))
                 .on_click(cx.listener(move |browser, _, window, cx| {
-                    if let Some(layout) = &mut browser.layout {
-                        layout.model_mut().choose_workspace(&id);
+                    if !browser.workspace_menu_is_current(&ticket) {
+                        return;
+                    }
+                    if !origin
+                        .as_ref()
+                        .is_some_and(|origin| browser.select_workspace_origin(origin))
+                    {
+                        return;
                     }
                     browser.close_menus();
                     if let Some(focus) = &browser.navigation {
@@ -177,7 +201,14 @@ impl Browser {
         } else {
             None
         };
+        let delete_ticket = ticket.clone();
+        let rename_ticket = ticket.clone();
+        let icon_ticket = ticket.clone();
+        let new_ticket = ticket.clone();
         let expected = space.id.clone();
+        let origin = self.selected_navigation_origin();
+        let rename_origin = origin.clone();
+        let icon_origin = origin.clone();
         let mark = |name: &str, color| Some(ui::icon(name, t.size.icon, color));
         let delete = ui::menu_item(
             "delete-workspace",
@@ -199,8 +230,11 @@ impl Browser {
                 .child(ui::text(div().text_color(c.muted), &t.text.meta).child(reason)),
             None => delete.text_color(c.attention_text).on_click(cx.listener(
                 move |browser, _, window, cx| {
+                    if !browser.workspace_menu_is_current(&delete_ticket) {
+                        return;
+                    }
                     browser.close_menus();
-                    browser.delete_workspace(&expected, window, cx);
+                    browser.delete_workspace(&expected, origin.as_ref(), window, cx);
                 },
             )),
         };
@@ -213,9 +247,12 @@ impl Browser {
                     "Rename",
                     Some(shortcuts::label(Command::RenameWorkspace)),
                 )
-                .on_click(cx.listener(|browser, _, window, cx| {
+                .on_click(cx.listener(move |browser, _, window, cx| {
+                    if !browser.workspace_menu_is_current(&rename_ticket) {
+                        return;
+                    }
                     browser.close_menus();
-                    browser.begin_name(false, window, cx)
+                    browser.begin_name_from(false, rename_origin.as_ref(), window, cx)
                 })),
             )
             .child(
@@ -225,9 +262,16 @@ impl Browser {
                     "Choose icon…",
                     None,
                 )
-                .on_click(cx.listener(|browser, _, _, cx| {
+                .on_click(cx.listener(move |browser, _, _, cx| {
+                    if !browser.workspace_menu_is_current(&icon_ticket) {
+                        return;
+                    }
+                    if !browser.selected_origin_is_current(icon_origin.as_ref()) {
+                        return;
+                    }
                     browser.workspace_menu = false;
                     browser.icon_picker = true;
+                    browser.icon_ticket = std::rc::Rc::new(());
                     cx.notify();
                 })),
             )
@@ -240,7 +284,10 @@ impl Browser {
                     "New workspace",
                     Some(shortcuts::label(Command::NewWorkspace)),
                 )
-                .on_click(cx.listener(|browser, _, window, cx| {
+                .on_click(cx.listener(move |browser, _, window, cx| {
+                    if !browser.workspace_menu_is_current(&new_ticket) {
+                        return;
+                    }
                     browser.close_menus();
                     browser.begin_workspace(window, cx)
                 })),
@@ -249,6 +296,8 @@ impl Browser {
 
     /// A grid of icons for the current workspace, and the plain number.
     pub(super) fn icon_picker(&self, cx: &mut Context<Self>) -> Div {
+        let ticket = self.icon_ticket.clone();
+        let origin = self.selected_navigation_origin();
         let (t, c) = (tokens(), colors());
         let current = self
             .layout
@@ -265,6 +314,8 @@ impl Browser {
             .pt(px(t.space.s4))
             .pb(px(t.space.s6));
         for name in icons::WORKSPACE {
+            let ticket = ticket.clone();
+            let origin = origin.clone();
             let chosen = current == Some(*name);
             grid = grid.child(
                 div()
@@ -282,9 +333,9 @@ impl Browser {
                         t.size.icon_large,
                         if chosen { c.accent } else { c.text_2 },
                     ))
-                    .on_click(
-                        cx.listener(move |browser, _, _, cx| browser.set_symbol(Some(name), cx)),
-                    ),
+                    .on_click(cx.listener(move |browser, _, _, cx| {
+                        browser.set_symbol(&ticket, origin.as_ref(), Some(name), cx)
+                    })),
             );
         }
         let number = ui::text(
@@ -299,7 +350,9 @@ impl Browser {
             .child(
                 ui::menu_item("icon-number", None, "Show number instead", None)
                     .child(number)
-                    .on_click(cx.listener(|browser, _, _, cx| browser.set_symbol(None, cx))),
+                    .on_click(cx.listener(move |browser, _, _, cx| {
+                        browser.set_symbol(&ticket, origin.as_ref(), None, cx)
+                    })),
             )
     }
 }

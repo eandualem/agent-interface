@@ -189,11 +189,7 @@ mod tests {
         if std::env::var_os("TWS_FIRST_LAUNCH_FIXTURE").is_none() {
             return;
         }
-        assert!(
-            crate::roster::provider_directory(None, None, None, false)
-                .unwrap()
-                .is_none()
-        );
+        assert!(crate::roster::provider_directory(false).unwrap().is_none());
         let (wake, woken) = mpsc::channel();
         let library = Library::start(None, move || {
             let _ = wake.send(());

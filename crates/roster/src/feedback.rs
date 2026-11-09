@@ -6,6 +6,7 @@ use serde::Deserialize;
 
 use crate::{
     configuration::configured,
+    profiles::{Connection, Error, Identity},
     transport, valid_agent,
     views::{ReportContent, ReportItem},
 };
@@ -52,6 +53,62 @@ struct Delivery {
     detail: String,
 }
 
+/// Feedback on one retained record, pinned to its originating profile.
+/// Clones retain the same connection and credentials for delayed submissions.
+#[derive(Clone)]
+pub struct Client {
+    connection: Connection,
+    item: ReportItem,
+}
+
+impl Client {
+    /// Reject a record from another profile or lifecycle before any I/O.
+    pub fn new(connection: Connection, origin: &Identity, item: ReportItem) -> Result<Self, Error> {
+        if connection.identity() != origin {
+            return Err(Error::BindingMismatch);
+        }
+        Ok(Self { connection, item })
+    }
+
+    /// Full origin for deferred UI results, never a current-selection lookup.
+    pub fn identity(&self) -> &Identity {
+        self.connection.identity()
+    }
+
+    /// Validate author and submit on the same captured binding. An unknown
+    /// delivery must be checked before another send, as with legacy feedback.
+    pub fn send(&self, text: &str) -> Outcome {
+        send_using(&Api::Bound(&self.connection), &self.item, text)
+    }
+}
+
+enum Api<'a> {
+    Legacy(&'a str, &'a str),
+    Bound(&'a Connection),
+}
+
+impl Api<'_> {
+    fn fetch(&self, path: &str, body: Option<Vec<u8>>, limit: usize) -> Result<Vec<u8>, Error> {
+        match self {
+            Self::Legacy(url, key) => {
+                let result = match body {
+                    Some(body) => transport::post_message(url, key, body),
+                    None => transport::fetch(url, path, key, limit),
+                };
+                result.map_err(|status| status.map_or(Error::Unavailable, Error::Refused))
+            }
+            Self::Bound(connection) => {
+                let response = connection.response(path, body, limit)?;
+                if (200..300).contains(&response.status) {
+                    Ok(response.body)
+                } else {
+                    Err(Error::Refused(response.status))
+                }
+            }
+        }
+    }
+}
+
 /// Revalidate the source and author, then send once. Runs on an I/O worker.
 pub fn send(data_dir: &Path, item: &ReportItem, text: &str) -> Outcome {
     let Some((url, key)) = configured(data_dir, None) else {
@@ -63,6 +120,10 @@ pub fn send(data_dir: &Path, item: &ReportItem, text: &str) -> Outcome {
 }
 
 fn send_to(url: &str, key: &str, item: &ReportItem, text: &str) -> Outcome {
+    send_using(&Api::Legacy(url, key), item, text)
+}
+
+fn send_using(api: &Api<'_>, item: &ReportItem, text: &str) -> Outcome {
     let refused = |text: &str| Outcome::Refused(text.into());
     if text.trim().is_empty() || text.chars().count() > TEXT_LIMIT {
         return refused("Enter feedback of at most 4,000 characters.");
@@ -78,7 +139,9 @@ fn send_to(url: &str, key: &str, item: &ReportItem, text: &str) -> Outcome {
     if item.id == 0 || item.id > i64::MAX as u64 {
         return refused("This record has an invalid reference.");
     }
-    if url != item.provider_url {
+    if let Api::Legacy(url, _) = api
+        && *url != item.provider_url
+    {
         return refused("The Backbone connection changed. Reopen this record before sending.");
     }
     let path = match &item.content {
@@ -93,10 +156,15 @@ fn send_to(url: &str, key: &str, item: &ReportItem, text: &str) -> Outcome {
     } else {
         4 * 1024 * 1024
     };
-    let body = match transport::fetch(url, &path, key, limit) {
+    let body = match api.fetch(&path, None, limit) {
         Ok(body) if body.len() <= limit => body,
-        Err(Some(404)) => {
+        Err(Error::Refused(404)) => {
             return refused("This record is no longer available. Your feedback has not been sent.");
+        }
+        Err(Error::BindingRequired | Error::BindingMismatch) => {
+            return refused(
+                "The Backbone profile binding was refused. Your feedback has not been sent.",
+            );
         }
         _ => return refused("Could not verify the author. Your feedback has not been sent."),
     };
@@ -120,13 +188,18 @@ fn send_to(url: &str, key: &str, item: &ReportItem, text: &str) -> Outcome {
     let unknown = || {
         Outcome::Unknown("Delivery could not be confirmed. Your text is kept here; check with the author before sending it again.".into())
     };
-    let body = match transport::post_message(url, key, body) {
+    let body = match api.fetch("/api/messages", Some(body), 65536) {
         Ok(body) => body,
-        Err(Some(401 | 403)) => {
+        Err(Error::Refused(401 | 403)) => {
             return refused("Backbone refused this app's access. Your feedback has not been sent.");
         }
-        Err(Some(404 | 413 | 422)) => {
+        Err(Error::Refused(404 | 413 | 422)) => {
             return refused("Backbone refused this feedback. Your text is kept here.");
+        }
+        Err(Error::BindingRequired | Error::BindingMismatch) => {
+            return refused(
+                "The Backbone profile binding was refused. Your feedback has not been sent.",
+            );
         }
         Err(_) => return unknown(),
     };

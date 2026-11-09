@@ -1,6 +1,6 @@
 //! Read-only contract probe for an explicitly configured private provider.
-//! Set BACKBONE_SOCKET_PATH and BACKBONE_API_KEY for a disposable fixture, then
-//! pass its data directory, time bounds and stable agent ID. No sends or read
+//! Set BACKBONE_API_KEY for a disposable fixture, then pass its data directory
+//! (its provider listens on run/api.sock), time bounds and stable agent ID. No sends or read
 //! markers are written.
 use agent_interface_roster::{conversations, interactions};
 use std::path::Path;

@@ -8,12 +8,13 @@ use gpui::{
     prelude::*, px,
 };
 
+use super::chooser_source::{Origin, Sessions};
 use super::{
     components as ui, design,
     name::{NameEvent, NameField},
 };
-use crate::sessions::SessionSource;
 use agent_interface_core::SessionChoices;
+use agent_interface_roster::profiles::Connection;
 
 pub(super) enum Choice {
     Session(String),
@@ -26,7 +27,7 @@ pub(super) struct SessionChooser {
     loading: bool,
     error: Option<String>,
     scroll: ScrollHandle,
-    source: Option<SessionSource>,
+    source: Option<Sessions>,
     _updates: Task<()>,
     _input: Subscription,
 }
@@ -35,6 +36,21 @@ impl EventEmitter<Choice> for SessionChooser {}
 
 impl SessionChooser {
     pub fn new(socket: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        Self::new_with(
+            Origin::Legacy {
+                socket: Some(socket),
+                directory: None,
+            },
+            window,
+            cx,
+        )
+    }
+
+    pub fn new_bound(connection: Connection, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        Self::new_with(Origin::Bound(connection), window, cx)
+    }
+
+    fn new_with(origin: Origin, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let field = cx.new(|cx| NameField::search(window, cx));
         let input = cx.subscribe_in(&field, window, |chooser, _, event, _, cx| {
             match event {
@@ -55,11 +71,11 @@ impl SessionChooser {
             cx.notify();
         });
         let (wake, mut woken) = mpsc::unbounded();
-        let (source, error) = match SessionSource::start(socket, move || {
+        let (source, error) = match origin.sessions(move || {
             let _ = wake.unbounded_send(());
         }) {
-            Ok(source) => (Some(source), None),
-            Err(error) => (None, Some(error.to_string())),
+            Ok(source) => (source, None),
+            Err(_) => (None, Some("Session discovery is unavailable.".into())),
         };
         let updates = cx.spawn(async move |this, cx| {
             while woken.next().await.is_some() {
@@ -93,7 +109,7 @@ impl SessionChooser {
     }
 
     fn refresh(&mut self, cx: &mut Context<Self>) {
-        if let Some(observation) = self.source.as_ref().and_then(SessionSource::take_update) {
+        if let Some(observation) = self.source.as_ref().and_then(Sessions::take_update) {
             self.choices.update(observation.sessions);
             self.error = observation.error;
             self.loading = false;
