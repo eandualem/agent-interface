@@ -180,7 +180,7 @@ fn get(connection: &Connection, path: &str) -> Result<Vec<u8>, Error> {
     Ok(response.body)
 }
 
-fn valid_registration(value: &str) -> bool {
+pub(super) fn valid_registration(value: &str) -> bool {
     value.len() == 32
         && value
             .bytes()

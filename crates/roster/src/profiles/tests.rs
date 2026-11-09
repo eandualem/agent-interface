@@ -582,9 +582,11 @@ fn starting_a_stopped_agent_uses_the_bound_route_and_reports_the_outcome() {
 
 #[test]
 fn removing_an_agent_stops_it_first_and_treats_a_missing_one_as_removed() {
+    const REG: &str = "1234567890abcdef1234567890abcdef";
     let (directory, listener, url) = crate::transport::tests::local_listener();
     let (profile, identity) = profile_at(directory.path(), url.strip_prefix("unix:").unwrap());
     let stopped = json!({"ok": true, "session": "worker"});
+    let changed = json!({"detail": {"code": "registration_changed"}});
     let server = serve(
         listener,
         vec![
@@ -594,26 +596,49 @@ fn removing_an_agent_stops_it_first_and_treats_a_missing_one_as_removed() {
             (404, json!({})),
             (200, stopped.clone()),
             (404, json!({})),
-            (200, stopped),
+            (200, stopped.clone()),
             (409, json!({"detail": "'worker' is running"})),
+            (409, changed.clone()),
+            (200, stopped),
+            (409, changed),
         ],
     );
     let connection = profile.connect().unwrap();
-    assert_eq!(connection.remove_agent("worker"), Ok(()));
-    assert_eq!(connection.remove_agent("worker"), Ok(()));
-    assert_eq!(connection.remove_agent("worker"), Ok(()));
+    // Removed; a 404 on stop ends there; a 404 on delete counts as removed.
+    assert_eq!(connection.remove_agent("worker", REG), Ok(()));
+    assert_eq!(connection.remove_agent("worker", REG), Ok(()));
+    assert_eq!(connection.remove_agent("worker", REG), Ok(()));
+    // The delete is refused while the agent runs.
     assert_eq!(
-        connection.remove_agent("worker").err(),
+        connection.remove_agent("worker", REG).err(),
         Some(Error::Refused(409))
     );
+    // The registration changed before the stop, then between stop and delete.
     assert_eq!(
-        connection.remove_agent("../other").err(),
+        connection.remove_agent("worker", REG).err(),
+        Some(Error::RegistrationChanged)
+    );
+    assert_eq!(
+        connection.remove_agent("worker", REG).err(),
+        Some(Error::RegistrationChanged)
+    );
+    assert_eq!(
+        connection.remove_agent("../other", REG).err(),
+        Some(Error::Invalid)
+    );
+    assert_eq!(
+        connection.remove_agent("worker", "invalid").err(),
         Some(Error::Invalid)
     );
     let requests = server.join().unwrap();
-    assert!(requests[1].starts_with("post /api/agents/worker/stop "));
-    assert!(requests[2].starts_with("delete /api/agents/worker "));
+    let query = format!("?expected_registration_id={REG} ");
+    assert!(requests[1].starts_with(&format!("post /api/agents/worker/stop{query}")));
+    assert!(requests[2].starts_with(&format!("delete /api/agents/worker{query}")));
     assert!(requests[2].contains("x-backbone-lifecycle-id: "));
+    assert!(requests[3].starts_with("post /api/agents/worker/stop"));
+    assert!(requests[5].starts_with("delete /api/agents/worker"));
+    assert!(requests[7].starts_with("delete /api/agents/worker"));
+    assert_eq!(requests.len(), 11);
 }
 
 #[test]

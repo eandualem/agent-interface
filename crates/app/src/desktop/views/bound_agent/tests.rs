@@ -101,6 +101,29 @@ fn removal_refusals_say_what_happened() {
     assert!(removal_refusal(ProfileError::Refused(409)).contains("still running"));
     assert!(removal_refusal(ProfileError::Refused(403)).contains("refused"));
     assert!(removal_refusal(ProfileError::Unavailable).contains("connection"));
+    assert!(removal_refusal(ProfileError::RegistrationChanged).contains("replaced"));
+}
+
+#[test]
+fn removal_refuses_a_registration_replaced_after_the_check() {
+    let inspect_path = format!("/api/agents/worker/inspect?expected_registration_id={REG}");
+    let stop_path = format!("/api/agents/worker/stop?expected_registration_id={REG}");
+    let (_a, a, server) = provider(
+        "a",
+        vec![
+            Reply::ok(&inspect_path, inspect("a")),
+            Reply {
+                status: 409,
+                post: true,
+                ..Reply::ok(
+                    &stop_path,
+                    json!({"detail":{"code":"registration_changed"}}),
+                )
+            },
+        ],
+    );
+    assert_eq!(remove_checked(&a, "worker", REG), Err(REPLACED));
+    server.join().unwrap();
 }
 
 #[test]
@@ -141,10 +164,7 @@ fn removal_leaves_a_newer_agent_with_the_same_name_alone() {
             )
         }],
     );
-    assert_eq!(
-        remove_checked(&a, "worker", REG),
-        Err("This agent registration changed. Reopen it from Team.")
-    );
+    assert_eq!(remove_checked(&a, "worker", REG), Err(REPLACED));
     server.join().unwrap();
 }
 

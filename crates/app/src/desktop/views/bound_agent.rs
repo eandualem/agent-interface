@@ -69,8 +69,13 @@ enum Removal {
     Done,
 }
 
+/// The card's registration is no longer the agent under this name.
+const REPLACED: &str =
+    "This agent was removed or replaced. Reopen it from Team if it is still listed.";
+
 fn removal_refusal(error: ProfileError) -> &'static str {
     match error {
+        ProfileError::RegistrationChanged => REPLACED,
         ProfileError::Refused(409) => "This agent is still running. Try again in a moment.",
         ProfileError::Refused(401 | 403) => "This profile refused to remove the agent.",
         ProfileError::Refused(_) => "The profile could not remove this agent.",
@@ -78,21 +83,22 @@ fn removal_refusal(error: ProfileError) -> &'static str {
     }
 }
 
-/// Remove the agent only if it is still the registration the card shows. Stop
-/// and delete still go by name, so a replacement made between this check and
-/// the delete could be removed until the provider checks the registration too.
+/// Remove the agent only if it is still the registration the card shows. The
+/// provider checks the registration again on stop and delete, so a replacement
+/// made after this check is refused rather than removed by a provider that
+/// supports the check; older providers ignore it.
 fn remove_checked(
     connection: &Connection,
     name: &str,
     registration: &str,
 ) -> Result<(), &'static str> {
     match runtime_context::inspect(connection.clone(), name, Some(registration)) {
-        Ok(_) => connection.remove_agent(name).map_err(removal_refusal),
+        Ok(_) => connection
+            .remove_agent(name, registration)
+            .map_err(removal_refusal),
         // No agent has this name any more, so there is nothing to remove.
         Err(runtime_context::Error::Unsupported) => Ok(()),
-        Err(runtime_context::Error::RegistrationChanged) => {
-            Err("This agent registration changed. Reopen it from Team.")
-        }
+        Err(runtime_context::Error::RegistrationChanged) => Err(REPLACED),
         Err(_) => Err("Couldn't confirm this is the same agent. Try again."),
     }
 }
@@ -224,9 +230,7 @@ impl Card {
                         // looking current under a different agent's live state.
                         card.snapshot = None;
                         card.error = Some(match error {
-                            runtime_context::Error::RegistrationChanged => {
-                                "This agent registration changed. Reopen it from Team."
-                            }
+                            runtime_context::Error::RegistrationChanged => REPLACED,
                             runtime_context::Error::Unsupported => {
                                 "This provider cannot supply the agent's profile context."
                             }
