@@ -5,12 +5,13 @@
 
 mod first;
 pub(super) mod probe;
+mod scene;
 mod setup;
 
 use std::time::Duration;
 
 use gpui::{
-    Animation, AnimationExt, App, Bounds, BoxShadow, ClipboardItem, Context, Entity, Global,
+    App, Bounds, ClipboardItem, Context, Entity, FocusHandle, Global, KeyDownEvent, MouseButton,
     Pixels, Rgba, SharedString, Size, Subscription, TitlebarOptions, Window, WindowBounds,
     WindowHandle, WindowOptions, div, point, prelude::*, px, size,
 };
@@ -23,8 +24,6 @@ use super::{
     shortcuts::{self, Command},
 };
 
-/// The opening scene's length; it plays once, without a skip.
-const SCENE: Duration = Duration::from_millis(8000);
 const TAGLINE: &str = "Your agents. Working together. On your machine.";
 const STEPS: [&str; 4] = ["Check", "Agent tools", "Your agent", "Shortcuts"];
 
@@ -51,6 +50,14 @@ pub struct Onboarding {
     first_ready: bool,
     first_agent: Option<String>,
     first_events: Option<Subscription>,
+    /// The opening scene's clock; Skip moves it to the handoff.
+    clock: scene::Clock,
+    /// Takes the keys that skip the scene.
+    focus: FocusHandle,
+    /// Where the face and the first step's marker were laid out, for the
+    /// open eye's flight between them.
+    tile: scene::Place,
+    marker: scene::Place,
 }
 
 struct Open(WindowHandle<Onboarding>);
@@ -93,8 +100,10 @@ pub fn show(intro: bool, cx: &mut App) -> Result<(), String> {
         remember(|settings| settings.intro_seen = true);
     }
     let handle = cx
-        .open_window(options, |_, cx| {
+        .open_window(options, |window, cx| {
             cx.new(|cx| {
+                let focus = cx.focus_handle();
+                window.focus(&focus, cx);
                 let mut view = Onboarding {
                     stage: if intro { Stage::Scene } else { Stage::Step(0) },
                     probe: None,
@@ -105,20 +114,13 @@ pub fn show(intro: bool, cx: &mut App) -> Result<(), String> {
                     first_ready: false,
                     first_agent: None,
                     first_events: None,
+                    clock: Default::default(),
+                    focus,
+                    tile: Default::default(),
+                    marker: Default::default(),
                 };
                 // The scene covers the first check, so step one opens with answers.
                 view.check(cx);
-                if intro {
-                    cx.spawn(async |view, cx| {
-                        cx.background_executor().timer(SCENE).await;
-                        let _ = view.update(cx, |view, cx| {
-                            view.stage = Stage::Step(0);
-                            remember(|settings| settings.intro_seen = true);
-                            cx.notify();
-                        });
-                    })
-                    .detach();
-                }
                 view
             })
         })
@@ -166,7 +168,19 @@ fn resize_limit(
 }
 
 impl Onboarding {
-    fn scale_controls(&self, cx: &mut Context<Self>) -> gpui::Div {
+    /// Jump the opening scene to its handoff, so setup follows at once.
+    fn skip(&mut self, cx: &mut Context<Self>) {
+        let ms = self.clock.ms();
+        let to = scene::skipped(ms);
+        if self.stage == Stage::Scene && to > ms {
+            self.clock.set(to);
+            cx.notify();
+        }
+    }
+
+    /// The interface size, offered throughout. During the opening scene it
+    /// fades in beside Skip, and its rule appears with setup.
+    fn scale_controls(&self, scene: Option<&scene::Scene>, cx: &mut Context<Self>) -> gpui::Div {
         let (t, c) = (tokens(), colors());
         let percent = Settings::current().interface_size;
         let sizes = super::zoom::SIZES;
@@ -241,6 +255,10 @@ impl Onboarding {
                     }))
                 })
         };
+        let mut rule = c.line;
+        if let Some(scene) = scene {
+            rule.a *= scene.setup;
+        }
         div()
             .flex()
             .flex_shrink_0()
@@ -250,7 +268,32 @@ impl Onboarding {
             .px(px(t.space.s24))
             .py(px(t.space.s8))
             .border_t(px(t.size.hairline))
-            .border_color(c.line)
+            .border_color(rule)
+            .when_some(scene.copied(), |bar, scene| {
+                bar.opacity(scene.controls)
+                    .child(
+                        ui::text(
+                            div()
+                                .id("skip-scene")
+                                .flex()
+                                .items_center()
+                                .gap(px(t.space.s8))
+                                .h(px(t.size.button))
+                                .ml(px(-t.space.s8))
+                                .px(px(t.space.s8))
+                                .rounded(px(t.radius.row))
+                                .cursor_pointer()
+                                .text_color(c.muted)
+                                .hover(|el| el.bg(colors().hover).text_color(colors().text))
+                                .opacity(1.0 - scene.leave),
+                            &t.text.row,
+                        )
+                        .child("Skip")
+                        .child(ui::keycap("esc"))
+                        .on_click(cx.listener(|view, _, _, cx| view.skip(cx))),
+                    )
+                    .child(div().flex_1())
+            })
             .child("Interface size")
             .child(button(
                 "setup-smaller",
@@ -308,15 +351,6 @@ impl Onboarding {
         }
         remember(|settings| settings.setup_done = true);
         window.remove_window();
-    }
-
-    fn scene(&self) -> gpui::AnyElement {
-        div()
-            .size_full()
-            .with_animation("opening-scene", Animation::new(SCENE), |scene, delta| {
-                scene.child(frame(Frame::at(delta * SCENE.as_millis() as f32)))
-            })
-            .into_any_element()
     }
 
     /// A check row: name, what it is for, its state, and an optional command to copy.
@@ -566,12 +600,10 @@ impl Onboarding {
         )
     }
 
-    fn rail(&self) -> gpui::Div {
+    /// The steps beside the page. During the opening scene it fades in with
+    /// setup, and the first step's marker waits for the face's eye to land.
+    fn rail(&self, current: usize, scene: Option<&scene::Scene>) -> gpui::Div {
         let (t, c) = (tokens(), colors());
-        let current = match self.stage {
-            Stage::Step(index) => index,
-            _ => STEPS.len(),
-        };
         let mut rail = div()
             .w(px(t.size.settings_nav))
             .flex_shrink_0()
@@ -592,6 +624,18 @@ impl Onboarding {
             } else {
                 (c.line_strong, c.muted)
             };
+            let mut mark = number(index, fill, index < current);
+            if index == 0
+                && let Some(scene) = scene
+            {
+                let mut numeral = c.on_accent;
+                numeral.a *= scene.numeral;
+                mark = mark
+                    .relative()
+                    .text_color(numeral)
+                    .opacity(if scene.landed() { 1.0 } else { 0.0 })
+                    .child(scene::marker_place(self.marker.clone()));
+            }
             rail = rail.child(
                 div()
                     .flex()
@@ -599,17 +643,32 @@ impl Onboarding {
                     .gap(px(t.space.s10))
                     .h(px(t.size.row))
                     .text_color(text)
-                    .child(number(index, fill, index < current))
+                    .child(mark)
                     .child(*name),
             );
         }
-        rail
+        rail.when_some(scene, |rail, scene| rail.opacity(scene.setup))
     }
 }
 
 impl Render for Onboarding {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (t, c) = (tokens(), colors());
+        // The scene runs on its own clock and hands over to the first step.
+        let scene = match self.stage {
+            Stage::Scene if self.clock.ms() >= t.motion.scene_ms => {
+                self.stage = Stage::Step(0);
+                remember(|settings| settings.intro_seen = true);
+                None
+            }
+            Stage::Scene => Some(scene::Scene::at(self.clock.ms())),
+            Stage::Step(_) => None,
+        };
+        // Setup's first step is laid out under the scene, ready to take over.
+        let index = match self.stage {
+            Stage::Step(index) => index,
+            Stage::Scene => 0,
+        };
         let root = ui::text(
             div()
                 .size_full()
@@ -619,13 +678,17 @@ impl Render for Onboarding {
                 .text_color(c.text)
                 .font_family(t.font.ui.clone()),
             &t.text.row,
-        );
-        let Stage::Step(index) = self.stage else {
-            let body = root
-                .child(div().flex_1().min_h_0().child(self.scene()))
-                .child(self.scale_controls(cx));
-            return super::window_controls::frame(body, "Welcome", window, cx);
-        };
+        )
+        .track_focus(&self.focus)
+        .when(scene.is_some(), |root| {
+            root.on_key_down(cx.listener(|view, event: &KeyDownEvent, _, cx| {
+                let keys = &event.keystroke.modifiers;
+                if !(keys.platform || keys.control || keys.alt) {
+                    view.skip(cx);
+                    cx.stop_propagation();
+                }
+            }))
+        });
         if index == 2
             && self.first.is_none()
             && let Some(probe) = &self.probe
@@ -801,29 +864,53 @@ impl Render for Onboarding {
                         }
                     })),
             });
+        let main = div()
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .flex()
+            .flex_col()
+            .when_some(scene, |main, scene| main.opacity(scene.setup))
+            .child(
+                div()
+                    .id("setup-page")
+                    .flex_1()
+                    .min_h_0()
+                    .pt(px(t.size.titlebar))
+                    .px(px(t.space.s24))
+                    .overflow_y_scroll()
+                    .when_some(scene, |page, scene| {
+                        page.relative().top(px(scene.page_offset()))
+                    })
+                    .child(page),
+            )
+            .child(footer);
         let body = root
             .child(
-                div().flex().flex_1().min_h_0().child(self.rail()).child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .h_full()
-                        .flex()
-                        .flex_col()
-                        .child(
-                            div()
-                                .id("setup-page")
-                                .flex_1()
-                                .min_h_0()
-                                .pt(px(t.size.titlebar))
-                                .px(px(t.space.s24))
-                                .overflow_y_scroll()
-                                .child(page),
+                div()
+                    .relative()
+                    .flex()
+                    .flex_1()
+                    .min_h_0()
+                    .child(self.rail(index, scene.as_ref()))
+                    .child(main)
+                    .when_some(scene, |body, scene| {
+                        body.child(
+                            scene::overlay(
+                                &scene,
+                                self.clock.clone(),
+                                self.tile.clone(),
+                                self.marker.clone(),
+                                TAGLINE,
+                            )
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|view, _, _, cx| view.skip(cx)),
+                            ),
                         )
-                        .child(footer),
-                ),
+                    }),
             )
-            .child(self.scale_controls(cx));
+            .child(self.scale_controls(scene.as_ref(), cx));
         super::window_controls::frame(body, "Welcome", window, cx)
     }
 }
@@ -910,164 +997,6 @@ fn number(index: usize, fill: Rgba, done: bool) -> gpui::Div {
     }
 }
 
-/// What the opening scene shows at one moment, each part from 0 (hidden) to 1.
-#[derive(Debug, PartialEq)]
-struct Frame {
-    light: f32,
-    panes: [f32; 3],
-    cursor: bool,
-    link: f32,
-    name: f32,
-    tagline: f32,
-    steps: f32,
-    lit: usize,
-    leave: f32,
-}
-
-impl Frame {
-    /// The scene at `ms` milliseconds: a light grows, a terminal splits into
-    /// three panes, a line links them, the name and line appear, then the
-    /// setup steps light one by one and everything dissolves.
-    fn at(ms: f32) -> Self {
-        let rise = |from: f32, length: f32| ((ms - from) / length).clamp(0.0, 1.0);
-        Self {
-            light: rise(0.0, 1000.0),
-            panes: [rise(600.0, 400.0), rise(1600.0, 500.0), rise(2300.0, 500.0)],
-            cursor: ((ms / 500.0) as u32).is_multiple_of(2),
-            link: rise(3000.0, 600.0),
-            name: rise(3300.0, 600.0),
-            tagline: rise(4000.0, 500.0) * (1.0 - rise(5000.0, 400.0)),
-            steps: rise(5200.0, 400.0),
-            lit: (0..STEPS.len())
-                .filter(|step| ms >= 5500.0 + *step as f32 * 300.0)
-                .count(),
-            leave: rise(7000.0, 1000.0),
-        }
-    }
-}
-
-fn frame(frame: Frame) -> gpui::Div {
-    let t = tokens();
-    let ground = rgba(0x0e0f13, 1.0);
-    let text = rgba(0xeceef3, 1.0);
-    let glow = rgba(0x7887ff, 1.0);
-    let shown = 1.0 - frame.leave;
-    let mut panes = div().flex().gap(px(6.0)).w(px(180.0)).h(px(72.0));
-    for (index, rise) in frame.panes.into_iter().enumerate() {
-        panes = panes.child(
-            div()
-                .relative()
-                .h_full()
-                // Each new pane grows out of the one before it.
-                .flex_basis(px(0.0))
-                .flex_grow(1.0)
-                .when(index > 0, |el| el.max_w(px(180.0 * rise)))
-                .rounded(px(6.0))
-                .border(px(1.5))
-                .border_color(rgba(0xeceef3, 0.8 * rise * shown))
-                .when(index == 0 && frame.cursor, |el| {
-                    el.child(
-                        div()
-                            .absolute()
-                            .left(px(8.0))
-                            .top(px(8.0))
-                            .w(px(7.0))
-                            .h(px(12.0))
-                            .bg(rgba(0xeceef3, rise * shown)),
-                    )
-                }),
-        );
-    }
-    let link = div()
-        .relative()
-        .w(px(180.0))
-        .h(px(18.0))
-        .child(
-            div()
-                .absolute()
-                .top(px(9.0))
-                .left(px(30.0))
-                .right(px(30.0))
-                .h(px(1.5))
-                .bg(rgba(0x8a96ff, 0.9 * frame.link * shown)),
-        )
-        .children([24.0, 84.0, 144.0].map(|left| {
-            div()
-                .absolute()
-                .top(px(6.0))
-                .left(px(left))
-                .size(px(7.0))
-                .rounded_full()
-                .bg(rgba(0x8a96ff, frame.link * shown))
-        }));
-    let mut steps = div().flex().gap(px(16.0)).justify_center();
-    for (index, name) in STEPS.iter().enumerate() {
-        let lit = if index < frame.lit { 1.0 } else { 0.3 };
-        steps = steps.child(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(6.0))
-                .text_color(rgba(0xeceef3, lit * frame.steps * shown))
-                .child(format!("{}  {name}", index + 1)),
-        );
-    }
-    div()
-        .size_full()
-        .relative()
-        .bg(ground)
-        .flex()
-        .flex_col()
-        .items_center()
-        .justify_center()
-        .gap(px(t.space.s16))
-        .child(
-            div()
-                .absolute()
-                .size(px(1.0))
-                .rounded_full()
-                .shadow(vec![BoxShadow {
-                    color: rgba(0x7887ff, 0.35 * frame.light * shown).into(),
-                    offset: point(px(0.0), px(0.0)),
-                    blur_radius: px(160.0 * frame.light),
-                    spread_radius: px(70.0 * frame.light),
-                    inset: false,
-                }])
-                .bg(glow),
-        )
-        .child(panes)
-        .child(link)
-        .child(
-            div()
-                .text_size(px(24.0))
-                .font_weight(gpui::FontWeight::SEMIBOLD)
-                .text_color(rgba(0xeceef3, frame.name * shown))
-                .child("Agent Interface"),
-        )
-        .child(
-            div()
-                .h(px(40.0))
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(
-                    div()
-                        .absolute()
-                        .whitespace_nowrap()
-                        .text_color(rgba(0xeceef3, frame.tagline * shown))
-                        .child(TAGLINE),
-                )
-                .child(steps),
-        )
-        .text_color(text)
-}
-
-fn rgba(hex: u32, alpha: f32) -> Rgba {
-    let mut color = gpui::rgb(hex);
-    color.a = alpha.clamp(0.0, 1.0);
-    color
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1102,20 +1031,5 @@ mod tests {
         assert!(first_run(&preferences));
         preferences.setup_done = true;
         assert!(!first_run(&preferences));
-    }
-
-    #[test]
-    fn the_scene_builds_then_dissolves() {
-        let start = Frame::at(0.0);
-        assert_eq!((start.light, start.panes, start.lit), (0.0, [0.0; 3], 0));
-        let middle = Frame::at(4500.0);
-        assert_eq!(middle.panes, [1.0; 3]);
-        assert_eq!((middle.name, middle.tagline, middle.steps), (1.0, 1.0, 0.0));
-        let steps = Frame::at(6500.0);
-        assert_eq!(
-            (steps.tagline, steps.steps, steps.lit),
-            (0.0, 1.0, STEPS.len())
-        );
-        assert_eq!(Frame::at(8000.0).leave, 1.0);
     }
 }
