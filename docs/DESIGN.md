@@ -19,6 +19,7 @@ is built, where each part lives, and how to change it.
 | Tab, workspace and icon menus | `desktop/menus.rs` | change menus |
 | Jump (Command-K) | `desktop/jump.rs` | change search results |
 | The Settings window | `desktop/settings_window.rs` | change Settings pages |
+| The opening scene | `desktop/onboarding/scene.rs` | change the first-run scene |
 | Icons | `crates/app/assets/icons/`, listed in `desktop/icons.rs` | add an icon |
 
 **The rule:** views use tokens and components, never their own values. A
@@ -109,6 +110,7 @@ Each theme defines the same names (`[color.dark]`, `[color.light]` in
 | `ok` | Saved light, connected |
 | `info`, `violet`, `green` | Inbound events and cache reads; cache writes; output tokens (Backbone views) |
 | `shadow` | Popover shadow |
+| `mark_from`, `mark_to`, `mark_edge`, `mark_glyph`, `mark_eye`, `mark_glow` | The app mark in the opening scene: its tile's gradient and hairline, the closed eye and mouth, the open eyes and the cursor eye's glow. The same in both themes, like the icon |
 | `pane_dim` | Opacity of unfocused panes' content |
 
 Terminal defaults per theme (`[terminal.dark]`, `[terminal.light]`): the
@@ -136,6 +138,7 @@ weight, applied with `components::text`:
 | `empty_title`, `body` | Empty and error states; explanatory text |
 | `figure` | The headline number in a view |
 | `card_title`, `step_key`, `step_mark` | A plan's title on its card; DONE or NOW atop a step in an opened plan; the `!` in a waiting step's mark |
+| `scene_title`, `scene_line` | The app's name and the line beneath it in the opening scene |
 
 ## Spacing, radii and sizes
 
@@ -266,6 +269,28 @@ reader composition are separate modules under `desktop/views/interactions/`.
 No view-specific colours or new font families are added. Native accessibility
 exposes rows as named buttons with selected state, the rail as an image description,
 and the window, direction and recipient controls as radio groups.
+
+## Opening scene
+
+The first time setup opens, the app's face introduces it, as the website's
+hero does: it laughs with both eyes open, looks right, looks left, and only
+then winks, the left eye closing from an amber stroke into the white `>` while
+the mouth lifts into the icon's smile. The wink is the last beat, never the
+first. The name and its line rise while the face looks around. The open amber
+eye then flies into the setup rail and becomes the first step's marker, so
+setup carries on from the face instead of cutting to it.
+
+`desktop/onboarding/scene.rs` holds the face's keyframes, which are the
+website's (five seconds, `cubic-bezier(.45, 0, .2, 1)`, the bob in
+`ease-in-out`), and the scene around them, both pure functions of time. The
+tile is a gradient div; the closing eye and the mouth are stroked paths on a
+canvas, with round ends drawn as dots; the open eye is a quad with a glow.
+`scene_mark` sizes the face, `[motion]` places it (`scene_ms`, `scene_face_ms`,
+`scene_words_ms`, `scene_handoff_ms`, `scene_flight_ms`), and a test checks
+that its last frame is `packaging/icon/agent-interface.svg`.
+
+Any key, a click or Skip jumps to the handoff. Interface size stays available
+in the bar below, whose rule appears with setup.
 
 ## Interaction patterns
 
