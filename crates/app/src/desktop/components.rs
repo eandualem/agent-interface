@@ -146,6 +146,10 @@ pub fn button(
     label: impl Into<SharedString>,
     kind: Button,
 ) -> Stateful<Div> {
+    button_frame(id, kind).child(label.into())
+}
+
+fn button_frame(id: impl Into<SharedString>, kind: Button) -> Stateful<Div> {
     let (t, c) = (tokens(), colors());
     let base = text(
         div()
@@ -175,7 +179,6 @@ pub fn button(
             .text_color(c.attention_text)
             .hover(|el| el.bg(colors().attention_soft)),
     }
-    .child(label.into())
 }
 
 /// How round a profile's mark is: its corner radius as a share of its size.
@@ -2605,12 +2608,28 @@ pub fn send_button(id: impl Into<SharedString>, enabled: bool) -> Stateful<Div> 
 
 /// A small spinner beside a message that is still sending.
 pub fn sending_spinner() -> impl IntoElement {
-    let (t, c) = (tokens(), colors());
+    spinner("sending-arc", colors().accent)
+}
+
+/// A primary button that is working: the label stays at full contrast, a
+/// turning arc says it is busy, and clicks do nothing.
+pub fn busy_button(id: impl Into<SharedString>, label: impl Into<SharedString>) -> Stateful<Div> {
+    let id = id.into();
+    let spin = spinner(format!("{id}-arc"), colors().on_accent);
+    button_frame(id, Button::Primary)
+        .cursor_default()
+        .pl(px(tokens().space.s10))
+        .child(spin)
+        .child(label.into())
+}
+
+fn spinner(id: impl Into<gpui::ElementId>, color: Rgba) -> Div {
+    let t = tokens();
     let size = t.size.dot + t.space.s4;
     div()
         .size(px(size))
-        .child(icon("agent-arc", size, c.accent).with_animation(
-            "sending-arc",
+        .child(icon("agent-arc", size, color).with_animation(
+            id,
             Animation::new(std::time::Duration::from_millis(t.motion.spinner_ms as u64)).repeat(),
             |arc, delta| arc.with_transformation(Transformation::rotate(percentage(delta))),
         ))

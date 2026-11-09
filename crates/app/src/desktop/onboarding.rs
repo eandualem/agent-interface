@@ -32,7 +32,7 @@ const TAGLINE: &str = "Your agents. Working together. On your machine.";
 const WATCH: Duration = Duration::from_secs(4);
 /// How long the workspace window gets to load its library before it takes
 /// over the profile's steps.
-const ADOPT_TRIES: usize = 100;
+const ADOPT_TRIES: usize = 200;
 
 /// Something setup can fix for the person when they ask.
 #[derive(Clone, Copy)]
@@ -493,8 +493,15 @@ impl Onboarding {
             return;
         };
         remember(|settings| settings.setup_done = true);
-        adopt(handle, flow, item, connection, client, cx);
-        window.remove_window();
+        adopt(
+            handle,
+            window.window_handle(),
+            flow,
+            item,
+            connection,
+            client,
+            cx,
+        );
     }
 
     /// What a row says while its fix runs, or after it failed.
@@ -877,8 +884,11 @@ impl Render for Onboarding {
 
 /// Give the first profile's steps to the workspace window. Its library may
 /// still be loading, so it is asked again until it can take them.
+/// Hand the profile flow to the workspace window once its library has
+/// loaded, then close setup, so there is no moment without either.
 fn adopt(
     handle: WindowHandle<super::Browser>,
+    setup: gpui::AnyWindowHandle,
     flow: Entity<Flow>,
     item: Listed,
     connection: Connection,
@@ -900,12 +910,13 @@ fn adopt(
                 })
                 .unwrap_or(true);
             if adopted {
-                return;
+                break;
             }
             cx.background_executor()
-                .timer(Duration::from_millis(100))
+                .timer(Duration::from_millis(50))
                 .await;
         }
+        let _ = setup.update(cx, |_, window, _| window.remove_window());
     })
     .detach();
 }

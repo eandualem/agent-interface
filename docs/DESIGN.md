@@ -174,7 +174,7 @@ All in `components.rs`; each takes its look from the tokens.
 | `badge` | Small mono label, such as an agent's CLI |
 | `view_choice` | A row of the new-pane views list: icon tile, label, description, scope |
 | `fact` | A label and value, one line of an agent's card |
-| `tool_card` | An agent tool to pick, for a profile's first agent and for Add agent alike: a radio mark (a turning arc while it installs), the name in `row_selected` and its state in `meta`, `attention` when it needs the person; selected, the accent tint and ring. Callers add the click and any Install or Update |
+| `tool_card` | An agent tool to pick, for a profile's first agent and for Add agent alike: a radio mark (a turning arc while it installs), the name in `row_selected` and its state in `meta` (for an agent, whether it starts signed in or asks to sign in), `attention` when it needs the person; selected, the accent tint and ring. Callers add the click and any Install or Update |
 | `choice_button`, `filter_frame`, `choice_frame`, `choice_key`, `hint_bar` | The chooser's two buttons, filter, selectable row with its ring, number key and centred key row |
 | `view_header`, `back_button`, `pill`, `info_card` | A view's 28 px header; the reading view's way back; a tag; a summary panel |
 | `tag` with `Tone` | How something is delivered: `Plain` for `all` and plain facts, `Tag` in the accent tint for a tag, `Quiet` outline for a direct assignment; a record's state: `Tag` for active, `Attention` for waiting on the person, `Done` for complete |
@@ -278,8 +278,11 @@ hero does: it laughs with both eyes open, looks right, looks left, and only
 then winks, the left eye closing from an amber stroke into the white `>` while
 the mouth lifts into the icon's smile. The wink is the last beat, never the
 first. The name and its line rise while the face looks around. The open amber
-eye then flies to the person's first profile and becomes its mark, so setup
-carries on from the face instead of cutting to it. When this computer is missing
+eye then flies to the person's first profile and settles into its mark: it takes
+on the colour of the mark's tile as it lands and fades while the letter appears,
+so setup carries on from the face instead of cutting to it. Until the profile
+exists its mark is neutral; once made it takes its own tint, which never
+changes. When this computer is missing
 something, the eye stays in the face as it leaves and Before you start appears.
 
 `desktop/onboarding/scene.rs` holds the face's keyframes, which are the

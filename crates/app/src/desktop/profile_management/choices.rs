@@ -392,12 +392,12 @@ fn eligible(runtime: &Runtime) -> bool {
         && runtime.setup_supported
         && runtime.setup_compatibility.compatible
 }
-fn authentication(value: Authentication) -> Option<&'static str> {
+/// What a tool's card says about it: whether the agent can start signed in.
+fn card_state(value: Authentication) -> &'static str {
     match value {
-        Authentication::NotAuthenticated => {
-            Some("Not signed in yet. The agent asks when it starts.")
-        }
-        _ => None,
+        Authentication::Authenticated => "Signed in",
+        Authentication::NotAuthenticated => "Asks you to sign in",
+        _ => "Ready",
     }
 }
 impl Render for Form {
@@ -526,14 +526,25 @@ impl Render for Form {
                                 div().flex().flex_1().min_w_0().items_center().gap(px(t.space.s8))
                                     .child(ui::icon("folder", t.size.icon, c.muted))
                                     .child(
-                                        div().flex_1().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap()
+                                        div().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap()
                                             .text_color(if folder.is_some() { c.code } else { c.faint })
                                             .child(match &folder {
-                                                Some((path, true)) => format!("{} · made for it", home_relative(path)),
-                                                Some((path, false)) => home_relative(path),
+                                                Some((path, _)) => home_relative(path),
                                                 None => "Choose the folder it works in".into(),
                                             }),
                                     )
+                                    // Setup makes this folder for the agent.
+                                    .when(folder.as_ref().is_some_and(|(_, made)| *made), |el| {
+                                        el.child(
+                                            ui::text(
+                                                div().flex_shrink_0().px(px(t.space.s6)).rounded(px(t.radius.row))
+                                                    .border(px(t.size.hairline)).border_color(c.line_strong).text_color(c.muted),
+                                                &t.text.meta,
+                                            )
+                                            .child("New"),
+                                        )
+                                    })
+                                    .child(div().flex_1())
                                     .child(ui::button("setup-folder", if self.project.is_some() || folder.is_some() { "Change…" } else { "Choose…" }, ui::Button::Secondary).on_click(cx.listener(|form, _, _, cx| form.choose_folder(cx))))
                                     .into_any_element(),
                             )),
@@ -545,7 +556,7 @@ impl Render for Form {
                     let id = runtime.id.clone();
                     let expected = ticket.clone();
                     tools = tools.child(
-                        ui::tool_card(format!("runtime-{id}"), runtime.display_name.clone(), "Ready", false, self.runtime.as_ref() == Some(&id), false)
+                        ui::tool_card(format!("runtime-{id}"), runtime.display_name.clone(), card_state(runtime.authentication), false, self.runtime.as_ref() == Some(&id), false)
                             .on_click(cx.listener(move |form, _, _, cx| {
                                 if form.finished || !form.ticket.accepts(&expected) { return; }
                                 let State::Ready { catalog, .. } = &form.state else { return; };
@@ -561,9 +572,6 @@ impl Render for Form {
                         note("No tool in this profile can set up an agent yet.".into()).into_any_element()
                     },
                 ));
-                if let Some(text) = self.runtime().and_then(|r| authentication(r.authentication)) {
-                    body = body.child(line("", note(text.into()).into_any_element()));
-                }
                 body = body.child(line(
                     "Role",
                     ui::segments()

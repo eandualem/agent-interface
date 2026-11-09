@@ -233,7 +233,7 @@ const LEAVE_MS: f32 = 400.0;
 const SETUP_AFTER_MS: f32 = 250.0;
 const SETUP_MS: f32 = 500.0;
 /// The first step's numeral appears once the eye has landed.
-const NUMERAL_MS: f32 = 150.0;
+const NUMERAL_MS: f32 = 200.0;
 /// How far the tile and the words travel as they rise and as they leave.
 const RISE_PX: f32 = 8.0;
 const WORDS_PX: f32 = 6.0;
@@ -401,7 +401,16 @@ fn glow(scale: f32, strength: f32) -> BoxShadow {
 
 /// The open eye between its place in the face and the profile's mark: it
 /// takes the mark's shape and the theme's accent, and loses its glow.
-fn paint_flight(from: Bounds<Pixels>, to: Bounds<Pixels>, progress: f32, window: &mut Window) {
+/// The open eye on its way to the profile's mark. It takes on the colour of
+/// the mark's tile as it lands, then fades (`shown` falls to 0) while the
+/// mark's letter appears, so it settles into the mark rather than swapping.
+fn paint_flight(
+    from: Bounds<Pixels>,
+    to: Bounds<Pixels>,
+    progress: f32,
+    shown: f32,
+    window: &mut Window,
+) {
     let c = colors();
     let lerp = |a: Pixels, b: Pixels, t: f32| px(f32::from(a) + (f32::from(b) - f32::from(a)) * t);
     // Dropping a little ahead of crossing makes the path a gentle arc.
@@ -423,7 +432,22 @@ fn paint_flight(from: Bounds<Pixels>, to: Bounds<Pixels>, progress: f32, window:
         progress,
     );
     window.paint_drop_shadows(bounds, Corners::all(radius), &[glow(scale, 1.0 - progress)]);
-    window.paint_quad(fill(bounds, mix(c.mark_eye, c.accent, progress)).corner_radii(radius));
+    let color = mix(c.mark_eye, c.selected, progress * progress);
+    window.paint_quad(
+        fill(
+            bounds,
+            Rgba {
+                a: color.a * shown,
+                ..color
+            },
+        )
+        .corner_radii(radius)
+        .border_widths(px(tokens().size.hairline) * progress)
+        .border_color(Rgba {
+            a: c.line_strong.a * shown * progress,
+            ..c.line_strong
+        }),
+    );
 }
 
 /// The face, its name and line, and the flying eye, laid over setup. The
@@ -446,6 +470,7 @@ pub(super) fn overlay(
     let face = scene.face;
     let lands = marker.as_ref().is_some_and(|marker| marker.get().is_some());
     let flight = if lands { scene.flight } else { 0.0 };
+    let settled = if lands { scene.numeral } else { 1.0 };
     let laid_out = tile.clone();
     let tile_element = div()
         .absolute()
@@ -513,13 +538,14 @@ pub(super) fn overlay(
                     // Keep the scene moving until it hands over to setup.
                     clock.tick();
                     window.request_animation_frame();
-                    if flight <= 0.0 || flight >= 1.0 {
+                    if flight <= 0.0 || settled >= 1.0 {
                         return;
                     }
                     if let (Some(tile), Some(target)) =
                         (tile.get(), marker.as_ref().and_then(|marker| marker.get()))
                     {
-                        paint_flight(eye_bounds(tile, &face), target, flight, window);
+                        let from = eye_bounds(tile, &face);
+                        paint_flight(from, target, flight, 1.0 - settled, window);
                     }
                 },
             )

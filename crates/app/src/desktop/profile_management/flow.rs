@@ -576,7 +576,7 @@ fn make(
 ) -> Result<Made, Failure> {
     let alive = || live.load(Ordering::Acquire);
     let storage = "Private storage for profile requests is unavailable.";
-    let library = crate::library::location::library_directory(directory.as_deref())
+    let library = crate::library::location::create_library_directory(directory.as_deref())
         .map_err(|_| (Stalled::Failed, None, storage))?;
     let controller = journal::Journal::open(&library.join("profile-operations"))
         .map(|journal| Controller::new(journal, &client))
@@ -657,7 +657,9 @@ impl Render for Flow {
             .map(|profile| profile.item().display_name.clone())
             .unwrap_or_else(|| self.name.read(cx).value().trim().to_owned());
         let id = self.profile_id().unwrap_or("new").to_owned();
-        let mark = ui::profile_mark(&id, &title, false, t.size.slot);
+        // Until the profile exists its mark is neutral; it takes its own
+        // tint from its id once made, and keeps it.
+        let mark = ui::profile_mark(&id, &title, self.profile.is_none(), t.size.slot);
         let mark = match &self.landing {
             // The opening scene's eye lands here and becomes the profile's mark.
             Some((place, shown)) => div()
@@ -794,7 +796,7 @@ impl Render for Flow {
             Step::Name => &[("↵", "continue"), ("esc", "cancel")],
             Step::SignIn => &[("esc", "finish later")],
             Step::Agent if self.setup.is_some() => &[("esc", "finish later")],
-            Step::Agent => &[("⌘↵", "start agent"), ("esc", "finish later")],
+            Step::Agent => &[(START_KEYS, "start agent"), ("esc", "finish later")],
         };
         div()
             .size_full()
@@ -836,6 +838,13 @@ impl Render for Flow {
             .child(ui::view_footer(hints, ""))
     }
 }
+
+/// The form starts its agent on ⌘↵ or Ctrl+↵; show the one this platform uses.
+const START_KEYS: &str = if cfg!(target_os = "macos") {
+    "⌘↵"
+} else {
+    "Ctrl+↵"
+};
 
 impl Flow {
     fn step_body(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
@@ -907,11 +916,12 @@ impl Flow {
                     )
                     .children(error)
                     .child(
-                        div().flex().child(
+                        div().flex().child(if self.busy.is_some() {
+                            ui::busy_button("profile-flow-continue", label)
+                        } else {
                             ui::button("profile-flow-continue", label, ui::Button::Primary)
-                                .when(self.busy.is_some(), |el| el.opacity(0.6).cursor_default())
-                                .on_click(cx.listener(|flow, _, _, cx| flow.create(cx))),
-                        ),
+                                .on_click(cx.listener(|flow, _, _, cx| flow.create(cx)))
+                        }),
                     )
                     .into_any_element()
             }
@@ -1096,11 +1106,8 @@ impl Flow {
                 if let Some((setup, _)) = &self.setup {
                     return body.child(setup.clone()).into_any_element();
                 }
-                body.child(meta(
-                    "It works in this folder and can help you set up the rest.".into(),
-                ))
-                .children(self.form.as_ref().map(|(form, _)| form.clone()))
-                .into_any_element()
+                body.children(self.form.as_ref().map(|(form, _)| form.clone()))
+                    .into_any_element()
             }
         }
     }
