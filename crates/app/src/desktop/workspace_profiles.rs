@@ -24,6 +24,8 @@ pub(super) enum Owner {
 #[derive(Default)]
 pub(super) struct Registry {
     entries: HashMap<String, Entry>,
+    /// Display names by profile id, from verified selections.
+    names: HashMap<String, String>,
 }
 
 struct Entry {
@@ -75,6 +77,7 @@ impl Registry {
                     )
                 })
                 .collect(),
+            names: self.names.clone(),
         }
     }
     /// Reconcile every workspace, not just the currently selected one.
@@ -139,8 +142,27 @@ impl Registry {
         let Some(result) = entry.selection.accept(finished.completion) else {
             return false;
         };
+        if let Ok(selected) = &result {
+            self.names.insert(
+                selected.item().profile_id.clone(),
+                selected.item().display_name.clone(),
+            );
+        }
         entry.result = Some(result.map(|selected| selected.connection().clone()));
         true
+    }
+
+    /// Remember a profile's display name for the status row.
+    pub fn remember_name(&mut self, item: &agent_interface_roster::profiles::Item) {
+        self.names
+            .insert(item.profile_id.clone(), item.display_name.clone());
+    }
+
+    /// A bound workspace's profile name, once a selection has reported it.
+    pub fn profile_name(&self, space: &Workspace) -> Option<&str> {
+        self.names
+            .get(space.profile_id.as_ref()?)
+            .map(String::as_str)
     }
 
     /// Install a picker result only after that exact workspace binding is saved.
@@ -541,6 +563,7 @@ impl Browser {
                 .find(|space| space.id == id)
             {
                 Some(space) => {
+                    self.workspace_profiles.remember_name(&item);
                     self.workspace_profiles.bind(space, connection);
                 }
                 // A conflicting save dropped the new workspace: make it again.
@@ -763,7 +786,23 @@ impl Browser {
         } else {
             name.trim()
         };
-        let Some((base, mut proposed)) = super::workspace::create_profile(layout, label) else {
+        let Some((base, proposed)) = super::workspace::create_profile(layout, label) else {
+            return;
+        };
+        self.propose_binding(base, proposed, item, connection, name, cx);
+    }
+
+    /// Save `proposed` with its selected workspace bound to the profile.
+    fn propose_binding(
+        &mut self,
+        base: agent_interface_store::Document,
+        mut proposed: agent_interface_core::Layout,
+        item: agent_interface_roster::profiles::Item,
+        connection: Connection,
+        name: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(layout) = &self.layout else {
             return;
         };
         let selected_id = proposed.selected.clone();
@@ -801,8 +840,9 @@ impl Browser {
         self.attach_profile_flow(flow, window, cx);
     }
 
-    /// Take over first run's profile steps once its profile exists: bind a
-    /// new workspace to it and carry on there, beside its panes. Returns false
+    /// Take over first run's profile steps once its profile exists: bind the
+    /// library's untouched starting workspace (or else a new one) to it and
+    /// carry on there, beside its panes. Returns false
     /// while this window's library is still loading, to be asked again.
     pub(super) fn adopt_profile_flow(
         &mut self,
@@ -817,7 +857,17 @@ impl Browser {
             return false;
         }
         self.use_profile_client(client);
-        self.bind_workspace(item, connection, "", cx);
+        let claim = self
+            .layout
+            .as_ref()
+            .filter(|_| !self.saving && !self.save_failed)
+            .and_then(|layout| super::workspace::claim_first(layout, &item.display_name));
+        match claim {
+            Some((base, proposed)) => {
+                self.propose_binding(base, proposed, item, connection, "", cx)
+            }
+            None => self.bind_workspace(item, connection, "", cx),
+        }
         self.attach_profile_flow(flow, window, cx);
         window.activate_window();
         true

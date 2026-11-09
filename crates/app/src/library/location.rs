@@ -22,6 +22,24 @@ pub fn library_directory(explicit: Option<&Path>) -> Result<PathBuf, Error> {
     })
 }
 
+/// Find the library directory, creating it (0700, like the library itself)
+/// when absent. First run makes its first profile before the workspace window
+/// has created the library, and profile requests keep their journal inside it.
+pub(crate) fn create_library_directory(explicit: Option<&Path>) -> Result<PathBuf, Error> {
+    use std::os::unix::fs::DirBuilderExt;
+    let path = library_location(explicit)?;
+    let fail = |error: io::Error| Error {
+        path: path.join("layouts.db"),
+        detail: error.to_string(),
+    };
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&path)
+        .map_err(fail)?;
+    path.canonicalize().map_err(fail)
+}
+
 /// Select a library location before first-run creation; perform no writes.
 pub(crate) fn library_location(explicit: Option<&Path>) -> Result<PathBuf, Error> {
     resolve(explicit, &|name| std::env::var_os(name), &user_home)
@@ -273,6 +291,20 @@ mod tests {
         env.insert("AGENT_INTERFACE_DATA_DIR", new.as_os_str().to_owned());
         assert_eq!(locate(&env), new);
         assert_eq!(std::fs::read(old.join("layouts.db")).unwrap(), b"existing");
+    }
+
+    #[test]
+    fn first_run_creates_a_private_library_directory() {
+        use std::os::unix::fs::PermissionsExt;
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let missing = root.join("share/agent-interface");
+        assert!(library_directory(Some(&missing)).is_err());
+        assert_eq!(create_library_directory(Some(&missing)).unwrap(), missing);
+        let mode = std::fs::metadata(&missing).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700);
+        // An existing library is returned unchanged.
+        assert_eq!(create_library_directory(Some(&missing)).unwrap(), missing);
     }
 
     #[test]

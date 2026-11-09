@@ -86,11 +86,15 @@ impl Browser {
         } else if let Some(model) = self.layout.as_ref().map(|layout| layout.model()) {
             if let Some(space) = model.workspace() {
                 left = left.child(div().text_color(c.text).child(space.name.clone()));
-                if let Some(profile_id) = &space.profile_id {
+                // A profile's workspace is usually named after it; say which
+                // profile only when the names differ, and never by its id.
+                if let Some(profile) = self.workspace_profiles.profile_name(space)
+                    && profile != space.name
+                {
                     left = left.child(
                         div()
                             .text_color(c.text_2)
-                            .child(format!("profile: {profile_id}")),
+                            .child(format!("profile: {profile}")),
                     );
                 }
                 match model.tab() {
@@ -162,8 +166,7 @@ impl Browser {
         let message = self
             .save_notice
             .clone()
-            .or_else(|| (!self.save_failed).then(|| self.error.clone()).flatten())
-            .or_else(|| self.loading.then(|| "Opening library…".to_owned()));
+            .or_else(|| (!self.save_failed).then(|| self.error.clone()).flatten());
         right = if self.save_failed {
             right
                 .child(
@@ -187,6 +190,9 @@ impl Browser {
             )
         } else if let Some(message) = message {
             right.child(div().text_color(c.attention_text).child(message))
+        } else if self.loading {
+            // Opening is routine, not a problem: say it quietly.
+            right.child(div().text_color(c.muted).child("Opening library…"))
         } else {
             right.child(
                 div()
