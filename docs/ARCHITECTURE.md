@@ -197,48 +197,67 @@ session-termination commands; navigation keeps them attached.
 Until setup is explicitly completed, an ordinary launch opens a setup window
 instead of the workspace window. Existing libraries and preferences, including
 pre-rename data, are preserved and do not count as completed setup. An explicit
-`--data-dir` launch opens that library directly. Setup opens with a scene of
-about five seconds, played once: the app's face laughs, looks around and winks
-into the icon, with the same keyframes as the website, and its open eye then
-flies into the setup rail as the first step's marker. Any key, a click or Skip
-jumps to that handoff, and a system that asks for reduced motion opens on the
-first step. The scene is a pure function of time, redrawn every frame, so tests
-check its beats and that its last frame is the app icon. Then come steps
-that check tmux, Agent Backbone, Git and the agent tools, create a first agent,
-and show the main shortcuts. tmux uses the terminal pane's `tmux_binary` resolver. Git,
-Backbone and agent tools are looked up after the user's interactive login shell
-runs its startup files, because an app opened from the Dock has a short PATH.
-The probe itself runs in `/bin/sh` so non-POSIX login shells can supply PATH too.
-Standard installation directories, including OpenCode's `~/.opencode/bin`, are
-appended without overriding the shell's PATH order. Refresh checks those paths
-again and passes the refreshed PATH to both runtime discovery and first-agent
-setup. Submitted requests retain their original environment for replay.
-The shell has an eight-second deadline; its output goes to a temporary file
-instead of a pipe, with positional reads limited to 256 KiB. The lookup falls
-back to PATH and the usual install folders. The
-Backbone check is a single read-only roster request. These checks install nothing.
+`--data-dir` launch opens that library directly.
 
-Every problem a step shows comes with the fix, run only when the person asks
-(`desktop/onboarding/install.rs`), never a command to copy. Git and tmux install
-through the system's own installer: Apple's command line tools or Homebrew on
-macOS, and on Linux the package manager behind `pkexec`'s graphical password
-prompt; without a package manager or that prompt, the row says so. Agent tools
-install with the official command each publishes. A Backbone that is installed
-but not answering restarts its service the way the installer starts it; one
-that is not set up points to the installer, which owns that setup. Fixes run
-off the UI thread with a fifteen-minute deadline, write their output to a
-temporary file, and explain a failure with its last line. Setup checks again
-when a fix ends, every few seconds while a system installer it opened is
-running, and whenever its window becomes active again. GitHub CLI is not
-checked: nothing in the app depends on it.
+First run is the person's first profile. A profile is where agents, sign-ins,
+skills and policies live, so setup makes one with the same steps as New profile
+and asks for nothing it can check or default instead.
 
-Every step shares one frame: a rail of steps on a track, each finished step
-with a check ring and one line of what it found, "Step N of 4" above the page
-title, and a footer whose main button, while it waits, stays legible and
-inactive beside the reason. After Continue or Back the next page rises into
-place (`page_ms`); reduced motion swaps at once. The first-agent step asks for
-one decision, the tool, on cards that offer their own install or update; the
-agent's name, folder and instructions keep their defaults behind Edit.
+Setup opens with a scene of about five seconds, played once: the app's face
+laughs, looks around and winks into the icon, with the same keyframes as the
+website. Any key, a click or Skip jumps to its handoff, and a system that asks
+for reduced motion opens without it. The scene is a pure function of time,
+redrawn every frame, so tests check its beats and that its last frame is the
+app icon. Its clock starts on the second painted frame, so a slow first frame
+cannot eat the laugh.
+
+Behind the scene, setup checks this computer. tmux uses the terminal pane's
+`tmux_binary` resolver. Git and the Backbone CLI are looked up after the user's
+interactive login shell runs its startup files, because an app opened from the
+Dock has a short PATH. The probe itself runs in `/bin/sh` so non-POSIX login
+shells can supply PATH too. Standard installation directories, including
+OpenCode's `~/.opencode/bin`, are appended without overriding the shell's PATH
+order. The shell has an eight-second deadline; its output goes to a temporary
+file instead of a pipe, with positional reads limited to 256 KiB. The lookup
+falls back to PATH and the usual install folders. Backbone counts as answering
+when its Default profile lists, shows, connects and returns its roster; these
+reads change nothing. The scene waits on the icon at its handoff until the
+check has answered, since that decides what follows.
+
+When this computer has everything, no check is shown: the face's open eye
+flies to the new profile's mark and the first profile's steps take the window.
+Otherwise one page, Before you start, lists only what is missing, each with its
+fix, and Continue waits until all of it is ready; nothing leads back to it
+afterwards. Use terminals only opens the workspace without a profile when tmux
+works. Fixes (`desktop/onboarding/install.rs`) run only when the person asks,
+never as a command to copy. Git and tmux install through the system's own
+installer: Apple's command line tools or Homebrew on macOS, and on Linux the
+package manager behind `pkexec`'s graphical password prompt; without a package
+manager or that prompt, the row says so. A Backbone that is installed but not
+answering restarts its service the way the installer starts it; one that is not
+set up points to the installer, which owns that setup. Fixes run off the UI
+thread with a fifteen-minute deadline, write their output to a temporary file,
+and explain a failure with its last line. Setup checks again when a fix ends,
+every few seconds while a system installer it opened is running, and whenever
+its window becomes active again. GitHub CLI is not checked: nothing in the app
+depends on it.
+
+The first profile's steps are New profile's `Flow` in first-run mode: it says
+"Your first profile", suggests the name Personal, and has no way back from the
+name, since there is nothing to go back to. Continue creates and starts the
+profile and runs the authenticated selection, as New profile does. When that
+selection succeeds, setup opens the workspace window, which binds a new
+workspace to the profile and takes over the same `Flow` entity
+(`Browser::adopt_profile_flow`, asked again until its library has loaded);
+setup then records completion and closes. Signing in happens beside a pane, as
+in New profile, and an agent tool that isn't installed offers Install there,
+which runs its official installer with the login shell's PATH and reads the
+profile's tools again. A profile's first agent is its guide: its name, role and
+folder show in one card and are edited in place. It starts as `guide`, working
+in `~/Agents/guide`, which setup creates (`create_directory`); a folder the
+person chooses must already exist. Its brief is the coordinating
+`orchestrator-v1` template or the person's own instructions.
+
 The welcome window offers the same persistent interface-size setting as the
 workspace, including during the opening scene, so display scaling can be adjusted
 before setup is complete. On Wayland, increasing this size asks the compositor
@@ -247,58 +266,13 @@ global window positions are unavailable, so app-calculated position limits canno
 safely place it. macOS and X11 instead bound resizing
 against the display, respecting the platform resize anchor.
 
-The first-agent step calls the selected engine's `runtimes --json --check-setup`
-(falling back to `runtimes --json` when an older CLI rejects the option), then submits
-`setup --file REQUEST --jsonl` only after an explicit Start action. It offers the
-`orchestrator-v1` brief or custom instructions, a name and a folder. Discovery
-reports installed tools and opt-in setup compatibility, never verified login;
-discovery never chooses a tool automatically. Refresh preserves an explicit choice
-when the tool remains in the catalog. Selecting any listed agent tool shows only
-its own diagnostic and executable; an incompatible choice cannot start setup.
-The same selected row controls the diagnostic, Start label and submitted runtime
-and hooks, so another installed tool cannot block it. Permission and login prompts stay
-in the actual agent terminal. First-agent selection also requires an explicit
-`setup_supported: true`; older providers and unsupported tools remain unavailable
-for this setup path. Start also requests an initial greeting, which may
-use the selected account. A submitted greeting is not reported as a received reply.
-
-The app saves the exact request, launcher and effective login-shell PATH in a
-private `onboarding-agent-<installation-digest>.json` beside settings before
-executing it. The resolved provider directory scopes each saved operation.
-Recovery loads that record even when fresh tool discovery cannot find an engine. An interrupted
-attempt reuses that request ID. Change agent tool first durably records cancellation
-intent, then submits the same fields and ID with `action=cancel_first_agent`.
-Cancellation uses the active or discovered engine and refreshed PATH when
-available, falling back to the saved executable and PATH. Normal setup replay
-always uses the saved launcher and PATH.
-Only a matching `request_cancelled` completion with `can_start_new_request=true`
-retires the local request and unlocks the form. The name, folder and brief survive;
-tool discovery and the login-shell PATH refresh before a new request is created.
-After interruption, cancellation intent resumes cancellation rather than starting
-the previous tool. The provider refuses cancellation after setup effects begin;
-the app retains the original record on refusal or an uncertain result. Saving,
-execution, cancellation and archiving serialize through a sibling file lock, and
-each worker checks that its request is still current before invoking the engine. The engine
-owns durable operation receipts and mutation deduplication. Requests are capped at
-32 KiB; stdout uses positional reads with a 1 MiB total limit, 64 KiB lines,
-1,024 events and a five-minute deadline. Request identity, sequence, final state
-and exit status must agree. Missing or contradictory results preserve the saved
-request and show an unknown outcome. Discovery has a fifteen-second deadline.
-Inherited authority remains intact; the app never substitutes an operator key.
-
-An installer activation record under the private engine root may select an
-immutable payload launcher only when its data directory matches the current
-connection and its canonical entrypoint remains inside that payload. Otherwise
-setup uses the detected Backbone CLI. Existing agents can be used without creating
-another agent; fresh installations may choose terminals for now and reopen setup
-later. A saved request remains intact when the user chooses terminals after an
-attempt finishes, even if that attempt needs recovery. Rechecking the computer
-refreshes unsubmitted discovery inputs while
-retaining any saved operation unchanged. Opening a created agent adds a saved terminal attachment through
-the normal workspace save path.
 Progress is saved as `[setup]` in `settings.toml`: an interrupted setup resumes
 without the scene, and **Set Up Agent Interface…** in the application menu
-reopens it. An explicit library directory skips setup.
+reopens it to make another profile. An explicit library directory skips setup.
+Earlier versions made the first agent in the Default profile through
+`setup --file REQUEST --jsonl` and kept a private `onboarding-agent-*.json`
+record for its recovery. Setup no longer reads or writes that record; an agent
+such a request made stays in Default, with the person's own CLI sign-ins.
 
 ## Appearance and integrations
 
@@ -1210,10 +1184,9 @@ delayed retries cannot discard a different or already recovered connection.
 Close Pane and Close Tab capture the selected origin before consuming library
 updates and reject changed bindings or connection epochs even when tab and pane
 IDs are unchanged. Fresh local closes still work for unavailable profiles.
-The application-menu setup command opens first-run setup from any workspace.
-Setup always adds its agent to the Default profile, never to the selected
-workspace's profile, and Settings › Profiles offers the same flow as Add agent on
-Default.
+The application-menu setup command opens first-run setup from any workspace,
+which makes a new profile with New profile's steps. Settings › Profiles offers
+Add agent for an existing profile, including Default.
 
 Save reconciliation treats a workspace's profile binding and its tab contents as
 an ownership boundary: a concurrent binding change cannot merge with a pane edit,
@@ -1437,10 +1410,10 @@ check, and the bounded scan has a read budget. Catalog-facing pending reads are
 observations only: actual admission repeats the check atomically. This local
 journal rule does not replace the provider's own request serialization.
 
-First run stays with the installer's Default profile: the installer initializes it,
-onboarding adds the first agent through schema-1 setup, and the app then opens that
-agent in a workspace bound to Default, through the same handshake as any profile.
-tmux-only use, with no Backbone, stays unbound.
+First run makes the person's first profile with New profile's steps and binds a
+workspace to it through the same handshake as any profile. The installer's Default
+profile remains, keeping the person's own CLI sign-ins. tmux-only use, with no
+Backbone, stays unbound.
 
 A profile workspace separates connecting from a failed connection and shows the
 reason. A profile's service does not restart itself after a reboot and its agents

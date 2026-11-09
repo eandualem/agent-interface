@@ -71,8 +71,8 @@ It supplies uv and Python when needed; no Rust or manual Python installation is 
 curl -fsSL https://raw.githubusercontent.com/eandualem/agent-interface/main/install.sh | sh
 ```
 
-**2. Open Agent Interface.** Continue through native onboarding to choose an
-installed, signed-in agent tool and create your first agent. Existing Backbone
+**2. Open Agent Interface.** Native onboarding creates your first profile,
+signs you in to an agent tool and starts your first agent, its guide. Existing Backbone
 configuration is preserved; see [connection guidance](docs/INSTALL.md#connect-agent-backbone)
 if you manage that installation independently.
 

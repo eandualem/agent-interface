@@ -5,6 +5,7 @@ use crate::{
     desktop::{
         design::{colors, tokens},
         name::NameField,
+        onboarding::{install, probe, scene},
     },
     profiles::{
         Client,
@@ -31,6 +32,8 @@ use std::{
 
 /// The only baseline the provider can create today, so nobody has to know it.
 const BASELINE: &str = "core-v1";
+/// The name a first profile starts with; the person can change it.
+const FIRST_NAME: &str = "Personal";
 /// How often an open sign-in is checked. The provider's check is local and quick.
 pub(super) const SIGN_IN_CHECK: Duration = Duration::from_secs(2);
 
@@ -103,6 +106,14 @@ pub(in crate::desktop) struct Flow {
     setup: Option<(Entity<setup::Pane>, Subscription)>,
     ticket: Ticket,
     pub focus: FocusHandle,
+    /// This is the person's first profile, made as the app is set up.
+    first: bool,
+    /// Where the opening scene's eye lands, the profile's mark, and how far
+    /// the mark has appeared.
+    landing: Option<(scene::Place, f32)>,
+    /// Agent tools being installed from the sign-in step: none while it
+    /// runs, or why it failed.
+    installing: BTreeMap<String, Option<String>>,
 }
 impl EventEmitter<Event> for Flow {}
 
@@ -143,7 +154,55 @@ impl Flow {
             setup: None,
             ticket: Ticket::default(),
             focus: cx.focus_handle(),
+            first: false,
+            landing: None,
+            installing: BTreeMap::new(),
         }
+    }
+
+    /// Make this the person's first profile: it says so, suggests a name, and
+    /// only Continue leaves the name step, since there is nothing to go back to.
+    pub fn for_first_run(&mut self, cx: &mut Context<Self>) {
+        self.first = true;
+        self.name
+            .update(cx, |field, cx| field.set_value(FIRST_NAME, cx));
+    }
+
+    /// Where the opening scene's eye lands, and how far the mark has appeared.
+    pub fn set_landing(&mut self, landing: Option<(scene::Place, f32)>) {
+        self.landing = landing;
+    }
+
+    /// Install a missing agent tool with its official installer, using the
+    /// PATH a terminal would have, then read the profile's tools again.
+    fn install(&mut self, runtime: String, cx: &mut Context<Self>) {
+        let Some(&(_, _, command)) = probe::TOOLS.iter().find(|(id, ..)| *id == runtime) else {
+            return;
+        };
+        if self.installing.get(&runtime) == Some(&None) {
+            return;
+        }
+        self.installing.insert(runtime.clone(), None);
+        let work = cx
+            .background_executor()
+            .spawn(async move { install::tool(command, &probe::login_path()) });
+        cx.spawn(async move |this, cx| {
+            let outcome = work.await;
+            let _ = this.update(cx, |flow, cx| {
+                match outcome {
+                    install::Outcome::Failed(reason) => {
+                        flow.installing.insert(runtime, Some(reason));
+                    }
+                    install::Outcome::Done | install::Outcome::Opened => {
+                        flow.installing.remove(&runtime);
+                    }
+                }
+                flow.read_catalog(cx);
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
     }
 
     /// The deepest focusable part of the current step.
@@ -427,7 +486,7 @@ impl Flow {
         let client = self.client.clone();
         let signed_in = self.first_signed_in();
         let form = cx.new(|cx| {
-            choices::Form::new(
+            let mut form = choices::Form::new(
                 client,
                 library,
                 profile,
@@ -435,7 +494,10 @@ impl Flow {
                 signed_in,
                 window,
                 cx,
-            )
+            );
+            // A profile's first agent is its guide.
+            form.as_guide(cx);
+            form
         });
         window.focus(&form.read(cx).focus.clone(), cx);
         let events = cx.subscribe_in(&form, window, |flow, form, event, window, cx| {
@@ -595,12 +657,22 @@ impl Render for Flow {
             .map(|profile| profile.item().display_name.clone())
             .unwrap_or_else(|| self.name.read(cx).value().trim().to_owned());
         let id = self.profile_id().unwrap_or("new").to_owned();
+        let mark = ui::profile_mark(&id, &title, false, t.size.slot);
+        let mark = match &self.landing {
+            // The opening scene's eye lands here and becomes the profile's mark.
+            Some((place, shown)) => div()
+                .relative()
+                .opacity(*shown)
+                .child(mark)
+                .child(scene::marker_place(place.clone())),
+            None => div().child(mark),
+        };
         let header = div()
             .flex()
             .items_center()
             .gap(px(t.space.s12))
             .pb(px(t.space.s20))
-            .child(ui::profile_mark(&id, &title, false, t.size.slot))
+            .child(mark)
             .child(
                 div()
                     .flex()
@@ -608,17 +680,18 @@ impl Render for Flow {
                     .gap(px(t.space.s2))
                     .child(
                         ui::text(div().text_color(c.text), &t.text.group_title).child(
-                            if self.profile.is_some() {
-                                title.clone()
-                            } else {
-                                "New profile".into()
+                            match (&self.profile, self.first) {
+                                (Some(_), _) => title.clone(),
+                                (None, true) => "Your first profile".into(),
+                                (None, false) => "New profile".into(),
                             },
                         ),
                     )
-                    .child(meta(if self.profile.is_some() {
-                        "New profile".into()
-                    } else {
-                        "Its own accounts, agents, skills and policies, kept apart from your other work.".into()
+                    .child(meta(match (&self.profile, self.first) {
+                        (Some(_), true) => "Your first profile".into(),
+                        (Some(_), false) => "New profile".into(),
+                        (None, true) => "A profile keeps its own sign-ins, agents, skills and policies. Name it after the work it's for.".into(),
+                        (None, false) => "Its own accounts, agents, skills and policies, kept apart from your other work.".into(),
                     })),
             );
         let steps = [
@@ -717,6 +790,7 @@ impl Render for Flow {
             .is_some_and(|(setup, _)| setup.read(cx).running());
         let hints: &[(&'static str, &'static str)] = match self.step {
             Step::Agent if running => &[("↵", "get started")],
+            Step::Name if self.first => &[("↵", "continue")],
             Step::Name => &[("↵", "continue"), ("esc", "cancel")],
             Step::SignIn => &[("esc", "finish later")],
             Step::Agent if self.setup.is_some() => &[("esc", "finish later")],
@@ -737,7 +811,13 @@ impl Render for Flow {
                     return;
                 }
                 match event.keystroke.key.as_str() {
-                    "escape" if flow.form.is_none() && flow.setup.is_none() => flow.close(cx),
+                    "escape"
+                        if flow.form.is_none()
+                            && flow.setup.is_none()
+                            && !(flow.first && flow.step == Step::Name) =>
+                    {
+                        flow.close(cx)
+                    }
                     "enter" if flow.step == Step::Name => flow.create(cx),
                     _ => return,
                 }
@@ -853,8 +933,48 @@ impl Flow {
                             .enumerate()
                         {
                             let id = runtime.id.clone();
+                            let installable = probe::TOOLS.iter().any(|(tool, ..)| *tool == id);
                             let right = if !runtime.available {
-                                meta("Not installed".into()).into_any_element()
+                                let install = |label: &'static str, id: String| {
+                                    ui::button(
+                                        SharedString::from(format!("install-{id}")),
+                                        label,
+                                        ui::Button::Secondary,
+                                    )
+                                    .on_click(cx.listener(
+                                        move |flow, _, _, cx| flow.install(id.clone(), cx),
+                                    ))
+                                };
+                                match self.installing.get(&id) {
+                                    Some(None) => div()
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(t.space.s6))
+                                        .child(ui::step_dot(ui::Step::Now))
+                                        .child(meta("Installing…".into()))
+                                        .into_any_element(),
+                                    Some(Some(_)) if installable => div()
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(t.space.s8))
+                                        .child(
+                                            ui::text(
+                                                div().text_color(c.attention_text),
+                                                &t.text.meta,
+                                            )
+                                            .child("Couldn't install"),
+                                        )
+                                        .child(install("Try again", id.clone()))
+                                        .into_any_element(),
+                                    _ if installable => div()
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(t.space.s8))
+                                        .child(meta("Not installed".into()))
+                                        .child(install("Install", id.clone()))
+                                        .into_any_element(),
+                                    _ => meta("Not installed".into()).into_any_element(),
+                                }
                             } else if self.accounts.get(&id) == Some(&Authentication::Authenticated)
                             {
                                 div()
@@ -903,18 +1023,38 @@ impl Flow {
                                     .flex()
                                     .items_center()
                                     .gap(px(t.space.s10))
-                                    .h(px(t.size.group_row + t.space.s8))
+                                    .min_h(px(t.size.group_row + t.space.s8))
+                                    .py(px(t.space.s6))
                                     .px(px(t.space.s14))
                                     .when(index > 0, |el| {
                                         el.border_t(px(t.size.hairline)).border_color(c.line)
                                     })
-                                    .when(!runtime.available, |el| el.opacity(0.6))
+                                    .when(!runtime.available && !installable, |el| el.opacity(0.6))
                                     .child(
                                         div()
                                             .flex_1()
-                                            .whitespace_nowrap()
-                                            .text_color(c.text)
-                                            .child(runtime.display_name.clone()),
+                                            .min_w_0()
+                                            .flex()
+                                            .flex_col()
+                                            .child(
+                                                div()
+                                                    .whitespace_nowrap()
+                                                    .text_color(c.text)
+                                                    .child(runtime.display_name.clone()),
+                                            )
+                                            // Why an install failed, in its own words.
+                                            .when_some(
+                                                self.installing.get(&runtime.id).cloned().flatten(),
+                                                |name, reason| {
+                                                    name.child(
+                                                        ui::text(
+                                                            div().text_color(c.attention_text),
+                                                            &t.text.meta,
+                                                        )
+                                                        .child(reason),
+                                                    )
+                                                },
+                                            ),
                                     )
                                     .child(right),
                             );
