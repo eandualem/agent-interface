@@ -670,7 +670,7 @@ esac
         self.assertIn("Restart your shell to apply changes", first.stderr)
         log = Path(self.env["FIXTURE_LOG"])
         lines = log.read_text().splitlines()
-        self.assertIn("tool install --upgrade --prerelease disallow --python >=3.11,<3.14 agent-backbone>=0.5.0,<2", lines)
+        self.assertIn("tool install --upgrade --prerelease disallow --python >=3.11,<3.14 agent-backbone>=0.5.1,<2", lines)
         self.assertTrue(any(line.startswith("-I -B -c") for line in lines))
         self.env["FIXTURE_RESUME"] = "3"
         log.write_text("")
@@ -765,7 +765,7 @@ esac
         log = Path(self.env["FIXTURE_LOG"])
         log.write_text("")
         result = self.install(archive, success=False)
-        self.assertIn("requires Backbone 0.5.0 or newer", result.stderr)
+        self.assertIn("requires Backbone 0.5.1 or newer", result.stderr)
         self.assertNotIn("tool install", log.read_text())
         self.assertIn("0.1.1", subprocess.check_output([self.link, "--version"], text=True))
         self.env.update(FIXTURE_RESUME="0", FIXTURE_VERSION_FAIL="0")
