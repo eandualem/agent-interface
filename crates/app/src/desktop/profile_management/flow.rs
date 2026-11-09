@@ -431,7 +431,7 @@ impl Flow {
                 client,
                 library,
                 profile,
-                "Skip, open a terminal",
+                "Use a terminal for now",
                 signed_in,
                 window,
                 cx,

@@ -1,0 +1,279 @@
+//! What setup can fix for the person, each only on an explicit click: install
+//! Git or tmux with the system's own installer, install an agent tool with
+//! its official script, or restart Agent Backbone's service. Every fix runs
+//! off the UI thread with a deadline, and a failure explains itself.
+
+use std::{
+    os::unix::fs::FileExt,
+    path::{Path, PathBuf},
+    process::{Command, Stdio},
+    time::{Duration, Instant},
+};
+
+/// Long enough for a package manager or an installer script on a slow line.
+const LIMIT: Duration = Duration::from_secs(15 * 60);
+/// How much of a failed command's output is kept to explain it.
+const TAIL: usize = 16 * 1024;
+
+/// How a fix ended.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Outcome {
+    /// It finished; check the computer again.
+    Done,
+    /// The system's own installer opened and finishes there; keep checking.
+    Opened,
+    /// It could not be done, and why, in a sentence.
+    Failed(String),
+}
+
+/// Find a command in the PATH setup found, or in the usual system places.
+fn find(command: &str, path_env: &str) -> Option<PathBuf> {
+    std::env::split_paths(path_env)
+        .chain(
+            [
+                "/usr/bin",
+                "/bin",
+                "/usr/sbin",
+                "/opt/homebrew/bin",
+                "/usr/local/bin",
+            ]
+            .map(PathBuf::from),
+        )
+        .map(|directory| directory.join(command))
+        .find(|path| path.is_file())
+}
+
+/// Install Git or tmux, by the name both the command and its package share.
+pub fn package(name: &'static str, path_env: &str) -> Outcome {
+    if cfg!(target_os = "macos") {
+        if name == "git" {
+            // Apple's own installer for the command line tools, which include Git.
+            return match run(Command::new("/usr/bin/xcode-select").arg("--install"), path_env) {
+                Ok(()) => Outcome::Opened,
+                Err(_) => Outcome::Failed(
+                    "The command line tools installer could not open. Open Software Update, then try again.".into(),
+                ),
+            };
+        }
+        let Some(brew) = find("brew", path_env) else {
+            return Outcome::Failed(format!(
+                "{name} installs with Homebrew, which isn't on this Mac yet. Install Homebrew from brew.sh, then try again."
+            ));
+        };
+        return finished(run(Command::new(brew).args(["install", name]), path_env));
+    }
+    // Linux: the distribution's package manager, behind the desktop's own
+    // password prompt. Without that prompt there is no safe way to ask.
+    let managers: [(&str, &[&str]); 4] = [
+        ("apt-get", &["install", "-y"]),
+        ("dnf", &["install", "-y"]),
+        ("pacman", &["-S", "--noconfirm"]),
+        ("zypper", &["--non-interactive", "install"]),
+    ];
+    let Some((manager, arguments)) = managers
+        .iter()
+        .find_map(|(manager, arguments)| find(manager, path_env).map(|path| (path, *arguments)))
+    else {
+        return Outcome::Failed(format!(
+            "This system's package manager isn't one setup knows. Install {name} with it, and setup notices."
+        ));
+    };
+    let Some(prompt) = find("pkexec", path_env) else {
+        return Outcome::Failed(format!(
+            "Installing {name} needs an administrator password, and this desktop has no prompt for it. Install {name} from a terminal, and setup notices."
+        ));
+    };
+    let mut command = Command::new(prompt);
+    command.arg(manager).args(arguments).arg(name);
+    finished(run(&mut command, path_env))
+}
+
+/// Install an agent tool with its official command.
+pub fn tool(install: &str, path_env: &str) -> Outcome {
+    finished(run(Command::new("/bin/sh").args(["-c", install]), path_env))
+}
+
+/// Restart Agent Backbone's service the way the installer starts it.
+pub fn restart_backbone(path_env: &str) -> Outcome {
+    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+        return Outcome::Failed("The home folder is unknown.".into());
+    };
+    if cfg!(target_os = "macos") {
+        let plist = home.join("Library/LaunchAgents/dev.agent-backbone.plist");
+        if !plist.is_file() {
+            return Outcome::Failed(not_installed());
+        }
+        let domain = format!("gui/{}", uzers::get_current_uid());
+        // Stopping fails when it was not running; starting is what counts.
+        let _ = run(
+            Command::new("/bin/launchctl")
+                .args(["bootout", &domain])
+                .arg(&plist),
+            path_env,
+        );
+        return finished(run(
+            Command::new("/bin/launchctl")
+                .args(["bootstrap", &domain])
+                .arg(&plist),
+            path_env,
+        ));
+    }
+    if !home
+        .join(".config/systemd/user/agent-backbone.service")
+        .is_file()
+    {
+        return Outcome::Failed(not_installed());
+    }
+    let Some(systemctl) = find("systemctl", path_env) else {
+        return Outcome::Failed("This system has no service manager setup can use.".into());
+    };
+    finished(run(
+        Command::new(systemctl).args(["--user", "restart", "agent-backbone.service"]),
+        path_env,
+    ))
+}
+
+fn not_installed() -> String {
+    "Agent Backbone's service isn't installed. Run the Agent Interface installer again to add it."
+        .into()
+}
+
+fn finished(result: Result<(), String>) -> Outcome {
+    match result {
+        Ok(()) => Outcome::Done,
+        Err(reason) => Outcome::Failed(reason),
+    }
+}
+
+/// Run a command to completion with setup's PATH. Output goes to a file, as
+/// in the probe, so a background process cannot hold a pipe open.
+fn run(command: &mut Command, path_env: &str) -> Result<(), String> {
+    let file =
+        tempfile::tempfile().map_err(|_| "Setup could not create a temporary file.".to_owned())?;
+    let output = |file: &std::fs::File| -> Result<Stdio, String> {
+        file.try_clone()
+            .map(Stdio::from)
+            .map_err(|_| "Setup could not create a temporary file.".to_owned())
+    };
+    let mut child = command
+        .env("PATH", path_env)
+        .stdin(Stdio::null())
+        .stdout(output(&file)?)
+        .stderr(output(&file)?)
+        .spawn()
+        .map_err(|error| format!("It could not start: {error}."))?;
+    let deadline = Instant::now() + LIMIT;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(200)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+        }
+    };
+    match status {
+        Some(status) if status.success() => Ok(()),
+        Some(_) => Err(explain(&last_line(&file))),
+        None => Err("It took too long and was stopped. Try again.".into()),
+    }
+}
+
+/// The last meaningful line a failed command printed.
+fn last_line(file: &std::fs::File) -> String {
+    let length = file.metadata().map_or(0, |info| info.len());
+    let start = length.saturating_sub(TAIL as u64);
+    let mut bytes = vec![0; (length - start) as usize];
+    let read = file.read_at(&mut bytes, start).unwrap_or(0);
+    bytes.truncate(read);
+    let text = String::from_utf8_lossy(&bytes);
+    text.lines()
+        .map(str::trim)
+        .rfind(|line| !line.is_empty())
+        .map(|line| line.chars().take(200).collect())
+        .unwrap_or_default()
+}
+
+/// A failed command's explanation, in a sentence the window can show.
+fn explain(line: &str) -> String {
+    if line.is_empty() {
+        return "It stopped with an error. Try again.".into();
+    }
+    if line.contains("npm: not found") || line.contains("npm: command not found") {
+        return "It needs Node.js 20 or newer with npm. Install Node.js, then try again.".into();
+    }
+    format!("It stopped with an error: {line}")
+}
+
+/// Shorten a path under the home folder to `~`.
+pub fn home_relative(path: &Path) -> String {
+    std::env::var_os("HOME")
+        .and_then(|home| path.strip_prefix(home).ok())
+        .map(|rest| format!("~/{}", rest.display()))
+        .unwrap_or_else(|| path.display().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temporary_path() -> (tempfile::TempDir, String) {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().display().to_string();
+        (directory, format!("{path}:/usr/bin:/bin"))
+    }
+
+    #[test]
+    fn a_tool_installer_that_succeeds_is_done() {
+        let (_directory, path) = temporary_path();
+        assert_eq!(tool("printf installed", &path), Outcome::Done);
+    }
+
+    #[test]
+    fn a_failing_installer_explains_itself_with_its_last_line() {
+        let (_directory, path) = temporary_path();
+        let outcome = tool(
+            "printf 'downloading\\nno space left on device\\n' >&2; exit 3",
+            &path,
+        );
+        assert_eq!(
+            outcome,
+            Outcome::Failed("It stopped with an error: no space left on device".into())
+        );
+        let silent = tool("exit 1", &path);
+        assert_eq!(
+            silent,
+            Outcome::Failed("It stopped with an error. Try again.".into())
+        );
+    }
+
+    #[test]
+    fn a_missing_npm_says_what_to_install() {
+        let (_directory, path) = temporary_path();
+        let outcome = tool("echo 'sh: 1: npm: not found' >&2; exit 127", &path);
+        assert_eq!(
+            outcome,
+            Outcome::Failed(
+                "It needs Node.js 20 or newer with npm. Install Node.js, then try again.".into()
+            )
+        );
+    }
+
+    #[test]
+    fn installers_see_the_path_setup_found() {
+        let (directory, path) = temporary_path();
+        let marker = directory.path().join("seen");
+        let script = directory.path().join("fixture-tool");
+        std::fs::write(
+            &script,
+            format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(tool("fixture-tool", &path), Outcome::Done);
+        assert!(marker.is_file());
+    }
+}

@@ -205,7 +205,7 @@ jumps to that handoff, and a system that asks for reduced motion opens on the
 first step. The scene is a pure function of time, redrawn every frame, so tests
 check its beats and that its last frame is the app icon. Then come steps
 that check tmux, Agent Backbone, Git and the agent tools, create a first agent,
-and show the main shortcuts. tmux uses the terminal pane's `tmux_binary` resolver. Git, GitHub CLI,
+and show the main shortcuts. tmux uses the terminal pane's `tmux_binary` resolver. Git,
 Backbone and agent tools are looked up after the user's interactive login shell
 runs its startup files, because an app opened from the Dock has a short PATH.
 The probe itself runs in `/bin/sh` so non-POSIX login shells can supply PATH too.
@@ -217,6 +217,28 @@ The shell has an eight-second deadline; its output goes to a temporary file
 instead of a pipe, with positional reads limited to 256 KiB. The lookup falls
 back to PATH and the usual install folders. The
 Backbone check is a single read-only roster request. These checks install nothing.
+
+Every problem a step shows comes with the fix, run only when the person asks
+(`desktop/onboarding/install.rs`), never a command to copy. Git and tmux install
+through the system's own installer: Apple's command line tools or Homebrew on
+macOS, and on Linux the package manager behind `pkexec`'s graphical password
+prompt; without a package manager or that prompt, the row says so. Agent tools
+install with the official command each publishes. A Backbone that is installed
+but not answering restarts its service the way the installer starts it; one
+that is not set up points to the installer, which owns that setup. Fixes run
+off the UI thread with a fifteen-minute deadline, write their output to a
+temporary file, and explain a failure with its last line. Setup checks again
+when a fix ends, every few seconds while a system installer it opened is
+running, and whenever its window becomes active again. GitHub CLI is not
+checked: nothing in the app depends on it.
+
+Every step shares one frame: a rail of steps on a track, each finished step
+with a check ring and one line of what it found, "Step N of 4" above the page
+title, and a footer whose main button, while it waits, stays legible and
+inactive beside the reason. After Continue or Back the next page rises into
+place (`page_ms`); reduced motion swaps at once. The first-agent step asks for
+one decision, the tool, on cards that offer their own install or update; the
+agent's name, folder and instructions keep their defaults behind Edit.
 The welcome window offers the same persistent interface-size setting as the
 workspace, including during the opening scene, so display scaling can be adjusted
 before setup is complete. On Wayland, increasing this size asks the compositor
