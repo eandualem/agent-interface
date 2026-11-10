@@ -373,12 +373,9 @@ impl Onboarding {
             return;
         };
         let names = missing(probe);
-        if names.is_empty()
-            || matches!(
-                self.installing,
-                Some(Installing::Running | Installing::Opened)
-            )
-        {
+        // An installer that was opened and closed without installing can be
+        // opened again.
+        if names.is_empty() || self.installing == Some(Installing::Running) {
             return;
         }
         let path_env = probe.path_env.clone();
@@ -522,10 +519,7 @@ impl Onboarding {
                     "Agent Interface keeps your terminals running with tmux, and your agents use Git for their work."
                 }
             };
-            let busy = matches!(
-                self.installing,
-                Some(Installing::Running | Installing::Opened)
-            );
+            let busy = self.installing == Some(Installing::Running);
             let label = if busy {
                 format!("Installing {what}\u{2026}")
             } else if matches!(self.installing, Some(Installing::Failed(_))) {

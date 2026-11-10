@@ -324,6 +324,14 @@ fn new_profile(cx: &mut App) {
                         browser.use_profile_client(client);
                     }
                     window.activate_window();
+                    if !matches!(browser.profile_client, Some(Ok(_))) {
+                        browser.save_notice = Some(
+                            "New profile needs the agent service, which isn't answering. Try again in a moment."
+                                .into(),
+                        );
+                        cx.notify();
+                        return;
+                    }
                     browser.open_profile_flow(String::new(), window, cx);
                 });
             }

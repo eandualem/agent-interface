@@ -937,7 +937,7 @@ impl Render for Form {
                         let name = form.name.read(cx).focus.clone();
                         let brief = form.brief.read(cx).focus.clone();
                         window.focus(
-                            if name.is_focused(window) && form.custom_brief && form.more {
+                            if name.is_focused(window) && form.custom_brief {
                                 &brief
                             } else {
                                 &name

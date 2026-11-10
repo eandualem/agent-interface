@@ -832,9 +832,10 @@ impl Flow {
 
 /// This computer's own Git name and email, either empty when unset.
 fn computer_identity() -> (String, String) {
+    let path = onboarding::probe::login_path();
     let read = |key: &str| {
         std::process::Command::new("git")
-            .env("PATH", onboarding::probe::login_path())
+            .env("PATH", &path)
             .args(["config", "--global", "--get", key])
             .stdin(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
