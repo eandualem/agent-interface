@@ -1057,21 +1057,24 @@ mod tests {
         let config = home.path().join("gitconfig");
         let (name, email) = (r"Sam O'Brien \ ops!", "ops!dev@example.com");
         std::fs::write(&path, identity_script(name, email)).unwrap();
-        let status = std::process::Command::new("/bin/sh")
-            .arg(&path)
-            .env("HOME", home.path())
-            .env("GIT_CONFIG_GLOBAL", &config)
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .status()
-            .unwrap();
+        let isolated = |command: &mut std::process::Command| {
+            command
+                .env("HOME", home.path())
+                .env("XDG_CONFIG_HOME", home.path())
+                .env("GIT_CONFIG_GLOBAL", &config)
+                .env("GIT_CONFIG_NOSYSTEM", "1");
+        };
+        let mut script = std::process::Command::new("/bin/sh");
+        script.arg(&path);
+        isolated(&mut script);
+        let status = script.status().unwrap();
         assert!(status.success());
         assert!(!path.exists());
         let read = |key: &str| {
-            let output = std::process::Command::new("git")
-                .args(["config", "--global", key])
-                .env("GIT_CONFIG_GLOBAL", &config)
-                .output()
-                .unwrap();
+            let mut git = std::process::Command::new("git");
+            git.args(["config", "--global", key]);
+            isolated(&mut git);
+            let output = git.output().unwrap();
             String::from_utf8(output.stdout).unwrap()
         };
         assert_eq!(read("user.name"), format!("{name}\n"));

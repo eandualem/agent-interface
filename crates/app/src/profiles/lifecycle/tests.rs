@@ -185,12 +185,13 @@ fn leaving_a_running_start_lets_its_command_finish() {
     assert_eq!(operation.apply(&live), Err(Error::Cancelled));
     assert!(!capture.exists());
     let deadline = Instant::now() + Duration::from_secs(10);
-    while !capture.exists() {
-        assert!(Instant::now() < deadline, "the command did not finish");
+    while fs::read(&capture).ok().as_deref() != Some(operation.request_bytes()) {
+        assert!(
+            Instant::now() < deadline,
+            "the command did not read its request"
+        );
         std::thread::sleep(Duration::from_millis(20));
     }
-    std::thread::sleep(Duration::from_millis(100));
-    assert_eq!(fs::read(&capture).unwrap(), operation.request_bytes());
 }
 
 #[test]
