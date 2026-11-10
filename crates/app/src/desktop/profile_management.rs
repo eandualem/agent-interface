@@ -253,6 +253,13 @@ impl Management {
                 if pane.sign_ins.get(&runtime).copied() != attempt {
                     return;
                 }
+                // A read that failed says nothing yet: keep checking.
+                if read
+                    .iter()
+                    .any(|(_, status)| *status == Authentication::Unavailable)
+                {
+                    return;
+                }
                 pane.signed.extend(read);
                 pane.signing.remove(&runtime);
                 if pane.signing.is_empty() {

@@ -540,7 +540,6 @@ impl Form {
             return;
         }
         self.start = None;
-        self.changed = false;
         self.refreshed = false;
         self.load(true, cx);
     }
