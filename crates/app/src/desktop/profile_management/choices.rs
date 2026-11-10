@@ -532,6 +532,14 @@ impl Form {
         self.prepared = Some((prepared, controller));
         self.finish(Event::Submit, cx);
     }
+    /// Show earlier setups. The form stays live behind them, so Back returns
+    /// to it as it was.
+    fn recover(&mut self, cx: &mut Context<Self>) {
+        if !self.finished {
+            cx.emit(Event::Recover);
+        }
+    }
+
     fn finish(&mut self, event: Event, cx: &mut Context<Self>) {
         if self.finished {
             return;
@@ -725,7 +733,7 @@ impl Render for Form {
                     .child(note("An earlier setup could not be read. Open it to finish or forget it, then check again.".into()))
                     .child(
                         div().flex().gap(px(t.space.s8))
-                            .child(ui::button("recover-pending-setup", "Earlier setups", ui::Button::Secondary).on_click(cx.listener(|form, _, _, cx| form.finish(Event::Recover, cx))))
+                            .child(ui::button("recover-pending-setup", "Earlier setups", ui::Button::Secondary).on_click(cx.listener(|form, _, _, cx| form.recover(cx))))
                             .child(ui::button("recheck-setup", "Check again", ui::Button::Secondary).on_click(cx.listener(|form, _, _, cx| form.load(false, cx)))),
                     )
             }
@@ -738,7 +746,7 @@ impl Render for Form {
                         div().flex().items_center().gap(px(t.space.s8))
                             .child(ui::step_dot(ui::Step::Waits))
                             .child(div().flex_1().child(note(if *pending == 1 { "An earlier setup in this profile didn't finish.".into() } else { format!("{pending} earlier setups in this profile didn't finish.").into() })))
-                            .child(ui::button("recover-pending-setup", "Open", ui::Button::Secondary).on_click(cx.listener(|form, _, _, cx| form.finish(Event::Recover, cx)))),
+                            .child(ui::button("recover-pending-setup", "Open", ui::Button::Secondary).on_click(cx.listener(|form, _, _, cx| form.recover(cx)))),
                     );
                 }
                 let typed = self.name.read(cx).value().to_owned();
@@ -1116,9 +1124,8 @@ impl Form {
                         false,
                     ))
                     .child(
-                        ui::text_action("recover-pending-setup", "Earlier setups").on_click(
-                            cx.listener(|form, _, _, cx| form.finish(Event::Recover, cx)),
-                        ),
+                        ui::text_action("recover-pending-setup", "Earlier setups")
+                            .on_click(cx.listener(|form, _, _, cx| form.recover(cx))),
                     ),
             );
         }
@@ -1137,9 +1144,8 @@ impl Form {
                     .justify_end()
                     .gap(px(t.space.s12))
                     .child(
-                        ui::text_action("recover-pending-setup", "Earlier setups").on_click(
-                            cx.listener(|form, _, _, cx| form.finish(Event::Recover, cx)),
-                        ),
+                        ui::text_action("recover-pending-setup", "Earlier setups")
+                            .on_click(cx.listener(|form, _, _, cx| form.recover(cx))),
                     )
                     .child(
                         ui::text_action("recheck-setup", "Check again")
