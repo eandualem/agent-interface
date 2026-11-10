@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Click through first run in a private Linux desktop: a fresh install makes
-its first profile, hands it to the workspace window, and starts its guide.
+its first profile and starts its guide, all in the one workspace window.
 
 Uses the real native app and a stand-in Agent Backbone
 (scripts/tests/fixtures/fake_backbone.py). No agent executable, model, real
 provider, user home or shared tmux server is used. Run under xvfb-run +
-dbus-run-session, as a normal user. At 100 % the opening scene plays and hands
-over to the profile's steps; at 150 % it has already been seen.
+dbus-run-session, as a normal user. At 100 % the opening scene plays and
+settles into the first question; at 150 % it has already been seen.
 """
 import csv
 import io
@@ -179,41 +179,35 @@ with tempfile.TemporaryDirectory(prefix="onboarding-", dir="/tmp") as directory:
                                   env=env, stdout=wm_log, stderr=subprocess.STDOUT)
             wait_for(lambda: "_GTK_FRAME_EXTENTS" in command("xprop", "-root", "_NET_SUPPORTED"), "window manager")
             app = subprocess.Popen([str(BINARY)], env=env, stdout=app_log, stderr=subprocess.STDOUT)
-            setup = wait_for(lambda: next(iter(app_windows()), None), "setup window")
-            command("xdotool", "mousemove", "--window", setup, "5", "5")
+            main = wait_for(lambda: next(iter(app_windows()), None), "the app's window")
+            command("xdotool", "mousemove", "--window", main, "5", "5")
 
-            # This computer has everything, so no check is shown: the scene (or,
-            # once seen, setup itself) goes straight to the first profile.
-            wait_for(lambda: re.search(r"first\s+profile", text(setup)), "Your first profile", timeout=60)
-            value = capture(setup, "profile")
-            assert "Before you start" not in value, "a ready computer was shown the check"
+            # This computer has everything, so nothing is asked of it: the scene
+            # (or, once seen, first run itself) goes straight to the first profile.
+            wait_for(lambda: re.search(r"first\s+profile", text(main)), "Name your first profile", timeout=60)
+            value = capture(main, "profile")
+            assert "Agent Backbone" not in value, "the service was named on screen"
             assert "Personal" in value, "the suggested name"
             assert not library.exists(), "the library folder existed before the first profile"
 
-            click(setup, "Continue")
-            main = wait_for(lambda: next((w for w, name in app_windows().items()
-                                          if w != setup and name == "Agent Interface"), None),
-                            "workspace window")
-            wait_for(lambda: setup not in app_windows(), "setup closes after the hand-off")
-            command("xdotool", "windowactivate", "--sync", main)
-            command("xdotool", "mousemove", "--window", main, "5", "5")
-            wait_for(lambda: "Signed" in text(main), "Sign in step with its accounts", timeout=60)
+            click(main, "Continue")
+            wait_for(lambda: re.search(r"your\s+guide", text(main)), "Start your guide", timeout=60)
+            # Each tool's card says whether it is signed in; nothing else opens.
+            wait_for(lambda: "Signed" in text(main), "the tools' sign-ins", timeout=60)
+            assert list(app_windows()) == [main], "first run opened or closed a window"
             lifecycle = [entry["request"] for entry in log("lifecycle.jsonl")]
             assert [r["action"] for r in lifecycle] == ["create", "start"], lifecycle
             assert lifecycle[0]["display_name"] == "Personal"
             profile_id = lifecycle[1]["profile_id"]
             assert stat.S_IMODE(library.stat().st_mode) == 0o700, "the library folder is private"
-            capture(main, "sign-in")
-
-            click(main, "Continue")
-            wait_for(lambda: "guide" in text(main) and "Start" in text(main), "the guide", timeout=60)
-            value = capture(main, "first-agent")
-            # Each tool's card says whether the agent starts signed in.
-            assert "Your guide" in value and re.search(r"Asks\s+you\s+to\s+sign\s+in", value), value
+            value = capture(main, "guide")
+            assert re.search(r"Sign\s+in\s+when\s+it\s+starts", value), value
 
             click(main, "Start", last=True)
-            wait_for(lambda: "all set" in text(main), "the guide running", timeout=60)
-            capture(main, "ready")
+            # The layer fades as the guide's pane opens.
+            wait_for(lambda: not re.search(r"your\s+guide", text(main)), "the guide's pane", timeout=60)
+            capture(main, "working")
+            assert list(app_windows()) == [main], "first run opened or closed a window"
 
             setups = [entry["request"] for entry in log("setup.jsonl")]
             assert len(setups) == 1, setups
@@ -237,9 +231,9 @@ with tempfile.TemporaryDirectory(prefix="onboarding-", dir="/tmp") as directory:
 
             (OUTPUT / "requests.json").write_text(json.dumps(dict(lifecycle=lifecycle, setup=setups), indent=2) + "\n")
             (OUTPUT / "result.json").write_text(json.dumps(dict(scale=SCALE, passed=True, checks=[
-                "no check on a ready computer", "first profile on a fresh install",
-                "private library folder", "hand-off to the workspace window",
-                "accounts on Sign in", "guide preselected on a signed-in tool",
+                "nothing asked of a ready computer", "first profile on a fresh install",
+                "private library folder", "one window throughout",
+                "sign-ins on the tool cards", "guide preselected on a signed-in tool",
                 "guide's setup request", "setup remembered as done",
                 "one workspace bound to the profile"]), indent=2) + "\n")
             print(f"Linux onboarding regression passed at {SCALE}%")
