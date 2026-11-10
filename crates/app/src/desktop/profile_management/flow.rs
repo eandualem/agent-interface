@@ -1053,11 +1053,14 @@ mod tests {
     fn the_identity_script_keeps_every_character_and_removes_itself() {
         let home = tempfile::tempdir().unwrap();
         let path = home.path().join("identity");
+        // Never the developer's own global configuration.
+        let config = home.path().join("gitconfig");
         let (name, email) = (r"Sam O'Brien \ ops!", "ops!dev@example.com");
         std::fs::write(&path, identity_script(name, email)).unwrap();
         let status = std::process::Command::new("/bin/sh")
             .arg(&path)
             .env("HOME", home.path())
+            .env("GIT_CONFIG_GLOBAL", &config)
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .status()
             .unwrap();
@@ -1066,7 +1069,7 @@ mod tests {
         let read = |key: &str| {
             let output = std::process::Command::new("git")
                 .args(["config", "--global", key])
-                .env("HOME", home.path())
+                .env("GIT_CONFIG_GLOBAL", &config)
                 .output()
                 .unwrap();
             String::from_utf8(output.stdout).unwrap()
