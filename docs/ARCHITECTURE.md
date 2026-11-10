@@ -81,6 +81,9 @@ output. Capture and restore segments share immutable hyperlink strings, avoiding
 per-segment copies of long targets. Initial snapshots are released after restoration. The reader queues
 output only for panes in its selected window. Recovery uses the state tmux
 can report; it cannot reconstruct every historical parser or input mode.
+tmux does not report a partly received UTF-8 character as pending, so when the
+first output after a snapshot starts inside a character, the pane is rebuilt
+again instead of drawing the rest as replacement characters.
 
 tmux writes a capture's text into the control connection unchanged, so a
 captured line could match the line that ends tmux's reply and make the reader
