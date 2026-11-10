@@ -1847,9 +1847,9 @@ pub fn plan_card(id: impl Into<SharedString>, selected: bool) -> Stateful<Div> {
 }
 
 /// An agent tool to pick, on a card: a radio mark, or a turning arc while it
-/// installs; its name; and its state in a line under it, in `attention` when
-/// it needs the person. Selected, it takes the accent tint and ring. The
-/// caller adds its click and any action, such as Install.
+/// installs; its name; its state in a line under it, in `attention` when it
+/// needs the person; and a trailing `action`, such as Install or Update.
+/// Selected, it takes the accent tint and ring. The caller adds its click.
 pub fn tool_card(
     id: impl Into<SharedString>,
     name: impl Into<SharedString>,
@@ -1857,10 +1857,12 @@ pub fn tool_card(
     attention: bool,
     selected: bool,
     busy: bool,
+    action: Option<&'static str>,
 ) -> Stateful<Div> {
     let (t, c) = (tokens(), colors());
+    let id = id.into();
     div()
-        .id(id.into())
+        .id(id.clone())
         .relative()
         .min_w_0()
         .flex()
@@ -1883,7 +1885,7 @@ pub fn tool_card(
                 .hover(|card| card.bg(colors().hover))
         })
         .child(if busy {
-            step_dot(Step::Now).into_any_element()
+            spinner(format!("{id}-arc"), c.accent).into_any_element()
         } else {
             icon(
                 if selected { "circle-check" } else { "circle" },
@@ -1911,12 +1913,34 @@ pub fn tool_card(
                 )
                 .child(
                     text(
-                        div().text_color(if attention { c.attention_text } else { c.muted }),
+                        div()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .text_color(if attention { c.attention_text } else { c.muted }),
                         &t.text.meta,
                     )
                     .child(state.into()),
                 ),
         )
+        .when_some(action, |card, label| {
+            card.child(
+                text(
+                    div()
+                        .flex_shrink_0()
+                        .flex()
+                        .items_center()
+                        .h(px(t.size.action))
+                        .px(px(t.space.s8))
+                        .rounded(px(t.radius.icon_button))
+                        .border(px(t.size.hairline))
+                        .border_color(c.line_strong)
+                        .text_color(c.text),
+                    &t.text.meta,
+                )
+                .child(label),
+            )
+        })
 }
 
 /// The ring around a selected row, card or node, drawn as an outline over
@@ -2609,6 +2633,139 @@ pub fn send_button(id: impl Into<SharedString>, enabled: bool) -> Stateful<Div> 
 /// A small spinner beside a message that is still sending.
 pub fn sending_spinner() -> impl IntoElement {
     spinner("sending-arc", colors().accent)
+}
+
+/// Where a first-run screen's column starts in a window `height` tall: centred
+/// on the tallest screen, but never under the title bar.
+pub fn setup_top(height: f32) -> f32 {
+    let t = tokens();
+    ((height - t.size.setup_stage) / 2.0).max(t.size.titlebar + t.space.s12)
+}
+
+/// A first-run screen: the app's mark, a title and a line, centred in one
+/// column that starts `top` from the stage's top, and the screen's body under
+/// them. Every first-run and New profile screen is this shape, so the mark,
+/// title and line never move between screens.
+pub fn setup_stage(
+    id: impl Into<SharedString>,
+    top: f32,
+    mark: impl IntoElement,
+    title: impl IntoElement,
+    line: impl IntoElement,
+    body: impl IntoElement,
+) -> Stateful<Div> {
+    let t = tokens();
+    div()
+        .id(id.into())
+        .size_full()
+        .overflow_y_scroll()
+        .flex()
+        .flex_col()
+        .items_center()
+        .child(
+            div()
+                .flex_shrink_0()
+                .w(px(t.size.setup_column))
+                .mt(px(top))
+                .pb(px(t.size.titlebar))
+                .flex()
+                .flex_col()
+                .items_center()
+                .child(mark)
+                .child(div().w_full().mt(px(t.space.s16)).child(title))
+                .child(div().w_full().mt(px(t.space.s6)).child(line))
+                .child(div().w_full().mt(px(t.space.s24)).child(body)),
+        )
+}
+
+/// A first-run screen's title, centred.
+pub fn setup_title(title: impl Into<SharedString>) -> Div {
+    let (t, c) = (tokens(), colors());
+    text(
+        div().w_full().text_center().text_color(c.text),
+        &t.text.scene_title,
+    )
+    .child(title.into())
+}
+
+/// A first-run screen's line under its title: centred, two lines at most.
+pub fn setup_line(line: impl Into<SharedString>) -> Div {
+    let (t, c) = (tokens(), colors());
+    text(
+        div().w_full().text_center().text_color(c.muted),
+        &t.text.scene_line,
+    )
+    .child(line.into())
+}
+
+/// A first-run screen's main button: the column's width, `setup_control`
+/// tall. Off, it stays legible but does nothing; busy, it turns an arc.
+pub fn setup_button(
+    id: impl Into<SharedString>,
+    label: impl Into<SharedString>,
+    enabled: bool,
+    busy: bool,
+) -> Stateful<Div> {
+    let (t, c) = (tokens(), colors());
+    let id = id.into();
+    let frame = if busy {
+        busy_button(id, label)
+    } else if enabled {
+        button(id, label, Button::Primary)
+    } else {
+        button(id, label, Button::Secondary)
+            .bg(c.field)
+            .text_color(c.muted)
+            .cursor_default()
+    };
+    frame
+        .w_full()
+        .h(px(t.size.setup_control))
+        .justify_center()
+        .font_weight(t.text.row_selected.weight())
+}
+
+/// A text field's frame on a first-run screen: `setup_control` tall, in the
+/// field colour, its border the accent while it has focus.
+pub fn setup_field(focused: bool) -> Div {
+    let (t, c) = (tokens(), colors());
+    text(
+        div()
+            .w_full()
+            .min_w_0()
+            .flex()
+            .items_center()
+            .gap(px(t.space.s8))
+            .h(px(t.size.setup_control))
+            .px(px(t.space.s10))
+            .rounded(px(t.radius.row))
+            .bg(c.field)
+            .border(px(t.size.hairline))
+            .border_color(if focused { c.accent } else { c.line_strong }),
+        &t.text.row,
+    )
+}
+
+/// A quiet action: a few muted words that take the text colour and a hover
+/// fill under the pointer, such as Change, More options or Skip.
+pub fn text_action(id: impl Into<SharedString>, label: impl Into<SharedString>) -> Stateful<Div> {
+    let (t, c) = (tokens(), colors());
+    text(
+        div()
+            .id(id.into())
+            .flex_shrink_0()
+            .flex()
+            .items_center()
+            .gap(px(t.space.s4))
+            .h(px(t.size.revision_step))
+            .px(px(t.space.s6))
+            .rounded(px(t.radius.icon_button))
+            .cursor_pointer()
+            .text_color(c.muted)
+            .hover(|el| el.bg(colors().hover).text_color(colors().text)),
+        &t.text.meta,
+    )
+    .child(label.into())
 }
 
 /// A primary button that is working: the label stays at full contrast, a

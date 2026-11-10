@@ -1,6 +1,7 @@
 //! The opening scene. The app's face laughs, looks right, looks left and then
-//! winks into the icon, exactly as the website's hero does; its open amber eye
-//! then flies to the person's first profile and becomes its mark.
+//! winks into the icon, exactly as the website's hero does; it then settles,
+//! smaller, at the top of the first-run column, where it stays while the words
+//! under it change.
 //!
 //! Every part is a pure function of time ([`Face::at`], [`Scene::at`]), so the
 //! window redraws it each frame and tests can check any moment.
@@ -16,19 +17,13 @@ use gpui::{
     linear_color_stop, linear_gradient, point, prelude::*, px, size,
 };
 
-use crate::desktop::{
-    components as ui,
-    design::{TextStyle, colors, tokens},
-};
-
-/// Where an element was laid out in the last frame, for the eye's flight.
-pub(in crate::desktop) type Place = Rc<Cell<Option<Bounds<Pixels>>>>;
+use crate::desktop::design::{colors, tokens};
 
 /// The scene's clock. It starts on the second frame the scene paints, once
 /// the window is on screen, so a slow first frame (GPUI compiles its shaders
 /// as the window opens) never eats into the face's laugh.
 #[derive(Clone, Default)]
-pub(super) struct Clock(Rc<Cell<(bool, Option<Instant>)>>);
+pub(in crate::desktop) struct Clock(Rc<Cell<(bool, Option<Instant>)>>);
 
 impl Clock {
     /// How far the scene has run.
@@ -178,7 +173,7 @@ fn track<const N: usize>(
 
 /// The face at one moment, in the icon's 1024-unit space.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(super) struct Face {
+pub(in crate::desktop) struct Face {
     /// The left eye's top, middle and bottom points.
     left: [(f32, f32); 3],
     left_width: f32,
@@ -225,37 +220,37 @@ impl Face {
 const RISE_MS: f32 = 600.0;
 /// The line under the name follows it by this much.
 const LINE_AFTER_MS: f32 = 200.0;
-/// How long Skip and the interface size take to appear.
+/// How long Skip takes to appear.
 const CONTROLS_MS: f32 = 400.0;
-/// How long the face and words take to leave once setup takes over.
-const LEAVE_MS: f32 = 400.0;
-/// Setup appears this long after the handoff, so the words have mostly gone.
-const SETUP_AFTER_MS: f32 = 250.0;
-const SETUP_MS: f32 = 500.0;
-/// The first step's numeral appears once the eye has landed.
-const NUMERAL_MS: f32 = 200.0;
-/// How far the tile and the words travel as they rise and as they leave.
+/// How long the name and tagline take to fade once the face settles.
+const OUT_MS: f32 = 250.0;
+/// The first screen's title and line fade in this long after the handoff.
+const INTO_AFTER_MS: f32 = 200.0;
+const INTO_MS: f32 = 300.0;
+/// Its body follows, rising a little as it appears.
+const FORM_AFTER_MS: f32 = 350.0;
+const FORM_MS: f32 = 350.0;
+/// How far the tile and the words travel as they rise.
 const RISE_PX: f32 = 8.0;
-const WORDS_PX: f32 = 6.0;
+pub(in crate::desktop) const WORDS_PX: f32 = 6.0;
 
 /// What the scene shows at one moment; each part runs from 0 to 1.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(super) struct Scene {
+pub(in crate::desktop) struct Scene {
     /// The tile rising into place.
     pub tile: f32,
-    /// The face and the words leaving for setup.
-    pub leave: f32,
     pub face: Face,
+    /// The app's name and tagline rising in, then fading as the face settles.
     pub name: f32,
     pub line: f32,
-    /// Skip and the interface size.
+    /// Skip.
     pub controls: f32,
-    /// The open eye on its way from the face to the first step.
-    pub flight: f32,
-    /// Setup's rail, page and footer.
-    pub setup: f32,
-    /// The "1" inside the first step's marker.
-    pub numeral: f32,
+    /// The face shrinking and rising into the column.
+    pub settle: f32,
+    /// The first screen's title and line.
+    pub into: f32,
+    /// The first screen's body.
+    pub form: f32,
 }
 
 impl Scene {
@@ -265,33 +260,39 @@ impl Scene {
         let rise = |from: f32, length: f32| ((ms - from) / length).clamp(0.0, 1.0);
         let out = gpui::ease_out_quint();
         let handoff = m.scene_handoff_ms;
+        let leave = 1.0 - rise(handoff, OUT_MS);
         Self {
             tile: out(rise(0.0, RISE_MS)),
-            leave: gpui::ease_in_out(rise(handoff, LEAVE_MS)),
             // Skipping lands on the handoff, where the face is already the icon.
             face: if ms >= handoff {
                 Face::icon()
             } else {
                 Face::at(ms - m.scene_face_ms)
             },
-            name: out(rise(m.scene_words_ms, RISE_MS)),
-            line: out(rise(m.scene_words_ms + LINE_AFTER_MS, RISE_MS)),
-            controls: out(rise(m.scene_face_ms, CONTROLS_MS)),
-            flight: gpui::ease_in_out(rise(handoff, m.scene_flight_ms)),
-            setup: out(rise(handoff + SETUP_AFTER_MS, SETUP_MS)),
-            numeral: rise(handoff + m.scene_flight_ms, NUMERAL_MS),
+            name: out(rise(m.scene_words_ms, RISE_MS)) * leave,
+            line: out(rise(m.scene_words_ms + LINE_AFTER_MS, RISE_MS)) * leave,
+            controls: out(rise(m.scene_face_ms, CONTROLS_MS)) * leave,
+            settle: gpui::ease_in_out(rise(handoff, m.scene_settle_ms)),
+            into: out(rise(handoff + INTO_AFTER_MS, INTO_MS)),
+            form: out(rise(handoff + FORM_AFTER_MS, FORM_MS)),
         }
     }
 
-    /// Whether the open eye has landed and the first step's marker shows.
-    pub fn landed(&self) -> bool {
-        self.flight >= 1.0
+    /// The tile's size and its rise as it comes in.
+    pub fn mark_size(&self) -> f32 {
+        let t = tokens();
+        lerp(t.size.scene_mark, t.size.setup_mark, self.settle)
     }
 
-    /// The offset of setup's page as it settles.
-    pub fn page_offset(&self) -> f32 {
-        WORDS_PX * (1.0 - self.setup)
+    /// Where the column's top sits: from the scene's centred face to the
+    /// first screen's column top, with the tile's small rise as it comes in.
+    pub fn top(&self, scene_top: f32, setup_top: f32) -> f32 {
+        lerp(scene_top, setup_top, self.settle) + RISE_PX * (1.0 - self.tile)
     }
+}
+
+fn lerp(from: f32, to: f32, t: f32) -> f32 {
+    from + (to - from) * t
 }
 
 /// Where the scene is after a skip: the handoff, unless it is already past it.
@@ -346,8 +347,8 @@ fn segment(window: &mut Window, from: Point<Pixels>, to: Point<Pixels>, width: f
     }
 }
 
-/// Paint the face into its tile. The open eye is left out while it flies.
-fn paint_face(tile: Bounds<Pixels>, face: &Face, with_eye: bool, window: &mut Window) {
+/// Paint the face into its tile.
+fn paint_face(tile: Bounds<Pixels>, face: &Face, window: &mut Window) {
     let c = colors();
     let scale = f32::from(tile.size.width) / ICON_SPAN;
     let at = |(x, y): (f32, f32), look: f32| {
@@ -367,12 +368,10 @@ fn paint_face(tile: Bounds<Pixels>, face: &Face, with_eye: bool, window: &mut Wi
     for center in [top, middle, bottom] {
         dot(window, center, width, color);
     }
-    if with_eye {
-        let eye = eye_bounds(tile, face);
-        let radius = px(EYE[4] * scale);
-        window.paint_drop_shadows(eye, Corners::all(radius), &[glow(scale, 1.0)]);
-        window.paint_quad(fill(eye, c.mark_eye).corner_radii(radius));
-    }
+    let eye = eye_bounds(tile, face);
+    let radius = px(EYE[4] * scale);
+    window.paint_drop_shadows(eye, Corners::all(radius), &[glow(scale)]);
+    window.paint_quad(fill(eye, c.mark_eye).corner_radii(radius));
     // The mouth, a quadratic curve with round ends.
     let width = STROKE * scale;
     let [start, control, end] = face.mouth.map(|p| at(p, 0.0));
@@ -386,12 +385,10 @@ fn paint_face(tile: Bounds<Pixels>, face: &Face, with_eye: bool, window: &mut Wi
     dot(window, end, width, c.mark_glyph);
 }
 
-/// The cursor eye's glow, as the icon draws it, faded by `strength`.
-fn glow(scale: f32, strength: f32) -> BoxShadow {
-    let mut color = colors().mark_glow;
-    color.a *= strength;
+/// The cursor eye's glow, as the icon draws it.
+fn glow(scale: f32) -> BoxShadow {
     BoxShadow {
-        color: color.into(),
+        color: colors().mark_glow.into(),
         offset: point(px(0.0), px(0.0)),
         blur_radius: px(36.0 * scale),
         spread_radius: px(0.0),
@@ -399,85 +396,17 @@ fn glow(scale: f32, strength: f32) -> BoxShadow {
     }
 }
 
-/// The open eye between its place in the face and the profile's mark: it
-/// takes the mark's shape and the theme's accent, and loses its glow.
-/// The open eye on its way to the profile's mark. It takes on the colour of
-/// the mark's tile as it lands, then fades (`shown` falls to 0) while the
-/// mark's letter appears, so it settles into the mark rather than swapping.
-fn paint_flight(
-    from: Bounds<Pixels>,
-    to: Bounds<Pixels>,
-    progress: f32,
-    shown: f32,
-    window: &mut Window,
-) {
-    let c = colors();
-    let lerp = |a: Pixels, b: Pixels, t: f32| px(f32::from(a) + (f32::from(b) - f32::from(a)) * t);
-    // Dropping a little ahead of crossing makes the path a gentle arc.
-    let down = (progress * 1.12).min(1.0);
-    let bounds = Bounds::new(
-        point(
-            lerp(from.origin.x, to.origin.x, progress),
-            lerp(from.origin.y, to.origin.y, down),
-        ),
-        size(
-            lerp(from.size.width, to.size.width, progress),
-            lerp(from.size.height, to.size.height, progress),
-        ),
-    );
-    let scale = f32::from(from.size.width) / EYE[2];
-    let radius = lerp(
-        px(EYE[4] * scale),
-        px(f32::from(to.size.width) * ui::PROFILE_MARK_ROUND),
-        progress,
-    );
-    window.paint_drop_shadows(bounds, Corners::all(radius), &[glow(scale, 1.0 - progress)]);
-    let color = mix(c.mark_eye, c.selected, progress * progress);
-    window.paint_quad(
-        fill(
-            bounds,
-            Rgba {
-                a: color.a * shown,
-                ..color
-            },
-        )
-        .corner_radii(radius)
-        .border_widths(px(tokens().size.hairline) * progress)
-        .border_color(Rgba {
-            a: c.line_strong.a * shown * progress,
-            ..c.line_strong
-        }),
-    );
-}
-
-/// The face, its name and line, and the flying eye, laid over setup. The
-/// caller adds the click that skips. Painting it runs `clock`; `tile` records
-/// where the face was laid out; `marker`, when the page has one, is where the
-/// eye lands. Without it the eye stays in the face as the face leaves.
-pub(super) fn overlay(
-    scene: &Scene,
-    clock: Clock,
-    tile: Place,
-    marker: Option<Place>,
-    tagline: &'static str,
-) -> Div {
+/// The app's face on its tile, `size` across, as the scene shows it: at rest
+/// it is the app icon. `shown` fades it in as the tile rises.
+pub(in crate::desktop) fn mark(size: f32, face: Face, shown: f32) -> Div {
     let (t, c) = (tokens(), colors());
-    let mark = t.size.scene_mark;
-    // The tile grows from 94 % as it rises, around its centre.
-    let grown = mark * (0.94 + 0.06 * scene.tile);
-    let inset = (mark - grown) / 2.0;
-    let drift = -RISE_PX * scene.leave;
-    let face = scene.face;
-    let lands = marker.as_ref().is_some_and(|marker| marker.get().is_some());
-    let flight = if lands { scene.flight } else { 0.0 };
-    let settled = if lands { scene.numeral } else { 1.0 };
-    let laid_out = tile.clone();
-    let tile_element = div()
-        .absolute()
-        .left(px(inset))
-        .top(px(inset + RISE_PX * (1.0 - scene.tile) + drift))
-        .size(px(grown))
-        .rounded(px(grown * 186.0 / ICON_SPAN))
+    // The shadow keeps the scene's proportions as the tile shrinks.
+    let depth =
+        ((size - t.size.setup_mark) / (t.size.scene_mark - t.size.setup_mark)).clamp(0.0, 1.0);
+    div()
+        .flex_shrink_0()
+        .size(px(size))
+        .rounded(px(size * 186.0 / ICON_SPAN))
         .bg(linear_gradient(
             180.0,
             linear_color_stop(c.mark_from, 0.0),
@@ -487,81 +416,37 @@ pub(super) fn overlay(
         .border_color(c.mark_edge)
         .shadow(vec![BoxShadow {
             color: c.shadow.into(),
-            offset: point(px(0.0), px(t.space.s16)),
-            blur_radius: px(t.space.s16 * 2.0 + t.space.s6),
+            offset: point(px(0.0), px(lerp(t.space.s10, t.space.s16, depth))),
+            blur_radius: px(lerp(
+                t.space.s24 + t.space.s2,
+                t.space.s16 * 2.0 + t.space.s6,
+                depth,
+            )),
             spread_radius: px(0.0),
             inset: false,
         }])
-        .opacity(scene.tile * (1.0 - scene.leave))
-        .child(
-            canvas(
-                move |bounds, _, _| laid_out.set(Some(bounds)),
-                move |bounds, (), window, _| paint_face(bounds, &face, flight <= 0.0, window),
-            )
-            .size_full(),
-        );
-    let words = |text: &'static str, style: &TextStyle, color: Rgba, shown: f32| {
-        ui::text(div().relative(), style)
-            .top(px(WORDS_PX * (1.0 - shown) + drift))
-            .opacity(shown * (1.0 - scene.leave))
-            .text_color(color)
-            .whitespace_nowrap()
-            .child(text)
-    };
-    div()
-        .absolute()
-        .inset_0()
-        .flex()
-        .flex_col()
-        .items_center()
-        .justify_center()
-        .occlude()
-        .child(
-            div()
-                .relative()
-                .flex_shrink_0()
-                .size(px(mark))
-                .child(tile_element),
-        )
-        .child(div().h(px(t.space.s24)))
-        .child(words(
-            "Agent Interface",
-            &t.text.scene_title,
-            c.text,
-            scene.name,
-        ))
-        .child(words(tagline, &t.text.scene_line, c.muted, scene.line))
+        .opacity(shown)
         .child(
             canvas(
                 |_, _, _| (),
-                move |_, (), window, _| {
-                    // Keep the scene moving until it hands over to setup.
-                    clock.tick();
-                    window.request_animation_frame();
-                    if flight <= 0.0 || settled >= 1.0 {
-                        return;
-                    }
-                    if let (Some(tile), Some(target)) =
-                        (tile.get(), marker.as_ref().and_then(|marker| marker.get()))
-                    {
-                        let from = eye_bounds(tile, &face);
-                        paint_flight(from, target, flight, 1.0 - settled, window);
-                    }
-                },
+                move |bounds, (), window, _| paint_face(bounds, &face, window),
             )
-            .absolute()
-            .inset_0(),
+            .size_full(),
         )
 }
 
-/// Records where the first step's marker is laid out, for the eye to land on.
-pub(in crate::desktop) fn marker_place(marker: Place) -> impl IntoElement {
+/// Keeps the scene moving: each frame it paints, it counts the frame on
+/// `clock` and asks for the next.
+pub(in crate::desktop) fn ticker(clock: Clock) -> impl IntoElement {
     canvas(
-        move |bounds, _, _| marker.set(Some(bounds)),
-        |_, (), _, _| (),
+        |_, _, _| (),
+        move |_, (), window, _| {
+            clock.tick();
+            window.request_animation_frame();
+        },
     )
     .absolute()
-    .inset_0()
+    .size_0()
 }
 
 #[cfg(test)]
@@ -659,19 +544,31 @@ mod tests {
     }
 
     #[test]
-    fn the_scene_hands_over_to_setup_through_the_first_step() {
-        let m = &tokens().motion;
+    fn the_face_settles_into_the_column_as_the_first_screen_appears() {
+        let (m, size) = (&tokens().motion, &tokens().size);
         let start = Scene::at(0.0);
-        assert_eq!((start.tile, start.setup, start.flight), (0.0, 0.0, 0.0));
+        assert_eq!(
+            (start.tile, start.settle, start.into, start.form),
+            (0.0, 0.0, 0.0, 0.0)
+        );
+        assert_eq!(start.mark_size(), size.scene_mark);
         let looking = Scene::at(m.scene_words_ms + RISE_MS + LINE_AFTER_MS);
-        assert_eq!((looking.name, looking.line, looking.leave), (1.0, 1.0, 0.0));
+        assert_eq!(
+            (looking.name, looking.line, looking.settle),
+            (1.0, 1.0, 0.0)
+        );
         let winked = Scene::at(m.scene_handoff_ms - 1.0);
         assert_eq!(winked.face, Face::icon());
-        assert_eq!(winked.setup, 0.0);
+        assert_eq!((winked.settle, winked.into), (0.0, 0.0));
+        // Settled: the face is the small mark at the column's top, the name
+        // and tagline have gone, and the first screen is fully shown.
         let end = Scene::at(m.scene_ms);
-        assert!(end.landed());
-        assert_eq!((end.leave, end.setup, end.numeral), (1.0, 1.0, 1.0));
-        assert!(m.scene_handoff_ms + m.scene_flight_ms + NUMERAL_MS <= m.scene_ms);
+        assert_eq!((end.settle, end.into, end.form), (1.0, 1.0, 1.0));
+        assert_eq!((end.name, end.line, end.controls), (0.0, 0.0, 0.0));
+        assert_eq!(end.mark_size(), size.setup_mark);
+        assert_eq!(end.top(231.0, 130.0), 130.0);
+        assert!(m.scene_handoff_ms + m.scene_settle_ms <= m.scene_ms);
+        assert!(m.scene_handoff_ms + FORM_AFTER_MS + FORM_MS <= m.scene_ms);
     }
 
     #[test]

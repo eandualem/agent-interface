@@ -1,11 +1,13 @@
-//! New profile, in three steps beside its workspace: name, sign in, first agent.
-//! Each step runs the same lifecycle, selection and setup requests as before.
+//! A new profile in two screens, each the one first-run shape: its name,
+//! with the Git name and email its agents commit as, then its guide. First
+//! run makes the person's first profile with it; New profile shows the same
+//! screens later, inside the content area, with a way to cancel.
 use super::{Open, Ticket, choices, setup, ui};
 use crate::{
     desktop::{
         design::{colors, tokens},
         name::NameField,
-        onboarding::{install, probe, scene},
+        onboarding::{self, scene},
     },
     profiles::{
         Client,
@@ -17,14 +19,12 @@ use crate::{
 use agent_interface_roster::profiles::{
     Connection, Profile,
     operations::{Prepared, Status},
-    runtime_catalog::{Authentication, Catalog},
 };
 use gpui::{
-    Context, Entity, EventEmitter, FocusHandle, SharedString, Subscription, Window, div,
-    prelude::*, px,
+    AnyElement, Context, Entity, EventEmitter, FocusHandle, SharedString, Subscription, Window,
+    div, prelude::*, px,
 };
 use std::{
-    collections::{BTreeMap, BTreeSet},
     path::PathBuf,
     sync::atomic::{AtomicBool, Ordering},
     time::Duration,
@@ -34,25 +34,24 @@ use std::{
 const BASELINE: &str = "core-v1";
 /// The name a first profile starts with; the person can change it.
 const FIRST_NAME: &str = "Personal";
-/// How often an open sign-in is checked. The provider's check is local and quick.
-pub(super) const SIGN_IN_CHECK: Duration = Duration::from_secs(2);
+const GIT_MISSING: &str =
+    "This computer's Git name and email aren't both set. Fill them in, or leave both empty.";
 
 pub(in crate::desktop) enum Event {
     /// The new profile is ready: bind the workspace to it.
     Bind(Box<Selected>),
-    /// A sign-in or agent session to show in that workspace.
+    /// The guide is up: open its pane in that workspace.
     Open(Open),
-    /// No agent for now: leave the workspace on a terminal.
+    /// No guide for now: leave the workspace on a terminal.
     Terminal,
-    /// Finish later; whatever was made stays.
+    /// Cancelled, or finished; whatever was made stays.
     Close,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Step {
+enum Screen {
     Name,
-    SignIn,
-    Agent,
+    Guide,
 }
 
 /// Why the name step stopped, and how to go on from there.
@@ -70,6 +69,37 @@ struct Made {
     profile: Profile,
 }
 
+/// The Git name and email a new profile's agents commit as. A profile starts
+/// with none, so this computer's own are offered, and can be changed.
+struct Git {
+    /// This computer's own name and email, once read; either may be empty.
+    computer: Option<(String, String)>,
+    /// The two fields are open.
+    open: bool,
+    name: Entity<NameField>,
+    email: Entity<NameField>,
+}
+
+/// What the new profile's agents commit as.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Identity {
+    /// This computer's own, which the provider copies in.
+    Computer,
+    /// None yet; the profile can set them later.
+    None,
+    /// Typed here, set inside the profile once it is running.
+    Typed(String, String),
+}
+
+/// A first-run screen's parts, for the stage that draws them.
+pub(in crate::desktop) struct Parts {
+    /// Changes with the screen, so the words can cross-fade.
+    pub key: &'static str,
+    pub title: SharedString,
+    pub line: SharedString,
+    pub body: AnyElement,
+}
+
 pub(in crate::desktop) struct Flow {
     client: Client,
     directory: Option<PathBuf>,
@@ -78,42 +108,28 @@ pub(in crate::desktop) struct Flow {
     /// The workspace it was opened from, where it shows until its profile exists.
     pub home: Option<String>,
     name: Entity<NameField>,
-    _name: Subscription,
-    step: Step,
-    busy: Option<&'static str>,
+    _fields: Vec<Subscription>,
+    screen: Screen,
+    busy: bool,
     stalled: Option<Stalled>,
     error: Option<&'static str>,
     library: Option<PathBuf>,
     profile: Option<Profile>,
-    /// Copy the person's Git name and email into the new profile. Off is a clean start.
-    copy_git: bool,
-    selection: Selection,
-    catalog: Option<Catalog>,
+    git: Git,
     /// The verified connection, once the profile is bound.
     connection: Option<Connection>,
-    /// What each CLI last reported about its sign-in.
-    accounts: BTreeMap<String, Authentication>,
-    /// Sign-ins opened beside the steps and not yet reported as finished.
-    signing: BTreeSet<String>,
-    /// Sign-ins whose session ended since the last read began. One more read
-    /// decides them: an ended session isn't a successful sign-in.
-    ended: BTreeSet<String>,
-    /// Reads left before an open sign-in stops waiting, as in Settings.
-    checks_left: usize,
-    /// A catalog read, or the wait before the next, is under way.
-    reading: bool,
+    selection: Selection,
+    /// The guide's choices, waiting for a window to be made in.
+    pending_guide: Option<(PathBuf, Profile)>,
     form: Option<(Entity<choices::Form>, Subscription)>,
+    /// Earlier starts of the guide, opened from its screen.
     setup: Option<(Entity<setup::Pane>, Subscription)>,
     ticket: Ticket,
     pub focus: FocusHandle,
     /// This is the person's first profile, made as the app is set up.
     first: bool,
-    /// Where the opening scene's eye lands, the profile's mark, and how far
-    /// the mark has appeared.
-    landing: Option<(scene::Place, f32)>,
-    /// Agent tools being installed from the sign-in step: none while it
-    /// runs, or why it failed.
-    installing: BTreeMap<String, Option<String>>,
+    /// The screen last drawn, and when it arrived, for its fade.
+    arrived: Option<(&'static str, std::time::Instant)>,
 }
 impl EventEmitter<Event> for Flow {}
 
@@ -126,102 +142,130 @@ impl Flow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let name = cx.new(|cx| NameField::search(window, cx));
-        let observe = cx.observe(&name, |_, _, cx| cx.notify());
+        let name = cx.new(|cx| NameField::bare("", window, cx));
+        let git_name = cx.new(|cx| NameField::bare("", window, cx));
+        let git_email = cx.new(|cx| NameField::bare("", window, cx));
+        let fields = [&name, &git_name, &git_email]
+            .into_iter()
+            .map(|field| cx.observe(field, |_, _, cx| cx.notify()))
+            .collect();
+        let work = cx
+            .background_executor()
+            .spawn(async { computer_identity() });
+        cx.spawn(async move |this, cx| {
+            let computer = work.await;
+            let _ = this.update(cx, |flow, cx| flow.found_identity(computer, cx));
+        })
+        .detach();
+        window.focus(&name.read(cx).focus.clone(), cx);
         Self {
             client,
             directory,
             workspace,
             home,
             name,
-            _name: observe,
-            step: Step::Name,
-            busy: None,
+            _fields: fields,
+            screen: Screen::Name,
+            busy: false,
             stalled: None,
             error: None,
             library: None,
             profile: None,
-            copy_git: false,
-            selection: Selection::default(),
-            catalog: None,
+            git: Git {
+                computer: None,
+                open: false,
+                name: git_name,
+                email: git_email,
+            },
             connection: None,
-            accounts: BTreeMap::new(),
-            signing: BTreeSet::new(),
-            ended: BTreeSet::new(),
-            checks_left: 0,
-            reading: false,
+            selection: Selection::default(),
+            pending_guide: None,
             form: None,
             setup: None,
             ticket: Ticket::default(),
             focus: cx.focus_handle(),
             first: false,
-            landing: None,
-            installing: BTreeMap::new(),
+            arrived: None,
         }
     }
 
-    /// Make this the person's first profile: it says so, suggests a name, and
-    /// only Continue leaves the name step, since there is nothing to go back to.
+    /// Make this the person's first profile: it says so, suggests a name
+    /// ready to type over, and has nothing to go back to.
     pub fn for_first_run(&mut self, cx: &mut Context<Self>) {
         self.first = true;
+        self.name.update(cx, |field, cx| {
+            field.set_value(FIRST_NAME, cx);
+            field.select_all(cx);
+        });
+    }
+
+    /// Carry on with a first profile made before the app last closed: connect
+    /// to it and go to its guide.
+    pub fn resume(&mut self, profile: Profile, cx: &mut Context<Self>) {
+        let display = profile.item().display_name.clone();
         self.name
-            .update(cx, |field, cx| field.set_value(FIRST_NAME, cx));
-    }
-
-    /// Where the opening scene's eye lands, and how far the mark has appeared.
-    pub fn set_landing(&mut self, landing: Option<(scene::Place, f32)>) {
-        self.landing = landing;
-    }
-
-    /// Install a missing agent tool with its official installer, using the
-    /// PATH a terminal would have, then read the profile's tools again.
-    fn install(&mut self, runtime: String, cx: &mut Context<Self>) {
-        let Some(&(_, _, command)) = probe::TOOLS.iter().find(|(id, ..)| *id == runtime) else {
-            return;
-        };
-        if self.installing.get(&runtime) == Some(&None) {
-            return;
+            .update(cx, |field, cx| field.set_value(&display, cx));
+        match crate::library::location::create_library_directory(self.directory.as_deref()) {
+            Ok(library) => self.library = Some(library),
+            Err(_) => {
+                self.error = Some("Private storage for profile requests is unavailable.");
+                return;
+            }
         }
-        self.installing.insert(runtime.clone(), None);
-        let work = cx
-            .background_executor()
-            .spawn(async move { install::tool(command, &probe::login_path()) });
-        cx.spawn(async move |this, cx| {
-            let outcome = work.await;
-            let _ = this.update(cx, |flow, cx| {
-                match outcome {
-                    install::Outcome::Failed(reason) => {
-                        flow.installing.insert(runtime, Some(reason));
-                    }
-                    install::Outcome::Done | install::Outcome::Opened => {
-                        flow.installing.remove(&runtime);
-                    }
-                }
-                flow.read_catalog(cx);
-                cx.notify();
-            });
-        })
-        .detach();
+        self.profile = Some(profile);
+        self.connect(cx);
+    }
+
+    /// This computer's Git name and email are known. With neither set, the
+    /// fields open, since there is nothing to copy.
+    fn found_identity(&mut self, computer: (String, String), cx: &mut Context<Self>) {
+        let (name, email) = computer.clone();
+        self.git
+            .name
+            .update(cx, |field, cx| field.set_value(&name, cx));
+        self.git
+            .email
+            .update(cx, |field, cx| field.set_value(&email, cx));
+        if name.is_empty() || email.is_empty() {
+            self.git.open = true;
+        }
+        self.git.computer = Some(computer);
         cx.notify();
     }
 
-    /// The deepest focusable part of the current step.
+    /// What the new profile's agents will commit as.
+    fn identity(&self, cx: &gpui::App) -> Identity {
+        let typed = (
+            self.git.name.read(cx).value().trim().to_owned(),
+            self.git.email.read(cx).value().trim().to_owned(),
+        );
+        let complete = |(name, email): &(String, String)| !name.is_empty() && !email.is_empty();
+        match &self.git.computer {
+            None => Identity::None,
+            Some(computer) if !self.git.open || &typed == computer => {
+                if complete(computer) {
+                    Identity::Computer
+                } else {
+                    Identity::None
+                }
+            }
+            Some(_) if typed.0.is_empty() && typed.1.is_empty() => Identity::None,
+            Some(_) => Identity::Typed(typed.0, typed.1),
+        }
+    }
+
+    /// The deepest focusable part of the current screen.
     pub fn focus_handle(&self, cx: &gpui::App) -> FocusHandle {
         if let Some((setup, _)) = &self.setup {
             return setup.read(cx).focus.clone();
         }
         if let Some((form, _)) = &self.form {
-            return form.read(cx).focus.clone();
+            return form.read(cx).name_focus(cx);
         }
-        if self.step == Step::Name {
+        if self.screen == Screen::Name {
             return self.name.read(cx).focus.clone();
         }
         self.focus.clone()
-    }
-
-    /// Only signing in happens beside a pane. Otherwise the steps have the area.
-    pub fn beside(&self) -> bool {
-        self.step == Step::SignIn
     }
 
     pub fn profile_id(&self) -> Option<&str> {
@@ -238,15 +282,18 @@ impl Flow {
 
     /// Continue from the name: create the profile, start it, then connect.
     fn create(&mut self, cx: &mut Context<Self>) {
-        if self.busy.is_some() || self.step != Step::Name || self.name.read(cx).composing() {
+        if self.busy || self.screen != Screen::Name || self.name.read(cx).composing() {
             return;
         }
         let display = self.name.read(cx).value().trim().to_owned();
+        if display.is_empty() {
+            return;
+        }
         let resume = self.stalled.take();
         let request = uuid::Uuid::new_v4().simple().to_string();
         let prepared = match &resume {
             Some(Stalled::Unconfirmed(_) | Stalled::NotStarted) => None,
-            _ => match if self.copy_git {
+            _ => match if self.identity(cx) == Identity::Computer {
                 Prepared::create_copying_git_identity(&request, &display, BASELINE)
             } else {
                 Prepared::create(&request, &display, BASELINE)
@@ -260,11 +307,7 @@ impl Flow {
             },
         };
         self.error = None;
-        self.busy = Some(if matches!(resume, Some(Stalled::NotStarted)) {
-            "Starting…"
-        } else {
-            "Creating…"
-        });
+        self.busy = true;
         let (client, directory) = (self.client.clone(), self.directory.clone());
         let made = self.profile.clone();
         let ticket = self.ticket.begin();
@@ -285,9 +328,12 @@ impl Flow {
                         flow.connect(cx);
                     }
                     Err((stalled, profile, message)) => {
-                        flow.busy = None;
+                        flow.busy = false;
                         if let Some(profile) = profile {
                             flow.profile = Some(*profile);
+                        }
+                        if message == GIT_MISSING {
+                            flow.git.open = true;
                         }
                         flow.stalled = Some(stalled);
                         flow.error = Some(message);
@@ -300,21 +346,23 @@ impl Flow {
         cx.notify();
     }
 
-    /// Verify the started profile, then hand it to the workspace.
+    /// Verify the started profile, hand it to the workspace, then go on to
+    /// its guide.
     fn connect(&mut self, cx: &mut Context<Self>) {
         let Some(id) = self.profile_id().map(str::to_owned) else {
             return;
         };
-        self.busy = Some("Connecting…");
+        self.busy = true;
         let attempt = match self.selection.begin(&self.client, &id) {
             Ok(attempt) => attempt,
             Err(error) => {
-                self.busy = None;
+                self.busy = false;
                 self.stalled = Some(Stalled::NotStarted);
                 self.error = Some(crate::desktop::profile_picker::message(&error));
                 return;
             }
         };
+        let identity = self.identity(cx);
         let work = cx.background_executor().spawn(async move { attempt.run() });
         cx.spawn(async move |this, cx| {
             let completion = work.await;
@@ -322,13 +370,17 @@ impl Flow {
                 let Some(result) = flow.selection.accept(completion) else {
                     return;
                 };
-                flow.busy = None;
+                flow.busy = false;
                 match result {
                     Ok(selected) => {
-                        flow.connection = Some(selected.connection().clone());
+                        let connection = selected.connection().clone();
+                        if let Identity::Typed(name, email) = identity {
+                            set_identity(connection.clone(), name, email, cx);
+                        }
+                        flow.connection = Some(connection);
                         cx.emit(Event::Bind(Box::new(selected)));
-                        flow.step = Step::SignIn;
-                        flow.read_catalog(cx);
+                        flow.screen = Screen::Guide;
+                        flow.guide(cx);
                     }
                     Err(error) => {
                         flow.stalled = Some(Stalled::NotStarted);
@@ -339,202 +391,71 @@ impl Flow {
             });
         })
         .detach();
-    }
-
-    /// Read which tools the profile has, once, then their sign-ins.
-    fn read_catalog(&mut self, cx: &mut Context<Self>) {
-        let Some(identity) = self
-            .profile
-            .as_ref()
-            .and_then(|profile| profile.expected_identity().ok())
-        else {
-            return;
-        };
-        let client = self.client.clone();
-        let ticket = self.ticket.0.clone();
-        let worker = ticket.clone();
-        let work = cx
-            .background_executor()
-            .spawn(async move { client.runtimes(&identity, &|| worker.load(Ordering::Acquire)) });
-        cx.spawn(async move |this, cx| {
-            let result = work.await;
-            let _ = this.update(cx, |flow, cx| {
-                if !flow.ticket.accepts(&ticket) || flow.step != Step::SignIn {
-                    return;
-                }
-                match result {
-                    Ok(catalog) => {
-                        flow.catalog = Some(catalog);
-                        flow.error = None;
-                        flow.read_accounts(cx);
-                    }
-                    Err(_) => flow.error = Some("This profile's tools could not be read."),
-                }
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-
-    /// Read every installed CLI's sign-in once, then only the ones being signed
-    /// in, for as long as that's open. Each read starts the CLI's own check.
-    fn read_accounts(&mut self, cx: &mut Context<Self>) {
-        let (Some(connection), Some(catalog)) = (self.connection.clone(), &self.catalog) else {
-            return;
-        };
-        if self.reading {
-            return;
-        }
-        let ended = std::mem::take(&mut self.ended);
-        let ids: Vec<String> = if self.accounts.is_empty() {
-            catalog
-                .items()
-                .iter()
-                .filter(|runtime| runtime.available && runtime.id != "shell")
-                .map(|runtime| runtime.id.clone())
-                .collect()
-        } else {
-            self.signing.union(&ended).cloned().collect()
-        };
-        if ids.is_empty() {
-            return;
-        }
-        self.reading = true;
-        let ticket = self.ticket.0.clone();
-        let work = cx
-            .background_executor()
-            .spawn(async move { super::read_accounts(&connection, ids) });
-        cx.spawn(async move |this, cx| {
-            let read = work.await;
-            let again = this
-                .update(cx, |flow, cx| {
-                    if !flow.ticket.accepts(&ticket) || flow.step != Step::SignIn {
-                        return false;
-                    }
-                    for (id, authentication) in read {
-                        if authentication == Authentication::Authenticated || ended.contains(&id) {
-                            flow.signing.remove(&id);
-                        }
-                        flow.accounts.insert(id, authentication);
-                    }
-                    // A sign-in that never opened, or was left, stops waiting.
-                    flow.checks_left = flow.checks_left.saturating_sub(1);
-                    if flow.checks_left == 0 {
-                        flow.signing.clear();
-                    }
-                    cx.notify();
-                    !flow.signing.is_empty() || !flow.ended.is_empty()
-                })
-                .unwrap_or(false);
-            if again {
-                cx.background_executor().timer(SIGN_IN_CHECK).await;
-            }
-            let _ = this.update(cx, |flow, cx| {
-                flow.reading = false;
-                if again && flow.ticket.accepts(&ticket) && flow.step == Step::SignIn {
-                    flow.read_accounts(cx);
-                }
-            });
-        })
-        .detach();
-    }
-
-    /// A sign-in's session is over. Its row shows what the provider then says.
-    pub fn sign_in_ended(&mut self, profile: &str, runtime: &str, cx: &mut Context<Self>) {
-        if self.profile_id() == Some(profile) && self.signing.contains(runtime) {
-            self.ended.insert(runtime.to_owned());
-            self.read_accounts(cx);
-        }
-    }
-
-    fn sign_in(&mut self, runtime: String, cx: &mut Context<Self>) {
-        let Some(profile_id) = self.profile_id().map(str::to_owned) else {
-            return;
-        };
-        self.signing.insert(runtime.clone());
-        self.checks_left = super::SIGN_IN_CHECKS;
-        cx.emit(Event::Open(Open::SignIn {
-            profile_id,
-            runtime,
-        }));
-        self.read_accounts(cx);
         cx.notify();
     }
 
-    fn signed_in(
-        &self,
-    ) -> impl Iterator<Item = &agent_interface_roster::profiles::runtime_catalog::Runtime> {
-        self.catalog
-            .iter()
-            .flat_map(|catalog| catalog.items())
-            .filter(|runtime| {
-                self.accounts.get(&runtime.id) == Some(&Authentication::Authenticated)
-            })
-    }
-
-    fn first_signed_in(&self) -> Option<String> {
-        self.signed_in().next().map(|runtime| runtime.id.clone())
-    }
-
-    fn first_agent(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// The guide's screen: its choices, made once the profile is bound.
+    fn guide(&mut self, cx: &mut Context<Self>) {
         let (Some(library), Some(profile)) = (self.library.clone(), self.profile.clone()) else {
             return;
         };
-        self.step = Step::Agent;
-        self.signing.clear();
         self.ticket.begin();
+        // The form is made in the window that shows it, on the next frame.
+        self.pending_guide = Some((library, profile));
+        cx.notify();
+    }
+
+    /// Make the guide's choices, focused on its name.
+    fn show_guide(
+        &mut self,
+        library: PathBuf,
+        profile: Profile,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let client = self.client.clone();
-        let signed_in = self.first_signed_in();
+        let (first, connection) = (self.first, self.connection.clone());
+        let skip = if first {
+            "Use a terminal instead"
+        } else {
+            "Skip for now"
+        };
         let form = cx.new(|cx| {
-            let mut form = choices::Form::new(
-                client,
-                library,
-                profile,
-                "Use a terminal for now",
-                signed_in,
-                window,
-                cx,
-            );
-            // A profile's first agent is its guide.
-            form.as_guide(cx);
+            let mut form = choices::Form::new(client, library, profile, skip, None, window, cx);
+            form.as_guide(first, connection, window, cx);
             form
         });
-        window.focus(&form.read(cx).focus.clone(), cx);
+        window.focus(&form.read(cx).name_focus(cx), cx);
         let events = cx.subscribe_in(&form, window, |flow, form, event, window, cx| {
             if !flow.form.as_ref().is_some_and(|(active, _)| active == form) {
                 return;
             }
-            let setup = match event {
+            match event {
                 choices::Event::Back => {
                     cx.emit(Event::Terminal);
                     flow.close(cx);
-                    return;
+                }
+                choices::Event::Opened(open) => {
+                    cx.emit(Event::Open(open.clone()));
+                    flow.close(cx);
                 }
                 choices::Event::Recover => {
                     let Some(controller) = form.read(cx).controller() else {
                         return;
                     };
                     let profile = Some(form.read(cx).profile_id().to_owned());
-                    cx.new(|cx| setup::Pane::from_controller(controller, profile, cx))
+                    let setup = cx.new(|cx| setup::Pane::from_controller(controller, profile, cx));
+                    flow.form = None;
+                    flow.show_setup(setup, window, cx);
                 }
-                choices::Event::Submit => {
-                    let Some((prepared, controller)) =
-                        form.update(cx, |form, _| form.take_prepared())
-                    else {
-                        return;
-                    };
-                    cx.new(|cx| {
-                        setup::Pane::from_prepared(controller, prepared, "Open a terminal", cx)
-                    })
-                }
-            };
-            flow.form = None;
-            flow.show_setup(setup, window, cx);
+                // A guide starts itself.
+                choices::Event::Submit => {}
+            }
         });
         self.form = Some((form, events));
-        cx.notify();
     }
 
+    /// Earlier starts of the guide; Back returns to its choices.
     fn show_setup(
         &mut self,
         setup: Entity<setup::Pane>,
@@ -546,21 +467,372 @@ impl Flow {
             cx.emit(Event::Open(open.clone()))
         })
         .detach();
-        cx.subscribe_in(&setup, window, |flow, _, _: &setup::Again, window, cx| {
-            flow.setup = None;
-            flow.first_agent(window, cx);
-        })
-        .detach();
         cx.observe(&setup, |_, _, cx| cx.notify()).detach();
-        let back = cx.subscribe(&setup, |flow, setup, _: &super::Back, cx| {
-            if !setup.read(cx).running() {
-                cx.emit(Event::Terminal);
-            }
-            flow.close(cx);
+        let back = cx.subscribe(&setup, |flow, _, _: &super::Back, cx| {
+            flow.setup = None;
+            flow.guide(cx);
         });
         self.setup = Some((setup, back));
         cx.notify();
     }
+
+    /// The current screen's title, line and body, for the stage to draw.
+    pub fn parts(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Parts {
+        if let Some((library, profile)) = self.pending_guide.take() {
+            self.show_guide(library, profile, window, cx);
+        }
+        match self.screen {
+            Screen::Name => Parts {
+                key: "name",
+                title: if self.first {
+                    "Name your first profile"
+                } else {
+                    "New profile"
+                }
+                .into(),
+                line: "A profile keeps its own sign-ins, agents and settings, apart from your other work.".into(),
+                body: self.name_body(window, cx).into_any_element(),
+            },
+            Screen::Guide => Parts {
+                key: "guide",
+                title: if self.first {
+                    "Start your guide"
+                } else {
+                    "Start its guide"
+                }
+                .into(),
+                line: "Your guide learns what you\u{2019}re working on and proposes the agents for it. You approve each one.".into(),
+                body: match (&self.setup, &self.form) {
+                    (Some((setup, _)), _) => div()
+                        .w_full()
+                        .h(px(tokens().size.setup_stage))
+                        .child(setup.clone())
+                        .into_any_element(),
+                    (None, Some((form, _))) => form.clone().into_any_element(),
+                    (None, None) => div().into_any_element(),
+                },
+            },
+        }
+    }
+
+    /// The name screen: the profile's name, what its agents commit as, and
+    /// Continue.
+    fn name_body(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let (t, c) = (tokens(), colors());
+        let meta =
+            |text: SharedString, color| ui::text(div().text_color(color), &t.text.meta).child(text);
+        let typed = self.name.read(cx).value().trim().to_owned();
+        let label = match (&self.busy, &self.stalled) {
+            (true, _) => format!(
+                "Setting up {}…",
+                if typed.is_empty() { "profile" } else { &typed }
+            ),
+            (false, Some(Stalled::Unconfirmed(_))) => "Check again".to_owned(),
+            (false, Some(Stalled::NotStarted | Stalled::Failed)) => "Try again".to_owned(),
+            (false, None) => "Continue".to_owned(),
+        };
+        let name_field = ui::setup_field(self.name.read(cx).focus.is_focused(window))
+            .child(ui::profile_mark(
+                "new",
+                if typed.is_empty() { "?" } else { &typed },
+                true,
+                t.size.profile_mark,
+            ))
+            .child(
+                div()
+                    .relative()
+                    .flex_1()
+                    .min_w_0()
+                    .child(self.name.clone())
+                    .when(typed.is_empty() && !self.first, |el| {
+                        el.child(
+                            div()
+                                .absolute()
+                                .top_0()
+                                .left_0()
+                                .h_full()
+                                .flex()
+                                .items_center()
+                                .text_color(c.faint)
+                                .child("Profile name, such as Client work"),
+                        )
+                    }),
+            );
+        // What its agents commit as: this computer's own, which can change.
+        let locked = self.busy
+            || matches!(
+                self.stalled,
+                Some(Stalled::Unconfirmed(_) | Stalled::NotStarted)
+            );
+        let git = if self.git.open {
+            let field = |entity: &Entity<NameField>, hint: &'static str| {
+                let empty = entity.read(cx).value().is_empty();
+                ui::setup_field(entity.read(cx).focus.is_focused(window)).child(
+                    div()
+                        .relative()
+                        .flex_1()
+                        .min_w_0()
+                        .child(entity.clone())
+                        .when(empty, |el| {
+                            el.child(
+                                div()
+                                    .absolute()
+                                    .top_0()
+                                    .left_0()
+                                    .h_full()
+                                    .flex()
+                                    .items_center()
+                                    .text_color(c.faint)
+                                    .child(hint),
+                            )
+                        }),
+                )
+            };
+            let empty = self.git.name.read(cx).value().is_empty()
+                && self.git.email.read(cx).value().is_empty();
+            div()
+                .pt(px(t.space.s16))
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .pb(px(t.space.s6))
+                        .child(meta("Git commits as".into(), c.muted)),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .gap(px(t.space.s8))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .child(field(&self.git.name, "Your name")),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .child(field(&self.git.email, "Email")),
+                        ),
+                )
+                .when(empty, |el| {
+                    el.child(div().pt(px(t.space.s6)).child(meta(
+                        "Leave these empty to set them later, inside the profile.".into(),
+                        c.muted,
+                    )))
+                })
+                .into_any_element()
+        } else if let Some((name, email)) = &self.git.computer {
+            ui::text(
+                div()
+                    .pt(px(t.space.s12))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(t.space.s8))
+                    .text_color(c.muted),
+                &t.text.meta,
+            )
+            .child(
+                div()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .child("Git commits as ")
+                    .child(div().text_color(c.text).child(name.clone()))
+                    .child(format!(" <{email}>")),
+            )
+            .when(!locked, |el| {
+                el.child(
+                    ui::text_action("git-change", "Change").on_click(cx.listener(
+                        |flow, _, window, cx| {
+                            flow.git.open = true;
+                            window.focus(&flow.git.name.read(cx).focus.clone(), cx);
+                            cx.notify();
+                        },
+                    )),
+                )
+            })
+            .into_any_element()
+        } else {
+            div().into_any_element()
+        };
+        div()
+            .id("profile-name")
+            .w_full()
+            .flex()
+            .flex_col()
+            .track_focus(&self.focus)
+            .child(name_field)
+            .child(git)
+            .child(
+                div().pt(px(t.space.s20)).child(
+                    ui::setup_button("profile-flow-continue", label, !typed.is_empty(), self.busy)
+                        .on_click(cx.listener(|flow, _, _, cx| flow.create(cx))),
+                ),
+            )
+            .children(self.error.map(|error| {
+                div()
+                    .pt(px(t.space.s10))
+                    .flex()
+                    .justify_center()
+                    .text_center()
+                    .child(meta(error.into(), c.attention_text))
+            }))
+            .when(!self.first, |el| {
+                el.child(
+                    div().pt(px(t.space.s12)).flex().justify_center().child(
+                        ui::text_action("profile-flow-cancel", "Cancel")
+                            .on_click(cx.listener(|flow, _, _, cx| flow.close(cx))),
+                    ),
+                )
+            })
+    }
+
+    /// Return and esc on the name screen: continue, and for New profile, cancel.
+    fn key(&mut self, event: &gpui::KeyDownEvent, cx: &mut Context<Self>) -> bool {
+        if self.screen != Screen::Name
+            || [&self.name, &self.git.name, &self.git.email]
+                .iter()
+                .any(|field| field.read(cx).composing())
+        {
+            return false;
+        }
+        match event.keystroke.key.as_str() {
+            "escape" if !self.first => self.close(cx),
+            "enter" => self.create(cx),
+            _ => return false,
+        }
+        true
+    }
+
+    /// A screen's words and body, cross-faded in as the screen arrives.
+    pub fn stage(
+        &mut self,
+        id: &'static str,
+        top: f32,
+        mark: impl IntoElement,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let Parts {
+            key,
+            title,
+            line,
+            body,
+        } = self.parts(window, cx);
+        // A screen fades in as it arrives; the first one is already there.
+        let step = tokens().motion.step_ms;
+        let now = std::time::Instant::now();
+        match self.arrived {
+            Some((shown, _)) if shown == key => {}
+            Some(_) if !onboarding::reduce_motion() => self.arrived = Some((key, now)),
+            _ => {
+                let past = now.checked_sub(Duration::from_secs(1)).unwrap_or(now);
+                self.arrived = Some((key, past));
+            }
+        }
+        let shown = self.arrived.map_or(1.0, |(_, since)| {
+            (since.elapsed().as_secs_f32() * 1000.0 / step).min(1.0)
+        });
+        if shown < 1.0 {
+            window.request_animation_frame();
+        }
+        let fade = |element: AnyElement| div().w_full().opacity(shown).child(element);
+        ui::setup_stage(
+            id,
+            top,
+            mark,
+            fade(ui::setup_title(title).into_any_element()),
+            fade(ui::setup_line(line).into_any_element()),
+            fade(body),
+        )
+        .capture_key_down(cx.listener(|flow, event: &gpui::KeyDownEvent, _, cx| {
+            if flow.key(event, cx) {
+                cx.stop_propagation();
+            }
+        }))
+    }
+}
+
+/// This computer's own Git name and email, either empty when unset.
+fn computer_identity() -> (String, String) {
+    let read = |key: &str| {
+        std::process::Command::new("git")
+            .env("PATH", onboarding::probe::login_path())
+            .args(["config", "--global", "--get", key])
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+            .unwrap_or_default()
+    };
+    (read("user.name"), read("user.email"))
+}
+
+/// Set a Git name and email typed for a new profile inside it: a shell in
+/// the profile, with its own home, runs `git config --global` and exits.
+/// Agent Backbone can copy only this computer's own identity into a profile,
+/// so this is how a different one is set. Best effort: a failure is logged,
+/// and the profile still works.
+fn set_identity(connection: Connection, name: String, email: String, cx: &mut Context<Flow>) {
+    cx.background_executor()
+        .spawn(async move {
+            if let Err(error) = typed_identity(&connection, &name, &email) {
+                tracing::warn!(event = "profile_git_identity_failed", %error, "Git identity not set");
+            }
+        })
+        .detach();
+}
+
+fn typed_identity(connection: &Connection, name: &str, email: &str) -> Result<(), String> {
+    let mut script = String::new();
+    for (key, value) in [("user.name", name), ("user.email", email)] {
+        if !value.is_empty() {
+            script.push_str(&format!("git config --global {key} {} && ", quote(value)));
+        }
+    }
+    script.push_str("exit");
+    let session = connection
+        .ensure_shell("git-identity", None)
+        .map_err(|error| format!("{error:?}"))?;
+    let tmux =
+        agent_interface_tmux::connection::tmux_binary().map_err(|error| error.to_string())?;
+    let target = format!("={session}:");
+    for keys in [["-l", script.as_str()], ["Enter", ""]] {
+        let mut command = std::process::Command::new(&tmux);
+        command
+            .arg("-S")
+            .arg(connection.tmux_socket())
+            .args(["send-keys", "-t", &target])
+            .arg(keys[0]);
+        if !keys[1].is_empty() {
+            command.arg(keys[1]);
+        }
+        let status = command
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map_err(|error| error.to_string())?;
+        if !status.success() {
+            return Err(format!("tmux send-keys exited with {status}"));
+        }
+    }
+    Ok(())
+}
+
+/// A value as one POSIX shell word.
+fn quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 type Failure = (Stalled, Option<Box<Profile>>, &'static str);
@@ -609,7 +881,7 @@ fn make(
                         Stalled::Failed,
                         None,
                         if receipt.error_code.as_deref() == Some("git_identity_unavailable") {
-                            "Your Git name and email aren't both set. Set them, or turn this off."
+                            GIT_MISSING
                         } else {
                             "The profile could not be made. Try again."
                         },
@@ -647,468 +919,28 @@ fn unconfirmed(key: String) -> Failure {
 }
 
 impl Render for Flow {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (t, c) = (tokens(), colors());
-        let meta =
-            |text: SharedString| ui::text(div().text_color(c.muted), &t.text.meta).child(text);
-        let title = self
-            .profile
-            .as_ref()
-            .map(|profile| profile.item().display_name.clone())
-            .unwrap_or_else(|| self.name.read(cx).value().trim().to_owned());
-        let id = self.profile_id().unwrap_or("new").to_owned();
-        // Until the profile exists its mark is neutral; it takes its own
-        // tint from its id once made, and keeps it.
-        let mark = ui::profile_mark(&id, &title, self.profile.is_none(), t.size.slot);
-        let mark = match &self.landing {
-            // The opening scene's eye lands here and becomes the profile's mark.
-            Some((place, shown)) => div()
-                .relative()
-                .opacity(*shown)
-                .child(mark)
-                .child(scene::marker_place(place.clone())),
-            None => div().child(mark),
-        };
-        let header = div()
-            .flex()
-            .items_center()
-            .gap(px(t.space.s12))
-            .pb(px(t.space.s20))
-            .child(mark)
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(t.space.s2))
-                    .child(
-                        ui::text(div().text_color(c.text), &t.text.group_title).child(
-                            match (&self.profile, self.first) {
-                                (Some(_), _) => title.clone(),
-                                (None, true) => "Your first profile".into(),
-                                (None, false) => "New profile".into(),
-                            },
-                        ),
-                    )
-                    .child(meta(match (&self.profile, self.first) {
-                        (Some(_), true) => "Your first profile".into(),
-                        (Some(_), false) => "New profile".into(),
-                        (None, true) => "A profile keeps its own sign-ins, agents, skills and policies. Name it after the work it's for.".into(),
-                        (None, false) => "Its own accounts, agents, skills and policies, kept apart from your other work.".into(),
-                    })),
-            );
-        let steps = [
-            (Step::Name, "Name"),
-            (Step::SignIn, "Sign in"),
-            (Step::Agent, "First agent"),
-        ];
-        let at = steps
-            .iter()
-            .position(|(step, _)| *step == self.step)
-            .unwrap_or(0);
-        let mut column = div().flex().flex_col().child(header);
-        for (index, (step, label)) in steps.into_iter().enumerate() {
-            let finished = self
-                .setup
-                .as_ref()
-                .is_some_and(|(setup, _)| setup.read(cx).running());
-            let state = if index < at || (index == at && finished) {
-                ui::Step::Done
-            } else if index == at {
-                if self.error.is_some() && step == Step::Name {
-                    ui::Step::Waits
-                } else {
-                    ui::Step::Now
-                }
-            } else {
-                ui::Step::Ahead
-            };
-            let last = index + 1 == 3;
-            let summary: Option<SharedString> = match (state, step) {
-                (ui::Step::Done, Step::Name) => Some(title.clone().into()),
-                (ui::Step::Done, Step::SignIn) => {
-                    let names = self
-                        .signed_in()
-                        .map(|r| r.display_name.clone())
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    Some(if names.is_empty() {
-                        "Skipped".into()
-                    } else {
-                        names.into()
-                    })
-                }
-                _ => None,
-            };
-            let mut content = div()
-                .flex_1()
-                .min_w_0()
-                .flex()
-                .flex_col()
-                .gap(px(t.space.s10))
-                .pb(px(t.space.s20))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(t.space.s8))
-                        .min_h(px(t.size.plan_dot))
-                        .child(
-                            ui::text(
-                                div().text_color(if state == ui::Step::Ahead {
-                                    c.muted
-                                } else {
-                                    c.text
-                                }),
-                                &t.text.row_selected,
-                            )
-                            .child(label),
-                        )
-                        .children(summary.map(meta)),
-                );
-            if index == at {
-                content = content.child(self.step_body(cx));
-            }
-            column = column.child(
-                div()
-                    .flex()
-                    .gap(px(t.space.s12))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .items_center()
-                            .gap(px(t.space.s4))
-                            .child(ui::step_dot(state))
-                            .when(!last, |el| {
-                                el.child(div().flex_1().w(px(t.size.hairline)).bg(c.line_strong))
-                            }),
-                    )
-                    .child(content),
-            );
-        }
-        let running = self
-            .setup
-            .as_ref()
-            .is_some_and(|(setup, _)| setup.read(cx).running());
-        let hints: &[(&'static str, &'static str)] = match self.step {
-            Step::Agent if running => &[("↵", "get started")],
-            Step::Name if self.first => &[("↵", "continue")],
-            Step::Name => &[("↵", "continue"), ("esc", "cancel")],
-            Step::SignIn => &[("esc", "finish later")],
-            Step::Agent if self.setup.is_some() => &[("esc", "finish later")],
-            Step::Agent => &[(START_KEYS, "start agent"), ("esc", "finish later")],
-        };
-        div()
-            .size_full()
-            .flex()
-            .flex_col()
-            .bg(c.surface)
-            .rounded(px(t.radius.pane))
-            .border(px(t.size.hairline))
-            .border_color(c.edge)
-            .overflow_hidden()
-            .track_focus(&self.focus)
-            .capture_key_down(cx.listener(|flow, event: &gpui::KeyDownEvent, _, cx| {
-                if flow.name.read(cx).composing() {
-                    return;
-                }
-                match event.keystroke.key.as_str() {
-                    "escape"
-                        if flow.form.is_none()
-                            && flow.setup.is_none()
-                            && !(flow.first && flow.step == Step::Name) =>
-                    {
-                        flow.close(cx)
-                    }
-                    "enter" if flow.step == Step::Name => flow.create(cx),
-                    _ => return,
-                }
-                cx.stop_propagation();
-            }))
-            .child(
-                div()
-                    .id("profile-flow")
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .px(px(t.space.s28))
-                    .pt(px(t.space.s24))
-                    .child(column.max_w(px(t.size.profile_flow))),
-            )
-            .child(ui::view_footer(hints, ""))
+    /// New profile, later: the same screens inside the content area.
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = tokens();
+        let top = ui::setup_top(f32::from(window.viewport_size().height));
+        let mark = scene::mark(t.size.setup_mark, scene::Face::icon(), 1.0);
+        div().size_full().bg(colors().ground).child(self.stage(
+            "profile-flow",
+            top,
+            mark,
+            window,
+            cx,
+        ))
     }
 }
 
-/// The form starts its agent on ⌘↵ or Ctrl+↵; show the one this platform uses.
-const START_KEYS: &str = if cfg!(target_os = "macos") {
-    "⌘↵"
-} else {
-    "Ctrl+↵"
-};
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-impl Flow {
-    fn step_body(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
-        let (t, c) = (tokens(), colors());
-        let meta =
-            |text: SharedString| ui::text(div().text_color(c.muted), &t.text.meta).child(text);
-        let error = self
-            .error
-            .map(|error| ui::text(div().text_color(c.attention_text), &t.text.meta).child(error));
-        match self.step {
-            Step::Name => {
-                let label = match (&self.busy, &self.stalled) {
-                    (Some(busy), _) => *busy,
-                    (None, Some(Stalled::Unconfirmed(_))) => "Check again",
-                    (None, Some(Stalled::NotStarted | Stalled::Failed)) => "Try again",
-                    (None, None) => "Continue",
-                };
-                let empty = self.name.read(cx).value().is_empty();
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(t.space.s10))
-                    .child(
-                        div()
-                            .relative()
-                            .child(self.name.clone())
-                            .when(empty, |el| {
-                                el.child(
-                                    ui::text(
-                                        div()
-                                            .absolute()
-                                            .top_0()
-                                            .left(px(t.space.s6 + t.size.hairline))
-                                            .h(px(t.size.jump_field))
-                                            .flex()
-                                            .items_center()
-                                            .text_color(c.faint),
-                                        &t.text.body,
-                                    )
-                                    .child("Profile name, such as Client work"),
-                                )
-                            }),
-                    )
-                    .child(meta(
-                        "Starts with the standard skills and policies. Nothing is copied from your other profiles.".into(),
-                    ))
-                    .when(
-                        !matches!(
-                            self.stalled,
-                            Some(Stalled::Unconfirmed(_) | Stalled::NotStarted)
-                        ),
-                        |el| {
-                            el.child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(t.space.s8))
-                                    .child(ui::switch("profile-flow-git", self.copy_git).on_click(
-                                        cx.listener(|flow, _, _, cx| {
-                                            if flow.busy.is_none() {
-                                                flow.copy_git = !flow.copy_git;
-                                                cx.notify();
-                                            }
-                                        }),
-                                    ))
-                                    .child(meta("Use my Git name and email".into())),
-                            )
-                        },
-                    )
-                    .children(error)
-                    .child(
-                        div().flex().child(if self.busy.is_some() {
-                            ui::busy_button("profile-flow-continue", label)
-                        } else {
-                            ui::button("profile-flow-continue", label, ui::Button::Primary)
-                                .on_click(cx.listener(|flow, _, _, cx| flow.create(cx)))
-                        }),
-                    )
-                    .into_any_element()
-            }
-            Step::SignIn => {
-                let mut card = ui::group_card();
-                match &self.catalog {
-                    None => {
-                        card = card.child(
-                            div()
-                                .p(px(t.space.s12))
-                                .child(meta("Reading this profile's tools…".into())),
-                        )
-                    }
-                    Some(catalog) => {
-                        for (index, runtime) in catalog
-                            .items()
-                            .iter()
-                            .filter(|runtime| runtime.id != "shell")
-                            .enumerate()
-                        {
-                            let id = runtime.id.clone();
-                            let installable = probe::TOOLS.iter().any(|(tool, ..)| *tool == id);
-                            let right = if !runtime.available {
-                                let install = |label: &'static str, id: String| {
-                                    ui::button(
-                                        SharedString::from(format!("install-{id}")),
-                                        label,
-                                        ui::Button::Secondary,
-                                    )
-                                    .on_click(cx.listener(
-                                        move |flow, _, _, cx| flow.install(id.clone(), cx),
-                                    ))
-                                };
-                                match self.installing.get(&id) {
-                                    Some(None) => div()
-                                        .flex()
-                                        .items_center()
-                                        .gap(px(t.space.s6))
-                                        .child(ui::step_dot(ui::Step::Now))
-                                        .child(meta("Installing…".into()))
-                                        .into_any_element(),
-                                    Some(Some(_)) if installable => div()
-                                        .flex()
-                                        .items_center()
-                                        .gap(px(t.space.s8))
-                                        .child(
-                                            ui::text(
-                                                div().text_color(c.attention_text),
-                                                &t.text.meta,
-                                            )
-                                            .child("Couldn't install"),
-                                        )
-                                        .child(install("Try again", id.clone()))
-                                        .into_any_element(),
-                                    _ if installable => div()
-                                        .flex()
-                                        .items_center()
-                                        .gap(px(t.space.s8))
-                                        .child(meta("Not installed".into()))
-                                        .child(install("Install", id.clone()))
-                                        .into_any_element(),
-                                    _ => meta("Not installed".into()).into_any_element(),
-                                }
-                            } else if self.accounts.get(&id) == Some(&Authentication::Authenticated)
-                            {
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(t.space.s6))
-                                    .child(ui::step_dot(ui::Step::Done))
-                                    .child(meta("Signed in".into()))
-                                    .into_any_element()
-                            } else {
-                                let opened = self.signing.contains(&id);
-                                // Never reported as signed in, and never a dead end:
-                                // the person can sign in again or skip.
-                                let checked_out =
-                                    self.accounts.get(&id) == Some(&Authentication::Unavailable);
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(t.space.s8))
-                                    .when(opened || checked_out, |el| {
-                                        el.child(meta(
-                                            if checked_out {
-                                                "Couldn't check"
-                                            } else {
-                                                "Waiting…"
-                                            }
-                                            .into(),
-                                        ))
-                                    })
-                                    .child(
-                                        ui::button(
-                                            SharedString::from(format!("sign-in-{id}")),
-                                            if opened { "Sign in again" } else { "Sign in" },
-                                            ui::Button::Secondary,
-                                        )
-                                        .on_click(
-                                            cx.listener(move |flow, _, _, cx| {
-                                                flow.sign_in(id.clone(), cx)
-                                            }),
-                                        ),
-                                    )
-                                    .into_any_element()
-                            };
-                            card = card.child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(t.space.s10))
-                                    .min_h(px(t.size.group_row + t.space.s8))
-                                    .py(px(t.space.s6))
-                                    .px(px(t.space.s14))
-                                    .when(index > 0, |el| {
-                                        el.border_t(px(t.size.hairline)).border_color(c.line)
-                                    })
-                                    .when(!runtime.available && !installable, |el| el.opacity(0.6))
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .min_w_0()
-                                            .flex()
-                                            .flex_col()
-                                            .child(
-                                                div()
-                                                    .whitespace_nowrap()
-                                                    .text_color(c.text)
-                                                    .child(runtime.display_name.clone()),
-                                            )
-                                            // Why an install failed, in its own words.
-                                            .when_some(
-                                                self.installing.get(&runtime.id).cloned().flatten(),
-                                                |name, reason| {
-                                                    name.child(
-                                                        ui::text(
-                                                            div().text_color(c.attention_text),
-                                                            &t.text.meta,
-                                                        )
-                                                        .child(reason),
-                                                    )
-                                                },
-                                            ),
-                                    )
-                                    .child(right),
-                            );
-                        }
-                    }
-                }
-                let any_signed = self.signed_in().next().is_some();
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(t.space.s10))
-                    .child(meta("Accounts you add here stay in this profile.".into()))
-                    .child(card)
-                    .children(error)
-                    .child(
-                        div().flex().items_center().gap(px(t.space.s12)).child(
-                            ui::button(
-                                "profile-flow-agent",
-                                if any_signed {
-                                    "Continue"
-                                } else {
-                                    "Skip for now"
-                                },
-                                if any_signed {
-                                    ui::Button::Primary
-                                } else {
-                                    ui::Button::Secondary
-                                },
-                            )
-                            .on_click(
-                                cx.listener(|flow, _, window, cx| flow.first_agent(window, cx)),
-                            ),
-                        ),
-                    )
-                    .into_any_element()
-            }
-            Step::Agent => {
-                let body = div().flex().flex_col().gap(px(t.space.s10));
-                if let Some((setup, _)) = &self.setup {
-                    return body.child(setup.clone()).into_any_element();
-                }
-                body.children(self.form.as_ref().map(|(form, _)| form.clone()))
-                    .into_any_element()
-            }
-        }
+    #[test]
+    fn a_typed_identity_is_one_shell_word_each() {
+        assert_eq!(quote("Sam Rivera"), "'Sam Rivera'");
+        assert_eq!(quote("it's"), "'it'\\''s'");
     }
 }

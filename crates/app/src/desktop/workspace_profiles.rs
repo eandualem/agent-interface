@@ -840,36 +840,73 @@ impl Browser {
         self.attach_profile_flow(flow, window, cx);
     }
 
-    /// Take over first run's profile steps once its profile exists: bind the
-    /// library's untouched starting workspace (or else a new one) to it and
-    /// carry on there, beside its panes. Returns false
+    /// Show first run over this window: the scene, what this computer needs,
+    /// then the first profile and its guide.
+    pub(super) fn start_onboarding(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let directory = self.directory.clone();
+        let onboarding = cx.new(|cx| super::onboarding::Onboarding::new(directory, window, cx));
+        let events = cx.subscribe_in(&onboarding, window, |browser, _, event, window, cx| {
+            use super::onboarding::Event;
+            match event {
+                Event::Bind(bind) => {
+                    if !browser.adopt_first_profile(bind, cx) {
+                        browser.first_bind = Some((**bind).clone());
+                    }
+                }
+                Event::Open(open) => {
+                    browser.open_from_setup(open.clone(), Some(String::new()), window, cx);
+                }
+                Event::Terminal => {
+                    let empty = browser
+                        .layout
+                        .as_ref()
+                        .is_some_and(|layout| layout.model().tab().is_none());
+                    if empty {
+                        let creation = browser.creation_target();
+                        browser.create_from(
+                            super::layout_edit::Create::Tab,
+                            creation.as_ref(),
+                            window,
+                            cx,
+                        );
+                    }
+                }
+                Event::Done => {
+                    browser.onboarding = None;
+                    if let Some(focus) = &browser.navigation {
+                        window.focus(focus, cx);
+                    }
+                }
+            }
+            cx.notify();
+        });
+        self.onboarding = Some((onboarding, events));
+        cx.notify();
+    }
+
+    /// First run made the person's first profile: bind the library's
+    /// untouched starting workspace (or else a new one) to it. Returns false
     /// while this window's library is still loading, to be asked again.
-    pub(super) fn adopt_profile_flow(
+    pub(super) fn adopt_first_profile(
         &mut self,
-        flow: Entity<super::profile_management::flow::Flow>,
-        item: agent_interface_roster::profiles::Item,
-        connection: Connection,
-        client: Client,
-        window: &mut Window,
+        bind: &super::onboarding::FirstBind,
         cx: &mut Context<Self>,
     ) -> bool {
-        if self.layout.is_none() {
+        if self.layout.is_none() || self.saving || self.save_failed {
             return false;
         }
-        self.use_profile_client(client);
+        self.use_profile_client(bind.client.clone());
         let claim = self
             .layout
             .as_ref()
-            .filter(|_| !self.saving && !self.save_failed)
-            .and_then(|layout| super::workspace::claim_first(layout, &item.display_name));
+            .and_then(|layout| super::workspace::claim_first(layout, &bind.item.display_name));
+        let (item, connection) = (bind.item.clone(), bind.connection.clone());
         match claim {
             Some((base, proposed)) => {
                 self.propose_binding(base, proposed, item, connection, "", cx)
             }
             None => self.bind_workspace(item, connection, "", cx),
         }
-        self.attach_profile_flow(flow, window, cx);
-        window.activate_window();
         true
     }
 

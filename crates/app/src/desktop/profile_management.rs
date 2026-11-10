@@ -31,6 +31,8 @@ mod setup;
 const PAGE_SIZE: usize = 16;
 /// How many checks a sign-in opened from Settings gets, about five minutes.
 pub(super) const SIGN_IN_CHECKS: usize = 150;
+/// How often an open sign-in is checked. The provider's check is local and quick.
+const SIGN_IN_CHECK: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Each CLI's sign-in, one request each. An unanswered read can't be told from
 /// a signed-out CLI, so it's reported as unavailable. Runs on an I/O worker.
@@ -192,7 +194,7 @@ impl Management {
         if self.watching.is_none() {
             self.watching = Some(cx.spawn(async move |this, cx| {
                 for _ in 0..SIGN_IN_CHECKS {
-                    cx.background_executor().timer(flow::SIGN_IN_CHECK).await;
+                    cx.background_executor().timer(SIGN_IN_CHECK).await;
                     let Ok(ids) = this.read_with(cx, |pane, _| pane.signing.clone()) else {
                         return;
                     };
@@ -379,7 +381,8 @@ impl Management {
                 }
                 let setup =
                     match event {
-                        choices::Event::Back => None,
+                        // Only a guide opens its own pane; this form adds agents.
+                        choices::Event::Back | choices::Event::Opened(_) => None,
                         choices::Event::Recover => {
                             let Some(controller) = form.read(cx).controller() else {
                                 return;
@@ -905,21 +908,23 @@ impl Render for Management {
                     let expected = ticket.clone();
                     let default = item.kind == Kind::LegacyDefault;
                     body = body.child(
-                        div().flex().items_center().justify_between()
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
                             .child(ui::group_title("Agents", ""))
-                            .child(ui::button("new-agent-setup", "Add agent", ui::Button::Secondary).on_click(cx.listener(move |pane, _, window, cx| {
-                                // Default keeps its host environment, so the provider refuses its
-                                // bound setup; first-run setup adds Default's agents instead.
-                                if default {
-                                    cx.defer(|cx| {
-                                        if let Err(error) = super::onboarding::show(false, cx) {
-                                            tracing::error!(event = "setup_window_failed", %error, "Cannot open setup");
+                            .child(
+                                ui::button("new-agent-setup", "Add agent", ui::Button::Secondary)
+                                    .on_click(cx.listener(move |pane, _, window, cx| {
+                                        // Default keeps its host environment, so the provider refuses its
+                                        // bound setup; a new profile, with its own guide, is the way on.
+                                        if default {
+                                            cx.defer(super::new_profile);
+                                        } else {
+                                            pane.choices(&expected, window, cx)
                                         }
-                                    });
-                                } else {
-                                    pane.choices(&expected, window, cx)
-                                }
-                            }))),
+                                    })),
+                            ),
                     );
                     if let Some((form, _)) = &self.choices {
                         body = body.child(form.clone());

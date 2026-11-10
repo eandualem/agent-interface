@@ -52,6 +52,7 @@ impl PaneHeaders {
 static PANE_HEADERS: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 static INTRO_SEEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static SETUP_DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static SETUP_PROFILE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
 /// How panes show their header now.
 pub fn pane_headers() -> PaneHeaders {
@@ -80,6 +81,8 @@ pub struct Settings {
     pub intro_seen: bool,
     /// First-run setup was finished.
     pub setup_done: bool,
+    /// The first profile first run made, until its guide starts.
+    pub setup_profile: Option<String>,
 }
 
 impl Default for Settings {
@@ -95,6 +98,7 @@ impl Default for Settings {
             pane_headers: PaneHeaders::Always,
             intro_seen: false,
             setup_done: false,
+            setup_profile: None,
         }
     }
 }
@@ -153,6 +157,17 @@ impl Settings {
             let flag = |key| setup.get(key).and_then(toml::Value::as_bool) == Some(true);
             settings.intro_seen = flag("intro_seen");
             settings.setup_done = flag("done");
+            settings.setup_profile = setup
+                .get("profile")
+                .and_then(toml::Value::as_str)
+                .filter(|id| {
+                    !id.is_empty()
+                        && id.len() <= 128
+                        && id
+                            .bytes()
+                            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+                })
+                .map(str::to_owned);
         }
         if let Some(shortcuts) = table.get("shortcuts").and_then(toml::Value::as_table) {
             settings.shortcuts = super::shortcuts::Bindings::from_entries(
@@ -186,11 +201,17 @@ impl Settings {
         if let Some(width) = self.conversation_width {
             text.push_str(&format!("conversation_width = {width}\n"));
         }
-        if self.intro_seen || self.setup_done {
+        if self.intro_seen || self.setup_done || self.setup_profile.is_some() {
             text.push_str(&format!(
                 "\n[setup]\nintro_seen = {}\ndone = {}\n",
                 self.intro_seen, self.setup_done
             ));
+            if let Some(profile) = &self.setup_profile {
+                text.push_str(&format!(
+                    "profile = {}\n",
+                    toml::Value::String(profile.clone())
+                ));
+            }
         }
         let changed = self.shortcuts.changed();
         if !changed.is_empty() {
@@ -214,6 +235,9 @@ impl Settings {
         CONVERSATION_WIDTH.store(self.conversation_width.unwrap_or(0), Ordering::Relaxed);
         INTRO_SEEN.store(self.intro_seen, Ordering::Relaxed);
         SETUP_DONE.store(self.setup_done, Ordering::Relaxed);
+        *SETUP_PROFILE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = self.setup_profile.clone();
     }
 
     /// The settings windows are drawing with now.
@@ -229,6 +253,10 @@ impl Settings {
             pane_headers: pane_headers(),
             intro_seen: INTRO_SEEN.load(Ordering::Relaxed),
             setup_done: SETUP_DONE.load(Ordering::Relaxed),
+            setup_profile: SETUP_PROFILE
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone(),
         }
     }
 }
@@ -547,6 +575,7 @@ mod tests {
             pane_headers: PaneHeaders::Hover,
             intro_seen: true,
             setup_done: false,
+            setup_profile: Some("0123abcd".into()),
         };
         assert_eq!(Settings::parse(&light.to_toml()), light);
         // Shortcuts are global; other tests rely on the defaults.
