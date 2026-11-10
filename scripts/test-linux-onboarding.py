@@ -66,7 +66,7 @@ with tempfile.TemporaryDirectory(prefix="onboarding-", dir="/tmp") as directory:
     seen = "true" if SCALE != 100 else "false"
     (settings / "settings.toml").write_text(
         f'theme = "dark"\ninterface_size = {SCALE}\n[setup]\nintro_seen = {seen}\ndone = false\n')
-    # A fresh install: nothing has made the library folder yet.
+    # A fresh install: the workspace window makes the library folder as it opens.
     library = root / "data/agent-interface"
     bin_dir = root / ".local/bin"
     bin_dir.mkdir(parents=True)
@@ -188,7 +188,6 @@ with tempfile.TemporaryDirectory(prefix="onboarding-", dir="/tmp") as directory:
             value = capture(main, "profile")
             assert "Agent Backbone" not in value, "the service was named on screen"
             assert "Personal" in value, "the suggested name"
-            assert not library.exists(), "the library folder existed before the first profile"
 
             click(main, "Continue")
             wait_for(lambda: re.search(r"your\s+guide", text(main)), "Start your guide", timeout=60)

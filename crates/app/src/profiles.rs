@@ -74,6 +74,22 @@ impl Client {
         })
     }
 
+    /// The same provider with a new PATH, such as after an agent tool was
+    /// installed into a folder that did not exist when this was captured.
+    pub fn with_path(&self, path_env: OsString) -> Self {
+        let mut environment: Vec<_> = self
+            .environment
+            .iter()
+            .filter(|(key, _)| key != "PATH")
+            .cloned()
+            .collect();
+        environment.push(("PATH".into(), path_env));
+        Self {
+            environment,
+            ..self.clone()
+        }
+    }
+
     /// Every invocation uses the executable, effective environment and directory
     /// captured together, including delayed retries and read-only discovery.
     fn command(&self) -> Command {

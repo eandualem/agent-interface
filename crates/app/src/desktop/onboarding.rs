@@ -142,6 +142,10 @@ pub(in crate::desktop) struct Onboarding {
     leaving: Option<Instant>,
     /// A first profile made before the app last closed, to carry on with.
     resume: Option<String>,
+    /// The service was restarted or set up once; only Try again repeats it.
+    repaired: bool,
+    /// The guide's pane asked for, and why it didn't open if it didn't.
+    opening: Option<(Open, Option<&'static str>)>,
     directory: Option<PathBuf>,
 }
 impl EventEmitter<Event> for Onboarding {}
@@ -174,6 +178,8 @@ impl Onboarding {
             details: false,
             leaving: None,
             resume,
+            repaired: false,
+            opening: None,
             directory,
         };
         // The scene covers the check, so what follows it is known.
@@ -204,6 +210,23 @@ impl Onboarding {
             now
         });
         cx.notify();
+    }
+
+    /// The workspace says whether the guide's pane opened: first run ends
+    /// only once it has.
+    pub fn opened(&mut self, result: Result<(), &'static str>, cx: &mut Context<Self>) {
+        match result {
+            Ok(()) => {
+                self.opening = None;
+                self.leave(cx);
+            }
+            Err(reason) => {
+                if let Some((_, failed)) = &mut self.opening {
+                    *failed = Some(reason);
+                }
+                cx.notify();
+            }
+        }
     }
 
     /// Jump the opening scene to its handoff.
@@ -258,6 +281,17 @@ impl Onboarding {
             }
             return;
         }
+        // Repair runs once; if the service still doesn't answer, say so.
+        if self.repaired {
+            self.service = Service::Failed(match &probe.backbone {
+                Backbone::Unreachable(reason) => {
+                    format!("Agent Backbone stopped answering after it was started ({reason}).")
+                }
+                _ => "Agent Backbone stopped answering after it was started.".to_owned(),
+            });
+            return;
+        }
+        self.repaired = true;
         self.service = Service::Starting;
         let work = cx.background_executor().spawn(async move { start(&probe) });
         cx.spawn(async move |view, cx| {
@@ -305,8 +339,8 @@ impl Onboarding {
                 })));
             }
             flow::Event::Open(open) => {
+                view.opening = Some((open.clone(), None));
                 cx.emit(Event::Open(open.clone()));
-                view.leave(cx);
             }
             flow::Event::Terminal => {
                 cx.emit(Event::Terminal);
@@ -315,15 +349,18 @@ impl Onboarding {
             flow::Event::Close => {}
         });
         if let Some(id) = self.resume.take() {
+            flow.update(cx, |flow, cx| flow.resuming(cx));
             let work = cx
                 .background_executor()
                 .spawn(async move { reader.show(&id, &|| true) });
             let resumed = flow.downgrade();
             cx.spawn(async move |_, cx| {
-                // A profile that is gone leaves the name screen as it is.
-                if let Ok(profile) = work.await {
-                    let _ = resumed.update(cx, |flow, cx| flow.resume(profile, cx));
-                }
+                // A profile that is gone leaves the name screen to start again.
+                let result = work.await;
+                let _ = resumed.update(cx, |flow, cx| match result {
+                    Ok(profile) => flow.resume(profile, cx),
+                    Err(_) => flow.fresh(cx),
+                });
             })
             .detach();
         }
@@ -404,6 +441,9 @@ impl Onboarding {
     /// What the person sees next, once it is known: what needs them, else the
     /// first profile. `None` while the check or the service is still going.
     fn next(&self) -> Option<Stage> {
+        if matches!(self.opening, Some((_, Some(_)))) {
+            return Some(Stage::Needs);
+        }
         let probe = self.probe.as_ref()?;
         if !missing(probe).is_empty() {
             return Some(Stage::Needs);
@@ -422,6 +462,37 @@ impl Onboarding {
         cx: &mut Context<Self>,
     ) -> Option<(SharedString, SharedString, AnyElement)> {
         let (t, c) = (tokens(), colors());
+        if let Some((open, Some(reason))) = &self.opening {
+            let open = open.clone();
+            let body = div()
+                .w_full()
+                .flex()
+                .flex_col()
+                .child(
+                    ui::setup_button("open-again", "Try again", true, false).on_click(cx.listener(
+                        move |view, _, _, cx| {
+                            view.opening = Some((open.clone(), None));
+                            cx.emit(Event::Open(open.clone()));
+                            cx.notify();
+                        },
+                    )),
+                )
+                .child(div().pt(px(t.space.s12)).flex().justify_center().child(
+                    ui::text_action("terminals-only", "Use a terminal instead").on_click(
+                        cx.listener(|view, _, _, cx| {
+                            view.opening = None;
+                            cx.emit(Event::Terminal);
+                            view.leave(cx);
+                        }),
+                    ),
+                ))
+                .into_any_element();
+            return Some((
+                "Your guide couldn\u{2019}t open".into(),
+                (*reason).into(),
+                body,
+            ));
+        }
         let probe = self.probe.as_ref()?;
         let names = missing(probe);
         let note = |text: SharedString, attention: bool| {
@@ -497,6 +568,7 @@ impl Onboarding {
                 ui::setup_button("service-again", "Try again", true, false).on_click(cx.listener(
                     |view, _, _, cx| {
                         view.service = Service::Checking;
+                        view.repaired = false;
                         view.details = false;
                         view.check(cx);
                     },
@@ -712,7 +784,13 @@ impl Render for Onboarding {
                         scene::mark(scene.mark_size(), scene.face, scene.tile),
                         scene.top(scene_top, setup_top),
                     ),
-                    None => (0.0, 0.0, settled(), setup_top),
+                    // Without the scene, the name stays while things get ready.
+                    None => (
+                        if getting_ready { 1.0 } else { 0.0 },
+                        0.0,
+                        settled(),
+                        setup_top,
+                    ),
                 };
                 let (tagline, tagline_shown): (AnyElement, f32) = if getting_ready {
                     (

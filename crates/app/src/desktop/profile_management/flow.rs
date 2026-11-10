@@ -199,6 +199,19 @@ impl Flow {
         });
     }
 
+    /// A first profile made before may be carried on with: hold the name
+    /// screen until [`Self::resume`] or [`Self::fresh`] says which.
+    pub fn resuming(&mut self, cx: &mut Context<Self>) {
+        self.busy = true;
+        cx.notify();
+    }
+
+    /// The profile made before is gone: start from the name.
+    pub fn fresh(&mut self, cx: &mut Context<Self>) {
+        self.busy = false;
+        cx.notify();
+    }
+
     /// Carry on with a first profile made before the app last closed: connect
     /// to it and go to its guide.
     pub fn resume(&mut self, profile: Profile, cx: &mut Context<Self>) {
@@ -282,7 +295,12 @@ impl Flow {
 
     /// Continue from the name: create the profile, start it, then connect.
     fn create(&mut self, cx: &mut Context<Self>) {
-        if self.busy || self.screen != Screen::Name || self.name.read(cx).composing() {
+        // What its agents commit as is decided before the profile is made.
+        if self.busy
+            || self.screen != Screen::Name
+            || self.git.computer.is_none()
+            || self.name.read(cx).composing()
+        {
             return;
         }
         let display = self.name.read(cx).value().trim().to_owned();
@@ -640,13 +658,21 @@ impl Flow {
             )
             .child(
                 div()
+                    .flex_1()
                     .min_w_0()
-                    .overflow_hidden()
+                    .flex()
+                    .items_center()
+                    .gap(px(t.space.s4))
                     .whitespace_nowrap()
-                    .text_ellipsis()
-                    .child("Git commits as ")
-                    .child(div().text_color(c.text).child(name.clone()))
-                    .child(format!(" <{email}>")),
+                    .child(div().flex_shrink_0().child("Git commits as"))
+                    .child(div().flex_shrink_0().text_color(c.text).child(name.clone()))
+                    .child(
+                        div()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .child(format!("<{email}>")),
+                    ),
             )
             .when(!locked, |el| {
                 el.child(
@@ -673,8 +699,13 @@ impl Flow {
             .child(git)
             .child(
                 div().pt(px(t.space.s20)).child(
-                    ui::setup_button("profile-flow-continue", label, !typed.is_empty(), self.busy)
-                        .on_click(cx.listener(|flow, _, _, cx| flow.create(cx))),
+                    ui::setup_button(
+                        "profile-flow-continue",
+                        label,
+                        !typed.is_empty() && self.git.computer.is_some(),
+                        self.busy,
+                    )
+                    .on_click(cx.listener(|flow, _, _, cx| flow.create(cx))),
                 ),
             )
             .children(self.error.map(|error| {
@@ -709,6 +740,29 @@ impl Flow {
             "enter" => self.create(cx),
             _ => return false,
         }
+        true
+    }
+
+    /// Tab moves between the name and, while open, the Git fields.
+    fn tab(&mut self, back: bool, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.screen != Screen::Name {
+            return false;
+        }
+        let mut fields = vec![self.name.read(cx).focus.clone()];
+        if self.git.open {
+            fields.push(self.git.name.read(cx).focus.clone());
+            fields.push(self.git.email.read(cx).focus.clone());
+        }
+        let at = fields
+            .iter()
+            .position(|f| f.is_focused(window))
+            .unwrap_or(0);
+        let next = if back {
+            (at + fields.len() - 1) % fields.len()
+        } else {
+            (at + 1) % fields.len()
+        };
+        window.focus(&fields[next], cx);
         true
     }
 
@@ -753,8 +807,10 @@ impl Flow {
             fade(ui::setup_line(line).into_any_element()),
             fade(body),
         )
-        .capture_key_down(cx.listener(|flow, event: &gpui::KeyDownEvent, _, cx| {
-            if flow.key(event, cx) {
+        .capture_key_down(cx.listener(|flow, event: &gpui::KeyDownEvent, window, cx| {
+            let tab = event.keystroke.key == "tab"
+                && flow.tab(event.keystroke.modifiers.shift, window, cx);
+            if tab || flow.key(event, cx) {
                 cx.stop_propagation();
             }
         }))

@@ -630,6 +630,8 @@ struct Browser {
     )>,
     /// First run, a layer over the whole window until it fades.
     onboarding: Option<(gpui::Entity<onboarding::Onboarding>, gpui::Subscription)>,
+    /// First run asked to open its guide's pane and waits to hear how it went.
+    first_open: bool,
     /// First run's profile, waiting for the library to load to be bound.
     first_bind: Option<onboarding::FirstBind>,
     /// New profile, across the content area of the workspace it is made for.
@@ -1577,6 +1579,7 @@ impl Browser {
 
     fn web_content_occluded(&self) -> bool {
         if self.profile_picker.is_some()
+            || self.onboarding.is_some()
             || self.profile_picker_requested
             || self.profile_content_unavailable()
         {

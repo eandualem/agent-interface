@@ -339,6 +339,7 @@ impl Browser {
     ) {
         use super::profile_management::Open;
         let Some(Ok(client)) = &self.profile_client else {
+            self.first_run_opened(Err("The profile could not be reached. Try again."), cx);
             return;
         };
         let client = client.clone();
@@ -379,6 +380,7 @@ impl Browser {
                     }
                     Err(error) => Err(error),
                 };
+                browser.first_run_opened(opened, cx);
                 if let Err(error) = opened {
                     browser.save_notice = Some(error.into());
                 }
@@ -854,6 +856,7 @@ impl Browser {
                     }
                 }
                 Event::Open(open) => {
+                    browser.first_open = true;
                     browser.open_from_setup(open.clone(), Some(String::new()), window, cx);
                 }
                 Event::Terminal => {
@@ -873,7 +876,10 @@ impl Browser {
                 }
                 Event::Done => {
                     browser.onboarding = None;
-                    if let Some(focus) = &browser.navigation {
+                    // A guide's terminal that took focus as it opened keeps it.
+                    if window.focused(cx).is_none()
+                        && let Some(focus) = &browser.navigation
+                    {
                         window.focus(focus, cx);
                     }
                 }
@@ -882,6 +888,16 @@ impl Browser {
         });
         self.onboarding = Some((onboarding, events));
         cx.notify();
+    }
+
+    /// Tell first run whether its guide's pane opened, when it asked for it.
+    fn first_run_opened(&mut self, opened: Result<(), &'static str>, cx: &mut Context<Self>) {
+        if !std::mem::take(&mut self.first_open) {
+            return;
+        }
+        if let Some((onboarding, _)) = &self.onboarding {
+            onboarding.update(cx, |onboarding, cx| onboarding.opened(opened, cx));
+        }
     }
 
     /// First run made the person's first profile: bind the library's
@@ -896,6 +912,21 @@ impl Browser {
             return false;
         }
         self.use_profile_client(bind.client.clone());
+        // Carrying on after a restart: the workspace bound before is reused.
+        let bound = self.layout.as_ref().and_then(|layout| {
+            layout
+                .model()
+                .workspaces
+                .iter()
+                .find(|space| space.profile_id.as_deref() == Some(bind.item.profile_id.as_str()))
+                .cloned()
+        });
+        if let Some(space) = bound {
+            self.workspace_profiles
+                .bind(&space, bind.connection.clone());
+            cx.notify();
+            return true;
+        }
         let claim = self
             .layout
             .as_ref()

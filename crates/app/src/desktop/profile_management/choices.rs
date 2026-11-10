@@ -89,6 +89,8 @@ pub(super) struct Form {
     accounts: BTreeMap<String, Authentication>,
     /// The guide's start, while it runs or after it stopped.
     start: Option<(Entity<setup::Pane>, Vec<Subscription>)>,
+    /// The tools and open setups were read again after the start stopped.
+    refreshed: bool,
     /// Something was changed since the start stopped, so Try again sends the
     /// new choices rather than the same request.
     changed: bool,
@@ -145,6 +147,7 @@ impl Form {
             connection: None,
             accounts: BTreeMap::new(),
             start: None,
+            refreshed: false,
             changed: false,
             focus: cx.focus_handle(),
         };
@@ -316,6 +319,34 @@ impl Form {
             .is_some_and(|(pane, _)| pane.read(cx).starting())
     }
 
+    /// Choose the previous or next tool that can run.
+    fn step_tool(&mut self, step: isize, cx: &mut Context<Self>) {
+        let State::Ready { catalog, .. } = &self.state else {
+            return;
+        };
+        let ready: Vec<String> = catalog
+            .items()
+            .iter()
+            .filter(|r| eligible(r))
+            .map(|r| r.id.clone())
+            .collect();
+        if ready.is_empty() {
+            return;
+        }
+        let at = self
+            .runtime
+            .as_ref()
+            .and_then(|id| ready.iter().position(|r| r == id));
+        let next = match at {
+            Some(at) => (at as isize + step).rem_euclid(ready.len() as isize) as usize,
+            None => 0,
+        };
+        self.runtime = Some(ready[next].clone());
+        self.model = None;
+        self.changed = true;
+        cx.notify();
+    }
+
     /// Install or update a tool with its official installer, using the PATH a
     /// terminal would have, then read the profile's tools again and pick it.
     fn install(&mut self, runtime: String, cx: &mut Context<Self>) {
@@ -326,12 +357,15 @@ impl Form {
             return;
         }
         self.installing.insert(runtime.clone(), None);
-        let work = cx
-            .background_executor()
-            .spawn(async move { install::tool(command, &probe::login_path()) });
+        let work = cx.background_executor().spawn(async move {
+            let outcome = install::tool(command, &probe::login_path());
+            // An installer can add a folder to the PATH that wasn't there.
+            (outcome, probe::login_path())
+        });
         cx.spawn(async move |this, cx| {
-            let outcome = work.await;
+            let (outcome, path_env) = work.await;
             let _ = this.update(cx, |form, cx| {
+                form.client = form.client.with_path(path_env.into());
                 match outcome {
                     install::Outcome::Failed(reason) => {
                         form.installing.insert(runtime, Some(reason));
@@ -376,8 +410,17 @@ impl Form {
                 form.ticket.cancel();
                 cx.emit(Event::Opened(open.clone()));
             }),
-            cx.observe(&pane, |_, _, cx| cx.notify()),
+            cx.observe(&pane, |form: &mut Self, pane, cx| {
+                // A start that stopped may leave its request open: show it
+                // under Earlier setups.
+                if pane.read(cx).failure().is_some() && !form.refreshed {
+                    form.refreshed = true;
+                    form.load(true, cx);
+                }
+                cx.notify()
+            }),
         ];
+        self.refreshed = false;
         self.start = Some((pane, subscriptions));
         self.changed = false;
         self.error = None;
@@ -447,6 +490,7 @@ impl Form {
                         && matches!(form.state, State::Ready { .. })
                     {
                         form.project = paths.into_iter().next().filter(|p| p.is_absolute());
+                        form.changed = true;
                         form.name_from_folder(cx);
                         cx.notify();
                     }
@@ -1074,6 +1118,14 @@ impl Form {
                     ),
             );
         }
+        if matches!(self.state, State::Failed) {
+            body = body.child(
+                div().flex().justify_end().child(
+                    ui::text_action("retry-setup-catalog", "Check again")
+                        .on_click(cx.listener(|form, _, _, cx| form.load(true, cx))),
+                ),
+            );
+        }
         if matches!(self.state, State::Unchecked(_)) {
             body = body.child(
                 div()
@@ -1191,6 +1243,10 @@ impl Form {
                     match event.keystroke.key.as_str() {
                         "escape" if !form.first && !form.busy(cx) => form.finish(Event::Back, cx),
                         "enter" if !brief => form.submit(&expected, cx),
+                        // Up and down move between the tools that can run.
+                        key @ ("up" | "down") if !brief && !form.busy(cx) => {
+                            form.step_tool(if key == "up" { -1 } else { 1 }, cx)
+                        }
                         _ => return,
                     }
                     cx.stop_propagation();

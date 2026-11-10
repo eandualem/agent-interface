@@ -1218,9 +1218,10 @@ delayed retries cannot discard a different or already recovered connection.
 Close Pane and Close Tab capture the selected origin before consuming library
 updates and reject changed bindings or connection epochs even when tab and pane
 IDs are unchanged. Fresh local closes still work for unavailable profiles.
-The application-menu setup command opens first-run setup from any workspace,
-which makes a new profile with New profile's steps. Settings › Profiles offers
-Add agent for an existing profile, including Default.
+**New Profile…** in the application menu shows New profile's screens in the
+active workspace window. Settings › Profiles offers Add agent for an isolated
+profile; for Default, which keeps the person's own environment and refuses bound
+setup, the same button opens New profile instead.
 
 Save reconciliation treats a workspace's profile binding and its tab contents as
 an ownership boundary: a concurrent binding change cannot merge with a pane edit,
@@ -1399,28 +1400,26 @@ Worker generations reject stale results and controls. Successful receipts remain
 progress metadata: workspace selection still performs the authenticated handshake.
 Fresh first-agent setup choices remain separate from saved-request recovery.
 
-New profile runs as three steps in its workspace: name, sign in, first agent. Only
-signing in sits beside a pane.
-The name step takes an explicit profile name and the one baseline the provider can
-create today, and records one immutable create request in the same durable
-lifecycle journal. The provider creates a profile without starting it, so the step
-then records and submits a start request and runs the authenticated selection;
-only that verified selection binds the workspace. An unconfirmed create is checked
-again under its original key rather than sent anew. A profile starts clean: the
-person may opt in to `git_identity: "copy"` on the create request, which has the
-provider copy only their Git name and email. Omitting the field keeps the request's
-bytes unchanged, and recovery restores whichever request was saved. The sign-in step reads the
-profile's runtime catalog and opens sign-in sessions in the bound workspace. It asks
-`GET /api/profile/accounts/status` once for each installed CLI, then only for a CLI
-being signed in, every two seconds while that sign-in is open, because each read
-starts the CLI's own check. Signed in means a stored sign-in, not a working account.
-A sign-in session that ends closes its pane, and one more read decides the row: an
-ended session proves nothing. The first-agent step submits the same setup request as
-Add agent. Setup is complete once the CLI has started, whatever it shows; first-run
-screens are between the CLI and the person. The steps then say so, and leaving them
-opens the agent, so focus lands in its terminal. A CLI that exits right away is a
-failed setup with the provider's explanation; recovery of its saved request stays in
-the profile's Settings page.
+New profile runs as two screens across its workspace's content area: name, then
+its guide.
+The name screen takes an explicit profile name and the one baseline the provider
+can create today, and records one immutable create request in the same durable
+lifecycle journal. The provider creates a profile without starting it, so the
+screen then records and submits a start request and runs the authenticated
+selection; only that verified selection binds the workspace. An unconfirmed create
+is checked again under its original key rather than sent anew. A profile starts
+clean: when this computer's own Git name and email are kept, the create request
+carries `git_identity: "copy"`, which has the provider copy only those. Otherwise
+the field is omitted, keeping the request's bytes unchanged, and recovery restores
+whichever request was saved. The guide screen reads the profile's runtime catalog
+and asks `GET /api/profile/accounts/status` once for each installed CLI, so each
+tool card can say whether it is signed in; signed in means a stored sign-in, not a
+working account. Its Start submits the same setup request as Add agent. Setup is
+complete once the CLI has started, or is waiting for a sign-in or permission,
+whatever it shows: its pane opens then, so a sign-in happens in its terminal and
+focus lands there. A CLI that exits right away is a failed setup with the
+provider's explanation, shown under the button; recovery of its saved request
+stays under Earlier setups and in the profile's Settings page.
 
 Native profile management exposes saved first-agent setup separately from the
 current runtime catalog. It opens a private setup journal from the already

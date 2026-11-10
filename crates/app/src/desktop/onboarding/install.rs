@@ -108,6 +108,9 @@ pub fn restart_backbone(path_env: &str) -> Outcome {
         if !plist.is_file() {
             return Outcome::Failed(not_installed());
         }
+        if let Err(reason) = owned(&plist, &home) {
+            return Outcome::Failed(reason);
+        }
         let domain = format!("gui/{}", uzers::get_current_uid());
         // Stopping fails when it was not running; starting is what counts.
         let _ = run(
@@ -123,11 +126,12 @@ pub fn restart_backbone(path_env: &str) -> Outcome {
             path_env,
         ));
     }
-    if !home
-        .join(".config/systemd/user/agent-backbone.service")
-        .is_file()
-    {
+    let unit = home.join(".config/systemd/user/agent-backbone.service");
+    if !unit.is_file() {
         return Outcome::Failed(not_installed());
+    }
+    if let Err(reason) = owned(&unit, &home) {
+        return Outcome::Failed(reason);
     }
     let Some(systemctl) = find("systemctl", path_env) else {
         return Outcome::Failed("This system has no service manager setup can use.".into());
@@ -145,10 +149,7 @@ pub fn initialize_backbone(backbone: &Path, path_env: &str) -> Result<(), String
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
         .ok_or("The home folder is unknown.")?;
-    let data = std::env::var_os("BACKBONE_DATA_DIR")
-        .filter(|dir| !dir.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home.join(".local/share/agent-backbone"));
+    let data = data_dir(&home);
     let request_id = uuid::Uuid::new_v4().simple().to_string();
     let request = serde_json::json!({
         "schema_version": 1,
@@ -202,6 +203,56 @@ pub fn initialize_backbone(backbone: &Path, path_env: &str) -> Result<(), String
                 .unwrap_or("no reason given")
         )),
         _ => Err("Agent Backbone's setup did not report a result.".into()),
+    }
+}
+
+/// The data folder this app's Agent Backbone uses.
+fn data_dir(home: &Path) -> PathBuf {
+    std::env::var_os("BACKBONE_DATA_DIR")
+        .filter(|dir| !dir.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".local/share/agent-backbone"))
+}
+
+/// Whether the installed service serves this app's data folder. Its
+/// definition names the folder in `BACKBONE_DATA_DIR`, or uses the default
+/// when it doesn't. A service for another folder is left alone.
+fn owned(definition: &Path, home: &Path) -> Result<(), String> {
+    let text = std::fs::read_to_string(definition)
+        .map_err(|_| "The agent service's definition could not be read.".to_owned())?;
+    let named = text
+        .lines()
+        .map(str::trim)
+        .enumerate()
+        .find_map(|(index, line)| {
+            if let Some(rest) = line
+                .trim_start_matches("Environment=")
+                .trim_matches('"')
+                .strip_prefix("BACKBONE_DATA_DIR=")
+            {
+                return Some(rest.trim_matches('"').to_owned());
+            }
+            // A launchd plist: the key, then its string on the next line.
+            (line == "<key>BACKBONE_DATA_DIR</key>").then(|| {
+                text.lines()
+                    .nth(index + 1)
+                    .unwrap_or_default()
+                    .trim()
+                    .trim_start_matches("<string>")
+                    .trim_end_matches("</string>")
+                    .to_owned()
+            })
+        });
+    let expected = data_dir(home);
+    let served = named.map_or_else(|| home.join(".local/share/agent-backbone"), PathBuf::from);
+    if served == expected {
+        Ok(())
+    } else {
+        Err(format!(
+            "The installed agent service serves {}, not {}, so it was left alone.",
+            served.display(),
+            expected.display()
+        ))
     }
 }
 
