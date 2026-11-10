@@ -192,15 +192,16 @@ with tempfile.TemporaryDirectory(prefix="onboarding-", dir="/tmp") as directory:
             click(main, "Continue")
             wait_for(lambda: re.search(r"your\s+guide", text(main)), "Start your guide", timeout=60)
             # Each tool's card says whether it is signed in; nothing else opens.
-            wait_for(lambda: "Signed" in text(main), "the tools' sign-ins", timeout=60)
+            # OCR reads the plain cards reliably; the selected one is tinted.
+            wait_for(lambda: re.search(r"Sign\s+in\s+when\s+it\s+starts", text(main)),
+                     "the tools' sign-ins", timeout=60)
             assert list(app_windows()) == [main], "first run opened or closed a window"
             lifecycle = [entry["request"] for entry in log("lifecycle.jsonl")]
             assert [r["action"] for r in lifecycle] == ["create", "start"], lifecycle
             assert lifecycle[0]["display_name"] == "Personal"
             profile_id = lifecycle[1]["profile_id"]
             assert stat.S_IMODE(library.stat().st_mode) == 0o700, "the library folder is private"
-            value = capture(main, "guide")
-            assert re.search(r"Sign\s+in\s+when\s+it\s+starts", value), value
+            capture(main, "guide")
 
             click(main, "Start", last=True)
             # The layer fades as the guide's pane opens.
