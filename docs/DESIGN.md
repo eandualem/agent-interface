@@ -138,7 +138,7 @@ weight, applied with `components::text`:
 | `empty_title`, `body` | Empty and error states; explanatory text |
 | `figure` | The headline number in a view |
 | `card_title`, `step_key`, `step_mark` | A plan's title on its card; DONE or NOW atop a step in an opened plan; the `!` in a waiting step's mark |
-| `scene_title`, `scene_line` | The app's name and the line beneath it in the opening scene |
+| `scene_title`, `scene_line` | The app's name and the line beneath it in the opening scene, then every first-run screen's title and line |
 
 ## Spacing, radii and sizes
 
@@ -273,54 +273,63 @@ and the window, direction and recipient controls as radio groups.
 
 ## Opening scene
 
-The first time setup opens, the app's face introduces it, as the website's
-hero does: it laughs with both eyes open, looks right, looks left, and only
-then winks, the left eye closing from an amber stroke into the white `>` while
-the mouth lifts into the icon's smile. The wink is the last beat, never the
-first. The name and its line rise while the face looks around. The open amber
-eye then flies to the person's first profile and settles into its mark: it takes
-on the colour of the mark's tile as it lands and fades while the letter appears,
-so setup carries on from the face instead of cutting to it. Until the profile
-exists its mark is neutral; once made it takes its own tint, which never
-changes. When this computer is missing
-something, the eye stays in the face as it leaves and Before you start appears.
+The first time the app opens, its face introduces it, as the website's hero
+does: it laughs with both eyes open, looks right, looks left, and only then
+winks, the left eye closing from an amber stroke into the white `>` while the
+mouth lifts into the icon's smile. The wink is the last beat, never the first.
+The name and its line rise while the face looks around. The face then settles:
+it shrinks from `scene_mark` to `setup_mark` and rises to the top of the
+first-run column over `scene_settle_ms`, while the name and tagline fade and
+the first screen's title and line appear in their place, its body following.
 
 `desktop/onboarding/scene.rs` holds the face's keyframes, which are the
 website's (five seconds, `cubic-bezier(.45, 0, .2, 1)`, the bob in
 `ease-in-out`), and the scene around them, both pure functions of time. The
 tile is a gradient div; the closing eye and the mouth are stroked paths on a
 canvas, with round ends drawn as dots; the open eye is a quad with a glow.
-`scene_mark` sizes the face, `[motion]` places it (`scene_ms`, `scene_face_ms`,
-`scene_words_ms`, `scene_handoff_ms`, `scene_flight_ms`), and a test checks
-that its last frame is `packaging/icon/agent-interface.svg`.
+`[motion]` places it (`scene_ms`, `scene_face_ms`, `scene_words_ms`,
+`scene_handoff_ms`, `scene_settle_ms`), and a test checks that its last frame
+is `packaging/icon/agent-interface.svg`.
 
-Any key, a click or Skip jumps to the handoff. Interface size stays available
-in the bar below, whose rule appears with setup.
+Any key, a click or Skip (bottom left, with its `esc` keycap) jumps to the
+handoff. Interface size stays available at the bottom right throughout first
+run.
 
-## Setup window
+## First-run screens
 
-First run is the person's first profile (`desktop/onboarding.rs`). After the
-opening scene the setup window shows New profile's own steps, the same `Flow`
-the workspace uses, under "Your first profile" with the name Personal suggested.
-Once the profile exists the workspace window takes those steps over, where
-signing in sits beside a pane, and setup closes. A page appears before them only
-when something is missing.
+Every first-run and New profile screen is one shape, built once as
+`components::setup_stage(mark, title, line, body)`: `ground` fills the window,
+and a `setup_column` (420) wide column is centred, its top at
+`max(titlebar + s12, (window height − setup_stage) / 2)`, so the mark, title
+and line never move between screens. The mark is the app face at rest at
+`setup_mark` (48); the title is `scene_title` in `text`, `s16` under it; the
+line is `scene_line` in `muted`, `s6` under that, two lines at most; the body
+starts `s24` lower. Screens cross-fade their words and body over `step_ms`.
 
-Before you start lists just what is missing on a `group_card`: a `step_dot`
-mark (`!` while it needs the person, turning while a fix runs), the name, a
-`meta` note, and the fix as a secondary button. Nothing asks the person to copy
-a command. A summary line leads it, marked the same way. Continue stays
-legible but inactive (`field` with a `line_strong` border and `muted` label)
-until everything is ready.
+Fields are `setup_field`: `setup_control` (36) tall, `field` with a
+`line_strong` border, `accent` while focused. The name field leads with a
+neutral `profile_mark` showing the first letter as it is typed; the guide's
+leads with the `bot` icon in `muted`. Labels are `meta` in `muted`, `s6` above
+their control, groups `s16` apart. The main button is `setup_button`: the
+column's width, `setup_control` tall, `s20` above; off it stays legible in
+`field` and `muted`, busy it turns an arc. Quiet actions are `text_action`:
+`meta` in `muted`, `text` with a `hover` fill under the pointer, `s12` under
+the button at the column's ends.
 
-New profile's sign-in step offers Install beside a tool that isn't installed,
-with a turning arc while it runs and the failure's reason under the tool's name.
-A profile's first agent is its guide, shown as one card on `panel`: an
-`accent_soft` tile with the bot icon, "Your guide" in `card_title` and what it
-does, then its Name field and its Folder, both editable in place. "Runs in"
-lists the agent tools as `tool_card`s, Role picks the coordinating brief or the
-person's own instructions, and Model, hooks and greeting stay behind one
-disclosure. The main button names the agent: Start guide.
+Name shows "Git commits as" the name and email on one `meta` line, the name in
+`text`, with Change at its end; Change, or a computer with no Git name, opens
+two fields. The guide shows its Name, "Runs in" with `tool_card`s two to a row
+(`s8` apart; selected takes `accent_soft` and the `focus` ring; the state line
+is `meta`, with a trailing Install or Update), then Start, and More options
+opens one `panel` group with folder, instructions, model, hooks and greeting.
+Errors are `meta` in `attention_text` under the button. When something needs
+the person, the same shape holds one button: "Install tmux to continue", or
+"Agents can't start yet" with Continue with terminals and Details, whose
+reason is `meta` in the mono font on `field`.
+
+When the guide's pane opens, the stage fades over `reveal_ms` and the
+navigation panel eases in from 24 px to the left. New profile, from the menu,
+shows the same screens across the content area.
 
 ## Interaction patterns
 

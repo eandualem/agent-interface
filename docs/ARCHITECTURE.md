@@ -194,89 +194,119 @@ session-termination commands; navigation keeps them attached.
 
 ## First-run setup
 
-Until setup is explicitly completed, an ordinary launch opens a setup window
-instead of the workspace window. Existing libraries and preferences, including
-pre-rename data, are preserved and do not count as completed setup. An explicit
-`--data-dir` launch opens that library directly.
+Until setup is explicitly completed, an ordinary launch shows first run as a
+layer over the workspace window (`desktop/onboarding.rs`, hosted by
+`Browser::start_onboarding`). No other window opens or closes during first run.
+Existing libraries and preferences, including pre-rename data, are preserved
+and do not count as completed setup. An explicit `--data-dir` launch opens that
+library directly.
 
 First run is the person's first profile. A profile is where agents, sign-ins,
-skills and policies live, so setup makes one with the same steps as New profile
-and asks for nothing it can check or default instead.
+skills and policies live, so first run makes one with New profile's own screens
+and asks for nothing it can check or default instead. On a ready computer it
+takes two presses: Continue on the name, then Start on the guide.
 
-Setup opens with a scene of about five seconds, played once: the app's face
+It opens with a scene of about five seconds, played once: the app's face
 laughs, looks around and winks into the icon, with the same keyframes as the
-website. Any key, a click or Skip jumps to its handoff, and a system that asks
-for reduced motion opens without it. The scene is a pure function of time,
-redrawn every frame, so tests check its beats and that its last frame is the
-app icon. Its clock starts on the second painted frame, so a slow first frame
-cannot eat the laugh.
+website, then shrinks and rises to the top of the first-run column, where it
+stays while each screen's words change under it. Any key, a click or Skip jumps
+to its handoff, and a system that asks for reduced motion opens without it. The
+scene is a pure function of time, redrawn every frame, so tests check its beats
+and that its last frame is the app icon. Its clock starts on the second painted
+frame, so a slow first frame cannot eat the laugh.
 
-Behind the scene, setup checks this computer. tmux uses the terminal pane's
+Behind the scene, first run checks this computer. tmux uses the terminal pane's
 `tmux_binary` resolver. Git and the Backbone CLI are looked up after the user's
 interactive login shell runs its startup files, because an app opened from the
 Dock has a short PATH. The probe itself runs in `/bin/sh` so non-POSIX login
 shells can supply PATH too. Standard installation directories, including
 OpenCode's `~/.opencode/bin`, are appended without overriding the shell's PATH
 order. The shell has an eight-second deadline; its output goes to a temporary
-file instead of a pipe, with positional reads limited to 256 KiB. The lookup
-falls back to PATH and the usual install folders. Backbone counts as answering
-when its Default profile lists, shows, connects and returns its roster; these
-reads change nothing. The scene waits on the icon at its handoff until the
-check has answered, since that decides what follows.
+file instead of a pipe, with positional reads limited to 256 KiB. Backbone
+counts as answering when its Default profile lists, shows, connects and returns
+its roster; these reads change nothing. The scene waits on the icon at its
+handoff until the check has answered, and the tagline then reads "Getting
+things ready…".
 
-When this computer has everything, no check is shown: the face's open eye
-flies to the new profile's mark and the first profile's steps take the window.
-Otherwise one page, Before you start, lists only what is missing, each with its
-fix, and Continue waits until all of it is ready; nothing leads back to it
-afterwards. Use terminals only opens the workspace without a profile when tmux
-works. Fixes (`desktop/onboarding/install.rs`) run only when the person asks,
-never as a command to copy. Git and tmux install through the system's own
-installer: Apple's command line tools or Homebrew on macOS, and on Linux the
-package manager behind `pkexec`'s graphical password prompt; without a package
-manager or that prompt, the row says so. A Backbone that is installed but not
-answering restarts its service the way the installer starts it; one that is not
-set up points to the installer, which owns that setup. Fixes run off the UI
-thread with a fifteen-minute deadline, write their output to a temporary file,
-and explain a failure with its last line. Setup checks again when a fix ends,
-every few seconds while a system installer it opened is running, and whenever
-its window becomes active again. GitHub CLI is not checked: nothing in the app
-depends on it.
+The agent service is started without asking and is never named on screen
+unless the person opens Details. One that is installed but not answering is
+restarted once, the way the installer starts it (`launchctl` on macOS, the
+systemd user unit on Linux and WSL), and given 30 seconds to answer. One that
+was never set up is set up with the installer's own request,
+`backbone setup --file REQUEST --jsonl` with `action: initialize`,
+`service: user` and the `core-v1` starter profile, which keeps any existing
+data. If it still does not answer, "Agents can't start yet" offers Try again
+and Continue with terminals; Details holds the technical reason and where the
+service's log is. tmux and Git, when missing, are one screen with one Install
+button. They install through the system's own installer: Apple's command line
+tools or Homebrew on macOS, and on Linux the package manager behind `pkexec`'s
+graphical password prompt; without a package manager or that prompt, the
+screen says so. Installs run off the UI thread with a fifteen-minute deadline,
+write their output to a temporary file, and explain a failure with its last
+line. First run checks again when an install ends and every few seconds while a
+system installer it opened is running. GitHub CLI is not checked: nothing in
+the app depends on it.
 
-The first profile's steps are New profile's `Flow` in first-run mode: it says
-"Your first profile", suggests the name Personal, and has no way back from the
-name, since there is nothing to go back to. Continue creates and starts the
-profile and runs the authenticated selection, as New profile does. Profile
-requests keep their journal in the library folder, so creation makes that
-folder (0700, as the library does) when first run reaches it before any
-workspace window has. When the selection succeeds, setup opens the workspace
-window, which binds the library's untouched starting workspace to the profile
-(a new workspace when the library already holds more) and takes over the same
-`Flow` entity (`Browser::adopt_profile_flow`, asked again until its library has
-loaded). Setup records completion and closes once the workspace has taken over,
-so there is no moment with neither window. Signing in happens beside a pane, as
-in New profile, and an agent tool that isn't installed offers Install there,
-which runs its official installer with the login shell's PATH and reads the
-profile's tools again. A profile's first agent is its guide: its name, role and
-folder show in one card and are edited in place. It starts as `guide`, working
-in `~/Agents/guide`, which setup creates (`create_directory`); a folder the
-person chooses must already exist. Its brief is the coordinating
-`orchestrator-v1` template or the person's own instructions.
+The first profile's screens are New profile's `Flow` in first-run mode
+(`profile_management/flow.rs`): "Name your first profile", with Personal
+selected so typing replaces it, and no way back, since there is nothing to go
+back to. Under the name, a line shows the Git name and email the profile's
+agents will commit as: this computer's own (`git config --global`), never
+another profile's. With both set and unchanged, the create request asks Agent
+Backbone to copy them in (`git_identity: copy`). Change opens two fields; left
+empty, the profile starts with none. Continue creates and starts the profile
+and runs the authenticated selection, as New profile does. Profile requests
+keep their journal in the library folder, so creation makes that folder (0700,
+as the library does) when first run reaches it before the window's library
+has. The workspace window then binds the library's untouched starting
+workspace to the profile (a new workspace when the library already holds
+more), as soon as its library has loaded.
 
-The welcome window offers the same persistent interface-size setting as the
-workspace, including during the opening scene, so display scaling can be adjusted
-before setup is complete. On Wayland, increasing this size asks the compositor
-to maximize setup, or uses the display extent alone if maximizing is unsupported;
-global window positions are unavailable, so app-calculated position limits cannot
-safely place it. macOS and X11 instead bound resizing
-against the display, respecting the platform resize anchor.
+The guide's screen (`profile_management/choices.rs` in guide mode) has its
+name, the tool it runs in and Start. Each tool card says whether that tool is
+signed in in the profile, will ask to sign in when it starts, isn't installed
+(Install, with the tool's official installer and the login shell's PATH) or
+needs an update. The first choice is a signed-in tool, else an installed one.
+Folder, instructions, model, hooks and greeting sit under More options. The
+guide starts as `guide`, working in `~/Agents/guide`, which setup creates
+(`create_directory`); a folder the person chooses must already exist. Its brief
+is the coordinating `orchestrator-v1` template or the person's own
+instructions. While it starts, the provider's steps show as one status line
+under the button, and as soon as the guide is running, or waiting for a sign-in
+or permission, its pane opens: a tool that needs signing in asks in that
+terminal. The layer then fades over `reveal_ms` while the panel eases in. Use a
+terminal instead leaves the workspace on a terminal. A start that fails keeps
+the choices, and Try again repeats the same request when nothing changed and
+the provider allows it.
 
-Progress is saved as `[setup]` in `settings.toml`: an interrupted setup resumes
-without the scene, and **Set Up Agent Interface…** in the application menu
-reopens it to make another profile. An explicit library directory skips setup.
-Earlier versions made the first agent in the Default profile through
-`setup --file REQUEST --jsonl` and kept a private `onboarding-agent-*.json`
-record for its recovery. Setup no longer reads or writes that record; an agent
-such a request made stays in Default, with the person's own CLI sign-ins.
+The layer offers the same persistent interface-size setting as the workspace,
+including during the opening scene. Progress is saved as `[setup]` in
+`settings.toml`: an interrupted first run resumes without the scene, and a
+profile made before the app closed (`profile`) goes straight to its guide.
+**New Profile…** in the application menu shows the same two screens in the
+content area, titled "New profile" and "Start its guide", with Cancel and Skip
+for now. An explicit library directory skips first run. Earlier versions made
+the first agent in the Default profile through `setup --file REQUEST --jsonl`
+and kept a private `onboarding-agent-*.json` record for its recovery. Setup no
+longer reads or writes that record; an agent such a request made stays in
+Default, with the person's own CLI sign-ins.
+
+### Limitations with Agent Backbone 0.5
+
+- A Git name and email typed on the name screen are not part of the create
+  request: Agent Backbone can only copy this computer's own. Once the profile
+  is running, first run opens a shell in it (`ensure_shell`, which starts in
+  the profile's home) and runs `git config --global` there. This is best
+  effort: a failure is logged, the profile still works, and the person can set
+  them later inside the profile.
+- Access to repositories is not set up. An isolated profile has its own home,
+  so the GitHub CLI sign-in and SSH keys of the person's own account are not
+  visible to its agents. Running `gh auth login` and `gh auth setup-git` in a
+  shell in that profile is the supported way today.
+- The service repair restarts and sets up the Default profile's login service
+  only. Under WSL it needs systemd enabled in `/etc/wsl.conf`; without it the
+  restart fails and first run offers Continue with terminals. WSL has not been
+  verified with this flow.
 
 ## Appearance and integrations
 
