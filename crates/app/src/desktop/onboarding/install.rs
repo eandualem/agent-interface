@@ -220,31 +220,17 @@ fn data_dir(home: &Path) -> PathBuf {
 fn owned(definition: &Path, home: &Path) -> Result<(), String> {
     let text = std::fs::read_to_string(definition)
         .map_err(|_| "The agent service's definition could not be read.".to_owned())?;
-    let named = text
-        .lines()
-        .map(str::trim)
-        .enumerate()
-        .find_map(|(index, line)| {
-            if let Some(rest) = line
-                .trim_start_matches("Environment=")
-                .trim_matches('"')
-                .strip_prefix("BACKBONE_DATA_DIR=")
-            {
-                return Some(rest.trim_matches('"').to_owned());
-            }
-            // A launchd plist: the key, then its string on the next line.
-            (line == "<key>BACKBONE_DATA_DIR</key>").then(|| {
-                text.lines()
-                    .nth(index + 1)
-                    .unwrap_or_default()
-                    .trim()
-                    .trim_start_matches("<string>")
-                    .trim_end_matches("</string>")
-                    .to_owned()
-            })
-        });
     let expected = data_dir(home);
-    let served = named.map_or_else(|| home.join(".local/share/agent-backbone"), PathBuf::from);
+    let served = match served_dir(&text) {
+        Served::Named(dir) => PathBuf::from(dir),
+        Served::Default => home.join(".local/share/agent-backbone"),
+        Served::Unknown => {
+            return Err(
+                "The agent service's data folder could not be read from its definition, so it was left alone."
+                    .into(),
+            );
+        }
+    };
     if served == expected {
         Ok(())
     } else {
@@ -253,6 +239,58 @@ fn owned(definition: &Path, home: &Path) -> Result<(), String> {
             served.display(),
             expected.display()
         ))
+    }
+}
+
+/// The data folder a service definition names.
+#[derive(Debug, PartialEq, Eq)]
+enum Served {
+    Named(String),
+    /// It names none, so it uses the default.
+    Default,
+    /// It names one in a form this doesn't read.
+    Unknown,
+}
+
+/// Read `BACKBONE_DATA_DIR` from a systemd unit (`Environment=`, quoted or
+/// not, `%%` for `%`) or a launchd plist (the key, then its XML string).
+fn served_dir(text: &str) -> Served {
+    let lines: Vec<&str> = text.lines().map(str::trim).collect();
+    for (index, line) in lines.iter().enumerate() {
+        if let Some(value) = line.strip_prefix("Environment=") {
+            let value = value.trim();
+            let unquoted = ['"', '\'']
+                .iter()
+                .find_map(|q| value.strip_prefix(*q).and_then(|v| v.strip_suffix(*q)))
+                .unwrap_or(value);
+            if let Some(dir) = unquoted.strip_prefix("BACKBONE_DATA_DIR=") {
+                return Served::Named(dir.replace("%%", "%"));
+            }
+            if value.contains("BACKBONE_DATA_DIR=") {
+                return Served::Unknown;
+            }
+        }
+        if *line == "<key>BACKBONE_DATA_DIR</key>" {
+            let next = lines.get(index + 1).copied().unwrap_or_default();
+            return match next
+                .strip_prefix("<string>")
+                .and_then(|v| v.strip_suffix("</string>"))
+            {
+                Some(dir) => Served::Named(
+                    dir.replace("&lt;", "<")
+                        .replace("&gt;", ">")
+                        .replace("&quot;", "\"")
+                        .replace("&apos;", "'")
+                        .replace("&amp;", "&"),
+                ),
+                None => Served::Unknown,
+            };
+        }
+    }
+    if text.contains("BACKBONE_DATA_DIR") {
+        Served::Unknown
+    } else {
+        Served::Default
     }
 }
 
@@ -347,6 +385,29 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().display().to_string();
         (directory, format!("{path}:/usr/bin:/bin"))
+    }
+
+    #[test]
+    fn a_service_definition_names_its_data_folder() {
+        let unit = "[Service]\nEnvironment='BACKBONE_DATA_DIR=/home/fixture $cash%%/data'\n";
+        assert_eq!(
+            served_dir(unit),
+            Served::Named("/home/fixture $cash%/data".into())
+        );
+        assert_eq!(
+            served_dir("Environment=\"BACKBONE_DATA_DIR=/a b\"\n"),
+            Served::Named("/a b".into())
+        );
+        let plist = "<key>BACKBONE_DATA_DIR</key>\n<string>/x &amp; y</string>\n";
+        assert_eq!(served_dir(plist), Served::Named("/x & y".into()));
+        assert_eq!(
+            served_dir("[Service]\nExecStart=backbone serve\n"),
+            Served::Default
+        );
+        assert_eq!(
+            served_dir("<key>BACKBONE_DATA_DIR</key><string>/x</string>"),
+            Served::Unknown
+        );
     }
 
     #[test]

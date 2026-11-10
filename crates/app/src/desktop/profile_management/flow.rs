@@ -128,6 +128,8 @@ pub(in crate::desktop) struct Flow {
     pub focus: FocusHandle,
     /// This is the person's first profile, made as the app is set up.
     first: bool,
+    /// What the profile's agents commit as, fixed when Continue was pressed.
+    chosen: Option<Identity>,
     /// The screen last drawn, and when it arrived, for its fade.
     arrived: Option<(&'static str, std::time::Instant)>,
 }
@@ -185,6 +187,7 @@ impl Flow {
             ticket: Ticket::default(),
             focus: cx.focus_handle(),
             first: false,
+            chosen: None,
             arrived: None,
         }
     }
@@ -221,7 +224,11 @@ impl Flow {
         match crate::library::location::create_library_directory(self.directory.as_deref()) {
             Ok(library) => self.library = Some(library),
             Err(_) => {
+                self.busy = false;
+                self.stalled = Some(Stalled::NotStarted);
+                self.profile = Some(profile);
                 self.error = Some("Private storage for profile requests is unavailable.");
+                cx.notify();
                 return;
             }
         }
@@ -326,6 +333,10 @@ impl Flow {
         };
         self.error = None;
         self.busy = true;
+        // One choice for the whole operation, whatever the fields show later.
+        if self.chosen.is_none() {
+            self.chosen = Some(self.identity(cx));
+        }
         let (client, directory) = (self.client.clone(), self.directory.clone());
         let made = self.profile.clone();
         let ticket = self.ticket.begin();
@@ -380,7 +391,7 @@ impl Flow {
                 return;
             }
         };
-        let identity = self.identity(cx);
+        let identity = self.chosen.clone().unwrap_or(Identity::None);
         let work = cx.background_executor().spawn(async move { attempt.run() });
         cx.spawn(async move |this, cx| {
             let completion = work.await;

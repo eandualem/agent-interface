@@ -212,7 +212,11 @@ impl Form {
                         form.read_accounts(cx);
                     }
                     Err(error) => {
-                        form.state = State::Failed;
+                        // A refresh that fails keeps what was read before, and
+                        // with it the way to an earlier, open request.
+                        if !(keep && matches!(form.state, State::Ready { .. })) {
+                            form.state = State::Failed;
+                        }
                         form.error = Some(error);
                     }
                 }
