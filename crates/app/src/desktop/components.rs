@@ -22,6 +22,16 @@ pub fn text<E: Styled>(element: E, style: &TextStyle) -> E {
     element.text_size(style.size()).font_weight(style.weight())
 }
 
+/// Single-line monospaced text, ellipsized when it does not fit.
+pub fn mono(text: impl Into<SharedString>) -> Div {
+    div()
+        .font_family(tokens().font.mono.clone())
+        .overflow_hidden()
+        .whitespace_nowrap()
+        .text_ellipsis()
+        .child(text.into())
+}
+
 /// An icon in one colour.
 pub fn icon(name: &str, size: f32, color: Rgba) -> Svg {
     svg()

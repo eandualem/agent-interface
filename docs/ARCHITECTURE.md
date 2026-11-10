@@ -81,6 +81,9 @@ output. Capture and restore segments share immutable hyperlink strings, avoiding
 per-segment copies of long targets. Initial snapshots are released after restoration. The reader queues
 output only for panes in its selected window. Recovery uses the state tmux
 can report; it cannot reconstruct every historical parser or input mode.
+tmux does not report a partly received UTF-8 character as pending, so when the
+first output after a snapshot starts inside a character, the pane is rebuilt
+again instead of drawing the rest as replacement characters.
 
 tmux writes a capture's text into the control connection unchanged, so a
 captured line could match the line that ends tmux's reply and make the reader
@@ -881,8 +884,8 @@ Agent Backbone owns canonical data, calculated results, engine versions, storage
 admission and atomic updates. The app does not calculate formulas.
 
 An explicitly bound Sheets client retains its verified profile identity and
-credential snapshot through pagination, range reads, exports and mutations.
-Prepared mutations retain that client for exact retries, even after credential
+credential snapshot through pagination, range reads, exports and feedback.
+Prepared feedback retains that client for exact retries, even after credential
 rotation; another profile or lifecycle cannot submit them. Binding refusals
 preserve drafts without legacy fallback. Native bound Sheets wiring is separate.
 
@@ -1006,8 +1009,8 @@ A prepared feedback request retains exact bytes and its retry key after an uncer
 response. The composer freezes while that request is unresolved and offers a retry of
 the same operation. Accepted feedback retains its receipt and distinguishes delivery
 states without claiming an agent answer. No agent workflow or service is started by
-the view. The typed adapter also represents provider mutation APIs, but the native
-Sheets view calls only reads, export and feedback submission.
+the view. The typed adapter exposes only reads, export and feedback submission;
+agents change workbooks through Backbone.
 
 JSON/XLSX exports preserve supported workbook features; CSV/TSV export one tab as
 values. Export warnings are bounded and displayed; malformed diagnostics fail

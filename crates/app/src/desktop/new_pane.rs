@@ -24,7 +24,7 @@ use super::{
     views::source::Source,
 };
 use super::{
-    components::{self as ui},
+    components::{self as ui, mono},
     design::{colors, tokens},
     name::{NameEvent, NameField},
     views::Section,
@@ -1042,15 +1042,6 @@ fn agent_row(
             &t.text.meta,
         ))
         .child(ui::choice_key(key.to_owned()))
-}
-
-fn mono(text: impl Into<SharedString>) -> gpui::Div {
-    div()
-        .font_family(tokens().font.mono.clone())
-        .overflow_hidden()
-        .whitespace_nowrap()
-        .text_ellipsis()
-        .child(text.into())
 }
 
 #[cfg(test)]

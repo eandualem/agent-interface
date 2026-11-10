@@ -287,7 +287,9 @@ filter. **Refresh** returns to the newest documents.
 An open report, Response or Document has a conversation with its author on
 the right edge. Choose its button, or press **C**, to open it; press **C** or
 Esc in the message field to close it again, keeping the draft. Enter adds a
-paragraph and **⌘↵** sends up to 4,000 characters. Each message includes a
+paragraph and **⌘↵** sends. The app sets no length limit; Agent Backbone sets
+its own (4,000 characters in 0.5.1, 64,000 in later versions), and a longer
+message shows **Not sent** with that reason. Each message includes a
 reference to the exact record being read, and the app checks that the author
 is still registered before sending. A message shows **Sending…** until Agent
 Backbone answers, then the time it was sent; **Not sent** offers **Retry**,

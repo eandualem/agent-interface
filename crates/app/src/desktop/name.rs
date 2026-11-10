@@ -75,14 +75,11 @@ impl Text {
                             GeneralCategoryGroup::Other | GeneralCategoryGroup::Separator
                         ))
             })
-            .take(
-                (if self.feedback {
-                    agent_interface_roster::feedback::TEXT_LIMIT
-                } else {
-                    80usize
-                })
-                .saturating_sub(remaining),
-            )
+            .take(if self.feedback {
+                usize::MAX
+            } else {
+                80usize.saturating_sub(remaining)
+            })
             .collect();
         let end = range.start + inserted.len();
         self.value.replace_range(range.clone(), &inserted);
@@ -782,7 +779,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn feedback_preserves_paragraphs_and_unicode_beyond_the_name_limit() {
+    fn feedback_preserves_paragraphs_and_unicode_without_a_length_limit() {
         let mut text = Text {
             feedback: true,
             ..Text::default()
@@ -791,15 +788,9 @@ mod tests {
         text.replace(None, &message, false);
         assert_eq!(text.value, message);
         assert_eq!(text.cursor, message.len());
-        text.replace(
-            None,
-            &"x".repeat(agent_interface_roster::feedback::TEXT_LIMIT),
-            false,
-        );
-        assert_eq!(
-            text.value.chars().count(),
-            agent_interface_roster::feedback::TEXT_LIMIT
-        );
+        // Feedback has no local length limit; Backbone answers for its own.
+        text.replace(None, &"x".repeat(20_000), false);
+        assert_eq!(text.value.chars().count(), message.chars().count() + 20_000);
     }
 
     #[test]

@@ -21,7 +21,6 @@ icons!(
     "clock",
     "info",
     "circle-help",
-    "arrow-up",
     "arrow-left-right",
     "arrow-down-left",
     "arrow-up-right",

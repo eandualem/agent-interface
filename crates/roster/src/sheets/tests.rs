@@ -21,6 +21,10 @@ fn record(revision: u8) -> serde_json::Value {
         "content_sha256":"0".repeat(64)
     })
 }
+fn receipt(operation: &str) -> serde_json::Value {
+    json!({"feedback_id":id(10),"sheet_id":id(1),"observed_revision_id":id(3),
+        "operation_id":operation,"delivery":{"ok":true,"queued":false,"outcome":"delivered"}})
+}
 fn request(stream: &mut UnixStream) -> (String, Vec<u8>) {
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
@@ -57,7 +61,7 @@ fn reply(stream: &mut UnixStream, status: u16, body: serde_json::Value) {
 }
 
 #[test]
-fn explicit_types_patch_semantics_and_dates_are_preserved() {
+fn explicit_types_and_dates_are_preserved() {
     assert!(Id::parse("../api/messages").is_none());
     assert!(Id::parse("A".repeat(32)).is_none());
     assert!(Input::Date("2024-02-29".into()).valid());
@@ -67,23 +71,6 @@ fn explicit_types_patch_semantics_and_dates_are_preserved() {
     assert!(!Input::Formula("=  ".into()).valid());
     assert!(Input::Formula("=SUM(A1:A2)".into()).valid());
     assert!(!Input::Number(f64::NAN).valid());
-    let change = Change {
-        row_id: id(5),
-        column_id: id(6),
-        input: Patch::Set(Input::Text("=literal".into())),
-        number_format: Patch::Unchanged,
-    };
-    let value = serde_json::to_value(&change).unwrap();
-    assert_eq!(value["input"], json!({"kind":"text","value":"=literal"}));
-    assert!(value.get("number_format").is_none());
-    let reset = Change {
-        input: Patch::Clear,
-        number_format: Patch::Clear,
-        ..change
-    };
-    let value = serde_json::to_value(reset).unwrap();
-    assert!(value["input"].is_null());
-    assert!(value["number_format"].is_null());
     let blank: Value = serde_json::from_value(json!({"kind":"blank","value":null})).unwrap();
     assert_eq!(blank, Value::Blank(()));
 }
@@ -95,7 +82,7 @@ fn private_http_fixture_checks_lost_reply_retry_and_stale_drafts() {
     let worker = thread::spawn(move || {
         let (mut first, _) = listener.accept().unwrap();
         let (headers, original) = request(&mut first);
-        assert!(headers.starts_with(&format!("POST /api/sheets/{}/revisions HTTP/1.1", id(1))));
+        assert!(headers.starts_with(&format!("POST /api/sheets/{}/feedback HTTP/1.1", id(1))));
         let value: serde_json::Value = serde_json::from_slice(&original).unwrap();
         assert!(value["author"].is_null());
         assert_eq!(value["request_id"], json!(id(7)));
@@ -103,7 +90,7 @@ fn private_http_fixture_checks_lost_reply_retry_and_stale_drafts() {
         let (mut retry, _) = listener.accept().unwrap();
         let (_, retried) = request(&mut retry);
         assert_eq!(original, retried);
-        reply(&mut retry, 200, json!({"record":record(8),"created":false}));
+        reply(&mut retry, 200, receipt("operation"));
         let (mut stale, _) = listener.accept().unwrap();
         request(&mut stale);
         reply(
@@ -196,28 +183,23 @@ fn transport_fixture_child() {
         return;
     };
     let client = Client::connect(Path::new(&directory)).unwrap();
-    let edit = Edit::operator(
+    let feedback = Feedback::operator(
         id(7),
         id(3),
-        vec![Operation::SetCells {
-            tab_id: id(4),
-            cells: vec![Change {
-                row_id: id(5),
-                column_id: id(6),
-                input: Patch::Set(Input::Boolean(true)),
-                number_format: Patch::Unchanged,
-            }],
-        }],
+        FeedbackKind::Question,
+        "What changed?".into(),
+        None,
     );
-    let prepared = client.prepare_edit(&id(1), &edit).unwrap();
+    let prepared = client.prepare_feedback(&id(1), &feedback).unwrap();
     assert!(matches!(client.submit(&prepared), Err(Error::Unknown)));
-    assert!(matches!(client.submit(&prepared),Ok(Accepted::Revision(r)) if r.revision_id == id(8)));
+    assert!(
+        matches!(client.submit(&prepared), Ok(Accepted::Feedback(r)) if r.operation_id == "operation")
+    );
     assert_eq!(
         client.submit(&prepared).unwrap_err(),
         Error::Stale { current: id(8) }
     );
-    assert_eq!(edit.base_revision_id, id(3));
-    assert_eq!(prepared.body, serde_json::to_vec(&edit).unwrap());
+    assert_eq!(prepared.body, serde_json::to_vec(&feedback).unwrap());
     let page = client
         .list(Some(&id(2).to_string()), Some("saved+cursor"))
         .unwrap();
@@ -304,7 +286,7 @@ fn diagnostics_limits_count_ascii_escaping_without_discarding_messages() {
 }
 
 #[test]
-fn range_footprints_and_feedback_bounds_fail_before_a_request() {
+fn feedback_bounds_fail_before_a_request() {
     let feedback = Feedback::operator(
         id(7),
         id(3),
@@ -317,35 +299,22 @@ fn range_footprints_and_feedback_bounds_fail_before_a_request() {
         }),
     );
     assert!(!feedback.valid());
-    let edit = Edit::operator(
-        id(7),
-        id(3),
-        vec![Operation::SetCells {
-            tab_id: id(4),
-            cells: (0..1001)
-                .map(|_| Change {
-                    row_id: id(5),
-                    column_id: id(6),
-                    input: Patch::Set(Input::Boolean(true)),
-                    number_format: Patch::Unchanged,
-                })
-                .collect(),
-        }],
-    );
-    assert!(!edit.valid());
+    let text = |n| Feedback::operator(id(7), id(3), FeedbackKind::Feedback, "x".repeat(n), None);
+    assert!(text(64_000).valid());
+    assert!(!text(64_001).valid());
 }
 
 #[test]
 fn provider_endpoint_fixtures_decode_without_losing_revision_or_delivery_identity() {
     let fixtures: serde_json::Value =
         serde_json::from_str(include_str!("../../tests/fixtures/sheets-api.json")).unwrap();
-    let initial: Mutation = serde_json::from_value(fixtures["create"].clone()).unwrap();
-    assert!(initial.record.valid());
+    let initial: Record = serde_json::from_value(fixtures["create"]["record"].clone()).unwrap();
+    assert!(initial.valid());
     for name in ["list", "history"] {
         let page: Page = serde_json::from_value(fixtures[name].clone()).unwrap();
         assert_eq!(page.items.len(), 1);
         assert!(page.items.iter().all(Record::valid));
-        assert_eq!(page.items[0].revision_id, initial.record.revision_id);
+        assert_eq!(page.items[0].revision_id, initial.revision_id);
     }
     let metadata: Record = serde_json::from_value(fixtures["metadata"].clone()).unwrap();
     let range: Grid = serde_json::from_value(fixtures["range"].clone()).unwrap();
@@ -354,25 +323,12 @@ fn provider_endpoint_fixtures_decode_without_losing_revision_or_delivery_identit
     assert_eq!(range.revision_id, metadata.revision_id);
     assert_eq!(range.rows.len(), 5);
     assert_eq!(range.cells.len(), 24); // The completely empty fifth row remains addressable.
-    let edited: Mutation = serde_json::from_value(fixtures["edit"].clone()).unwrap();
-    assert_eq!(
-        edited.record.parent_revision_id,
-        Some(initial.record.revision_id.clone())
-    );
-    assert_eq!(edited.record.editor_kind, "operator");
-    assert!(edited.record.editor_id.is_none());
+    let edited: Record = serde_json::from_value(fixtures["edit"]["record"].clone()).unwrap();
     let stale: FailureEnvelope = serde_json::from_value(fixtures["stale"].clone()).unwrap();
     assert_eq!(stale.detail.code, "stale_revision");
-    assert_eq!(
-        stale.detail.current_revision_id,
-        Some(edited.record.revision_id)
-    );
-    let imported: Imported = serde_json::from_value(fixtures["import"].clone()).unwrap();
-    assert!(imported.record.valid());
-    assert!(valid_warnings(&imported.warnings));
-    assert_eq!(imported.warnings.len(), 1);
+    assert_eq!(stale.detail.current_revision_id, Some(edited.revision_id));
     let feedback: FeedbackReceipt = serde_json::from_value(fixtures["feedback"].clone()).unwrap();
-    assert_eq!(feedback.observed_revision_id, initial.record.revision_id);
+    assert_eq!(feedback.observed_revision_id, initial.revision_id);
     assert!(feedback.delivery.queued);
     assert!(!feedback.delivery.ok);
     assert_eq!(feedback.delivery.outcome, "queued");

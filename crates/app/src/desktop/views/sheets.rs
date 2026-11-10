@@ -441,31 +441,41 @@ impl Sheets {
         let work = cx
             .background_executor()
             .spawn(async move { client.submit(&request) });
-        cx.spawn(async move |this,cx| {
+        cx.spawn(async move |this, cx| {
             let result = work.await;
-            let _ = this.update(cx, |s,cx| {
+            let _ = this.update(cx, |s, cx| {
                 s.busy = false;
                 match result {
                     Ok(Accepted::Feedback(receipt)) => {
-                        s.pending = None; s.pending_uncertain = false;
-                        conversation.update(cx, |c,cx| c.complete(index, Outcome::Accepted(receipt.delivery.message().into()), cx));
+                        s.pending = None;
+                        s.pending_uncertain = false;
+                        conversation.update(cx, |c, cx| {
+                            c.complete(
+                                index,
+                                Outcome::Accepted(receipt.delivery.message().into()),
+                                cx,
+                            )
+                        });
                         s.notice = Some(receipt.delivery.message().into());
                         s.feedback_receipt = Some(receipt);
                     }
-                    Ok(_) => {
-                        s.pending_uncertain = true;
-                        conversation.update(cx, |c,cx| c.complete(index, Outcome::Unknown("Could not confirm feedback. Retry the same request to check its outcome.".into()), cx));
-                    }
                     Err(error) => {
                         s.pending_uncertain = unresolved_mutation(s.pending_uncertain, &error);
-                        if !s.pending_uncertain { s.pending = None; }
-                        let outcome = if s.pending_uncertain { Outcome::Unknown(error.message().into()) } else { Outcome::Refused(error.message().into()) };
-                        conversation.update(cx, |c,cx| c.complete(index, outcome, cx));
+                        if !s.pending_uncertain {
+                            s.pending = None;
+                        }
+                        let outcome = if s.pending_uncertain {
+                            Outcome::Unknown(error.message().into())
+                        } else {
+                            Outcome::Refused(error.message().into())
+                        };
+                        conversation.update(cx, |c, cx| c.complete(index, outcome, cx));
                     }
                 }
                 cx.notify();
             });
-        }).detach();
+        })
+        .detach();
     }
 }
 impl Sheets {
