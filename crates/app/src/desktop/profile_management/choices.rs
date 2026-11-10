@@ -94,6 +94,9 @@ pub(super) struct Form {
     /// Something was changed since the start stopped, so Try again sends the
     /// new choices rather than the same request.
     changed: bool,
+    /// The person picked a tool. Unlike `changed`, a start never clears it,
+    /// so a later account read never swaps it for a signed-in one.
+    picked: bool,
     pub focus: FocusHandle,
 }
 impl EventEmitter<Event> for Form {}
@@ -149,6 +152,7 @@ impl Form {
             start: None,
             refreshed: false,
             changed: false,
+            picked: false,
             focus: cx.focus_handle(),
         };
         form.load(false, cx);
@@ -293,6 +297,7 @@ impl Form {
                 form.accounts.extend(read);
                 // Prefer a signed-in tool while the person hasn't chosen.
                 if !form.changed
+                    && !form.picked
                     && let State::Ready { catalog, .. } = &form.state
                     && let Some(id) = catalog
                         .items()
@@ -348,6 +353,7 @@ impl Form {
         self.runtime = Some(ready[next].clone());
         self.model = None;
         self.changed = true;
+        self.picked = true;
         cx.notify();
     }
 
@@ -378,6 +384,7 @@ impl Form {
                         form.installing.remove(&runtime);
                         form.select = Some(runtime);
                         form.changed = true;
+                        form.picked = true;
                         form.load(true, cx);
                     }
                 }
@@ -1100,6 +1107,7 @@ impl Form {
                                 form.runtime = Some(id.clone());
                                 form.model = None;
                                 form.changed = true;
+                                form.picked = true;
                                 cx.notify();
                             } else {
                                 form.install(id.clone(), cx);
