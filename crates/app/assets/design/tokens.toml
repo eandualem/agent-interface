@@ -40,6 +40,12 @@ violet = "#c39bd3"          # cache writes in usage
 green = "#a9c77e"           # output tokens in usage
 code = "#e8c27a"            # inline code in a document
 shadow = "#00000073"        # popover shadow
+mark_from = "#2a2d33"       # the app mark's tile, top; the mark keeps the icon's colours in both themes
+mark_to = "#121315"         # the app mark's tile, bottom
+mark_edge = "#ffffff12"     # the hairline inside the mark's tile (7 %)
+mark_glyph = "#e7e8eb"      # the mark's closed eye and mouth
+mark_eye = "#e8a85f"        # the mark's open eyes
+mark_glow = "#e8a85f8c"     # the glow around the mark's cursor eye (55 %)
 pane_dim = 0.72             # opacity of unfocused panes' content
 
 [color.light]
@@ -72,6 +78,12 @@ violet = "#7f4fa0"
 green = "#4f7a1f"
 code = "#8a6000"
 shadow = "#281e1424"
+mark_from = "#2a2d33"
+mark_to = "#121315"
+mark_edge = "#ffffff12"
+mark_glyph = "#e7e8eb"
+mark_eye = "#e8a85f"
+mark_glow = "#e8a85f8c"
 pane_dim = 0.8
 
 # Terminal defaults per theme: text, background, cursor and the 16 ANSI colours.
@@ -164,6 +176,14 @@ weight = 600
 size = 9.0
 weight = 700
 
+[text.scene_title]          # the app's name in the opening scene
+size = 26.0
+weight = 600
+
+[text.scene_line]           # the line under the name in the opening scene
+size = 14.0
+weight = 400
+
 # ---------------------------------------------------------------- spacing
 
 # A 2 px base. Views use these names, never raw numbers.
@@ -232,7 +252,11 @@ window_min_height = 420.0
 caret = 1.0                 # text caret and composition underline
 settings_width = 680.0
 settings_height = 480.0
-setup_height = 540.0        # the setup window, tall enough for the agent step
+scene_mark = 152.0          # the app mark in the opening scene
+setup_column = 420.0        # the column every first-run screen sits in
+setup_stage = 464.0         # the tallest first-run screen, used to place the column
+setup_mark = 48.0           # the app mark once the scene has settled
+setup_control = 36.0        # fields and the main button on first-run screens
 settings_nav = 180.0
 theme_card = 140.0
 empty_icon = 40.0           # tile above empty and error messages
@@ -240,7 +264,6 @@ empty_width = 300.0         # text width in empty and error states
 menu_heading = 26.0         # heading inside a menu
 profile_popover = 308.0     # the New workspace popover
 profile_mark = 20.0         # a profile's letter mark in lists
-profile_flow = 460.0        # the New profile steps column
 keycap = 16.0               # keycap line height
 hairline = 1.0              # rules, borders and separators
 minimap_stroke = 1.0        # tab layout thumbnail lines
@@ -315,3 +338,12 @@ sheet_number = 40.0         # the row numbers' column
 
 [motion]
 spinner_ms = 1100           # one turn of the working-agent arc
+# The opening scene. The face's own laugh, look and wink keep the website's
+# five-second keyframes; these place it in the first-run stage.
+scene_ms = 5300             # the whole scene, from the first frame to setup
+scene_face_ms = 300         # when the face starts, while its tile rises
+scene_words_ms = 1700       # when the name rises; the line follows 200 ms later
+scene_handoff_ms = 4500     # when setup takes over; Skip jumps here
+scene_settle_ms = 500       # the face shrinking and rising into the column
+step_ms = 220               # title, line and body cross-fading between screens
+reveal_ms = 320             # the first-run stage fading as the workspace arrives

@@ -152,6 +152,8 @@ pub(super) struct NameField {
     dragging: bool,
     cancel_on_blur: bool,
     read_only: bool,
+    /// Drawn without its own frame, inside a caller's field frame.
+    bare: bool,
     _blur: Subscription,
 }
 
@@ -182,6 +184,7 @@ impl NameField {
             dragging: false,
             cancel_on_blur: true,
             read_only: false,
+            bare: false,
             _blur: blur,
         }
     }
@@ -203,6 +206,23 @@ impl NameField {
             None => window.blur(cx),
         }
         field
+    }
+
+    /// A one-line field drawn without a frame, for a caller's own field frame,
+    /// that keeps the current keyboard focus.
+    pub fn bare(value: &str, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let mut field = Self::filter(window, cx);
+        field.text.search = false;
+        field.bare = true;
+        field.set_value(value, cx);
+        field
+    }
+
+    /// Select the whole text, so typing replaces it.
+    pub fn select_all(&mut self, cx: &mut Context<Self>) {
+        self.text.anchor = 0;
+        self.text.cursor = self.text.value.len();
+        cx.notify();
     }
 
     /// A multiline feedback field that keeps the current keyboard focus.
@@ -662,14 +682,14 @@ impl Render for NameField {
             .min_w_0()
             .h(px(if feedback {
                 super::design::tokens().size.composer_field
-            } else if search {
+            } else if search || self.bare {
                 super::design::tokens().size.jump_field
             } else {
                 super::design::tokens().size.row - super::design::tokens().space.s8
             }))
             .text_color(super::design::colors().text)
             // A message field sits bare inside the conversation's composer frame.
-            .when(!feedback, |field| {
+            .when(!feedback && !self.bare, |field| {
                 field
                     .px(px(super::design::tokens().space.s6))
                     .rounded(px(super::design::tokens().radius.key))

@@ -501,7 +501,19 @@ impl Render for ProfilePicker {
                     .on_click(cx.listener(move |picker, _, _, cx| picker.choose(&id, cx))),
             );
         }
-        menu = menu.child(ui::menu_heading("PROFILE")).child(rows);
+        menu = menu
+            .child(ui::menu_heading("PROFILE"))
+            .child(
+                ui::text(
+                    div()
+                        .px(px(t.space.s10))
+                        .pb(px(t.space.s6))
+                        .text_color(c.muted),
+                    &t.text.meta,
+                )
+                .child("Each profile keeps its own sign-ins, agents, skills and policies."),
+            )
+            .child(rows);
         if let Some((_, error)) = &self.selection_error {
             menu = menu.child(
                 ui::text(

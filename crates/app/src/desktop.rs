@@ -66,7 +66,7 @@ actions!(
         /// Show the Settings window.
         OpenSettings,
         /// Open first-run setup again.
-        RunSetup,
+        NewProfile,
         /// Close the focused pane; the last pane closes its tab.
         ClosePane,
         /// Close the selected tab, leaving its sessions under tmux's ownership.
@@ -122,15 +122,7 @@ pub fn run(directory: Option<PathBuf>) -> Result<(), String> {
             // Defer: a window that is dispatching this action cannot be updated
             // until dispatch returns.
             cx.on_action(|_: &OpenSettings, cx| cx.defer(settings_window::show));
-            // Setup always adds its agent to Default, whichever workspace is
-            // selected, so any window may open it.
-            cx.on_action(|_: &RunSetup, cx| {
-                cx.defer(|cx| {
-                    if let Err(error) = onboarding::show(false, cx) {
-                        tracing::error!(event = "setup_window_failed", %error, "Cannot open setup");
-                    }
-                })
-            });
+            cx.on_action(|_: &NewProfile, cx| cx.defer(new_profile));
             cx.on_action(|_: &ClosePane, cx| {
                 if let Some(window) = cx.active_window() {
                     cx.defer(move |cx| {
@@ -207,12 +199,18 @@ pub fn run(directory: Option<PathBuf>) -> Result<(), String> {
                 }
             })
             .detach();
-            // A fresh install opens through setup; an explicit library never does.
-            let result = if directory.is_none() && onboarding::first_run(&preferences) {
-                onboarding::show(!preferences.intro_seen, cx)
-            } else {
-                open_browser(directory, source, cx)
-            };
+            // A fresh install opens with first run over the window; an explicit
+            // library never does.
+            let first = directory.is_none() && onboarding::first_run(&preferences);
+            let result = open_browser(directory, source, cx);
+            if first
+                && result.is_ok()
+                && let Some(handle) = browser_window(cx)
+            {
+                let _ = handle.update(cx, |browser, window, cx| {
+                    browser.start_onboarding(window, cx)
+                });
+            }
             if let Err(error) = result {
                 *opened.borrow_mut() = Some(format!("cannot open window: {error}"));
                 cx.spawn(async |cx| cx.update(|cx| cx.quit())).detach();
@@ -258,7 +256,7 @@ fn configure_menu(cx: &mut App) {
                 MenuItem::action("New Window", NewWindow),
                 MenuItem::action("Open Library…", OpenLibrary),
                 MenuItem::action("Settings…", OpenSettings),
-                MenuItem::action("Set Up Agent Interface…", RunSetup),
+                MenuItem::action("New Profile…", NewProfile),
                 MenuItem::action("Close Pane", ClosePane),
                 MenuItem::action("Detach", DetachSession),
                 MenuItem::action("Close Tab", CloseTab),
@@ -302,6 +300,44 @@ fn browser_window(cx: &App) -> Option<gpui::WindowHandle<Browser>> {
                 .into_iter()
                 .find_map(|window| window.downcast::<Browser>())
         })
+}
+
+/// New profile, from the application menu: its two screens in the active
+/// workspace window, which opens if there is none.
+fn new_profile(cx: &mut App) {
+    cx.spawn(async |cx| {
+        let client = cx
+            .background_executor()
+            .spawn(async { onboarding::probe::profile_client() })
+            .await;
+        cx.update(|cx| {
+            if browser_window(cx).is_none() {
+                let source = crate::sessions::source_socket(None).map_err(|e| e.to_string());
+                if let Err(error) = open_browser(None, source, cx) {
+                    tracing::error!(event = "new_profile_window_failed", %error, "Cannot open a window");
+                    return;
+                }
+            }
+            if let Some(handle) = browser_window(cx) {
+                let _ = handle.update(cx, |browser, window, cx| {
+                    if let Some(client) = client {
+                        browser.use_profile_client(client);
+                    }
+                    window.activate_window();
+                    if !matches!(browser.profile_client, Some(Ok(_))) {
+                        browser.save_notice = Some(
+                            "New profile needs the agent service, which isn't answering. Try again in a moment."
+                                .into(),
+                        );
+                        cx.notify();
+                        return;
+                    }
+                    browser.open_profile_flow(String::new(), window, cx);
+                });
+            }
+        });
+    })
+    .detach();
 }
 
 fn open_browser(
@@ -600,7 +636,13 @@ struct Browser {
         gpui::Entity<profile_picker::ProfilePicker>,
         gpui::Subscription,
     )>,
-    /// New profile, shown beside the workspace it is made for.
+    /// First run, a layer over the whole window until it fades.
+    onboarding: Option<(gpui::Entity<onboarding::Onboarding>, gpui::Subscription)>,
+    /// First run asked to open its guide's pane and waits to hear how it went.
+    first_open: bool,
+    /// First run's profile, waiting for the library to load to be bound.
+    first_bind: Option<onboarding::FirstBind>,
+    /// New profile, across the content area of the workspace it is made for.
     profile_flow: Option<(
         gpui::Entity<profile_management::flow::Flow>,
         gpui::Subscription,
@@ -787,15 +829,6 @@ impl Browser {
 
     /// A finished sign-in has nothing left to show, so its pane goes.
     fn close_ended_pane(&mut self, target: &Target, window: &mut Window, cx: &mut Context<Self>) {
-        if let (Some((flow, _)), Some(profile), Some(attachment)) = (
-            &self.profile_flow,
-            target.connection.as_ref(),
-            target.leaf.attachment.as_ref(),
-        ) && let Some(runtime) = attachment.session.strip_prefix("sign-in-")
-        {
-            let profile = profile.identity().profile_id.clone();
-            flow.update(cx, |flow, cx| flow.sign_in_ended(&profile, runtime, cx));
-        }
         if self.saving || self.save_failed {
             return;
         }
@@ -1554,6 +1587,7 @@ impl Browser {
 
     fn web_content_occluded(&self) -> bool {
         if self.profile_picker.is_some()
+            || self.onboarding.is_some()
             || self.profile_picker_requested
             || self.profile_content_unavailable()
         {
@@ -2804,7 +2838,30 @@ impl Render for Browser {
                 terminal.open_shell(leaf, environment, cx)
             });
         }
+        if let Some(bind) = &self.first_bind
+            && self.adopt_first_profile(&bind.clone(), cx)
+        {
+            self.first_bind = None;
+        }
         let sidebar = self.sidebar(window, cx);
+        // As first run fades, the panel eases in from the left.
+        let sidebar = match self
+            .onboarding
+            .as_ref()
+            .and_then(|(onboarding, _)| onboarding.read(cx).reveal())
+        {
+            Some(reveal) => {
+                let eased = gpui::ease_out_quint()(reveal);
+                div()
+                    .relative()
+                    .flex()
+                    .left(px(-design::tokens().space.s24 * (1.0 - eased)))
+                    .opacity(eased)
+                    .child(sidebar)
+                    .into_any_element()
+            }
+            None => sidebar.into_any_element(),
+        };
         let content = self.content(window, cx);
         let content = self.beside_profile_flow(content, cx);
         let status = self.status_bar(window, cx);
@@ -2859,6 +2916,14 @@ impl Render for Browser {
             .capture_key_down(
                 cx.listener(|browser, event: &gpui::KeyDownEvent, window, cx| {
                     if browser.profile_picker.is_some() {
+                        return;
+                    }
+                    // First run has the keyboard until it fades.
+                    if browser
+                        .onboarding
+                        .as_ref()
+                        .is_some_and(|(onboarding, _)| onboarding.read(cx).reveal().is_none())
+                    {
                         return;
                     }
                     if let Some(drag) = &mut browser.pane_drag
@@ -3107,6 +3172,11 @@ impl Render for Browser {
             )
             .child(status)
             .children(overlay)
+            .children(
+                self.onboarding
+                    .as_ref()
+                    .map(|(onboarding, _)| onboarding.clone()),
+            )
             // Last painted means first in the bubble phase. Let every button
             // clear its press in capture before suppressing drag-generated clicks.
             .child(

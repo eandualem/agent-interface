@@ -13,7 +13,7 @@ use crate::profiles::{
     Client, Error,
     selection::{Attempt, Completion, Selection},
 };
-use gpui::{Context, Window, prelude::*};
+use gpui::{Context, Entity, Window, prelude::*};
 
 #[derive(Clone, PartialEq, Eq)]
 pub(super) enum Owner {
@@ -24,6 +24,8 @@ pub(super) enum Owner {
 #[derive(Default)]
 pub(super) struct Registry {
     entries: HashMap<String, Entry>,
+    /// Display names by profile id, from verified selections.
+    names: HashMap<String, String>,
 }
 
 struct Entry {
@@ -75,6 +77,7 @@ impl Registry {
                     )
                 })
                 .collect(),
+            names: self.names.clone(),
         }
     }
     /// Reconcile every workspace, not just the currently selected one.
@@ -139,8 +142,27 @@ impl Registry {
         let Some(result) = entry.selection.accept(finished.completion) else {
             return false;
         };
+        if let Ok(selected) = &result {
+            self.names.insert(
+                selected.item().profile_id.clone(),
+                selected.item().display_name.clone(),
+            );
+        }
         entry.result = Some(result.map(|selected| selected.connection().clone()));
         true
+    }
+
+    /// Remember a profile's display name for the status row.
+    pub fn remember_name(&mut self, item: &agent_interface_roster::profiles::Item) {
+        self.names
+            .insert(item.profile_id.clone(), item.display_name.clone());
+    }
+
+    /// A bound workspace's profile name, once a selection has reported it.
+    pub fn profile_name(&self, space: &Workspace) -> Option<&str> {
+        self.names
+            .get(space.profile_id.as_ref()?)
+            .map(String::as_str)
     }
 
     /// Install a picker result only after that exact workspace binding is saved.
@@ -317,6 +339,7 @@ impl Browser {
     ) {
         use super::profile_management::Open;
         let Some(Ok(client)) = &self.profile_client else {
+            self.first_run_opened(Err("The profile could not be reached. Try again."), cx);
             return;
         };
         let client = client.clone();
@@ -357,6 +380,7 @@ impl Browser {
                     }
                     Err(error) => Err(error),
                 };
+                browser.first_run_opened(opened, cx);
                 if let Err(error) = opened {
                     browser.save_notice = Some(error.into());
                 }
@@ -541,6 +565,7 @@ impl Browser {
                 .find(|space| space.id == id)
             {
                 Some(space) => {
+                    self.workspace_profiles.remember_name(&item);
                     self.workspace_profiles.bind(space, connection);
                 }
                 // A conflicting save dropped the new workspace: make it again.
@@ -763,7 +788,23 @@ impl Browser {
         } else {
             name.trim()
         };
-        let Some((base, mut proposed)) = super::workspace::create_profile(layout, label) else {
+        let Some((base, proposed)) = super::workspace::create_profile(layout, label) else {
+            return;
+        };
+        self.propose_binding(base, proposed, item, connection, name, cx);
+    }
+
+    /// Save `proposed` with its selected workspace bound to the profile.
+    fn propose_binding(
+        &mut self,
+        base: agent_interface_store::Document,
+        mut proposed: agent_interface_core::Layout,
+        item: agent_interface_roster::profiles::Item,
+        connection: Connection,
+        name: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(layout) = &self.layout else {
             return;
         };
         let selected_id = proposed.selected.clone();
@@ -798,6 +839,115 @@ impl Browser {
         let flow = cx.new(|cx| {
             super::profile_management::flow::Flow::new(client, directory, name, home, window, cx)
         });
+        self.attach_profile_flow(flow, window, cx);
+    }
+
+    /// Show first run over this window: the scene, what this computer needs,
+    /// then the first profile and its guide.
+    pub(super) fn start_onboarding(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let directory = self.directory.clone();
+        let onboarding = cx.new(|cx| super::onboarding::Onboarding::new(directory, window, cx));
+        let events = cx.subscribe_in(&onboarding, window, |browser, _, event, window, cx| {
+            use super::onboarding::Event;
+            match event {
+                Event::Bind(bind) => {
+                    if !browser.adopt_first_profile(bind, cx) {
+                        browser.first_bind = Some((**bind).clone());
+                    }
+                }
+                Event::Open(open) => {
+                    browser.first_open = true;
+                    browser.open_from_setup(open.clone(), Some(String::new()), window, cx);
+                }
+                Event::Terminal => {
+                    let empty = browser
+                        .layout
+                        .as_ref()
+                        .is_some_and(|layout| layout.model().tab().is_none());
+                    if empty {
+                        let creation = browser.creation_target();
+                        browser.create_from(
+                            super::layout_edit::Create::Tab,
+                            creation.as_ref(),
+                            window,
+                            cx,
+                        );
+                    }
+                }
+                Event::Done => {
+                    browser.onboarding = None;
+                    // A guide's terminal that took focus as it opened keeps it.
+                    if window.focused(cx).is_none()
+                        && let Some(focus) = &browser.navigation
+                    {
+                        window.focus(focus, cx);
+                    }
+                }
+            }
+            cx.notify();
+        });
+        self.onboarding = Some((onboarding, events));
+        cx.notify();
+    }
+
+    /// Tell first run whether its guide's pane opened, when it asked for it.
+    fn first_run_opened(&mut self, opened: Result<(), &'static str>, cx: &mut Context<Self>) {
+        if !std::mem::take(&mut self.first_open) {
+            return;
+        }
+        if let Some((onboarding, _)) = &self.onboarding {
+            onboarding.update(cx, |onboarding, cx| onboarding.opened(opened, cx));
+        }
+    }
+
+    /// First run made the person's first profile: bind the library's
+    /// untouched starting workspace (or else a new one) to it. Returns false
+    /// while this window's library is still loading, to be asked again.
+    pub(super) fn adopt_first_profile(
+        &mut self,
+        bind: &super::onboarding::FirstBind,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.layout.is_none() || self.saving || self.save_failed {
+            return false;
+        }
+        self.use_profile_client(bind.client.clone());
+        // Carrying on after a restart: the workspace bound before is reused.
+        let bound = self.layout.as_ref().and_then(|layout| {
+            layout
+                .model()
+                .workspaces
+                .iter()
+                .find(|space| space.profile_id.as_deref() == Some(bind.item.profile_id.as_str()))
+                .cloned()
+        });
+        if let Some(space) = bound {
+            self.workspace_profiles
+                .bind(&space, bind.connection.clone());
+            cx.notify();
+            return true;
+        }
+        let claim = self
+            .layout
+            .as_ref()
+            .and_then(|layout| super::workspace::claim_first(layout, &bind.item.display_name));
+        let (item, connection) = (bind.item.clone(), bind.connection.clone());
+        match claim {
+            Some((base, proposed)) => {
+                self.propose_binding(base, proposed, item, connection, "", cx)
+            }
+            None => self.bind_workspace(item, connection, "", cx),
+        }
+        true
+    }
+
+    /// Show a profile flow's steps in the content area and follow its events.
+    fn attach_profile_flow(
+        &mut self,
+        flow: Entity<super::profile_management::flow::Flow>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         window.focus(&flow.read(cx).focus_handle(cx), cx);
         let events = cx.subscribe_in(&flow, window, |browser, flow, event, window, cx| {
             if !browser

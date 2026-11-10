@@ -1,139 +1,62 @@
-//! First-run onboarding: a short opening scene, then a setup window that
-//! checks this computer, finds agent tools and shows the main shortcuts.
-//! It opens instead of the workspace window on a fresh install, and from
-//! the application menu at any time after.
+//! First run, as a layer over the workspace window. The app's face winks,
+//! then settles at the top of one column where each question appears in turn:
+//! the person's first profile, then its guide, the same screens as New
+//! profile. The agent service starts quietly while the face plays; tmux or
+//! Git, when missing, is one Install button. When the guide's pane opens the
+//! layer fades and the workspace is there.
 
-mod first;
+pub(super) mod install;
 pub(super) mod probe;
-mod setup;
+pub(super) mod scene;
 
-use std::time::Duration;
+use std::{
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 
+use agent_interface_roster::profiles::{Connection, Item as Listed};
 use gpui::{
-    Animation, AnimationExt, App, Bounds, BoxShadow, ClipboardItem, Context, Entity, Global,
-    Pixels, Rgba, SharedString, Size, Subscription, TitlebarOptions, Window, WindowBounds,
-    WindowHandle, WindowOptions, div, point, prelude::*, px, size,
+    AnyElement, Context, Entity, EventEmitter, FocusHandle, KeyDownEvent, MouseButton,
+    SharedString, Subscription, Window, div, prelude::*, px,
 };
 
-use self::probe::{Backbone, Probe, TOOLS};
+use self::probe::{Backbone, Probe};
 use super::{
-    components::{self as ui, Button, Tone},
+    components as ui,
     design::{colors, tokens},
+    profile_management::{
+        Open,
+        flow::{self, Flow},
+    },
     settings::{self, Settings},
-    shortcuts::{self, Command},
 };
+use crate::profiles::Client;
 
-/// The opening scene's length; it plays once, without a skip.
-const SCENE: Duration = Duration::from_millis(8000);
 const TAGLINE: &str = "Your agents. Working together. On your machine.";
-const STEPS: [&str; 4] = ["Check", "Agent tools", "Your agent", "Shortcuts"];
+/// How often first run checks again while a system installer it opened runs.
+const WATCH: Duration = Duration::from_secs(4);
+/// How long the agent service gets to answer after the app starts it.
+const SERVICE_WAIT: Duration = Duration::from_secs(30);
+const SERVICE_POLL: Duration = Duration::from_secs(1);
 
-/// Whether this launch opens through setup instead of the workspace window:
-/// only a completed setup skips onboarding. Existing libraries and preferences
-/// may predate onboarding and do not establish that setup was completed.
+/// Whether this launch opens with first run: only a completed setup skips it.
+/// Existing libraries and preferences may predate first run and do not
+/// establish that it was completed.
 pub fn first_run(preferences: &Settings) -> bool {
     !preferences.setup_done
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Stage {
-    Scene,
-    Step(usize),
-}
-
-pub struct Onboarding {
-    stage: Stage,
-    probe: Option<Probe>,
-    checking: bool,
-    copied: Option<&'static str>,
-    open_error: Option<&'static str>,
-    first: Option<Entity<first::FirstAgent>>,
-    first_ready: bool,
-    first_agent: Option<String>,
-    first_events: Option<Subscription>,
-}
-
-struct Open(WindowHandle<Onboarding>);
-impl Global for Open {}
-
-/// Open setup, with the opening scene first when `intro` is set.
-pub fn show(intro: bool, cx: &mut App) -> Result<(), String> {
-    let open = cx.try_global::<Open>().map(|Open(handle)| *handle);
-    if let Some(handle) = open
-        && handle
-            .update(cx, |_, window, _| window.activate_window())
-            .is_ok()
-    {
-        return Ok(());
-    }
-    let t = tokens();
-    let options = WindowOptions {
-        app_id: Some(super::APP_ID.into()),
-        window_decorations: cfg!(target_os = "linux").then_some(gpui::WindowDecorations::Client),
-        window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
-            None,
-            size(px(t.size.settings_width), px(t.size.setup_height)),
-            cx,
-        ))),
-        is_resizable: true,
-        titlebar: Some(TitlebarOptions {
-            title: Some("Welcome to Agent Interface".into()),
-            appears_transparent: true,
-            traffic_light_position: Some(point(
-                px(t.size.window_controls_x),
-                px(t.size.window_controls_y),
-            )),
-        }),
-        ..Default::default()
-    };
-    let intro = intro && !reduce_motion();
-    if !intro {
-        // Without the scene, record now that setup began, so an interrupted
-        // setup still resumes after other settings create the file.
-        remember(|settings| settings.intro_seen = true);
-    }
-    let handle = cx
-        .open_window(options, |_, cx| {
-            cx.new(|cx| {
-                let mut view = Onboarding {
-                    stage: if intro { Stage::Scene } else { Stage::Step(0) },
-                    probe: None,
-                    checking: false,
-                    copied: None,
-                    open_error: None,
-                    first: None,
-                    first_ready: false,
-                    first_agent: None,
-                    first_events: None,
-                };
-                // The scene covers the first check, so step one opens with answers.
-                view.check(cx);
-                if intro {
-                    cx.spawn(async |view, cx| {
-                        cx.background_executor().timer(SCENE).await;
-                        let _ = view.update(cx, |view, cx| {
-                            view.stage = Stage::Step(0);
-                            remember(|settings| settings.intro_seen = true);
-                            cx.notify();
-                        });
-                    })
-                    .detach();
-                }
-                view
-            })
-        })
-        .map_err(|error| error.to_string())?;
-    cx.set_global(Open(handle));
-    Ok(())
-}
-
-/// The system asks for less motion: open straight on the first step.
-fn reduce_motion() -> bool {
-    cfg!(target_os = "macos")
-        && std::process::Command::new("/usr/bin/defaults")
-            .args(["read", "com.apple.universalaccess", "reduceMotion"])
-            .output()
-            .is_ok_and(|output| output.stdout.trim_ascii() == b"1")
+/// The system asks for less motion: no scene, and screens change at once.
+/// Read once, the first time it is asked.
+pub(in crate::desktop) fn reduce_motion() -> bool {
+    static REDUCE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *REDUCE.get_or_init(|| {
+        cfg!(target_os = "macos")
+            && std::process::Command::new("/usr/bin/defaults")
+                .args(["read", "com.apple.universalaccess", "reduceMotion"])
+                .output()
+                .is_ok_and(|output| output.stdout.trim_ascii() == b"1")
+    })
 }
 
 /// Apply a settings change everywhere and save it.
@@ -148,132 +71,196 @@ fn remember(update: impl FnOnce(&mut Settings)) {
     });
 }
 
-fn resize_limit(
-    current: Bounds<Pixels>,
-    visible: Bounds<Pixels>,
-    bottom_anchor: bool,
-) -> Size<Pixels> {
-    // AppKit keeps the bottom edge fixed; Linux grows from the top edge.
-    let height = if bottom_anchor {
-        current.bottom() - visible.origin.y
-    } else {
-        visible.bottom() - current.origin.y
-    };
-    size(
-        (visible.right() - current.origin.x - px(16.)).max(px(1.)),
-        (height - px(16.)).max(px(1.)),
-    )
+pub(in crate::desktop) enum Event {
+    /// The first profile exists: bind the starting workspace to it.
+    Bind(Box<FirstBind>),
+    /// The guide is up: open its pane.
+    Open(Open),
+    /// No guide for now: the workspace opens on a terminal.
+    Terminal,
+    /// The layer has faded away.
+    Done,
 }
 
+/// The first profile, for the workspace window to bind its starting
+/// workspace to once its library has loaded.
+#[derive(Clone)]
+pub(in crate::desktop) struct FirstBind {
+    pub item: Listed,
+    pub connection: Connection,
+    pub client: Client,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Stage {
+    /// The opening scene, over whichever screen comes next.
+    Scene,
+    /// Something needs the person, or the service is still starting.
+    Needs,
+    /// The first profile and its guide.
+    Profile,
+}
+
+/// The agent service, as first run sees it.
+#[derive(Clone, PartialEq, Eq)]
+enum Service {
+    Checking,
+    /// The app is starting or setting it up.
+    Starting,
+    Ready,
+    /// It couldn't, and why, in technical words for Details.
+    Failed(String),
+}
+
+/// An install the person asked for.
+#[derive(Clone, PartialEq, Eq)]
+enum Installing {
+    Running,
+    /// The system's own installer is open; first run checks until it is done.
+    Opened,
+    Failed(String),
+}
+
+pub(in crate::desktop) struct Onboarding {
+    stage: Stage,
+    probe: Option<Probe>,
+    checking: bool,
+    /// Another check was asked for while one ran.
+    recheck: bool,
+    service: Service,
+    installing: Option<Installing>,
+    watching: bool,
+    /// The opening scene's clock; Skip moves it to the handoff.
+    clock: scene::Clock,
+    focus: FocusHandle,
+    /// The flow's client, waiting for a window to make the flow in.
+    pending_flow: Option<Client>,
+    flow: Option<(Entity<Flow>, Subscription)>,
+    /// The service's technical reason is shown.
+    details: bool,
+    /// The layer began to fade.
+    leaving: Option<Instant>,
+    /// A first profile made before the app last closed, to carry on with.
+    resume: Option<String>,
+    /// The service was restarted or set up once; only Try again repeats it.
+    repaired: bool,
+    /// The guide's pane asked for, and why it didn't open if it didn't.
+    opening: Option<(Open, Option<&'static str>)>,
+    directory: Option<PathBuf>,
+}
+impl EventEmitter<Event> for Onboarding {}
+
 impl Onboarding {
-    fn scale_controls(&self, cx: &mut Context<Self>) -> gpui::Div {
-        let (t, c) = (tokens(), colors());
-        let percent = Settings::current().interface_size;
-        let sizes = super::zoom::SIZES;
-        let at = sizes.iter().position(|size| *size == percent).unwrap_or(1);
-        let button = |id, label, next: Option<u32>| {
-            ui::button(id, label, Button::Secondary)
-                .opacity(if next.is_some() { 1.0 } else { 0.4 })
-                .when_some(next, |el, next| {
-                    el.on_click(cx.listener(move |_, _, window, cx| {
-                        remember(|settings| settings.interface_size = next);
-                        if !window.is_maximized() && !window.is_fullscreen() {
-                            let wayland = raw_window_handle::HasWindowHandle::window_handle(window)
-                                .is_ok_and(|handle| {
-                                    matches!(
-                                        handle.as_raw(),
-                                        raw_window_handle::RawWindowHandle::Wayland(_)
-                                    )
-                                });
-                            if wayland {
-                                // Wayland owns placement and does not expose a
-                                // global window origin. Let the compositor fit
-                                // larger text instead of mixing local/global bounds.
-                                if next > percent {
-                                    if window.window_controls().maximize {
-                                        window.zoom_window();
-                                    } else if let Some(display) = window.display(cx) {
-                                        // Some compositors do not offer maximize.
-                                        // Only the output's extent is meaningful here.
-                                        window.resize(
-                                            size(
-                                                px(tokens().size.settings_width),
-                                                px(tokens().size.setup_height),
-                                            )
-                                            .min(&display.visible_bounds().size),
-                                        );
-                                    }
-                                }
-                            } else {
-                                // Both bounds use the new zoom factor. Respect the
-                                // platform's fixed edge when growing the window.
-                                let current = window.bounds();
-                                let available =
-                                    window.display(cx).map_or(current.size, |display| {
-                                        resize_limit(
-                                            current,
-                                            display.visible_bounds(),
-                                            cfg!(target_os = "macos"),
-                                        )
-                                    });
-                                window.resize(
-                                    size(
-                                        px(tokens().size.settings_width),
-                                        px(tokens().size.setup_height),
-                                    )
-                                    .min(&available),
-                                );
-                            }
-                        }
-                        cx.defer(|cx| {
-                            for handle in cx.windows() {
-                                let _ = handle.update(cx, |_, window, cx| {
-                                    #[cfg(target_os = "macos")]
-                                    window.set_traffic_light_position(point(
-                                        px(tokens().size.window_controls_x),
-                                        px(tokens().size.window_controls_y),
-                                    ));
-                                    window.bounds_changed(cx);
-                                });
-                            }
-                        });
-                        cx.refresh_windows();
-                    }))
-                })
+    pub fn new(directory: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let preferences = Settings::current();
+        let resume = preferences.setup_profile.clone();
+        // A profile made before is carried on with straight away, no scene.
+        let intro = !preferences.intro_seen && resume.is_none() && !reduce_motion();
+        if !intro {
+            // Record now that first run began, so an interrupted one resumes
+            // without the scene after other settings create the file.
+            remember(|settings| settings.intro_seen = true);
+        }
+        let focus = cx.focus_handle();
+        window.focus(&focus, cx);
+        let mut view = Self {
+            stage: if intro { Stage::Scene } else { Stage::Needs },
+            probe: None,
+            checking: false,
+            recheck: false,
+            service: Service::Checking,
+            installing: None,
+            watching: false,
+            clock: Default::default(),
+            focus,
+            pending_flow: None,
+            flow: None,
+            details: false,
+            leaving: None,
+            resume,
+            repaired: false,
+            opening: None,
+            directory,
         };
-        div()
-            .flex()
-            .flex_shrink_0()
-            .items_center()
-            .justify_end()
-            .gap(px(t.space.s8))
-            .px(px(t.space.s24))
-            .py(px(t.space.s8))
-            .border_t(px(t.size.hairline))
-            .border_color(c.line)
-            .child("Interface size")
-            .child(button(
-                "setup-smaller",
-                "−",
-                at.checked_sub(1).map(|at| sizes[at]),
-            ))
-            .child(format!("{percent}%"))
-            .child(button("setup-larger", "+", sizes.get(at + 1).copied()))
+        // The scene covers the check, so what follows it is known.
+        view.check(cx);
+        view
     }
 
+    /// How far the layer has faded, while it is leaving.
+    pub fn reveal(&self) -> Option<f32> {
+        self.leaving.map(|since| {
+            (since.elapsed().as_secs_f32() * 1000.0 / tokens().motion.reveal_ms).clamp(0.0, 1.0)
+        })
+    }
+
+    /// First run is over: save that, and fade away.
+    fn leave(&mut self, cx: &mut Context<Self>) {
+        if self.leaving.is_some() {
+            return;
+        }
+        remember(|settings| {
+            settings.setup_done = true;
+            settings.setup_profile = None;
+        });
+        let now = Instant::now();
+        self.leaving = Some(if reduce_motion() {
+            now.checked_sub(Duration::from_secs(1)).unwrap_or(now)
+        } else {
+            now
+        });
+        cx.notify();
+    }
+
+    /// The workspace says whether the guide's pane opened: first run ends
+    /// only once it has.
+    pub fn opened(&mut self, result: Result<(), &'static str>, cx: &mut Context<Self>) {
+        match result {
+            Ok(()) => {
+                self.opening = None;
+                self.leave(cx);
+            }
+            Err(reason) => {
+                if let Some((_, failed)) = &mut self.opening {
+                    *failed = Some(reason);
+                }
+                cx.notify();
+            }
+        }
+    }
+
+    /// Jump the opening scene to its handoff.
+    fn skip(&mut self, cx: &mut Context<Self>) {
+        let ms = self.clock.ms();
+        let to = scene::skipped(ms);
+        if self.stage == Stage::Scene && to > ms {
+            self.clock.set(to);
+            cx.notify();
+        }
+    }
+
+    /// Check the computer again. A request during a check runs after it.
     fn check(&mut self, cx: &mut Context<Self>) {
         if self.checking {
+            self.recheck = true;
             return;
         }
         self.checking = true;
         cx.spawn(async |view, cx| {
             let probe = cx.background_executor().spawn(async { Probe::run() }).await;
             let _ = view.update(cx, |view, cx| {
-                if let Some(first) = &view.first {
-                    first.update(cx, |first, cx| first.refresh(&probe, cx));
+                if view.installing != Some(Installing::Running) && missing(&probe).is_empty() {
+                    view.installing = None;
                 }
+                let start = matches!(view.service, Service::Checking | Service::Ready);
                 view.probe = Some(probe);
                 view.checking = false;
+                if start {
+                    view.start_service(cx);
+                }
+                if std::mem::take(&mut view.recheck) {
+                    view.check(cx);
+                }
                 cx.notify();
             });
         })
@@ -281,818 +268,669 @@ impl Onboarding {
         cx.notify();
     }
 
-    fn copy(&mut self, id: &'static str, text: &str, cx: &mut Context<Self>) {
-        cx.write_to_clipboard(ClipboardItem::new_string(text.into()));
-        self.copied = Some(id);
+    /// Start the agent service without asking: restarted once if it doesn't
+    /// answer, or set up as the installer does if it never was.
+    fn start_service(&mut self, cx: &mut Context<Self>) {
+        let Some(probe) = self.probe.clone() else {
+            return;
+        };
+        if matches!(probe.backbone, Backbone::Running { .. }) && probe.client().is_some() {
+            self.service = Service::Ready;
+            if self.flow.is_none() {
+                self.pending_flow = probe.client();
+            }
+            return;
+        }
+        // Repair runs once; if the service still doesn't answer, say so.
+        if self.repaired {
+            self.service = Service::Failed(match &probe.backbone {
+                Backbone::Unreachable(reason) => {
+                    format!("Agent Backbone stopped answering after it was started ({reason}).")
+                }
+                _ => "Agent Backbone stopped answering after it was started.".to_owned(),
+            });
+            return;
+        }
+        self.repaired = true;
+        self.service = Service::Starting;
+        let work = cx.background_executor().spawn(async move { start(&probe) });
+        cx.spawn(async move |view, cx| {
+            let result = work.await;
+            let _ = view.update(cx, |view, cx| {
+                match result {
+                    Ok(()) => {
+                        view.service = Service::Ready;
+                        view.check(cx);
+                    }
+                    Err(reason) => {
+                        tracing::warn!(event = "setup_service_failed", %reason, "Agent service not started");
+                        view.service = Service::Failed(reason);
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Make the first profile's flow, or carry on with the one made before.
+    fn make_flow(&mut self, client: Client, window: &mut Window, cx: &mut Context<Self>) {
+        let directory = self.directory.clone();
+        let reader = client.clone();
+        let flow = cx.new(|cx| {
+            let mut flow = Flow::new(client.clone(), directory, String::new(), None, window, cx);
+            flow.for_first_run(cx);
+            flow
+        });
+        // During the scene, keys skip it; the name field takes them after.
+        if self.stage == Stage::Scene {
+            window.focus(&self.focus, cx);
+        } else {
+            window.focus(&flow.read(cx).focus_handle(cx), cx);
+        }
+        let events = cx.subscribe_in(&flow, window, move |view, _, event, _, cx| match event {
+            flow::Event::Bind(selected) => {
+                let id = selected.item().profile_id.clone();
+                remember(|settings| settings.setup_profile = Some(id));
+                cx.emit(Event::Bind(Box::new(FirstBind {
+                    item: selected.item().clone(),
+                    connection: selected.connection().clone(),
+                    client: client.clone(),
+                })));
+            }
+            flow::Event::Open(open) => {
+                view.opening = Some((open.clone(), None));
+                cx.emit(Event::Open(open.clone()));
+            }
+            flow::Event::Terminal => {
+                cx.emit(Event::Terminal);
+                view.leave(cx);
+            }
+            flow::Event::Close => {}
+        });
+        if let Some(id) = self.resume.take() {
+            flow.update(cx, |flow, cx| flow.resuming(cx));
+            let work = cx
+                .background_executor()
+                .spawn(async move { reader.show(&id, &|| true) });
+            let resumed = flow.downgrade();
+            cx.spawn(async move |_, cx| {
+                // A profile that is gone leaves the name screen to start again.
+                let result = work.await;
+                let _ = resumed.update(cx, |flow, cx| match result {
+                    Ok(profile) => flow.resume(profile, cx),
+                    Err(_) => flow.fresh(cx),
+                });
+            })
+            .detach();
+        }
+        self.flow = Some((flow, events));
+    }
+
+    /// Install what's missing, then check again.
+    fn install(&mut self, cx: &mut Context<Self>) {
+        let Some(probe) = &self.probe else {
+            return;
+        };
+        let names = missing(probe);
+        // An installer that was opened and closed without installing can be
+        // opened again.
+        if names.is_empty() || self.installing == Some(Installing::Running) {
+            return;
+        }
+        let path_env = probe.path_env.clone();
+        self.installing = Some(Installing::Running);
+        let work = cx.background_executor().spawn(async move {
+            let mut outcome = install::Outcome::Done;
+            for name in names {
+                outcome = install::package(name, &path_env);
+                if outcome != install::Outcome::Done {
+                    break;
+                }
+            }
+            outcome
+        });
+        cx.spawn(async move |view, cx| {
+            let outcome = work.await;
+            let _ = view.update(cx, |view, cx| {
+                view.installing = match outcome {
+                    install::Outcome::Done => None,
+                    install::Outcome::Opened => {
+                        view.watch(cx);
+                        Some(Installing::Opened)
+                    }
+                    install::Outcome::Failed(reason) => Some(Installing::Failed(reason)),
+                };
+                view.check(cx);
+            });
+        })
+        .detach();
         cx.notify();
     }
 
-    /// Open the workspace before completing setup, so a failed window open
-    /// leaves the last page usable and can be retried.
-    fn finish(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if super::browser_window(cx).is_none() {
-            let source = crate::sessions::source_socket(None).map_err(|e| e.to_string());
-            if let Err(error) = super::open_browser(None, source, cx) {
-                tracing::warn!(event = "setup_open_failed", %error, "Workspace window not opened");
-                self.open_error = Some("The workspace window could not open. Try again.");
-                cx.notify();
-                return;
-            }
-        }
-        if let Some(name) = &self.first_agent
-            && let Err(error) = show_agent(name.clone(), cx)
-        {
-            self.open_error = Some(error);
-            cx.notify();
+    /// While a system installer first run opened is running, check now and
+    /// then until what it installs is found.
+    fn watch(&mut self, cx: &mut Context<Self>) {
+        if self.watching {
             return;
         }
-        remember(|settings| settings.setup_done = true);
-        window.remove_window();
+        self.watching = true;
+        cx.spawn(async |view, cx| {
+            loop {
+                cx.background_executor().timer(WATCH).await;
+                let open = view.update(cx, |view, cx| {
+                    let open = view.installing == Some(Installing::Opened);
+                    if open {
+                        view.check(cx);
+                    } else {
+                        view.watching = false;
+                    }
+                    open
+                });
+                if !matches!(open, Ok(true)) {
+                    break;
+                }
+            }
+        })
+        .detach();
     }
 
-    fn scene(&self) -> gpui::AnyElement {
-        div()
-            .size_full()
-            .with_animation("opening-scene", Animation::new(SCENE), |scene, delta| {
-                scene.child(frame(Frame::at(delta * SCENE.as_millis() as f32)))
-            })
-            .into_any_element()
+    /// What the person sees next, once it is known: what needs them, else the
+    /// first profile. `None` while the check or the service is still going.
+    fn next(&self) -> Option<Stage> {
+        if matches!(self.opening, Some((_, Some(_)))) {
+            return Some(Stage::Needs);
+        }
+        let probe = self.probe.as_ref()?;
+        if !missing(probe).is_empty() {
+            return Some(Stage::Needs);
+        }
+        match (&self.service, &self.flow) {
+            (Service::Failed(_), _) => Some(Stage::Needs),
+            (Service::Ready, Some(_)) => Some(Stage::Profile),
+            _ => None,
+        }
     }
 
-    /// A check row: name, what it is for, its state, and an optional command to copy.
-    fn row(
-        &self,
-        id: &'static str,
-        name: &str,
-        note: impl Into<SharedString>,
-        state: (Tone, &str),
-        command: Option<&'static str>,
+    /// A screen that needs the person: an install, or a service that won't
+    /// start. One button, and for the service, a way on with terminals.
+    fn needs(
+        &mut self,
         cx: &mut Context<Self>,
-    ) -> gpui::Div {
+    ) -> Option<(SharedString, SharedString, AnyElement)> {
         let (t, c) = (tokens(), colors());
-        let copied = self.copied == Some(id);
-        div()
+        if let Some((open, Some(reason))) = &self.opening {
+            let open = open.clone();
+            let body = div()
+                .w_full()
+                .flex()
+                .flex_col()
+                .child(
+                    ui::setup_button("open-again", "Try again", true, false).on_click(cx.listener(
+                        move |view, _, _, cx| {
+                            view.opening = Some((open.clone(), None));
+                            cx.emit(Event::Open(open.clone()));
+                            cx.notify();
+                        },
+                    )),
+                )
+                .child(div().pt(px(t.space.s12)).flex().justify_center().child(
+                    ui::text_action("terminals-only", "Use a terminal instead").on_click(
+                        cx.listener(|view, _, _, cx| {
+                            view.opening = None;
+                            cx.emit(Event::Terminal);
+                            view.leave(cx);
+                        }),
+                    ),
+                ))
+                .into_any_element();
+            return Some((
+                "Your guide couldn\u{2019}t open".into(),
+                (*reason).into(),
+                body,
+            ));
+        }
+        let probe = self.probe.as_ref()?;
+        let names = missing(probe);
+        let note = |text: SharedString, attention: bool| {
+            div()
+                .pt(px(t.space.s10))
+                .flex()
+                .justify_center()
+                .text_center()
+                .child(
+                    ui::text(
+                        div().text_color(if attention { c.attention_text } else { c.muted }),
+                        &t.text.meta,
+                    )
+                    .child(text),
+                )
+        };
+        if !names.is_empty() {
+            let what = names
+                .iter()
+                .map(|name| if *name == "git" { "Git" } else { name })
+                .collect::<Vec<_>>()
+                .join(" and ");
+            let line = match names.as_slice() {
+                ["tmux"] => "Agent Interface keeps your terminals running with tmux.",
+                ["git"] => "Your agents use Git for their work.",
+                _ => {
+                    "Agent Interface keeps your terminals running with tmux, and your agents use Git for their work."
+                }
+            };
+            let busy = self.installing == Some(Installing::Running);
+            let label = if busy {
+                format!("Installing {what}\u{2026}")
+            } else if matches!(self.installing, Some(Installing::Failed(_))) {
+                "Try again".to_owned()
+            } else {
+                format!("Install {what}")
+            };
+            let body = div()
+                .w_full()
+                .flex()
+                .flex_col()
+                .child(
+                    ui::setup_button("install-missing", label, true, busy)
+                        .on_click(cx.listener(|view, _, _, cx| view.install(cx))),
+                )
+                .children(match &self.installing {
+                    Some(Installing::Opened) => Some(note(
+                        "Finish the installer that opened. This screen moves on by itself.".into(),
+                        false,
+                    )),
+                    Some(Installing::Failed(reason)) => Some(note(reason.clone().into(), true)),
+                    _ => None,
+                })
+                .into_any_element();
+            return Some((
+                format!("Install {what} to continue").into(),
+                line.into(),
+                body,
+            ));
+        }
+        let Service::Failed(reason) = &self.service else {
+            return None;
+        };
+        let reason = reason.clone();
+        let body = div()
+            .w_full()
             .flex()
             .flex_col()
-            .gap(px(t.space.s6))
-            .py(px(t.space.s10))
-            .border_b(px(t.size.hairline))
-            .border_color(c.line)
+            .child(
+                ui::setup_button("service-again", "Try again", true, false).on_click(cx.listener(
+                    |view, _, _, cx| {
+                        view.service = Service::Checking;
+                        view.repaired = false;
+                        view.details = false;
+                        view.check(cx);
+                    },
+                )),
+            )
             .child(
                 div()
+                    .pt(px(t.space.s12))
                     .flex()
-                    .items_center()
-                    .gap(px(t.space.s10))
+                    .justify_center()
+                    .gap(px(t.space.s20))
                     .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .child(div().text_color(c.text).child(name.to_owned()))
-                            .child(
-                                ui::text(div().text_color(c.muted), &t.text.status)
-                                    .child(note.into()),
-                            ),
-                    )
-                    .child(match state.0 {
-                        // Ready reads as done, in the same green as a finished step.
-                        Tone::Tag => div()
-                            .flex()
-                            .items_center()
-                            .gap(px(t.space.s4))
-                            .text_color(c.ok)
-                            .child(ui::icon("check", t.size.icon, c.ok))
-                            .child(state.1.to_owned()),
-                        tone => ui::tag(state.1.to_owned(), tone),
-                    }),
-            )
-            .when_some(command, |el, command| {
-                el.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(t.space.s8))
-                        .child(
-                            ui::text(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .px(px(t.space.s8))
-                                    .py(px(t.space.s4))
-                                    .rounded(px(t.radius.row))
-                                    .bg(c.field)
-                                    .text_color(c.code)
-                                    .font_family(t.font.mono.clone()),
-                                &t.text.status,
-                            )
-                            .child(command),
-                        )
-                        .child(
-                            ui::button(
-                                SharedString::from(format!("copy-{id}")),
-                                if copied { "Copied" } else { "Copy" },
-                                Button::Secondary,
-                            )
-                            .on_click(
-                                cx.listener(move |view, _, _, cx| view.copy(id, command, cx)),
-                            ),
+                        ui::text_action("terminals-only", "Continue with terminals").on_click(
+                            cx.listener(|view, _, _, cx| {
+                                cx.emit(Event::Terminal);
+                                view.leave(cx);
+                            }),
                         ),
+                    )
+                    .child(
+                        ui::text_action("service-details", "Details")
+                            .child(ui::icon(
+                                if self.details {
+                                    "chevron-down"
+                                } else {
+                                    "chevron-right"
+                                },
+                                t.size.icon - t.space.s2,
+                                c.muted,
+                            ))
+                            .on_click(cx.listener(|view, _, _, cx| {
+                                view.details = !view.details;
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .when(self.details, |body| {
+                body.child(
+                    div().pt(px(t.space.s10)).child(
+                        ui::text(
+                            div()
+                                .px(px(t.space.s10))
+                                .py(px(t.space.s8))
+                                .rounded(px(t.radius.row))
+                                .bg(c.field)
+                                .border(px(t.size.hairline))
+                                .border_color(c.line)
+                                .text_color(c.muted)
+                                .font_family(t.font.mono.clone()),
+                            &t.text.meta,
+                        )
+                        .child(reason),
+                    ),
                 )
             })
-    }
-
-    fn check_step(&self, cx: &mut Context<Self>) -> gpui::Div {
-        let probe = self.probe.as_ref();
-        let found = |command| probe.and_then(|probe| probe.path(command)).is_some();
-        let tmux = probe.is_some_and(|probe| probe.tmux.is_some());
-        let ready = (Tone::Tag, "Ready");
-        let missing = (Tone::Attention, "Not found");
-        let mac = cfg!(target_os = "macos");
-        let mut page = heading(
-            "Check this computer",
-            "Terminals run in tmux; agents run through Agent Backbone.",
-        );
-        page = page.child(self.row(
-            "tmux",
-            "tmux",
-            "Keeps every terminal running, even when the window is closed.",
-            if tmux { ready } else { missing },
-            (probe.is_some() && !tmux).then_some(if mac {
-                "brew install tmux"
-            } else {
-                "sudo apt install tmux"
-            }),
-            cx,
-        ));
-        let (state, note, command): (_, String, _) = match probe.map(|probe| &probe.backbone) {
-            None => (
-                (Tone::Plain, "Checking"),
-                "Looking for Agent Backbone.".into(),
-                None,
-            ),
-            Some(Backbone::Running { agents }) => (
-                ready,
-                match agents {
-                    0 => "Running. Your first agent comes next.".into(),
-                    1 => "Running with 1 agent. Your agents stay as they are.".into(),
-                    n => format!("Running with {n} agents. Your agents stay as they are."),
-                },
-                None,
-            ),
-            Some(Backbone::Unreachable(error)) => (
-                (Tone::Attention, "Not answering"),
-                format!("Set up, but not answering ({error})."),
-                Some("backbone doctor"),
-            ),
-            Some(Backbone::NotSetUp) => (
-                (Tone::Attention, "Not set up"),
-                "Run the Agent Interface installer again to finish setting up Agent Backbone."
-                    .into(),
-                None,
-            ),
-        };
-        page = page.child(self.row("backbone", "Agent Backbone", note, state, command, cx));
-        page = page.child(self.row(
-            "git",
-            "Git",
-            "Agents use it for code work.",
-            if found("git") { ready } else { missing },
-            (!found("git")).then_some(if mac {
-                "xcode-select --install"
-            } else {
-                "sudo apt install git"
-            }),
-            cx,
-        ));
-        page.child(self.row(
-            "gh",
-            "GitHub CLI",
-            "Optional: lets agents work with issues and pull requests.",
-            if found("gh") {
-                ready
-            } else {
-                (Tone::Plain, "Optional")
-            },
-            (!found("gh")).then_some(if mac {
-                "brew install gh"
-            } else {
-                "sudo apt install gh"
-            }),
-            cx,
+            .into_any_element();
+        Some((
+            "Agents can\u{2019}t start yet".into(),
+            "Agent Interface couldn\u{2019}t start the service that runs your agents. Your terminals still work.".into(),
+            body,
         ))
     }
 
-    fn tools_step(&self, cx: &mut Context<Self>) -> gpui::Div {
-        let (t, c) = (tokens(), colors());
-        let probe = self.probe.as_ref();
-        let mut page = heading(
-            "Agent tools",
-            "Your agents run in these. You sign in inside each tool the first time you open it.",
-        );
-        let mut any = false;
-        for (command, name, install) in TOOLS {
-            let path = probe.and_then(|probe| probe.path(command));
-            any |= path.is_some();
-            let mut note = match path {
-                Some(path) => format!("Installed at {}", path.display()),
-                None if cfg!(target_os = "linux") => {
-                    "Not installed. Run this in a Linux terminal; on Windows, use WSL.".into()
-                }
-                None => "Not installed. Paste this in a terminal to add it.".into(),
-            };
-            if *command == "opencode" {
-                note.push_str(" Agent setup requires OpenCode 2.1.4 or newer; this command installs or updates OpenCode 2.");
-            } else if *command == "gemini" && path.is_none() {
-                note.push_str(" Gemini CLI requires Node.js 20 or newer with npm. Claude Code, Codex and OpenCode use standalone installers.");
-            }
-            let state = match (probe, path) {
-                (None, _) => (Tone::Plain, "Checking"),
-                (_, Some(_)) => (Tone::Tag, "Installed"),
-                (_, None) => (Tone::Plain, "Not installed"),
-            };
-            page = page.child(self.row(
-                command,
-                name,
-                note,
-                state,
-                (path.is_none() || *command == "opencode").then_some(*install),
-                cx,
-            ));
-        }
-        page.when(probe.is_some() && !any, |el| {
-            el.child(
-                ui::text(
-                    div().pt(px(t.space.s12)).text_color(c.text_2),
-                    &t.text.status,
-                )
-                .child("You can add one later. Terminals work without agents."),
-            )
-        })
-    }
-
-    fn shortcuts_step(&self, cx: &mut Context<Self>) -> gpui::Div {
-        let (t, c) = (tokens(), colors());
-        let mut page = heading(
-            "Shortcuts",
-            "The keys you will use most. Change any of them in Settings.",
-        );
-        for command in [
-            Command::Jump,
-            Command::NewTab,
-            Command::SplitRight,
-            Command::FocusPanel,
-        ] {
-            let label = shortcuts::COMMANDS
-                .iter()
-                .find(|(each, ..)| *each == command)
-                .map_or("", |(_, _, label, ..)| label);
-            page = page.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .h(px(t.size.slot))
-                    .border_b(px(t.size.hairline))
-                    .border_color(c.line)
-                    .child(div().flex_1().text_color(c.text_2).child(label))
-                    .child(ui::keycap(shortcuts::label(command))),
-            );
-        }
-        page.child(
-            div().pt(px(t.space.s16)).child(
-                ui::button("open-settings", "Change in Settings", Button::Secondary)
-                    .on_click(cx.listener(|_, _, _, cx| cx.defer(super::settings_window::show))),
-            ),
-        )
-    }
-
-    fn rail(&self) -> gpui::Div {
-        let (t, c) = (tokens(), colors());
-        let current = match self.stage {
-            Stage::Step(index) => index,
-            _ => STEPS.len(),
+    /// Skip, during the scene, and the interface size, throughout.
+    fn corners(&self, scene: Option<&scene::Scene>, cx: &mut Context<Self>) -> [AnyElement; 2] {
+        let t = tokens();
+        let percent = Settings::current().interface_size;
+        let sizes = super::zoom::SIZES;
+        let at = sizes.iter().position(|size| *size == percent).unwrap_or(1);
+        let step = |id: &'static str, label: &'static str, next: Option<u32>| {
+            ui::text_action(id, label)
+                .border(px(t.size.hairline))
+                .border_color(colors().line_strong)
+                .opacity(if next.is_some() { 1.0 } else { 0.4 })
+                .when_some(next, |el, next| {
+                    el.on_click(cx.listener(move |_, _, _, cx| {
+                        remember(|settings| settings.interface_size = next);
+                        cx.refresh_windows();
+                    }))
+                })
         };
-        let mut rail = div()
-            .w(px(t.size.settings_nav))
-            .flex_shrink_0()
-            .h_full()
-            .flex()
-            .flex_col()
-            .gap(px(t.space.s4))
-            .px(px(t.space.s12))
-            .pt(px(t.size.titlebar))
-            .bg(c.panel)
-            .border_r(px(t.size.hairline))
-            .border_color(c.line);
-        for (index, name) in STEPS.iter().enumerate() {
-            let (fill, text) = if index < current {
-                (c.ok, c.text_2)
-            } else if index == current {
-                (c.accent, c.text)
-            } else {
-                (c.line_strong, c.muted)
-            };
-            rail = rail.child(
+        let corner = |left: bool| {
+            ui::text(
                 div()
+                    .absolute()
+                    .bottom(px(t.space.s14))
+                    .when(left, |el| el.left(px(t.space.s18)))
+                    .when(!left, |el| el.right(px(t.space.s18)))
                     .flex()
                     .items_center()
-                    .gap(px(t.space.s10))
-                    .h(px(t.size.row))
-                    .text_color(text)
-                    .child(number(index, fill, index < current))
-                    .child(*name),
-            );
-        }
-        rail
+                    .gap(px(t.space.s8))
+                    .text_color(colors().muted),
+                &t.text.meta,
+            )
+        };
+        let skip = corner(true)
+            .when_some(scene.copied(), |el, scene| {
+                el.opacity(scene.controls).child(
+                    ui::text_action("skip-scene", "Skip")
+                        .child(ui::keycap("esc"))
+                        .on_click(cx.listener(|view, _, _, cx| view.skip(cx))),
+                )
+            })
+            .into_any_element();
+        let size = corner(false)
+            .child("Interface size")
+            .child(step(
+                "setup-smaller",
+                "\u{2212}",
+                at.checked_sub(1).map(|at| sizes[at]),
+            ))
+            .child(format!("{percent}%"))
+            .child(step("setup-larger", "+", sizes.get(at + 1).copied()))
+            .into_any_element();
+        [skip, size]
     }
 }
 
 impl Render for Onboarding {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (t, c) = (tokens(), colors());
-        let root = ui::text(
-            div()
-                .size_full()
-                .flex()
-                .flex_col()
-                .bg(c.surface)
-                .text_color(c.text)
-                .font_family(t.font.ui.clone()),
-            &t.text.row,
-        );
-        let Stage::Step(index) = self.stage else {
-            let body = root
-                .child(div().flex_1().min_h_0().child(self.scene()))
-                .child(self.scale_controls(cx));
-            return super::window_controls::frame(body, "Welcome", window, cx);
-        };
-        if index == 2
-            && self.first.is_none()
-            && let Some(probe) = &self.probe
-            && let Ok(Some(directory)) = crate::roster::provider_directory(true)
-        {
-            let executable =
-                setup::active_engine(&directory).or_else(|| probe.path("backbone").cloned());
-            let existing = matches!(probe.backbone, Backbone::Running { agents } if agents > 0);
-            let first = cx.new(|cx| {
-                first::FirstAgent::new(
-                    executable,
-                    probe.path_env.clone(),
-                    directory,
-                    existing,
-                    window,
-                    cx,
-                )
-            });
-            self.first_events = Some(cx.subscribe(&first, |view, _, event, cx| {
-                match event {
-                    first::FirstEvent::RefreshTools => view.check(cx),
-                    first::FirstEvent::Pending => {
-                        view.first_ready = false;
-                        view.first_agent = None;
-                    }
-                    first::FirstEvent::Ready(name) => {
-                        view.first_ready = true;
-                        view.first_agent = Some(name.clone());
-                    }
-                    first::FirstEvent::Existing => {
-                        // Choosing existing agents skips creation. Returning to
-                        // this form must still allow starting a new agent.
-                        view.first_ready = false;
-                        view.first_agent = None;
-                        view.stage = Stage::Step(3);
-                    }
-                    first::FirstEvent::OpenTerminal(name) => {
-                        view.open_error = show_agent(name.clone(), cx).err();
-                    }
-                }
-                cx.notify();
-            }));
-            self.first = Some(first);
+        if let Some(client) = self.pending_flow.take() {
+            self.make_flow(client, window, cx);
         }
-        let page = match index {
-            0 => self.check_step(cx),
-            1 => self.tools_step(cx),
-            2 => match &self.first {
-                Some(first) => div().child(first.clone()),
-                None if self.probe.is_none() => heading("Your first agent", "Checking your tools and shell environment…"),
-                None => heading("Your first agent", "The setup engine is unavailable. Return to Check, then install or reconnect the engine before creating an agent.")
-                    .when(self.probe.as_ref().is_some_and(|probe| matches!(probe.backbone, Backbone::Running { agents } if agents > 0)), |page| {
-                        page.child(ui::button("keep-existing-agents", "Use my existing agents", Button::Secondary)
-                            .on_click(cx.listener(|view, _, _, cx| {
-                                view.first_ready = true;
-                                view.first_agent = None;
-                                cx.notify();
-                            })))
-                    }),
-            },
-            _ => self.shortcuts_step(cx),
-        }
-        .when_some(self.open_error, |page, error| {
-            page.child(
-                div()
-                    .pt(px(t.space.s12))
-                    .text_color(c.attention_text)
-                    .child(error),
-            )
-        });
-        let last = index + 1 == STEPS.len();
-        // On the agent step the main button starts or repairs setup until the
-        // agent runs, and always names what it is waiting for.
-        let primary = match (index, &self.first) {
-            (2, _) if self.first_ready => first::Primary::Continue,
-            (2, Some(first)) => first.read(cx).primary(),
-            (2, None) if self.probe.is_none() => first::Primary::Waiting("Checking…".into()),
-            (2, None) => first::Primary::Waiting("Waiting for the setup engine".into()),
-            _ => first::Primary::Continue,
-        };
-        let footer = div()
-            .flex()
-            .flex_wrap()
-            .flex_shrink_0()
-            .items_center()
-            .gap(px(t.space.s8))
-            .px(px(t.space.s24))
-            .py(px(t.space.s16))
-            .border_t(px(t.size.hairline))
-            .border_color(c.line)
-            .when(index > 0, |el| {
-                el.child(
-                    ui::button("back", "Back", Button::Secondary).on_click(cx.listener(
-                        move |view, _, _, cx| {
-                            view.stage = Stage::Step(index - 1);
-                            view.copied = None;
-                            cx.notify();
-                        },
-                    )),
-                )
-            })
-            .when(index < 2, |el| {
-                el.child(
-                    ui::button(
-                        "check-again",
-                        if self.checking {
-                            "Checking…"
-                        } else {
-                            "Check again"
-                        },
-                        Button::Secondary,
-                    )
-                    .on_click(cx.listener(|view, _, _, cx| view.check(cx))),
-                )
-            })
-            .child(div().flex_1())
-            .when(
-                index == 2
-                    && !self.first_ready
-                    && self
-                        .first
-                        .as_ref()
-                        .is_none_or(|first| first.read(cx).can_use_terminals()),
-                |footer| {
-                    footer.child(
-                        ui::button(
-                            "terminals-for-now",
-                            "Use terminals for now",
-                            Button::Secondary,
-                        )
-                        .on_click(cx.listener(|view, _, _, cx| {
-                            view.first_agent = None;
-                            // Skipping advances navigation without declaring an
-                            // unfinished agent ready; Back must still offer Start.
-                            view.stage = Stage::Step(3);
-                            cx.notify();
-                        })),
-                    )
-                },
-            )
-            .child(match primary {
-                first::Primary::Continue => ui::button(
-                    "continue",
-                    if last {
-                        "Open Agent Interface"
-                    } else {
-                        "Continue"
-                    },
-                    Button::Primary,
-                )
-                .on_click(cx.listener(move |view, _, window, cx| {
-                    if last {
-                        view.finish(window, cx);
-                    } else {
-                        view.stage = Stage::Step(index + 1);
-                        view.copied = None;
-                        cx.notify();
-                    }
-                })),
-                first::Primary::Waiting(label) => ui::button("continue", label, Button::Primary)
-                    .opacity(0.45)
-                    .cursor_default(),
-                first::Primary::Start(label) => ui::button("continue", label, Button::Primary)
-                    .on_click(cx.listener(|view, _, _, cx| {
-                        if let Some(first) = &view.first {
-                            first.update(cx, |first, cx| first.start(cx));
-                        }
-                    })),
-                first::Primary::ChangeTool(label) => ui::button("continue", label, Button::Primary)
-                    .on_click(cx.listener(|view, _, _, cx| {
-                        if let Some(first) = &view.first {
-                            first.update(cx, |first, cx| first.edit_choices(cx));
-                        }
-                    })),
-            });
-        let body = root
-            .child(
-                div().flex().flex_1().min_h_0().child(self.rail()).child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .h_full()
-                        .flex()
-                        .flex_col()
-                        .child(
-                            div()
-                                .id("setup-page")
-                                .flex_1()
-                                .min_h_0()
-                                .pt(px(t.size.titlebar))
-                                .px(px(t.space.s24))
-                                .overflow_y_scroll()
-                                .child(page),
-                        )
-                        .child(footer),
-                ),
-            )
-            .child(self.scale_controls(cx));
-        super::window_controls::frame(body, "Welcome", window, cx)
-    }
-}
-
-/// Show the actual agent terminal for login/permissions or the introduction.
-/// The saved library may still be loading when setup opens the workspace.
-fn default_profile() -> Option<String> {
-    use agent_interface_roster::profiles::Kind;
-    probe::profile_client()?
-        .list(&|| true)
-        .ok()?
-        .into_iter()
-        .find(|item| item.kind == Kind::LegacyDefault)
-        .map(|item| item.profile_id)
-}
-
-fn show_agent(name: String, cx: &mut App) -> Result<(), &'static str> {
-    if super::browser_window(cx).is_none() {
-        let source = crate::sessions::source_socket(None).map_err(|error| error.to_string());
-        super::open_browser(None, source, cx)
-            .map_err(|_| "The agent window could not open. Try again.")?;
-    }
-    let handle = super::browser_window(cx).ok_or("The agent window could not open. Try again.")?;
-    let default = cx.background_executor().spawn(async { default_profile() });
-    cx.spawn(async move |cx| {
-        // Setup adds the first agent to Default, the profile a new install starts in.
-        if let Some(profile_id) = default.await {
-            for _ in 0..50 {
-                let opened = handle
-                    .update(cx, |browser, window, cx| {
-                        browser.open_setup_agent(&name, &profile_id, "Default", window, cx)
-                    })
-                    .unwrap_or(true);
-                if opened {
-                    return;
-                }
-                cx.background_executor()
-                    .timer(Duration::from_millis(100))
-                    .await;
+        if let Some(reveal) = self.reveal() {
+            if reveal >= 1.0 {
+                cx.emit(Event::Done);
+            } else {
+                window.request_animation_frame();
             }
         }
-        let _ = handle.update(cx, |browser, _, cx| {
-            browser.save_notice = Some(format!(
-                "Could not open {name}. Check the workspace connection, then reopen it from setup."
-            ));
-            cx.notify();
-        });
-    })
-    .detach();
-    Ok(())
-}
-
-fn heading(title: &str, note: &str) -> gpui::Div {
-    let (t, c) = (tokens(), colors());
-    div()
-        .flex()
-        .flex_col()
-        .child(ui::text(div().text_color(c.text), &t.text.page_title).child(title.to_owned()))
-        .child(
-            ui::text(div().pb(px(t.space.s8)).text_color(c.text_2), &t.text.body)
-                .child(note.to_owned()),
-        )
-}
-
-/// A step's number in a circle, or a tick once it is done.
-fn number(index: usize, fill: Rgba, done: bool) -> gpui::Div {
-    let (t, c) = (tokens(), colors());
-    let base = div()
-        .flex_shrink_0()
-        .size(px(t.size.agent_symbol))
-        .rounded_full()
-        .flex()
-        .items_center()
-        .justify_center()
-        .bg(fill);
-    if done {
-        base.child(ui::icon(
-            "check",
-            t.size.agent_symbol - t.space.s6,
-            c.on_accent,
-        ))
-    } else {
-        ui::text(base.text_color(c.on_accent), &t.text.status).child(format!("{}", index + 1))
+        let handoff = t.motion.scene_handoff_ms;
+        let next = self.next();
+        // What follows the scene must be known at its handoff, so the face
+        // waits there, at rest on the icon, until it is.
+        let waiting =
+            self.stage == Stage::Scene && next.is_none() && self.clock.ms() >= handoff - 1.0;
+        if waiting {
+            self.clock.set(handoff - 1.0);
+        }
+        if self.stage == Stage::Scene
+            && self.clock.ms() >= t.motion.scene_ms
+            && let Some(next) = next
+        {
+            self.stage = next;
+            remember(|settings| settings.intro_seen = true);
+            if let Some((flow, _)) = &self.flow {
+                window.focus(&flow.read(cx).focus_handle(cx), cx);
+            }
+        } else if self.stage != Stage::Scene
+            && let Some(next) = next
+            && next != self.stage
+        {
+            self.stage = next;
+            if let Some((flow, _)) = self.flow.as_ref().filter(|_| next == Stage::Profile) {
+                window.focus(&flow.read(cx).focus_handle(cx), cx);
+            }
+        }
+        let scene = (self.stage == Stage::Scene).then(|| scene::Scene::at(self.clock.ms()));
+        // Without the scene, an unknown next screen waits on the settled face.
+        let getting_ready = waiting || (scene.is_none() && next.is_none());
+        let height = f32::from(window.viewport_size().height);
+        let setup_top = ui::setup_top(height);
+        // The scene's face and words, centred.
+        let scene_block = t.size.scene_mark
+            + t.space.s16
+            + t.space.s6
+            + f32::from(t.text.scene_title.size()) * 1.3
+            + f32::from(t.text.scene_line.size()) * 1.6;
+        let scene_top = ((height - scene_block) / 2.0).max(setup_top);
+        let settled = || scene::mark(t.size.setup_mark, scene::Face::icon(), 1.0);
+        let flow = self.flow.as_ref().map(|(flow, _)| flow.clone());
+        let content: AnyElement = match (&scene, next, flow) {
+            // After the scene, the flow draws its own screens.
+            (None, Some(Stage::Profile), Some(flow)) => flow
+                .update(cx, |flow, cx| {
+                    flow.stage("first-run", setup_top, settled(), window, cx)
+                })
+                .into_any_element(),
+            (scene, next, flow) => {
+                let parts = match next {
+                    Some(Stage::Needs) => self.needs(cx),
+                    Some(Stage::Profile) => flow.map(|flow| {
+                        let parts = flow.update(cx, |flow, cx| flow.parts(window, cx));
+                        (parts.title, parts.line, parts.body)
+                    }),
+                    _ => None,
+                };
+                let shown = scene.map_or(1.0, |scene| scene.into);
+                let form = scene.map_or(1.0, |scene| scene.form);
+                let (title, line, body) = match parts {
+                    Some((title, line, body)) => (
+                        ui::setup_title(title).opacity(shown).into_any_element(),
+                        ui::setup_line(line).opacity(shown).into_any_element(),
+                        div()
+                            .relative()
+                            .top(px(scene::WORDS_PX * (1.0 - form)))
+                            .opacity(form)
+                            .child(body)
+                            .into_any_element(),
+                    ),
+                    None => (
+                        div().into_any_element(),
+                        div().into_any_element(),
+                        div().into_any_element(),
+                    ),
+                };
+                // The app's name and tagline sit where the screen's words will.
+                let (name, tagline, mark, top) = match scene {
+                    Some(scene) => (
+                        scene.name,
+                        scene.line,
+                        scene::mark(scene.mark_size(), scene.face, scene.tile),
+                        scene.top(scene_top, setup_top),
+                    ),
+                    // Without the scene, the name stays while things get ready.
+                    None => (
+                        if getting_ready { 1.0 } else { 0.0 },
+                        0.0,
+                        settled(),
+                        setup_top,
+                    ),
+                };
+                let (tagline, tagline_shown): (AnyElement, f32) = if getting_ready {
+                    (
+                        div()
+                            .flex()
+                            .justify_center()
+                            .items_center()
+                            .gap(px(t.space.s8))
+                            .child(ui::sending_spinner())
+                            .child(
+                                ui::text(div().text_color(c.muted), &t.text.scene_line)
+                                    .child("Getting things ready\u{2026}"),
+                            )
+                            .into_any_element(),
+                        1.0,
+                    )
+                } else {
+                    (ui::setup_line(TAGLINE).into_any_element(), tagline)
+                };
+                let swap = |under: AnyElement, over: AnyElement, shown: f32| {
+                    div().relative().w_full().child(under).child(
+                        div()
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .w_full()
+                            .opacity(shown)
+                            .child(over),
+                    )
+                };
+                ui::setup_stage(
+                    "first-run",
+                    top,
+                    mark,
+                    swap(
+                        title,
+                        ui::setup_title("Agent Interface").into_any_element(),
+                        name,
+                    ),
+                    swap(line, tagline, tagline_shown),
+                    div().when(form < 1.0, |el| el.occlude()).child(body),
+                )
+                .into_any_element()
+            }
+        };
+        let [skip, size] = self.corners(scene.as_ref(), cx);
+        div()
+            .absolute()
+            .inset_0()
+            .bg(c.ground)
+            .text_color(c.text)
+            .font_family(t.font.ui.clone())
+            .occlude()
+            .opacity(1.0 - self.reveal().unwrap_or(0.0))
+            .when(self.stage == Stage::Scene, |root| {
+                root.track_focus(&self.focus)
+                    .on_key_down(cx.listener(|view, event: &KeyDownEvent, _, cx| {
+                        let keys = &event.keystroke.modifiers;
+                        if !(keys.platform || keys.control || keys.alt) {
+                            view.skip(cx);
+                            cx.stop_propagation();
+                        }
+                    }))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|view, _, _, cx| view.skip(cx)),
+                    )
+                    .child(scene::ticker(self.clock.clone()))
+            })
+            .child(content)
+            .child(skip)
+            .child(size)
     }
 }
 
-/// What the opening scene shows at one moment, each part from 0 (hidden) to 1.
-#[derive(Debug, PartialEq)]
-struct Frame {
-    light: f32,
-    panes: [f32; 3],
-    cursor: bool,
-    link: f32,
-    name: f32,
-    tagline: f32,
-    steps: f32,
-    lit: usize,
-    leave: f32,
-}
-
-impl Frame {
-    /// The scene at `ms` milliseconds: a light grows, a terminal splits into
-    /// three panes, a line links them, the name and line appear, then the
-    /// setup steps light one by one and everything dissolves.
-    fn at(ms: f32) -> Self {
-        let rise = |from: f32, length: f32| ((ms - from) / length).clamp(0.0, 1.0);
-        Self {
-            light: rise(0.0, 1000.0),
-            panes: [rise(600.0, 400.0), rise(1600.0, 500.0), rise(2300.0, 500.0)],
-            cursor: ((ms / 500.0) as u32).is_multiple_of(2),
-            link: rise(3000.0, 600.0),
-            name: rise(3300.0, 600.0),
-            tagline: rise(4000.0, 500.0) * (1.0 - rise(5000.0, 400.0)),
-            steps: rise(5200.0, 400.0),
-            lit: (0..STEPS.len())
-                .filter(|step| ms >= 5500.0 + *step as f32 * 300.0)
-                .count(),
-            leave: rise(7000.0, 1000.0),
+/// Start the agent service, or set it up, and wait for it to answer.
+/// Blocks; runs off the UI thread.
+fn start(probe: &Probe) -> Result<(), String> {
+    let logs = if cfg!(target_os = "macos") {
+        "Its log is backbone.log in its data folder."
+    } else {
+        "Its log: journalctl --user -u agent-backbone.service -n 80"
+    };
+    match &probe.backbone {
+        Backbone::Running { .. } => Err(format!(
+            "Agent Backbone answered, but its backbone command was not found on this computer's PATH ({}).",
+            probe.path_env
+        )),
+        Backbone::Unreachable(reason) => {
+            if let install::Outcome::Failed(why) = install::restart_backbone(&probe.path_env) {
+                return Err(format!(
+                    "Agent Backbone did not answer ({reason}), and restarting its service failed: {why}"
+                ));
+            }
+            answered().ok_or_else(|| {
+                format!(
+                    "Agent Backbone did not answer after one restart (waited {} s). {logs}",
+                    SERVICE_WAIT.as_secs()
+                )
+            })
+        }
+        Backbone::NotSetUp => {
+            let Some(backbone) = probe.path("backbone") else {
+                return Err(
+                    "Agent Backbone isn't installed. Run the Agent Interface installer again."
+                        .into(),
+                );
+            };
+            install::initialize_backbone(backbone, &probe.path_env)?;
+            answered().ok_or_else(|| {
+                format!(
+                    "Agent Backbone was set up but did not answer (waited {} s). {logs}",
+                    SERVICE_WAIT.as_secs()
+                )
+            })
         }
     }
 }
 
-fn frame(frame: Frame) -> gpui::Div {
-    let t = tokens();
-    let ground = rgba(0x0e0f13, 1.0);
-    let text = rgba(0xeceef3, 1.0);
-    let glow = rgba(0x7887ff, 1.0);
-    let shown = 1.0 - frame.leave;
-    let mut panes = div().flex().gap(px(6.0)).w(px(180.0)).h(px(72.0));
-    for (index, rise) in frame.panes.into_iter().enumerate() {
-        panes = panes.child(
-            div()
-                .relative()
-                .h_full()
-                // Each new pane grows out of the one before it.
-                .flex_basis(px(0.0))
-                .flex_grow(1.0)
-                .when(index > 0, |el| el.max_w(px(180.0 * rise)))
-                .rounded(px(6.0))
-                .border(px(1.5))
-                .border_color(rgba(0xeceef3, 0.8 * rise * shown))
-                .when(index == 0 && frame.cursor, |el| {
-                    el.child(
-                        div()
-                            .absolute()
-                            .left(px(8.0))
-                            .top(px(8.0))
-                            .w(px(7.0))
-                            .h(px(12.0))
-                            .bg(rgba(0xeceef3, rise * shown)),
-                    )
-                }),
-        );
+/// Wait for the agent service to answer, for up to [`SERVICE_WAIT`].
+fn answered() -> Option<()> {
+    let deadline = Instant::now() + SERVICE_WAIT;
+    while Instant::now() < deadline {
+        if matches!(probe::backbone(), Backbone::Running { .. }) {
+            return Some(());
+        }
+        std::thread::sleep(SERVICE_POLL);
     }
-    let link = div()
-        .relative()
-        .w(px(180.0))
-        .h(px(18.0))
-        .child(
-            div()
-                .absolute()
-                .top(px(9.0))
-                .left(px(30.0))
-                .right(px(30.0))
-                .h(px(1.5))
-                .bg(rgba(0x8a96ff, 0.9 * frame.link * shown)),
-        )
-        .children([24.0, 84.0, 144.0].map(|left| {
-            div()
-                .absolute()
-                .top(px(6.0))
-                .left(px(left))
-                .size(px(7.0))
-                .rounded_full()
-                .bg(rgba(0x8a96ff, frame.link * shown))
-        }));
-    let mut steps = div().flex().gap(px(16.0)).justify_center();
-    for (index, name) in STEPS.iter().enumerate() {
-        let lit = if index < frame.lit { 1.0 } else { 0.3 };
-        steps = steps.child(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(6.0))
-                .text_color(rgba(0xeceef3, lit * frame.steps * shown))
-                .child(format!("{}  {name}", index + 1)),
-        );
-    }
-    div()
-        .size_full()
-        .relative()
-        .bg(ground)
-        .flex()
-        .flex_col()
-        .items_center()
-        .justify_center()
-        .gap(px(t.space.s16))
-        .child(
-            div()
-                .absolute()
-                .size(px(1.0))
-                .rounded_full()
-                .shadow(vec![BoxShadow {
-                    color: rgba(0x7887ff, 0.35 * frame.light * shown).into(),
-                    offset: point(px(0.0), px(0.0)),
-                    blur_radius: px(160.0 * frame.light),
-                    spread_radius: px(70.0 * frame.light),
-                    inset: false,
-                }])
-                .bg(glow),
-        )
-        .child(panes)
-        .child(link)
-        .child(
-            div()
-                .text_size(px(24.0))
-                .font_weight(gpui::FontWeight::SEMIBOLD)
-                .text_color(rgba(0xeceef3, frame.name * shown))
-                .child("Agent Interface"),
-        )
-        .child(
-            div()
-                .h(px(40.0))
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(
-                    div()
-                        .absolute()
-                        .whitespace_nowrap()
-                        .text_color(rgba(0xeceef3, frame.tagline * shown))
-                        .child(TAGLINE),
-                )
-                .child(steps),
-        )
-        .text_color(text)
+    None
 }
 
-fn rgba(hex: u32, alpha: f32) -> Rgba {
-    let mut color = gpui::rgb(hex);
-    color.a = alpha.clamp(0.0, 1.0);
-    color
+/// What this computer is missing for terminals and agents: tmux, Git.
+fn missing(probe: &Probe) -> Vec<&'static str> {
+    let mut names = Vec::new();
+    if probe.tmux.is_none() {
+        names.push("tmux");
+    }
+    if probe.path("git").is_none() {
+        names.push("git");
+    }
+    names
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn enlarged_setup_stays_visible_for_both_resize_anchors() {
-        // A 768px display at 200%, with setup near either vertical edge.
-        let visible = Bounds::new(point(px(0.), px(12.)), size(px(683.), px(360.)));
-        for top in [px(20.), px(120.)] {
-            let current = Bounds::new(point(px(170.), top), size(px(340.), px(240.)));
-            for bottom_anchor in [false, true] {
-                let extent =
-                    size(px(680.), px(480.)).min(&resize_limit(current, visible, bottom_anchor));
-                let y = if bottom_anchor {
-                    current.bottom() - extent.height
-                } else {
-                    top
-                };
-                let resized = Bounds::new(point(current.origin.x, y), extent);
-                assert!(resized.origin.y >= visible.origin.y);
-                assert!(resized.bottom() <= visible.bottom());
-                assert!(resized.right() <= visible.right());
-            }
-        }
-    }
 
     #[test]
     fn only_completed_setup_skips_onboarding() {
@@ -1102,20 +940,5 @@ mod tests {
         assert!(first_run(&preferences));
         preferences.setup_done = true;
         assert!(!first_run(&preferences));
-    }
-
-    #[test]
-    fn the_scene_builds_then_dissolves() {
-        let start = Frame::at(0.0);
-        assert_eq!((start.light, start.panes, start.lit), (0.0, [0.0; 3], 0));
-        let middle = Frame::at(4500.0);
-        assert_eq!(middle.panes, [1.0; 3]);
-        assert_eq!((middle.name, middle.tagline, middle.steps), (1.0, 1.0, 0.0));
-        let steps = Frame::at(6500.0);
-        assert_eq!(
-            (steps.tagline, steps.steps, steps.lit),
-            (0.0, 1.0, STEPS.len())
-        );
-        assert_eq!(Frame::at(8000.0).leave, 1.0);
     }
 }

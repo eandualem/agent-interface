@@ -230,8 +230,9 @@ The installation command above also installs
 [Agent Backbone](https://github.com/eandualem/agent-backbone) from its published
 Python package. A fresh installation initializes its user service and enables
 the private Unix socket used by the app. Open Agent Interface to continue
-onboarding; no separate Backbone installation command is needed. Agent tools
-still need to be installed and signed in before creating an agent.
+onboarding; no separate Backbone installation command is needed. Onboarding
+creates your first profile, and offers to install Git, tmux or an agent tool
+when one is missing; each agent tool signs in inside its own terminal.
 
 New installations and permitted upgrades select Backbone 0.5.1 or newer. If a compatible published
 release is unavailable, installation stops before replacing the app. Setup

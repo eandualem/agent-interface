@@ -403,6 +403,7 @@ impl Pane {
                     if !pane.accepts(&ticket) {
                         return false;
                     }
+                    let mut finished = false;
                     let Page::Operation {
                         key,
                         snapshot,
@@ -434,6 +435,7 @@ impl Pane {
                                 Ok(next) if next.key == *key => {
                                     *snapshot = Some(Box::new(next));
                                     pane.error = error;
+                                    finished = true;
                                 }
                                 Ok(_) => {
                                     *snapshot = None;
@@ -445,6 +447,13 @@ impl Pane {
                                 }
                             }
                         }
+                    }
+                    // A fresh start has no ready page: once the agent is up,
+                    // its own pane is the next step.
+                    if finished && pane.fresh.is_some() && pane.running() {
+                        pane.get_started(cx);
+                        cx.notify();
+                        return false;
                     }
                     cx.notify();
                     true
@@ -578,8 +587,55 @@ impl Pane {
         })
     }
 
-    /// What a person starting an agent needs: it's starting, it's running, it
-    /// needs them, or it didn't start and what to do next.
+    /// A fresh start is still under way.
+    pub fn starting(&self) -> bool {
+        let Page::Operation { snapshot, .. } = &self.page else {
+            return false;
+        };
+        !self.finished
+            && !self.running()
+            && (self.busy || (snapshot.is_none() && self.error.is_none()))
+    }
+
+    /// The step the provider last reported, such as `hooks` or `launch`.
+    pub fn step(&self) -> Option<&str> {
+        let Page::Operation { progress, .. } = &self.page else {
+            return None;
+        };
+        progress.as_deref().and_then(|p| p.event.step.as_deref())
+    }
+
+    /// Why a fresh start stopped, in a sentence, once it has.
+    pub fn failure(&self) -> Option<String> {
+        if self.starting() || self.running() || self.finished {
+            return None;
+        }
+        let Page::Operation { snapshot, .. } = &self.page else {
+            return None;
+        };
+        snapshot
+            .as_deref()
+            .and_then(outcome)
+            .or(self.error.map(|error| message(error).to_owned()))
+            .or_else(|| Some("It stopped before it was ready. Try again.".to_owned()))
+    }
+
+    /// Try the same request again, when the provider allows it. Returns false
+    /// when only a new request can go on.
+    pub fn retry(&mut self, cx: &mut Context<Self>) -> bool {
+        let Page::Operation { snapshot, .. } = &self.page else {
+            return false;
+        };
+        if !Command::Retry.allowed(snapshot.as_deref()) {
+            return false;
+        }
+        let ticket = self.ticket.0.clone();
+        self.invoke(Command::Retry, &ticket, cx);
+        true
+    }
+
+    /// What a person starting an agent needs: it's starting, or it didn't
+    /// start and what to do next. Once it runs, its pane opens instead.
     fn progress(
         &self,
         leave: &'static str,
@@ -589,59 +645,41 @@ impl Pane {
         let (t, c) = (tokens(), colors());
         let meta = |text: String| ui::text(div().text_color(c.muted), &t.text.meta).child(text);
         let name = snapshot.map_or("Your agent", |s| s.agent_name.as_str());
-        // The CLI is up, so setup is done. What it shows next is between it and
-        // the person.
-        let running = self.running();
-        let starting = !running && (self.busy || (snapshot.is_none() && self.error.is_none()));
-        let (step, title, note) = if running {
+        let starting = self.starting() || self.running();
+        let (step, title, note) = if starting {
             (
-                None,
-                "You're all set".to_owned(),
-                Some(format!("{name} is running. Go ahead and talk to it.")),
-            )
-        } else if starting {
-            (
-                Some(ui::Step::Now),
+                ui::Step::Now,
                 format!("Starting {name}…"),
-                Some("This can take a moment. It keeps going if you leave.".to_owned()),
+                Some(stage(self.step(), name)),
             )
         } else {
             (
-                Some(ui::Step::Waits),
+                ui::Step::Waits,
                 format!("{name} didn't start"),
-                snapshot
-                    .and_then(outcome)
-                    .or(self.error.map(|error| message(error).to_owned())),
+                self.failure(),
             )
         };
         let ticket = self.ticket.0.clone();
         let mut actions = div().flex().items_center().gap(px(t.space.s8));
         if !starting {
-            if running {
-                actions = actions.child(
-                    ui::button("setup-get-started", "Get started", ui::Button::Primary)
-                        .on_click(cx.listener(|pane, _, _, cx| pane.get_started(cx))),
+            let again = snapshot.is_some_and(|s| Command::Retry.allowed(Some(s)));
+            actions = actions
+                .child(
+                    ui::button("setup-try-again", "Try again", ui::Button::Primary).on_click(
+                        cx.listener(move |pane, _, _, cx| {
+                            if again {
+                                pane.invoke(Command::Retry, &ticket, cx);
+                            } else {
+                                pane.finished = true;
+                                cx.emit(Again);
+                            }
+                        }),
+                    ),
+                )
+                .child(
+                    ui::button("setup-leave", leave, ui::Button::Secondary)
+                        .on_click(cx.listener(|pane, _, _, cx| pane.back(cx))),
                 );
-            } else {
-                let again = snapshot.is_some_and(|s| Command::Retry.allowed(Some(s)));
-                actions = actions
-                    .child(
-                        ui::button("setup-try-again", "Try again", ui::Button::Primary).on_click(
-                            cx.listener(move |pane, _, _, cx| {
-                                if again {
-                                    pane.invoke(Command::Retry, &ticket, cx);
-                                } else {
-                                    pane.finished = true;
-                                    cx.emit(Again);
-                                }
-                            }),
-                        ),
-                    )
-                    .child(
-                        ui::button("setup-leave", leave, ui::Button::Secondary)
-                            .on_click(cx.listener(|pane, _, _, cx| pane.back(cx))),
-                    );
-            }
         }
         div()
             .size_full()
@@ -650,11 +688,7 @@ impl Pane {
             .gap(px(t.space.s10))
             .track_focus(&self.focus)
             .capture_key_down(cx.listener(move |pane, event: &gpui::KeyDownEvent, _, cx| {
-                let key = event.keystroke.key.as_str();
-                if running && (key == "enter" || key == "escape") {
-                    pane.get_started(cx);
-                    cx.stop_propagation();
-                } else if key == "escape" {
+                if event.keystroke.key.as_str() == "escape" {
                     pane.back(cx);
                     cx.stop_propagation();
                 }
@@ -664,12 +698,22 @@ impl Pane {
                     .flex()
                     .items_center()
                     .gap(px(t.space.s8))
-                    .children(step.map(ui::step_dot))
+                    .child(ui::step_dot(step))
                     .child(div().text_color(c.text).child(title)),
             )
             .children(note.map(meta))
             .child(actions)
             .into_any_element()
+    }
+}
+
+/// What a start is doing, from the step the provider last reported.
+pub(super) fn stage(step: Option<&str>, name: &str) -> String {
+    match step {
+        Some("hooks") => "Adding its hooks…".to_owned(),
+        Some("agent") => format!("Creating {name}…"),
+        Some("launch" | "ready") => "Opening its terminal…".to_owned(),
+        _ => "Checking the tool…".to_owned(),
     }
 }
 impl Render for Pane {

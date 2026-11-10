@@ -23,6 +23,7 @@ fn choice() -> Selection<'static> {
     Selection {
         name: "worker",
         project: Path::new("/example/project"),
+        create: false,
         runtime: "codex",
         model: None,
         brief: Some("Do the project work"),
@@ -188,4 +189,19 @@ fn an_agent_is_named_after_its_folder() {
 #[test]
 fn a_typed_name_with_spaces_becomes_hyphens() {
     assert_eq!(super::agent_name(" new  agent "), "new-agent");
+}
+#[test]
+fn a_guide_asks_setup_to_make_its_own_folder() {
+    let catalog = catalog(&fixtures()["runtime_catalog"]["catalog"].clone());
+    let mut guide = choice();
+    guide.name = "guide";
+    guide.project = Path::new("/home/person/Agents/guide");
+    guide.create = true;
+    guide.brief = None;
+    let prepared = freeze("guide-request", &profile(), &catalog, guide).unwrap();
+    let first: Value = serde_json::from_slice(prepared.bytes(Action::FirstAgent)).unwrap();
+    assert_eq!(first["agent"]["name"], "guide");
+    assert_eq!(first["agent"]["directory"], "/home/person/Agents/guide");
+    assert_eq!(first["agent"]["create_directory"], true);
+    assert_eq!(first["agent"]["brief"]["template"], "orchestrator-v1");
 }

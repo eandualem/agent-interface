@@ -47,6 +47,8 @@ group!(
         attention_text: Rgba = color, on_attention: Rgba = color,
         attention_soft: Rgba = color, ok: Rgba = color, info: Rgba = color,
         violet: Rgba = color, green: Rgba = color, code: Rgba = color, shadow: Rgba = color,
+        mark_from: Rgba = color, mark_to: Rgba = color, mark_edge: Rgba = color,
+        mark_glyph: Rgba = color, mark_eye: Rgba = color, mark_glow: Rgba = color,
         pane_dim: f32 = number,
     }
 );
@@ -79,6 +81,7 @@ group!(
         figure: TextStyle = style, group_title: TextStyle = style, doc_title: TextStyle = style,
         doc_heading: TextStyle = style, doc_body: TextStyle = style, quote: TextStyle = style,
         card_title: TextStyle = style, step_key: TextStyle = style, step_mark: TextStyle = style,
+        scene_title: TextStyle = style, scene_line: TextStyle = style,
     }
 );
 
@@ -119,11 +122,12 @@ group!(
         window_width: f32 = number, window_height: f32 = number,
         window_min_width: f32 = number, window_min_height: f32 = number,
         caret: f32 = number,
-        settings_width: f32 = number, settings_height: f32 = number, setup_height: f32 = number,
-        settings_nav: f32 = number, theme_card: f32 = number,
+        settings_width: f32 = number, settings_height: f32 = number,
+        scene_mark: f32 = number, setup_column: f32 = number, setup_stage: f32 = number,
+        setup_mark: f32 = number, setup_control: f32 = number, settings_nav: f32 = number, theme_card: f32 = number,
         empty_icon: f32 = number, empty_width: f32 = number,
         menu_heading: f32 = number, keycap: f32 = number, hairline: f32 = number,
-        profile_popover: f32 = number, profile_mark: f32 = number, profile_flow: f32 = number,
+        profile_popover: f32 = number, profile_mark: f32 = number,
         minimap_stroke: f32 = number, workspace_block_padding: f32 = number,
         pane_number_width: f32 = number, view_toolbar: f32 = number,
         view_footer: f32 = number, view_choice: f32 = number, view_tile: f32 = number,
@@ -168,8 +172,12 @@ group!(
 );
 
 group!(
-    /// Timings for visible working-agent indicators.
-    Motion { spinner_ms: f32 = number }
+    /// Timings for the working-agent indicator and the opening scene.
+    Motion {
+        spinner_ms: f32 = number, scene_ms: f32 = number, scene_face_ms: f32 = number,
+        scene_words_ms: f32 = number, scene_handoff_ms: f32 = number,
+        scene_settle_ms: f32 = number, step_ms: f32 = number, reveal_ms: f32 = number,
+    }
 );
 
 /// The whole design language.

@@ -19,6 +19,7 @@ is built, where each part lives, and how to change it.
 | Tab, workspace and icon menus | `desktop/menus.rs` | change menus |
 | Jump (Command-K) | `desktop/jump.rs` | change search results |
 | The Settings window | `desktop/settings_window.rs` | change Settings pages |
+| The opening scene | `desktop/onboarding/scene.rs` | change the first-run scene |
 | Icons | `crates/app/assets/icons/`, listed in `desktop/icons.rs` | add an icon |
 
 **The rule:** views use tokens and components, never their own values. A
@@ -109,6 +110,7 @@ Each theme defines the same names (`[color.dark]`, `[color.light]` in
 | `ok` | Saved light, connected |
 | `info`, `violet`, `green` | Inbound events and cache reads; cache writes; output tokens (Backbone views) |
 | `shadow` | Popover shadow |
+| `mark_from`, `mark_to`, `mark_edge`, `mark_glyph`, `mark_eye`, `mark_glow` | The app mark in the opening scene: its tile's gradient and hairline, the closed eye and mouth, the open eyes and the cursor eye's glow. The same in both themes, like the icon |
 | `pane_dim` | Opacity of unfocused panes' content |
 
 Terminal defaults per theme (`[terminal.dark]`, `[terminal.light]`): the
@@ -136,6 +138,7 @@ weight, applied with `components::text`:
 | `empty_title`, `body` | Empty and error states; explanatory text |
 | `figure` | The headline number in a view |
 | `card_title`, `step_key`, `step_mark` | A plan's title on its card; DONE or NOW atop a step in an opened plan; the `!` in a waiting step's mark |
+| `scene_title`, `scene_line` | The app's name and the line beneath it in the opening scene, then every first-run screen's title and line |
 
 ## Spacing, radii and sizes
 
@@ -171,6 +174,7 @@ All in `components.rs`; each takes its look from the tokens.
 | `badge` | Small mono label, such as an agent's CLI |
 | `view_choice` | A row of the new-pane views list: icon tile, label, description, scope |
 | `fact` | A label and value, one line of an agent's card |
+| `tool_card` | An agent tool to pick, for a profile's first agent and for Add agent alike: a radio mark (a turning arc while it installs), the name in `row_selected` and its state in `meta` (for an agent, whether it starts signed in or asks to sign in), `attention` when it needs the person; selected, the accent tint and ring. Callers add the click and any Install or Update |
 | `choice_button`, `filter_frame`, `choice_frame`, `choice_key`, `hint_bar` | The chooser's two buttons, filter, selectable row with its ring, number key and centred key row |
 | `view_header`, `back_button`, `pill`, `info_card` | A view's 28 px header; the reading view's way back; a tag; a summary panel |
 | `tag` with `Tone` | How something is delivered: `Plain` for `all` and plain facts, `Tag` in the accent tint for a tag, `Quiet` outline for a direct assignment; a record's state: `Tag` for active, `Attention` for waiting on the person, `Done` for complete |
@@ -266,6 +270,66 @@ reader composition are separate modules under `desktop/views/interactions/`.
 No view-specific colours or new font families are added. Native accessibility
 exposes rows as named buttons with selected state, the rail as an image description,
 and the window, direction and recipient controls as radio groups.
+
+## Opening scene
+
+The first time the app opens, its face introduces it, as the website's hero
+does: it laughs with both eyes open, looks right, looks left, and only then
+winks, the left eye closing from an amber stroke into the white `>` while the
+mouth lifts into the icon's smile. The wink is the last beat, never the first.
+The name and its line rise while the face looks around. The face then settles:
+it shrinks from `scene_mark` to `setup_mark` and rises to the top of the
+first-run column over `scene_settle_ms`, while the name and tagline fade and
+the first screen's title and line appear in their place, its body following.
+
+`desktop/onboarding/scene.rs` holds the face's keyframes, which are the
+website's (five seconds, `cubic-bezier(.45, 0, .2, 1)`, the bob in
+`ease-in-out`), and the scene around them, both pure functions of time. The
+tile is a gradient div; the closing eye and the mouth are stroked paths on a
+canvas, with round ends drawn as dots; the open eye is a quad with a glow.
+`[motion]` places it (`scene_ms`, `scene_face_ms`, `scene_words_ms`,
+`scene_handoff_ms`, `scene_settle_ms`), and a test checks that its last frame
+is `packaging/icon/agent-interface.svg`.
+
+Any key, a click or Skip (bottom left, with its `esc` keycap) jumps to the
+handoff. Interface size stays available at the bottom right throughout first
+run.
+
+## First-run screens
+
+Every first-run and New profile screen is one shape, built once as
+`components::setup_stage(mark, title, line, body)`: `ground` fills the window,
+and a `setup_column` (420) wide column is centred, its top at
+`max(titlebar + s12, (window height − setup_stage) / 2)`, so the mark, title
+and line never move between screens. The mark is the app face at rest at
+`setup_mark` (48); the title is `scene_title` in `text`, `s16` under it; the
+line is `scene_line` in `muted`, `s6` under that, two lines at most; the body
+starts `s24` lower. Screens cross-fade their words and body over `step_ms`.
+
+Fields are `setup_field`: `setup_control` (36) tall, `field` with a
+`line_strong` border, `accent` while focused. The name field leads with a
+neutral `profile_mark` showing the first letter as it is typed; the guide's
+leads with the `bot` icon in `muted`. Labels are `meta` in `muted`, `s6` above
+their control, groups `s16` apart. The main button is `setup_button`: the
+column's width, `setup_control` tall, `s20` above; off it stays legible in
+`field` and `muted`, busy it turns an arc. Quiet actions are `text_action`:
+`meta` in `muted`, `text` with a `hover` fill under the pointer, `s12` under
+the button at the column's ends.
+
+Name shows "Git commits as" the name and email on one `meta` line, the name in
+`text`, with Change at its end; Change, or a computer with no Git name, opens
+two fields. The guide shows its Name, "Runs in" with `tool_card`s two to a row
+(`s8` apart; selected takes `accent_soft` and the `focus` ring; the state line
+is `meta`, with a trailing Install or Update), then Start, and More options
+opens one `panel` group with folder, instructions, model, hooks and greeting.
+Errors are `meta` in `attention_text` under the button. When something needs
+the person, the same shape holds one button: "Install tmux to continue", or
+"Agents can't start yet" with Continue with terminals and Details, whose
+reason is `meta` in the mono font on `field`.
+
+When the guide's pane opens, the stage fades over `reveal_ms` and the
+navigation panel eases in from 24 px to the left. New profile, from the menu,
+shows the same screens across the content area.
 
 ## Interaction patterns
 
