@@ -58,7 +58,7 @@ impl Feedback {
     }
     pub(super) fn valid(&self) -> bool {
         !self.text.trim().is_empty()
-            && self.text.chars().count() <= 4000
+            && self.text.chars().count() <= 64_000
             && self.anchor.as_ref().is_none_or(|a| {
                 !a.row_ids.is_empty()
                     && !a.column_ids.is_empty()

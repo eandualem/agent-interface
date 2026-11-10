@@ -299,6 +299,9 @@ fn feedback_bounds_fail_before_a_request() {
         }),
     );
     assert!(!feedback.valid());
+    let text = |n| Feedback::operator(id(7), id(3), FeedbackKind::Feedback, "x".repeat(n), None);
+    assert!(text(64_000).valid());
+    assert!(!text(64_001).valid());
 }
 
 #[test]
