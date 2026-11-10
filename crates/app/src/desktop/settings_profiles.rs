@@ -69,15 +69,15 @@ impl Profiles {
             return;
         };
         let directory = library_directory(cx);
-        let pane = cx.new(|cx| Management::new(client, directory, Some(id), cx));
+        let pane = cx.new(|cx| Management::new(client, directory.clone(), Some(id), cx));
         window.focus(&pane.read(cx).focus.clone(), cx);
         let back = cx.subscribe(&pane, |page, _, _: &Back, cx| {
             page.detail = None;
             page.refresh(cx);
         });
-        let open = cx.subscribe(&pane, |page, _, open: &Open, cx| {
-            let (open, client) = (open.clone(), page.client.clone());
-            cx.defer(move |cx| show_in_browser(open, client, cx));
+        let open = cx.subscribe(&pane, move |page, _, open: &Open, cx| {
+            let (open, client, directory) = (open.clone(), page.client.clone(), directory.clone());
+            cx.defer(move |cx| show_in_browser(open, client, directory, cx));
         });
         self.detail = Some((pane, vec![back, open]));
         cx.notify();
@@ -99,8 +99,25 @@ fn library_directory(cx: &App) -> Option<std::path::PathBuf> {
         .find_map(|window| window.read(cx).ok().and_then(|b| b.directory.clone()))
 }
 
-fn show_in_browser(open: Open, client: Option<Client>, cx: &mut App) {
-    if let Some(handle) = super::browser_window(cx) {
+/// Open in the window whose library recorded the setup, else the usual one.
+fn show_in_browser(
+    open: Open,
+    client: Option<Client>,
+    directory: Option<std::path::PathBuf>,
+    cx: &mut App,
+) {
+    let uses = |window: &gpui::WindowHandle<Browser>, cx: &App| {
+        window.read(cx).is_ok_and(|b| b.directory == directory)
+    };
+    let usual = super::browser_window(cx);
+    let handle = usual.filter(|window| uses(window, cx)).or_else(|| {
+        cx.windows()
+            .into_iter()
+            .filter_map(|window| window.downcast::<Browser>())
+            .find(|window| uses(window, cx))
+            .or(usual)
+    });
+    if let Some(handle) = handle {
         let _ = handle.update(cx, |browser, window, cx| {
             if let Some(client) = client {
                 browser.use_profile_client(client);
