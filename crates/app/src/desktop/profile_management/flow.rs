@@ -937,7 +937,11 @@ fn make(
         .map(|journal| Controller::new(journal, &client))
         .map_err(|_| unavailable(&made))?;
     let profile = match (made, resume) {
-        (Some(profile), Some(Stalled::NotStarted)) => profile,
+        // Read it again: the start names its current lifecycle, which an
+        // earlier attempt may have changed.
+        (Some(profile), Some(Stalled::NotStarted)) => client
+            .show(&profile.item().profile_id, &alive)
+            .unwrap_or(profile),
         (_, resume) => {
             let receipt = match (prepared, resume) {
                 (Some(prepared), _) => {
