@@ -81,15 +81,8 @@ fn next(listener: &UnixListener, label: &str, key: &str, path: &str) -> (UnixStr
     (stream, body)
 }
 
-fn edit() -> Edit {
-    Edit::operator(
-        id(7),
-        id(3),
-        vec![Operation::RenameTab {
-            tab_id: id(4),
-            name: "Updated".into(),
-        }],
-    )
+fn feedback() -> Feedback {
+    Feedback::operator(id(7), id(3), FeedbackKind::Feedback, "Updated".into(), None)
 }
 
 #[test]
@@ -107,15 +100,15 @@ fn delayed_sheets_and_prepared_retries_keep_original_profile_and_credentials() {
         delayed.recv_timeout(Duration::from_secs(5)).unwrap();
         let mut a = record(8);
         a["title"] = json!("sentinel-a");
-        reply(&mut stream, 200, a.clone());
-        let path = format!("POST /api/sheets/{}/revisions", id(1));
+        reply(&mut stream, 200, a);
+        let path = format!("POST /api/sheets/{}/feedback", id(1));
         let (stream, original) = next(&listener, "a", "fixture-original", &path);
         drop(stream);
         let (mut stream, _) = next(&listener, "a", "fixture-rotated", "GET /api/profile");
         reply(&mut stream, 200, identity);
         let (mut stream, retried) = next(&listener, "a", "fixture-original", &path);
         assert_eq!(original, retried);
-        reply(&mut stream, 200, json!({"record":a,"created":false}));
+        reply(&mut stream, 200, receipt("sentinel-a"));
         let (mut stream, _) = next(
             &listener,
             "a",
@@ -149,7 +142,7 @@ fn delayed_sheets_and_prepared_retries_keep_original_profile_and_credentials() {
     assert_eq!(b.record(&id(1), None).unwrap().title, "sentinel-b");
     release.send(()).unwrap();
     assert_eq!(pending_read.join().unwrap().title, "sentinel-a");
-    let prepared = a.prepare_edit(&id(1), &edit()).unwrap();
+    let prepared = a.prepare_feedback(&id(1), &feedback()).unwrap();
     assert!(matches!(b.submit(&prepared), Err(Error::ProviderChanged)));
     assert!(matches!(a.submit(&prepared), Err(Error::Unknown)));
     fs::write(
@@ -160,7 +153,7 @@ fn delayed_sheets_and_prepared_retries_keep_original_profile_and_credentials() {
     let rotated = Client::bound(profile.connect().unwrap());
     assert_eq!(rotated.identity(), a.identity());
     assert!(
-        matches!(rotated.submit(&prepared), Ok(Accepted::Revision(r)) if r.title == "sentinel-a")
+        matches!(rotated.submit(&prepared), Ok(Accepted::Feedback(r)) if r.operation_id == "sentinel-a")
     );
     let exported = a.export(&id(1), &id(8), Format::Json, None).unwrap();
     assert_eq!(
@@ -201,7 +194,7 @@ fn binding_refusals_stop_pages_and_mutations_without_retry_or_fallback() {
             &listener,
             "a",
             "fixture-original",
-            &format!("POST /api/sheets/{}/revisions", id(1)),
+            &format!("POST /api/sheets/{}/feedback", id(1)),
         );
         reply(
             &mut stream,
@@ -211,7 +204,7 @@ fn binding_refusals_stop_pages_and_mutations_without_retry_or_fallback() {
     });
     let client = Client::bound(connection);
     assert_eq!(client.list_all().unwrap_err(), Error::BindingRefused);
-    let prepared = client.prepare_edit(&id(1), &edit()).unwrap();
+    let prepared = client.prepare_feedback(&id(1), &feedback()).unwrap();
     assert_eq!(client.submit(&prepared).unwrap_err(), Error::BindingRefused);
     worker.join().unwrap();
 }
