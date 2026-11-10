@@ -95,7 +95,8 @@ fn start_at(
         return refused("Starting agents requires Backbone's authenticated local connection.");
     };
     let mut body = serde_json::json!({ "resume": resume, "wait": false });
-    if let Some(defaults) = defaults.filter(|_| supports_defaults(url, key, name)) {
+    let read = |path: &str| transport::get(url, path, key, 1024 * 1024);
+    if let Some(defaults) = defaults.filter(|_| supports_defaults(read, name)) {
         body["terminal_defaults"] = serde_json::to_value(defaults).expect("terminal colours JSON");
     }
     let reply = transport::post_local(
@@ -162,7 +163,9 @@ pub(crate) fn start_outcome(
     }
 }
 
-fn supports_defaults(url: &str, key: &str, name: &str) -> bool {
+/// Whether `name`'s saved runtime advertises `terminal_defaults`, from the
+/// runtime catalog and the agent's inspection that `read` returns.
+pub(crate) fn supports_defaults(read: impl Fn(&str) -> Option<Vec<u8>>, name: &str) -> bool {
     #[derive(Deserialize)]
     struct Runtime {
         id: String,
@@ -173,7 +176,6 @@ fn supports_defaults(url: &str, key: &str, name: &str) -> bool {
     struct Agent {
         runtime: String,
     }
-    let read = |path: &str| transport::get(url, path, key, 1024 * 1024);
     let Some(catalog) =
         read("/api/runtimes").and_then(|bytes| serde_json::from_slice::<Vec<Runtime>>(&bytes).ok())
     else {

@@ -102,7 +102,8 @@ impl Operation {
         // A start or stop that loses its command keeps its reservation in the
         // provider, which then refuses every later one. Leaving a screen or quitting
         // never stops it: the command finishes and releases the reservation itself.
-        let (status, bytes) = self.run(&args, live, timeout, true)?;
+        // It may read `--file` only after this call returns, so the file goes with it.
+        let (status, bytes) = self.run(&args, live, timeout, Some(input))?;
         self.observe(status, &bytes)
     }
 
@@ -116,7 +117,7 @@ impl Operation {
             "--".into(),
             self.request_id().into(),
         ];
-        let (status, bytes) = self.run(&args, live, TIMEOUT, false)?;
+        let (status, bytes) = self.run(&args, live, TIMEOUT, None)?;
         self.observe(status, &bytes)
     }
 
@@ -139,7 +140,7 @@ impl Operation {
         args: &[OsString],
         live: &dyn Fn() -> bool,
         timeout: Duration,
-        keep_running: bool,
+        keep_running: Option<super::invocation_file::InvocationFile>,
     ) -> Result<(ExitStatus, Vec<u8>), Error> {
         if !live() {
             return Err(Error::Cancelled);
@@ -214,7 +215,8 @@ fn drain(output: &std::fs::File, bytes: &mut Vec<u8>) -> Result<(), Error> {
 
 struct Invocation {
     child: Option<Child>,
-    keep_running: bool,
+    /// Some to leave the child running, holding its request file until it exits.
+    keep_running: Option<super::invocation_file::InvocationFile>,
 }
 impl Invocation {
     fn try_wait(&mut self) -> std::io::Result<Option<ExitStatus>> {
@@ -231,10 +233,11 @@ impl Drop for Invocation {
         if child.try_wait().ok().flatten().is_some() {
             return;
         }
-        if self.keep_running {
+        if let Some(input) = self.keep_running.take() {
             // It writes to an anonymous file, so it outlives this process safely.
             std::thread::spawn(move || {
                 let _ = child.wait();
+                drop(input);
             });
             return;
         }
