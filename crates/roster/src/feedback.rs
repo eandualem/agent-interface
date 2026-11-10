@@ -11,9 +11,6 @@ use crate::{
     views::{ReportContent, ReportItem},
 };
 
-/// Local composer limit, independent of Backbone's larger wire limit.
-pub const TEXT_LIMIT: usize = 4000;
-
 /// Result of one user-initiated submission. No outcome causes an automatic retry.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Outcome {
@@ -125,8 +122,8 @@ fn send_to(url: &str, key: &str, item: &ReportItem, text: &str) -> Outcome {
 
 fn send_using(api: &Api<'_>, item: &ReportItem, text: &str) -> Outcome {
     let refused = |text: &str| Outcome::Refused(text.into());
-    if text.trim().is_empty() || text.chars().count() > TEXT_LIMIT {
-        return refused("Enter feedback of at most 4,000 characters.");
+    if text.trim().is_empty() {
+        return refused("Enter feedback before sending.");
     }
     let Some(author_id) = item.author_id.as_deref().filter(|id| {
         id.len() == 32
