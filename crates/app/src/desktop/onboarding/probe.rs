@@ -220,8 +220,9 @@ fn path_lookup(path_env: &str, home: Option<&Path>) -> (Vec<(&'static str, PathB
     (found, path_env)
 }
 
-/// A fresh install's first profile is Default, read through its verified connection.
-fn backbone() -> Backbone {
+/// Whether Agent Backbone's Default profile answers, read through its
+/// verified connection. Blocks for a moment; call off the UI thread.
+pub fn backbone() -> Backbone {
     use agent_interface_roster::profiles::Kind;
     const UNANSWERED: &str = "The Default profile is not answering";
     let live = || true;

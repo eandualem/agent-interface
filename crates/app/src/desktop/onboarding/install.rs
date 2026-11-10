@@ -1,7 +1,9 @@
-//! What setup can fix for the person, each only on an explicit click: install
-//! Git or tmux with the system's own installer, install an agent tool with
-//! its official script, or restart Agent Backbone's service. Every fix runs
-//! off the UI thread with a deadline, and a failure explains itself.
+//! What first run fixes: Git or tmux with the system's own installer and an
+//! agent tool with its official script, each on the person's click; and the
+//! agent service, which first run starts by itself: restarted once when it
+//! doesn't answer, or set up the way the installer does when it never was.
+//! Every fix runs off the UI thread with a deadline, and a failure explains
+//! itself.
 
 use std::{
     os::unix::fs::FileExt,
@@ -14,6 +16,9 @@ use std::{
 const LIMIT: Duration = Duration::from_secs(15 * 60);
 /// How much of a failed command's output is kept to explain it.
 const TAIL: usize = 16 * 1024;
+/// Agent Backbone's own setup waits up to 30 s for its service; this leaves
+/// room for a slow first start.
+const SETUP_LIMIT: Duration = Duration::from_secs(5 * 60);
 
 /// How a fix ended.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -133,6 +138,73 @@ pub fn restart_backbone(path_env: &str) -> Outcome {
     ))
 }
 
+/// Set Agent Backbone up the way the installer does, when it never was: its
+/// data, its Default profile and its login service. Safe to repeat; existing
+/// data is kept.
+pub fn initialize_backbone(backbone: &Path, path_env: &str) -> Result<(), String> {
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or("The home folder is unknown.")?;
+    let data = std::env::var_os("BACKBONE_DATA_DIR")
+        .filter(|dir| !dir.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".local/share/agent-backbone"));
+    let request_id = uuid::Uuid::new_v4().simple().to_string();
+    let request = serde_json::json!({
+        "schema_version": 1,
+        "request_id": request_id,
+        "action": "initialize",
+        "data_dir": data,
+        "service": "user",
+        "starter_profile": "core-v1",
+    });
+    let mut file = tempfile::NamedTempFile::new()
+        .map_err(|_| "Setup could not create a temporary file.".to_owned())?;
+    std::io::Write::write_all(&mut file, request.to_string().as_bytes())
+        .map_err(|_| "Setup could not write its request.".to_owned())?;
+    let output =
+        tempfile::tempfile().map_err(|_| "Setup could not create a temporary file.".to_owned())?;
+    let mut child = Command::new(backbone)
+        .args(["setup", "--file"])
+        .arg(file.path())
+        .arg("--jsonl")
+        .env("PATH", path_env)
+        .stdin(Stdio::null())
+        .stdout(
+            output
+                .try_clone()
+                .map_err(|_| "Setup could not create a temporary file.".to_owned())?,
+        )
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| format!("Agent Backbone's setup could not start: {error}."))?;
+    let deadline = Instant::now() + SETUP_LIMIT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(200)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("Agent Backbone's setup took too long and was stopped.".into());
+            }
+        }
+    }
+    let result = last_line(&output);
+    let event: serde_json::Value = serde_json::from_str(&result).unwrap_or_default();
+    match (event["type"].as_str(), event["status"].as_str()) {
+        (Some("result"), Some("completed")) => Ok(()),
+        (Some("result"), _) => Err(format!(
+            "Agent Backbone's setup stopped: {}",
+            event["message"]
+                .as_str()
+                .or(event["code"].as_str())
+                .unwrap_or("no reason given")
+        )),
+        _ => Err("Agent Backbone's setup did not report a result.".into()),
+    }
+}
+
 fn not_installed() -> String {
     "Agent Backbone's service isn't installed. Run the Agent Interface installer again to add it."
         .into()
@@ -192,7 +264,7 @@ fn last_line(file: &std::fs::File) -> String {
     text.lines()
         .map(str::trim)
         .rfind(|line| !line.is_empty())
-        .map(|line| line.chars().take(200).collect())
+        .map(|line| line.chars().take(TAIL).collect())
         .unwrap_or_default()
 }
 
@@ -204,6 +276,7 @@ fn explain(line: &str) -> String {
     if line.contains("npm: not found") || line.contains("npm: command not found") {
         return "It needs Node.js 20 or newer with npm. Install Node.js, then try again.".into();
     }
+    let line: String = line.chars().take(200).collect();
     format!("It stopped with an error: {line}")
 }
 
