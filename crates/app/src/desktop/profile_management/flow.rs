@@ -334,7 +334,9 @@ impl Flow {
         self.error = None;
         self.busy = true;
         // One choice for the whole operation, whatever the fields show later.
-        if self.chosen.is_none() {
+        // A new create request takes the fields as they are now; going on
+        // with the same request or profile keeps the earlier choice.
+        if prepared.is_some() || self.chosen.is_none() {
             self.chosen = Some(self.identity(cx));
         }
         let (client, directory) = (self.client.clone(), self.directory.clone());
@@ -915,11 +917,20 @@ fn make(
 ) -> Result<Made, Failure> {
     let alive = || live.load(Ordering::Acquire);
     let storage = "Private storage for profile requests is unavailable.";
+    // A profile already made stays the one to start, whatever storage says.
+    let unavailable = |made: &Option<Profile>| match made {
+        Some(profile) => (
+            Stalled::NotStarted,
+            Some(Box::new(profile.clone())),
+            storage,
+        ),
+        None => (Stalled::Failed, None, storage),
+    };
     let library = crate::library::location::create_library_directory(directory.as_deref())
-        .map_err(|_| (Stalled::Failed, None, storage))?;
+        .map_err(|_| unavailable(&made))?;
     let controller = journal::Journal::open(&library.join("profile-operations"))
         .map(|journal| Controller::new(journal, &client))
-        .map_err(|_| (Stalled::Failed, None, storage))?;
+        .map_err(|_| unavailable(&made))?;
     let profile = match (made, resume) {
         (Some(profile), Some(Stalled::NotStarted)) => profile,
         (_, resume) => {
