@@ -476,7 +476,7 @@ impl Flow {
                     };
                     let profile = Some(form.read(cx).profile_id().to_owned());
                     let setup = cx.new(|cx| setup::Pane::from_controller(controller, profile, cx));
-                    flow.form = None;
+                    // The choices stay behind it, so Back returns to them as they were.
                     flow.show_setup(setup, window, cx);
                 }
                 // A guide starts itself.
@@ -499,9 +499,13 @@ impl Flow {
         })
         .detach();
         cx.observe(&setup, |_, _, cx| cx.notify()).detach();
-        let back = cx.subscribe(&setup, |flow, _, _: &super::Back, cx| {
+        let back = cx.subscribe_in(&setup, window, |flow, _, _: &super::Back, window, cx| {
             flow.setup = None;
-            flow.guide(cx);
+            match &flow.form {
+                Some((form, _)) => window.focus(&form.read(cx).name_focus(cx), cx),
+                None => flow.guide(cx),
+            }
+            cx.notify();
         });
         self.setup = Some((setup, back));
         cx.notify();

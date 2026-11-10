@@ -82,6 +82,13 @@ impl Profiles {
         self.detail = Some((pane, vec![back, open]));
         cx.notify();
     }
+
+    /// A sign-in pane closed in a main window.
+    pub fn sign_in_ended(&mut self, profile_id: &str, runtime: &str, cx: &mut Context<Self>) {
+        if let Some((pane, _)) = &self.detail {
+            pane.update(cx, |pane, cx| pane.sign_in_ended(profile_id, runtime, cx));
+        }
+    }
 }
 
 /// The open library's folder, from the first main window.

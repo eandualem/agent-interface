@@ -227,6 +227,34 @@ impl Management {
         cx.notify();
     }
 
+    /// A sign-in pane for this profile closed: read that CLI once more and
+    /// stop waiting for it, rather than until the checks run out.
+    pub fn sign_in_ended(&mut self, profile_id: &str, runtime: &str, cx: &mut Context<Self>) {
+        if self.profile_id.as_deref() != Some(profile_id) || !self.signing.contains(runtime) {
+            return;
+        }
+        let Some(connection) = self.connection.clone() else {
+            return;
+        };
+        let runtime = runtime.to_owned();
+        let id = runtime.clone();
+        let read = cx
+            .background_executor()
+            .spawn(async move { read_accounts(&connection, vec![id]) });
+        cx.spawn(async move |this, cx| {
+            let read = read.await;
+            let _ = this.update(cx, |pane, cx| {
+                pane.signed.extend(read);
+                pane.signing.remove(&runtime);
+                if pane.signing.is_empty() {
+                    pane.watching = None;
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     fn complete(&mut self, result: Result<Page, controller::Error>) {
         self.busy = false;
         match result {

@@ -65,6 +65,18 @@ pub struct SettingsWindow {
 struct Open(WindowHandle<SettingsWindow>);
 impl Global for Open {}
 
+/// Tell an open Settings › Profiles page that a profile's sign-in pane closed.
+pub fn sign_in_ended(profile_id: &str, runtime: &str, cx: &mut App) {
+    let Some(handle) = cx.try_global::<Open>().map(|Open(handle)| *handle) else {
+        return;
+    };
+    let _ = handle.update(cx, |view, _, cx| {
+        if let Some(profiles) = &view.profiles {
+            profiles.update(cx, |page, cx| page.sign_in_ended(profile_id, runtime, cx));
+        }
+    });
+}
+
 /// Bring the Settings window forward, opening it if it is not open.
 pub fn show(cx: &mut App) {
     let open = cx.try_global::<Open>().map(|Open(handle)| *handle);
