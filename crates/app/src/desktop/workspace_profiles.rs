@@ -343,6 +343,7 @@ impl Browser {
             return;
         };
         let client = client.clone();
+        let first_run = self.first_open;
         self.profile_picker = None;
         let work = cx.background_executor().spawn(async move {
             let live = || true;
@@ -372,7 +373,14 @@ impl Browser {
             let _ = this.update_in(cx, |browser, window, cx| {
                 let opened = match result {
                     Ok((session, profile_id, label)) => {
-                        if browser.open_setup_agent(&session, &profile_id, &label, window, cx) {
+                        if browser.open_setup_agent(
+                            &session,
+                            &profile_id,
+                            &label,
+                            first_run,
+                            window,
+                            cx,
+                        ) {
                             Ok(())
                         } else {
                             Err("Couldn't open it in a workspace. Try again.")
@@ -447,21 +455,6 @@ impl Browser {
             return None;
         }
         self.layout.as_ref()?.model().pane()
-    }
-
-    pub(super) fn terminal_available(&self, pane: &str) -> bool {
-        let Some(space) = self
-            .layout
-            .as_ref()
-            .and_then(|layout| layout.model().workspace_for_pane(pane))
-        else {
-            return false;
-        };
-        match self.workspace_profiles.route(space) {
-            Route::Legacy => true,
-            Route::Bound(_) => true,
-            Route::Unavailable => false,
-        }
     }
 
     pub(super) fn retire_profile_panes(&mut self) {
@@ -1083,8 +1076,6 @@ mod tests {
         assert!(browser.active_agents().is_none());
         assert!(browser.profile_content_unavailable());
         assert!(browser.web_content_occluded());
-        assert!(!browser.terminal_available(&pane_b));
-        assert!(browser.terminal_available(&pane_a));
         assert_eq!(
             browser.attachment_state_in(&model.workspaces[0], &attachment),
             Some(AgentState::NeedsYou)

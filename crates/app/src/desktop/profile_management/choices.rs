@@ -94,6 +94,9 @@ pub(super) struct Form {
     /// Something was changed since the start stopped, so Try again sends the
     /// new choices rather than the same request.
     changed: bool,
+    /// The person picked a tool. Unlike `changed`, a start never clears it,
+    /// so a later account read never swaps it for a signed-in one.
+    picked: bool,
     pub focus: FocusHandle,
 }
 impl EventEmitter<Event> for Form {}
@@ -149,6 +152,7 @@ impl Form {
             start: None,
             refreshed: false,
             changed: false,
+            picked: false,
             focus: cx.focus_handle(),
         };
         form.load(false, cx);
@@ -293,6 +297,7 @@ impl Form {
                 form.accounts.extend(read);
                 // Prefer a signed-in tool while the person hasn't chosen.
                 if !form.changed
+                    && !form.picked
                     && let State::Ready { catalog, .. } = &form.state
                     && let Some(id) = catalog
                         .items()
@@ -348,6 +353,7 @@ impl Form {
         self.runtime = Some(ready[next].clone());
         self.model = None;
         self.changed = true;
+        self.picked = true;
         cx.notify();
     }
 
@@ -378,6 +384,7 @@ impl Form {
                         form.installing.remove(&runtime);
                         form.select = Some(runtime);
                         form.changed = true;
+                        form.picked = true;
                         form.load(true, cx);
                     }
                 }
@@ -532,6 +539,26 @@ impl Form {
         self.prepared = Some((prepared, controller));
         self.finish(Event::Submit, cx);
     }
+    /// Back from earlier setups: the choices stay, but a start that stopped
+    /// may have been cancelled or forgotten there, so it and the open setups
+    /// are read again and the next start is a new request.
+    pub fn returned(&mut self, cx: &mut Context<Self>) {
+        if self.busy(cx) {
+            return;
+        }
+        self.start = None;
+        self.refreshed = false;
+        self.load(true, cx);
+    }
+
+    /// Show earlier setups. The form stays live behind them, so Back returns
+    /// to it as it was.
+    fn recover(&mut self, cx: &mut Context<Self>) {
+        if !self.finished {
+            cx.emit(Event::Recover);
+        }
+    }
+
     fn finish(&mut self, event: Event, cx: &mut Context<Self>) {
         if self.finished {
             return;
@@ -725,7 +752,7 @@ impl Render for Form {
                     .child(note("An earlier setup could not be read. Open it to finish or forget it, then check again.".into()))
                     .child(
                         div().flex().gap(px(t.space.s8))
-                            .child(ui::button("recover-pending-setup", "Earlier setups", ui::Button::Secondary).on_click(cx.listener(|form, _, _, cx| form.finish(Event::Recover, cx))))
+                            .child(ui::button("recover-pending-setup", "Earlier setups", ui::Button::Secondary).on_click(cx.listener(|form, _, _, cx| form.recover(cx))))
                             .child(ui::button("recheck-setup", "Check again", ui::Button::Secondary).on_click(cx.listener(|form, _, _, cx| form.load(false, cx)))),
                     )
             }
@@ -738,7 +765,7 @@ impl Render for Form {
                         div().flex().items_center().gap(px(t.space.s8))
                             .child(ui::step_dot(ui::Step::Waits))
                             .child(div().flex_1().child(note(if *pending == 1 { "An earlier setup in this profile didn't finish.".into() } else { format!("{pending} earlier setups in this profile didn't finish.").into() })))
-                            .child(ui::button("recover-pending-setup", "Open", ui::Button::Secondary).on_click(cx.listener(|form, _, _, cx| form.finish(Event::Recover, cx)))),
+                            .child(ui::button("recover-pending-setup", "Open", ui::Button::Secondary).on_click(cx.listener(|form, _, _, cx| form.recover(cx)))),
                     );
                 }
                 let typed = self.name.read(cx).value().to_owned();
@@ -1080,6 +1107,7 @@ impl Form {
                                 form.runtime = Some(id.clone());
                                 form.model = None;
                                 form.changed = true;
+                                form.picked = true;
                                 cx.notify();
                             } else {
                                 form.install(id.clone(), cx);
@@ -1116,9 +1144,8 @@ impl Form {
                         false,
                     ))
                     .child(
-                        ui::text_action("recover-pending-setup", "Earlier setups").on_click(
-                            cx.listener(|form, _, _, cx| form.finish(Event::Recover, cx)),
-                        ),
+                        ui::text_action("recover-pending-setup", "Earlier setups")
+                            .on_click(cx.listener(|form, _, _, cx| form.recover(cx))),
                     ),
             );
         }
@@ -1137,9 +1164,8 @@ impl Form {
                     .justify_end()
                     .gap(px(t.space.s12))
                     .child(
-                        ui::text_action("recover-pending-setup", "Earlier setups").on_click(
-                            cx.listener(|form, _, _, cx| form.finish(Event::Recover, cx)),
-                        ),
+                        ui::text_action("recover-pending-setup", "Earlier setups")
+                            .on_click(cx.listener(|form, _, _, cx| form.recover(cx))),
                     )
                     .child(
                         ui::text_action("recheck-setup", "Check again")

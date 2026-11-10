@@ -1920,14 +1920,15 @@ impl Browser {
     /// The first-agent setup action already started the session. Open a saved
     /// attachment, preserving every existing pane and applying normal save rules.
     /// Open a session setup points at, such as the agent first-run setup added, in
-    /// a workspace bound to that setup's profile. A fresh window's untouched workspace
-    /// takes the binding; reconcile then verifies the connection, and the pane attaches
-    /// once it is. `label` names a workspace this creates.
+    /// a workspace bound to that setup's profile. On first run, a fresh window's
+    /// untouched workspace takes the binding; reconcile then verifies the connection,
+    /// and the pane attaches once it is. `label` names a workspace this creates.
     fn open_setup_agent(
         &mut self,
         name: &str,
         profile_id: &str,
         label: &str,
+        first_run: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
@@ -1940,7 +1941,8 @@ impl Browser {
         let Some(layout) = &self.layout else {
             return false;
         };
-        let Some((base, proposed)) = setup_agent_layout(layout, name, profile_id, label) else {
+        let Some((base, proposed)) = setup_agent_layout(layout, name, profile_id, label, first_run)
+        else {
             // Already shown: go to it.
             let shown = layout
                 .model()
@@ -2506,6 +2508,17 @@ impl Render for Browser {
                     |browser, terminal, _: &terminal::SignInEnded, window, cx| {
                         let target = terminal.read(cx).target.clone();
                         browser.close_ended_pane(&target, window, cx);
+                        // Settings › Profiles waits on this sign-in too.
+                        if let (Some(connection), Some(attachment)) =
+                            (&target.connection, &target.leaf.attachment)
+                            && let Some(runtime) = attachment.session.strip_prefix("sign-in-")
+                        {
+                            let profile_id = connection.identity().profile_id.clone();
+                            let runtime = runtime.to_owned();
+                            cx.defer(move |cx| {
+                                settings_window::sign_in_ended(&profile_id, &runtime, cx)
+                            });
+                        }
                     },
                 )
                 .detach();
@@ -3202,12 +3215,13 @@ impl Render for Browser {
 /// The workspace, tab and pane showing an agent's session from this window's
 /// source: the current tab if it shows one, else the first in saved order.
 /// The saved change that shows `name` in `profile_id`'s workspace, or `None` when
-/// that workspace already shows it.
+/// that workspace already shows it. Only first run takes over an untouched window.
 fn setup_agent_layout(
     layout: &WindowLayout,
     name: &str,
     profile_id: &str,
     label: &str,
+    first_run: bool,
 ) -> Option<(Document, Layout)> {
     let bound =
         |space: &agent_interface_core::Workspace| space.profile_id.as_deref() == Some(profile_id);
@@ -3236,7 +3250,8 @@ fn setup_agent_layout(
         .iter()
         .find(|space| bound(space))
         .map(|space| space.id.clone());
-    let untouched = layout.model().workspaces.len() == 1
+    let untouched = first_run
+        && layout.model().workspaces.len() == 1
         && layout.model().workspaces[0].profile_id.is_none()
         && layout.model().workspaces[0]
             .tabs
@@ -3820,29 +3835,36 @@ mod tests {
         let fresh = window(
             r#"{"version":2,"workspaces":[{"id":"000000000001","name":"Workspace","tabs":[],"selected":""}],"selected":"000000000001","focus":true}"#,
         );
-        let (_, opened) = setup_agent_layout(&fresh, "guide", "default-id", "Default").unwrap();
+        let (_, opened) =
+            setup_agent_layout(&fresh, "guide", "default-id", "Default", true).unwrap();
         assert_eq!(opened.workspaces.len(), 1);
         let space = &opened.workspaces[0];
         assert_eq!(space.profile_id.as_deref(), Some("default-id"));
         let attachment = opened.pane().unwrap().attachment.clone().unwrap();
         assert_eq!(attachment.session, "guide");
         assert_eq!(attachment.source_socket, None);
+        // Outside first run, such as from Settings, it gets a workspace of its own.
+        let (_, own) = setup_agent_layout(&fresh, "guide", "default-id", "Default", false).unwrap();
+        assert_eq!(own.workspaces.len(), 2);
+        assert_eq!(own.workspaces[0].profile_id, None);
         // A repeat with that workspace saved adds nothing.
         let with = |model: &Layout| {
             let path = std::path::Path::new("layouts.db");
             WindowLayout::new(fresh.save_snapshot().0.with_model(model, path).unwrap())
         };
         let saved = with(&opened);
-        assert!(setup_agent_layout(&saved, "guide", "default-id", "Default").is_none());
+        assert!(setup_agent_layout(&saved, "guide", "default-id", "Default", true).is_none());
         // Another agent joins the same workspace.
-        let (_, second) = setup_agent_layout(&saved, "second", "default-id", "Default").unwrap();
+        let (_, second) =
+            setup_agent_layout(&saved, "second", "default-id", "Default", true).unwrap();
         assert_eq!(second.workspaces.len(), 1);
         assert_eq!(second.workspaces[0].tabs.len(), 2);
         // Work in an unbound workspace stays put, unbound.
         let mut busy = opened.clone();
         busy.workspaces[0].profile_id = None;
         let busy = with(&busy);
-        let (_, separate) = setup_agent_layout(&busy, "guide", "default-id", "Default").unwrap();
+        let (_, separate) =
+            setup_agent_layout(&busy, "guide", "default-id", "Default", true).unwrap();
         assert_eq!(separate.workspaces.len(), 2);
         assert_eq!(separate.workspaces[0].profile_id, None);
         assert_eq!(

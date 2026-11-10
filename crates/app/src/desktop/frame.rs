@@ -162,16 +162,6 @@ impl Browser {
                 .filter(|drag| drag.dragging)
                 .and_then(|drag| drag.destination.as_ref()),
             leaf_states,
-            unavailable: leaves
-                .iter()
-                .filter(|leaf| leaf.runs_terminal() && !self.terminal_available(&leaf.id))
-                .map(|leaf| {
-                    (
-                        leaf.id.clone(),
-                        "This terminal is unavailable for the workspace profile.",
-                    )
-                })
-                .collect(),
         };
         let node = tree
             .as_ref()

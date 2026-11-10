@@ -110,6 +110,8 @@ pub(super) struct Management {
     signed: BTreeMap<String, Authentication>,
     /// Sign-ins opened from here and not yet reported as finished.
     signing: BTreeSet<String>,
+    /// Sign-ins opened here for each CLI, so a late read can't end a newer one.
+    sign_ins: BTreeMap<String, u64>,
     watching: Option<gpui::Task<()>>,
     /// Lifecycle requests for this profile without a confirmed outcome.
     unfinished: usize,
@@ -141,6 +143,7 @@ impl Management {
             connection: None,
             signed: BTreeMap::new(),
             signing: BTreeSet::new(),
+            sign_ins: BTreeMap::new(),
             watching: None,
             unfinished: 0,
             more: false,
@@ -187,6 +190,7 @@ impl Management {
         };
         let profile_id = profile.item().profile_id.clone();
         self.signing.insert(runtime.clone());
+        *self.sign_ins.entry(runtime.clone()).or_default() += 1;
         cx.emit(Open::SignIn {
             profile_id,
             runtime,
@@ -225,6 +229,46 @@ impl Management {
             }));
         }
         cx.notify();
+    }
+
+    /// A sign-in pane for this profile closed: read that CLI once more and
+    /// stop waiting for it, rather than until the checks run out.
+    pub fn sign_in_ended(&mut self, profile_id: &str, runtime: &str, cx: &mut Context<Self>) {
+        if self.profile_id.as_deref() != Some(profile_id) || !self.signing.contains(runtime) {
+            return;
+        }
+        let Some(connection) = self.connection.clone() else {
+            return;
+        };
+        let attempt = self.sign_ins.get(runtime).copied();
+        let runtime = runtime.to_owned();
+        let id = runtime.clone();
+        let read = cx
+            .background_executor()
+            .spawn(async move { read_accounts(&connection, vec![id]) });
+        cx.spawn(async move |this, cx| {
+            let read = read.await;
+            let _ = this.update(cx, |pane, cx| {
+                // Sign in was pressed again meanwhile: that attempt goes on.
+                if pane.sign_ins.get(&runtime).copied() != attempt {
+                    return;
+                }
+                // A read that failed says nothing yet: keep checking.
+                if read
+                    .iter()
+                    .any(|(_, status)| *status == Authentication::Unavailable)
+                {
+                    return;
+                }
+                pane.signed.extend(read);
+                pane.signing.remove(&runtime);
+                if pane.signing.is_empty() {
+                    pane.watching = None;
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     fn complete(&mut self, result: Result<Page, controller::Error>) {
