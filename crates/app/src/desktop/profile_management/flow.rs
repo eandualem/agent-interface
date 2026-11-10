@@ -864,20 +864,33 @@ fn set_identity(connection: Connection, name: String, email: String, cx: &mut Co
 }
 
 fn typed_identity(connection: &Connection, name: &str, email: &str) -> Result<(), String> {
-    let mut script = String::new();
-    for (key, value) in [("user.name", name), ("user.email", email)] {
-        if !value.is_empty() {
-            script.push_str(&format!("git config --global {key} {} && ", quote(value)));
-        }
-    }
-    script.push_str("exit");
+    use std::io::Write;
+    // The profile's shell may be fish, tcsh or nushell, which quote differently,
+    // so it is typed only `exec /bin/sh <file>`, read alike by all of them. The
+    // script removes its file, and the session ends when it finishes.
+    let script = identity_script(name, email);
     let session = connection
         .ensure_shell("git-identity", None)
         .map_err(|error| format!("{error:?}"))?;
+    let mut file = tempfile::Builder::new()
+        .prefix("agent-interface-identity-")
+        .tempfile()
+        .map_err(|error| error.to_string())?;
+    file.write_all(script.as_bytes())
+        .map_err(|error| error.to_string())?;
+    let path = file
+        .path()
+        .to_str()
+        .filter(|path| {
+            path.bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"/._-".contains(&byte))
+        })
+        .ok_or("the temporary folder's path needs quoting")?;
+    let command = format!("exec /bin/sh {path}");
     let tmux =
         agent_interface_tmux::connection::tmux_binary().map_err(|error| error.to_string())?;
     let target = format!("={session}:");
-    for keys in [["-l", script.as_str()], ["Enter", ""]] {
+    for keys in [["-l", command.as_str()], ["Enter", ""]] {
         let mut command = std::process::Command::new(&tmux);
         command
             .arg("-S")
@@ -897,7 +910,20 @@ fn typed_identity(connection: &Connection, name: &str, email: &str) -> Result<()
             return Err(format!("tmux send-keys exited with {status}"));
         }
     }
+    // The shell reads the file after this returns; the script removes it.
+    file.keep().map_err(|error| error.to_string())?;
     Ok(())
+}
+
+/// A `/bin/sh` script, run with its own path as `$0`, that sets the identity.
+fn identity_script(name: &str, email: &str) -> String {
+    let mut script = String::from("rm -f -- \"$0\"\n");
+    for (key, value) in [("user.name", name), ("user.email", email)] {
+        if !value.is_empty() {
+            script.push_str(&format!("git config --global {key} {}\n", quote(value)));
+        }
+    }
+    script
 }
 
 /// A value as one POSIX shell word.
@@ -1021,5 +1047,37 @@ mod tests {
     fn a_typed_identity_is_one_shell_word_each() {
         assert_eq!(quote("Sam Rivera"), "'Sam Rivera'");
         assert_eq!(quote("it's"), "'it'\\''s'");
+    }
+
+    #[test]
+    fn the_identity_script_keeps_every_character_and_removes_itself() {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join("identity");
+        // Never the developer's own global configuration.
+        let config = home.path().join("gitconfig");
+        let (name, email) = (r"Sam O'Brien \ ops!", "ops!dev@example.com");
+        std::fs::write(&path, identity_script(name, email)).unwrap();
+        let isolated = |command: &mut std::process::Command| {
+            command
+                .env("HOME", home.path())
+                .env("XDG_CONFIG_HOME", home.path())
+                .env("GIT_CONFIG_GLOBAL", &config)
+                .env("GIT_CONFIG_NOSYSTEM", "1");
+        };
+        let mut script = std::process::Command::new("/bin/sh");
+        script.arg(&path);
+        isolated(&mut script);
+        let status = script.status().unwrap();
+        assert!(status.success());
+        assert!(!path.exists());
+        let read = |key: &str| {
+            let mut git = std::process::Command::new("git");
+            git.args(["config", "--global", key]);
+            isolated(&mut git);
+            let output = git.output().unwrap();
+            String::from_utf8(output.stdout).unwrap()
+        };
+        assert_eq!(read("user.name"), format!("{name}\n"));
+        assert_eq!(read("user.email"), format!("{email}\n"));
     }
 }

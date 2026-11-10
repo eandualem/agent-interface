@@ -173,7 +173,8 @@ FIXTURE
 
 #[test]
 fn leaving_a_running_start_lets_its_command_finish() {
-    let (dir, client) = stub("sleep 1; printf finished > \"$CAPTURE\"");
+    // `$4` is the `--file` path; the command reads it only after the caller left.
+    let (dir, client) = stub("sleep 1; /bin/cat \"$4\" > \"$CAPTURE\"");
     let capture = dir.path().join("calls");
     let mut operation = Operation::new(&client, start());
     let checks = std::cell::Cell::new(0);
@@ -184,8 +185,11 @@ fn leaving_a_running_start_lets_its_command_finish() {
     assert_eq!(operation.apply(&live), Err(Error::Cancelled));
     assert!(!capture.exists());
     let deadline = Instant::now() + Duration::from_secs(10);
-    while !capture.exists() {
-        assert!(Instant::now() < deadline, "the command did not finish");
+    while fs::read(&capture).ok().as_deref() != Some(operation.request_bytes()) {
+        assert!(
+            Instant::now() < deadline,
+            "the command did not read its request"
+        );
         std::thread::sleep(Duration::from_millis(20));
     }
 }
