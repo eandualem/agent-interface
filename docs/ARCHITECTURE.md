@@ -1009,8 +1009,8 @@ A prepared feedback request retains exact bytes and its retry key after an uncer
 response. The composer freezes while that request is unresolved and offers a retry of
 the same operation. Accepted feedback retains its receipt and distinguishes delivery
 states without claiming an agent answer. No agent workflow or service is started by
-the view. The typed adapter also represents provider mutation APIs, but the native
-Sheets view calls only reads, export and feedback submission.
+the view. The typed adapter exposes only reads, export and feedback submission;
+agents change workbooks through Backbone.
 
 JSON/XLSX exports preserve supported workbook features; CSV/TSV export one tab as
 values. Export warnings are bounded and displayed; malformed diagnostics fail
