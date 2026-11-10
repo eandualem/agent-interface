@@ -502,7 +502,10 @@ impl Flow {
         let back = cx.subscribe_in(&setup, window, |flow, _, _: &super::Back, window, cx| {
             flow.setup = None;
             match &flow.form {
-                Some((form, _)) => window.focus(&form.read(cx).name_focus(cx), cx),
+                Some((form, _)) => {
+                    form.update(cx, |form, cx| form.returned(cx));
+                    window.focus(&form.read(cx).name_focus(cx), cx);
+                }
                 None => flow.guide(cx),
             }
             cx.notify();

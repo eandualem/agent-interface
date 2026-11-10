@@ -532,6 +532,19 @@ impl Form {
         self.prepared = Some((prepared, controller));
         self.finish(Event::Submit, cx);
     }
+    /// Back from earlier setups: the choices stay, but a start that stopped
+    /// may have been cancelled or forgotten there, so it and the open setups
+    /// are read again and the next start is a new request.
+    pub fn returned(&mut self, cx: &mut Context<Self>) {
+        if self.busy(cx) {
+            return;
+        }
+        self.start = None;
+        self.changed = false;
+        self.refreshed = false;
+        self.load(true, cx);
+    }
+
     /// Show earlier setups. The form stays live behind them, so Back returns
     /// to it as it was.
     fn recover(&mut self, cx: &mut Context<Self>) {
