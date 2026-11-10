@@ -986,10 +986,11 @@ fn read(
         }
         let size: usize = batch.iter().map(Event::size).sum();
         let mut state = shared.lock();
-        while state.queued > QUEUE_LIMIT && !state.cancelled {
+        while state.queued > QUEUE_LIMIT && !state.cancelled && !state.finished {
             state = shared.wait(state);
         }
-        if state.cancelled {
+        // Nothing takes output once the worker has stopped.
+        if state.cancelled || state.finished {
             break;
         }
         state.queued += size;
@@ -1274,8 +1275,13 @@ fn work(
             state = shared.wait(state);
         }
     }
+    // Stopped by cancellation or failure: release the reader and every
+    // waiting input or history request, which nothing will now answer.
     state.finished = true;
+    state.queue.clear();
+    state.queued = 0;
     drop(state);
+    shared.changed.notify_all();
     wake();
 }
 
@@ -1725,6 +1731,37 @@ mod tests {
             shared.lock().transport_failure.as_deref(),
             Some("reading from control client: fixture read failed")
         );
+    }
+
+    #[test]
+    fn reader_stops_waiting_for_room_once_the_worker_has_stopped() {
+        let shared = Shared {
+            state: Mutex::new(State::default()),
+            changed: Condvar::new(),
+        };
+        shared.lock().queued = QUEUE_LIMIT + 1;
+        thread::scope(|scope| {
+            let reader = scope.spawn(|| {
+                read(
+                    &shared,
+                    &b"%sessions-changed\n"[..],
+                    Decoder::new(),
+                    0,
+                    None,
+                    vec![],
+                )
+            });
+            thread::sleep(Duration::from_millis(50));
+            assert!(!reader.is_finished(), "the queue is full");
+            shared.lock().finished = true;
+            shared.changed.notify_all();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !reader.is_finished() {
+                assert!(Instant::now() < deadline, "the reader is still waiting");
+                thread::sleep(Duration::from_millis(10));
+            }
+        });
+        assert!(shared.lock().closed);
     }
 
     #[test]

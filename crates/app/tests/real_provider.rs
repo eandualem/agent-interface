@@ -175,7 +175,7 @@ fn create_start_setup_and_shell_on_a_new_profile() {
     println!("sessions: {:?}", sessions(&connection));
 
     // A stopped agent starts again through the bound route.
-    let response = connection.start_agent("second", false);
+    let response = connection.start_agent("second", false, None);
     println!("start while registered: {response:?}");
 
     // Removing stops the session first, only for the registration inspected.

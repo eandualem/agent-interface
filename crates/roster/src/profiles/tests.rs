@@ -529,10 +529,11 @@ fn account_status_reads_one_cli_and_refuses_another_answer() {
         Ok(Authentication::Authenticated)
     );
     assert_eq!(connection.account_status("codex"), Err(Error::Invalid));
-    assert_eq!(connection.account_status("codex"), Err(Error::Refused(422)));
+    assert_eq!(connection.account_status("a&b#c"), Err(Error::Refused(422)));
     let requests = server.join().unwrap();
     let query = sessions["account_status_query"].as_str().unwrap();
     assert!(requests[1].starts_with(&format!("get {query} ")));
+    assert!(requests[3].starts_with("get /api/profile/accounts/status?runtime=a%26b%23c "));
 }
 
 #[test]
@@ -553,23 +554,23 @@ fn starting_a_stopped_agent_uses_the_bound_route_and_reports_the_outcome() {
     );
     let connection = profile.connect().unwrap();
     assert!(matches!(
-        connection.start_agent("worker", false),
+        connection.start_agent("worker", false, None),
         Outcome::Accepted(_)
     ));
     assert_eq!(
-        connection.start_agent("worker", true),
+        connection.start_agent("worker", true, None),
         Outcome::AlreadyRunning
     );
     assert!(matches!(
-        connection.start_agent("worker", false),
+        connection.start_agent("worker", false, None),
         Outcome::Refused(_)
     ));
     assert!(matches!(
-        connection.start_agent("worker", true),
+        connection.start_agent("worker", true, None),
         Outcome::Refused(_)
     ));
     assert!(matches!(
-        connection.start_agent("../other", false),
+        connection.start_agent("../other", false, None),
         Outcome::Refused(_)
     ));
     let requests = server.join().unwrap();
@@ -578,6 +579,43 @@ fn starting_a_stopped_agent_uses_the_bound_route_and_reports_the_outcome() {
     let body = requests[2].rsplit("\r\n\r\n").next().unwrap();
     let sent: Value = serde_json::from_str(body).unwrap();
     assert_eq!(sent, json!({"resume": true, "wait": false}));
+}
+
+#[test]
+fn a_bound_start_sends_terminal_colours_when_the_runtime_supports_them() {
+    use crate::lifecycle::{Outcome, TerminalDefaults};
+    let (directory, listener, url) = crate::transport::tests::local_listener();
+    let (profile, identity) = profile_at(directory.path(), url.strip_prefix("unix:").unwrap());
+    let server = serve(
+        listener,
+        vec![
+            (200, identity.clone()),
+            (
+                200,
+                json!([{"id": "codex", "terminal_defaults_supported": true}]),
+            ),
+            (200, json!({"runtime": "codex"})),
+            (
+                200,
+                json!({"ok": true, "session": "worker", "already_existed": false, "ready": "not_waited"}),
+            ),
+        ],
+    );
+    let connection = profile.connect().unwrap();
+    let defaults = TerminalDefaults::new([255; 3], [24, 25, 29]);
+    assert!(matches!(
+        connection.start_agent("worker", false, Some(defaults.clone())),
+        Outcome::Accepted(_)
+    ));
+    let requests = server.join().unwrap();
+    assert!(requests[1].starts_with("get /api/runtimes "));
+    assert!(requests[2].starts_with("get /api/agents/worker/inspect "));
+    let body = requests[3].rsplit("\r\n\r\n").next().unwrap();
+    let sent: Value = serde_json::from_str(body).unwrap();
+    assert_eq!(
+        sent["terminal_defaults"],
+        serde_json::to_value(defaults).unwrap()
+    );
 }
 
 #[test]
