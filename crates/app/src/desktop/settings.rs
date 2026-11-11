@@ -184,7 +184,8 @@ impl Settings {
                 setup
                     .get(key)
                     .and_then(toml::Value::as_str)
-                    .filter(|value| !value.is_empty() && value.len() <= 1024)
+                    // One may be empty: the form accepts a name or an email alone.
+                    .filter(|value| value.len() <= 1024)
                     .map(str::to_owned)
             };
             settings.setup_identity = text("git_name").zip(text("git_email"));
@@ -632,6 +633,11 @@ mod tests {
             setup_identity: Some(("Sam O'Brien \"ops\"".into(), "sam@example.com".into())),
         };
         assert_eq!(Settings::parse(&light.to_toml()), light);
+        let partial = Settings {
+            setup_identity: Some((String::new(), "sam@example.com".into())),
+            ..light.clone()
+        };
+        assert_eq!(Settings::parse(&partial.to_toml()), partial);
         // Shortcuts are global; other tests rely on the defaults.
         let applied = Settings {
             shortcuts: super::super::shortcuts::Bindings::default(),
