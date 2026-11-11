@@ -715,7 +715,7 @@ build-time advisory exception are described below.
 - **Hyper 1.12.0, hyper-util 0.1.21, http-body-util 0.1.5 and Tokio 1.53.3:**
   MIT HTTP/runtime dependencies, pinned exactly, for HTTP over a connected
   Unix socket after the peer identity check.
-- **`rustix` 1.1.5:** effective-UID access for that check. MIT OR Apache-2.0
+- **`rustix` 1.1.6:** effective-UID access for that check. MIT OR Apache-2.0
   OR Apache-2.0 WITH LLVM-exception. The app also uses this pinned workspace
   dependency for safe nonblocking pipes and owned discovery-process cleanup.
 - **`objc2-web-kit` 0.3.2:** MIT-licensed bindings, pinned exactly, used by the
