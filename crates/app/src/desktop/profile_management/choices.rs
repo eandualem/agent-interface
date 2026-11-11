@@ -5,7 +5,7 @@ use super::{Open, Ticket, setup, ui};
 use crate::{
     desktop::{
         design::{colors, tokens},
-        name::NameField,
+        name::{NameEvent, NameField},
         onboarding::{
             install::{self, home_relative},
             probe,
@@ -115,9 +115,12 @@ impl Form {
         let fields = [&name, &brief]
             .into_iter()
             .map(|field| {
-                cx.observe(field, |form: &mut Self, _, cx| {
-                    form.changed = true;
-                    cx.notify()
+                // Only an edit changes the request; a click or caret move doesn't.
+                cx.subscribe(field, |form: &mut Self, _, event: &NameEvent, cx| {
+                    if let NameEvent::Changed(_) = event {
+                        form.changed = true;
+                        cx.notify()
+                    }
                 })
             })
             .collect();
@@ -264,11 +267,14 @@ impl Form {
         self.first = first;
         self.connection = connection;
         self.name = cx.new(|cx| NameField::bare(GUIDE, window, cx));
-        self._fields
-            .push(cx.observe(&self.name, |form: &mut Self, _, cx| {
-                form.changed = true;
-                cx.notify()
-            }));
+        self._fields.push(
+            cx.subscribe(&self.name, |form: &mut Self, _, event: &NameEvent, cx| {
+                if let NameEvent::Changed(_) = event {
+                    form.changed = true;
+                    cx.notify()
+                }
+            }),
+        );
     }
 
     /// Read which installed tools are signed in, once each, so a guide's

@@ -2664,8 +2664,9 @@ pub fn setup_stage(
         .items_center()
         .child(
             div()
-                .flex_shrink_0()
-                .w(px(t.size.setup_column))
+                // As wide as the column, or the stage when it is narrower.
+                .w_full()
+                .max_w(px(t.size.setup_column))
                 .mt(px(top))
                 .pb(px(t.size.titlebar))
                 .flex()

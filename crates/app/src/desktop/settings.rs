@@ -53,6 +53,7 @@ static PANE_HEADERS: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::
 static INTRO_SEEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static SETUP_DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static SETUP_PROFILE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+static SETUP_REQUEST: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
 /// How panes show their header now.
 pub fn pane_headers() -> PaneHeaders {
@@ -83,6 +84,8 @@ pub struct Settings {
     pub setup_done: bool,
     /// The first profile first run made, until its guide starts.
     pub setup_profile: Option<String>,
+    /// The request that makes first run's profile, until it is made.
+    pub setup_request: Option<String>,
 }
 
 impl Default for Settings {
@@ -99,6 +102,7 @@ impl Default for Settings {
             intro_seen: false,
             setup_done: false,
             setup_profile: None,
+            setup_request: None,
         }
     }
 }
@@ -157,17 +161,21 @@ impl Settings {
             let flag = |key| setup.get(key).and_then(toml::Value::as_bool) == Some(true);
             settings.intro_seen = flag("intro_seen");
             settings.setup_done = flag("done");
-            settings.setup_profile = setup
-                .get("profile")
-                .and_then(toml::Value::as_str)
-                .filter(|id| {
-                    !id.is_empty()
-                        && id.len() <= 128
-                        && id
-                            .bytes()
-                            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-                })
-                .map(str::to_owned);
+            let id = |key| {
+                setup
+                    .get(key)
+                    .and_then(toml::Value::as_str)
+                    .filter(|id| {
+                        !id.is_empty()
+                            && id.len() <= 128
+                            && id
+                                .bytes()
+                                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+                    })
+                    .map(str::to_owned)
+            };
+            settings.setup_profile = id("profile");
+            settings.setup_request = id("request");
         }
         if let Some(shortcuts) = table.get("shortcuts").and_then(toml::Value::as_table) {
             settings.shortcuts = super::shortcuts::Bindings::from_entries(
@@ -201,7 +209,11 @@ impl Settings {
         if let Some(width) = self.conversation_width {
             text.push_str(&format!("conversation_width = {width}\n"));
         }
-        if self.intro_seen || self.setup_done || self.setup_profile.is_some() {
+        if self.intro_seen
+            || self.setup_done
+            || self.setup_profile.is_some()
+            || self.setup_request.is_some()
+        {
             text.push_str(&format!(
                 "\n[setup]\nintro_seen = {}\ndone = {}\n",
                 self.intro_seen, self.setup_done
@@ -210,6 +222,12 @@ impl Settings {
                 text.push_str(&format!(
                     "profile = {}\n",
                     toml::Value::String(profile.clone())
+                ));
+            }
+            if let Some(request) = &self.setup_request {
+                text.push_str(&format!(
+                    "request = {}\n",
+                    toml::Value::String(request.clone())
                 ));
             }
         }
@@ -238,6 +256,9 @@ impl Settings {
         *SETUP_PROFILE
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = self.setup_profile.clone();
+        *SETUP_REQUEST
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = self.setup_request.clone();
     }
 
     /// The settings windows are drawing with now.
@@ -254,6 +275,10 @@ impl Settings {
             intro_seen: INTRO_SEEN.load(Ordering::Relaxed),
             setup_done: SETUP_DONE.load(Ordering::Relaxed),
             setup_profile: SETUP_PROFILE
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone(),
+            setup_request: SETUP_REQUEST
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .clone(),
@@ -576,6 +601,7 @@ mod tests {
             intro_seen: true,
             setup_done: false,
             setup_profile: Some("0123abcd".into()),
+            setup_request: Some("89ef4567".into()),
         };
         assert_eq!(Settings::parse(&light.to_toml()), light);
         // Shortcuts are global; other tests rely on the defaults.
