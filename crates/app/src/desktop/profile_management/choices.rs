@@ -199,7 +199,8 @@ impl Form {
                             let ready = |id: &String| {
                                 catalog.items().iter().any(|r| &r.id == id && eligible(r))
                             };
-                            let kept = form.runtime.clone().filter(ready);
+                            let before = form.runtime.clone();
+                            let kept = before.clone().filter(ready);
                             form.runtime = form
                                 .select
                                 .take()
@@ -207,6 +208,11 @@ impl Form {
                                 .or(kept)
                                 .or_else(|| form.prefer.clone().filter(ready))
                                 .or_else(|| first_choice(catalog));
+                            // After a start, another tool is another request:
+                            // Try again sends what the screen now shows.
+                            if form.start.is_some() && form.runtime != before {
+                                form.changed = true;
+                            }
                             if form.model.as_ref().is_some_and(|model| {
                                 !catalog.items().iter().any(|r| {
                                     Some(&r.id) == form.runtime.as_ref() && r.models.contains(model)

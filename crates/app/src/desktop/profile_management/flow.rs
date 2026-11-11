@@ -248,9 +248,19 @@ impl Flow {
         typed: Option<(String, String)>,
         cx: &mut Context<Self>,
     ) {
-        // The request's own Git choice: typed values are set once it is made.
+        // The request's own Git choice: typed values are set once it is made,
+        // and stay in the fields if it has to be made again.
         self.chosen = Some(match typed {
-            Some((name, email)) => Identity::Typed(name, email),
+            Some((name, email)) => {
+                self.git
+                    .name
+                    .update(cx, |field, cx| field.set_value(&name, cx));
+                self.git
+                    .email
+                    .update(cx, |field, cx| field.set_value(&email, cx));
+                self.git.open = true;
+                Identity::Typed(name, email)
+            }
             None => Identity::None,
         });
         self.stalled = Some(Stalled::Unconfirmed(key));
@@ -283,12 +293,15 @@ impl Flow {
     /// fields open, since there is nothing to copy.
     fn found_identity(&mut self, computer: (String, String), cx: &mut Context<Self>) {
         let (name, email) = computer.clone();
-        self.git
-            .name
-            .update(cx, |field, cx| field.set_value(&name, cx));
-        self.git
-            .email
-            .update(cx, |field, cx| field.set_value(&email, cx));
+        // A recovered request's typed values stay in the fields.
+        if !matches!(self.chosen, Some(Identity::Typed(..))) {
+            self.git
+                .name
+                .update(cx, |field, cx| field.set_value(&name, cx));
+            self.git
+                .email
+                .update(cx, |field, cx| field.set_value(&email, cx));
+        }
         if name.is_empty() || email.is_empty() {
             self.git.open = true;
         }
@@ -666,11 +679,7 @@ impl Flow {
                 self.stalled,
                 Some(Stalled::Unconfirmed(_) | Stalled::NotStarted | Stalled::Lookup(_))
             );
-        // A request already sent keeps the Git name and email typed for it.
-        let sent = match (&self.chosen, locked) {
-            (Some(Identity::Typed(name, email)), true) => Some((name.clone(), email.clone())),
-            _ => None,
-        };
+        let sent = self.sent();
         let git = if self.git.open && sent.is_none() {
             let field = |entity: &Entity<NameField>, hint: &'static str| {
                 let empty = entity.read(cx).value().is_empty();
@@ -831,12 +840,26 @@ impl Flow {
     }
 
     /// Tab moves between the name and, while open, the Git fields.
+    /// The Git name and email typed for a request already sent, while it
+    /// is pending: shown as they are, not as fields.
+    fn sent(&self) -> Option<(String, String)> {
+        let pending = self.busy
+            || matches!(
+                self.stalled,
+                Some(Stalled::Unconfirmed(_) | Stalled::NotStarted | Stalled::Lookup(_))
+            );
+        match &self.chosen {
+            Some(Identity::Typed(name, email)) if pending => Some((name.clone(), email.clone())),
+            _ => None,
+        }
+    }
+
     fn tab(&mut self, back: bool, window: &mut Window, cx: &mut Context<Self>) -> bool {
         if self.screen != Screen::Name {
             return false;
         }
         let mut fields = vec![self.name.read(cx).focus.clone()];
-        if self.git.open {
+        if self.git.open && self.sent().is_none() {
             fields.push(self.git.name.read(cx).focus.clone());
             fields.push(self.git.email.read(cx).focus.clone());
         }
