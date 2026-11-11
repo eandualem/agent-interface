@@ -1461,7 +1461,10 @@ client before loading choices. It checks the independent private setup journal
 for open requests, which it points to without blocking other agent names, and then
 reads that instance's schema-2 runtime catalog.
 An explicit project folder, name, brief, runtime and optional catalog model are
-frozen with hook and greeting choices into one original request. Compatibility
+frozen with hook and greeting choices into one original request. Gemini CLI and
+Antigravity CLI can't take a brief silently, so Agent Backbone sends it as their
+first turn; with the default brief, which asks the agent to greet, the request
+asks for no separate greeting. Compatibility
 and authentication observations remain separate; neither opens a terminal or
 connects a workspace. Confirmation hands the retained controller and prepared
 request to recovery with its original key established before admission or I/O.
