@@ -975,7 +975,7 @@ impl Browser {
                         );
                     }
                 }
-                Event::Creating(_) => {}
+                Event::Creating(..) => {}
                 Event::Close => {
                     browser.profile_flow = None;
                     if let Some(focus) = &browser.navigation {

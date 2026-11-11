@@ -46,8 +46,9 @@ pub(in crate::desktop) enum Event {
     Terminal,
     /// Cancelled, or finished; whatever was made stays.
     Close,
-    /// A request to make the profile, under this key, is about to be sent.
-    Creating(String),
+    /// A request to make the profile, under this key, is about to be sent,
+    /// with the Git name and email typed for it.
+    Creating(String, Option<(String, String)>),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -241,7 +242,17 @@ impl Flow {
 
     /// First run closed while its profile was being made: Check again looks
     /// up that same request rather than making another profile.
-    pub fn resume_request(&mut self, key: String, cx: &mut Context<Self>) {
+    pub fn resume_request(
+        &mut self,
+        key: String,
+        typed: Option<(String, String)>,
+        cx: &mut Context<Self>,
+    ) {
+        // The request's own Git choice: typed values are set once it is made.
+        self.chosen = Some(match typed {
+            Some((name, email)) => Identity::Typed(name, email),
+            None => Identity::None,
+        });
         self.stalled = Some(Stalled::Unconfirmed(key));
         self.error = Some("Setup closed while the profile was being made. Check again.");
         cx.notify();
@@ -371,7 +382,14 @@ impl Flow {
             },
         };
         if let Some(prepared) = &prepared {
-            cx.emit(Event::Creating(Controller::key(prepared.request_id())));
+            let typed = match self.identity(cx) {
+                Identity::Typed(name, email) => Some((name, email)),
+                _ => None,
+            };
+            cx.emit(Event::Creating(
+                Controller::key(prepared.request_id()),
+                typed,
+            ));
         }
         self.error = None;
         self.busy = true;

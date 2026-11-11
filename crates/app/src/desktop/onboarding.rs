@@ -143,7 +143,7 @@ pub(in crate::desktop) struct Onboarding {
     /// A first profile made before the app last closed, to carry on with.
     resume: Option<String>,
     /// The request making it, when the app closed before it was made.
-    resume_request: Option<String>,
+    resume_request: Option<(String, Option<(String, String)>)>,
     /// The service was restarted or set up once; only Try again repeats it.
     repaired: bool,
     /// The guide's pane asked for, and why it didn't open if it didn't.
@@ -156,7 +156,10 @@ impl Onboarding {
     pub fn new(directory: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let preferences = Settings::current();
         let resume = preferences.setup_profile.clone();
-        let resume_request = preferences.setup_request.clone();
+        let resume_request = preferences
+            .setup_request
+            .clone()
+            .map(|key| (key, preferences.setup_identity.clone()));
         // A profile made before is carried on with straight away, no scene.
         let intro = !preferences.intro_seen
             && resume.is_none()
@@ -210,6 +213,7 @@ impl Onboarding {
             settings.setup_done = true;
             settings.setup_profile = None;
             settings.setup_request = None;
+            settings.setup_identity = None;
         });
         let now = Instant::now();
         self.leaving = Some(if reduce_motion() {
@@ -341,6 +345,7 @@ impl Onboarding {
                 remember(|settings| {
                     settings.setup_profile = Some(id);
                     settings.setup_request = None;
+                    settings.setup_identity = None;
                 });
                 cx.emit(Event::Bind(Box::new(FirstBind {
                     item: selected.item().clone(),
@@ -356,16 +361,21 @@ impl Onboarding {
                 cx.emit(Event::Terminal);
                 view.leave(cx);
             }
-            flow::Event::Creating(key) => {
-                let key = key.clone();
-                remember(|settings| settings.setup_request = Some(key));
+            flow::Event::Creating(key, typed) => {
+                let (key, typed) = (key.clone(), typed.clone());
+                remember(|settings| {
+                    // A new request replaces a saved profile that is gone.
+                    settings.setup_profile = None;
+                    settings.setup_request = Some(key);
+                    settings.setup_identity = typed;
+                });
             }
             flow::Event::Close => {}
         });
         if let Some(id) = self.resume.take() {
             flow.update(cx, |flow, cx| flow.resume_saved(id, cx));
-        } else if let Some(key) = self.resume_request.take() {
-            flow.update(cx, |flow, cx| flow.resume_request(key, cx));
+        } else if let Some((key, typed)) = self.resume_request.take() {
+            flow.update(cx, |flow, cx| flow.resume_request(key, typed, cx));
         }
         self.flow = Some((flow, events));
     }
