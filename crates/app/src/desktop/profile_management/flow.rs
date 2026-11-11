@@ -680,6 +680,14 @@ impl Flow {
                 Some(Stalled::Unconfirmed(_) | Stalled::NotStarted | Stalled::Lookup(_))
             );
         let sent = self.sent();
+        // Hidden fields can't keep focus: the screen takes it instead.
+        if sent.is_some()
+            && [&self.git.name, &self.git.email]
+                .iter()
+                .any(|field| field.read(cx).focus.is_focused(window))
+        {
+            window.focus(&self.focus, cx);
+        }
         let git = if self.git.open && sent.is_none() {
             let field = |entity: &Entity<NameField>, hint: &'static str| {
                 let empty = entity.read(cx).value().is_empty();
