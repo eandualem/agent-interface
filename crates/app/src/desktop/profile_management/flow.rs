@@ -1132,6 +1132,8 @@ fn make(
 
 /// The receipt of a create request sent before, reading what is saved first:
 /// after a restart it may never have been sent, or may already have finished.
+/// A lookup that fails resends the identical request under its original ID,
+/// which the provider treats as the same request, never a second profile.
 fn recover(
     controller: &Controller,
     key: &str,
@@ -1146,7 +1148,9 @@ fn recover(
         Ok(snapshot) => match (snapshot.terminal, snapshot.phase) {
             (Some(receipt), _) => Ok(receipt),
             (None, Phase::Prepared) => controller.submit(key, alive),
-            (None, Phase::Submitted) => controller.refresh(key, alive),
+            (None, Phase::Submitted) => controller
+                .refresh(key, alive)
+                .or_else(|_| controller.retry(key, alive)),
         }
         .map_err(|_| unconfirmed(key.to_owned())),
         Err(_) => Err(unconfirmed(key.to_owned())),
@@ -1180,6 +1184,46 @@ impl Render for Flow {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_request_marked_sent_but_never_received_is_resent_unchanged() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path().canonicalize().unwrap();
+        let provider = root.join("provider");
+        // The provider has no record of the request: every lookup fails.
+        std::fs::write(
+            &provider,
+            "#!/bin/sh\nd=$(dirname \"$0\")\nprintf '%s\\n' \"$2\" >> \"$d/calls\"\n[ \"$2\" = operation ] && exit 1\n/bin/cat \"$d/reply\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&provider, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let client = Client::new(provider, "/usr/bin:/bin".into()).unwrap();
+        let controller = Controller::new(
+            journal::Journal::open(&root.join("journal")).unwrap(),
+            &client,
+        );
+        let prepared = Prepared::create("request-a", "Example", BASELINE).unwrap();
+        let key = controller.enqueue(prepared).unwrap().key;
+        // No reply yet: the send is recorded, but no receipt came back.
+        assert!(controller.submit(&key, &|| true).is_err());
+        std::fs::write(
+            root.join("reply"),
+            serde_json::json!({
+                "schema_version": 1, "request_id": "request-a", "action": "create",
+                "profile_id": "profile-a", "installation_id": "installation-a",
+                "lifecycle_id": "lifecycle-a", "status": "succeeded", "error": null
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let Ok(receipt) = recover(&controller, &key, &|| true) else {
+            panic!("the request was not resent");
+        };
+        assert_eq!(receipt.status, Status::Succeeded);
+        let calls = std::fs::read_to_string(root.join("calls")).unwrap();
+        assert_eq!(calls, "apply\noperation\napply\n");
+    }
 
     #[test]
     fn a_saved_create_request_is_looked_up_never_made_again() {
