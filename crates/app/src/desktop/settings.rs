@@ -489,9 +489,11 @@ pub fn save(settings: &Settings, path: &Path) -> io::Result<()> {
 }
 
 fn save_to_temporary(settings: &Settings, path: &Path, temporary: &Path) -> io::Result<()> {
+    // Owner-only: it can hold a Git name and email typed during setup.
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
+        .mode(0o600)
         .open(temporary)?;
     let written = file
         .write_all(settings.to_toml().as_bytes())
@@ -655,6 +657,9 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("nested/settings.toml");
         save(&light, &path).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
         assert_eq!(
             Settings::parse(&std::fs::read_to_string(&path).unwrap()),
             light

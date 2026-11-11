@@ -666,7 +666,12 @@ impl Flow {
                 self.stalled,
                 Some(Stalled::Unconfirmed(_) | Stalled::NotStarted | Stalled::Lookup(_))
             );
-        let git = if self.git.open {
+        // A request already sent keeps the Git name and email typed for it.
+        let sent = match (&self.chosen, locked) {
+            (Some(Identity::Typed(name, email)), true) => Some((name.clone(), email.clone())),
+            _ => None,
+        };
+        let git = if self.git.open && sent.is_none() {
             let field = |entity: &Entity<NameField>, hint: &'static str| {
                 let empty = entity.read(cx).value().is_empty();
                 ui::setup_field(entity.read(cx).focus.is_focused(window)).child(
@@ -725,7 +730,7 @@ impl Flow {
                     )))
                 })
                 .into_any_element()
-        } else if let Some((name, email)) = &self.git.computer {
+        } else if let Some((name, email)) = sent.as_ref().or(self.git.computer.as_ref()) {
             ui::text(
                 div()
                     .pt(px(t.space.s12))
@@ -746,13 +751,15 @@ impl Flow {
                     .whitespace_nowrap()
                     .child(div().flex_shrink_0().child("Git commits as"))
                     .child(div().flex_shrink_0().text_color(c.text).child(name.clone()))
-                    .child(
-                        div()
-                            .min_w_0()
-                            .overflow_hidden()
-                            .text_ellipsis()
-                            .child(format!("<{email}>")),
-                    ),
+                    .when(!email.is_empty(), |el| {
+                        el.child(
+                            div()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .child(format!("<{email}>")),
+                        )
+                    }),
             )
             .when(!locked, |el| {
                 el.child(

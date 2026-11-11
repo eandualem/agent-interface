@@ -301,9 +301,11 @@ impl Form {
             let read = work.await;
             let _ = this.update(cx, |form, cx| {
                 form.accounts.extend(read);
-                // Prefer a signed-in tool while the person hasn't chosen.
+                // Prefer a signed-in tool while the person hasn't chosen and
+                // nothing has started, so Try again matches what is shown.
                 if !form.changed
                     && !form.picked
+                    && form.start.is_none()
                     && let State::Ready { catalog, .. } = &form.state
                     && let Some(id) = catalog
                         .items()
