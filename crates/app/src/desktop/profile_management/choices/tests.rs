@@ -65,6 +65,19 @@ fn explicit_choices_freeze_original_tuple_and_identical_cancel_body() {
     );
 }
 #[test]
+fn a_tool_that_takes_the_brief_as_its_first_turn_gets_no_second_greeting() {
+    for (id, greeting) in [("gemini", false), ("antigravity", false), ("codex", true)] {
+        let mut wire = fixtures()["runtime_catalog"]["catalog"].clone();
+        wire["items"][0]["id"] = json!(id);
+        let mut selected = choice();
+        selected.runtime = id;
+        selected.greeting = true;
+        let prepared = freeze("request", &profile(), &catalog(&wire), selected).unwrap();
+        let first: Value = serde_json::from_slice(prepared.bytes(Action::FirstAgent)).unwrap();
+        assert_eq!(first["start_greeting"], greeting, "{id}");
+    }
+}
+#[test]
 fn changed_origin_or_stale_runtime_model_cannot_prepare() {
     let wire = fixtures()["runtime_catalog"]["catalog"].clone();
     let catalog = catalog(&wire);

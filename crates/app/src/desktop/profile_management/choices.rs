@@ -655,10 +655,14 @@ fn freeze(
                 },
             },
         },
-        choice.greeting,
+        // A tool that takes the brief as its first turn already greets.
+        choice.greeting && !BRIEF_AS_FIRST_TURN.contains(&runtime.id.as_str()),
     )
     .ok()
 }
+/// Tools that can't take a brief silently: Agent Backbone sends it as the
+/// agent's first turn, and the default brief asks it to greet.
+const BRIEF_AS_FIRST_TURN: [&str; 2] = ["gemini", "antigravity"];
 /// The name a profile's first agent starts with.
 const GUIDE: &str = "guide";
 /// A typed name as an agent name: spaces as hyphens.
