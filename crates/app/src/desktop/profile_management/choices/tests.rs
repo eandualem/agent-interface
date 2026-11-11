@@ -66,11 +66,18 @@ fn explicit_choices_freeze_original_tuple_and_identical_cancel_body() {
 }
 #[test]
 fn a_tool_that_takes_the_brief_as_its_first_turn_gets_no_second_greeting() {
-    for (id, greeting) in [("gemini", false), ("antigravity", false), ("codex", true)] {
+    // The default brief asks the agent to greet; custom instructions may not.
+    for (id, brief, greeting) in [
+        ("gemini", None, false),
+        ("antigravity", None, false),
+        ("gemini", Some("Do the project work"), true),
+        ("codex", None, true),
+    ] {
         let mut wire = fixtures()["runtime_catalog"]["catalog"].clone();
         wire["items"][0]["id"] = json!(id);
         let mut selected = choice();
         selected.runtime = id;
+        selected.brief = brief;
         selected.greeting = true;
         let prepared = freeze("request", &profile(), &catalog(&wire), selected).unwrap();
         let first: Value = serde_json::from_slice(prepared.bytes(Action::FirstAgent)).unwrap();

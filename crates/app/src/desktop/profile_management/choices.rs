@@ -655,8 +655,10 @@ fn freeze(
                 },
             },
         },
-        // A tool that takes the brief as its first turn already greets.
-        choice.greeting && !BRIEF_AS_FIRST_TURN.contains(&runtime.id.as_str()),
+        // A tool that takes the default brief as its first turn already
+        // greets, since that brief asks it to; custom instructions may not.
+        choice.greeting
+            && !(choice.brief.is_none() && BRIEF_AS_FIRST_TURN.contains(&runtime.id.as_str())),
     )
     .ok()
 }
