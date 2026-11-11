@@ -1025,45 +1025,61 @@ fn make(
     let controller = journal::Journal::open(&library.join("profile-operations"))
         .map(|journal| Controller::new(journal, &client))
         .map_err(|_| unavailable(&made))?;
-    let profile = match (made, resume) {
-        // Read it again: the start names its current lifecycle, which an
-        // earlier attempt may have changed.
-        (Some(profile), Some(Stalled::NotStarted)) => client
-            .show(&profile.item().profile_id, &alive)
-            .unwrap_or(profile),
-        (_, resume) => {
-            let receipt = match (prepared, resume) {
-                (Some(prepared), _) => {
-                    let key = Controller::key(prepared.request_id());
-                    let result = controller
-                        .enqueue(prepared)
-                        .and_then(|_| controller.submit(&key, &alive));
-                    result.map_err(|_| unconfirmed(key))?
-                }
-                (None, Some(Stalled::Unconfirmed(key))) => recover(&controller, &key, &alive)?,
-                _ => return Err((Stalled::Failed, None, "Give the profile a name.")),
-            };
-            match (receipt.status, receipt.identity) {
-                (Status::Succeeded, Some(identity)) => client
-                    .show(&identity.profile_id, &alive)
-                    .map_err(|_| unconfirmed(Controller::key(&receipt.request_id)))?,
-                (Status::Pending, _) | (Status::Succeeded, None) => {
-                    return Err(unconfirmed(Controller::key(&receipt.request_id)));
-                }
-                (Status::Failed, _) => {
-                    return Err((
-                        Stalled::Failed,
-                        None,
-                        if receipt.error_code.as_deref() == Some("git_identity_unavailable") {
-                            GIT_MISSING
+    let profile =
+        match (made, resume) {
+            // Read it again: the start names its current lifecycle, which an
+            // earlier attempt may have changed.
+            (Some(profile), Some(Stalled::NotStarted)) => client
+                .show(&profile.item().profile_id, &alive)
+                .unwrap_or(profile),
+            (_, resume) => {
+                let receipt = match (prepared, resume) {
+                    (Some(prepared), _) => {
+                        let key = Controller::key(prepared.request_id());
+                        let result = controller
+                            .enqueue(prepared)
+                            .and_then(|_| controller.submit(&key, &alive));
+                        result.map_err(|_| unconfirmed(key))?
+                    }
+                    (None, Some(Stalled::Unconfirmed(key))) => recover(&controller, &key, &alive)?,
+                    _ => return Err((Stalled::Failed, None, "Give the profile a name.")),
+                };
+                match (receipt.status, receipt.identity) {
+                    (Status::Succeeded, Some(identity)) => {
+                        client.show(&identity.profile_id, &alive).map_err(|_| {
+                        // Made, then removed: only the list can say so, and
+                        // then a new request is safe.
+                        let gone = client.list(&alive).is_ok_and(|items| {
+                            items.iter().all(|item| item.profile_id != identity.profile_id)
+                        });
+                        if gone {
+                            (
+                                Stalled::Failed,
+                                None,
+                                "The profile made before was removed. Try again to make it again.",
+                            )
                         } else {
-                            "The profile could not be made. Try again."
-                        },
-                    ));
+                            unconfirmed(Controller::key(&receipt.request_id))
+                        }
+                    })?
+                    }
+                    (Status::Pending, _) | (Status::Succeeded, None) => {
+                        return Err(unconfirmed(Controller::key(&receipt.request_id)));
+                    }
+                    (Status::Failed, _) => {
+                        return Err((
+                            Stalled::Failed,
+                            None,
+                            if receipt.error_code.as_deref() == Some("git_identity_unavailable") {
+                                GIT_MISSING
+                            } else {
+                                "The profile could not be made. Try again."
+                            },
+                        ));
+                    }
                 }
             }
-        }
-    };
+        };
     let not_started = |profile: &Profile| {
         (
             Stalled::NotStarted,
