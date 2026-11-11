@@ -53,6 +53,8 @@ static PANE_HEADERS: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::
 static INTRO_SEEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static SETUP_DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static SETUP_PROFILE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+static SETUP_REQUEST: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+static SETUP_IDENTITY: std::sync::Mutex<Option<(String, String)>> = std::sync::Mutex::new(None);
 
 /// How panes show their header now.
 pub fn pane_headers() -> PaneHeaders {
@@ -83,6 +85,10 @@ pub struct Settings {
     pub setup_done: bool,
     /// The first profile first run made, until its guide starts.
     pub setup_profile: Option<String>,
+    /// The request that makes first run's profile, until it is made.
+    pub setup_request: Option<String>,
+    /// The Git name and email typed for that request, set once it is made.
+    pub setup_identity: Option<(String, String)>,
 }
 
 impl Default for Settings {
@@ -99,6 +105,8 @@ impl Default for Settings {
             intro_seen: false,
             setup_done: false,
             setup_profile: None,
+            setup_request: None,
+            setup_identity: None,
         }
     }
 }
@@ -157,17 +165,30 @@ impl Settings {
             let flag = |key| setup.get(key).and_then(toml::Value::as_bool) == Some(true);
             settings.intro_seen = flag("intro_seen");
             settings.setup_done = flag("done");
-            settings.setup_profile = setup
-                .get("profile")
-                .and_then(toml::Value::as_str)
-                .filter(|id| {
-                    !id.is_empty()
-                        && id.len() <= 128
-                        && id
-                            .bytes()
-                            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-                })
-                .map(str::to_owned);
+            let id = |key| {
+                setup
+                    .get(key)
+                    .and_then(toml::Value::as_str)
+                    .filter(|id| {
+                        !id.is_empty()
+                            && id.len() <= 128
+                            && id
+                                .bytes()
+                                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+                    })
+                    .map(str::to_owned)
+            };
+            settings.setup_profile = id("profile");
+            settings.setup_request = id("request");
+            let text = |key| {
+                setup
+                    .get(key)
+                    .and_then(toml::Value::as_str)
+                    // One may be empty: the form accepts a name or an email alone.
+                    .filter(|value| value.len() <= 1024)
+                    .map(str::to_owned)
+            };
+            settings.setup_identity = text("git_name").zip(text("git_email"));
         }
         if let Some(shortcuts) = table.get("shortcuts").and_then(toml::Value::as_table) {
             settings.shortcuts = super::shortcuts::Bindings::from_entries(
@@ -201,7 +222,12 @@ impl Settings {
         if let Some(width) = self.conversation_width {
             text.push_str(&format!("conversation_width = {width}\n"));
         }
-        if self.intro_seen || self.setup_done || self.setup_profile.is_some() {
+        if self.intro_seen
+            || self.setup_done
+            || self.setup_profile.is_some()
+            || self.setup_request.is_some()
+            || self.setup_identity.is_some()
+        {
             text.push_str(&format!(
                 "\n[setup]\nintro_seen = {}\ndone = {}\n",
                 self.intro_seen, self.setup_done
@@ -210,6 +236,19 @@ impl Settings {
                 text.push_str(&format!(
                     "profile = {}\n",
                     toml::Value::String(profile.clone())
+                ));
+            }
+            if let Some(request) = &self.setup_request {
+                text.push_str(&format!(
+                    "request = {}\n",
+                    toml::Value::String(request.clone())
+                ));
+            }
+            if let Some((name, email)) = &self.setup_identity {
+                text.push_str(&format!(
+                    "git_name = {}\ngit_email = {}\n",
+                    toml::Value::String(name.clone()),
+                    toml::Value::String(email.clone())
                 ));
             }
         }
@@ -238,6 +277,12 @@ impl Settings {
         *SETUP_PROFILE
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = self.setup_profile.clone();
+        *SETUP_REQUEST
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = self.setup_request.clone();
+        *SETUP_IDENTITY
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = self.setup_identity.clone();
     }
 
     /// The settings windows are drawing with now.
@@ -254,6 +299,14 @@ impl Settings {
             intro_seen: INTRO_SEEN.load(Ordering::Relaxed),
             setup_done: SETUP_DONE.load(Ordering::Relaxed),
             setup_profile: SETUP_PROFILE
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone(),
+            setup_request: SETUP_REQUEST
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone(),
+            setup_identity: SETUP_IDENTITY
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .clone(),
@@ -436,9 +489,11 @@ pub fn save(settings: &Settings, path: &Path) -> io::Result<()> {
 }
 
 fn save_to_temporary(settings: &Settings, path: &Path, temporary: &Path) -> io::Result<()> {
+    // Owner-only: it can hold a Git name and email typed during setup.
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
+        .mode(0o600)
         .open(temporary)?;
     let written = file
         .write_all(settings.to_toml().as_bytes())
@@ -576,8 +631,15 @@ mod tests {
             intro_seen: true,
             setup_done: false,
             setup_profile: Some("0123abcd".into()),
+            setup_request: Some("89ef4567".into()),
+            setup_identity: Some(("Sam O'Brien \"ops\"".into(), "sam@example.com".into())),
         };
         assert_eq!(Settings::parse(&light.to_toml()), light);
+        let partial = Settings {
+            setup_identity: Some((String::new(), "sam@example.com".into())),
+            ..light.clone()
+        };
+        assert_eq!(Settings::parse(&partial.to_toml()), partial);
         // Shortcuts are global; other tests rely on the defaults.
         let applied = Settings {
             shortcuts: super::super::shortcuts::Bindings::default(),
@@ -595,6 +657,9 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("nested/settings.toml");
         save(&light, &path).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
         assert_eq!(
             Settings::parse(&std::fs::read_to_string(&path).unwrap()),
             light

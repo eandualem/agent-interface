@@ -11,14 +11,14 @@ use crate::{
     },
     profiles::{
         Client,
-        controller::Controller,
+        controller::{self, Controller, Phase},
         journal,
         selection::{Selected, Selection},
     },
 };
 use agent_interface_roster::profiles::{
     Connection, Profile,
-    operations::{Prepared, Status},
+    operations::{Prepared, Receipt, Status},
 };
 use gpui::{
     AnyElement, Context, Entity, EventEmitter, FocusHandle, SharedString, Subscription, Window,
@@ -46,6 +46,9 @@ pub(in crate::desktop) enum Event {
     Terminal,
     /// Cancelled, or finished; whatever was made stays.
     Close,
+    /// A request to make the profile, under this key, is about to be sent,
+    /// with the Git name and email typed for it.
+    Creating(String, Option<(String, String)>),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -62,6 +65,8 @@ enum Stalled {
     NotStarted,
     /// Nothing usable was made: a new request is safe.
     Failed,
+    /// A profile made before couldn't be read: read it again.
+    Lookup(String),
 }
 
 struct Made {
@@ -202,16 +207,64 @@ impl Flow {
         });
     }
 
-    /// A first profile made before may be carried on with: hold the name
-    /// screen until [`Self::resume`] or [`Self::fresh`] says which.
-    pub fn resuming(&mut self, cx: &mut Context<Self>) {
+    /// Carry on with the first profile made before, once it is read. Only a
+    /// list without it says it is gone; a failed read keeps it to read again.
+    pub fn resume_saved(&mut self, id: String, cx: &mut Context<Self>) {
         self.busy = true;
+        self.error = None;
+        let client = self.client.clone();
+        let work = cx.background_executor().spawn(async move {
+            let profile = client.show(&id, &|| true);
+            let gone = profile.is_err()
+                && client
+                    .list(&|| true)
+                    .is_ok_and(|items| items.iter().all(|item| item.profile_id != id));
+            (id, profile, gone)
+        });
+        cx.spawn(async move |this, cx| {
+            let (id, profile, gone) = work.await;
+            let _ = this.update(cx, |flow, cx| {
+                match profile {
+                    Ok(profile) => return flow.resume(profile, cx),
+                    Err(_) if gone => {}
+                    Err(_) => {
+                        flow.stalled = Some(Stalled::Lookup(id));
+                        flow.error = Some("The profile made before couldn't be read. Check again.");
+                    }
+                }
+                flow.busy = false;
+                cx.notify();
+            });
+        })
+        .detach();
         cx.notify();
     }
 
-    /// The profile made before is gone: start from the name.
-    pub fn fresh(&mut self, cx: &mut Context<Self>) {
-        self.busy = false;
+    /// First run closed while its profile was being made: Check again looks
+    /// up that same request rather than making another profile.
+    pub fn resume_request(
+        &mut self,
+        key: String,
+        typed: Option<(String, String)>,
+        cx: &mut Context<Self>,
+    ) {
+        // The request's own Git choice: typed values are set once it is made,
+        // and stay in the fields if it has to be made again.
+        self.chosen = Some(match typed {
+            Some((name, email)) => {
+                self.git
+                    .name
+                    .update(cx, |field, cx| field.set_value(&name, cx));
+                self.git
+                    .email
+                    .update(cx, |field, cx| field.set_value(&email, cx));
+                self.git.open = true;
+                Identity::Typed(name, email)
+            }
+            None => Identity::None,
+        });
+        self.stalled = Some(Stalled::Unconfirmed(key));
+        self.error = Some("Setup closed while the profile was being made. Check again.");
         cx.notify();
     }
 
@@ -240,12 +293,15 @@ impl Flow {
     /// fields open, since there is nothing to copy.
     fn found_identity(&mut self, computer: (String, String), cx: &mut Context<Self>) {
         let (name, email) = computer.clone();
-        self.git
-            .name
-            .update(cx, |field, cx| field.set_value(&name, cx));
-        self.git
-            .email
-            .update(cx, |field, cx| field.set_value(&email, cx));
+        // A recovered request's typed values stay in the fields.
+        if !matches!(self.chosen, Some(Identity::Typed(..))) {
+            self.git
+                .name
+                .update(cx, |field, cx| field.set_value(&name, cx));
+            self.git
+                .email
+                .update(cx, |field, cx| field.set_value(&email, cx));
+        }
         if name.is_empty() || email.is_empty() {
             self.git.open = true;
         }
@@ -302,6 +358,13 @@ impl Flow {
 
     /// Continue from the name: create the profile, start it, then connect.
     fn create(&mut self, cx: &mut Context<Self>) {
+        if !self.busy
+            && let Some(Stalled::Lookup(id)) = &self.stalled
+        {
+            let id = id.clone();
+            self.stalled = None;
+            return self.resume_saved(id, cx);
+        }
         // What its agents commit as is decided before the profile is made.
         if self.busy
             || self.screen != Screen::Name
@@ -317,7 +380,7 @@ impl Flow {
         let resume = self.stalled.take();
         let request = uuid::Uuid::new_v4().simple().to_string();
         let prepared = match &resume {
-            Some(Stalled::Unconfirmed(_) | Stalled::NotStarted) => None,
+            Some(Stalled::Unconfirmed(_) | Stalled::NotStarted | Stalled::Lookup(_)) => None,
             _ => match if self.identity(cx) == Identity::Computer {
                 Prepared::create_copying_git_identity(&request, &display, BASELINE)
             } else {
@@ -331,6 +394,16 @@ impl Flow {
                 }
             },
         };
+        if let Some(prepared) = &prepared {
+            let typed = match self.identity(cx) {
+                Identity::Typed(name, email) => Some((name, email)),
+                _ => None,
+            };
+            cx.emit(Event::Creating(
+                Controller::key(prepared.request_id()),
+                typed,
+            ));
+        }
         self.error = None;
         self.busy = true;
         // One choice for the whole operation, whatever the fields show later.
@@ -569,7 +642,7 @@ impl Flow {
                 "Setting up {}…",
                 if typed.is_empty() { "profile" } else { &typed }
             ),
-            (false, Some(Stalled::Unconfirmed(_))) => "Check again".to_owned(),
+            (false, Some(Stalled::Unconfirmed(_) | Stalled::Lookup(_))) => "Check again".to_owned(),
             (false, Some(Stalled::NotStarted | Stalled::Failed)) => "Try again".to_owned(),
             (false, None) => "Continue".to_owned(),
         };
@@ -604,9 +677,18 @@ impl Flow {
         let locked = self.busy
             || matches!(
                 self.stalled,
-                Some(Stalled::Unconfirmed(_) | Stalled::NotStarted)
+                Some(Stalled::Unconfirmed(_) | Stalled::NotStarted | Stalled::Lookup(_))
             );
-        let git = if self.git.open {
+        let sent = self.sent();
+        // Hidden fields can't keep focus: the screen takes it instead.
+        if sent.is_some()
+            && [&self.git.name, &self.git.email]
+                .iter()
+                .any(|field| field.read(cx).focus.is_focused(window))
+        {
+            window.focus(&self.focus, cx);
+        }
+        let git = if self.git.open && sent.is_none() {
             let field = |entity: &Entity<NameField>, hint: &'static str| {
                 let empty = entity.read(cx).value().is_empty();
                 ui::setup_field(entity.read(cx).focus.is_focused(window)).child(
@@ -665,7 +747,7 @@ impl Flow {
                     )))
                 })
                 .into_any_element()
-        } else if let Some((name, email)) = &self.git.computer {
+        } else if let Some((name, email)) = sent.as_ref().or(self.git.computer.as_ref()) {
             ui::text(
                 div()
                     .pt(px(t.space.s12))
@@ -686,13 +768,15 @@ impl Flow {
                     .whitespace_nowrap()
                     .child(div().flex_shrink_0().child("Git commits as"))
                     .child(div().flex_shrink_0().text_color(c.text).child(name.clone()))
-                    .child(
-                        div()
-                            .min_w_0()
-                            .overflow_hidden()
-                            .text_ellipsis()
-                            .child(format!("<{email}>")),
-                    ),
+                    .when(!email.is_empty(), |el| {
+                        el.child(
+                            div()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .child(format!("<{email}>")),
+                        )
+                    }),
             )
             .when(!locked, |el| {
                 el.child(
@@ -764,12 +848,26 @@ impl Flow {
     }
 
     /// Tab moves between the name and, while open, the Git fields.
+    /// The Git name and email typed for a request already sent, while it
+    /// is pending: shown as they are, not as fields.
+    fn sent(&self) -> Option<(String, String)> {
+        let pending = self.busy
+            || matches!(
+                self.stalled,
+                Some(Stalled::Unconfirmed(_) | Stalled::NotStarted | Stalled::Lookup(_))
+            );
+        match &self.chosen {
+            Some(Identity::Typed(name, email)) if pending => Some((name.clone(), email.clone())),
+            _ => None,
+        }
+    }
+
     fn tab(&mut self, back: bool, window: &mut Window, cx: &mut Context<Self>) -> bool {
         if self.screen != Screen::Name {
             return false;
         }
         let mut fields = vec![self.name.read(cx).focus.clone()];
-        if self.git.open {
+        if self.git.open && self.sent().is_none() {
             fields.push(self.git.name.read(cx).focus.clone());
             fields.push(self.git.email.read(cx).focus.clone());
         }
@@ -965,47 +1063,61 @@ fn make(
     let controller = journal::Journal::open(&library.join("profile-operations"))
         .map(|journal| Controller::new(journal, &client))
         .map_err(|_| unavailable(&made))?;
-    let profile = match (made, resume) {
-        // Read it again: the start names its current lifecycle, which an
-        // earlier attempt may have changed.
-        (Some(profile), Some(Stalled::NotStarted)) => client
-            .show(&profile.item().profile_id, &alive)
-            .unwrap_or(profile),
-        (_, resume) => {
-            let receipt = match (prepared, resume) {
-                (Some(prepared), _) => {
-                    let key = Controller::key(prepared.request_id());
-                    let result = controller
-                        .enqueue(prepared)
-                        .and_then(|_| controller.submit(&key, &alive));
-                    result.map_err(|_| unconfirmed(key))?
-                }
-                (None, Some(Stalled::Unconfirmed(key))) => controller
-                    .refresh(&key, &alive)
-                    .map_err(|_| unconfirmed(key.clone()))?,
-                _ => return Err((Stalled::Failed, None, "Give the profile a name.")),
-            };
-            match (receipt.status, receipt.identity) {
-                (Status::Succeeded, Some(identity)) => client
-                    .show(&identity.profile_id, &alive)
-                    .map_err(|_| unconfirmed(Controller::key(&receipt.request_id)))?,
-                (Status::Pending, _) | (Status::Succeeded, None) => {
-                    return Err(unconfirmed(Controller::key(&receipt.request_id)));
-                }
-                (Status::Failed, _) => {
-                    return Err((
-                        Stalled::Failed,
-                        None,
-                        if receipt.error_code.as_deref() == Some("git_identity_unavailable") {
-                            GIT_MISSING
+    let profile =
+        match (made, resume) {
+            // Read it again: the start names its current lifecycle, which an
+            // earlier attempt may have changed.
+            (Some(profile), Some(Stalled::NotStarted)) => client
+                .show(&profile.item().profile_id, &alive)
+                .unwrap_or(profile),
+            (_, resume) => {
+                let receipt = match (prepared, resume) {
+                    (Some(prepared), _) => {
+                        let key = Controller::key(prepared.request_id());
+                        let result = controller
+                            .enqueue(prepared)
+                            .and_then(|_| controller.submit(&key, &alive));
+                        result.map_err(|_| unconfirmed(key))?
+                    }
+                    (None, Some(Stalled::Unconfirmed(key))) => recover(&controller, &key, &alive)?,
+                    _ => return Err((Stalled::Failed, None, "Give the profile a name.")),
+                };
+                match (receipt.status, receipt.identity) {
+                    (Status::Succeeded, Some(identity)) => {
+                        client.show(&identity.profile_id, &alive).map_err(|_| {
+                        // Made, then removed: only the list can say so, and
+                        // then a new request is safe.
+                        let gone = client.list(&alive).is_ok_and(|items| {
+                            items.iter().all(|item| item.profile_id != identity.profile_id)
+                        });
+                        if gone {
+                            (
+                                Stalled::Failed,
+                                None,
+                                "The profile made before was removed. Try again to make it again.",
+                            )
                         } else {
-                            "The profile could not be made. Try again."
-                        },
-                    ));
+                            unconfirmed(Controller::key(&receipt.request_id))
+                        }
+                    })?
+                    }
+                    (Status::Pending, _) | (Status::Succeeded, None) => {
+                        return Err(unconfirmed(Controller::key(&receipt.request_id)));
+                    }
+                    (Status::Failed, _) => {
+                        return Err((
+                            Stalled::Failed,
+                            None,
+                            if receipt.error_code.as_deref() == Some("git_identity_unavailable") {
+                                GIT_MISSING
+                            } else {
+                                "The profile could not be made. Try again."
+                            },
+                        ));
+                    }
                 }
             }
-        }
-    };
+        };
     let not_started = |profile: &Profile| {
         (
             Stalled::NotStarted,
@@ -1024,6 +1136,33 @@ fn make(
         return Err(not_started(&profile));
     }
     Ok(Made { library, profile })
+}
+
+/// The receipt of a create request sent before, reading what is saved first:
+/// after a restart it may never have been sent, or may already have finished.
+/// A lookup that fails resends the identical request under its original ID,
+/// which the provider treats as the same request, never a second profile.
+fn recover(
+    controller: &Controller,
+    key: &str,
+    alive: &dyn Fn() -> bool,
+) -> Result<Receipt, Failure> {
+    match controller.read(key) {
+        Err(controller::Error::Missing) => Err((
+            Stalled::Failed,
+            None,
+            "The profile could not be made. Try again.",
+        )),
+        Ok(snapshot) => match (snapshot.terminal, snapshot.phase) {
+            (Some(receipt), _) => Ok(receipt),
+            (None, Phase::Prepared) => controller.submit(key, alive),
+            (None, Phase::Submitted) => controller
+                .refresh(key, alive)
+                .or_else(|_| controller.retry(key, alive)),
+        }
+        .map_err(|_| unconfirmed(key.to_owned())),
+        Err(_) => Err(unconfirmed(key.to_owned())),
+    }
 }
 
 fn unconfirmed(key: String) -> Failure {
@@ -1053,6 +1192,93 @@ impl Render for Flow {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_request_marked_sent_but_never_received_is_resent_unchanged() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path().canonicalize().unwrap();
+        let provider = root.join("provider");
+        // The provider has no record of the request: every lookup fails.
+        std::fs::write(
+            &provider,
+            "#!/bin/sh\nd=$(dirname \"$0\")\nprintf '%s\\n' \"$2\" >> \"$d/calls\"\n[ \"$2\" = operation ] && exit 1\n/bin/cat \"$d/reply\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&provider, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let client = Client::new(provider, "/usr/bin:/bin".into()).unwrap();
+        let controller = Controller::new(
+            journal::Journal::open(&root.join("journal")).unwrap(),
+            &client,
+        );
+        let prepared = Prepared::create("request-a", "Example", BASELINE).unwrap();
+        let key = controller.enqueue(prepared).unwrap().key;
+        // No reply yet: the send is recorded, but no receipt came back.
+        assert!(controller.submit(&key, &|| true).is_err());
+        std::fs::write(
+            root.join("reply"),
+            serde_json::json!({
+                "schema_version": 1, "request_id": "request-a", "action": "create",
+                "profile_id": "profile-a", "installation_id": "installation-a",
+                "lifecycle_id": "lifecycle-a", "status": "succeeded", "error": null
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let Ok(receipt) = recover(&controller, &key, &|| true) else {
+            panic!("the request was not resent");
+        };
+        assert_eq!(receipt.status, Status::Succeeded);
+        let calls = std::fs::read_to_string(root.join("calls")).unwrap();
+        assert_eq!(calls, "apply\noperation\napply\n");
+    }
+
+    #[test]
+    fn a_saved_create_request_is_looked_up_never_made_again() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path().canonicalize().unwrap();
+        let provider = root.join("provider");
+        std::fs::write(
+            &provider,
+            "#!/bin/sh\nprintf '%s\\n' \"$2\" >> \"$(dirname \"$0\")/calls\"\n/bin/cat \"$(dirname \"$0\")/reply\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&provider, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::write(
+            root.join("reply"),
+            serde_json::json!({
+                "schema_version": 1, "request_id": "request-a", "action": "create",
+                "profile_id": "profile-a", "installation_id": "installation-a",
+                "lifecycle_id": "lifecycle-a", "status": "succeeded", "error": null
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let client = Client::new(provider, "/usr/bin:/bin".into()).unwrap();
+        let controller = Controller::new(
+            journal::Journal::open(&root.join("journal")).unwrap(),
+            &client,
+        );
+        let calls = || std::fs::read_to_string(root.join("calls")).unwrap_or_default();
+        // Saved, but the app closed before the request was written: nothing was made.
+        let missing = Controller::key("request-b");
+        assert!(matches!(
+            recover(&controller, &missing, &|| true),
+            Err((Stalled::Failed, None, _))
+        ));
+        // Written, but closed before it was sent: send that same request.
+        let prepared = Prepared::create("request-a", "Example", BASELINE).unwrap();
+        let key = controller.enqueue(prepared).unwrap().key;
+        let Ok(receipt) = recover(&controller, &key, &|| true) else {
+            panic!("the saved request was not sent");
+        };
+        assert_eq!(receipt.status, Status::Succeeded);
+        assert_eq!(calls(), "apply\n");
+        // Already finished: its saved receipt, with no command at all.
+        assert!(recover(&controller, &key, &|| true).is_ok_and(|saved| saved == receipt));
+        assert_eq!(calls(), "apply\n");
+    }
 
     #[test]
     fn a_typed_identity_is_one_shell_word_each() {

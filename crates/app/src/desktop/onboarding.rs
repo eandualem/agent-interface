@@ -142,6 +142,8 @@ pub(in crate::desktop) struct Onboarding {
     leaving: Option<Instant>,
     /// A first profile made before the app last closed, to carry on with.
     resume: Option<String>,
+    /// The request making it, when the app closed before it was made.
+    resume_request: Option<(String, Option<(String, String)>)>,
     /// The service was restarted or set up once; only Try again repeats it.
     repaired: bool,
     /// The guide's pane asked for, and why it didn't open if it didn't.
@@ -154,8 +156,15 @@ impl Onboarding {
     pub fn new(directory: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let preferences = Settings::current();
         let resume = preferences.setup_profile.clone();
+        let resume_request = preferences
+            .setup_request
+            .clone()
+            .map(|key| (key, preferences.setup_identity.clone()));
         // A profile made before is carried on with straight away, no scene.
-        let intro = !preferences.intro_seen && resume.is_none() && !reduce_motion();
+        let intro = !preferences.intro_seen
+            && resume.is_none()
+            && resume_request.is_none()
+            && !reduce_motion();
         if !intro {
             // Record now that first run began, so an interrupted one resumes
             // without the scene after other settings create the file.
@@ -178,6 +187,7 @@ impl Onboarding {
             details: false,
             leaving: None,
             resume,
+            resume_request,
             repaired: false,
             opening: None,
             directory,
@@ -202,6 +212,8 @@ impl Onboarding {
         remember(|settings| {
             settings.setup_done = true;
             settings.setup_profile = None;
+            settings.setup_request = None;
+            settings.setup_identity = None;
         });
         let now = Instant::now();
         self.leaving = Some(if reduce_motion() {
@@ -316,7 +328,6 @@ impl Onboarding {
     /// Make the first profile's flow, or carry on with the one made before.
     fn make_flow(&mut self, client: Client, window: &mut Window, cx: &mut Context<Self>) {
         let directory = self.directory.clone();
-        let reader = client.clone();
         let flow = cx.new(|cx| {
             let mut flow = Flow::new(client.clone(), directory, String::new(), None, window, cx);
             flow.for_first_run(cx);
@@ -331,7 +342,11 @@ impl Onboarding {
         let events = cx.subscribe_in(&flow, window, move |view, _, event, _, cx| match event {
             flow::Event::Bind(selected) => {
                 let id = selected.item().profile_id.clone();
-                remember(|settings| settings.setup_profile = Some(id));
+                remember(|settings| {
+                    settings.setup_profile = Some(id);
+                    settings.setup_request = None;
+                    settings.setup_identity = None;
+                });
                 cx.emit(Event::Bind(Box::new(FirstBind {
                     item: selected.item().clone(),
                     connection: selected.connection().clone(),
@@ -346,23 +361,21 @@ impl Onboarding {
                 cx.emit(Event::Terminal);
                 view.leave(cx);
             }
+            flow::Event::Creating(key, typed) => {
+                let (key, typed) = (key.clone(), typed.clone());
+                remember(|settings| {
+                    // A new request replaces a saved profile that is gone.
+                    settings.setup_profile = None;
+                    settings.setup_request = Some(key);
+                    settings.setup_identity = typed;
+                });
+            }
             flow::Event::Close => {}
         });
         if let Some(id) = self.resume.take() {
-            flow.update(cx, |flow, cx| flow.resuming(cx));
-            let work = cx
-                .background_executor()
-                .spawn(async move { reader.show(&id, &|| true) });
-            let resumed = flow.downgrade();
-            cx.spawn(async move |_, cx| {
-                // A profile that is gone leaves the name screen to start again.
-                let result = work.await;
-                let _ = resumed.update(cx, |flow, cx| match result {
-                    Ok(profile) => flow.resume(profile, cx),
-                    Err(_) => flow.fresh(cx),
-                });
-            })
-            .detach();
+            flow.update(cx, |flow, cx| flow.resume_saved(id, cx));
+        } else if let Some((key, typed)) = self.resume_request.take() {
+            flow.update(cx, |flow, cx| flow.resume_request(key, typed, cx));
         }
         self.flow = Some((flow, events));
     }

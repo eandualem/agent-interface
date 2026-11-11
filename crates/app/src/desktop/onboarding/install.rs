@@ -7,6 +7,7 @@
 
 use std::{
     os::unix::fs::FileExt,
+    os::unix::process::CommandExt,
     path::{Path, PathBuf},
     process::{Command, Stdio},
     time::{Duration, Instant},
@@ -93,9 +94,16 @@ pub fn package(name: &'static str, path_env: &str) -> Outcome {
     finished(run(&mut command, path_env))
 }
 
-/// Install an agent tool with its official command.
+/// Install an agent tool with its official command. Its download is piped
+/// into a shell, so `pipefail` makes a failed download fail the install.
 pub fn tool(install: &str, path_env: &str) -> Outcome {
-    finished(run(Command::new("/bin/sh").args(["-c", install]), path_env))
+    let Some(bash) = find("bash", path_env) else {
+        return Outcome::Failed("Installing it needs bash, which isn't on this computer.".into());
+    };
+    finished(run(
+        Command::new(bash).args(["-o", "pipefail", "-c", install]),
+        path_env,
+    ))
 }
 
 /// Restart Agent Backbone's service the way the installer starts it.
@@ -309,6 +317,10 @@ fn finished(result: Result<(), String>) -> Outcome {
 /// Run a command to completion with setup's PATH. Output goes to a file, as
 /// in the probe, so a background process cannot hold a pipe open.
 fn run(command: &mut Command, path_env: &str) -> Result<(), String> {
+    run_within(command, path_env, LIMIT)
+}
+
+fn run_within(command: &mut Command, path_env: &str, limit: Duration) -> Result<(), String> {
     let file =
         tempfile::tempfile().map_err(|_| "Setup could not create a temporary file.".to_owned())?;
     let output = |file: &std::fs::File| -> Result<Stdio, String> {
@@ -321,14 +333,18 @@ fn run(command: &mut Command, path_env: &str) -> Result<(), String> {
         .stdin(Stdio::null())
         .stdout(output(&file)?)
         .stderr(output(&file)?)
+        // Its own group, so a timeout stops the downloader and installer too.
+        .process_group(0)
         .spawn()
         .map_err(|error| format!("It could not start: {error}."))?;
-    let deadline = Instant::now() + LIMIT;
+    let deadline = Instant::now() + limit;
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break Some(status),
             Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(200)),
             _ => {
+                let group = rustix::process::Pid::from_child(&child);
+                let _ = rustix::process::kill_process_group(group, rustix::process::Signal::KILL);
                 let _ = child.kill();
                 let _ = child.wait();
                 break None;
@@ -414,6 +430,47 @@ mod tests {
     fn a_tool_installer_that_succeeds_is_done() {
         let (_directory, path) = temporary_path();
         assert_eq!(tool("printf installed", &path), Outcome::Done);
+    }
+
+    #[test]
+    fn a_timeout_stops_what_the_installer_started() {
+        let (directory, path) = temporary_path();
+        let pid = directory.path().join("pid");
+        let script = format!("sleep 30 & echo $! > '{}'; wait", pid.display());
+        let outcome = run_within(
+            Command::new("/bin/sh").args(["-c", &script]),
+            &path,
+            Duration::from_millis(500),
+        );
+        assert_eq!(
+            outcome,
+            Err("It took too long and was stopped. Try again.".into())
+        );
+        let pid: i32 = std::fs::read_to_string(&pid)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let pid = rustix::process::Pid::from_raw(pid).unwrap();
+        // The background sleep was in the installer's group, so it is gone.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while rustix::process::test_kill_process(pid).is_ok() {
+            assert!(
+                Instant::now() < deadline,
+                "the installer's child kept running"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn a_download_that_fails_fails_the_install_it_feeds() {
+        let (_directory, path) = temporary_path();
+        assert_ne!(
+            tool("echo 'download failed' >&2; exit 22 | sh", &path),
+            Outcome::Done
+        );
+        assert_ne!(tool("false | sh", &path), Outcome::Done);
     }
 
     #[test]
