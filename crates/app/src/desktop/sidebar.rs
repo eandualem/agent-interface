@@ -766,7 +766,7 @@ impl Browser {
                         agent_groups::Row::Agent {
                             name,
                             state,
-                            members: 0,
+                            swarms: 0,
                             ..
                         } => agent(self, cx, &name, state, None),
                         agent_groups::Row::Agent {
@@ -775,10 +775,11 @@ impl Browser {
                             members,
                             needs_you,
                             expanded,
+                            ..
                         } => {
                             let toggled = name.clone();
                             agent(self, cx, &name, state, None)
-                                .child(
+                                .children((members > 0).then(|| {
                                     ui::text(
                                         div().text_color(if needs_you {
                                             c.attention_text
@@ -787,8 +788,8 @@ impl Browser {
                                         }),
                                         &t.text.meta,
                                     )
-                                    .child(members.to_string()),
-                                )
+                                    .child(members.to_string())
+                                }))
                                 .child(
                                     ui::icon_button(
                                         SharedString::from(format!("agent-swarms-{name}")),

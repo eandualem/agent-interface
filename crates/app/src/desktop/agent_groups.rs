@@ -13,6 +13,8 @@ pub(super) enum Row {
     Agent {
         name: String,
         state: AgentState,
+        /// How many running swarms list under this agent; the row expands when any do.
+        swarms: usize,
         /// How many listed agents are folded under this one.
         members: usize,
         /// Whether a folded member needs the user.
@@ -86,6 +88,7 @@ pub(super) fn rows(
         rows.push(Row::Agent {
             name: name.clone(),
             state: *state,
+            swarms: own.len(),
             members: own.iter().map(|(_, members)| members.len()).sum(),
             needs_you: own
                 .iter()
@@ -141,9 +144,10 @@ mod tests {
             // Its initiator is not listed, so its member stays where it was.
             swarm("lost", "gone", &["lost-coder"]),
         ];
-        let agent = |name: &str, state, members, needs_you, expanded| Row::Agent {
+        let agent = |name: &str, state, members: usize, needs_you, expanded| Row::Agent {
             name: name.into(),
             state,
+            swarms: members.min(1),
             members,
             needs_you,
             expanded,
@@ -174,5 +178,21 @@ mod tests {
         );
         assert!(matches!(&open[2], Row::Member { name, .. } if name == "fix-coordinator"));
         assert!(matches!(&open[3], Row::Member { name, .. } if name == "fix-coder"));
+
+        // A member leading a swarm of its own keeps its row, and the agent
+        // above it still expands although nothing folds under it.
+        let nested = [
+            swarm("fix", "lead", &["fix-coordinator"]),
+            swarm("deeper", "fix-coordinator", &["fix-coder"]),
+        ];
+        let closed = rows(&entries, &nested, &HashSet::new());
+        assert!(matches!(
+            &closed[0],
+            Row::Agent { name, swarms: 1, members: 0, .. } if name == "lead"
+        ));
+        assert!(matches!(
+            &closed[1],
+            Row::Agent { name, swarms: 1, members: 1, .. } if name == "fix-coordinator"
+        ));
     }
 }
