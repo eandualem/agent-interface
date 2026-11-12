@@ -568,6 +568,25 @@ struct Attaching {
     _events: gpui::Subscription,
 }
 
+/// Remember a running swarm's server and sessions. Sessions add up, since a
+/// tab opened earlier may still show a member that has left; another server
+/// starts over.
+fn watch_swarm(
+    watched: &mut HashMap<(String, String), (String, std::collections::HashSet<String>)>,
+    key: (String, String),
+    source: &str,
+    initiator: &str,
+    members: &[String],
+) {
+    let (seen, sessions) = watched.entry(key).or_default();
+    if seen != source {
+        *seen = source.to_owned();
+        sessions.clear();
+    }
+    sessions.extend(members.iter().cloned());
+    sessions.insert(initiator.to_owned());
+}
+
 fn close_tab_proposal(
     layout: &WindowLayout,
     workspace: &str,
@@ -924,6 +943,7 @@ impl Browser {
         self.bind_after_save = None;
         self.views.clear();
         self.new_panes.clear();
+        self.watched_swarms.clear();
         self.editing = None;
         self.chooser = None;
         self.shell_after_save = None;
@@ -1312,6 +1332,7 @@ impl Browser {
             .iter()
             .find(|tab| tab.name == name)
             .map(|tab| tab.id.clone());
+        let key = (space.id.clone(), name.to_owned());
         let source = self.swarm_source(space);
         let cwd = self.launch_directory();
         self.close_menus();
@@ -1335,6 +1356,8 @@ impl Browser {
             session: session.into(),
             source_socket: Some(source.clone()),
         };
+        // The tab shows these sessions whether or not a later read lists them.
+        watch_swarm(&mut self.watched_swarms, key, &source, initiator, members);
         let (base, mut proposed) = layout.save_snapshot();
         if !proposed.add_group_tab(
             name.into(),
@@ -1366,12 +1389,11 @@ impl Browser {
         }
     }
 
-    /// Close the tabs of swarms that finished: once a readable list no longer
-    /// names a swarm seen running, a tab still showing only that swarm goes.
+    /// Close the tabs of swarms that finished: once a list read in full no
+    /// longer names a swarm seen running, a tab still showing only that swarm
+    /// goes. What is running is noted on every update; closing waits until
+    /// nothing else is being saved or edited.
     fn close_finished_swarm_tabs(&mut self, cx: &mut Context<Self>) {
-        if self.saving || self.save_failed || self.pending_save.is_some() {
-            return;
-        }
         let Some(layout) = &self.layout else {
             return;
         };
@@ -1387,7 +1409,14 @@ impl Browser {
         }
         let mut watched = std::mem::take(&mut self.watched_swarms);
         let spaces = &layout.model().workspaces;
-        watched.retain(|(space, _), _| spaces.iter().any(|other| other.id == *space));
+        // A list from another server says nothing about a swarm seen on this
+        // one, so a workspace that changed server forgets what it watched.
+        watched.retain(|(space, _), (seen, _)| {
+            spaces.iter().any(|other| other.id == *space)
+                && read
+                    .get(space.as_str())
+                    .is_none_or(|(source, _)| source == seen)
+        });
         // A workspace without a readable list keeps what it watched.
         let mut finished: Vec<(String, String)> = watched
             .keys()
@@ -1398,18 +1427,20 @@ impl Browser {
             for swarm in swarms {
                 let key = ((*space).to_owned(), swarm.name.clone());
                 finished.retain(|other| *other != key);
-                // A tab opened earlier may still show a member that has left.
-                let (seen, sessions) = watched.entry(key).or_default();
-                if seen != source {
-                    *seen = source.clone();
-                    sessions.clear();
-                }
-                sessions.extend(swarm.members.iter().cloned());
-                sessions.insert(swarm.initiator.clone());
+                watch_swarm(&mut watched, key, source, &swarm.initiator, &swarm.members);
             }
         }
         self.watched_swarms = watched;
-        if finished.is_empty() {
+        // A save started here must not overlap one the person is about to
+        // make; the swarm stays watched and the next update tries again.
+        if finished.is_empty()
+            || self.saving
+            || self.save_failed
+            || self.pending_save.is_some()
+            || self.editing.is_some()
+            || self.resize.is_some()
+            || self.pane_drag.is_some()
+        {
             return;
         }
         if let Some(update) = self.library.as_ref().and_then(Library::take_update) {
@@ -3537,6 +3568,21 @@ mod tests {
         model.choose_tab(&tab);
         assert!(model.detach_pane());
         assert!(!saved_view(&model, &id, &view));
+    }
+
+    #[test]
+    fn a_watched_swarm_keeps_past_members_and_starts_over_on_another_server() {
+        let mut watched = HashMap::new();
+        let key = || ("space".to_owned(), "fix".to_owned());
+        watch_swarm(&mut watched, key(), "/one", "lead", &["coder".into()]);
+        watch_swarm(&mut watched, key(), "/one", "lead", &["helper".into()]);
+        let (source, sessions) = &watched[&key()];
+        assert_eq!(source, "/one");
+        assert_eq!(sessions.len(), 3);
+        watch_swarm(&mut watched, key(), "/two", "lead", &[]);
+        let (source, sessions) = &watched[&key()];
+        assert_eq!(source, "/two");
+        assert_eq!(sessions.len(), 1);
     }
 
     #[test]
