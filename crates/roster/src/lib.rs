@@ -64,6 +64,9 @@ pub struct Snapshot {
     pub details: BTreeMap<String, AgentDetails>,
     /// Running swarms from the same poll; empty when their read failed.
     pub swarms: Vec<Swarm>,
+    /// Whether `swarms` came from a readable response, so an empty list means
+    /// no swarm is running rather than an unknown answer.
+    pub swarms_read: bool,
     /// A fixed diagnostic when cached states are stale; none after success.
     pub error: Option<&'static str>,
     /// Last successful response time, or none before any successful response.
@@ -89,7 +92,9 @@ impl Snapshot {
     /// Apply one response from the swarms endpoint, or its failure. Swarms only
     /// group agents, so an unreadable list clears them without marking states stale.
     pub fn update_swarms(&mut self, response: Option<&[u8]>) {
-        self.swarms = response.and_then(decode_swarms).unwrap_or_default();
+        let swarms = response.and_then(decode_swarms);
+        self.swarms_read = swarms.is_some();
+        self.swarms = swarms.unwrap_or_default();
     }
 
     /// Mark a transport or configuration failure without retaining its details.
@@ -302,6 +307,9 @@ mod tests {
         assert_eq!(snapshot.swarms[0].members.len(), SWARM_MEMBERS);
         snapshot.update_swarms(Some(b"not JSON"));
         assert!(snapshot.swarms.is_empty() && snapshot.error.is_none());
+        assert!(!snapshot.swarms_read);
+        snapshot.update_swarms(Some(br#"{"items":[]}"#));
+        assert!(snapshot.swarms_read);
     }
 
     #[test]

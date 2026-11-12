@@ -418,6 +418,7 @@ fn open_browser_with_status(
                 browser.roster_updates =
                     Some(cx.observe_global::<agent_status::Sources>(|browser, cx| {
                         browser.refresh_source_matches(cx);
+                        browser.close_finished_swarm_tabs(cx);
                     }));
             }
             // Stopping the library joins its storage worker, which can wait on
@@ -683,6 +684,9 @@ struct Browser {
     creation_from: Option<Selection>,
     /// Agents whose swarms are listed under them in the navigation panel.
     expanded_agents: std::collections::HashSet<String>,
+    /// Swarms seen running, by workspace and swarm name, with their sessions;
+    /// kept until no tab is left to close for a finished one.
+    watched_swarms: HashMap<(String, String), Vec<String>>,
     tabs_scroll: gpui::ScrollHandle,
     workspaces_scroll: gpui::ScrollHandle,
     shown_workspace: Option<(String, gpui::Pixels)>,
@@ -1354,6 +1358,73 @@ impl Browser {
         self.creation_from = Some(Selection::capture(layout.model()));
         self.pending_save = Some((base, proposed));
         self.save(cx);
+    }
+
+    /// Close the tabs of swarms that finished: once a readable list no longer
+    /// names a swarm seen running, a tab still showing only that swarm goes.
+    fn close_finished_swarm_tabs(&mut self, cx: &mut Context<Self>) {
+        if self.saving || self.save_failed || self.pending_save.is_some() {
+            return;
+        }
+        let Some(layout) = &self.layout else {
+            return;
+        };
+        let mut read: HashMap<&str, Vec<agent_interface_roster::Swarm>> = HashMap::new();
+        for space in &layout.model().workspaces {
+            if let Some(swarms) = self
+                .workspace_agents(space)
+                .and_then(agent_status::LiveAgents::read_swarms)
+            {
+                read.insert(&space.id, swarms);
+            }
+        }
+        let mut watched = std::mem::take(&mut self.watched_swarms);
+        let spaces = &layout.model().workspaces;
+        watched.retain(|(space, _), _| spaces.iter().any(|other| other.id == *space));
+        // A workspace without a readable list keeps what it watched.
+        let mut finished: Vec<(String, String)> = watched
+            .keys()
+            .filter(|(space, _)| read.contains_key(space.as_str()))
+            .cloned()
+            .collect();
+        for (space, swarms) in &read {
+            for swarm in swarms {
+                let key = ((*space).to_owned(), swarm.name.clone());
+                finished.retain(|other| *other != key);
+                let mut sessions = swarm.members.clone();
+                sessions.push(swarm.initiator.clone());
+                watched.insert(key, sessions);
+            }
+        }
+        self.watched_swarms = watched;
+        if finished.is_empty() {
+            return;
+        }
+        if let Some(update) = self.library.as_ref().and_then(Library::take_update) {
+            self.apply(update);
+        }
+        let Some(layout) = &self.layout else {
+            return;
+        };
+        let (base, mut proposed) = layout.save_snapshot();
+        let mut closed = false;
+        for key in finished {
+            let sessions: Vec<&str> = self.watched_swarms[&key]
+                .iter()
+                .map(String::as_str)
+                .collect();
+            if proposed.close_group_tabs(&key.0, &key.1, &sessions) {
+                // Kept until a later read finds the tab gone, so a save the
+                // library refused is tried again.
+                closed = true;
+            } else {
+                self.watched_swarms.remove(&key);
+            }
+        }
+        if closed {
+            self.pending_save = Some((base, proposed));
+            self.save(cx);
+        }
     }
 
     fn save(&mut self, cx: &mut Context<Self>) {

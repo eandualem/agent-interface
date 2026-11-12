@@ -119,9 +119,56 @@ pub(super) fn rows(
     groups.into_iter().flat_map(|(_, rows)| rows).collect()
 }
 
+/// Offline agents whose running swarms still have a listed member. Listing
+/// them keeps a swarm together while the agent that started it restarts.
+pub(super) fn offline_leads(
+    entries: &[(String, AgentState)],
+    swarms: &[Swarm],
+    state: impl Fn(&str) -> AgentState,
+) -> Vec<String> {
+    let listed: HashSet<&str> = entries.iter().map(|(name, _)| name.as_str()).collect();
+    let mut leads: Vec<String> = Vec::new();
+    for swarm in swarms {
+        let lead = swarm.initiator.as_str();
+        if !listed.contains(lead)
+            && !leads.iter().any(|name| name == lead)
+            && swarm
+                .members
+                .iter()
+                .any(|member| listed.contains(member.as_str()))
+            && state(lead) == AgentState::Offline
+        {
+            leads.push(lead.to_owned());
+        }
+    }
+    leads
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_offline_initiator_is_listed_while_its_swarm_has_listed_members() {
+        let entries = vec![("fix-coder".to_owned(), AgentState::Idle)];
+        let swarm = |name: &str, initiator: &str, member: &str| Swarm {
+            name: name.into(),
+            initiator: initiator.into(),
+            members: vec![member.into()],
+        };
+        let swarms = [
+            swarm("fix", "lead", "fix-coder"),
+            swarm("more", "lead", "fix-coder"),
+            // Not an agent Backbone knows, and a swarm with nobody listed.
+            swarm("lost", "gone", "fix-coder"),
+            swarm("quiet", "resting", "absent"),
+        ];
+        let state = |name: &str| match name {
+            "gone" => AgentState::Unknown,
+            _ => AgentState::Offline,
+        };
+        assert_eq!(offline_leads(&entries, &swarms, state), ["lead"]);
+    }
 
     #[test]
     fn members_fold_under_a_listed_initiator_and_show_when_expanded() {

@@ -596,6 +596,37 @@ impl Layout {
         true
     }
 
+    /// Remove the tabs of `workspace` that still show only a finished group:
+    /// named `name`, with every pane attached to one of `sessions`. A tab the
+    /// person renamed or gave another pane is theirs and stays. A removed
+    /// selection moves to the first remaining tab. No session is stopped.
+    pub fn close_group_tabs(&mut self, workspace: &str, name: &str, sessions: &[&str]) -> bool {
+        let Some(space) = self
+            .workspaces
+            .iter_mut()
+            .find(|space| space.id == workspace)
+        else {
+            return false;
+        };
+        let before = space.tabs.len();
+        space.tabs.retain(|tab| {
+            tab.name != name
+                || !tab.tree.leaves().iter().all(|leaf| {
+                    leaf.attachment
+                        .as_ref()
+                        .is_some_and(|attachment| sessions.contains(&attachment.session.as_str()))
+                })
+        });
+        if !space.tabs.iter().any(|tab| tab.id == space.selected) {
+            space.selected = space
+                .tabs
+                .first()
+                .map(|tab| tab.id.clone())
+                .unwrap_or_default();
+        }
+        space.tabs.len() != before
+    }
+
     /// Split the focused leaf, retaining its identity and attachment as the first
     /// child and focusing the new second child. An empty workspace gets a tab.
     /// The caller supplies cwd and checks schema limits before persisting.
@@ -849,6 +880,39 @@ mod tests {
 
         assert!(model.add_group_tab("alone".into(), attachment("lead"), vec![], "/tmp".into()));
         assert!(matches!(model.tab().unwrap().tree, Node::Leaf(_)));
+    }
+
+    #[test]
+    fn a_finished_group_closes_only_tabs_still_showing_just_that_group() {
+        let attachment = |name: &str| Attachment {
+            session: name.into(),
+            source_socket: None,
+        };
+        let mut model = Layout::initial("/tmp".into());
+        let space = model.selected.clone();
+        let first = model.tab().unwrap().id.clone();
+        let group = |model: &mut Layout| {
+            model.add_group_tab(
+                "fix".into(),
+                attachment("lead"),
+                vec![attachment("coder")],
+                "/tmp".into(),
+            )
+        };
+        // A tab the person gave a shell of their own stays.
+        assert!(group(&mut model) && model.split(Direction::Right, "/tmp".into(), false));
+        let kept = model.tab().unwrap().id.clone();
+        assert!(group(&mut model));
+        let sessions = ["lead", "coder"];
+        assert!(!model.close_group_tabs(&space, "other", &sessions));
+        assert!(!model.close_group_tabs("elsewhere", "fix", &sessions));
+        assert!(!model.close_group_tabs(&space, "fix", &["lead"]));
+        assert!(model.close_group_tabs(&space, "fix", &sessions));
+        let space = model.workspace().unwrap();
+        let tabs: Vec<_> = space.tabs.iter().map(|tab| tab.id.clone()).collect();
+        assert_eq!(tabs, [first.clone(), kept]);
+        // The closed tab was selected, so the first one is now.
+        assert_eq!(space.selected, first);
     }
 
     #[test]
