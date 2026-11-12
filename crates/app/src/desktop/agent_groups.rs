@@ -35,8 +35,9 @@ pub(super) enum Row {
     },
 }
 
-/// Arrange listed agents. A swarm folds its listed members under its initiator
-/// when the initiator is listed too; an agent that started a swarm of its own
+/// Arrange listed agents. A swarm lists under its initiator when the initiator
+/// is listed, folding whichever members are listed too, even none, so it can
+/// still be opened; an agent that started a swarm of its own
 /// always keeps its top-level row. `entries` arrive with agents needing the
 /// user first, then working ones; an agent takes the most urgent place among
 /// itself and the members folded under it, so folding never hides attention.
@@ -51,13 +52,7 @@ pub(super) fn rows(
         .collect();
     let grouped: Vec<&Swarm> = swarms
         .iter()
-        .filter(|swarm| {
-            states.contains_key(swarm.initiator.as_str())
-                && swarm
-                    .members
-                    .iter()
-                    .any(|member| states.contains_key(member.as_str()))
-        })
+        .filter(|swarm| states.contains_key(swarm.initiator.as_str()))
         .collect();
     let leads: HashSet<&str> = grouped
         .iter()
@@ -204,6 +199,18 @@ mod tests {
             &closed[1],
             Row::Agent { name, swarms: 1, members: 0, .. } if name == "lead"
         ));
+
+        // A swarm with no listed member still lists under its initiator.
+        let quiet = rows(
+            &entries,
+            &[swarm("empty", "other", &["offline"])],
+            &HashSet::from(["other".to_owned()]),
+        );
+        assert!(quiet.contains(&Row::Swarm {
+            initiator: "other".into(),
+            name: "empty".into(),
+            members: vec!["offline".into()],
+        }));
 
         // An idle agent rises above working ones when a folded member needs
         // the user, and a member of two of its swarms counts once.

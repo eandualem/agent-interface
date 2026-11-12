@@ -187,10 +187,11 @@ fn decode_swarms(response: &[u8]) -> Option<Vec<Swarm>> {
             continue;
         }
         let mut members: Vec<String> = Vec::new();
+        let mut seen = std::collections::BTreeSet::new();
         for member in swarm.members.iter().flatten() {
             if let Some(member) = views::member_name(member)
                 && member != initiator
-                && !members.contains(&member)
+                && seen.insert(member.clone())
             {
                 members.push(member);
             }
