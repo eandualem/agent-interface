@@ -72,12 +72,12 @@ fn provider(
                 assert!(bytes.len() < 8192);
             }
             let request = String::from_utf8(bytes).unwrap().to_ascii_lowercase();
-            // The swarm read after each roster is answered without counting.
-            if request.starts_with("get /api/swarms ") {
-                write!(stream, "HTTP/1.1 200 Fixture\r\nContent-Length: 12\r\nConnection: close\r\n\r\n{{\"items\":[]}}").unwrap();
-                continue;
-            }
-            let target = if attempt == 0 {
+            // The swarm read after each roster is answered without counting,
+            // and carries the same credential and binding as every request.
+            let swarms = request.starts_with("get /api/swarms ");
+            let target = if swarms {
+                "/api/swarms"
+            } else if attempt == 0 {
                 "/api/profile"
             } else {
                 "/api/agents"
@@ -93,6 +93,10 @@ fn provider(
                 ("x-backbone-lifecycle-id", format!("lifecycle-{label}")),
             ] {
                 assert!(request.contains(&format!("{header}: {value}\r\n")));
+            }
+            if swarms {
+                write!(stream, "HTTP/1.1 200 Fixture\r\nContent-Length: 12\r\nConnection: close\r\n\r\n{{\"items\":[]}}").unwrap();
+                continue;
             }
             if attempt == 1
                 && let Some((arrived, release)) = &delay

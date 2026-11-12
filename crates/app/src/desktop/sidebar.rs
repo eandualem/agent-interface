@@ -740,7 +740,8 @@ impl Browser {
                     let target = browser.agent_target(name);
                     let calm = matches!(state, AgentState::Idle | AgentState::Unknown);
                     let id = match swarm {
-                        Some(swarm) => format!("agent-{swarm}-{name}"),
+                        // Names never hold a slash, so these cannot collide.
+                        Some(swarm) => format!("agent-{swarm}/{name}"),
                         None => format!("agent-{name}"),
                     };
                     ui::row(SharedString::from(id), false)
@@ -792,7 +793,7 @@ impl Browser {
                                 }))
                                 .child(
                                     ui::icon_button(
-                                        SharedString::from(format!("agent-swarms-{name}")),
+                                        SharedString::from(format!("agent-swarms/{name}")),
                                         if expanded {
                                             "chevron-down"
                                         } else {
@@ -817,7 +818,7 @@ impl Browser {
                         } => {
                             let creation = creation.clone();
                             ui::row(
-                                SharedString::from(format!("swarm-{initiator}-{name}")),
+                                SharedString::from(format!("swarm-{initiator}/{name}")),
                                 false,
                             )
                             .pl(px(t.space.s10 * 2.0))

@@ -35,9 +35,11 @@ pub(super) enum Row {
     },
 }
 
-/// Arrange listed agents, keeping `entries` order. A swarm folds its listed
-/// members under its initiator when the initiator is listed too; an agent that
-/// started a swarm of its own always keeps its top-level row.
+/// Arrange listed agents. A swarm folds its listed members under its initiator
+/// when the initiator is listed too; an agent that started a swarm of its own
+/// always keeps its top-level row. `entries` arrive with agents needing the
+/// user first, then working ones; an agent takes the most urgent place among
+/// itself and the members folded under it, so folding never hides attention.
 pub(super) fn rows(
     entries: &[(String, AgentState)],
     swarms: &[Swarm],
@@ -74,7 +76,7 @@ pub(super) fn rows(
         .flat_map(|swarm| folded(swarm))
         .map(|(name, _)| name)
         .collect();
-    let mut rows = Vec::new();
+    let mut groups: Vec<((bool, bool), Vec<Row>)> = Vec::new();
     for (name, state) in entries {
         if hidden.contains(name) {
             continue;
@@ -85,21 +87,19 @@ pub(super) fn rows(
             .map(|swarm| (*swarm, folded(swarm)))
             .collect();
         let open = expanded.contains(name);
-        rows.push(Row::Agent {
+        let all = || own.iter().flat_map(|(_, members)| members);
+        let needs_you = all().any(|(_, state)| state.needs_you());
+        let working = all().any(|(_, state)| state.working());
+        let mut rows = vec![Row::Agent {
             name: name.clone(),
             state: *state,
             swarms: own.len(),
-            members: own.iter().map(|(_, members)| members.len()).sum(),
-            needs_you: own
-                .iter()
-                .flat_map(|(_, members)| members)
-                .any(|(_, state)| state.needs_you()),
+            // An agent in two of this agent's swarms is one folded agent.
+            members: all().map(|(name, _)| name).collect::<HashSet<_>>().len(),
+            needs_you,
             expanded: open,
-        });
-        if !open {
-            continue;
-        }
-        for (swarm, members) in own {
+        }];
+        for (swarm, members) in own.into_iter().filter(|_| open) {
             rows.push(Row::Swarm {
                 initiator: name.clone(),
                 name: swarm.name.clone(),
@@ -111,8 +111,17 @@ pub(super) fn rows(
                 state,
             }));
         }
+        groups.push((
+            (
+                !(state.needs_you() || needs_you),
+                !(state.working() || working),
+            ),
+            rows,
+        ));
     }
-    rows
+    // Stable, so agents keep their given order within each urgency.
+    groups.sort_by_key(|(urgency, _)| *urgency);
+    groups.into_iter().flat_map(|(_, rows)| rows).collect()
 }
 
 #[cfg(test)]
@@ -186,13 +195,31 @@ mod tests {
             swarm("deeper", "fix-coordinator", &["fix-coder"]),
         ];
         let closed = rows(&entries, &nested, &HashSet::new());
+        // The coordinator comes first: its folded member needs the user.
         assert!(matches!(
             &closed[0],
-            Row::Agent { name, swarms: 1, members: 0, .. } if name == "lead"
+            Row::Agent { name, swarms: 1, members: 1, .. } if name == "fix-coordinator"
         ));
         assert!(matches!(
             &closed[1],
-            Row::Agent { name, swarms: 1, members: 1, .. } if name == "fix-coordinator"
+            Row::Agent { name, swarms: 1, members: 0, .. } if name == "lead"
         ));
+
+        // An idle agent rises above working ones when a folded member needs
+        // the user, and a member of two of its swarms counts once.
+        let entries: Vec<(String, AgentState)> = [
+            ("m", AgentState::NeedsYou),
+            ("busy", AgentState::Working),
+            ("z-lead", AgentState::Idle),
+        ]
+        .map(|(name, state)| (name.to_owned(), state))
+        .to_vec();
+        let twice = [swarm("s1", "z-lead", &["m"]), swarm("s2", "z-lead", &["m"])];
+        let raised = rows(&entries, &twice, &HashSet::new());
+        assert!(matches!(
+            &raised[0],
+            Row::Agent { name, swarms: 2, members: 1, needs_you: true, .. } if name == "z-lead"
+        ));
+        assert!(matches!(&raised[1], Row::Agent { name, .. } if name == "busy"));
     }
 }

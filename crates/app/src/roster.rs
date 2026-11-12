@@ -472,6 +472,12 @@ mod tests {
                     }
                     let request = String::from_utf8(request).unwrap();
                     let swarms = request.starts_with("GET /api/swarms ");
+                    assert!(
+                        !swarms
+                            || request
+                                .to_ascii_lowercase()
+                                .contains("authorization: bearer poll-key-")
+                    );
                     let body = if swarms { r#"{"items":[]}"# } else { body };
                     if !swarms {
                         requests.push(request);

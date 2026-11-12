@@ -146,49 +146,64 @@ fn decode(response: &[u8]) -> Option<Decoded> {
     Some((states, details))
 }
 
+/// Members shown for one swarm; more would not fit a tab or the saved layout.
+const SWARM_MEMBERS: usize = 32;
+
 fn decode_swarms(response: &[u8]) -> Option<Vec<Swarm>> {
+    // Null or mistyped fields drop that swarm, never the whole list.
     #[derive(serde::Deserialize, Default)]
     #[serde(default)]
     struct Raw {
-        name: String,
-        status: String,
-        initiator: String,
-        coordinator: String,
-        members: Vec<Box<RawValue>>,
+        name: Option<String>,
+        status: Option<String>,
+        initiator: Option<String>,
+        coordinator: Option<String>,
+        members: Option<Vec<Box<RawValue>>>,
     }
     #[derive(serde::Deserialize)]
     struct Document {
-        items: Vec<Raw>,
+        items: Vec<Box<RawValue>>,
     }
     if response.len() > RESPONSE_LIMIT || !within_depth(response) {
         return None;
     }
     let document: Document = serde_json::from_slice(response).ok()?;
-    Some(
-        document
-            .items
-            .into_iter()
-            .filter(|swarm| {
-                !swarm.name.is_empty()
-                    && valid_agent(&swarm.initiator)
-                    && !matches!(swarm.status.as_str(), "done" | "disbanded" | "failed")
-            })
-            .map(|swarm| {
-                let mut members: Vec<String> = swarm
-                    .members
-                    .iter()
-                    .filter_map(|member| views::member_name(member))
-                    .filter(|name| *name != swarm.initiator)
-                    .collect();
-                members.sort_by_key(|name| *name != swarm.coordinator);
-                Swarm {
-                    name: swarm.name,
-                    initiator: swarm.initiator,
-                    members,
-                }
-            })
-            .collect(),
-    )
+    let mut swarms = Vec::new();
+    for item in document.items {
+        let Ok(swarm) = serde_json::from_str::<Raw>(item.get()) else {
+            continue;
+        };
+        let (Some(name), Some(initiator)) = (swarm.name, swarm.initiator) else {
+            continue;
+        };
+        // The name becomes a tab name, so it follows the agent-name rule too.
+        if !valid_agent(&name)
+            || !valid_agent(&initiator)
+            || matches!(
+                swarm.status.as_deref(),
+                Some("done" | "disbanded" | "failed")
+            )
+        {
+            continue;
+        }
+        let mut members: Vec<String> = Vec::new();
+        for member in swarm.members.iter().flatten() {
+            if let Some(member) = views::member_name(member)
+                && member != initiator
+                && !members.contains(&member)
+            {
+                members.push(member);
+            }
+        }
+        members.sort_by_key(|member| Some(member) != swarm.coordinator.as_ref());
+        members.truncate(SWARM_MEMBERS);
+        swarms.push(Swarm {
+            name,
+            initiator,
+            members,
+        });
+    }
+    Some(swarms)
 }
 
 // RawValue skips nested data without the normal Value recursion limit. Bound
@@ -261,9 +276,11 @@ mod tests {
         snapshot.update_swarms(Some(
             br#"{"items":[
             {"name":"fix-7","status":"active","initiator":"lead","coordinator":"fix-7-coordinator",
-             "members":["fix-7-coder",{"name":"fix-7-coordinator"},"lead","not an agent"]},
-            {"name":"old","status":"done","initiator":"lead","members":["old-coder"]},
-            {"name":"orphan","status":"active","initiator":"","members":["x"]}
+             "members":["fix-7-coder",{"name":"fix-7-coordinator"},"lead","not an agent","fix-7-coder"]},
+            {"name":"old","status":"done","initiator":"lead","coordinator":null,"members":["old-coder"]},
+            {"name":"orphan","status":"active","initiator":null,"members":["x"]},
+            {"name":"not a tab\tname","status":"active","initiator":"lead","members":["x"]},
+            {"name":["mistyped"],"initiator":"lead"}, 7
         ]}"#,
         ));
         assert_eq!(
@@ -275,6 +292,13 @@ mod tests {
             }]
         );
         assert!(snapshot.error.is_none());
+        let crowd: Vec<String> = (0..100).map(|index| format!("\"m{index}\"")).collect();
+        let crowd = format!(
+            r#"{{"items":[{{"name":"big","initiator":"lead","members":[{}]}}]}}"#,
+            crowd.join(",")
+        );
+        snapshot.update_swarms(Some(crowd.as_bytes()));
+        assert_eq!(snapshot.swarms[0].members.len(), SWARM_MEMBERS);
         snapshot.update_swarms(Some(b"not JSON"));
         assert!(snapshot.swarms.is_empty() && snapshot.error.is_none());
     }

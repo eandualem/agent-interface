@@ -706,6 +706,7 @@ fn bound_roster_preserves_typed_failures_and_decodes_success() {
     let (directory, listener, url) = crate::transport::tests::local_listener();
     let (profile, identity) = profile_at(directory.path(), url.strip_prefix("unix:").unwrap());
     let required = fixture()["http_errors"]["binding_required"]["body"].clone();
+    let required_again = required.clone();
     let server = serve(
         listener,
         vec![
@@ -721,6 +722,9 @@ fn bound_roster_preserves_typed_failures_and_decodes_success() {
             (200, json!({"items": []})),
             // An unreadable swarm list leaves the roster itself usable.
             (500, json!({})),
+            // A binding refused on the swarm read is still a refused binding.
+            (200, json!({"items": []})),
+            (409, required_again),
         ],
     );
     let connection = profile.connect().unwrap();
@@ -733,10 +737,11 @@ fn bound_roster_preserves_typed_failures_and_decodes_success() {
     assert_eq!(roster.swarms[0].members, ["fix-coder"]);
     let empty = connection.roster().unwrap();
     assert!(empty.states.is_empty() && empty.swarms.is_empty());
+    assert_eq!(connection.roster().err(), Some(Error::BindingRequired));
     let requests = server.join().unwrap();
-    assert_eq!(requests.len(), 8);
+    assert_eq!(requests.len(), 10);
     for (index, request) in requests.iter().enumerate().skip(1) {
-        let path = if [5, 7].contains(&index) {
+        let path = if [5, 7, 9].contains(&index) {
             "/api/swarms"
         } else {
             "/api/agents"
