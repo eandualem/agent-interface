@@ -388,7 +388,11 @@ impl Browser {
                     }
                     Err(error) => Err(error),
                 };
-                browser.first_run_opened(opened, cx);
+                // A pane queued to save is not open yet: first run hears
+                // when that save ends.
+                if opened.is_err() || !browser.first_open_waits_for_save() {
+                    browser.first_run_opened(opened, cx);
+                }
                 if let Err(error) = opened {
                     browser.save_notice = Some(error.into());
                 }
@@ -894,6 +898,48 @@ impl Browser {
         }
     }
 
+    /// Whether first run's answer waits for the save that holds its guide's
+    /// pane. A conflict or a failure drops that edit, so first run must not
+    /// end before the save does.
+    fn first_open_waits_for_save(&mut self) -> bool {
+        if self.first_open && self.saving {
+            self.first_open = false;
+            self.first_open_saving = true;
+        }
+        self.first_open_saving
+    }
+
+    /// The save holding first run's guide pane ended, keeping the pane or not.
+    pub(super) fn first_open_saved(&mut self, kept: bool, cx: &mut Context<Self>) {
+        if !std::mem::take(&mut self.first_open_saving) {
+            return;
+        }
+        self.first_open = true;
+        let opened = kept
+            .then_some(())
+            .ok_or("Couldn't open it in a workspace. Try again.");
+        self.first_run_opened(opened, cx);
+    }
+
+    /// New profile opened before this window's library loaded has no
+    /// workspace to show in yet: it takes the first one shown.
+    pub(super) fn home_profile_flow(&mut self, cx: &mut Context<Self>) {
+        let Some((flow, _)) = &self.profile_flow else {
+            return;
+        };
+        let Some(space) = self
+            .layout
+            .as_ref()
+            .and_then(|layout| layout.model().workspace())
+        else {
+            return;
+        };
+        if flow.read(cx).home.is_none() {
+            let home = space.id.clone();
+            flow.update(cx, |flow, _| flow.home = Some(home));
+        }
+    }
+
     /// First run made the person's first profile: bind the library's
     /// untouched starting workspace (or else a new one) to it. Returns false
     /// while this window's library is still loading, to be asked again.
@@ -1223,5 +1269,26 @@ mod tests {
             Route::Legacy
         ));
         assert!(registry.entries.is_empty());
+    }
+
+    #[test]
+    fn first_run_waits_for_the_save_that_holds_its_guide_pane() {
+        // Already shown, with nothing to save: first run hears at once.
+        let mut browser = super::super::Browser {
+            first_open: true,
+            ..Default::default()
+        };
+        assert!(!browser.first_open_waits_for_save());
+        assert!(browser.first_open);
+        // Queued to save: the answer waits for the save.
+        browser.saving = true;
+        assert!(browser.first_open_waits_for_save());
+        assert!(!browser.first_open && browser.first_open_saving);
+        // Any other pane opened from setup never waits.
+        let mut other = super::super::Browser {
+            saving: true,
+            ..Default::default()
+        };
+        assert!(!other.first_open_waits_for_save());
     }
 }
