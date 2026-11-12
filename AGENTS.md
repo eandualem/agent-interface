@@ -97,8 +97,10 @@ work at every task boundary, not something left until the disk is full:
 - When no task needs the current build, run `cargo clean` and remove
   `.zig-cache`. During longer work, remove `target/debug/incremental` and
   build profiles that are no longer in use.
-- When a branch is merged or abandoned, remove its worktree together with
-  the `target/` inside it.
+- When a branch is merged or abandoned, remove its linked worktree together
+  with the `target/` inside it, after saving any uncommitted, untracked or
+  ignored files that are still needed. The main checkout is never removed;
+  switch it to another branch instead.
 - Of the app bundle copies you made yourself, keep one previous bundle as
   the rollback for the installed app and delete older backups and preview
   bundles. Delete archives you built locally in `dist/` once a newer build
