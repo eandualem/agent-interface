@@ -19,16 +19,22 @@ thread_local! {
 impl Snapshot {
     /// Read one agents response from an explicitly supplied local API address.
     ///
-    /// This blocks for at most three seconds and belongs on an I/O worker.
+    /// After a good agents response it also reads the running swarms. Each of
+    /// the two requests blocks for at most three seconds; this belongs on an
+    /// I/O worker.
     /// It reads no configuration or credentials itself. Credentials require a
     /// `unix:/absolute/socket` endpoint with verified ownership and peer identity.
     /// Anonymous loopback HTTP reads remain supported; redirects and proxies are
-    /// disabled. Every
-    /// failure marks the existing snapshot stale with the same fixed diagnostic.
+    /// disabled. Every agents
+    /// failure marks the existing snapshot stale with the same fixed diagnostic;
+    /// a swarms failure only clears the swarms.
     pub fn fetch(&mut self, url: &str, key: &str) {
         match get(url, "/api/agents", key, RESPONSE_LIMIT) {
             Some(bytes) => self.update(&bytes),
             None => self.unavailable(),
+        }
+        if self.error.is_none() {
+            self.update_swarms(get(url, "/api/swarms", key, RESPONSE_LIMIT).as_deref());
         }
     }
 }

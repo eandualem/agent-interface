@@ -14,6 +14,7 @@ use gpui::{
 };
 
 use crate::library::{Library, Update, WindowLayout};
+mod agent_groups;
 mod agent_status;
 mod chooser;
 mod chooser_source;
@@ -680,6 +681,8 @@ struct Browser {
     pending_save: Option<(Document, Layout)>,
     pending_creation: Option<(Create, String)>,
     creation_from: Option<Selection>,
+    /// Agents whose swarms are listed under them in the navigation panel.
+    expanded_agents: std::collections::HashSet<String>,
     tabs_scroll: gpui::ScrollHandle,
     workspaces_scroll: gpui::ScrollHandle,
     shown_workspace: Option<(String, gpui::Pixels)>,
@@ -1226,36 +1229,13 @@ impl Browser {
             cx.notify();
             return;
         }
-        let Some(layout) = &self.layout else {
+        let Some(cwd) = self.launch_directory() else {
+            self.save_notice = Some("Cannot read the launch directory as text.".into());
+            cx.notify();
             return;
         };
-        // An app opened from the Dock or Finder runs in "/". New terminals
-        // start in the home folder instead, as other terminal apps do.
-        let cwd = if layout
-            .model()
-            .workspace()
-            .is_some_and(|space| space.profile_id.is_some())
-        {
-            "/".into()
-        } else {
-            match std::env::current_dir()
-                .ok()
-                .map(|path| {
-                    if path.as_os_str() == "/" {
-                        crate::library::location::user_home(None).unwrap_or(path)
-                    } else {
-                        path
-                    }
-                })
-                .and_then(|path| path.to_str().map(str::to_owned))
-            {
-                Some(cwd) => cwd,
-                None => {
-                    self.save_notice = Some("Cannot read the launch directory as text.".into());
-                    cx.notify();
-                    return;
-                }
-            }
+        let Some(layout) = &self.layout else {
+            return;
         };
         self.creation_from = Some(Selection::capture(layout.model()));
         self.pending_creation = Some((action, cwd));
@@ -1266,6 +1246,113 @@ impl Browser {
         if let Some(focus) = &self.navigation {
             window.focus(focus, cx);
         }
+        self.save(cx);
+    }
+
+    /// Where a new pane in the selected workspace starts, or none when the
+    /// launch directory is not text.
+    fn launch_directory(&self) -> Option<String> {
+        if self
+            .layout
+            .as_ref()
+            .and_then(|layout| layout.model().workspace())
+            .is_some_and(|space| space.profile_id.is_some())
+        {
+            return Some("/".into());
+        }
+        // An app opened from the Dock or Finder runs in "/". New terminals
+        // start in the home folder instead, as other terminal apps do.
+        std::env::current_dir()
+            .ok()
+            .map(|path| {
+                if path.as_os_str() == "/" {
+                    crate::library::location::user_home(None).unwrap_or(path)
+                } else {
+                    path
+                }
+            })
+            .and_then(|path| path.to_str().map(str::to_owned))
+    }
+
+    /// Show a swarm in a tab of its own, named after it: the initiator in the
+    /// left half and the members tiled in the right half. A tab already
+    /// carrying the swarm's name is shown instead. Nothing is started.
+    fn open_swarm_tab(
+        &mut self,
+        (initiator, name, members): (&str, &str, &[String]),
+        target: Option<&creation_origin::Target>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.saving || self.save_failed {
+            return;
+        }
+        if let Some(update) = self.library.as_ref().and_then(Library::take_update) {
+            self.apply(update);
+        }
+        if !target.is_some_and(|target| self.creation_is_current(target)) {
+            self.save_notice = Some("The destination changed. Open the swarm again.".into());
+            cx.notify();
+            return;
+        }
+        let Some(space) = self
+            .layout
+            .as_ref()
+            .and_then(|layout| layout.model().workspace())
+        else {
+            return;
+        };
+        let existing = space
+            .tabs
+            .iter()
+            .find(|tab| tab.name == name)
+            .map(|tab| tab.id.clone());
+        let source = match self.workspace_profiles.route(space) {
+            workspace_profiles::Route::Bound(connection) => {
+                connection.tmux_socket().to_str().map(str::to_owned)
+            }
+            workspace_profiles::Route::Legacy => self
+                .source
+                .as_ref()
+                .and_then(|source| source.as_ref().ok())
+                .and_then(|path| path.to_str())
+                .map(str::to_owned),
+            workspace_profiles::Route::Unavailable => None,
+        };
+        let cwd = self.launch_directory();
+        self.close_menus();
+        if let Some(focus) = &self.navigation {
+            window.focus(focus, cx);
+        }
+        let Some(layout) = &mut self.layout else {
+            return;
+        };
+        if let Some(tab) = existing {
+            self.reset_focus |= layout.model_mut().choose_tab(&tab);
+            cx.notify();
+            return;
+        }
+        let (Some(source), Some(cwd)) = (source, cwd) else {
+            self.save_notice = Some("The workspace session source is unavailable.".into());
+            cx.notify();
+            return;
+        };
+        let attachment = |session: &str| Attachment {
+            session: session.into(),
+            source_socket: Some(source.clone()),
+        };
+        let (base, mut proposed) = layout.save_snapshot();
+        if !proposed.add_group_tab(
+            name.into(),
+            attachment(initiator),
+            members.iter().map(|member| attachment(member)).collect(),
+            cwd,
+        ) {
+            return;
+        }
+        // The new tab is not in the displayed model yet; select it once saved.
+        self.creation_from = Some(Selection::capture(layout.model()));
+        self.pending_save = Some((base, proposed));
         self.save(cx);
     }
 

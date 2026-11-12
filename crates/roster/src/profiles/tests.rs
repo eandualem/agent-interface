@@ -691,13 +691,14 @@ fn agent_list_reads_again_while_registrations_settle_but_not_forever() {
         (200, identity.clone()),
         settling.clone(),
         (200, json!({"items": [], "total": 0})),
+        (200, json!({"items": []})),
     ];
     replies.extend(std::iter::repeat_n(settling, 41));
     let server = serve(listener, replies);
     let connection = profile.connect().unwrap();
     assert!(connection.roster().is_ok());
     assert_eq!(connection.roster().err(), Some(Error::Refused(409)));
-    assert_eq!(server.join().unwrap().len(), 44);
+    assert_eq!(server.join().unwrap().len(), 45);
 }
 
 #[test]
@@ -705,6 +706,7 @@ fn bound_roster_preserves_typed_failures_and_decodes_success() {
     let (directory, listener, url) = crate::transport::tests::local_listener();
     let (profile, identity) = profile_at(directory.path(), url.strip_prefix("unix:").unwrap());
     let required = fixture()["http_errors"]["binding_required"]["body"].clone();
+    let required_again = required.clone();
     let server = serve(
         listener,
         vec![
@@ -713,7 +715,16 @@ fn bound_roster_preserves_typed_failures_and_decodes_success() {
             (403, json!({})),
             (200, json!({"items": "invalid"})),
             (200, json!({"items": [{"name": "worker", "state": "busy"}]})),
+            (
+                200,
+                json!({"items": [{"name": "fix", "status": "active", "initiator": "worker", "members": ["fix-coder"]}]}),
+            ),
             (200, json!({"items": []})),
+            // An unreadable swarm list leaves the roster itself usable.
+            (500, json!({})),
+            // A binding refused on the swarm read is still a refused binding.
+            (200, json!({"items": []})),
+            (409, required_again),
         ],
     );
     let connection = profile.connect().unwrap();
@@ -723,11 +734,19 @@ fn bound_roster_preserves_typed_failures_and_decodes_success() {
     let roster = connection.roster().unwrap();
     assert_eq!(roster.states["worker"], "busy");
     assert!(roster.error.is_none() && roster.observed_at.is_some());
-    assert!(connection.roster().unwrap().states.is_empty());
+    assert_eq!(roster.swarms[0].members, ["fix-coder"]);
+    let empty = connection.roster().unwrap();
+    assert!(empty.states.is_empty() && empty.swarms.is_empty());
+    assert_eq!(connection.roster().err(), Some(Error::BindingRequired));
     let requests = server.join().unwrap();
-    assert_eq!(requests.len(), 6);
-    for request in &requests[1..] {
-        assert!(request.starts_with("get /api/agents "));
+    assert_eq!(requests.len(), 10);
+    for (index, request) in requests.iter().enumerate().skip(1) {
+        let path = if [5, 7, 9].contains(&index) {
+            "/api/swarms"
+        } else {
+            "/api/agents"
+        };
+        assert!(request.starts_with(&format!("get {path} ")));
         assert!(request.contains("x-backbone-lifecycle-id: lifecycle-a1\r\n"));
     }
 }

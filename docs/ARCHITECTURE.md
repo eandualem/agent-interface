@@ -449,7 +449,10 @@ Agent views cache unchanged render trees; data, size, focus and appearance
 changes invalidate them. Visible working and starting indicators animate using GPUI; other states are
 static. State labels retain the distinction between starting and busy, and
 between blocked and waiting for a person. Each connection-owned roster worker reads
-immediately and then two seconds after each completed request. Its live model
+immediately and then two seconds after each completed request. After a good
+roster it also reads the running swarms, which only group agents in the
+navigation panel: a failed swarm read clears the grouping without marking agent
+states stale. Its live model
 constructs each agent's status, label and ordering once per observation; windows,
 navigation badges, choosers and information views retain that connection's model.
 Shared UI components render its symbol, colour and label. Roster changes

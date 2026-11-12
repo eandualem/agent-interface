@@ -9,7 +9,7 @@ use std::{
 use gpui::{AnyElement, Context, EntityId, SharedString, Window, div, prelude::*, px};
 
 use super::{
-    Browser, components as ui,
+    Browser, agent_groups, components as ui,
     design::{colors, tokens},
     icons, settings,
 };
@@ -726,27 +726,127 @@ impl Browser {
                 rows = rows.child(quiet("No active agents", None))
             }
             Some(entries) => {
-                for (name, state) in entries {
-                    let target = self.agent_target(name);
+                let swarms = self
+                    .active_agents()
+                    .map(|agents| agents.swarms())
+                    .unwrap_or_default();
+                let creation = self.creation_target();
+                // An agent row; `swarm` marks a member indented under its swarm.
+                let agent = |browser: &Self,
+                             cx: &mut Context<Self>,
+                             name: &str,
+                             state: AgentState,
+                             swarm: Option<&str>| {
+                    let target = browser.agent_target(name);
                     let calm = matches!(state, AgentState::Idle | AgentState::Unknown);
-                    rows = rows.child(
-                        ui::row(SharedString::from(format!("agent-{name}")), false)
-                            .child(ui::agent_symbol(*state))
+                    let id = match swarm {
+                        // Names never hold a slash, so these cannot collide.
+                        Some(swarm) => format!("agent-{swarm}/{name}"),
+                        None => format!("agent-{name}"),
+                    };
+                    ui::row(SharedString::from(id), false)
+                        .when(swarm.is_some(), |row| row.pl(px(t.space.s10 * 3.0)))
+                        .child(ui::agent_symbol(state))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .text_color(if calm { c.muted } else { c.text })
+                                .child(name.to_owned()),
+                        )
+                        .on_click(cx.listener(move |browser, _, window, cx| {
+                            if let Some(target) = &target {
+                                browser.go_to_agent_target(target, window, cx);
+                            }
+                        }))
+                };
+                for row in agent_groups::rows(entries, &swarms, &self.expanded_agents) {
+                    rows = rows.child(match row {
+                        agent_groups::Row::Agent {
+                            name,
+                            state,
+                            swarms: 0,
+                            ..
+                        } => agent(self, cx, &name, state, None),
+                        agent_groups::Row::Agent {
+                            name,
+                            state,
+                            members,
+                            needs_you,
+                            expanded,
+                            ..
+                        } => {
+                            let toggled = name.clone();
+                            agent(self, cx, &name, state, None)
+                                .children((members > 0).then(|| {
+                                    ui::text(
+                                        div().text_color(if needs_you {
+                                            c.attention_text
+                                        } else {
+                                            c.muted
+                                        }),
+                                        &t.text.meta,
+                                    )
+                                    .child(members.to_string())
+                                }))
+                                .child(
+                                    ui::icon_button(
+                                        SharedString::from(format!("agent-swarms/{name}")),
+                                        if expanded {
+                                            "chevron-down"
+                                        } else {
+                                            "chevron-right"
+                                        },
+                                    )
+                                    .on_click(cx.listener(
+                                        move |browser, _, _, cx| {
+                                            cx.stop_propagation();
+                                            if !browser.expanded_agents.remove(&toggled) {
+                                                browser.expanded_agents.insert(toggled.clone());
+                                            }
+                                            cx.notify();
+                                        },
+                                    )),
+                                )
+                        }
+                        agent_groups::Row::Swarm {
+                            initiator,
+                            name,
+                            members,
+                        } => {
+                            let creation = creation.clone();
+                            ui::row(
+                                SharedString::from(format!("swarm-{initiator}/{name}")),
+                                false,
+                            )
+                            .pl(px(t.space.s10 * 2.0))
+                            .text_color(c.muted)
+                            .child(ui::icon("users", t.size.icon, c.muted))
                             .child(
                                 div()
                                     .flex_1()
                                     .min_w_0()
                                     .overflow_hidden()
                                     .text_ellipsis()
-                                    .text_color(if calm { c.muted } else { c.text })
                                     .child(name.clone()),
                             )
-                            .on_click(cx.listener(move |browser, _, window, cx| {
-                                if let Some(target) = &target {
-                                    browser.go_to_agent_target(target, window, cx);
-                                }
-                            })),
-                    );
+                            .on_click(cx.listener(
+                                move |browser, _, window, cx| {
+                                    browser.open_swarm_tab(
+                                        (&initiator, &name, &members),
+                                        creation.as_ref(),
+                                        window,
+                                        cx,
+                                    );
+                                },
+                            ))
+                        }
+                        agent_groups::Row::Member { swarm, name, state } => {
+                            agent(self, cx, &name, state, Some(&swarm))
+                        }
+                    });
                 }
             }
         }

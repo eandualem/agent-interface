@@ -312,6 +312,14 @@ impl Connection {
         if snapshot.error.is_some() {
             return Err(Error::Invalid);
         }
+        // Swarms only group agents, so their own failure clears them. A refused
+        // binding is about the connection and is never hidden.
+        let swarms = match self.response("/api/swarms", None, RESPONSE_LIMIT) {
+            Err(error @ (Error::BindingRequired | Error::BindingMismatch)) => return Err(error),
+            Err(_) => None,
+            Ok(response) => successful(&response).is_ok().then_some(response),
+        };
+        snapshot.update_swarms(swarms.as_ref().map(|response| response.body.as_slice()));
         Ok(snapshot)
     }
 

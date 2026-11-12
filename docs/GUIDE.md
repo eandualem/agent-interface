@@ -78,6 +78,10 @@ workspace menu), a **Jump** field (Command-K) that finds tabs, panes, agents and
 commands across every workspace, the tabs with a thumbnail of each layout, and,
 with Agent Backbone installed, the **AGENTS** section: agents needing you first,
 each with a state symbol. Click an agent to show the tab holding its session.
+An agent running swarms shows the number of swarm members beside its name
+instead of listing them separately. Click the arrow to list each swarm with its
+members under the agent. Click a swarm to show it in a tab named after it: the
+agent that started it on the left and its members tiled on the right.
 The bottom row switches workspaces with one click (right-click for options,
 including **Choose icon…**) and opens Settings. Drag the panel's right edge to
 resize it. Panes are cards with a header naming what runs there; the focused
