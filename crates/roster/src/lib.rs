@@ -40,6 +40,17 @@ pub struct AgentDetails {
     pub state_since: Option<f64>,
 }
 
+/// A running swarm: the agent that started it and the agents working in it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Swarm {
+    /// Swarm name.
+    pub name: String,
+    /// The agent that started the swarm.
+    pub initiator: String,
+    /// Member agent names, the coordinator first, without the initiator.
+    pub members: Vec<String>,
+}
+
 /// Cached metadata, separate from tmux attachment availability.
 ///
 /// Names, states and their presentation details are retained. An API `online` value
@@ -51,6 +62,8 @@ pub struct Snapshot {
     pub states: BTreeMap<String, String>,
     /// Details observed together with `states`.
     pub details: BTreeMap<String, AgentDetails>,
+    /// Running swarms from the same poll; empty when their read failed.
+    pub swarms: Vec<Swarm>,
     /// A fixed diagnostic when cached states are stale; none after success.
     pub error: Option<&'static str>,
     /// Last successful response time, or none before any successful response.
@@ -71,6 +84,12 @@ impl Snapshot {
             }
             None => self.unavailable(),
         }
+    }
+
+    /// Apply one response from the swarms endpoint, or its failure. Swarms only
+    /// group agents, so an unreadable list clears them without marking states stale.
+    pub fn update_swarms(&mut self, response: Option<&[u8]>) {
+        self.swarms = response.and_then(decode_swarms).unwrap_or_default();
     }
 
     /// Mark a transport or configuration failure without retaining its details.
@@ -125,6 +144,51 @@ fn decode(response: &[u8]) -> Option<Decoded> {
         states.insert(name, state);
     }
     Some((states, details))
+}
+
+fn decode_swarms(response: &[u8]) -> Option<Vec<Swarm>> {
+    #[derive(serde::Deserialize, Default)]
+    #[serde(default)]
+    struct Raw {
+        name: String,
+        status: String,
+        initiator: String,
+        coordinator: String,
+        members: Vec<Box<RawValue>>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Document {
+        items: Vec<Raw>,
+    }
+    if response.len() > RESPONSE_LIMIT || !within_depth(response) {
+        return None;
+    }
+    let document: Document = serde_json::from_slice(response).ok()?;
+    Some(
+        document
+            .items
+            .into_iter()
+            .filter(|swarm| {
+                !swarm.name.is_empty()
+                    && valid_agent(&swarm.initiator)
+                    && !matches!(swarm.status.as_str(), "done" | "disbanded" | "failed")
+            })
+            .map(|swarm| {
+                let mut members: Vec<String> = swarm
+                    .members
+                    .iter()
+                    .filter_map(|member| views::member_name(member))
+                    .filter(|name| *name != swarm.initiator)
+                    .collect();
+                members.sort_by_key(|name| *name != swarm.coordinator);
+                Swarm {
+                    name: swarm.name,
+                    initiator: swarm.initiator,
+                    members,
+                }
+            })
+            .collect(),
+    )
 }
 
 // RawValue skips nested data without the normal Value recursion limit. Bound
@@ -190,6 +254,30 @@ fn truthy(value: &RawValue) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn swarms_keep_running_groups_with_the_coordinator_first() {
+        let mut snapshot = Snapshot::default();
+        snapshot.update_swarms(Some(
+            br#"{"items":[
+            {"name":"fix-7","status":"active","initiator":"lead","coordinator":"fix-7-coordinator",
+             "members":["fix-7-coder",{"name":"fix-7-coordinator"},"lead","not an agent"]},
+            {"name":"old","status":"done","initiator":"lead","members":["old-coder"]},
+            {"name":"orphan","status":"active","initiator":"","members":["x"]}
+        ]}"#,
+        ));
+        assert_eq!(
+            snapshot.swarms,
+            [Swarm {
+                name: "fix-7".into(),
+                initiator: "lead".into(),
+                members: vec!["fix-7-coordinator".into(), "fix-7-coder".into()],
+            }]
+        );
+        assert!(snapshot.error.is_none());
+        snapshot.update_swarms(Some(b"not JSON"));
+        assert!(snapshot.swarms.is_empty() && snapshot.error.is_none());
+    }
 
     #[test]
     fn malformed_details_do_not_discard_valid_fields() {

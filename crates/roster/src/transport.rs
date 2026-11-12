@@ -30,6 +30,9 @@ impl Snapshot {
             Some(bytes) => self.update(&bytes),
             None => self.unavailable(),
         }
+        if self.error.is_none() {
+            self.update_swarms(get(url, "/api/swarms", key, RESPONSE_LIMIT).as_deref());
+        }
     }
 }
 

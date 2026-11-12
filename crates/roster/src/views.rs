@@ -425,7 +425,7 @@ impl Team {
 }
 
 // A member is a name, or an object with one.
-fn member_name(raw: &RawValue) -> Option<String> {
+pub(crate) fn member_name(raw: &RawValue) -> Option<String> {
     #[derive(Deserialize)]
     struct Named {
         name: String,

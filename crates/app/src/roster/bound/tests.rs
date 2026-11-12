@@ -43,7 +43,8 @@ fn provider(
     )
     .unwrap();
     let server = thread::spawn(move || {
-        for attempt in 0..3 {
+        let mut attempt = 0;
+        while attempt < 3 {
             listener.set_nonblocking(true).unwrap();
             let deadline = Instant::now() + Duration::from_secs(10);
             let mut stream = loop {
@@ -71,6 +72,11 @@ fn provider(
                 assert!(bytes.len() < 8192);
             }
             let request = String::from_utf8(bytes).unwrap().to_ascii_lowercase();
+            // The swarm read after each roster is answered without counting.
+            if request.starts_with("get /api/swarms ") {
+                write!(stream, "HTTP/1.1 200 Fixture\r\nContent-Length: 12\r\nConnection: close\r\n\r\n{{\"items\":[]}}").unwrap();
+                continue;
+            }
             let target = if attempt == 0 {
                 "/api/profile"
             } else {
@@ -127,6 +133,7 @@ fn provider(
                 listener = UnixListener::bind(&path).unwrap();
                 fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
             }
+            attempt += 1;
         }
     });
     (directory, profile, server)

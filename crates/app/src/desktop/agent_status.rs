@@ -150,6 +150,16 @@ impl LiveAgents {
         self.0.current.borrow().active.clone()
     }
 
+    /// Running swarms from the newest observation.
+    pub fn swarms(&self) -> Vec<agent_interface_roster::Swarm> {
+        let current = self.0.current.borrow();
+        current
+            .snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.swarms.clone())
+            .unwrap_or_default()
+    }
+
     pub fn unavailable(&self) -> bool {
         self.0
             .current
@@ -180,6 +190,7 @@ impl LiveAgents {
         let changed = current.snapshot.as_ref().is_none_or(|old| {
             old.states != snapshot.states
                 || old.details != snapshot.details
+                || old.swarms != snapshot.swarms
                 || old.error != snapshot.error
         });
         if changed {

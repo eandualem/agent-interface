@@ -312,6 +312,11 @@ impl Connection {
         if snapshot.error.is_some() {
             return Err(Error::Invalid);
         }
+        let swarms = self
+            .response("/api/swarms", None, RESPONSE_LIMIT)
+            .ok()
+            .filter(|response| successful(response).is_ok());
+        snapshot.update_swarms(swarms.as_ref().map(|response| response.body.as_slice()));
         Ok(snapshot)
     }
 
