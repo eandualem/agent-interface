@@ -661,6 +661,8 @@ struct Browser {
     onboarding: Option<(gpui::Entity<onboarding::Onboarding>, gpui::Subscription)>,
     /// First run asked to open its guide's pane and waits to hear how it went.
     first_open: bool,
+    /// That pane is in the save now running: first run hears when it ends.
+    first_open_saving: bool,
     /// First run's profile, waiting for the library to load to be bound.
     first_bind: Option<onboarding::FirstBind>,
     /// New profile, across the content area of the workspace it is made for.
@@ -1539,11 +1541,19 @@ impl Browser {
                         if let Some((item, connection, name)) = browser.bind_after_save.take() {
                             browser.bind_workspace(item, connection, &name, cx);
                         }
+                        browser.first_open_saved(!result.conflict, cx);
                     }
                     Err(error) => {
                         browser.save_failed = true;
                         browser.pending_save = Some((base, local));
                         browser.error = Some(format!("Changes not saved: {error}. Retry saving."));
+                        if browser.first_open_saving {
+                            // First run covers the window, so its own Try again
+                            // repeats the edit; the failed one is dropped.
+                            tracing::warn!(event = "first_run_pane_save_failed", %error, "First run's pane was not saved");
+                            browser.discard_save(cx);
+                            browser.first_open_saved(false, cx);
+                        }
                     }
                 }
                 cx.notify();
@@ -2597,6 +2607,13 @@ impl Render for Browser {
                 if !focus.contains_focused(window, cx) {
                     window.focus(&focus, cx);
                 }
+            } else if self
+                .onboarding
+                .as_ref()
+                .is_some_and(|(onboarding, _)| onboarding.read(cx).reveal().is_none())
+            {
+                // First run covers the window and keeps the focus it placed,
+                // until it starts to fade.
             } else if let Some(focus) = &self.navigation {
                 window.focus(focus, cx);
             }
@@ -3055,6 +3072,7 @@ impl Render for Browser {
         {
             self.first_bind = None;
         }
+        self.home_profile_flow(cx);
         let sidebar = self.sidebar(window, cx);
         // As first run fades, the panel eases in from the left.
         let sidebar = match self
