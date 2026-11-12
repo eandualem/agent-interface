@@ -597,10 +597,17 @@ impl Layout {
     }
 
     /// Remove the tabs of `workspace` that still show only a finished group:
-    /// named `name`, with every pane attached to one of `sessions`. A tab the
-    /// person renamed or gave another pane is theirs and stays. A removed
-    /// selection moves to the first remaining tab. No session is stopped.
-    pub fn close_group_tabs(&mut self, workspace: &str, name: &str, sessions: &[&str]) -> bool {
+    /// named `name`, with every pane attached to one of `sessions` on the
+    /// `source` server. A tab the person renamed or gave another pane is
+    /// theirs and stays. A removed selection moves to the first remaining
+    /// tab. No session is stopped.
+    pub fn close_group_tabs(
+        &mut self,
+        workspace: &str,
+        name: &str,
+        source: &str,
+        sessions: &[&str],
+    ) -> bool {
         let Some(space) = self
             .workspaces
             .iter_mut()
@@ -612,9 +619,11 @@ impl Layout {
         space.tabs.retain(|tab| {
             tab.name != name
                 || !tab.tree.leaves().iter().all(|leaf| {
-                    leaf.attachment
-                        .as_ref()
-                        .is_some_and(|attachment| sessions.contains(&attachment.session.as_str()))
+                    leaf.attachment.as_ref().is_some_and(|attachment| {
+                        // Session names are only unique within one server.
+                        attachment.source_socket.as_deref() == Some(source)
+                            && sessions.contains(&attachment.session.as_str())
+                    })
                 })
         });
         if !space.tabs.iter().any(|tab| tab.id == space.selected) {
@@ -886,7 +895,7 @@ mod tests {
     fn a_finished_group_closes_only_tabs_still_showing_just_that_group() {
         let attachment = |name: &str| Attachment {
             session: name.into(),
-            source_socket: None,
+            source_socket: Some("/fixture/source".into()),
         };
         let mut model = Layout::initial("/tmp".into());
         let space = model.selected.clone();
@@ -904,10 +913,13 @@ mod tests {
         let kept = model.tab().unwrap().id.clone();
         assert!(group(&mut model));
         let sessions = ["lead", "coder"];
-        assert!(!model.close_group_tabs(&space, "other", &sessions));
-        assert!(!model.close_group_tabs("elsewhere", "fix", &sessions));
-        assert!(!model.close_group_tabs(&space, "fix", &["lead"]));
-        assert!(model.close_group_tabs(&space, "fix", &sessions));
+        let source = "/fixture/source";
+        assert!(!model.close_group_tabs(&space, "other", source, &sessions));
+        assert!(!model.close_group_tabs("elsewhere", "fix", source, &sessions));
+        assert!(!model.close_group_tabs(&space, "fix", source, &["lead"]));
+        // The same names on another server are other sessions.
+        assert!(!model.close_group_tabs(&space, "fix", "/fixture/other", &sessions));
+        assert!(model.close_group_tabs(&space, "fix", source, &sessions));
         let space = model.workspace().unwrap();
         let tabs: Vec<_> = space.tabs.iter().map(|tab| tab.id.clone()).collect();
         assert_eq!(tabs, [first.clone(), kept]);

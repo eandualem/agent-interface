@@ -684,9 +684,10 @@ struct Browser {
     creation_from: Option<Selection>,
     /// Agents whose swarms are listed under them in the navigation panel.
     expanded_agents: std::collections::HashSet<String>,
-    /// Swarms seen running, by workspace and swarm name, with their sessions;
-    /// kept until no tab is left to close for a finished one.
-    watched_swarms: HashMap<(String, String), Vec<String>>,
+    /// Swarms seen running, by workspace and swarm name, with their server
+    /// and every session seen in them; kept until no tab is left to close
+    /// for a finished one.
+    watched_swarms: HashMap<(String, String), (String, std::collections::HashSet<String>)>,
     tabs_scroll: gpui::ScrollHandle,
     workspaces_scroll: gpui::ScrollHandle,
     shown_workspace: Option<(String, gpui::Pixels)>,
@@ -1311,18 +1312,7 @@ impl Browser {
             .iter()
             .find(|tab| tab.name == name)
             .map(|tab| tab.id.clone());
-        let source = match self.workspace_profiles.route(space) {
-            workspace_profiles::Route::Bound(connection) => {
-                connection.tmux_socket().to_str().map(str::to_owned)
-            }
-            workspace_profiles::Route::Legacy => self
-                .source
-                .as_ref()
-                .and_then(|source| source.as_ref().ok())
-                .and_then(|path| path.to_str())
-                .map(str::to_owned),
-            workspace_profiles::Route::Unavailable => None,
-        };
+        let source = self.swarm_source(space);
         let cwd = self.launch_directory();
         self.close_menus();
         if let Some(focus) = &self.navigation {
@@ -1360,6 +1350,22 @@ impl Browser {
         self.save(cx);
     }
 
+    /// The tmux server holding the sessions of a workspace's swarms.
+    fn swarm_source(&self, space: &agent_interface_core::Workspace) -> Option<String> {
+        match self.workspace_profiles.route(space) {
+            workspace_profiles::Route::Bound(connection) => {
+                connection.tmux_socket().to_str().map(str::to_owned)
+            }
+            workspace_profiles::Route::Legacy => self
+                .source
+                .as_ref()
+                .and_then(|source| source.as_ref().ok())
+                .and_then(|path| path.to_str())
+                .map(str::to_owned),
+            workspace_profiles::Route::Unavailable => None,
+        }
+    }
+
     /// Close the tabs of swarms that finished: once a readable list no longer
     /// names a swarm seen running, a tab still showing only that swarm goes.
     fn close_finished_swarm_tabs(&mut self, cx: &mut Context<Self>) {
@@ -1369,13 +1375,14 @@ impl Browser {
         let Some(layout) = &self.layout else {
             return;
         };
-        let mut read: HashMap<&str, Vec<agent_interface_roster::Swarm>> = HashMap::new();
+        let mut read: HashMap<&str, (String, Vec<agent_interface_roster::Swarm>)> = HashMap::new();
         for space in &layout.model().workspaces {
             if let Some(swarms) = self
                 .workspace_agents(space)
                 .and_then(agent_status::LiveAgents::read_swarms)
+                && let Some(source) = self.swarm_source(space)
             {
-                read.insert(&space.id, swarms);
+                read.insert(&space.id, (source, swarms));
             }
         }
         let mut watched = std::mem::take(&mut self.watched_swarms);
@@ -1387,13 +1394,18 @@ impl Browser {
             .filter(|(space, _)| read.contains_key(space.as_str()))
             .cloned()
             .collect();
-        for (space, swarms) in &read {
+        for (space, (source, swarms)) in &read {
             for swarm in swarms {
                 let key = ((*space).to_owned(), swarm.name.clone());
                 finished.retain(|other| *other != key);
-                let mut sessions = swarm.members.clone();
-                sessions.push(swarm.initiator.clone());
-                watched.insert(key, sessions);
+                // A tab opened earlier may still show a member that has left.
+                let (seen, sessions) = watched.entry(key).or_default();
+                if seen != source {
+                    *seen = source.clone();
+                    sessions.clear();
+                }
+                sessions.extend(swarm.members.iter().cloned());
+                sessions.insert(swarm.initiator.clone());
             }
         }
         self.watched_swarms = watched;
@@ -1409,11 +1421,9 @@ impl Browser {
         let (base, mut proposed) = layout.save_snapshot();
         let mut closed = false;
         for key in finished {
-            let sessions: Vec<&str> = self.watched_swarms[&key]
-                .iter()
-                .map(String::as_str)
-                .collect();
-            if proposed.close_group_tabs(&key.0, &key.1, &sessions) {
+            let (source, sessions) = &self.watched_swarms[&key];
+            let sessions: Vec<&str> = sessions.iter().map(String::as_str).collect();
+            if proposed.close_group_tabs(&key.0, &key.1, source, &sessions) {
                 // Kept until a later read finds the tab gone, so a save the
                 // library refused is tried again.
                 closed = true;
