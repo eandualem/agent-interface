@@ -452,7 +452,10 @@ between blocked and waiting for a person. Each connection-owned roster worker re
 immediately and then two seconds after each completed request. After a good
 roster it also reads the running swarms, which only group agents in the
 navigation panel: a failed swarm read clears the grouping without marking agent
-states stale. Its live model
+states stale. Each window remembers the swarms it has seen running; when a
+readable list stops naming one, it closes the tabs still named after that swarm
+whose every pane attaches to a session seen in that swarm, on its tmux server. A failed or partly unreadable list never counts as
+a finish, and a swarm that ends while the app is closed leaves its tab. Its live model
 constructs each agent's status, label and ordering once per observation; windows,
 navigation badges, choosers and information views retain that connection's model.
 Shared UI components render its symbol, colour and label. Roster changes

@@ -160,6 +160,14 @@ impl LiveAgents {
             .unwrap_or_default()
     }
 
+    /// Running swarms when the newest observation read them; `None` while
+    /// that answer is unknown, so a failed read never looks like a finish.
+    pub fn read_swarms(&self) -> Option<Vec<agent_interface_roster::Swarm>> {
+        let current = self.0.current.borrow();
+        let snapshot = current.snapshot.as_ref()?;
+        (snapshot.error.is_none() && snapshot.swarms_read).then(|| snapshot.swarms.clone())
+    }
+
     pub fn unavailable(&self) -> bool {
         self.0
             .current

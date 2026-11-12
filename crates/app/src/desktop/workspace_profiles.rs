@@ -616,6 +616,7 @@ impl Browser {
             self.roster_updates =
                 Some(cx.observe_global::<agent_status::Sources>(|browser, cx| {
                     browser.refresh_source_matches(cx);
+                    browser.close_finished_swarm_tabs(cx);
                     cx.notify();
                 }));
         }

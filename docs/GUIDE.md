@@ -82,6 +82,9 @@ An agent running swarms shows the number of swarm members beside its name
 instead of listing them separately. Click the arrow to list each swarm with its
 members under the agent. Click a swarm to show it in a tab named after it: the
 agent that started it on the left and its members tiled on the right.
+The tab closes by itself when the swarm finishes, unless you renamed it or
+added a pane of your own. A swarm stays grouped under the agent that started it
+while that agent is offline, for example during a restart.
 The bottom row switches workspaces with one click (right-click for options,
 including **Choose icon…**) and opens Settings. Drag the panel's right edge to
 resize it. Panes are cards with a header naming what runs there; the focused

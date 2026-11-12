@@ -658,6 +658,12 @@ impl Browser {
                 .iter()
                 .map(|(name, state)| (name.clone(), *state))
                 .collect();
+            if let Some(agents) = self.active_agents() {
+                let leads = agent_groups::offline_leads(&entries, &agents.swarms(), |name| {
+                    agents.get(name).state
+                });
+                entries.extend(leads.into_iter().map(|name| (name, AgentState::Offline)));
+            }
             entries.sort_by_key(|(name, state)| {
                 (
                     !state.needs_you(),
