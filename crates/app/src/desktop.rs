@@ -2607,8 +2607,13 @@ impl Render for Browser {
                 if !focus.contains_focused(window, cx) {
                     window.focus(&focus, cx);
                 }
-            } else if self.onboarding.is_some() {
-                // First run covers the window and keeps the focus it placed.
+            } else if self
+                .onboarding
+                .as_ref()
+                .is_some_and(|(onboarding, _)| onboarding.read(cx).reveal().is_none())
+            {
+                // First run covers the window and keeps the focus it placed,
+                // until it starts to fade.
             } else if let Some(focus) = &self.navigation {
                 window.focus(focus, cx);
             }

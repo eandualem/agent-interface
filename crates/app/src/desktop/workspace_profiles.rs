@@ -338,12 +338,16 @@ impl Browser {
         cx: &mut Context<Self>,
     ) {
         use super::profile_management::Open;
+        // Whether first run asked travels with the request, so another
+        // request never answers for it.
+        let first_run = std::mem::take(&mut self.first_open);
         let Some(Ok(client)) = &self.profile_client else {
-            self.first_run_opened(Err("The profile could not be reached. Try again."), cx);
+            if first_run {
+                self.first_run_opened(Err("The profile could not be reached. Try again."), cx);
+            }
             return;
         };
         let client = client.clone();
-        let first_run = self.first_open;
         self.profile_picker = None;
         let work = cx.background_executor().spawn(async move {
             let live = || true;
@@ -388,13 +392,15 @@ impl Browser {
                     }
                     Err(error) => Err(error),
                 };
-                // A pane queued to save is not open yet: first run hears
-                // when that save ends.
-                if opened.is_err() || !browser.first_open_waits_for_save() {
+                if !first_run {
+                    if let Err(error) = opened {
+                        browser.save_notice = Some(error.into());
+                    }
+                } else if let Some(opened) = browser.first_open_answer(opened) {
                     browser.first_run_opened(opened, cx);
-                }
-                if let Err(error) = opened {
-                    browser.save_notice = Some(error.into());
+                    if let Err(error) = opened {
+                        browser.save_notice = Some(error.into());
+                    }
                 }
                 cx.notify();
             });
@@ -888,25 +894,28 @@ impl Browser {
         cx.notify();
     }
 
-    /// Tell first run whether its guide's pane opened, when it asked for it.
+    /// Tell first run whether the pane it asked for opened.
     fn first_run_opened(&mut self, opened: Result<(), &'static str>, cx: &mut Context<Self>) {
-        if !std::mem::take(&mut self.first_open) {
-            return;
-        }
         if let Some((onboarding, _)) = &self.onboarding {
             onboarding.update(cx, |onboarding, cx| onboarding.opened(opened, cx));
         }
     }
 
-    /// Whether first run's answer waits for the save that holds its guide's
-    /// pane. A conflict or a failure drops that edit, so first run must not
-    /// end before the save does.
-    fn first_open_waits_for_save(&mut self) -> bool {
-        if self.first_open && self.saving {
-            self.first_open = false;
-            self.first_open_saving = true;
+    /// What first run hears now about a pane it asked for. A pane queued to
+    /// save is not open yet: a conflict or a failure drops that edit, so the
+    /// answer comes when the save ends, and nothing said meanwhile replaces it.
+    fn first_open_answer(
+        &mut self,
+        opened: Result<(), &'static str>,
+    ) -> Option<Result<(), &'static str>> {
+        if self.first_open_saving {
+            return None;
         }
-        self.first_open_saving
+        if opened.is_ok() && self.saving {
+            self.first_open_saving = true;
+            return None;
+        }
+        Some(opened)
     }
 
     /// The save holding first run's guide pane ended, keeping the pane or not.
@@ -914,7 +923,6 @@ impl Browser {
         if !std::mem::take(&mut self.first_open_saving) {
             return;
         }
-        self.first_open = true;
         let opened = kept
             .then_some(())
             .ok_or("Couldn't open it in a workspace. Try again.");
@@ -1273,22 +1281,17 @@ mod tests {
 
     #[test]
     fn first_run_waits_for_the_save_that_holds_its_guide_pane() {
-        // Already shown, with nothing to save: first run hears at once.
-        let mut browser = super::super::Browser {
-            first_open: true,
-            ..Default::default()
-        };
-        assert!(!browser.first_open_waits_for_save());
-        assert!(browser.first_open);
+        let mut browser = super::super::Browser::default();
+        // Already shown, with nothing to save, or failed: first run hears at once.
+        assert_eq!(browser.first_open_answer(Ok(())), Some(Ok(())));
+        assert_eq!(browser.first_open_answer(Err("no")), Some(Err("no")));
+        assert!(!browser.first_open_saving);
         // Queued to save: the answer waits for the save.
         browser.saving = true;
-        assert!(browser.first_open_waits_for_save());
-        assert!(!browser.first_open && browser.first_open_saving);
-        // Any other pane opened from setup never waits.
-        let mut other = super::super::Browser {
-            saving: true,
-            ..Default::default()
-        };
-        assert!(!other.first_open_waits_for_save());
+        assert_eq!(browser.first_open_answer(Ok(())), None);
+        assert!(browser.first_open_saving);
+        // A second request refused during that save does not answer for it.
+        assert_eq!(browser.first_open_answer(Err("no")), None);
+        assert!(browser.first_open_saving);
     }
 }
