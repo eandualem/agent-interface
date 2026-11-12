@@ -89,6 +89,29 @@ with a body saying why. Once the workspace exists, keep `cargo fmt --check`,
 `cargo clippy --all-targets -- -D warnings` and `cargo test` passing before
 each commit.
 
+## Build output
+
+Rust and Zig builds are large. Clearing outdated build output is routine
+work at every task boundary, not something left until the disk is full:
+
+- When no task needs the current build, run `cargo clean` and remove
+  `.zig-cache`. During longer work, remove `target/debug/incremental` and
+  build profiles that are no longer in use.
+- When a branch is merged or abandoned, remove its linked worktree together
+  with the `target/` inside it, after saving any uncommitted, untracked or
+  ignored files that are still needed. The main checkout is never removed;
+  switch it to another branch instead.
+- Of the app bundle copies you made yourself, keep one previous bundle as
+  the rollback for the installed app and delete older backups and preview
+  bundles. Delete archives you built locally in `dist/` once a newer build
+  replaces them.
+- Leave alone the installed app, anything you did not create, the output of
+  a build that is still running, and release archives waiting to be
+  published.
+- Never store built binaries, app bundles, unpacked packages or build caches
+  in the local memory directory. Record the commit, checksum and a short
+  receipt instead; the build can be repeated or downloaded again.
+
 ## Local continuity
 
 At startup read `.backbone/memory/SCRATCHPAD.md` and the files it links. In
