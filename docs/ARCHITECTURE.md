@@ -674,9 +674,12 @@ Stored HTML is not rewritten; the script changes the page in memory:
   colour expression it reads as its root value. A `background`, `border` or
   other colour shorthand written with `var()` is mapped as a whole.
 - **Left as authored:** shadows, SVG (its inline styles, rules that reach only
-  SVG, and the colour custom properties it uses from outside, taken again when
-  the graphic or an element around it changes and after a resize), images,
-  video, canvas, keyframes and any style sheet the page cannot read.
+  SVG, and the colour custom properties it uses from outside), images, video,
+  canvas, keyframes and any style sheet the page cannot read. A graphic holds
+  the authored values of those properties through a host rule with no
+  specificity, so its own rules (such as `svg:hover`) and inline style still
+  win; the values are taken again when the graphic or an element around it
+  changes, after hover and focus changes, and after a resize.
 - **Theme changes** map from the authored values, which the script keeps, with
   no reload; so does a change of the system appearance, which can switch the
   document's own light or dark rules. The document's transitions are held while colours are restored,
@@ -700,8 +703,8 @@ Stored HTML is not rewritten; the script changes the page in memory:
   reads, when the document gives them none. A part of a link with its own fill
   is checked the same way. All of them are checked again shortly after any
   change to the page (a selector such as `.selected + a` reaches beyond the
-  changed element), after a transition or animation ends, and after hover,
-  focus and press when the document has rules for those states.
+  changed element), after a resize, after a transition or animation ends, and
+  after hover, focus and press when the document has rules for those states.
 - **Selection.** Selected text keeps its own colour over a translucent accent,
   as in native readers, unless the document styles its own selection.
 

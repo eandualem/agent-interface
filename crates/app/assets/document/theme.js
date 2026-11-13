@@ -419,25 +419,20 @@
   const settle = () => getComputedStyle(document.documentElement).color;
 
   // SVG keeps its authored colours, including those it takes from custom
-  // properties set outside it: each outermost graphic holds the values they
-  // had before mapping. What it held before is put back on the next apply,
-  // unless the document has since set that property itself.
+  // properties set outside it: each outermost graphic whose values the
+  // mapping changed holds the authored ones through a host rule with no
+  // specificity, so the document's own rules for the graphic, such as
+  // svg:hover, and its inline style still win.
   const pin = (all) => {
-    for (const [svg, saved] of S.pins || []) {
-      for (const [name, value, priority, applied] of saved) {
-        if (svg.style.getPropertyValue(name) !== applied) continue;
-        if (value) svg.style.setProperty(name, value, priority);
-        else svg.style.removeProperty(name);
-      }
-    }
-    S.pins = [];
+    for (const svg of document.querySelectorAll('[data-ai-pin]')) svg.removeAttribute('data-ai-pin');
+    S.pins = 0;
     const props = new Set();
     for (const [style] of all) {
       for (const name of names(style)) {
         if (name.startsWith('--') && !name.startsWith('--ai-')) props.add(name);
       }
     }
-    if (!props.size) return () => {};
+    if (!props.size) return () => '';
     const graphics = Array.from(document.querySelectorAll('svg')).filter(
       (svg) => !svg.parentElement?.closest('svg'),
     );
@@ -446,21 +441,22 @@
       return [svg, [...props].map((name) => [name, style.getPropertyValue(name)])];
     });
     return () => {
-      for (const [svg, values] of authored) {
+      let css = '';
+      authored.forEach(([svg, values], index) => {
         // Only the properties whose value here the mapping changed, aliases
         // of mapped properties included: a layout value such as a width keeps
         // following its media queries.
         const now = getComputedStyle(svg);
-        const saved = [];
-        for (const [name, value] of values) {
-          if (!value || now.getPropertyValue(name) === value) continue;
-          const before = [svg.style.getPropertyValue(name), svg.style.getPropertyPriority(name)];
-          // Inline, without !important, so the document can still set it.
-          svg.style.setProperty(name, value.trim());
-          saved.push([name, ...before, svg.style.getPropertyValue(name)]);
-        }
-        S.pins.push([svg, saved]);
-      }
+        const held = values
+          .filter(([name, value]) => value && now.getPropertyValue(name) !== value)
+          .map(([name, value]) => `${name}:${value.trim()};`)
+          .join('');
+        if (!held) return;
+        svg.setAttribute('data-ai-pin', index);
+        css += `:where(svg[data-ai-pin="${index}"]){${held}}`;
+        S.pins += 1;
+      });
+      return css;
     };
   };
 
@@ -476,13 +472,13 @@
       const pinned = pin(all);
       measure(all);
       all.forEach(([style, rule]) => remap(style, rule));
-      pinned();
+      const held = pinned();
       const variables = Object.entries(T.variables || {})
         .map(([name, value]) => `--ai-${name}:${value}!important;`)
         .join('');
       const css = `:root{color-scheme:${T.scheme}!important;${variables}}${T.css}${
         selecting ? '' : SELECTION
-      }`;
+      }${held}`;
       style.textContent = HOLD + css;
       readable(document);
       // Releasing the hold after the new colours are in place animates nothing.
@@ -535,7 +531,10 @@
     S.listening = true;
     const recheck = (always) => () => {
       const state = window[KEY];
-      if (always || state.interactive) state.recheck();
+      if (!always && !state.interactive) return;
+      // A state rule around a graphic can change the values it holds.
+      if (!always && state.pins) state.schedule();
+      else state.recheck();
     };
     for (const name of ['pointerover', 'pointerout', 'pointerdown', 'pointerup', 'focusin', 'focusout']) {
       document.addEventListener(name, recheck(false), true);
@@ -557,14 +556,15 @@
       true,
     );
     // The document's own light or dark rules take over when the system
-    // appearance changes, so its page and text are measured again. A
-    // resize can change which values a graphic should hold.
+    // appearance changes, so its page and text are measured again.
     window.matchMedia?.('(prefers-color-scheme: dark)').addEventListener?.('change', () => {
       window[KEY].schedule();
     });
+    // A media query can change fills, and the values a graphic holds.
     window.addEventListener('resize', () => {
       const state = window[KEY];
-      if (!state.pins?.length) return;
+      state.recheck();
+      if (!state.pins) return;
       clearTimeout(state.resizing);
       state.resizing = setTimeout(() => state.apply(), 150);
     });
