@@ -19,7 +19,6 @@ pre :is(code, kbd, samp) { background-color: transparent !important; color: inhe
 table {
   border-collapse: separate !important; border-spacing: 0 !important;
   border: 1px solid var(--ai-line) !important; border-radius: 6px;
-  background-color: transparent !important;
 }
 :is(th, td) { border: 0 !important; border-bottom: 1px solid var(--ai-line) !important; }
 th {
@@ -31,8 +30,7 @@ table > :first-child > tr:first-child > :first-child { border-top-left-radius: 5
 table > :first-child > tr:first-child > :last-child { border-top-right-radius: 5px; }
 table > :last-child > tr:last-child > :first-child { border-bottom-left-radius: 5px; }
 table > :last-child > tr:last-child > :last-child { border-bottom-right-radius: 5px; }
-blockquote {
-  border-left: 2px solid var(--ai-line-strong) !important; color: var(--ai-muted) !important;
-}
-:where(blockquote) { margin-left: 0; padding-left: 12px; }
+blockquote { border-left: 2px solid var(--ai-line-strong) !important; }
+/* Fills and text colours a document gives these keep their mapped pair. */
+:where(blockquote) { margin-left: 0; padding-left: 12px; color: var(--ai-muted); }
 hr { border: 0 !important; height: 1px; background-color: var(--ai-line) !important; }
