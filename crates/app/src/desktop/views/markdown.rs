@@ -1,5 +1,5 @@
-//! The one Markdown reader every view uses: skills, policies, reports, answers
-//! and conversation messages. Authored messages keep leading rules as content.
+//! The one Markdown reader every view uses: skills, policies, reports, answers,
+//! plan step details, conversation and interaction messages. Authored messages keep leading rules as content.
 //! CommonMark with tables, strikethrough and task lists is parsed by
 //! `pulldown-cmark` into blocks, drawn in the document styles. Web addresses
 //! read as their site and open when clicked; it loads no images.

@@ -433,6 +433,14 @@ nested formatting without rescanning every mark for each span.
 Markdown nesting beyond 32 containers falls back to the complete source text,
 bounding parsing, element-tree rendering and destruction. URL recognition scans
 forward and closes each link by replacing only entries within its own label.
+Parsed blocks are kept by source text in a per-thread cache bounded at 8 MiB of
+source, dropping the half used longest ago when full, so a frame that draws
+unchanged text parses nothing: a 40 KB document costs about 18 µs to look up
+against 555 µs to parse (release build, the ignored `parse_cost` test in
+`views/markdown.rs`). Table columns share the width by their longest cell.
+`views/reading.rs` names the colours of tables, code, quotes, rules, links and
+selection once; native Markdown draws from it and the stylesheet for HTML
+documents is generated from it, so both surfaces show the same element alike.
 WebKit handles those selectors through the macOS responder chain, without a
 clipboard JavaScript bridge.
 
@@ -646,9 +654,22 @@ document and is limited to 4 MiB, including inline assets.
 
 `desktop::views::artifact_web` is the system-webview boundary. On macOS and Linux it
 creates a Wry/WebKit child view only for an opened document, positions it in
-the pane's content rectangle, and updates its host theme stylesheet. Text,
-backgrounds and controls follow the active app theme; layout and media retain
-their authored presentation. Stored HTML is not rewritten. The view is
+the pane's content rectangle, and runs the host theme script
+(`assets/document/theme.js`, built once per theme by `views/reading.rs`). The
+script replaces each colour in the document's own style rules and inline
+styles with the theme colour playing the same part: a neutral by where it sits
+between the document's own page and text colour, a chromatic colour by the
+theme colour nearest in hue, as a soft tint when it is a fill near the page.
+Cards, status colours and chips therefore keep their meaning in any theme, and
+a document written for a light page reads correctly in a dark theme whatever
+the system appearance. The authored values are kept in the page, so a theme
+change maps from them again without a reload, and later changes to styles are
+observed. `assets/document/theme.css` then gives tables, code, quotes, rules
+and links the shared reading look and exposes the theme as `--ai-*` custom
+properties that a document may use. Shadows, SVG, images, video, canvas and
+keyframes keep their authored colours, as does a style sheet the page cannot
+read. Layout and media retain their authored presentation. Stored HTML is not
+rewritten. The view is
 hidden while native overlays or pane dragging need that space. Closing the
 document or hiding its pane releases the web view, so reopening starts a fresh
 document runtime. Native terminals, menus and report views do not use WebKit.
@@ -756,7 +777,8 @@ build-time advisory exception are described below.
   screenshot-drop staging. Each is MIT OR Apache-2.0.
 - **`pulldown-cmark` 0.13.6:** MIT-licensed CommonMark parser, pinned exactly
   with default features off, behind the one Markdown reader that skills,
-  policies, reports, answers and conversation messages use (`views/markdown.rs`).
+  policies, reports, answers, conversation messages, interaction messages and
+  plan step details use (`views/markdown.rs`).
   Authored messages treat a leading `---` as a rule rather than front matter.
   It adds tables,
   strikethrough and task lists; the app draws the parsed blocks natively.
