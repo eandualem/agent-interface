@@ -609,6 +609,9 @@
         // and a change around a graphic can change the values it holds.
         if (top(record.target) || sheet(record.target)) whole = true;
         else if (record.target.querySelector?.('svg')) whole = true;
+        // The graphic's own class or attributes can match rules that set the
+        // properties it holds; its own style changes need no new pins.
+        else if (record.target.matches?.('svg') && record.attributeName !== 'style') whole = true;
         // Only a style attribute holds colours; any other attribute can still
         // change a fill through a selector, such as [aria-selected], which the
         // check below covers.
