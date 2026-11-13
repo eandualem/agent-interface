@@ -157,33 +157,65 @@
     return css(theme.text, color.a);
   };
 
-  // What the document's custom properties hold on its root, and where each
-  // rule or element that refers to them uses them, before mapping.
-  let roots = new Map();
-  let scopes = new Map();
+  // Custom properties used as the channels of a colour, as in
+  // `rgb(var(--bg))` or `hsl(var(--background))`, with that function. CSS
+  // resolves them on each element, so they are mapped where they are defined.
+  let channels = new Map();
+  const CHANNELS = /\b(rgba?|hsla?)\(\s*var\(\s*(--[\w-]+)\s*[,)]/gi;
+  // Note the channel properties `text` uses; whether any was new.
+  const learn = (text) => {
+    let fresh = false;
+    for (const [, fn, name] of text.matchAll(CHANNELS)) {
+      if (channels.has(name)) continue;
+      channels.set(name, fn.toLowerCase().startsWith('hsl') ? 'hsl' : 'rgb');
+      fresh = true;
+    }
+    return fresh;
+  };
 
-  // A custom property inside a larger expression, as in
-  // `rgb(1 2 3 / var(--alpha))`, reads as its value where `scope` uses it,
-  // else on the root; a value that is one `var()` alone follows that
-  // property's own mapping.
-  const expand = (value, scope) =>
-    value.includes('var(') && !/^\s*var\([^()]*\)\s*$/.test(value)
-      ? value.replace(
-        /var\(\s*(--[\w-]+)\s*(?:,([^()]*))?\)/g,
-        (whole, name, fallback) =>
-          scope?.get(name) || roots.get(name) || (fallback && fallback.trim()) || whole,
-      )
-      : value;
+  // Channels in the theme, written as they were: `0 0 0`, `0, 0, 0`, or for
+  // hsl `0 0% 0%`.
+  const rechannel = (value, fn) => {
+    const color = parse(`${fn}(${value})`);
+    if (!color || color.a <= 0) return null;
+    const { r, g, b } = parse(mapped({ ...color, a: 1 }, null));
+    let parts = [r, g, b].map((v) => String(Math.round(v * 255)));
+    if (fn === 'hsl') {
+      const max = Math.max(r, g, b);
+      const min = Math.min(r, g, b);
+      const l = (max + min) / 2;
+      const d = max - min;
+      const s = d ? d / (1 - Math.abs(2 * l - 1)) : 0;
+      let h = 0;
+      if (d) h = max === r ? ((g - b) / d) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+      parts = [`${+((h * 60 + 360) % 360).toFixed(1)}`, `${+(s * 100).toFixed(1)}%`, `${+(l * 100).toFixed(1)}%`];
+    }
+    return parts.join(value.includes(',') ? ', ' : ' ');
+  };
+
+  // A colour function whose alpha is a var(), as in `rgb(1 2 3 / var(--a))`:
+  // its colour is mapped and its alpha kept. A var() elsewhere in it is a
+  // channel or colour property, mapped where it is defined.
+  const ALPHA = /^([a-z]+)\((.*?)(?:\s*\/\s*|\s*,\s*)(var\(.*\))\)$/is;
+  const alpha = (token, fill) => {
+    const match = ALPHA.exec(token);
+    if (!match || match[2].includes('var(')) return token;
+    const color = parse(`${match[1]}(${match[2]})`);
+    if (!color) return token;
+    const { r, g, b } = parse(mapped({ ...color, a: 1 }, fill));
+    const part = (v) => Math.round(v * 255);
+    return `rgb(${part(r)} ${part(g)} ${part(b)} / ${match[3]})`;
+  };
 
   // `value` with each colour in it mapped, as a fill or a foreground.
-  const recolor = (authored, fill, scope) => {
-    if (authored.includes('url(')) return authored;
-    const value = expand(authored, scope);
+  const recolor = (value, fill) => {
+    if (value.includes('url(')) return value;
     return value.replace(TOKEN, (token, at) => {
       const before = value[at - 1] || '';
       const after = value[at + token.length] || '';
       const word = /^[a-z]+$/i.test(token);
       if (word && (/[-\w]/.test(before) || /[-\w(]/.test(after))) return token;
+      if (token.includes('var(')) return alpha(token, fill);
       const color = parse(token);
       return color && color.a > 0 ? mapped(color, fill) : token;
     });
@@ -223,7 +255,6 @@
 
   const remap = (style, rule) => {
     const changes = [];
-    const scope = scopes.get(style);
     for (const name of names(style)) {
       const value = style.getPropertyValue(name);
       if (!value) continue;
@@ -231,14 +262,16 @@
       if (name.startsWith('--') && !name.startsWith('--ai-')) {
         // A property that holds one colour, a gradient, or another property
         // with a fallback; a shadow or a list keeps its own colours.
-        const color = parse(expand(value, scope));
+        const color = parse(value);
         if (color) {
           if (color.a > 0) next = mapped(color, null);
-        } else if (/gradient\(|^\s*var\(/i.test(value)) {
-          next = recolor(value, null, scope);
+        } else if (channels.has(name)) {
+          next = rechannel(value, channels.get(name));
+        } else if (/gradient\(|^\s*var\(|^\s*[a-z-]+\([^]*\)\s*$/i.test(value)) {
+          next = recolor(value, null);
         }
       } else if (COLOR.test(name) || (SHORTHAND.test(name) && value.includes('var('))) {
-        next = recolor(value, name.startsWith('background'), scope);
+        next = recolor(value, name.startsWith('background'));
       }
       if (next && next !== value) changes.push([name, value, style.getPropertyPriority(name), next]);
     }
@@ -288,42 +321,12 @@
       }
     }
     for (const element of document.querySelectorAll('[style]')) {
-      if (!element.closest('svg')) out.push([element.style, null, element]);
+      if (!element.closest('svg')) out.push([element.style, null]);
     }
     return out;
   };
 
-  const measure = (all) => {
-    const root = getComputedStyle(document.documentElement);
-    roots = new Map();
-    for (const [style] of all) {
-      for (const name of names(style)) {
-        if (!name.startsWith('--') || roots.has(name)) continue;
-        const value = root.getPropertyValue(name).trim();
-        if (value) roots.set(name, value);
-      }
-    }
-    // A rule reads its properties on the first element it matches, as with
-    // `.badge { --channels: 0 0 0; background: rgb(var(--channels)) }`.
-    scopes = new Map();
-    for (const [style, rule, element] of all) {
-      const used = [...style.cssText.matchAll(/var\(\s*(--[\w-]+)/g)].map(([, name]) => name);
-      if (!used.length) continue;
-      let target = element;
-      try {
-        target ||= rule && document.querySelector(rule.selectorText);
-      } catch {
-        // A selector that cannot be queried, such as a nested one, reads the root.
-      }
-      if (!target) continue;
-      const computed = getComputedStyle(target);
-      const scope = new Map();
-      for (const name of used) {
-        const value = computed.getPropertyValue(name).trim();
-        if (value) scope.set(name, value);
-      }
-      scopes.set(style, scope);
-    }
+  const measure = () => {
     const solid = (element, property) => {
       const color = element && parse(getComputedStyle(element)[property]);
       return color && color.a > 0.5 ? oklch(color).l : null;
@@ -496,7 +499,9 @@
       const all = declarations();
       all.forEach(([style]) => restore(style));
       const pinned = pin(all);
-      measure(all);
+      channels = new Map();
+      for (const [style] of all) learn(style.cssText);
+      measure();
       all.forEach(([style, rule]) => remap(style, rule));
       const held = pinned();
       const variables = Object.entries(T.variables || {})
@@ -521,6 +526,8 @@
   // One element's inline style, after the document changed it.
   const touch = (element) => {
     if (!(element instanceof Element) || element.closest('svg')) return;
+    // A new channel property may be defined in rules mapped without it.
+    if (learn(element.style.cssText)) S.schedule();
     restore(element.style);
     remap(element.style);
   };
