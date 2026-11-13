@@ -171,6 +171,12 @@
     /\b(rgba?|hsla?)\(\s*(var\((?:[^()]|\((?:[^()]|\([^()]*\))*\))*\))/gi;
   const ALIASES = /(--[\w-]+)\s*:\s*(var\([^;}]*)/g;
   const REFERENCES = /var\(\s*(--[\w-]+)/g;
+  // Colours built from one property per component, as in
+  // `rgb(var(--r) var(--g) var(--b))`: mapped together where one block
+  // defines all three.
+  let triples = new Map();
+  const TRIPLES =
+    /\b(rgba?|hsla?)\(\s*var\(\s*(--[\w-]+)\s*\)\s*,?\s*var\(\s*(--[\w-]+)\s*\)\s*,?\s*var\(\s*(--[\w-]+)\s*\)/gi;
   // Note the channel properties and aliases `text` uses; whether any channel
   // property was new.
   const learn = (text) => {
@@ -189,6 +195,9 @@
         aliases.get(name).add(target);
         if (channels.has(name)) add(target, channels.get(name));
       }
+    }
+    for (const [, fn, ...names] of text.matchAll(TRIPLES)) {
+      triples.set(names.join(), [fn.toLowerCase().startsWith('hsl') ? 'hsl' : 'rgb', names]);
     }
     for (const [, fn, argument] of text.matchAll(CHANNELS)) {
       for (const [, name] of argument.matchAll(REFERENCES)) {
@@ -220,18 +229,21 @@
     const color = parse(`${fn}(${value})`);
     if (!color || color.a <= 0) return null;
     const { r, g, b } = parse(mapped({ ...color, a: 1 }, null));
-    let parts = [r, g, b].map((v) => String(Math.round(v * 255)));
-    if (fn === 'hsl') {
-      const max = Math.max(r, g, b);
-      const min = Math.min(r, g, b);
-      const l = (max + min) / 2;
-      const d = max - min;
-      const s = d ? d / (1 - Math.abs(2 * l - 1)) : 0;
-      let h = 0;
-      if (d) h = max === r ? ((g - b) / d) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
-      parts = [`${+((h * 60 + 360) % 360).toFixed(1)}`, `${+(s * 100).toFixed(1)}%`, `${+(l * 100).toFixed(1)}%`];
-    }
-    return parts.join(value.includes(',') ? ', ' : ' ') + tail;
+    return components({ r, g, b }, fn).join(value.includes(',') ? ', ' : ' ') + tail;
+  };
+
+  // A colour's three components as written for `fn`: rgb 0 to 255, or hsl
+  // degrees and percentages.
+  const components = ({ r, g, b }, fn) => {
+    if (fn !== 'hsl') return [r, g, b].map((v) => String(Math.round(v * 255)));
+    const max = Math.max(r, g, b);
+    const min = Math.min(r, g, b);
+    const l = (max + min) / 2;
+    const d = max - min;
+    const s = d ? d / (1 - Math.abs(2 * l - 1)) : 0;
+    let h = 0;
+    if (d) h = max === r ? ((g - b) / d) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+    return [`${+((h * 60 + 360) % 360).toFixed(1)}`, `${+(s * 100).toFixed(1)}%`, `${+(l * 100).toFixed(1)}%`];
   };
 
   // A colour function whose alpha is a var(), as in `rgb(1 2 3 / var(--a))`:
@@ -312,10 +324,16 @@
   // A rule that reaches only SVG content, which keeps its own colours like
   // the graphic's inline styles; a rule matching nothing yet is mapped.
   // State pseudo-classes are set aside, so `svg:hover` counts before a hover.
-  const STATE = /:(?:hover|focus|focus-within|focus-visible|active|visited|checked|target)\b/g;
+  const STATE =
+    /:(?:hover|focus-within|focus-visible|focus|active|visited|checked|target)(?![\w-])/g;
+  // A negation or list that holds only states goes with them, so
+  // `svg:not(:hover)` reads as `svg`, not the invalid `svg:not()`.
+  const ONLY = new RegExp(`:(?:not|is|where)\\((?:\\s*,?\\s*${STATE.source})+\\s*\\)`, 'g');
   const graphic = (rule) => {
     try {
-      const found = document.querySelectorAll(rule.selectorText.replace(STATE, ''));
+      const found = document.querySelectorAll(
+        rule.selectorText.replace(ONLY, '').replace(STATE, ''),
+      );
       return found.length > 0 && Array.from(found).every((element) => element.closest('svg'));
     } catch {
       return false;
@@ -344,6 +362,18 @@
       }
       if (next && next !== value) changes.push([name, value, style.getPropertyPriority(name), next]);
     }
+    for (const [fn, parts] of triples.values()) {
+      const values = parts.map((name) => style.getPropertyValue(name).trim());
+      if (values.some((value) => !value || value.includes('var('))) continue;
+      const color = parse(`${fn}(${values.join(' ')})`);
+      if (!color || color.a <= 0) continue;
+      const next = components(parse(mapped({ ...color, a: 1 }, null)), fn);
+      parts.forEach((name, at) => {
+        if (next[at] !== values[at]) {
+          changes.push([name, style.getPropertyValue(name), style.getPropertyPriority(name), next[at]]);
+        }
+      });
+    }
     if (!changes.length) return;
     if (rule && graphic(rule)) {
       S.kept.push(rule);
@@ -358,7 +388,8 @@
 
   // Whether any rule depends on hover, focus or press, which change fills
   // without changing the document.
-  const STATES = /:(?:hover|focus|focus-within|focus-visible|active|checked|indeterminate)\b/;
+  const STATES =
+    /:(?:hover|focus-within|focus-visible|focus|active|checked|indeterminate)(?![\w-])/;
   let interactive = false;
   // Whether the document styles its own selection.
   let selecting = false;
@@ -575,6 +606,7 @@
       S.kept = [];
       channels = new Map();
       aliases = new Map();
+      triples = new Map();
       for (const [style] of all) learn(style.cssText);
       measure();
       all.forEach(([style, rule]) => remap(style, rule));

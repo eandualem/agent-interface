@@ -674,11 +674,14 @@ Stored HTML is not rewritten; the script changes the page in memory:
   fallback, so CSS resolves it on each element as written. A property used as
   the channels of a colour, as in `rgb(var(--bg))` or
   `hsl(var(--background))`, directly or through aliases and their fallbacks,
-  is mapped in its own format, keeping any alpha it carries. A colour function
-  whose alpha is a `var()` keeps that alpha; in any other colour function with
-  a `var()`, such as `color-mix()`, the literal colours and channel fallbacks
-  are mapped and the references kept. A `background`, `border` or other colour
-  shorthand written with `var()` is mapped as a whole.
+  is mapped in its own format, keeping any alpha it carries. Separate
+  component properties, as in `rgb(var(--r) var(--g) var(--b))`, are mapped
+  together where one block defines all three; components defined in different
+  blocks keep their values. A colour function whose alpha is a `var()` keeps
+  that alpha; in any other colour function with a `var()`, such as
+  `color-mix()`, the literal colours and channel fallbacks are mapped and the
+  references kept. A `background`, `border` or other colour shorthand written
+  with `var()` is mapped as a whole.
 - **Left as authored:** shadows, SVG (its inline styles, rules that reach only
   SVG, state rules such as `svg:hover` included, and the colour custom
   properties it uses from outside), images, video, canvas, keyframes and any
