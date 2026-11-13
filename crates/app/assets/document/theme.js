@@ -157,24 +157,28 @@
     return css(theme.text, color.a);
   };
 
-  // What the document's custom properties hold on its root, before mapping.
+  // What the document's custom properties hold on its root, and where each
+  // rule or element that refers to them uses them, before mapping.
   let roots = new Map();
+  let scopes = new Map();
 
   // A custom property inside a larger expression, as in
-  // `rgb(1 2 3 / var(--alpha))`, reads as its root value; a value that is one
-  // `var()` alone follows that property's own mapping.
-  const expand = (value) =>
+  // `rgb(1 2 3 / var(--alpha))`, reads as its value where `scope` uses it,
+  // else on the root; a value that is one `var()` alone follows that
+  // property's own mapping.
+  const expand = (value, scope) =>
     value.includes('var(') && !/^\s*var\([^()]*\)\s*$/.test(value)
       ? value.replace(
         /var\(\s*(--[\w-]+)\s*(?:,([^()]*))?\)/g,
-        (whole, name, fallback) => roots.get(name) || (fallback && fallback.trim()) || whole,
+        (whole, name, fallback) =>
+          scope?.get(name) || roots.get(name) || (fallback && fallback.trim()) || whole,
       )
       : value;
 
   // `value` with each colour in it mapped, as a fill or a foreground.
-  const recolor = (authored, fill) => {
+  const recolor = (authored, fill, scope) => {
     if (authored.includes('url(')) return authored;
-    const value = expand(authored);
+    const value = expand(authored, scope);
     return value.replace(TOKEN, (token, at) => {
       const before = value[at - 1] || '';
       const after = value[at + token.length] || '';
@@ -219,6 +223,7 @@
 
   const remap = (style, rule) => {
     const changes = [];
+    const scope = scopes.get(style);
     for (const name of names(style)) {
       const value = style.getPropertyValue(name);
       if (!value) continue;
@@ -226,14 +231,14 @@
       if (name.startsWith('--') && !name.startsWith('--ai-')) {
         // A property that holds one colour, a gradient, or another property
         // with a fallback; a shadow or a list keeps its own colours.
-        const color = parse(expand(value));
+        const color = parse(expand(value, scope));
         if (color) {
           if (color.a > 0) next = mapped(color, null);
         } else if (/gradient\(|^\s*var\(/i.test(value)) {
-          next = recolor(value, null);
+          next = recolor(value, null, scope);
         }
       } else if (COLOR.test(name) || (SHORTHAND.test(name) && value.includes('var('))) {
-        next = recolor(value, name.startsWith('background'));
+        next = recolor(value, name.startsWith('background'), scope);
       }
       if (next && next !== value) changes.push([name, value, style.getPropertyPriority(name), next]);
     }
@@ -283,7 +288,7 @@
       }
     }
     for (const element of document.querySelectorAll('[style]')) {
-      if (!element.closest('svg')) out.push([element.style, null]);
+      if (!element.closest('svg')) out.push([element.style, null, element]);
     }
     return out;
   };
@@ -297,6 +302,27 @@
         const value = root.getPropertyValue(name).trim();
         if (value) roots.set(name, value);
       }
+    }
+    // A rule reads its properties on the first element it matches, as with
+    // `.badge { --channels: 0 0 0; background: rgb(var(--channels)) }`.
+    scopes = new Map();
+    for (const [style, rule, element] of all) {
+      const used = [...style.cssText.matchAll(/var\(\s*(--[\w-]+)/g)].map(([, name]) => name);
+      if (!used.length) continue;
+      let target = element;
+      try {
+        target ||= rule && document.querySelector(rule.selectorText);
+      } catch {
+        // A selector that cannot be queried, such as a nested one, reads the root.
+      }
+      if (!target) continue;
+      const computed = getComputedStyle(target);
+      const scope = new Map();
+      for (const name of used) {
+        const value = computed.getPropertyValue(name).trim();
+        if (value) scope.set(name, value);
+      }
+      scopes.set(style, scope);
     }
     const solid = (element, property) => {
       const color = element && parse(getComputedStyle(element)[property]);

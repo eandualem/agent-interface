@@ -670,9 +670,10 @@ Stored HTML is not rewritten; the script changes the page in memory:
   whatever the system appearance. Any CSS colour syntax is read, including
   `oklch()`, `lab()` and `color()`, converted through a one-pixel canvas.
 - **Variables.** A custom property is mapped where it is defined when it holds
-  one colour, a gradient or a `var()` reference with a fallback; inside a larger
-  colour expression it reads as its root value. A `background`, `border` or
-  other colour shorthand written with `var()` is mapped as a whole.
+  one colour, a gradient or a `var()` reference with a fallback; inside a
+  larger colour expression it reads as its value where the rule or element
+  uses it. A `background`, `border` or other colour shorthand written with
+  `var()` is mapped as a whole.
 - **Left as authored:** shadows, SVG (its inline styles, rules that reach only
   SVG, and the colour custom properties it uses from outside), images, video,
   canvas, keyframes and any style sheet the page cannot read. A graphic holds

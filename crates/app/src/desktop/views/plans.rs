@@ -930,7 +930,7 @@ fn detail(
             gap: t.space.s6,
         };
         column = column.child(markdown::render_in(
-            &markdown::authored(item.detail.trim()),
+            &markdown::authored(&item.detail),
             &look,
             pane,
             cx,
