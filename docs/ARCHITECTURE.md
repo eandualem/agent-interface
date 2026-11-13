@@ -686,7 +686,8 @@ Stored HTML is not rewritten; the script changes the page in memory:
   those properties through a host rule with no specificity, so its own rules
   (such as `svg:hover`) and inline style still win; the values are taken again
   when the graphic or an element around it changes, after hover and focus
-  changes, and after a resize.
+  changes, and after a resize. A rule kept for SVG alone is mapped once it
+  reaches other elements.
 - **Theme changes** map from the authored values, which the script keeps, with
   no reload; so does a change of the system appearance, which can switch the
   document's own light or dark rules. The document's transitions are held while colours are restored,

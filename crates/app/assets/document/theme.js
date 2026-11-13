@@ -325,7 +325,11 @@
       }
       if (next && next !== value) changes.push([name, value, style.getPropertyPriority(name), next]);
     }
-    if (!changes.length || (rule && graphic(rule))) return;
+    if (!changes.length) return;
+    if (rule && graphic(rule)) {
+      S.kept.push(rule);
+      return;
+    }
     for (const change of changes) {
       style.setProperty(change[0], change[3], change[2]);
       change[3] = style.getPropertyValue(change[0]);
@@ -549,6 +553,7 @@
       const all = declarations();
       all.forEach(([style]) => restore(style));
       const pinned = pin(all);
+      S.kept = [];
       channels = new Map();
       aliases = new Map();
       for (const [style] of all) learn(style.cssText);
@@ -648,7 +653,8 @@
     window.addEventListener('resize', () => {
       const state = window[KEY];
       state.recheck();
-      if (!state.pins) return;
+      // Pins may be needed only at the new size, so any graphic counts.
+      if (!document.querySelector('svg')) return;
       clearTimeout(state.resizing);
       state.resizing = setTimeout(() => state.apply(), 150);
     });
@@ -745,6 +751,12 @@
     }
     S.observer.takeRecords();
     watch();
+    // A rule kept for SVG alone that now reaches other elements, as when a
+    // paragraph takes a class only SVG text had, is mapped with the rest.
+    if (any && (S.kept || []).some((rule) => !graphic(rule))) {
+      S.schedule();
+      return;
+    }
     // A changed fill changes which links and code read against it.
     if (any) S.recheck();
   };
