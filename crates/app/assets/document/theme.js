@@ -165,7 +165,8 @@
   // channel property's alias makes the property it names one too.
   let aliases = new Map();
   const CHANNELS = /\b(rgba?|hsla?)\(\s*var\(\s*(--[\w-]+)\s*[,)]/gi;
-  const ALIASES = /(--[\w-]+)\s*:\s*var\(\s*(--[\w-]+)/g;
+  const ALIASES = /(--[\w-]+)\s*:\s*(var\([^;}]*)/g;
+  const REFERENCES = /var\(\s*(--[\w-]+)/g;
   // Note the channel properties and aliases `text` uses; whether any channel
   // property was new.
   const learn = (text) => {
@@ -176,10 +177,14 @@
       fresh = true;
       for (const target of aliases.get(name) || []) add(target, fn);
     };
-    for (const [, name, target] of text.matchAll(ALIASES)) {
+    // Every property an alias names, its fallbacks' included, as in
+    // `--surface: var(--missing, var(--base))`.
+    for (const [, name, value] of text.matchAll(ALIASES)) {
       if (!aliases.has(name)) aliases.set(name, new Set());
-      aliases.get(name).add(target);
-      if (channels.has(name)) add(target, channels.get(name));
+      for (const [, target] of value.matchAll(REFERENCES)) {
+        aliases.get(name).add(target);
+        if (channels.has(name)) add(target, channels.get(name));
+      }
     }
     for (const [, fn, name] of text.matchAll(CHANNELS)) {
       add(name, fn.toLowerCase().startsWith('hsl') ? 'hsl' : 'rgb');
@@ -655,8 +660,8 @@
     window.addEventListener('resize', () => {
       const state = window[KEY];
       state.recheck();
-      // Pins may be needed only at the new size, so any graphic counts.
-      if (!document.querySelector('svg')) return;
+      // A media query can change the page's own colours, which are measured
+      // again, and the values a graphic should hold.
       clearTimeout(state.resizing);
       state.resizing = setTimeout(() => state.apply(), 150);
     });

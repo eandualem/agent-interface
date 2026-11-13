@@ -673,12 +673,12 @@ Stored HTML is not rewritten; the script changes the page in memory:
   one colour, a gradient, a colour function or a `var()` reference with a
   fallback, so CSS resolves it on each element as written. A property used as
   the channels of a colour, as in `rgb(var(--bg))` or
-  `hsl(var(--background))`, directly or through aliases, is mapped in its own
-  format, keeping any alpha it carries. A colour function whose alpha is a
-  `var()` keeps that alpha; in any other colour function with a `var()`, such
-  as `color-mix()`, the literal colours and channel fallbacks are mapped and
-  the references kept. A `background`, `border` or other colour shorthand
-  written with `var()` is mapped as a whole.
+  `hsl(var(--background))`, directly or through aliases and their fallbacks,
+  is mapped in its own format, keeping any alpha it carries. A colour function
+  whose alpha is a `var()` keeps that alpha; in any other colour function with
+  a `var()`, such as `color-mix()`, the literal colours and channel fallbacks
+  are mapped and the references kept. A `background`, `border` or other colour
+  shorthand written with `var()` is mapped as a whole.
 - **Left as authored:** shadows, SVG (its inline styles, rules that reach only
   SVG, state rules such as `svg:hover` included, and the colour custom
   properties it uses from outside), images, video, canvas, keyframes and any
@@ -690,8 +690,9 @@ Stored HTML is not rewritten; the script changes the page in memory:
   reaches other elements.
 - **Theme changes** map from the authored values, which the script keeps, with
   no reload; so does a change of the system appearance, which can switch the
-  document's own light or dark rules. The document's transitions are held while colours are restored,
-  measured and mapped.
+  document's own light or dark rules, and so does a resize, after it settles,
+  since a media query can change the page's own colours. The document's
+  transitions are held while colours are restored, measured and mapped.
 - **Later changes** are mapped too: style elements and style sheet links (also
   inside added subtrees, when their attributes change, and when a sheet
   finishes loading), inline styles, any attribute of the root or body, and
