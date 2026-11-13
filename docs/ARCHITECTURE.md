@@ -687,19 +687,18 @@ Stored HTML is not rewritten; the script changes the page in memory:
 - **Reading elements.** `assets/document/theme.css` gives tables, code, quotes,
   rules and links the shared reading look. It forces only their lines and
   shape; fills and text colours are defaults, so a fill the document gives an
-  element keeps the text mapped for it. A table header takes the default
-  header fill only where its own text reads on it. It exposes the theme as `--ai-*`
+  element keeps the text mapped for it. A code block or table header takes the
+  default fill only where all the text in it reads on it. It exposes the theme as `--ai-*`
   custom properties that a document may use.
-- **Links and inline code** take the theme's link and code colours unless those
-  would read below 3:1 against the fill behind them (translucent fills laid
-  over what is behind them); then they keep the colour mapped for that fill, or
-  take the theme's text or page colour, whichever reads, when the document
-  gives them none. A
-  part of a link with its own fill is checked the same way. All of them are
-  checked again shortly after any change to the page (a selector such as
-  `.selected + a` reaches beyond the changed element), after a transition or
-  animation ends, and after hover, focus and press when the document has
-  rules for those states.
+- **Links, inline code and quotes** take the theme's link, code and muted
+  colours unless those would read below 3:1 against the fill behind them
+  (translucent fills laid over what is behind them); then they keep the colour
+  mapped for that fill, or take the theme's text or page colour, whichever
+  reads, when the document gives them none. A part of a link with its own fill
+  is checked the same way. All of them are checked again shortly after any
+  change to the page (a selector such as `.selected + a` reaches beyond the
+  changed element), after a transition or animation ends, and after hover,
+  focus and press when the document has rules for those states.
 - **Selection.** Selected text keeps its own colour over a translucent accent,
   as in native readers, unless the document styles its own selection.
 

@@ -99,10 +99,16 @@
   const own = [
     ['a', parse((T.variables || {}).accent || '')],
     ['code, kbd, samp', parse((T.variables || {}).code || '')],
+    ['blockquote', parse((T.variables || {}).muted || '')],
   ];
   const OWN = own.map(([selector]) => selector).join(', ');
-  // The default fill of a table header, which its own text must read on.
-  const head = parse((T.variables || {})['table-head'] || '');
+  // The default fills the stylesheet gives these, which the text in them
+  // must read on.
+  const fills = [
+    ['pre', parse((T.variables || {}).block || '')],
+    ['th', parse((T.variables || {})['table-head'] || '')],
+  ];
+  const FILLS = fills.map(([selector]) => selector).join(', ');
   // Each theme colour's hue, and where it sits between the theme's page (0)
   // and text (1).
   const hues = (T.hues || []).map((value) => {
@@ -342,17 +348,36 @@
     element.setAttribute('data-ai-own', fill ? (ink ? 'ink' : 'page') : '');
   };
 
-  // The stylesheet gives links and inline code the theme's link and code
-  // colours, except where that would be hard to read against what is behind
-  // them; those keep the text colour mapped for their fill.
+  // Whether every piece of text in `element` reads on `fill`, apart from
+  // parts that have a fill of their own.
+  const fits = (element, fill) => {
+    const seen = new Set();
+    for (const part of [element, ...element.querySelectorAll('*')]) {
+      const text = Array.from(part.childNodes).some(
+        (node) => node.nodeType === Node.TEXT_NODE && node.data.trim(),
+      );
+      if (!text) continue;
+      const style = getComputedStyle(part);
+      if (part !== element && (parse(style.backgroundColor)?.a || 0) > 0.5) continue;
+      if (seen.has(style.color)) continue;
+      seen.add(style.color);
+      const ink = parse(style.color);
+      if (!ink || contrast(ink, fill) < 3) return false;
+    }
+    return true;
+  };
+
+  // The stylesheet gives links, inline code and quotes the theme's link, code
+  // and muted colours, except where that would be hard to read against what
+  // is behind them; those keep the text colour mapped for their fill.
   const readable = (root) => {
     if (!root) return;
-    // A header whose text would not read on the default header fill keeps
-    // the fill behind it, such as its row's.
-    const cells = root.matches?.('th') ? [root] : [];
-    for (const cell of [...cells, ...root.querySelectorAll('th')]) {
-      const ink = parse(getComputedStyle(cell).color);
-      cell.toggleAttribute('data-ai-own-fill', !ink || !head || contrast(ink, head) < 3);
+    // A code block or header takes the default fill only where all its text
+    // reads on it; otherwise it keeps the fill behind it, such as its row's.
+    const blocks = root.matches?.(FILLS) ? [root] : [];
+    for (const element of [...blocks, ...root.querySelectorAll(FILLS)]) {
+      const fill = fills.find(([selector]) => element.matches(selector))[1];
+      element.toggleAttribute('data-ai-own-fill', !fill || !fits(element, fill));
     }
     const found = root.matches?.(OWN) ? [root] : [];
     for (const element of [...found, ...root.querySelectorAll(OWN)]) {
