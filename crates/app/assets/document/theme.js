@@ -28,6 +28,9 @@
   const parse = (text) => {
     const key = text.trim().toLowerCase();
     if (!key || KEEP.has(key) || !context) return null;
+    // In a document without a doctype the canvas reads bare hex digits, as in
+    // `--weight: 700`, as a colour; no colour value is written that way.
+    if (/^[0-9a-f]+$/.test(key)) return null;
     if (S.parsed.has(key)) return S.parsed.get(key);
     const read = (first) => {
       context.fillStyle = first;
@@ -177,8 +180,8 @@
   let triples = new Map();
   const TRIPLES =
     /\b(rgba?|hsla?)\(\s*var\(\s*(--[\w-]+)\s*\)\s*,?\s*var\(\s*(--[\w-]+)\s*\)\s*,?\s*var\(\s*(--[\w-]+)\s*\)/gi;
-  // Note the channel properties and aliases `text` uses; whether any channel
-  // property was new.
+  // Note the channel properties, aliases and component triples `text` uses;
+  // whether any of the properties or triples was new.
   const learn = (text) => {
     let fresh = false;
     const add = (name, fn) => {
@@ -197,7 +200,9 @@
       }
     }
     for (const [, fn, ...names] of text.matchAll(TRIPLES)) {
-      triples.set(names.join(), [fn.toLowerCase().startsWith('hsl') ? 'hsl' : 'rgb', names]);
+      const key = names.join();
+      if (!triples.has(key)) fresh = true;
+      triples.set(key, [fn.toLowerCase().startsWith('hsl') ? 'hsl' : 'rgb', names]);
     }
     for (const [, fn, argument] of text.matchAll(CHANNELS)) {
       for (const [, name] of argument.matchAll(REFERENCES)) {
