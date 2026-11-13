@@ -101,6 +101,8 @@
     ['code, kbd, samp', parse((T.variables || {}).code || '')],
   ];
   const OWN = own.map(([selector]) => selector).join(', ');
+  // The default fill of a table header, which its own text must read on.
+  const head = parse((T.variables || {})['table-head'] || '');
   // Each theme colour's hue, and where it sits between the theme's page (0)
   // and text (1).
   const hues = (T.hues || []).map((value) => {
@@ -345,6 +347,13 @@
   // them; those keep the text colour mapped for their fill.
   const readable = (root) => {
     if (!root) return;
+    // A header whose text would not read on the default header fill keeps
+    // the fill behind it, such as its row's.
+    const cells = root.matches?.('th') ? [root] : [];
+    for (const cell of [...cells, ...root.querySelectorAll('th')]) {
+      const ink = parse(getComputedStyle(cell).color);
+      cell.toggleAttribute('data-ai-own-fill', !ink || !head || contrast(ink, head) < 3);
+    }
     const found = root.matches?.(OWN) ? [root] : [];
     for (const element of [...found, ...root.querySelectorAll(OWN)]) {
       if (element.closest('pre, svg')) continue;
@@ -496,7 +505,7 @@
     let any = false;
     for (const record of records) {
       if (record.type === 'attributes') {
-        if (record.attributeName === 'data-ai-own') continue;
+        if (record.attributeName.startsWith('data-ai-')) continue;
         any = true;
         if (top(record.target)) whole = true;
         // Only a style attribute holds colours; any other attribute can still

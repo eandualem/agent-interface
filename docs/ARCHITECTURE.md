@@ -687,7 +687,8 @@ Stored HTML is not rewritten; the script changes the page in memory:
 - **Reading elements.** `assets/document/theme.css` gives tables, code, quotes,
   rules and links the shared reading look. It forces only their lines and
   shape; fills and text colours are defaults, so a fill the document gives an
-  element keeps the text mapped for it. It exposes the theme as `--ai-*`
+  element keeps the text mapped for it. A table header takes the default
+  header fill only where its own text reads on it. It exposes the theme as `--ai-*`
   custom properties that a document may use.
 - **Links and inline code** take the theme's link and code colours unless those
   would read below 3:1 against the fill behind them (translucent fills laid

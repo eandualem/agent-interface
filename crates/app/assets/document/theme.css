@@ -24,7 +24,8 @@ table {
   border: 1px solid var(--ai-line) !important; border-radius: 6px;
 }
 :is(th, td) { border: 0 !important; border-bottom: 1px solid var(--ai-line) !important; }
-:where(th) { background-color: var(--ai-table-head); color: var(--ai-text); font-weight: 600; }
+:where(th) { font-weight: 600; }
+:where(th:not([data-ai-own-fill])) { background-color: var(--ai-table-head); }
 table > :last-child > tr:last-child > :is(th, td) { border-bottom: 0 !important; }
 table > :first-child > tr:first-child > :first-child { border-top-left-radius: 5px; }
 table > :first-child > tr:first-child > :last-child { border-top-right-radius: 5px; }
