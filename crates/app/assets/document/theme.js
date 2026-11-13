@@ -189,10 +189,15 @@
       const value = style.getPropertyValue(name);
       if (!value) continue;
       let next = null;
-      if (name.startsWith('--')) {
-        // Only a property that holds one colour: a shadow or a list keeps its own.
-        const color = name.startsWith('--ai-') ? null : parse(expand(value));
-        if (color && color.a > 0) next = mapped(color);
+      if (name.startsWith('--') && !name.startsWith('--ai-')) {
+        // A property that holds one colour, a gradient, or another property
+        // with a fallback; a shadow or a list keeps its own colours.
+        const color = parse(expand(value));
+        if (color) {
+          if (color.a > 0) next = mapped(color);
+        } else if (/gradient\(|^\s*var\(/i.test(value)) {
+          next = recolor(value);
+        }
       } else if (COLOR.test(name)) {
         next = recolor(value);
       }
