@@ -296,14 +296,35 @@
 
   // The fill an element is read against: its own, else the nearest behind
   // it; null when that is an image or gradient.
+  // Translucent fills are laid over what is behind them.
   const behind = (element) => {
+    const layers = [];
+    let base = theme.page;
     for (let at = element; at; at = at.parentElement) {
       const style = getComputedStyle(at);
       if (style.backgroundImage !== 'none') return null;
       const fill = parse(style.backgroundColor);
-      if (fill && fill.a > 0.5) return fill;
+      if (!fill || fill.a <= 0) continue;
+      if (fill.a >= 0.999) {
+        base = fill;
+        break;
+      }
+      layers.push(fill);
     }
-    return theme.page;
+    return layers.reduceRight((under, layer) => mix(under, layer, layer.a), base);
+  };
+
+  // Mark `element` when the theme's `color` would not read against what is
+  // behind it. The mark says which of the theme's text and page colours
+  // reads better there, for an element the document gives no colour.
+  const mark = (element, color) => {
+    const fill = behind(element);
+    if (fill && color && contrast(fill, color) >= 3) {
+      element.removeAttribute('data-ai-own');
+      return;
+    }
+    const ink = fill && contrast(fill, theme.text) >= contrast(fill, theme.page);
+    element.setAttribute('data-ai-own', fill ? (ink ? 'ink' : 'page') : '');
   };
 
   // The stylesheet gives links and inline code the theme's link and code
@@ -315,8 +336,16 @@
     for (const element of [...found, ...root.querySelectorAll(OWN)]) {
       if (element.closest('pre, svg')) continue;
       const color = own.find(([selector]) => element.matches(selector))[1];
-      const fill = behind(element);
-      element.toggleAttribute('data-ai-own', !fill || !color || contrast(fill, color) < 3);
+      mark(element, color);
+      // The link colour reaches inside a link too: a part with its own fill
+      // keeps its own colour where the link colour would not read on it.
+      if (!element.matches('a')) continue;
+      for (const part of element.querySelectorAll('*')) {
+        const style = getComputedStyle(part);
+        const filled = style.backgroundImage !== 'none' || (parse(style.backgroundColor)?.a || 0) > 0;
+        if (filled) mark(part, color);
+        else part.removeAttribute('data-ai-own');
+      }
     }
   };
 
@@ -443,14 +472,16 @@
     const top = (node) => node === document.documentElement || node === document.body;
     let whole = false;
     const elements = new Set();
+    const changed = new Set();
     const added = [];
     for (const record of records) {
       if (record.type === 'attributes') {
         if (record.attributeName === 'data-ai-own') continue;
         if (top(record.target)) whole = true;
-        else if (record.attributeName === 'style' || record.attributeName === 'class') {
-          elements.add(record.target);
-        }
+        // Any attribute can change a fill through a selector, such as
+        // [aria-selected] or [open]; only a style attribute holds colours.
+        else if (record.attributeName === 'style') elements.add(record.target);
+        else changed.add(record.target);
       } else if (record.type === 'characterData') {
         whole ||= sheet(record.target.parentNode);
       } else {
@@ -475,7 +506,7 @@
     try {
       elements.forEach(touch);
       // A changed fill changes which links and code read against it.
-      for (const element of [...elements, ...added]) {
+      for (const element of [...elements, ...changed, ...added]) {
         if (!(element instanceof Element)) continue;
         readable(element);
         readable(element.parentElement?.closest(OWN));
