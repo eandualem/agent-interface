@@ -179,7 +179,12 @@ pub fn run(directory: Option<PathBuf>) -> Result<(), String> {
                 }
             });
             cx.on_action(|_: &Quit, cx| {
-                cx.quit();
+                // Deferred: the action may have come from the Settings window.
+                cx.defer(|cx| {
+                    if settings_window::may_quit(cx) {
+                        cx.quit();
+                    }
+                });
             });
             cx.on_action(|_: &NewWindow, cx| {
                 // Dispatch currently borrows the originating window. Open after it

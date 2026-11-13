@@ -111,6 +111,23 @@ pub fn sign_in_ended(profile_id: &str, runtime: &str, cx: &mut App) {
     });
 }
 
+/// Whether the app may quit now. With unsaved theme edits, the first
+/// request brings Settings forward and asks; a second quits.
+pub fn may_quit(cx: &mut App) -> bool {
+    let Some(handle) = cx.try_global::<Open>().map(|Open(handle)| *handle) else {
+        return true;
+    };
+    handle
+        .update(cx, |view, window, cx| {
+            let may = view.may_close(cx);
+            if !may {
+                window.activate_window();
+            }
+            may
+        })
+        .unwrap_or(true)
+}
+
 /// Bring the Settings window forward, opening it if it is not open.
 pub fn show(cx: &mut App) {
     let open = cx.try_global::<Open>().map(|Open(handle)| *handle);
@@ -581,7 +598,7 @@ impl SettingsWindow {
                 &t.text.status,
             )
             .child(format!(
-                "This theme has unsaved changes. {save_key} saves them; Discard changes, or closing again, drops them."
+                "This theme has unsaved changes. {save_key} saves them; Discard changes, or closing or quitting again, drops them."
             )),
             None => Self::note(if unsaved {
                 format!("Unsaved changes. {save_key} saves and applies the theme.")
