@@ -1430,6 +1430,12 @@ impl Render for SettingsWindow {
                     window.remove_window();
                 }
             }))
+            // Close Pane's shortcut closes a window that has no panes.
+            .on_action(cx.listener(|view, _: &super::ClosePane, window, cx| {
+                if view.may_close(cx) {
+                    window.remove_window();
+                }
+            }))
             .child(super::window_controls::frame(body, "Settings", window, cx))
     }
 }
