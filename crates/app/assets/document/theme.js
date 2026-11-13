@@ -389,7 +389,9 @@
     }
     const found = root.matches?.(OWN) ? [root] : [];
     for (const element of [...found, ...root.querySelectorAll(OWN)]) {
-      if (element.closest('pre, svg')) continue;
+      // Code in a code block takes the block's colour; a link there is still
+      // given the link colour, so it is checked.
+      if (element.closest('svg') || (!element.matches('a') && element.closest('pre'))) continue;
       // Inside a link the link colour wins, so that is the colour to check.
       const link = element.parentElement?.closest('a');
       const color = (link ? own[0] : own.find(([selector]) => element.matches(selector)))[1];
@@ -492,6 +494,18 @@
     for (const name of ['transitionend', 'animationend']) {
       document.addEventListener(name, recheck(true), true);
     }
+    // A style sheet that finishes loading later, such as a replaced href,
+    // brings rules that were not there to map.
+    document.addEventListener(
+      'load',
+      (event) => {
+        const node = event.target;
+        if (node && node.id !== ID && (node.nodeName === 'LINK' || node.nodeName === 'STYLE')) {
+          window[KEY].schedule();
+        }
+      },
+      true,
+    );
   }
 
   // Rules changed through the style sheet objects leave no DOM record.
@@ -526,9 +540,11 @@
     });
   };
 
+  // A style element or style sheet link of the document's own.
+  const sheet = (node) =>
+    node && node.id !== ID && (node.nodeName === 'STYLE' || node.nodeName === 'LINK');
+
   S.changed = (records) => {
-    const sheet = (node) =>
-      node && node.id !== ID && (node.nodeName === 'STYLE' || node.nodeName === 'LINK');
     // A node added or removed with style sheets anywhere inside it.
     const holds = (node) =>
       sheet(node) || (node instanceof Element && Boolean(node.querySelector('style, link')));
@@ -542,7 +558,8 @@
       if (record.type === 'attributes') {
         if (record.attributeName.startsWith('data-ai-')) continue;
         any = true;
-        if (top(record.target)) whole = true;
+        // A sheet's href, media or disabled state changes which rules apply.
+        if (top(record.target) || sheet(record.target)) whole = true;
         // Only a style attribute holds colours; any other attribute can still
         // change a fill through a selector, such as [aria-selected], which the
         // check below covers.

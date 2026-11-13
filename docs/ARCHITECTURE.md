@@ -679,11 +679,12 @@ Stored HTML is not rewritten; the script changes the page in memory:
 - **Theme changes** map from the authored values, which the script keeps, with
   no reload. The document's transitions are held while colours are restored,
   measured and mapped.
-- **Later changes** are mapped too: style elements (also inside added
-  subtrees), inline styles, any attribute of the root or body, and rules changed
-  through `insertRule`, `deleteRule`, `replace`, `replaceSync`, `setProperty`
-  and `removeProperty`. A rule changed by assigning a style property directly
-  is mapped at the next of those.
+- **Later changes** are mapped too: style elements and style sheet links (also
+  inside added subtrees, when their attributes change, and when a sheet
+  finishes loading), inline styles, any attribute of the root or body, and
+  rules changed through `insertRule`, `deleteRule`, `replace`, `replaceSync`,
+  `setProperty` and `removeProperty`. A rule changed by assigning a style
+  property directly is mapped at the next of those.
 - **Reading elements.** `assets/document/theme.css` gives tables, code, quotes,
   rules and links the shared reading look. It forces only their lines and
   shape; fills and text colours are defaults, so a fill the document gives an
