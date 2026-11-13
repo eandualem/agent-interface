@@ -18,8 +18,10 @@
   ]);
   const COLOR = /(?:^|-)color$|^background-image$/;
   const TOKEN =
-    /#[0-9a-f]{3,8}\b|\b(?:rgb|hsl)a?\((?:[^()]|\([^()]*\))*\)|\b[a-z]+\b/gi;
-  const context = document.createElement('canvas').getContext('2d');
+    /#[0-9a-f]{3,8}\b|\b(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color|color-mix)\((?:[^()]|\([^()]*\))*\)|\b[a-z]+\b/gi;
+  const pixel = document.createElement('canvas');
+  pixel.width = pixel.height = 1;
+  const context = pixel.getContext('2d', { willReadFrequently: true });
 
   // A CSS colour as { r, g, b, a } with channels in 0..1, or null.
   const parse = (text) => {
@@ -41,6 +43,13 @@
         color = { r, g, b, a: 1 };
       } else if (rgba) {
         color = { r: rgba[1] / 255, g: rgba[2] / 255, b: rgba[3] / 255, a: +rgba[4] };
+      } else {
+        // Another colour space, such as oklch() or color(): paint it and
+        // read back the sRGB pixel.
+        context.clearRect(0, 0, 1, 1);
+        context.fillRect(0, 0, 1, 1);
+        const [r, g, b, a] = context.getImageData(0, 0, 1, 1).data;
+        color = { r: r / 255, g: g / 255, b: b / 255, a: a / 255 };
       }
     }
     if (S.parsed.size > 4096) S.parsed.clear();
@@ -163,7 +172,18 @@
     S.saved.delete(style);
   };
 
-  const remap = (style) => {
+  // A rule that reaches only SVG content, which keeps its own colours like
+  // the graphic's inline styles; a rule matching nothing yet is mapped.
+  const graphic = (rule) => {
+    try {
+      const found = document.querySelectorAll(rule.selectorText);
+      return found.length > 0 && Array.from(found).every((element) => element.closest('svg'));
+    } catch {
+      return false;
+    }
+  };
+
+  const remap = (style, rule) => {
     const changes = [];
     for (const name of names(style)) {
       const value = style.getPropertyValue(name);
@@ -178,7 +198,7 @@
       }
       if (next && next !== value) changes.push([name, value, style.getPropertyPriority(name), next]);
     }
-    if (!changes.length) return;
+    if (!changes.length || (rule && graphic(rule))) return;
     for (const change of changes) {
       style.setProperty(change[0], change[3], change[2]);
       change[3] = style.getPropertyValue(change[0]);
@@ -192,7 +212,7 @@
     const walk = (rules) => {
       for (const rule of rules) {
         if (rule.type === CSSRule.KEYFRAMES_RULE || rule.type === CSSRule.FONT_FACE_RULE) continue;
-        if (rule.style) out.push(rule.style);
+        if (rule.style) out.push([rule.style, rule.selectorText ? rule : null]);
         if (rule.cssRules) walk(rule.cssRules);
       }
     };
@@ -205,7 +225,7 @@
       }
     }
     for (const element of document.querySelectorAll('[style]')) {
-      if (!element.closest('svg')) out.push(element.style);
+      if (!element.closest('svg')) out.push([element.style, null]);
     }
     return out;
   };
@@ -213,7 +233,7 @@
   const measure = (all) => {
     const root = getComputedStyle(document.documentElement);
     roots = new Map();
-    for (const style of all) {
+    for (const [style] of all) {
       for (const name of names(style)) {
         if (!name.startsWith('--') || roots.has(name)) continue;
         const value = root.getPropertyValue(name).trim();
@@ -278,9 +298,9 @@
       const style = host();
       style.textContent = '';
       const all = declarations();
-      all.forEach(restore);
+      all.forEach(([style]) => restore(style));
       measure(all);
-      all.forEach(remap);
+      all.forEach(([style, rule]) => remap(style, rule));
       const variables = Object.entries(T.variables || {})
         .map(([name, value]) => `--ai-${name}:${value}!important;`)
         .join('');
@@ -339,7 +359,7 @@
     S.observer = S.observer || new MutationObserver((records) => window[KEY].changed(records));
     S.observer.observe(document, {
       subtree: true, childList: true, characterData: true,
-      attributes: true, attributeOldValue: true, attributeFilter: ['style', 'class'],
+      attributes: true,
     });
   };
 
@@ -349,18 +369,19 @@
     // A node added or removed with style sheets anywhere inside it.
     const holds = (node) =>
       sheet(node) || (node instanceof Element && Boolean(node.querySelector('style, link')));
-    // Expressions were mapped with the root's custom properties.
-    const variables = (record) =>
-      record.target === document.documentElement &&
-      record.attributeName === 'style' &&
-      `${record.oldValue || ''}${record.target.getAttribute('style') || ''}`.includes('--');
+    // The root and body may carry the document's own theme: a class, a data
+    // attribute or custom properties that expressions were expanded with.
+    const top = (node) => node === document.documentElement || node === document.body;
     let whole = false;
     const elements = new Set();
     const added = [];
     for (const record of records) {
       if (record.type === 'attributes') {
-        whole ||= variables(record);
-        elements.add(record.target);
+        if (record.attributeName === 'data-ai-filled') continue;
+        if (top(record.target)) whole = true;
+        else if (record.attributeName === 'style' || record.attributeName === 'class') {
+          elements.add(record.target);
+        }
       } else if (record.type === 'characterData') {
         whole ||= sheet(record.target.parentNode);
       } else {
