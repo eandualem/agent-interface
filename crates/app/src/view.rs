@@ -912,9 +912,22 @@ impl Render for TerminalView {
         let input = self.input.filter(|_| !self.panes().is_finished());
         let selection_move = Rc::new(cx.listener(Self::selection_move));
         let background = self.grid.borrow().appearance.background;
-        // The terminal's own red behind its own background colour, so a
-        // message reads in any theme.
-        let alert = self.grid.borrow().appearance.palette[1];
+        // The terminal's own red, with whichever of its text and background
+        // colours reads better on it, so a message shows in any theme.
+        let (alert, alert_text) = {
+            let grid = self.grid.borrow();
+            let appearance = &grid.appearance;
+            let red = appearance.palette[1];
+            let distance = |colour: Rgba| {
+                (colour.r - red.r).powi(2) + (colour.g - red.g).powi(2) + (colour.b - red.b).powi(2)
+            };
+            let text = if distance(appearance.background) >= distance(appearance.foreground) {
+                appearance.background
+            } else {
+                appearance.foreground
+            };
+            (red, text)
+        };
         let embedded = self.embedded;
         let panes = self.panes.clone();
         let message = self
@@ -1110,7 +1123,7 @@ impl Render for TerminalView {
                         .bottom_0()
                         .left_0()
                         .bg(alert)
-                        .text_color(background)
+                        .text_color(alert_text)
                         .text_sm()
                         .child(message),
                 )

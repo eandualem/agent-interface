@@ -193,7 +193,13 @@ fn name_of(text: &str) -> Option<String> {
 
 /// Read a theme file, bounded, refusing anything but a regular file.
 fn read(path: &Path) -> io::Result<String> {
-    let file = std::fs::File::open(path)?;
+    use std::os::unix::fs::OpenOptionsExt;
+    // Check the opened handle, as the settings reader does, so a pipe named
+    // like a theme cannot leave Settings waiting for a writer.
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(path)?;
     if !file.metadata()?.is_file() {
         return Err(io::Error::other("not a regular file"));
     }
@@ -612,6 +618,23 @@ mod tests {
             let again = resolve_text("copy", &text).unwrap();
             assert_eq!(again, design, "{id}");
         }
+    }
+
+    #[test]
+    fn theme_files_are_bounded_and_pipes_are_refused_without_waiting() {
+        let directory = tempfile::tempdir().unwrap();
+        let pipe = directory.path().join("pipe.json");
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(&pipe)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(read(&pipe).is_err());
+        let large = directory.path().join("large.json");
+        std::fs::write(&large, " ".repeat(MAX_THEME_BYTES as usize + 1)).unwrap();
+        assert!(read(&large).is_err());
     }
 
     #[test]
