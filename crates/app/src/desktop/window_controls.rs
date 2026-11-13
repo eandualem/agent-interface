@@ -48,7 +48,7 @@ pub(super) fn frame(
                     }
                 })
                 .child(div().flex_1().child(title))
-                .child(button("window-minimize", "minus", |window| {
+                .child(button("window-minimize", "minus", |window, _| {
                     window.minimize_window()
                 }))
                 .child(button(
@@ -58,9 +58,12 @@ pub(super) fn frame(
                     } else {
                         "square"
                     },
-                    |window| window.zoom_window(),
+                    |window, _| window.zoom_window(),
                 ))
-                .child(button("window-close", "x", |window| window.remove_window())),
+                .child(button("window-close", "x", |window, cx| {
+                    // As Close Window does, so a window may keep unsaved work.
+                    window.dispatch_action(Box::new(super::CloseWindow), cx)
+                })),
         );
     }
     frame = frame.child(div().flex_1().min_h_0().w_full().child(content));
@@ -117,7 +120,7 @@ pub(super) fn frame(
 fn button(
     id: &'static str,
     label: &'static str,
-    action: impl Fn(&mut Window) + 'static,
+    action: impl Fn(&mut Window, &mut gpui::App) + 'static,
 ) -> impl IntoElement {
     let (t, c) = (tokens(), colors());
     ui::text(
@@ -132,7 +135,7 @@ fn button(
             .hover(|el| el.bg(c.hover))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_click(move |_, window, cx| {
-                action(window);
+                action(window, cx);
                 cx.stop_propagation();
             })
             .child(ui::icon(label, t.size.icon, c.text_2)),

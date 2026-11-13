@@ -147,6 +147,12 @@ pub fn show(cx: &mut App) {
     if let Ok(handle) = cx.open_window(options, |window, cx| {
         let id = window.window_handle().window_id();
         cx.new(|cx| {
+            let closing = cx.entity().downgrade();
+            window.on_window_should_close(cx, move |_, cx| {
+                closing
+                    .update(cx, |view: &mut SettingsWindow, cx| view.may_close(cx))
+                    .unwrap_or(true)
+            });
             // Record before shortcut dispatch, so keys such as Command-W are
             // assigned instead of closing the window.
             let view = cx.entity().downgrade();
@@ -261,6 +267,21 @@ impl SettingsWindow {
             }
         }
         true
+    }
+
+    /// Whether the window may close now. Unsaved theme edits are only
+    /// dropped on a second request: the first shows the editor and asks.
+    fn may_close(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(editing) = &mut self.editing else {
+            return true;
+        };
+        if editing.discarding || editing.editor.read(cx).value() == editing.saved {
+            return true;
+        }
+        editing.discarding = true;
+        self.page = Page::Appearance;
+        cx.notify();
+        false
     }
 
     /// Open the person's theme `id` in the JSON editor.
@@ -560,7 +581,7 @@ impl SettingsWindow {
                 &t.text.status,
             )
             .child(format!(
-                "This theme has unsaved changes. {save_key} saves them; Discard changes drops them."
+                "This theme has unsaved changes. {save_key} saves them; Discard changes, or closing again, drops them."
             )),
             None => Self::note(if unsaved {
                 format!("Unsaved changes. {save_key} saves and applies the theme.")
@@ -1401,6 +1422,14 @@ impl Render for SettingsWindow {
                     )
                 }),
         );
-        super::window_controls::frame(body, "Settings", window, cx)
+        // Close Window asks here first, so unsaved theme edits are not lost.
+        div()
+            .size_full()
+            .on_action(cx.listener(|view, _: &super::CloseWindow, window, cx| {
+                if view.may_close(cx) {
+                    window.remove_window();
+                }
+            }))
+            .child(super::window_controls::frame(body, "Settings", window, cx))
     }
 }
