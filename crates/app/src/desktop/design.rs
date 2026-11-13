@@ -351,6 +351,22 @@ impl Design {
         if self.size.conversation_width as u32 > CONVERSATION_WIDTH_MAX {
             return Err(wrong("size", "conversation_width", "must be 4000 or less"));
         }
+        // Animations divide by their duration.
+        let m = &self.motion;
+        for (key, value) in [
+            ("spinner_ms", m.spinner_ms),
+            ("scene_ms", m.scene_ms),
+            ("scene_face_ms", m.scene_face_ms),
+            ("scene_words_ms", m.scene_words_ms),
+            ("scene_handoff_ms", m.scene_handoff_ms),
+            ("scene_settle_ms", m.scene_settle_ms),
+            ("step_ms", m.step_ms),
+            ("reveal_ms", m.reveal_ms),
+        ] {
+            if value < 1.0 {
+                return Err(wrong("motion", key, "must be 1 or more"));
+            }
+        }
         Ok(self)
     }
 
@@ -633,11 +649,15 @@ mod tests {
     }
 
     #[test]
-    fn panel_widths_must_stay_in_order() {
+    fn panel_widths_stay_in_order_and_durations_are_not_zero() {
         let mut table = base(false).clone();
         table["size"]["panel_min"] = Value::Float(800.0);
         let error = Design::from_table(&table, "x", false).unwrap_err();
         assert_eq!(error.path, "size.panel_min");
+        let mut table = base(false).clone();
+        table["motion"]["spinner_ms"] = Value::Float(0.5);
+        let error = Design::from_table(&table, "x", false).unwrap_err();
+        assert_eq!(error.path, "motion.spinner_ms");
         let mut table = base(false).clone();
         table["size"]["conversation_width"] = Value::Float(5000.0);
         assert!(Design::from_table(&table, "x", false).is_err());
