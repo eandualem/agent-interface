@@ -111,6 +111,20 @@ pub fn sign_in_ended(profile_id: &str, runtime: &str, cx: &mut App) {
     });
 }
 
+/// Whether `window` may close now: always, unless it is Settings holding
+/// unsaved theme edits, which asks on the first request.
+pub fn may_close_window(window: gpui::AnyWindowHandle, cx: &mut App) -> bool {
+    let Some(handle) = cx.try_global::<Open>().map(|Open(handle)| *handle) else {
+        return true;
+    };
+    if handle.window_id() != window.window_id() {
+        return true;
+    }
+    handle
+        .update(cx, |view, _, cx| view.may_close(cx))
+        .unwrap_or(true)
+}
+
 /// Whether the app may quit now. With unsaved theme edits, the first
 /// request brings Settings forward and asks; a second quits.
 pub fn may_quit(cx: &mut App) -> bool {
@@ -591,15 +605,20 @@ impl SettingsWindow {
             "Ctrl+S"
         };
         let status = match &editing.problem {
-            Some(problem) => ui::text(div().text_color(c.attention_text), &t.text.status)
-                .child(problem.to_string()),
-            None if editing.discarding => ui::text(
+            // The warning comes first: another request drops the edits.
+            _ if editing.discarding => ui::text(
                 div().text_color(c.attention_text),
                 &t.text.status,
             )
             .child(format!(
-                "This theme has unsaved changes. {save_key} saves them; Discard changes, or closing or quitting again, drops them."
+                "This theme has unsaved changes. {save_key} saves them; Discard changes, or closing or quitting again, drops them.{}",
+                editing
+                    .problem
+                    .as_ref()
+                    .map_or(String::new(), |problem| format!(" {problem}"))
             )),
+            Some(problem) => ui::text(div().text_color(c.attention_text), &t.text.status)
+                .child(problem.to_string()),
             None => Self::note(if unsaved {
                 format!("Unsaved changes. {save_key} saves and applies the theme.")
             } else {
@@ -1439,20 +1458,6 @@ impl Render for SettingsWindow {
                     )
                 }),
         );
-        // Close Window asks here first, so unsaved theme edits are not lost.
-        div()
-            .size_full()
-            .on_action(cx.listener(|view, _: &super::CloseWindow, window, cx| {
-                if view.may_close(cx) {
-                    window.remove_window();
-                }
-            }))
-            // Close Pane's shortcut closes a window that has no panes.
-            .on_action(cx.listener(|view, _: &super::ClosePane, window, cx| {
-                if view.may_close(cx) {
-                    window.remove_window();
-                }
-            }))
-            .child(super::window_controls::frame(body, "Settings", window, cx))
+        super::window_controls::frame(body, "Settings", window, cx)
     }
 }
