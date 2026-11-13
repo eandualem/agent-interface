@@ -255,19 +255,9 @@ impl ThemeEditor {
                 }
             }
             "enter" if plain => {
-                // Keep the line's indent, one step deeper after an opening bracket.
-                let line = self.line_at(self.text.cursor);
-                let indent: String = self.text.value[line.start..]
-                    .chars()
-                    .take_while(|ch| *ch == ' ' || *ch == '\t')
-                    .collect();
-                let opens = self.text.value[line.start..range.start]
-                    .trim_end()
-                    .ends_with(['{', '[']);
-                let deeper = if opens { "  " } else { "" };
+                let inserted = newline(&self.text.value, range.start);
                 self.remember(false);
-                self.text
-                    .replace(None, &format!("\n{indent}{deeper}"), false);
+                self.text.replace(None, &inserted, false);
             }
             "tab" if !mods.shift && plain => {
                 self.remember(false);
@@ -342,6 +332,9 @@ impl ThemeEditor {
         if self.text.value != before {
             self.mistake = None;
             cx.emit(EditorEvent::Changed);
+        } else {
+            // Moving, selecting or saving ends the typing undo joins.
+            self.typing = false;
         }
         self.follow = moved;
         window.prevent_default();
@@ -518,6 +511,18 @@ impl ThemeEditor {
     }
 }
 
+/// The line break Enter inserts before byte `at`: the line's own indent,
+/// one step deeper after an opening bracket.
+fn newline(value: &str, at: usize) -> String {
+    let start = value[..at].rfind('\n').map_or(0, |at| at + 1);
+    let indent: String = value[start..]
+        .chars()
+        .take_while(|ch| *ch == ' ' || *ch == '\t')
+        .collect();
+    let opens = value[start..at].trim_end().ends_with(['{', '[']);
+    format!("\n{indent}{}", if opens { "  " } else { "" })
+}
+
 fn run(
     len: usize,
     font: &gpui::Font,
@@ -676,6 +681,7 @@ impl Render for ThemeEditor {
                 MouseButton::Left,
                 cx.listener(|editor, event: &gpui::MouseDownEvent, window, cx| {
                     window.focus(&editor.focus, cx);
+                    editor.typing = false;
                     editor.text.cursor = editor.hit(event.position);
                     if event.click_count == 2 {
                         let value = &editor.text.value;
@@ -730,5 +736,21 @@ impl Render for ThemeEditor {
                 )
                 .size_full(),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::newline;
+
+    #[test]
+    fn enter_keeps_the_indent_of_the_line_where_the_selection_starts() {
+        let text = "{\n  \"color\": {\n    \"accent\": \"#ffffff\"\n  }\n}";
+        assert_eq!(newline(text, 1), "\n  ");
+        assert_eq!(newline(text, text.find("{\n    ").unwrap() + 1), "\n    ");
+        // The end of the indented closing brace keeps its indent.
+        assert_eq!(newline(text, text.len() - 2), "\n  ");
+        // A selection from the first line to the end starts on the first line.
+        assert_eq!(newline(text, 0), "\n");
     }
 }

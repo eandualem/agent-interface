@@ -13,14 +13,19 @@ pub const FONT_SIZES: std::ops::RangeInclusive<u32> = 9..=24;
 static FONT_SIZE: AtomicU32 = AtomicU32::new(0);
 /// Navigation panel widths the settings accept, from the design tokens.
 fn sidebar_widths() -> std::ops::RangeInclusive<u32> {
-    let size = &super::design::tokens().size;
+    sidebar_widths_in(&super::design::tokens().size)
+}
+fn sidebar_widths_in(size: &super::design::Size) -> std::ops::RangeInclusive<u32> {
     size.panel_min as u32..=size.panel_max as u32
 }
 /// The dragged panel width, or zero for the default of 22 terminal cells.
 static SIDEBAR_WIDTH: AtomicU32 = AtomicU32::new(0);
 /// Conversation panel widths the settings accept, from the design's minimum.
 fn conversation_widths() -> std::ops::RangeInclusive<u32> {
-    super::design::tokens().size.conversation_width as u32..=4000
+    conversation_widths_in(&super::design::tokens().size)
+}
+fn conversation_widths_in(size: &super::design::Size) -> std::ops::RangeInclusive<u32> {
+    size.conversation_width as u32..=super::design::CONVERSATION_WIDTH_MAX
 }
 /// The dragged conversation width, or zero for a share of the reader.
 static CONVERSATION_WIDTH: AtomicU32 = AtomicU32::new(0);
@@ -133,6 +138,9 @@ impl Settings {
         {
             settings.theme = theme.to_owned();
         }
+        // Saved widths are checked against the chosen theme's limits.
+        let design = super::themes::resolve(&settings.theme)
+            .unwrap_or_else(|_| super::design::builtin(false).clone());
         if let Some(size) = table.get("font_size").and_then(toml::Value::as_integer)
             && u32::try_from(size).is_ok_and(|size| FONT_SIZES.contains(&size))
         {
@@ -148,7 +156,7 @@ impl Settings {
         }
         if let Some(width) = table.get("sidebar_width").and_then(toml::Value::as_integer)
             && let Ok(width) = u32::try_from(width)
-            && sidebar_widths().contains(&width)
+            && sidebar_widths_in(&design.size).contains(&width)
         {
             settings.sidebar_width = Some(width);
         }
@@ -156,7 +164,7 @@ impl Settings {
             .get("conversation_width")
             .and_then(toml::Value::as_integer)
             && let Ok(width) = u32::try_from(width)
-            && conversation_widths().contains(&width)
+            && conversation_widths_in(&design.size).contains(&width)
         {
             settings.conversation_width = Some(width);
         }

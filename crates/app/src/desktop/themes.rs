@@ -232,6 +232,9 @@ pub fn resolve(id: &str) -> Result<Design, Error> {
 /// The theme `text` would be if it were saved as `id`; errors in `text`
 /// carry their line and column.
 pub fn resolve_text(id: &str, text: &str) -> Result<Design, Error> {
+    if text.len() as u64 > MAX_THEME_BYTES {
+        return Err(Error::new("A theme must be 256 KiB or smaller"));
+    }
     let (table, light, name) = overlay(text, id, &mut vec![id.to_owned()])?;
     Design::from_table(&table, &name, light).map_err(|error| {
         let path: Vec<&str> = error.path.split('.').collect();
@@ -408,14 +411,14 @@ fn toml_value(value: &serde_json::Value) -> Result<Value, String> {
     })
 }
 
-/// A full theme file: `design`'s colours, terminal colours and fonts, named
-/// `name`, over the built-in theme of its kind.
+/// A theme file for `design` named `name`, over the built-in theme of its
+/// kind: every colour, and the other tokens where they differ from it.
 pub fn full_json(design: &Design, name: &str) -> String {
     format!(
         "{{\n  \"name\": {},\n  \"extends\": \"{}\",\n{}\n}}\n",
         serde_json::Value::from(name),
         if design.light { "light" } else { "dark" },
-        design.colors_json()
+        design.theme_json(design::builtin(design.light))
     )
 }
 
@@ -446,6 +449,9 @@ pub fn new_id(name: &str) -> String {
 
 /// Save `text` as the person's theme `id`, replacing the file whole.
 pub fn save(id: &str, text: &str) -> io::Result<()> {
+    if text.len() as u64 > MAX_THEME_BYTES {
+        return Err(io::Error::other("a theme must be 256 KiB or smaller"));
+    }
     let path = file(id).ok_or_else(|| io::Error::other(format!("\"{id}\" cannot be saved")))?;
     let dir = path
         .parent()

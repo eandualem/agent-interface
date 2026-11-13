@@ -109,6 +109,22 @@ macro_rules! group {
                 write_object(out, indent, fields);
             }
         }
+
+        impl $name {
+            /// Write the fields that differ from `base`, if any differ.
+            #[allow(dead_code, reason = "theme files write colours in full")]
+            fn changed_json(&self, base: &Self, out: &mut String, indent: usize) -> bool {
+                let mut fields: Vec<(&str, &dyn Json)> = Vec::new();
+                $(if self.$field != base.$field {
+                    fields.push((stringify!($field), &self.$field));
+                })*
+                if fields.is_empty() {
+                    return false;
+                }
+                write_object(out, indent, &fields);
+                true
+            }
+        }
     };
 }
 
@@ -291,6 +307,9 @@ pub struct Design {
     pub motion: Motion,
 }
 
+/// The widest the conversation panel may be dragged, in pixels.
+pub const CONVERSATION_WIDTH_MAX: u32 = 4000;
+
 /// The token groups a theme table holds, in the order they are written.
 pub const GROUPS: [&str; 8] = [
     "color", "terminal", "font", "text", "space", "radius", "size", "motion",
@@ -317,25 +336,47 @@ impl Design {
             size: Size::read(group("size")?, "size")?,
             motion: Motion::read(group("motion")?, "motion")?,
         })
+        .and_then(Self::check)
     }
 
-    /// The theme's colours, terminal colours and fonts as JSON, for a theme
-    /// file a person edits.
-    pub fn colors_json(&self) -> String {
-        let font = [("ui", &self.font.ui), ("mono", &self.font.mono)];
-        let font: Vec<(&str, &dyn Json)> = font
-            .iter()
-            .map(|(key, value)| (*key, *value as &dyn Json))
-            .collect();
-        let mut out = String::new();
-        let mut fonts = String::new();
-        write_object(&mut fonts, 2, &font);
-        out.push_str("  \"color\": ");
+    /// Settings clamp panel widths between these, so they must be in order.
+    fn check(self) -> Result<Self, TokenError> {
+        if self.size.panel_min as u32 > self.size.panel_max as u32 {
+            return Err(wrong(
+                "size",
+                "panel_min",
+                "must not be larger than size.panel_max",
+            ));
+        }
+        if self.size.conversation_width as u32 > CONVERSATION_WIDTH_MAX {
+            return Err(wrong("size", "conversation_width", "must be 4000 or less"));
+        }
+        Ok(self)
+    }
+
+    /// The theme as the members of a theme file over `base`: every colour
+    /// and terminal colour, then only the other tokens that differ.
+    pub fn theme_json(&self, base: &Design) -> String {
+        let mut out = String::from("  \"color\": ");
         self.colors.json(&mut out, 2);
         out.push_str(",\n  \"terminal\": ");
         self.terminal.json(&mut out, 2);
-        out.push_str(",\n  \"font\": ");
-        out.push_str(&fonts);
+        let mut group = |name: &str, write: &dyn Fn(&mut String) -> bool| {
+            let mut text = String::new();
+            if write(&mut text) {
+                out.push_str(&format!(",\n  \"{name}\": {text}"));
+            }
+        };
+        group("font", &|out| self.font.changed_json(&base.font, out, 2));
+        group("text", &|out| self.text.changed_json(&base.text, out, 2));
+        group("space", &|out| self.space.changed_json(&base.space, out, 2));
+        group("radius", &|out| {
+            self.radius.changed_json(&base.radius, out, 2)
+        });
+        group("size", &|out| self.size.changed_json(&base.size, out, 2));
+        group("motion", &|out| {
+            self.motion.changed_json(&base.motion, out, 2)
+        });
         out
     }
 }
@@ -570,13 +611,35 @@ mod tests {
     }
 
     #[test]
-    fn a_theme_writes_its_colours_as_json_that_reads_back() {
-        let design = builtin(true);
-        let text = format!("{{\n{}\n}}", design.colors_json());
+    fn a_theme_writes_its_colours_and_its_other_changes_as_json() {
+        let light = builtin(true);
+        let text = format!("{{\n{}\n}}", light.theme_json(light));
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(value["color"]["accent"], "#a35a16");
         assert_eq!(value["color"]["pane_dim"], 0.8);
         assert_eq!(value["terminal"]["palette"].as_array().unwrap().len(), 16);
-        assert_eq!(value["font"]["mono"], design.font.mono.as_str());
+        assert!(value.get("font").is_none() && value.get("size").is_none());
+
+        let mut changed = light.clone();
+        changed.font.mono = "Iosevka".into();
+        changed.text.row.size = 15.0;
+        changed.radius.pane = 2.0;
+        let text = format!("{{\n{}\n}}", changed.theme_json(light));
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(value["font"], serde_json::json!({ "mono": "Iosevka" }));
+        assert_eq!(value["text"]["row"]["size"], 15.0);
+        assert_eq!(value["radius"], serde_json::json!({ "pane": 2 }));
+        assert!(value.get("space").is_none());
+    }
+
+    #[test]
+    fn panel_widths_must_stay_in_order() {
+        let mut table = base(false).clone();
+        table["size"]["panel_min"] = Value::Float(800.0);
+        let error = Design::from_table(&table, "x", false).unwrap_err();
+        assert_eq!(error.path, "size.panel_min");
+        let mut table = base(false).clone();
+        table["size"]["conversation_width"] = Value::Float(5000.0);
+        assert!(Design::from_table(&table, "x", false).is_err());
     }
 }
