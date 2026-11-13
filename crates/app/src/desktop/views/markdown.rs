@@ -11,7 +11,10 @@ use gpui::{
 };
 use pulldown_cmark::{Event, LinkType, Options, Parser, Tag, TagEnd, TextMergeStream};
 
-use super::selection::{self, Selectable};
+use super::{
+    reading,
+    selection::{self, Selectable},
+};
 
 use crate::desktop::{
     components as ui,
@@ -40,11 +43,11 @@ pub(super) enum Mark {
 impl Mark {
     /// Add this mark's look to `style`.
     pub fn apply(self, style: &mut HighlightStyle) {
-        let c = colors();
         match self {
             Self::Code => {
-                style.color = Some(c.code.into());
-                style.background_color = Some(c.selected.into());
+                let look = reading::look();
+                style.color = Some(look.code_text.into());
+                style.background_color = Some(look.code_fill.into());
             }
             Self::Strong => style.font_weight = Some(FontWeight::SEMIBOLD),
             Self::Emphasis => style.font_style = Some(FontStyle::Italic),
@@ -483,7 +486,7 @@ pub(super) fn render_in<V: Selectable>(
 
 /// `blocks` one under another, `gap` apart.
 fn column<V: Selectable>(blocks: &[Block], gap: f32, pane: &V, cx: &mut Context<V>) -> gpui::Div {
-    let (t, c) = (tokens(), colors());
+    let (t, c, look) = (tokens(), colors(), reading::look());
     let mut out = div().flex().flex_col().gap(px(gap)).min_w_0();
     for (at, block) in blocks.iter().enumerate() {
         out = out.child(match block {
@@ -536,8 +539,8 @@ fn column<V: Selectable>(blocks: &[Block], gap: f32, pane: &V, cx: &mut Context<
             Block::Quote(blocks) => div()
                 .pl(px(t.space.s12))
                 .border_l(px(t.space.s2))
-                .border_color(c.line_strong)
-                .text_color(c.muted)
+                .border_color(look.quote_bar)
+                .text_color(look.quote_text)
                 .child(column(blocks, gap, pane, cx))
                 .into_any_element(),
             Block::Code(code) => ui::text(
@@ -545,9 +548,9 @@ fn column<V: Selectable>(blocks: &[Block], gap: f32, pane: &V, cx: &mut Context<
                     .px(px(t.space.s14))
                     .py(px(t.space.s12))
                     .rounded(px(t.radius.slot))
-                    .bg(c.ground)
+                    .bg(look.block_fill)
                     .border(px(t.size.hairline))
-                    .border_color(c.line)
+                    .border_color(look.block_line)
                     .font_family(t.font.mono.clone())
                     .text_color(c.text_2)
                     .line_height(gpui::relative(1.5))
@@ -559,15 +562,17 @@ fn column<V: Selectable>(blocks: &[Block], gap: f32, pane: &V, cx: &mut Context<
             Block::Rule => div()
                 .my(px(t.space.s4))
                 .h(px(t.size.hairline))
-                .bg(c.line)
+                .bg(look.rule)
                 .into_any_element(),
             Block::Table { head, rows } => {
                 let row = |cells: &[Inline], header: bool, cx: &mut Context<V>| {
                     let mut line = div()
                         .flex()
                         .border_t(px(t.size.hairline))
-                        .border_color(c.line)
-                        .when(header, |el| el.border_t_0().bg(c.field).text_color(c.text));
+                        .border_color(look.table_line)
+                        .when(header, |el| {
+                            el.border_t_0().bg(look.table_head).text_color(c.text)
+                        });
                     for cell in cells {
                         line = line.child(
                             div()
@@ -586,7 +591,7 @@ fn column<V: Selectable>(blocks: &[Block], gap: f32, pane: &V, cx: &mut Context<
                     .flex_col()
                     .rounded(px(t.radius.slot))
                     .border(px(t.size.hairline))
-                    .border_color(c.line)
+                    .border_color(look.table_line)
                     .overflow_hidden();
                 if !head.is_empty() {
                     table = table.child(row(head, true, cx));

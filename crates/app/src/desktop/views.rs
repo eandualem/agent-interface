@@ -52,6 +52,7 @@ mod markdown;
 mod plans;
 mod policies;
 mod reader;
+mod reading;
 mod reports;
 mod seen;
 mod selection;
