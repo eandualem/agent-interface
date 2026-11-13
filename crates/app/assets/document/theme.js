@@ -446,18 +446,14 @@
       return [svg, [...props].map((name) => [name, style.getPropertyValue(name)])];
     });
     return () => {
-      // Only the properties the mapping changed: a layout value such as a
-      // width keeps following its media queries.
-      const mapped = new Set();
-      for (const [style] of all) {
-        for (const [name] of S.saved.get(style) || []) {
-          if (name.startsWith('--')) mapped.add(name);
-        }
-      }
       for (const [svg, values] of authored) {
+        // Only the properties whose value here the mapping changed, aliases
+        // of mapped properties included: a layout value such as a width keeps
+        // following its media queries.
+        const now = getComputedStyle(svg);
         const saved = [];
         for (const [name, value] of values) {
-          if (!value || !mapped.has(name)) continue;
+          if (!value || now.getPropertyValue(name) === value) continue;
           const before = [svg.style.getPropertyValue(name), svg.style.getPropertyPriority(name)];
           // Inline, without !important, so the document can still set it.
           svg.style.setProperty(name, value.trim());
