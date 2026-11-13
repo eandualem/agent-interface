@@ -161,21 +161,51 @@
   // `rgb(var(--bg))` or `hsl(var(--background))`, with that function. CSS
   // resolves them on each element, so they are mapped where they are defined.
   let channels = new Map();
+  // Properties defined as another one, as in `--panel: var(--base)`: a
+  // channel property's alias makes the property it names one too.
+  let aliases = new Map();
   const CHANNELS = /\b(rgba?|hsla?)\(\s*var\(\s*(--[\w-]+)\s*[,)]/gi;
-  // Note the channel properties `text` uses; whether any was new.
+  const ALIASES = /(--[\w-]+)\s*:\s*var\(\s*(--[\w-]+)/g;
+  // Note the channel properties and aliases `text` uses; whether any channel
+  // property was new.
   const learn = (text) => {
     let fresh = false;
-    for (const [, fn, name] of text.matchAll(CHANNELS)) {
-      if (channels.has(name)) continue;
-      channels.set(name, fn.toLowerCase().startsWith('hsl') ? 'hsl' : 'rgb');
+    const add = (name, fn) => {
+      if (channels.has(name)) return;
+      channels.set(name, fn);
       fresh = true;
+      for (const target of aliases.get(name) || []) add(target, fn);
+    };
+    for (const [, name, target] of text.matchAll(ALIASES)) {
+      if (!aliases.has(name)) aliases.set(name, new Set());
+      aliases.get(name).add(target);
+      if (channels.has(name)) add(target, channels.get(name));
+    }
+    for (const [, fn, name] of text.matchAll(CHANNELS)) {
+      add(name, fn.toLowerCase().startsWith('hsl') ? 'hsl' : 'rgb');
     }
     return fresh;
   };
 
   // Channels in the theme, written as they were: `0 0 0`, `0, 0, 0`, or for
-  // hsl `0 0% 0%`.
+  // hsl `0 0% 0%`, with any alpha they carry. An alias keeps its reference
+  // and has its fallback mapped.
   const rechannel = (value, fn) => {
+    const alias = /^\s*var\(\s*(--[\w-]+)\s*,\s*([^]+)\)\s*$/.exec(value);
+    if (alias) {
+      const fallback = rechannel(alias[2], fn);
+      return fallback ? `var(${alias[1]}, ${fallback})` : null;
+    }
+    let tail = '';
+    const slash = value.indexOf('/');
+    const commas = value.split(',');
+    if (slash >= 0) {
+      tail = ` / ${value.slice(slash + 1).trim()}`;
+      value = value.slice(0, slash);
+    } else if (commas.length === 4) {
+      tail = `, ${commas[3].trim()}`;
+      value = commas.slice(0, 3).join(',');
+    }
     const color = parse(`${fn}(${value})`);
     if (!color || color.a <= 0) return null;
     const { r, g, b } = parse(mapped({ ...color, a: 1 }, null));
@@ -190,7 +220,7 @@
       if (d) h = max === r ? ((g - b) / d) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
       parts = [`${+((h * 60 + 360) % 360).toFixed(1)}`, `${+(s * 100).toFixed(1)}%`, `${+(l * 100).toFixed(1)}%`];
     }
-    return parts.join(value.includes(',') ? ', ' : ' ');
+    return parts.join(value.includes(',') ? ', ' : ' ') + tail;
   };
 
   // A colour function whose alpha is a var(), as in `rgb(1 2 3 / var(--a))`:
@@ -500,6 +530,7 @@
       all.forEach(([style]) => restore(style));
       const pinned = pin(all);
       channels = new Map();
+      aliases = new Map();
       for (const [style] of all) learn(style.cssText);
       measure();
       all.forEach(([style, rule]) => remap(style, rule));

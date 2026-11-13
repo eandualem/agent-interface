@@ -673,9 +673,10 @@ Stored HTML is not rewritten; the script changes the page in memory:
   one colour, a gradient, a colour function or a `var()` reference with a
   fallback, so CSS resolves it on each element as written. A property used as
   the channels of a colour, as in `rgb(var(--bg))` or
-  `hsl(var(--background))`, is mapped in its own format. A colour function
-  whose alpha is a `var()` keeps that alpha. A `background`, `border` or other
-  colour shorthand written with `var()` is mapped as a whole.
+  `hsl(var(--background))`, directly or through aliases, is mapped in its own
+  format, keeping any alpha it carries. A colour function whose alpha is a
+  `var()` keeps that alpha. A `background`, `border` or other colour shorthand
+  written with `var()` is mapped as a whole.
 - **Left as authored:** shadows, SVG (its inline styles, rules that reach only
   SVG, and the colour custom properties it uses from outside), images, video,
   canvas, keyframes and any style sheet the page cannot read. A graphic holds
