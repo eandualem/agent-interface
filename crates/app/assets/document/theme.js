@@ -101,9 +101,13 @@
     ['code, kbd, samp', parse((T.variables || {}).code || '')],
   ];
   const OWN = own.map(([selector]) => selector).join(', ');
+  // Each theme colour's hue, and where it sits between the theme's page (0)
+  // and text (1).
   const hues = (T.hues || []).map((value) => {
     const color = parse(value);
-    return { color, h: oklch(color).h };
+    const { l, h } = oklch(color);
+    const [page, text] = [oklch(theme.page).l, oklch(theme.text).l];
+    return { color, h, at: Math.min(1, Math.max(0.05, (l - page) / (text - page))) };
   });
   // Where a neutral sits between the page (0) and its text (1), in the theme.
   const ramp = [
@@ -113,14 +117,23 @@
   // The document's own page and text lightness, measured before mapping.
   let page = { from: 1, span: -1 };
 
-  const mapped = (color) => {
+  // `color` in the theme. `fill` says whether it is a background (true), a
+  // foreground such as text or a border (false), or unknown (null), as in a
+  // custom property, where a colour close to the page is taken as a fill.
+  const mapped = (color, fill) => {
     const { l, c, h } = oklch(color);
     const at = Math.min(1, (l - page.from) / page.span);
     if (c >= 0.045 && hues.length) {
       const turn = (d) => Math.abs(Math.atan2(Math.sin(d), Math.cos(d)));
       const hue = hues.reduce((best, next) => (turn(next.h - h) < turn(best.h - h) ? next : best));
-      // Near the page it is a fill behind text; otherwise the colour itself.
-      return css(at < 0.3 ? mix(theme.page, hue.color, 0.16) : hue.color, color.a);
+      // The theme's colour for that hue, as far from the page as the authored
+      // colour was, so a deep badge under light text stays deep and dark text
+      // on a pale badge stays dark. A foreground reaches the full colour by
+      // halfway to the text colour, where most text colours sit.
+      const asFill = fill === null ? at < 0.35 : fill;
+      const reach = asFill ? hue.at : Math.min(hue.at, 0.55);
+      const amount = Math.min(1, Math.max(0.16, at / reach));
+      return css(mix(theme.page, hue.color, amount), color.a);
     }
     // Lighter than a light page, or darker than a dark one: a raised card.
     if (at < -0.005) return css(theme.raised, color.a);
@@ -149,8 +162,8 @@
       )
       : value;
 
-  // `value` with each colour in it mapped.
-  const recolor = (authored) => {
+  // `value` with each colour in it mapped, as a fill or a foreground.
+  const recolor = (authored, fill) => {
     if (authored.includes('url(')) return authored;
     const value = expand(authored);
     return value.replace(TOKEN, (token, at) => {
@@ -159,7 +172,7 @@
       const word = /^[a-z]+$/i.test(token);
       if (word && (/[-\w]/.test(before) || /[-\w(]/.test(after))) return token;
       const color = parse(token);
-      return color && color.a > 0 ? mapped(color) : token;
+      return color && color.a > 0 ? mapped(color, fill) : token;
     });
   };
 
@@ -206,12 +219,12 @@
         // with a fallback; a shadow or a list keeps its own colours.
         const color = parse(expand(value));
         if (color) {
-          if (color.a > 0) next = mapped(color);
+          if (color.a > 0) next = mapped(color, null);
         } else if (/gradient\(|^\s*var\(/i.test(value)) {
-          next = recolor(value);
+          next = recolor(value, null);
         }
       } else if (COLOR.test(name) || (SHORTHAND.test(name) && value.includes('var('))) {
-        next = recolor(value);
+        next = recolor(value, name.startsWith('background'));
       }
       if (next && next !== value) changes.push([name, value, style.getPropertyPriority(name), next]);
     }

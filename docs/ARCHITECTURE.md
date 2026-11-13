@@ -661,8 +661,11 @@ Stored HTML is not rewritten; the script changes the page in memory:
 - **Colours are mapped, not erased.** Each colour in the document's own style
   rules and inline styles becomes the theme colour playing the same part: a
   neutral by where it sits between the document's own page and text colour, a
-  chromatic colour by the theme colour nearest in hue, as a soft tint when it is
-  a fill near the page. Cards, status colours and chips keep their meaning, and
+  chromatic colour by the theme colour nearest in hue, placed as far from the
+  page as the authored colour was: a pale tint stays a tint, a deep badge under
+  light text stays deep. Text, borders and other foregrounds reach the full
+  theme colour by halfway to the text colour, where most text colours sit.
+  Cards, status colours and chips keep their meaning, and
   a document written for a light page reads correctly in a dark theme whatever
   the system appearance. Any CSS colour syntax is read, including `oklch()`,
   `lab()` and `color()`, converted through a one-pixel canvas.
