@@ -1,0 +1,57 @@
+{
+  "name": "Catppuccin Mocha",
+  "extends": "dark",
+  "color": {
+    "ground": "#11111b",
+    "panel": "#181825",
+    "surface": "#1e1e2e",
+    "field": "#313244",
+    "hover": "#252535",
+    "selected": "#313244",
+    "line": "#313244",
+    "line_strong": "#45475a",
+    "edge": "#313244",
+    "text": "#cdd6f4",
+    "text_2": "#bac2de",
+    "muted": "#a6adc8",
+    "faint": "#7f849c",
+    "accent": "#cba6f7",
+    "accent_text": "#89b4fa",
+    "on_accent": "#1e1e2e",
+    "accent_soft": "#cba6f724",
+    "focus": "#cba6f773",
+    "focus_halo": "#cba6f714",
+    "attention": "#f38ba8",
+    "attention_text": "#f38ba8",
+    "on_attention": "#1e1e2e",
+    "attention_soft": "#f38ba81f",
+    "ok": "#a6e3a1",
+    "info": "#89b4fa",
+    "violet": "#f5c2e7",
+    "green": "#a6e3a1",
+    "code": "#f9e2af",
+    "shadow": "#18182580",
+    "mark_from": "#2a2d33",
+    "mark_to": "#121315",
+    "mark_edge": "#ffffff12",
+    "mark_glyph": "#e7e8eb",
+    "mark_eye": "#e8a85f",
+    "mark_glow": "#e8a85f8c",
+    "pane_dim": 0.72
+  },
+  "terminal": {
+    "text": "#cdd6f4",
+    "background": "#1e1e2e",
+    "cursor": "#f5e0dc",
+    "selection": "#585b70",
+    "selection_text": "#cdd6f4",
+    "palette": [
+      "#45475a", "#f38ba8", "#a6e3a1", "#f9e2af", "#89b4fa", "#f5c2e7", "#94e2d5", "#a6adc8",
+      "#585b70", "#f37799", "#89d88b", "#ebd391", "#74a8fc", "#f2aede", "#6bd7ca", "#bac2de"
+    ]
+  },
+  "font": {
+    "ui": ".SystemUIFont",
+    "mono": "Menlo"
+  }
+}

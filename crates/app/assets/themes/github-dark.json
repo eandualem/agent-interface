@@ -1,0 +1,57 @@
+{
+  "name": "GitHub Dark",
+  "extends": "dark",
+  "color": {
+    "ground": "#010409",
+    "panel": "#010409",
+    "surface": "#0d1117",
+    "field": "#0d1117",
+    "hover": "#0c1015",
+    "selected": "#2d3239",
+    "line": "#30363d",
+    "line_strong": "#30363d",
+    "edge": "#30363d",
+    "text": "#e6edf3",
+    "text_2": "#c5ccd2",
+    "muted": "#7d8590",
+    "faint": "#6e7681",
+    "accent": "#238636",
+    "accent_text": "#2f81f7",
+    "on_accent": "#0d1117",
+    "accent_soft": "#23863624",
+    "focus": "#23863673",
+    "focus_halo": "#23863614",
+    "attention": "#f85149",
+    "attention_text": "#f85149",
+    "on_attention": "#0d1117",
+    "attention_soft": "#f851491f",
+    "ok": "#3fb950",
+    "info": "#2f81f7",
+    "violet": "#bc8cff",
+    "green": "#3fb950",
+    "code": "#d29922",
+    "shadow": "#010409cc",
+    "mark_from": "#2a2d33",
+    "mark_to": "#121315",
+    "mark_edge": "#ffffff12",
+    "mark_glyph": "#e7e8eb",
+    "mark_eye": "#e8a85f",
+    "mark_glow": "#e8a85f8c",
+    "pane_dim": 0.72
+  },
+  "terminal": {
+    "text": "#e6edf3",
+    "background": "#0d1117",
+    "cursor": "#2f81f7",
+    "selection": "#142744",
+    "selection_text": "#e6edf3",
+    "palette": [
+      "#484f58", "#ff7b72", "#3fb950", "#d29922", "#58a6ff", "#bc8cff", "#39c5cf", "#b1bac4",
+      "#6e7681", "#ffa198", "#56d364", "#e3b341", "#79c0ff", "#d2a8ff", "#56d4dd", "#ffffff"
+    ]
+  },
+  "font": {
+    "ui": ".SystemUIFont",
+    "mono": "Menlo"
+  }
+}

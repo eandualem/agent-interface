@@ -1,0 +1,57 @@
+{
+  "name": "Gruvbox Dark",
+  "extends": "dark",
+  "color": {
+    "ground": "#1d2021",
+    "panel": "#1d2021",
+    "surface": "#282828",
+    "field": "#32302f",
+    "hover": "#2d2c2c",
+    "selected": "#3c3836",
+    "line": "#3c3836",
+    "line_strong": "#504945",
+    "edge": "#3c3836",
+    "text": "#ebdbb2",
+    "text_2": "#d5c4a1",
+    "muted": "#a89984",
+    "faint": "#665c54",
+    "accent": "#fabd2f",
+    "accent_text": "#83a598",
+    "on_accent": "#282828",
+    "accent_soft": "#fabd2f24",
+    "focus": "#fabd2f73",
+    "focus_halo": "#fabd2f14",
+    "attention": "#fb4934",
+    "attention_text": "#fb4934",
+    "on_attention": "#282828",
+    "attention_soft": "#fb49341f",
+    "ok": "#b8bb26",
+    "info": "#83a598",
+    "violet": "#b16286",
+    "green": "#98971a",
+    "code": "#fabd2f",
+    "shadow": "#0000006b",
+    "mark_from": "#2a2d33",
+    "mark_to": "#121315",
+    "mark_edge": "#ffffff12",
+    "mark_glyph": "#e7e8eb",
+    "mark_eye": "#e8a85f",
+    "mark_glow": "#e8a85f8c",
+    "pane_dim": 0.72
+  },
+  "terminal": {
+    "text": "#ebdbb2",
+    "background": "#282828",
+    "cursor": "#ebdbb2",
+    "selection": "#384539",
+    "selection_text": "#ebdbb2",
+    "palette": [
+      "#3c3836", "#cc241d", "#98971a", "#d79921", "#458588", "#b16286", "#689d6a", "#a89984",
+      "#928374", "#fb4934", "#b8bb26", "#fabd2f", "#83a598", "#d3869b", "#8ec07c", "#ebdbb2"
+    ]
+  },
+  "font": {
+    "ui": ".SystemUIFont",
+    "mono": "Menlo"
+  }
+}

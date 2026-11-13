@@ -96,7 +96,7 @@ Double-click a pane header to expand it, then double-click again or press Escape
 to restore the split layout. Expansion belongs to that tab: switching tabs leaves
 their own layouts unchanged, and returning restores the tab's previous view.
 
-Settings (Command-comma) offers a dark or light theme, the interface size,
+Settings (Command-comma) offers a theme, the interface size,
 the terminal text size, whether panes show headers (always, on hover or never) and editable shortcuts;
 changes apply to every window at once and are saved in
 `$XDG_CONFIG_HOME/agent-interface/settings.toml`, or
@@ -104,6 +104,16 @@ changes apply to every window at once and are saved in
 **Interface size** (75% to 200%) scales the whole window, terminals included,
 on top of the display's own scale. Use it when a screen draws the app too
 small or too large, such as a 4K display under WSL.
+**Themes.** Settings › Appearance shows Dark and Light, twelve popular themes
+(Dracula, One Dark, Tokyo Night, Catppuccin, Nord, Gruvbox, Solarized, GitHub
+and One Light) and your own. Click one to use it everywhere at once.
+**Customize…** copies the theme in use into a JSON file of your own and opens
+it in the editor, where you can change any colour, the interface and terminal
+fonts, type sizes and spacing; Command-S (Control-S on Linux) saves and
+applies it, and a mistake is marked on its line. **Import VS Code theme…**
+turns a VS Code colour theme file into one of your themes. Your themes are
+files in `agent-interface/themes/` beside the settings file;
+[the design guide](DESIGN.md#themes) describes their format and every token.
 Some terminal programs choose their own colours when they start. If their colours
 remain from the previous theme, finish the current work and restart that program
 when convenient; changing the app theme does not restart running sessions.

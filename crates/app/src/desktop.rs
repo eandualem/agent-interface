@@ -44,6 +44,8 @@ mod sidebar;
 mod split_resize;
 mod status;
 mod terminal;
+mod theme_editor;
+mod themes;
 mod views;
 mod window_controls;
 mod workspace;

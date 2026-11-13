@@ -10,6 +10,8 @@ is built, where each part lives, and how to change it.
 | What | File | Change it to… |
 | --- | --- | --- |
 | Every colour, size, radius, type style and timing | [`crates/app/assets/design/tokens.toml`](../crates/app/assets/design/tokens.toml) | restyle the app without touching Rust |
+| The bundled themes | [`crates/app/assets/themes/`](../crates/app/assets/themes/) | change or add a shipped theme |
+| Theme files, the editor and VS Code import | `desktop/themes.rs`, `desktop/theme_editor.rs` | change how themes are read |
 | The typed loader and its checks | `crates/app/src/desktop/design.rs` | add a new token |
 | Shared pieces (rows, buttons, keycaps, menus, agent symbols…) | `crates/app/src/desktop/components.rs` | change how a component is built |
 | The navigation panel | `desktop/sidebar.rs` | rearrange the panel |
@@ -88,8 +90,9 @@ a similar one in a view.
 
 ## Colour tokens
 
-Each theme defines the same names (`[color.dark]`, `[color.light]` in
-`tokens.toml`). Views read the current theme through `design::colors()`.
+The built-in themes define the same names (`[color.dark]`, `[color.light]` in
+`tokens.toml`). Views read the theme in use through `design::colors()`, and
+every other token through `design::tokens()`, so any theme can change them.
 
 | Token | Role |
 | --- | --- |
@@ -114,11 +117,65 @@ Each theme defines the same names (`[color.dark]`, `[color.light]` in
 | `pane_dim` | Opacity of unfocused panes' content |
 
 Terminal defaults per theme (`[terminal.dark]`, `[terminal.light]`): the
-default text, background and cursor colours and the 16 ANSI colours. The light
+default text, background and cursor colours, the selection's background and
+text (`selection`, `selection_text`) and the 16 ANSI colours. The light
 terminal and native readers share a warm off-white background. Darker neutral
 gaps and borders separate the panes; an amber outline identifies the focused
 pane. Dark keeps Ghostty's
 defaults; light is Tomorrow, darkened to pass 4.5:1.
+
+## Themes
+
+Besides the built-in Dark and Light, the app ships twelve themes as JSON in
+`crates/app/assets/themes/`, and people add their own in
+`agent-interface/themes/` beside the settings file (Settings › Appearance ›
+Customize, or Import VS Code theme). A theme names the theme it `extends` and
+sets any tokens it changes, using the group and token names in this page:
+
+```jsonc
+{
+  "name": "Night Shift",
+  "extends": "dark",              // "dark", "light", or another theme's id
+  "color": { "accent": "#7aa2f7", "focus": "#7aa2f773" },
+  "terminal": { "background": "#16161e", "cursor": "#7aa2f7" },
+  "font": { "ui": "Inter", "mono": "JetBrains Mono" },
+  "text": { "row": { "size": 14 } },
+  "radius": { "pane": 4 }
+}
+```
+
+- Anything left out comes from the extended theme; `type` (`"dark"` or
+  `"light"`) is inherited too and tells web views and window captions which
+  kind of theme it is.
+- Comments and trailing commas are allowed. Colours are `#rrggbb` or
+  `#rrggbbaa`; numbers are pixels, weights 100 to 900, and `pane_dim` an
+  opacity. `terminal.palette` lists all 16 colours.
+- The terminal text size and the interface size stay in Settings, so
+  `font.terminal_size` is not a theme setting; `font.mono` applies on every
+  system.
+- An unknown or malformed token is refused with its line and column. A theme
+  that cannot be read leaves Dark in use, and Settings says why.
+
+The file's id is its name without `.json`: lowercase letters, digits and
+hyphens. Each applied theme stays in memory until the app quits, so the views
+keep plain references to its tokens; applying the same theme again reuses it.
+
+**Importing from VS Code** reads a colour theme's `colors` map: editor and side
+bar backgrounds become `surface` and `panel`, list hover and selection become
+`hover` and `selected`, the first visible highlight among badge, progress
+bar, button, focus border and link becomes the accent, error colours become
+`attention`, and `terminal.*` keys set the terminal colours. Tints the app
+needs and VS Code has no key for are made from those colours, and colours it
+leaves out keep Dark's or Light's. Syntax colours (`tokenColors`) have no
+place in the app, and an `include`d parent file is not read. The result is a
+full theme file to adjust in the editor.
+
+**The bundled themes** were made the same way, from each project's own VS Code
+theme or published palette (Dracula, One Dark Pro, Tokyo Night, Catppuccin
+Mocha and Latte, Nord, Gruvbox, Solarized Dark and Light, GitHub Dark and
+Light, One Light), with an accent chosen where the original's buttons are
+grey. Their sources and MIT licences are listed in
+[`packaging/extra-notices.txt`](../packaging/extra-notices.txt).
 
 ## Type
 
