@@ -80,6 +80,8 @@ struct Editing {
     saved: String,
     /// Why the text is not a theme, if it is not.
     problem: Option<themes::Error>,
+    /// Back was pressed with unsaved changes; pressing it again discards them.
+    discarding: bool,
     _events: gpui::Subscription,
 }
 
@@ -186,8 +188,11 @@ impl SettingsWindow {
         let mut next = Settings::current();
         update(&mut next);
         let resized = next.interface_size != Settings::current().interface_size;
+        let controls = |size: &design::Size| (size.window_controls_x, size.window_controls_y);
+        let before = controls(&tokens().size);
         next.apply();
-        if resized {
+        // A theme may move the native window buttons, as a new scale does.
+        if resized || controls(&tokens().size) != before {
             // Each window takes the new scale and lays out again; deferred so
             // this window is no longer borrowed.
             cx.defer(|cx| {
@@ -275,6 +280,7 @@ impl SettingsWindow {
                 if let Some(editing) = &mut view.editing {
                     let text = editor.read(cx).value().to_owned();
                     editing.problem = themes::resolve_text(&editing.id, &text).err();
+                    editing.discarding = false;
                     cx.notify();
                 }
             }
@@ -287,6 +293,7 @@ impl SettingsWindow {
             problem: themes::resolve_text(id, &text).err(),
             editor,
             saved: text,
+            discarding: false,
             _events: events,
         });
         self.theme_note = None;
@@ -548,6 +555,13 @@ impl SettingsWindow {
         let status = match &editing.problem {
             Some(problem) => ui::text(div().text_color(c.attention_text), &t.text.status)
                 .child(problem.to_string()),
+            None if editing.discarding => ui::text(
+                div().text_color(c.attention_text),
+                &t.text.status,
+            )
+            .child(format!(
+                "This theme has unsaved changes. {save_key} saves them; Discard changes drops them."
+            )),
             None => Self::note(if unsaved {
                 format!("Unsaved changes. {save_key} saves and applies the theme.")
             } else {
@@ -566,12 +580,32 @@ impl SettingsWindow {
                     .items_center()
                     .gap(px(t.space.s8))
                     .child(
-                        ui::button("theme-back", "Back", ui::Button::Secondary).on_click(
-                            cx.listener(|view, _, _, cx| {
-                                view.editing = None;
-                                cx.notify();
-                            }),
-                        ),
+                        ui::button(
+                            "theme-back",
+                            if editing.discarding {
+                                "Discard changes"
+                            } else {
+                                "Back"
+                            },
+                            if editing.discarding {
+                                ui::Button::Danger
+                            } else {
+                                ui::Button::Secondary
+                            },
+                        )
+                        .on_click(cx.listener(|view, _, _, cx| {
+                            // Unsaved changes are only dropped on a second press.
+                            let unsaved = view.editing.as_ref().is_some_and(|editing| {
+                                editing.editor.read(cx).value() != editing.saved
+                            });
+                            match &mut view.editing {
+                                Some(editing) if unsaved && !editing.discarding => {
+                                    editing.discarding = true
+                                }
+                                _ => view.editing = None,
+                            }
+                            cx.notify();
+                        })),
                     )
                     .child(
                         div()
