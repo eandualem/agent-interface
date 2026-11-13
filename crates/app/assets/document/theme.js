@@ -227,16 +227,20 @@
   // without changing the document.
   const STATES = /:(?:hover|focus|focus-within|focus-visible|active)\b/;
   let interactive = false;
+  // Whether the document styles its own selection.
+  let selecting = false;
 
   // Every style declaration the document wrote: rules, nested rules, inline.
   const declarations = () => {
     const out = [];
     interactive = false;
+    selecting = false;
     const walk = (rules) => {
       for (const rule of rules) {
         if (rule.type === CSSRule.KEYFRAMES_RULE || rule.type === CSSRule.FONT_FACE_RULE) continue;
         if (rule.style) out.push([rule.style, rule.selectorText ? rule : null]);
         if (STATES.test(rule.selectorText || '')) interactive = true;
+        if ((rule.selectorText || '').includes('::selection')) selecting = true;
         if (rule.cssRules) walk(rule.cssRules);
       }
     };
@@ -316,13 +320,21 @@
     }
   };
 
+  // Held while colours are restored, measured and mapped, so the document's
+  // own transitions neither show the old colours nor are read mid-way.
+  const HOLD = '*,*::before,*::after{transition:none!important;}';
+  // Selected text keeps its own colour over a translucent accent, as in
+  // native readers; a document that styles its selection keeps that, mapped.
+  const SELECTION = '::selection{background:var(--ai-selection)!important;}';
+  const settle = () => getComputedStyle(document.documentElement).color;
+
   const apply = () => {
     if (!document.documentElement) return;
     S.observer?.disconnect();
     S.busy = true;
     try {
       const style = host();
-      style.textContent = '';
+      style.textContent = HOLD;
       const all = declarations();
       all.forEach(([style]) => restore(style));
       measure(all);
@@ -330,8 +342,14 @@
       const variables = Object.entries(T.variables || {})
         .map(([name, value]) => `--ai-${name}:${value}!important;`)
         .join('');
-      style.textContent = `:root{color-scheme:${T.scheme}!important;${variables}}${T.css}`;
+      const css = `:root{color-scheme:${T.scheme}!important;${variables}}${T.css}${
+        selecting ? '' : SELECTION
+      }`;
+      style.textContent = HOLD + css;
       readable(document);
+      // Releasing the hold after the new colours are in place animates nothing.
+      settle();
+      style.textContent = css;
       S.interactive = interactive;
     } finally {
       S.busy = false;

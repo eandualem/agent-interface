@@ -5,8 +5,6 @@
    keeps the text mapped for it, inside it too; lines and shape are forced. */
 :where(html) { background: var(--ai-background); color: var(--ai-text); font-family: system-ui; }
 body * { -webkit-user-select: text !important; user-select: text !important; }
-/* Selected text keeps its own colour over a translucent accent, as native. */
-::selection { background: var(--ai-selection) !important; }
 /* The script marks with data-ai-own the links and code where the theme's
    colour would not read against their fill; those keep their mapped colour. */
 :is(a, a *):not(svg, svg *, [data-ai-own], [data-ai-own] *) {
