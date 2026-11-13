@@ -544,9 +544,12 @@
   };
 
   // Held while colours are restored, measured and mapped, so the document's
-  // own transitions neither show the old colours nor are read mid-way, and
-  // light-dark() is measured in the scheme the page will be drawn in.
-  const HOLD = `:root{color-scheme:${T.scheme}!important}*,*::before,*::after{transition:none!important;}`;
+  // own transitions neither show the old colours nor are read mid-way.
+  const HOLD = '*,*::before,*::after{transition:none!important;}';
+  // A document using light-dark() is measured in the scheme it will be drawn
+  // in. Any other keeps its own, since the scheme also sets the browser's
+  // default text colour, which the measurement reads.
+  const SCHEME = `:root{color-scheme:${T.scheme}!important}`;
   // Selected text keeps its own colour over a translucent accent, as in
   // native readers; a document that styles its selection keeps that, mapped.
   const SELECTION = '::selection{background:var(--ai-selection)!important;}';
@@ -602,6 +605,9 @@
       const style = host();
       style.textContent = HOLD;
       const all = declarations();
+      if (all.some(([declared]) => declared.cssText.includes('light-dark('))) {
+        style.textContent = SCHEME + HOLD;
+      }
       all.forEach(([style]) => restore(style));
       const pinned = pin(all);
       S.kept = [];
