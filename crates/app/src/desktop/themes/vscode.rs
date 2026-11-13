@@ -2,8 +2,11 @@
 //! tokens. A colour the theme leaves out keeps the built-in Dark or Light
 //! theme's value; tints the app needs and VS Code has no key for are made
 //! from the theme's own colours. Syntax colours (`tokenColors`) have no
-//! place in the app and are left out, and an `include`d parent theme is not
-//! read.
+//! place in the app and are left out. A theme file's `include`d parents are
+//! read first, and the theme chosen in VS Code on this machine can be found
+//! without asking for its file.
+
+use std::path::{Path, PathBuf};
 
 use gpui::Rgba;
 use serde_json::{Map, Value};
@@ -11,12 +14,16 @@ use serde_json::{Map, Value};
 use super::{Error, jsonc};
 use crate::desktop::design::{self, Design};
 
-/// The largest VS Code theme file read.
+/// The largest VS Code file read: a theme, a settings file or an
+/// extension's manifest.
 pub const MAX_BYTES: u64 = 1024 * 1024;
+/// How many parents a theme file may include in a chain.
+const MAX_INCLUDES: usize = 8;
 
 /// The theme `text` describes, named from the file when it has no name, as
 /// a full theme file of the app's own.
-pub fn import(text: &str, fallback_name: &str) -> Result<(String, String), Error> {
+#[cfg(test)]
+fn import(text: &str, fallback_name: &str) -> Result<(String, String), Error> {
     let value = jsonc::parse(text)?;
     let object = value
         .as_object()
@@ -29,19 +36,216 @@ pub fn import(text: &str, fallback_name: &str) -> Result<(String, String), Error
             ));
         }
     };
-    let kind = object.get("type").and_then(Value::as_str).unwrap_or("dark");
-    let light = matches!(kind, "light" | "vs" | "hc-light");
-    let name = object
-        .get("name")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|name| !name.is_empty())
-        .unwrap_or(fallback_name)
-        .to_owned();
+    let light = object.get("type").and_then(Value::as_str).map(is_light);
+    let name = object.get("name").and_then(Value::as_str);
+    Ok(build(colors, light, name.unwrap_or(fallback_name)))
+}
+
+/// The theme in the file at `path`, with the parents it includes. `light`
+/// says which kind it is when the file does not.
+pub fn import_file(
+    path: &Path,
+    light: Option<bool>,
+    name: Option<&str>,
+) -> Result<(String, String), Error> {
+    let mut colors = Map::new();
+    let mut found_light = None;
+    let mut found_name = None;
+    let mut found_colors = false;
+    let mut next = Some(path.to_path_buf());
+    let mut layers = Vec::new();
+    while let Some(file) = next.take() {
+        if layers.len() > MAX_INCLUDES {
+            return Err(Error::new("The theme includes too many parent themes"));
+        }
+        let text = read(&file)?;
+        let value = jsonc::parse(&text)
+            .map_err(|error| Error::new(format!("{}: {error}", file.display())))?;
+        let object = value.as_object().cloned().unwrap_or_default();
+        if let Some(include) = object.get("include").and_then(Value::as_str) {
+            next = file.parent().map(|folder| folder.join(include));
+        }
+        layers.push(object);
+    }
+    // Parents first, so each theme's own colours win.
+    for object in layers.iter().rev() {
+        if let Some(Value::Object(own)) = object.get("colors") {
+            found_colors = true;
+            colors.extend(own.clone());
+        }
+        if let Some(kind) = object.get("type").and_then(Value::as_str) {
+            found_light = Some(is_light(kind));
+        }
+        if let Some(own) = object.get("name").and_then(Value::as_str) {
+            found_name = Some(own.to_owned());
+        }
+    }
+    if !found_colors {
+        return Err(Error::new(
+            "This file has no \"colors\" map, so it is not a VS Code colour theme",
+        ));
+    }
+    let stem = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .map(|stem| {
+            stem.trim_end_matches("-color-theme")
+                .replace(['-', '_'], " ")
+        })
+        .unwrap_or_else(|| "Imported".into());
+    let name = name.map(str::to_owned).or(found_name).unwrap_or(stem);
+    Ok(build(&colors, found_light.or(light), &name))
+}
+
+fn is_light(kind: &str) -> bool {
+    matches!(kind, "light" | "vs" | "hc-light")
+}
+
+/// The app's theme file for a VS Code `colors` map. A theme that does not
+/// say whether it is light is judged by its editor background.
+fn build(colors: &Map<String, Value>, light: Option<bool>, name: &str) -> (String, String) {
+    let light = light.unwrap_or_else(|| {
+        colors
+            .get("editor.background")
+            .and_then(Value::as_str)
+            .and_then(colour)
+            .is_some_and(|background| luminance(background) > 0.5)
+    });
+    let name = name.trim();
+    let name = if name.is_empty() { "Imported" } else { name };
     let mut design = design::builtin(light).clone();
-    design.name.clone_from(&name);
+    design.name = name.to_owned();
     map(&mut design, colors);
-    Ok((name.clone(), super::full_json(&design, &name)))
+    (name.to_owned(), super::full_json(&design, name))
+}
+
+/// Read one of VS Code's files, bounded, without waiting on a pipe.
+fn read(path: &Path) -> Result<String, Error> {
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+    let fail = |error: std::io::Error| Error::new(format!("{}: {error}", path.display()));
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(path)
+        .map_err(fail)?;
+    if !file.metadata().map_err(fail)?.is_file() {
+        return Err(Error::new(format!("{} is not a file", path.display())));
+    }
+    let mut text = String::new();
+    file.take(MAX_BYTES + 1)
+        .read_to_string(&mut text)
+        .map_err(fail)?;
+    if text.len() as u64 > MAX_BYTES {
+        return Err(Error::new(format!(
+            "{} is larger than 1 MiB",
+            path.display()
+        )));
+    }
+    Ok(text)
+}
+
+/// The colour theme chosen in VS Code on this machine.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Chosen {
+    /// The theme's name as VS Code's settings give it.
+    pub name: String,
+    /// The theme's file inside the extension that provides it.
+    pub path: PathBuf,
+    /// Whether the extension lists it as a light theme.
+    pub light: Option<bool>,
+}
+
+/// Find the colour theme chosen in VS Code: `workbench.colorTheme` in its
+/// user settings, looked up among the installed and built-in extensions.
+pub fn chosen() -> Option<Chosen> {
+    let home = PathBuf::from(std::env::var_os("HOME").filter(|home| !home.is_empty())?);
+    let (settings, builtin) = if cfg!(target_os = "macos") {
+        (
+            home.join("Library/Application Support/Code/User/settings.json"),
+            vec![
+                PathBuf::from(
+                    "/Applications/Visual Studio Code.app/Contents/Resources/app/extensions",
+                ),
+                home.join("Applications/Visual Studio Code.app/Contents/Resources/app/extensions"),
+            ],
+        )
+    } else {
+        let config = std::env::var_os("XDG_CONFIG_HOME")
+            .filter(|config| !config.is_empty())
+            .map_or_else(|| home.join(".config"), PathBuf::from);
+        (
+            config.join("Code/User/settings.json"),
+            vec![
+                PathBuf::from("/usr/share/code/resources/app/extensions"),
+                PathBuf::from("/usr/lib/code/extensions"),
+            ],
+        )
+    };
+    let mut folders = vec![home.join(".vscode/extensions")];
+    folders.extend(builtin);
+    chosen_in(&settings, &folders)
+}
+
+fn chosen_in(settings: &Path, folders: &[PathBuf]) -> Option<Chosen> {
+    let settings = jsonc::parse(&read(settings).ok()?).ok()?;
+    let name = settings.get("workbench.colorTheme")?.as_str()?.to_owned();
+    for folder in folders {
+        let Ok(extensions) = std::fs::read_dir(folder) else {
+            continue;
+        };
+        for extension in extensions.flatten() {
+            let root = extension.path();
+            let Some(manifest) = read(&root.join("package.json"))
+                .ok()
+                .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+            else {
+                continue;
+            };
+            let Some(themes) = manifest
+                .pointer("/contributes/themes")
+                .and_then(Value::as_array)
+            else {
+                continue;
+            };
+            // Built-in themes label themselves through a translation file.
+            let mut labels: Option<Value> = None;
+            for theme in themes {
+                let text = |key: &str| theme.get(key).and_then(Value::as_str);
+                let label = text("label").map(|label| {
+                    match label
+                        .strip_prefix('%')
+                        .and_then(|key| key.strip_suffix('%'))
+                    {
+                        Some(key) => labels
+                            .get_or_insert_with(|| {
+                                read(&root.join("package.nls.json"))
+                                    .ok()
+                                    .and_then(|text| serde_json::from_str(&text).ok())
+                                    .unwrap_or(Value::Null)
+                            })
+                            .get(key)
+                            .and_then(Value::as_str)
+                            .unwrap_or(label)
+                            .to_owned(),
+                        None => label.to_owned(),
+                    }
+                });
+                if text("id") != Some(name.as_str()) && label.as_deref() != Some(name.as_str()) {
+                    continue;
+                }
+                let Some(path) = text("path") else {
+                    continue;
+                };
+                return Some(Chosen {
+                    name,
+                    path: root.join(path),
+                    light: text("uiTheme").map(is_light),
+                });
+            }
+        }
+    }
+    None
 }
 
 /// A VS Code colour: `#rgb`, `#rgba`, `#rrggbb` or `#rrggbbaa`.
@@ -340,5 +544,72 @@ mod tests {
         assert_eq!(colour("#abc"), design::hex("#aabbcc"));
         assert_eq!(colour("#abcd"), design::hex("#aabbccdd"));
         assert!(colour("abc").is_none());
+    }
+}
+
+#[cfg(test)]
+mod files {
+    use super::*;
+
+    #[test]
+    fn the_theme_chosen_in_vs_code_is_found_and_read_with_its_parents() {
+        let root = tempfile::tempdir().unwrap();
+        let write = |path: &str, text: &str| {
+            let path = root.path().join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        };
+        write(
+            "User/settings.json",
+            "{\n  // chosen\n  \"workbench.colorTheme\": \"Paper Day\",\n}",
+        );
+        write(
+            "ext/other/package.json",
+            r#"{"contributes": {"themes": [{"label": "Else", "path": "./x.json"}]}}"#,
+        );
+        write(
+            "ext/paper/package.json",
+            r#"{"contributes": {"themes": [{"label": "%day%", "uiTheme": "vs", "path": "./themes/day.json"}]}}"#,
+        );
+        write("ext/paper/package.nls.json", r#"{"day": "Paper Day"}"#);
+        write(
+            "ext/paper/themes/day.json",
+            r##"{"include": "./base.json", "colors": {"editor.background": "#fefefe"}}"##,
+        );
+        write(
+            "ext/paper/themes/base.json",
+            r##"{"colors": {"editor.background": "#000000", "editor.foreground": "#222222"}}"##,
+        );
+        let chosen = chosen_in(
+            &root.path().join("User/settings.json"),
+            &[root.path().join("ext")],
+        )
+        .unwrap();
+        assert_eq!(chosen.name, "Paper Day");
+        assert_eq!(chosen.light, Some(true));
+        let (name, json) = import_file(&chosen.path, chosen.light, Some(&chosen.name)).unwrap();
+        assert_eq!(name, "Paper Day");
+        let design = super::super::resolve_text("x", &json).unwrap();
+        assert!(design.light);
+        // The theme's own colour wins over its parent's, which fills the rest.
+        assert_eq!(design.colors.surface, design::hex("#fefefe").unwrap());
+        assert_eq!(design.terminal.text, design::hex("#222222").unwrap());
+
+        write(
+            "User/settings.json",
+            r#"{"workbench.colorTheme": "Missing"}"#,
+        );
+        assert!(
+            chosen_in(
+                &root.path().join("User/settings.json"),
+                &[root.path().join("ext")]
+            )
+            .is_none()
+        );
+        // Without a stated kind, the editor background decides.
+        let (_, json) =
+            import_file(&root.path().join("ext/paper/themes/day.json"), None, None).unwrap();
+        assert!(super::super::resolve_text("x", &json).unwrap().light);
+        assert!(import_file(&root.path().join("ext/paper/package.json"), None, None).is_err());
     }
 }

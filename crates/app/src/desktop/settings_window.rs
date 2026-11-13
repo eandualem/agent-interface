@@ -63,6 +63,8 @@ pub struct SettingsWindow {
     refusal: Option<String>,
     /// Every theme, with its colours for a preview, or none when it cannot be read.
     themes: Vec<(themes::Entry, Option<design::Colors>)>,
+    /// The colour theme chosen in VS Code on this machine, if it is found.
+    vscode: Option<themes::vscode::Chosen>,
     /// What the last theme action did, or why it failed.
     theme_note: Option<String>,
     /// The theme file open in the editor.
@@ -79,29 +81,6 @@ struct Editing {
     /// Why the text is not a theme, if it is not.
     problem: Option<themes::Error>,
     _events: gpui::Subscription,
-}
-
-/// Read a VS Code colour theme file, named after the file when it has no name.
-fn read_vscode_theme(path: &std::path::Path) -> Result<(String, String), themes::Error> {
-    use std::io::Read;
-    let fail = |error: std::io::Error| themes::Error::new(format!("{}: {error}", path.display()));
-    let file = std::fs::File::open(path).map_err(fail)?;
-    let mut text = String::new();
-    file.take(themes::vscode::MAX_BYTES + 1)
-        .read_to_string(&mut text)
-        .map_err(fail)?;
-    if text.len() as u64 > themes::vscode::MAX_BYTES {
-        return Err(themes::Error::new("The file is larger than 1 MiB"));
-    }
-    let stem = path
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .map(|stem| {
-            stem.trim_end_matches("-color-theme")
-                .replace(['-', '_'], " ")
-        })
-        .unwrap_or_else(|| "Imported".into());
-    themes::vscode::import(&text, &stem)
 }
 
 /// Every theme, with the colours its card previews.
@@ -190,6 +169,7 @@ pub fn show(cx: &mut App) {
                 recording: None,
                 refusal: None,
                 themes: theme_list(),
+                vscode: themes::vscode::chosen(),
                 theme_note: None,
                 editing: None,
                 _keys: keys,
@@ -355,9 +335,36 @@ impl SettingsWindow {
         }
     }
 
-    /// Ask for a VS Code colour theme file, import it as one of the
-    /// person's own themes, use it and open it.
-    fn import_theme(&mut self, cx: &mut Context<Self>) {
+    /// Import the VS Code colour theme at `path` as one of the person's own
+    /// themes and use it.
+    fn import_theme(
+        &mut self,
+        path: &std::path::Path,
+        light: Option<bool>,
+        name: Option<&str>,
+        cx: &mut Context<Self>,
+    ) {
+        let imported = themes::vscode::import_file(path, light, name).and_then(|(name, json)| {
+            let id = themes::new_id(&name);
+            themes::save(&id, &json)
+                .map(|()| id)
+                .map_err(|error| themes::Error::new(format!("Not saved: {error}")))
+        });
+        match imported {
+            Ok(id) => {
+                self.themes = theme_list();
+                self.theme_note = None;
+                self.change(|settings| settings.theme = id, cx);
+            }
+            Err(error) => {
+                self.theme_note = Some(format!("Not imported. {error}"));
+                cx.notify();
+            }
+        }
+    }
+
+    /// Ask for a VS Code colour theme file and import it.
+    fn import_theme_file(&mut self, cx: &mut Context<Self>) {
         let paths = cx.prompt_for_paths(gpui::PathPromptOptions {
             files: true,
             directories: false,
@@ -371,25 +378,7 @@ impl SettingsWindow {
             let Some(path) = paths.into_iter().next() else {
                 return;
             };
-            let _ = this.update(cx, |view, cx| {
-                let imported = read_vscode_theme(&path).and_then(|(name, json)| {
-                    let id = themes::new_id(&name);
-                    themes::save(&id, &json)
-                        .map(|()| (id, name))
-                        .map_err(|error| themes::Error::new(format!("Not saved: {error}")))
-                });
-                match imported {
-                    Ok((id, _)) => {
-                        view.themes = theme_list();
-                        view.theme_note = None;
-                        view.change(|settings| settings.theme = id, cx);
-                    }
-                    Err(error) => {
-                        view.theme_note = Some(format!("Not imported. {error}"));
-                        cx.notify();
-                    }
-                }
-            });
+            let _ = this.update(cx, |view, cx| view.import_theme(&path, None, None, cx));
         })
         .detach();
     }
@@ -860,9 +849,32 @@ impl SettingsWindow {
                                 })),
                         )
                     })
+                    .when_some(self.vscode.clone(), |el, chosen| {
+                        el.child(
+                            ui::button(
+                                "theme-import-current",
+                                format!("Import \"{}\" from VS Code", chosen.name),
+                                ui::Button::Secondary,
+                            )
+                            .on_click(cx.listener(
+                                move |view, _, _, cx| {
+                                    view.import_theme(
+                                        &chosen.path,
+                                        chosen.light,
+                                        Some(&chosen.name),
+                                        cx,
+                                    )
+                                },
+                            )),
+                        )
+                    })
                     .child(
-                        ui::button("theme-import", "Import VS Code theme…", ui::Button::Secondary)
-                            .on_click(cx.listener(|view, _, _, cx| view.import_theme(cx))),
+                        ui::button(
+                            "theme-import",
+                            "Import VS Code theme file…",
+                            ui::Button::Secondary,
+                        )
+                        .on_click(cx.listener(|view, _, _, cx| view.import_theme_file(cx))),
                     )
                     .into_any_element(),
                 Self::note(if own {

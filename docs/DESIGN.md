@@ -167,8 +167,12 @@ bar, button, focus border and link becomes the accent, error colours become
 `attention`, and `terminal.*` keys set the terminal colours. Tints the app
 needs and VS Code has no key for are made from those colours, and colours it
 leaves out keep Dark's or Light's. Syntax colours (`tokenColors`) have no
-place in the app, and an `include`d parent file is not read. The result is a
-full theme file to adjust in the editor.
+place in the app. A theme file's `include`d parents are read first, and a
+theme that does not say whether it is light is judged by its editor
+background. Settings also offers the theme chosen in VS Code directly: it
+reads `workbench.colorTheme` from VS Code's user settings and finds that
+theme among the installed and built-in extensions. The result is a full
+theme file to adjust in the editor.
 
 **The bundled themes** were made the same way, from each project's own VS Code
 theme or published palette (Dracula, One Dark Pro, Tokyo Night, Catppuccin

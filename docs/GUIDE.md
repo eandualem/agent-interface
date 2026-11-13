@@ -110,8 +110,10 @@ and One Light) and your own. Click one to use it everywhere at once.
 **Customize…** copies the theme in use into a JSON file of your own and opens
 it in the editor, where you can change any colour, the interface and terminal
 fonts, type sizes and spacing; Command-S (Control-S on Linux) saves and
-applies it, and a mistake is marked on its line. **Import VS Code theme…**
-turns a VS Code colour theme file into one of your themes. Your themes are
+applies it, and a mistake is marked on its line. When VS Code is installed,
+**Import "…" from VS Code** brings in the colour theme you use there in one
+click; **Import VS Code theme file…** does the same for any colour theme
+file you choose. Your themes are
 files in `agent-interface/themes/` beside the settings file;
 [the design guide](DESIGN.md#themes) describes their format and every token.
 Some terminal programs choose their own colours when they start. If their colours
