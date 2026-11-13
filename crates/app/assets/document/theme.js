@@ -17,8 +17,9 @@
     'revert-layer', 'none', 'auto',
   ]);
   const COLOR = /(?:^|-)color$|^background-image$/;
+  // Colour functions up to three parentheses deep, as with nested fallbacks.
   const TOKEN =
-    /#[0-9a-f]{3,8}\b|\b(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color|color-mix)\((?:[^()]|\([^()]*\))*\)|\b[a-z]+\b/gi;
+    /#[0-9a-f]{3,8}\b|\b(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color|color-mix)\((?:[^()]|\((?:[^()]|\((?:[^()]|\([^()]*\))*\))*\))*\)|\b[a-z]+\b/gi;
   const pixel = document.createElement('canvas');
   pixel.width = pixel.height = 1;
   const context = pixel.getContext('2d', { willReadFrequently: true });
@@ -256,13 +257,19 @@
     if (kept !== token) return kept;
     const call = /^([a-z-]+)\(([^]*)\)$/i.exec(token);
     if (!call) return token;
-    // The fallback may be followed by an alpha, as in
-    // `rgb(var(--bg, 255 255 255) / 0.9)`, which is kept.
-    const channel = /^\s*var\(\s*(--[\w-]+)\s*,\s*([^()]+)\)(\s*(?:\/|,)[^]*)?$/.exec(call[2]);
-    if (/^(rgba?|hsla?)$/i.test(call[1]) && channel) {
+    // The var() may hold nested fallbacks and be followed by an alpha, as in
+    // `rgb(var(--a, var(--b, 255 255 255)) / 0.9)`; the alpha is kept.
+    const argument = call[2].trimStart();
+    if (/^(rgba?|hsla?)$/i.test(call[1]) && argument.startsWith('var(')) {
+      let depth = 0;
+      let end = 0;
+      for (; end < argument.length; end += 1) {
+        if (argument[end] === '(') depth += 1;
+        else if (argument[end] === ')' && (depth -= 1) === 0) break;
+      }
       const fn = call[1].toLowerCase().startsWith('hsl') ? 'hsl' : 'rgb';
-      const mapped = rechannel(channel[2], fn);
-      return mapped ? `${call[1]}(var(${channel[1]}, ${mapped})${channel[3] || ''})` : token;
+      const mapped = rechannel(argument.slice(0, end + 1), fn);
+      return mapped ? `${call[1]}(${mapped}${argument.slice(end + 1)})` : token;
     }
     return `${call[1]}(${recolor(call[2], fill)})`;
   };
