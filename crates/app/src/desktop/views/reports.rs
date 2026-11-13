@@ -412,7 +412,7 @@ fn reader(
     };
     let body = look(&t.text.doc_body, 1.55);
     let authored = |text: &str, look: &markdown::Look, cx: &mut Context<ViewPane>| {
-        markdown::render_in(&markdown::parse_authored(text), look, pane, cx)
+        markdown::render_in(&markdown::authored(text), look, pane, cx)
     };
     let mut column = ui::reader_column().gap(px(t.space.s16));
     match &item.content {

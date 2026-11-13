@@ -4,7 +4,7 @@
 //! `pulldown-cmark` into blocks, drawn in the document styles. Web addresses
 //! read as their site and open when clicked; it loads no images.
 
-use std::ops::Range;
+use std::{cell::RefCell, collections::HashMap, ops::Range, rc::Rc};
 
 use gpui::{
     Context, FontStyle, FontWeight, HighlightStyle, StrikethroughStyle, div, prelude::*, px,
@@ -101,12 +101,79 @@ pub(super) enum Block {
     },
 }
 
+/// Parsed text by source, so drawing unchanged text again parses nothing.
+/// Entries are kept by use: when the sources held pass [`CACHE_BYTES`], the
+/// half used longest ago is dropped.
+/// Parsed blocks and when they were last used.
+type Kept = (Rc<Vec<Block>>, u64);
+
+#[derive(Default)]
+struct Cache {
+    /// Authored records, then documents with front matter.
+    kinds: [HashMap<Box<str>, Kept>; 2],
+    bytes: usize,
+    used: u64,
+}
+
+const CACHE_BYTES: usize = 8 * 1024 * 1024;
+
+thread_local! {
+    static CACHE: RefCell<Cache> = RefCell::default();
+}
+
+fn cached(text: &str, front_matter: bool) -> Rc<Vec<Block>> {
+    CACHE.with_borrow_mut(|cache| {
+        cache.used += 1;
+        let used = cache.used;
+        if let Some((blocks, last)) = cache.kinds[usize::from(front_matter)].get_mut(text) {
+            *last = used;
+            return blocks.clone();
+        }
+        let blocks = Rc::new(parse_with(text, front_matter));
+        if text.len() > CACHE_BYTES / 4 {
+            return blocks;
+        }
+        if cache.bytes + text.len() > CACHE_BYTES {
+            let mut ages: Vec<u64> = cache
+                .kinds
+                .iter()
+                .flat_map(|kind| kind.values().map(|(_, last)| *last))
+                .collect();
+            ages.sort_unstable();
+            let keep = ages[ages.len() / 2];
+            let mut bytes = 0;
+            for kind in &mut cache.kinds {
+                kind.retain(|_, (_, last)| *last > keep);
+                bytes += kind.keys().map(|text| text.len()).sum::<usize>();
+            }
+            cache.bytes = bytes;
+        }
+        cache.bytes += text.len();
+        cache.kinds[usize::from(front_matter)].insert(text.into(), (blocks.clone(), used));
+        blocks
+    })
+}
+
+/// The blocks of a document, after any front matter between `---` lines;
+/// kept for the next frame.
+pub(super) fn document(text: &str) -> Rc<Vec<Block>> {
+    cached(text, true)
+}
+
+/// The blocks of an authored record, which has no front matter: a leading
+/// `---` is a rule. Kept for the next frame.
+pub(super) fn authored(text: &str) -> Rc<Vec<Block>> {
+    cached(text, false)
+}
+
 /// The blocks of a document, after any front matter between `---` lines.
+#[cfg(test)]
 pub(super) fn parse(text: &str) -> Vec<Block> {
     parse_with(text, true)
 }
 
 /// Authored records contain no front matter; a leading `---` is a rule.
+#[cfg(test)]
 pub(super) fn parse_authored(text: &str) -> Vec<Block> {
     parse_with(text, false)
 }
@@ -565,6 +632,19 @@ fn column<V: Selectable>(blocks: &[Block], gap: f32, pane: &V, cx: &mut Context<
                 .bg(look.rule)
                 .into_any_element(),
             Block::Table { head, rows } => {
+                // A column's share of the width follows its longest cell,
+                // within bounds so no column vanishes or takes the table.
+                let widths: Vec<f32> = (0..head.len().max(1))
+                    .map(|column| {
+                        std::iter::once(head)
+                            .chain(rows)
+                            .filter_map(|cells| cells.get(column))
+                            .map(|cell| cell.text.chars().count())
+                            .max()
+                            .unwrap_or(0)
+                            .clamp(6, 48) as f32
+                    })
+                    .collect();
                 let row = |cells: &[Inline], header: bool, cx: &mut Context<V>| {
                     let mut line = div()
                         .flex()
@@ -573,12 +653,11 @@ fn column<V: Selectable>(blocks: &[Block], gap: f32, pane: &V, cx: &mut Context<
                         .when(header, |el| {
                             el.border_t_0().bg(look.table_head).text_color(c.text)
                         });
-                    for cell in cells {
+                    for (column, cell) in cells.iter().enumerate() {
+                        let mut slot = div().flex_1().min_w_0();
+                        slot.style().flex_grow = widths.get(column).copied();
                         line = line.child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .px(px(t.space.s10))
+                            slot.px(px(t.space.s10))
                                 .py(px(t.space.s6))
                                 .when(header, |el| el.font_weight(FontWeight::SEMIBOLD))
                                 .child(styled(cell, pane, cx)),
@@ -615,6 +694,46 @@ mod tests {
             text: text.into(),
             ..Inline::default()
         }
+    }
+
+    #[test]
+    fn unchanged_text_is_parsed_once_and_old_entries_leave() {
+        let first = authored("**once**");
+        assert!(Rc::ptr_eq(&first, &authored("**once**")));
+        // The same text read as a document is a different reading.
+        assert!(!Rc::ptr_eq(&first, &document("**once**")));
+        assert_eq!(*document("---\na: b\n---\nbody"), parse("body"));
+        // Filling the cache drops what was used longest ago, never the newest.
+        let filler = "x".repeat(CACHE_BYTES / 5);
+        for at in 0..6 {
+            authored(&format!("{at}{filler}"));
+        }
+        let held = CACHE.with_borrow(|cache| cache.bytes);
+        assert!(held <= CACHE_BYTES, "{held}");
+        assert!(!Rc::ptr_eq(&first, &authored("**once**")));
+        let newest = authored(&format!("5{filler}"));
+        assert!(Rc::ptr_eq(&newest, &authored(&format!("5{filler}"))));
+    }
+
+    /// `cargo test --release -p agent-interface-app --lib parse_cost -- --ignored --nocapture`
+    #[test]
+    #[ignore = "a measurement, not a check"]
+    fn parse_cost() {
+        let section = "## Heading\n\nA paragraph with **bold**, `code` and [a link](https://example.com/a).\n\n- one\n- two https://example.com/b\n\n| a | b |\n|---|---|\n| 1 | `2` |\n\n";
+        let text = section.repeat(40_000 / section.len());
+        let runs = 2_000;
+        let start = std::time::Instant::now();
+        for _ in 0..runs {
+            std::hint::black_box(parse(std::hint::black_box(&text)));
+        }
+        let parsed = start.elapsed() / runs;
+        document(&text);
+        let start = std::time::Instant::now();
+        for _ in 0..runs {
+            std::hint::black_box(document(std::hint::black_box(&text)));
+        }
+        let cached = start.elapsed() / runs;
+        println!("{} bytes: parse {parsed:?}, cached {cached:?}", text.len());
     }
 
     #[test]

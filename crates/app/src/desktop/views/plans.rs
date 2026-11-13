@@ -14,7 +14,7 @@ use agent_interface_roster::{
 };
 use gpui::{AnyElement, Context, Entity, SharedString, Task, Window, div, prelude::*, px};
 
-use super::{ViewPane, reports, selection};
+use super::{ViewPane, markdown, reports, selection};
 use crate::desktop::{
     components as ui,
     design::{colors, tokens},
@@ -923,11 +923,18 @@ fn detail(
             )),
         );
     } else {
-        column = column.child(
-            ui::text(div().text_color(c.text_2), &t.text.body)
-                .line_height(px(t.text.body.size * 1.45))
-                .child(selection::text(pane, item.detail.trim(), &[], cx)),
-        );
+        let look = markdown::Look {
+            style: &t.text.body,
+            color: c.text_2,
+            line_height: 1.45,
+            gap: t.space.s6,
+        };
+        column = column.child(markdown::render_in(
+            &markdown::authored(item.detail.trim()),
+            &look,
+            pane,
+            cx,
+        ));
     }
     let fact = |label: &'static str, value: AnyElement| {
         div()
