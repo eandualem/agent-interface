@@ -544,8 +544,9 @@
   };
 
   // Held while colours are restored, measured and mapped, so the document's
-  // own transitions neither show the old colours nor are read mid-way.
-  const HOLD = '*,*::before,*::after{transition:none!important;}';
+  // own transitions neither show the old colours nor are read mid-way, and
+  // light-dark() is measured in the scheme the page will be drawn in.
+  const HOLD = `:root{color-scheme:${T.scheme}!important}*,*::before,*::after{transition:none!important;}`;
   // Selected text keeps its own colour over a translucent accent, as in
   // native readers; a document that styles its selection keeps that, mapped.
   const SELECTION = '::selection{background:var(--ai-selection)!important;}';

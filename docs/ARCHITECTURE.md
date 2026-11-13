@@ -694,7 +694,9 @@ Stored HTML is not rewritten; the script changes the page in memory:
   no reload; so does a change of the system appearance, which can switch the
   document's own light or dark rules, and so does a resize, after it settles,
   since a media query can change the page's own colours. The document's
-  transitions are held while colours are restored, measured and mapped.
+  transitions are held while colours are restored, measured and mapped, and
+  the theme's light or dark scheme already applies, so `light-dark()` is
+  measured as it will be drawn.
 - **Later changes** are mapped too: style elements and style sheet links (also
   inside added subtrees, when their attributes change, and when a sheet
   finishes loading), inline styles, any attribute of the root or body, and
