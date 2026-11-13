@@ -13,14 +13,19 @@ pub const FONT_SIZES: std::ops::RangeInclusive<u32> = 9..=24;
 static FONT_SIZE: AtomicU32 = AtomicU32::new(0);
 /// Navigation panel widths the settings accept, from the design tokens.
 fn sidebar_widths() -> std::ops::RangeInclusive<u32> {
-    let size = &super::design::tokens().size;
+    sidebar_widths_in(&super::design::tokens().size)
+}
+fn sidebar_widths_in(size: &super::design::Size) -> std::ops::RangeInclusive<u32> {
     size.panel_min as u32..=size.panel_max as u32
 }
 /// The dragged panel width, or zero for the default of 22 terminal cells.
 static SIDEBAR_WIDTH: AtomicU32 = AtomicU32::new(0);
 /// Conversation panel widths the settings accept, from the design's minimum.
 fn conversation_widths() -> std::ops::RangeInclusive<u32> {
-    super::design::tokens().size.conversation_width as u32..=4000
+    conversation_widths_in(&super::design::tokens().size)
+}
+fn conversation_widths_in(size: &super::design::Size) -> std::ops::RangeInclusive<u32> {
+    size.conversation_width as u32..=super::design::CONVERSATION_WIDTH_MAX
 }
 /// The dragged conversation width, or zero for a share of the reader.
 static CONVERSATION_WIDTH: AtomicU32 = AtomicU32::new(0);
@@ -69,7 +74,9 @@ pub fn pane_headers() -> PaneHeaders {
 pub struct Settings {
     /// Persistent, explicit local diagnostic verbosity.
     pub logging: crate::diagnostics::Level,
-    pub light: bool,
+    /// The theme's id: `dark`, `light`, a bundled theme or one of the
+    /// person's own (see `themes`).
+    pub theme: String,
     pub font_size: f32,
     /// The interface size in percent, one of [`super::zoom::SIZES`].
     pub interface_size: u32,
@@ -95,7 +102,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             logging: crate::diagnostics::Level::Warnings,
-            light: false,
+            theme: "dark".into(),
             font_size: super::design::tokens().font.terminal_size,
             interface_size: 100,
             shortcuts: super::shortcuts::Bindings::default(),
@@ -126,9 +133,14 @@ impl Settings {
         {
             settings.logging = *level;
         }
-        if let Some(theme) = table.get("theme").and_then(toml::Value::as_str) {
-            settings.light = theme == "light";
+        if let Some(theme) = table.get("theme").and_then(toml::Value::as_str)
+            && super::themes::valid_id(theme)
+        {
+            settings.theme = theme.to_owned();
         }
+        // Saved widths are checked against the chosen theme's limits.
+        let design = super::themes::resolve(&settings.theme)
+            .unwrap_or_else(|_| super::design::builtin(false).clone());
         if let Some(size) = table.get("font_size").and_then(toml::Value::as_integer)
             && u32::try_from(size).is_ok_and(|size| FONT_SIZES.contains(&size))
         {
@@ -144,7 +156,7 @@ impl Settings {
         }
         if let Some(width) = table.get("sidebar_width").and_then(toml::Value::as_integer)
             && let Ok(width) = u32::try_from(width)
-            && sidebar_widths().contains(&width)
+            && sidebar_widths_in(&design.size).contains(&width)
         {
             settings.sidebar_width = Some(width);
         }
@@ -152,7 +164,7 @@ impl Settings {
             .get("conversation_width")
             .and_then(toml::Value::as_integer)
             && let Ok(width) = u32::try_from(width)
-            && conversation_widths().contains(&width)
+            && conversation_widths_in(&design.size).contains(&width)
         {
             settings.conversation_width = Some(width);
         }
@@ -202,8 +214,8 @@ impl Settings {
 
     pub fn to_toml(&self) -> String {
         let mut text = format!(
-            "theme = \"{}\"\nfont_size = {}\n",
-            if self.light { "light" } else { "dark" },
+            "theme = {}\nfont_size = {}\n",
+            toml::Value::String(self.theme.clone()),
             self.font_size as u32
         );
         text.push_str(&format!("logging = \"{}\"\n", self.logging.name()));
@@ -265,7 +277,7 @@ impl Settings {
     /// Make these the settings every window draws with.
     pub fn apply(&self) {
         crate::diagnostics::set_level(self.logging);
-        super::design::set_light(self.light);
+        super::themes::apply(&self.theme);
         PANE_HEADERS.store(self.pane_headers as u8, Ordering::Relaxed);
         FONT_SIZE.store(self.font_size.to_bits(), Ordering::Relaxed);
         super::zoom::set(self.interface_size);
@@ -289,7 +301,7 @@ impl Settings {
     pub fn current() -> Self {
         Self {
             logging: crate::diagnostics::level(),
-            light: super::design::is_light(),
+            theme: super::themes::current(),
             font_size: font_size(),
             interface_size: (super::zoom::factor() * 100.0).round() as u32,
             shortcuts: super::shortcuts::current(),
@@ -621,7 +633,7 @@ mod tests {
             .unwrap();
         let light = Settings {
             logging: crate::diagnostics::Level::Warnings,
-            light: true,
+            theme: "solarized-light".into(),
             font_size: 16.0,
             interface_size: 150,
             shortcuts,
@@ -651,7 +663,7 @@ mod tests {
         assert_eq!(Settings::current(), Settings::default());
         assert_eq!(Settings::parse("not toml ["), Settings::default());
         let odd = Settings::parse(
-            "theme = \"sepia\"\nfont_size = 99\ninterface_size = 130\nsidebar_width = 9000\nconversation_width = 10\nother = 1\n",
+            "theme = \"Sepia!\"\nfont_size = 99\ninterface_size = 130\nsidebar_width = 9000\nconversation_width = 10\nother = 1\n",
         );
         assert_eq!(odd, Settings::default());
         let directory = tempfile::tempdir().unwrap();

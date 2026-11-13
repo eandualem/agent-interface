@@ -323,6 +323,20 @@ two seconds for settings writes, including writes from already-closed windows.
 The wait tracks file workers, independently of their UI result handlers. A
 write still blocked beyond that shutdown allowance may remain unfinished.
 
+Themes are JSON files: twelve bundled into the binary and the person's own
+in `themes/` beside `settings.toml`, read up to 256 KiB each (VS Code imports
+up to 1 MiB). `settings.toml` stores only the chosen theme's id. A theme is
+merged over the TOML table of the theme it extends, so one checked reader
+(`design.rs`) builds every theme, and each mistake is reported with its token
+path, which the JSON lexer turns into a line and column. The theme in use is
+an interned `&'static` design behind a lock read once per lookup: views keep
+calling `tokens()` and `colors()` as before, and a theme switch repaints every
+window. The cost is that each distinct theme applied stays in memory until
+the app quits, a few kilobytes each; the editor applies only on save. Terminals
+take their colours and font from the theme when they are created and when
+appearance changes, never per cell. Files are saved atomically, and a theme
+that fails to read leaves Dark in use with the reason shown in Settings.
+
 The legacy keymap inspection commands do not replace native Settings
 shortcuts.
 
@@ -692,6 +706,12 @@ build-time advisory exception are described below.
   carry LGPL-2.1-or-later, MIT-CMU and BSD terms, preserved in the
   [Linux protocol notices](../packaging/wayland-notices.txt). Cargo licence
   metadata alone does not describe those generated-binding inputs.
+- **Bundled colour themes:** colour values from MIT-licensed theme projects
+  (Dracula, One Dark Pro, Tokyo Night, Catppuccin, Nord, Gruvbox, Solarized,
+  GitHub Primer, One Light), stored as the app's own theme JSON. Their
+  copyright notices are in
+  [`packaging/extra-notices.txt`](../packaging/extra-notices.txt). No code is
+  taken from them, and no crate is added.
 - **`libghostty-vt`:** terminal emulation behind the `term` boundary, pinned with
   its native binding. MIT OR Apache-2.0; Ghostty's core is MIT-licensed.
 - **`rusqlite`:** transactional access to the existing SQLite library format.

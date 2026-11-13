@@ -44,6 +44,8 @@ mod sidebar;
 mod split_resize;
 mod status;
 mod terminal;
+mod theme_editor;
+mod themes;
 mod views;
 mod window_controls;
 mod workspace;
@@ -131,7 +133,7 @@ pub fn run(directory: Option<PathBuf>) -> Result<(), String> {
                             let _ = browser.update(cx, |browser, window, cx| {
                                 browser.close_pane(window, cx);
                             });
-                        } else {
+                        } else if settings_window::may_close_window(window, cx) {
                             let _ = window.update(cx, |_, window, _| window.remove_window());
                         }
                     });
@@ -163,7 +165,9 @@ pub fn run(directory: Option<PathBuf>) -> Result<(), String> {
             cx.on_action(|_: &CloseWindow, cx| {
                 if let Some(window) = cx.active_window() {
                     cx.defer(move |cx| {
-                        let _ = window.update(cx, |_, window, _| window.remove_window());
+                        if settings_window::may_close_window(window, cx) {
+                            let _ = window.update(cx, |_, window, _| window.remove_window());
+                        }
                     });
                 }
             });
@@ -177,7 +181,16 @@ pub fn run(directory: Option<PathBuf>) -> Result<(), String> {
                 }
             });
             cx.on_action(|_: &Quit, cx| {
-                cx.quit();
+                // Deferred: the action may have come from the Settings window.
+                // Termination by the system (the Dock's Quit, logging out)
+                // does not pass here and cannot be refused; edits not yet
+                // saved in the theme editor are then lost, as the editor's
+                // "Unsaved changes" line warns.
+                cx.defer(|cx| {
+                    if settings_window::may_quit(cx) {
+                        cx.quit();
+                    }
+                });
             });
             cx.on_action(|_: &NewWindow, cx| {
                 // Dispatch currently borrows the originating window. Open after it

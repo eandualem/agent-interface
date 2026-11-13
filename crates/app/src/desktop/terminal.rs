@@ -790,6 +790,8 @@ pub(super) fn appearance() -> Appearance {
         foreground: terminal.text,
         background: terminal.background,
         cursor: terminal.cursor,
+        selection: terminal.selection,
+        selection_text: terminal.selection_text,
         palette: terminal.palette,
     }
 }

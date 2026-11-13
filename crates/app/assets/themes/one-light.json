@@ -1,0 +1,53 @@
+{
+  "name": "One Light",
+  "extends": "light",
+  "color": {
+    "ground": "#e0e0e1",
+    "panel": "#eaeaeb",
+    "surface": "#fafafa",
+    "field": "#ffffff",
+    "hover": "#e4e4e5",
+    "selected": "#dbdbdc",
+    "line": "#dbdbdc",
+    "line_strong": "#dbdbdc",
+    "edge": "#dbdbdc",
+    "text": "#383a42",
+    "text_2": "#55575e",
+    "muted": "#696c77",
+    "faint": "#9d9d9f",
+    "accent": "#5871ef",
+    "accent_text": "#4078f2",
+    "on_accent": "#fafafa",
+    "accent_soft": "#5871ef1f",
+    "focus": "#5871ef",
+    "focus_halo": "#5871ef1a",
+    "attention": "#e45649",
+    "attention_text": "#e45649",
+    "on_attention": "#fafafa",
+    "attention_soft": "#e456491a",
+    "ok": "#50a14f",
+    "info": "#4078f2",
+    "violet": "#a626a4",
+    "green": "#50a14f",
+    "code": "#986801",
+    "shadow": "#00000026",
+    "mark_from": "#2a2d33",
+    "mark_to": "#121315",
+    "mark_edge": "#ffffff12",
+    "mark_glyph": "#e7e8eb",
+    "mark_eye": "#e8a85f",
+    "mark_glow": "#e8a85f8c",
+    "pane_dim": 0.8
+  },
+  "terminal": {
+    "text": "#383a42",
+    "background": "#fafafa",
+    "cursor": "#526fff",
+    "selection": "#e5e5e6",
+    "selection_text": "#383a42",
+    "palette": [
+      "#383a42", "#e45649", "#50a14f", "#986801", "#4078f2", "#a626a4", "#0184bc", "#a0a1a7",
+      "#696c77", "#e45649", "#50a14f", "#986801", "#4078f2", "#a626a4", "#0184bc", "#232429"
+    ]
+  }
+}

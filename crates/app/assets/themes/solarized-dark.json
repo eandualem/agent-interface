@@ -1,0 +1,53 @@
+{
+  "name": "Solarized Dark",
+  "extends": "dark",
+  "color": {
+    "ground": "#001e26",
+    "panel": "#00212b",
+    "surface": "#002b36",
+    "field": "#073642",
+    "hover": "#003846",
+    "selected": "#073642",
+    "line": "#073642",
+    "line_strong": "#2b4c55",
+    "edge": "#073642",
+    "text": "#93a1a1",
+    "text_2": "#839496",
+    "muted": "#839496",
+    "faint": "#586e75",
+    "accent": "#2aa198",
+    "accent_text": "#268bd2",
+    "on_accent": "#002b36",
+    "accent_soft": "#2aa19824",
+    "focus": "#2aa19873",
+    "focus_halo": "#2aa19814",
+    "attention": "#dc322f",
+    "attention_text": "#dc322f",
+    "on_attention": "#002b36",
+    "attention_soft": "#dc322f1f",
+    "ok": "#859900",
+    "info": "#268bd2",
+    "violet": "#d33682",
+    "green": "#859900",
+    "code": "#b58900",
+    "shadow": "#00000073",
+    "mark_from": "#2a2d33",
+    "mark_to": "#121315",
+    "mark_edge": "#ffffff12",
+    "mark_glyph": "#e7e8eb",
+    "mark_eye": "#e8a85f",
+    "mark_glow": "#e8a85f8c",
+    "pane_dim": 0.72
+  },
+  "terminal": {
+    "text": "#839496",
+    "background": "#002b36",
+    "cursor": "#93a1a1",
+    "selection": "#274642",
+    "selection_text": "#839496",
+    "palette": [
+      "#073642", "#dc322f", "#859900", "#b58900", "#268bd2", "#d33682", "#2aa198", "#eee8d5",
+      "#002b36", "#cb4b16", "#586e75", "#657b83", "#839496", "#6c71c4", "#93a1a1", "#fdf6e3"
+    ]
+  }
+}

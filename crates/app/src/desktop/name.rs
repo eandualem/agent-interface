@@ -17,33 +17,45 @@ pub(super) enum NameEvent {
     Changed(String),
 }
 
+/// Editable text with a selection and an input method's marked range,
+/// shared by the one-line fields here and the theme editor.
 #[derive(Default)]
-struct Text {
-    value: String,
-    anchor: usize,
-    cursor: usize,
-    marked: Option<Range<usize>>,
+pub(super) struct Text {
+    pub(super) value: String,
+    pub(super) anchor: usize,
+    pub(super) cursor: usize,
+    pub(super) marked: Option<Range<usize>>,
     search: bool,
-    feedback: bool,
+    /// Line breaks and tabs are text, and there is no length limit.
+    pub(super) feedback: bool,
 }
 
 impl Text {
-    fn selection(&self) -> Range<usize> {
+    /// Multiline text with no length limit, the caret at its start.
+    pub(super) fn multiline(value: &str) -> Self {
+        Self {
+            value: value.to_owned(),
+            feedback: true,
+            ..Self::default()
+        }
+    }
+
+    pub(super) fn selection(&self) -> Range<usize> {
         self.anchor.min(self.cursor)..self.anchor.max(self.cursor)
     }
 
-    fn utf16(&self, range: Range<usize>) -> Range<usize> {
+    pub(super) fn utf16(&self, range: Range<usize>) -> Range<usize> {
         self.value[..range.start].encode_utf16().count()
             ..self.value[..range.end].encode_utf16().count()
     }
 
-    fn bytes(&self, range: Range<usize>) -> Range<usize> {
+    pub(super) fn bytes(&self, range: Range<usize>) -> Range<usize> {
         from_utf16(&self.value, range.start)..from_utf16(&self.value, range.end)
     }
 
     /// The text as one accessible run, with the selection's anchor and caret
     /// as character indices into it, so dictation finds an editable field.
-    fn accessible_run(&self) -> (Node, usize, usize) {
+    pub(super) fn accessible_run(&self) -> (Node, usize, usize) {
         let mut run = Node::new(Role::TextRun);
         run.set_value(self.value.clone());
         run.set_character_lengths(
@@ -57,7 +69,12 @@ impl Text {
         (run, index(self.anchor), index(self.cursor))
     }
 
-    fn replace(&mut self, range: Option<Range<usize>>, text: &str, marked: bool) -> Range<usize> {
+    pub(super) fn replace(
+        &mut self,
+        range: Option<Range<usize>>,
+        text: &str,
+        marked: bool,
+    ) -> Range<usize> {
         let range = range
             .map(|range| self.bytes(range))
             .or_else(|| self.marked.clone())
@@ -89,7 +106,7 @@ impl Text {
         range.start..end
     }
 
-    fn compose(
+    pub(super) fn compose(
         &mut self,
         range: Option<Range<usize>>,
         text: &str,
@@ -103,7 +120,7 @@ impl Text {
         }
     }
 
-    fn snap(&self, offset: usize) -> usize {
+    pub(super) fn snap(&self, offset: usize) -> usize {
         self.value
             .grapheme_indices(true)
             .map(|(i, _)| i)
@@ -111,7 +128,7 @@ impl Text {
             .unwrap_or(self.value.len())
     }
 
-    fn boundary(&self, right: bool) -> usize {
+    pub(super) fn boundary(&self, right: bool) -> usize {
         if right {
             self.value
                 .grapheme_indices(true)

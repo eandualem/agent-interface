@@ -1,0 +1,53 @@
+{
+  "name": "One Dark",
+  "extends": "dark",
+  "color": {
+    "ground": "#21252b",
+    "panel": "#21252b",
+    "surface": "#282c34",
+    "field": "#1d1f23",
+    "hover": "#2c313a",
+    "selected": "#323842",
+    "line": "#3e4452",
+    "line_strong": "#3e4452",
+    "edge": "#181a1f",
+    "text": "#abb2bf",
+    "text_2": "#979eaa",
+    "muted": "#7f848e",
+    "faint": "#495162",
+    "accent": "#61afef",
+    "accent_text": "#61afef",
+    "on_accent": "#282c34",
+    "accent_soft": "#61afef24",
+    "focus": "#61afef73",
+    "focus_halo": "#61afef14",
+    "attention": "#e06c75",
+    "attention_text": "#e06c75",
+    "on_attention": "#282c34",
+    "attention_soft": "#e06c751f",
+    "ok": "#98c379",
+    "info": "#61afef",
+    "violet": "#c162de",
+    "green": "#8cc265",
+    "code": "#d19a66",
+    "shadow": "#00000073",
+    "mark_from": "#2a2d33",
+    "mark_to": "#121315",
+    "mark_edge": "#ffffff12",
+    "mark_glyph": "#e7e8eb",
+    "mark_eye": "#e8a85f",
+    "mark_glow": "#e8a85f8c",
+    "pane_dim": 0.72
+  },
+  "terminal": {
+    "text": "#abb2bf",
+    "background": "#282c34",
+    "cursor": "#528bff",
+    "selection": "#404859",
+    "selection_text": "#abb2bf",
+    "palette": [
+      "#3f4451", "#e05561", "#8cc265", "#d18f52", "#4aa5f0", "#c162de", "#42b3c2", "#d7dae0",
+      "#4f5666", "#ff616e", "#a5e075", "#f0a45d", "#4dc4ff", "#de73ff", "#4cd1e0", "#e6e6e6"
+    ]
+  }
+}
