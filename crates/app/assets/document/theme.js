@@ -405,20 +405,28 @@
     }, 16);
   };
 
-  // Hover, focus and press change fills without a DOM record: check links
-  // and code again just after, when the document has rules for those states,
-  // and whenever a transition or animation ends.
+  // Check every link and code element again, once, shortly after: a change
+  // can reach elements outside its own subtree through selectors such as
+  // `.selected + a` or `:has()`.
   S.readable = readable;
+  S.recheck = () => {
+    const state = window[KEY];
+    if (state.rechecking) return;
+    state.rechecking = true;
+    setTimeout(() => {
+      state.rechecking = false;
+      state.readable(document);
+    }, 30);
+  };
+
+  // Hover, focus and press change fills without a DOM record: check again
+  // when the document has rules for those states, and whenever a transition
+  // or animation ends.
   if (!S.listening) {
     S.listening = true;
     const recheck = (always) => () => {
       const state = window[KEY];
-      if ((!always && !state.interactive) || state.rechecking) return;
-      state.rechecking = true;
-      setTimeout(() => {
-        state.rechecking = false;
-        state.readable(document);
-      }, 30);
+      if (always || state.interactive) state.recheck();
     };
     for (const name of ['pointerover', 'pointerout', 'pointerdown', 'pointerup', 'focusin', 'focusout']) {
       document.addEventListener(name, recheck(false), true);
@@ -472,19 +480,21 @@
     const top = (node) => node === document.documentElement || node === document.body;
     let whole = false;
     const elements = new Set();
-    const changed = new Set();
-    const added = [];
+    let any = false;
     for (const record of records) {
       if (record.type === 'attributes') {
         if (record.attributeName === 'data-ai-own') continue;
+        any = true;
         if (top(record.target)) whole = true;
-        // Any attribute can change a fill through a selector, such as
-        // [aria-selected] or [open]; only a style attribute holds colours.
+        // Only a style attribute holds colours; any other attribute can still
+        // change a fill through a selector, such as [aria-selected], which the
+        // check below covers.
         else if (record.attributeName === 'style') elements.add(record.target);
-        else changed.add(record.target);
       } else if (record.type === 'characterData') {
+        any = true;
         whole ||= sheet(record.target.parentNode);
       } else {
+        any = true;
         whole ||= sheet(record.target);
         for (const node of [...record.addedNodes, ...record.removedNodes]) {
           whole ||= holds(node);
@@ -493,7 +503,6 @@
           if (!(node instanceof Element)) continue;
           if (node.hasAttribute('style')) elements.add(node);
           node.querySelectorAll('[style]').forEach((element) => elements.add(element));
-          added.push(node);
         }
       }
     }
@@ -505,17 +514,13 @@
     S.busy = true;
     try {
       elements.forEach(touch);
-      // A changed fill changes which links and code read against it.
-      for (const element of [...elements, ...changed, ...added]) {
-        if (!(element instanceof Element)) continue;
-        readable(element);
-        readable(element.parentElement?.closest(OWN));
-      }
     } finally {
       S.busy = false;
     }
     S.observer.takeRecords();
     watch();
+    // A changed fill changes which links and code read against it.
+    if (any) S.recheck();
   };
   S.apply = apply;
 

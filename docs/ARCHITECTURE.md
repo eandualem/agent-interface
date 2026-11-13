@@ -691,10 +691,11 @@ Stored HTML is not rewritten; the script changes the page in memory:
   over what is behind them); then they keep the colour mapped for that fill, or
   take the theme's text or page colour, whichever reads, when the document
   gives them none. A
-  part of a link with its own fill is checked the same way. They are checked
-  again when an attribute changes, when a transition or animation ends, and
-  shortly after hover, focus and press when the document has rules for those
-  states.
+  part of a link with its own fill is checked the same way. All of them are
+  checked again shortly after any change to the page (a selector such as
+  `.selected + a` reaches beyond the changed element), after a transition or
+  animation ends, and after hover, focus and press when the document has
+  rules for those states.
 - **Selection.** Selected text keeps its own colour over a translucent accent,
   as in native readers, unless the document styles its own selection.
 
