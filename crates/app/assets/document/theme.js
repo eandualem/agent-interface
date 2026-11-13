@@ -211,13 +211,20 @@
     S.saved.set(style, changes);
   };
 
+  // Whether any rule depends on hover, focus or press, which change fills
+  // without changing the document.
+  const STATES = /:(?:hover|focus|focus-within|focus-visible|active)\b/;
+  let interactive = false;
+
   // Every style declaration the document wrote: rules, nested rules, inline.
   const declarations = () => {
     const out = [];
+    interactive = false;
     const walk = (rules) => {
       for (const rule of rules) {
         if (rule.type === CSSRule.KEYFRAMES_RULE || rule.type === CSSRule.FONT_FACE_RULE) continue;
         if (rule.style) out.push([rule.style, rule.selectorText ? rule : null]);
+        if (STATES.test(rule.selectorText || '')) interactive = true;
         if (rule.cssRules) walk(rule.cssRules);
       }
     };
@@ -311,6 +318,7 @@
         .join('');
       style.textContent = `:root{color-scheme:${T.scheme}!important;${variables}}${T.css}`;
       links(document);
+      S.interactive = interactive;
     } finally {
       S.busy = false;
     }
@@ -335,6 +343,25 @@
       window[KEY].apply();
     }, 16);
   };
+
+  // Hover, focus and press change fills without a DOM record: check the
+  // links again just after, when the document has rules for those states.
+  S.links = links;
+  if (!S.listening) {
+    S.listening = true;
+    const recheck = () => {
+      const state = window[KEY];
+      if (!state.interactive || state.rechecking) return;
+      state.rechecking = true;
+      setTimeout(() => {
+        state.rechecking = false;
+        state.links(document);
+      }, 30);
+    };
+    for (const name of ['pointerover', 'pointerout', 'pointerdown', 'pointerup', 'focusin', 'focusout']) {
+      document.addEventListener(name, recheck, true);
+    }
+  }
 
   // Rules changed through the style sheet objects leave no DOM record.
   if (!S.patched) {
