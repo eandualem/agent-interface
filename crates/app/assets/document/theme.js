@@ -48,9 +48,17 @@
     return color;
   };
 
+  const linear = (v) => (v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4);
+  // The contrast ratio between two colours, from 1 to 21.
+  const contrast = (one, two) => {
+    const luminance = ({ r, g, b }) =>
+      0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b);
+    const [high, low] = [luminance(one), luminance(two)].sort((x, y) => y - x);
+    return (high + 0.05) / (low + 0.05);
+  };
+
   // Lightness, chroma and hue in OKLab, where equal steps look equal.
   const oklch = ({ r, g, b }) => {
-    const linear = (v) => (v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4);
     const [lr, lg, lb] = [linear(r), linear(g), linear(b)];
     const l = Math.cbrt(0.4122214708 * lr + 0.5363325363 * lg + 0.0514459929 * lb);
     const m = Math.cbrt(0.2119034982 * lr + 0.6806995451 * lg + 0.1073969566 * lb);
@@ -78,6 +86,7 @@
   const theme = Object.fromEntries(
     Object.entries(T.ramp || {}).map(([name, value]) => [name, parse(value)]),
   );
+  const link = parse((T.variables || {}).accent || '');
   const hues = (T.hues || []).map((value) => {
     const color = parse(value);
     return { color, h: oklch(color).h };
@@ -115,18 +124,21 @@
   // What the document's custom properties hold on its root, before mapping.
   let roots = new Map();
 
-  // `value` with each colour in it mapped. A custom property inside a larger
-  // expression, as in `rgb(1 2 3 / var(--alpha))`, reads as its root value; a
-  // value that is one `var()` alone follows that property's own mapping.
-  const recolor = (authored) => {
-    if (authored.includes('url(')) return authored;
-    let value = authored;
-    if (value.includes('var(') && !/^\s*var\([^()]*\)\s*$/.test(value)) {
-      value = value.replace(
+  // A custom property inside a larger expression, as in
+  // `rgb(1 2 3 / var(--alpha))`, reads as its root value; a value that is one
+  // `var()` alone follows that property's own mapping.
+  const expand = (value) =>
+    value.includes('var(') && !/^\s*var\([^()]*\)\s*$/.test(value)
+      ? value.replace(
         /var\(\s*(--[\w-]+)\s*(?:,([^()]*))?\)/g,
         (whole, name, fallback) => roots.get(name) || (fallback && fallback.trim()) || whole,
-      );
-    }
+      )
+      : value;
+
+  // `value` with each colour in it mapped.
+  const recolor = (authored) => {
+    if (authored.includes('url(')) return authored;
+    const value = expand(authored);
     return value.replace(TOKEN, (token, at) => {
       const before = value[at - 1] || '';
       const after = value[at + token.length] || '';
@@ -158,7 +170,8 @@
       if (!value) continue;
       let next = null;
       if (name.startsWith('--')) {
-        const color = name.startsWith('--ai-') ? null : parse(value);
+        // Only a property that holds one colour: a shadow or a list keeps its own.
+        const color = name.startsWith('--ai-') ? null : parse(expand(value));
         if (color && color.a > 0) next = mapped(color);
       } else if (COLOR.test(name)) {
         next = recolor(value);
@@ -233,17 +246,27 @@
     return style;
   };
 
-  // A link with its own fill keeps the text colour mapped for that fill;
-  // the stylesheet gives every other link the theme's link colour.
-  const links = (root) => {
-    const found = root.matches?.('a') ? [root] : [];
-    for (const link of [...found, ...root.querySelectorAll('a')]) {
-      const style = getComputedStyle(link);
+  // The fill a link is read against: its own, else the nearest behind it;
+  // null when that is an image or gradient.
+  const behind = (element) => {
+    for (let at = element; at; at = at.parentElement) {
+      const style = getComputedStyle(at);
+      if (style.backgroundImage !== 'none') return null;
       const fill = parse(style.backgroundColor);
-      link.toggleAttribute(
-        'data-ai-filled',
-        Boolean(fill && fill.a > 0.5) || style.backgroundImage !== 'none',
-      );
+      if (fill && fill.a > 0.5) return fill;
+    }
+    return theme.page;
+  };
+
+  // The stylesheet gives links the theme's link colour, except where that
+  // would be hard to read against what is behind them; those keep the text
+  // colour mapped for their fill.
+  const links = (root) => {
+    if (!root) return;
+    const found = root.matches?.('a') ? [root] : [];
+    for (const element of [...found, ...root.querySelectorAll('a')]) {
+      const fill = behind(element);
+      element.toggleAttribute('data-ai-filled', !fill || !link || contrast(fill, link) < 3);
     }
   };
 
@@ -316,25 +339,34 @@
     S.observer = S.observer || new MutationObserver((records) => window[KEY].changed(records));
     S.observer.observe(document, {
       subtree: true, childList: true, characterData: true,
-      attributes: true, attributeFilter: ['style'],
+      attributes: true, attributeOldValue: true, attributeFilter: ['style', 'class'],
     });
   };
 
   S.changed = (records) => {
     const sheet = (node) =>
       node && node.id !== ID && (node.nodeName === 'STYLE' || node.nodeName === 'LINK');
+    // A node added or removed with style sheets anywhere inside it.
+    const holds = (node) =>
+      sheet(node) || (node instanceof Element && Boolean(node.querySelector('style, link')));
+    // Expressions were mapped with the root's custom properties.
+    const variables = (record) =>
+      record.target === document.documentElement &&
+      record.attributeName === 'style' &&
+      `${record.oldValue || ''}${record.target.getAttribute('style') || ''}`.includes('--');
     let whole = false;
     const elements = new Set();
     const added = [];
     for (const record of records) {
       if (record.type === 'attributes') {
+        whole ||= variables(record);
         elements.add(record.target);
       } else if (record.type === 'characterData') {
         whole ||= sheet(record.target.parentNode);
       } else {
         whole ||= sheet(record.target);
         for (const node of [...record.addedNodes, ...record.removedNodes]) {
-          whole ||= sheet(node);
+          whole ||= holds(node);
         }
         for (const node of record.addedNodes) {
           if (!(node instanceof Element)) continue;
@@ -352,7 +384,12 @@
     S.busy = true;
     try {
       elements.forEach(touch);
-      added.forEach(links);
+      // A changed fill changes which links stand out against it.
+      for (const element of [...elements, ...added]) {
+        if (!(element instanceof Element)) continue;
+        links(element);
+        links(element.parentElement?.closest('a'));
+      }
     } finally {
       S.busy = false;
     }
