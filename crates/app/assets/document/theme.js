@@ -263,6 +263,14 @@
         if (STATES.test(rule.selectorText || '')) interactive = true;
         if ((rule.selectorText || '').includes('::selection')) selecting = true;
         if (rule.cssRules) walk(rule.cssRules);
+        // An imported sheet the document may read, such as a data: URL.
+        if (rule.styleSheet) {
+          try {
+            walk(rule.styleSheet.cssRules);
+          } catch {
+            // One it may not read keeps its colours.
+          }
+        }
       }
     };
     for (const sheet of [...document.styleSheets, ...(document.adoptedStyleSheets || [])]) {
@@ -382,7 +390,9 @@
     const found = root.matches?.(OWN) ? [root] : [];
     for (const element of [...found, ...root.querySelectorAll(OWN)]) {
       if (element.closest('pre, svg')) continue;
-      const color = own.find(([selector]) => element.matches(selector))[1];
+      // Inside a link the link colour wins, so that is the colour to check.
+      const link = element.parentElement?.closest('a');
+      const color = (link ? own[0] : own.find(([selector]) => element.matches(selector)))[1];
       mark(element, color);
       // The link colour reaches inside a link too: a part with its own fill
       // keeps its own colour where the link colour would not read on it.
