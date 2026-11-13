@@ -107,6 +107,7 @@
   const fills = [
     ['pre', parse((T.variables || {}).block || '')],
     ['th', parse((T.variables || {})['table-head'] || '')],
+    ['code, kbd, samp', parse((T.variables || {})['code-fill'] || '')],
   ];
   const FILLS = fills.map(([selector]) => selector).join(', ');
   // Each theme colour's hue, and where it sits between the theme's page (0)
@@ -384,6 +385,7 @@
     // reads on it; otherwise it keeps the fill behind it, such as its row's.
     const blocks = root.matches?.(FILLS) ? [root] : [];
     for (const element of [...blocks, ...root.querySelectorAll(FILLS)]) {
+      if (!element.matches('pre, th') && element.closest('pre')) continue;
       const fill = fills.find(([selector]) => element.matches(selector))[1];
       element.toggleAttribute('data-ai-own-fill', !fill || !fits(element, fill));
     }
@@ -416,6 +418,44 @@
   const SELECTION = '::selection{background:var(--ai-selection)!important;}';
   const settle = () => getComputedStyle(document.documentElement).color;
 
+  // SVG keeps its authored colours, including those it takes from custom
+  // properties set outside it: each outermost graphic holds the values they
+  // had before mapping. What it held before is put back on the next apply.
+  const pin = (all) => {
+    for (const [svg, saved] of S.pins || []) {
+      for (const [name, value, priority] of saved) {
+        if (value) svg.style.setProperty(name, value, priority);
+        else svg.style.removeProperty(name);
+      }
+    }
+    S.pins = [];
+    const props = new Set();
+    for (const [style] of all) {
+      for (const name of names(style)) {
+        if (name.startsWith('--') && !name.startsWith('--ai-')) props.add(name);
+      }
+    }
+    if (!props.size) return () => {};
+    const graphics = Array.from(document.querySelectorAll('svg')).filter(
+      (svg) => !svg.parentElement?.closest('svg'),
+    );
+    const authored = graphics.map((svg) => {
+      const style = getComputedStyle(svg);
+      return [svg, [...props].map((name) => [name, style.getPropertyValue(name)])];
+    });
+    return () => {
+      for (const [svg, values] of authored) {
+        const saved = [];
+        for (const [name, value] of values) {
+          if (!value) continue;
+          saved.push([name, svg.style.getPropertyValue(name), svg.style.getPropertyPriority(name)]);
+          svg.style.setProperty(name, value.trim(), 'important');
+        }
+        S.pins.push([svg, saved]);
+      }
+    };
+  };
+
   const apply = () => {
     if (!document.documentElement) return;
     S.observer?.disconnect();
@@ -425,8 +465,10 @@
       style.textContent = HOLD;
       const all = declarations();
       all.forEach(([style]) => restore(style));
+      const pinned = pin(all);
       measure(all);
       all.forEach(([style, rule]) => remap(style, rule));
+      pinned();
       const variables = Object.entries(T.variables || {})
         .map(([name, value]) => `--ai-${name}:${value}!important;`)
         .join('');
@@ -545,9 +587,10 @@
     node && node.id !== ID && (node.nodeName === 'STYLE' || node.nodeName === 'LINK');
 
   S.changed = (records) => {
-    // A node added or removed with style sheets anywhere inside it.
+    // A node added or removed with style sheets or a graphic inside it.
     const holds = (node) =>
-      sheet(node) || (node instanceof Element && Boolean(node.querySelector('style, link')));
+      sheet(node) ||
+      (node instanceof Element && (node.matches('svg') || Boolean(node.querySelector('style, link, svg'))));
     // The root and body may carry the document's own theme: a class, a data
     // attribute or custom properties that expressions were expanded with.
     const top = (node) => node === document.documentElement || node === document.body;

@@ -673,9 +673,9 @@ Stored HTML is not rewritten; the script changes the page in memory:
   one colour, a gradient or a `var()` reference with a fallback; inside a larger
   colour expression it reads as its root value. A `background`, `border` or
   other colour shorthand written with `var()` is mapped as a whole.
-- **Left as authored:** shadows, SVG (its inline styles and rules that reach
-  only SVG), images, video, canvas, keyframes and any style sheet the page cannot
-  read.
+- **Left as authored:** shadows, SVG (its inline styles, rules that reach only
+  SVG, and the custom properties it uses from outside), images, video, canvas,
+  keyframes and any style sheet the page cannot read.
 - **Theme changes** map from the authored values, which the script keeps, with
   no reload. The document's transitions are held while colours are restored,
   measured and mapped.
@@ -688,8 +688,8 @@ Stored HTML is not rewritten; the script changes the page in memory:
 - **Reading elements.** `assets/document/theme.css` gives tables, code, quotes,
   rules and links the shared reading look. It forces only their lines and
   shape; fills and text colours are defaults, so a fill the document gives an
-  element keeps the text mapped for it. A code block or table header takes the
-  default fill only where all the text in it reads on it. It exposes the theme as `--ai-*`
+  element keeps the text mapped for it. Code, a code block or a table header
+  takes the default fill only where all the text in it reads on it. It exposes the theme as `--ai-*`
   custom properties that a document may use.
 - **Links, inline code and quotes** take the theme's link, code and muted
   colours unless those would read below 3:1 against the fill behind them

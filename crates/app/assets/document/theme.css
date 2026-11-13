@@ -16,7 +16,7 @@ body * { -webkit-user-select: text !important; user-select: text !important; }
 /* Where the document gives such an element no colour of its own. */
 :where([data-ai-own="ink"]) { color: var(--ai-text); }
 :where([data-ai-own="page"]) { color: var(--ai-background); }
-:where(code, kbd, samp) { background-color: var(--ai-code-fill); }
+:where(:is(code, kbd, samp):not([data-ai-own-fill])) { background-color: var(--ai-code-fill); }
 :where(:is(code, kbd, samp):not([data-ai-own])) { color: var(--ai-code); }
 :is(code, kbd, samp) { border-color: var(--ai-line) !important; border-radius: 4px; }
 :where(pre:not([data-ai-own-fill])) { background-color: var(--ai-block); }
