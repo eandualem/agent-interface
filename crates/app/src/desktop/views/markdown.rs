@@ -102,8 +102,8 @@ pub(super) enum Block {
 }
 
 /// Parsed text by source, so drawing unchanged text again parses nothing.
-/// Entries are kept by use: when the sources held pass [`CACHE_BYTES`], the
-/// half used longest ago is dropped.
+/// Entries are kept by use: when the sources held would pass [`CACHE_BYTES`],
+/// those used longest ago are dropped until half of it is free.
 /// Parsed blocks and when they were last used.
 type Kept = (Rc<Vec<Block>>, u64);
 
@@ -134,17 +134,25 @@ fn cached(text: &str, front_matter: bool) -> Rc<Vec<Block>> {
             return blocks;
         }
         if cache.bytes + text.len() > CACHE_BYTES {
-            let mut ages: Vec<u64> = cache
+            // Make room down to half the limit, oldest first, so a full
+            // cache is not sorted again on the next new text.
+            let mut ages: Vec<(u64, usize)> = cache
                 .kinds
                 .iter()
-                .flat_map(|kind| kind.values().map(|(_, last)| *last))
+                .flat_map(|kind| kind.iter().map(|(text, (_, last))| (*last, text.len())))
                 .collect();
             ages.sort_unstable();
-            let keep = ages[ages.len() / 2];
-            let mut bytes = 0;
+            let mut bytes = cache.bytes;
+            let mut keep = 0;
+            for (last, len) in ages {
+                if bytes + text.len() <= CACHE_BYTES / 2 {
+                    break;
+                }
+                bytes -= len;
+                keep = last;
+            }
             for kind in &mut cache.kinds {
                 kind.retain(|_, (_, last)| *last > keep);
-                bytes += kind.keys().map(|text| text.len()).sum::<usize>();
             }
             cache.bytes = bytes;
         }
@@ -713,6 +721,26 @@ mod tests {
         assert!(!Rc::ptr_eq(&first, &authored("**once**")));
         let newest = authored(&format!("5{filler}"));
         assert!(Rc::ptr_eq(&newest, &authored(&format!("5{filler}"))));
+        // Many small old entries do not let large new ones pass the limit.
+        for at in 0..10_000 {
+            authored(&format!("small {at}"));
+        }
+        for at in 6..16 {
+            authored(&format!("{at}{filler}"));
+            let held = CACHE.with_borrow(|cache| cache.bytes);
+            assert!(held <= CACHE_BYTES, "{held}");
+        }
+        let held = CACHE.with_borrow(|cache| {
+            let counted: usize = cache
+                .kinds
+                .iter()
+                .flat_map(HashMap::keys)
+                .map(|t| t.len())
+                .sum();
+            assert_eq!(counted, cache.bytes);
+            cache.bytes
+        });
+        assert!(held <= CACHE_BYTES, "{held}");
     }
 
     /// `cargo test --release -p agent-interface-app --lib parse_cost -- --ignored --nocapture`

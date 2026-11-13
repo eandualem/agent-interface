@@ -4,7 +4,9 @@
 :where(html) { background: var(--ai-background); color: var(--ai-text); font-family: system-ui; }
 body * { -webkit-user-select: text !important; user-select: text !important; }
 ::selection { background: var(--ai-selection) !important; color: var(--ai-text) !important; }
-:is(a, a *):not(svg, svg *) { color: var(--ai-accent) !important; }
+:is(a, a *):not(svg, svg *, [data-ai-filled], [data-ai-filled] *) {
+  color: var(--ai-accent) !important;
+}
 :is(code, kbd, samp) {
   background-color: var(--ai-code-fill) !important; color: var(--ai-code) !important;
   border-color: var(--ai-line) !important; border-radius: 4px;

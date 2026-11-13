@@ -434,7 +434,7 @@ Markdown nesting beyond 32 containers falls back to the complete source text,
 bounding parsing, element-tree rendering and destruction. URL recognition scans
 forward and closes each link by replacing only entries within its own label.
 Parsed blocks are kept by source text in a per-thread cache bounded at 8 MiB of
-source, dropping the half used longest ago when full, so a frame that draws
+source, dropping the entries used longest ago when full, so a frame that draws
 unchanged text parses nothing: a 40 KB document costs about 18 µs to look up
 against 555 µs to parse (release build, the ignored `parse_cost` test in
 `views/markdown.rs`). Table columns share the width by their longest cell.
@@ -663,8 +663,11 @@ theme colour nearest in hue, as a soft tint when it is a fill near the page.
 Cards, status colours and chips therefore keep their meaning in any theme, and
 a document written for a light page reads correctly in a dark theme whatever
 the system appearance. The authored values are kept in the page, so a theme
-change maps from them again without a reload, and later changes to styles are
-observed. `assets/document/theme.css` then gives tables, code, quotes, rules
+change maps from them again without a reload. Later changes to style elements,
+inline styles and rules changed through `insertRule`, `deleteRule`, `replace`,
+`replaceSync`, `setProperty` and `removeProperty` are mapped too; a rule changed
+by assigning a style property directly is mapped at the next of those. A
+custom property inside a larger colour expression reads as its root value. `assets/document/theme.css` then gives tables, code, quotes, rules
 and links the shared reading look and exposes the theme as `--ai-*` custom
 properties that a document may use. Shadows, SVG, images, video, canvas and
 keyframes keep their authored colours, as does a style sheet the page cannot

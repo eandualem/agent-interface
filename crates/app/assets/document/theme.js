@@ -112,14 +112,26 @@
     return css(theme.text, color.a);
   };
 
-  // `value` with each colour in it mapped; names only where `named` allows.
-  const recolor = (value, named) => {
-    if (value.includes('url(')) return value;
+  // What the document's custom properties hold on its root, before mapping.
+  let roots = new Map();
+
+  // `value` with each colour in it mapped. A custom property inside a larger
+  // expression, as in `rgb(1 2 3 / var(--alpha))`, reads as its root value; a
+  // value that is one `var()` alone follows that property's own mapping.
+  const recolor = (authored) => {
+    if (authored.includes('url(')) return authored;
+    let value = authored;
+    if (value.includes('var(') && !/^\s*var\([^()]*\)\s*$/.test(value)) {
+      value = value.replace(
+        /var\(\s*(--[\w-]+)\s*(?:,([^()]*))?\)/g,
+        (whole, name, fallback) => roots.get(name) || (fallback && fallback.trim()) || whole,
+      );
+    }
     return value.replace(TOKEN, (token, at) => {
       const before = value[at - 1] || '';
       const after = value[at + token.length] || '';
       const word = /^[a-z]+$/i.test(token);
-      if (word && (!named || /[-\w(]/.test(before) || /[-\w(]/.test(after))) return token;
+      if (word && (/[-\w]/.test(before) || /[-\w(]/.test(after))) return token;
       const color = parse(token);
       return color && color.a > 0 ? mapped(color) : token;
     });
@@ -149,7 +161,7 @@
         const color = name.startsWith('--ai-') ? null : parse(value);
         if (color && color.a > 0) next = mapped(color);
       } else if (COLOR.test(name)) {
-        next = recolor(value, name !== 'background-image');
+        next = recolor(value);
       }
       if (next && next !== value) changes.push([name, value, style.getPropertyPriority(name), next]);
     }
@@ -185,7 +197,16 @@
     return out;
   };
 
-  const measure = () => {
+  const measure = (all) => {
+    const root = getComputedStyle(document.documentElement);
+    roots = new Map();
+    for (const style of all) {
+      for (const name of names(style)) {
+        if (!name.startsWith('--') || roots.has(name)) continue;
+        const value = root.getPropertyValue(name).trim();
+        if (value) roots.set(name, value);
+      }
+    }
     const solid = (element, property) => {
       const color = element && parse(getComputedStyle(element)[property]);
       return color && color.a > 0.5 ? oklch(color).l : null;
@@ -212,19 +233,39 @@
     return style;
   };
 
+  // A link with its own fill keeps the text colour mapped for that fill;
+  // the stylesheet gives every other link the theme's link colour.
+  const links = (root) => {
+    const found = root.matches?.('a') ? [root] : [];
+    for (const link of [...found, ...root.querySelectorAll('a')]) {
+      const style = getComputedStyle(link);
+      const fill = parse(style.backgroundColor);
+      link.toggleAttribute(
+        'data-ai-filled',
+        Boolean(fill && fill.a > 0.5) || style.backgroundImage !== 'none',
+      );
+    }
+  };
+
   const apply = () => {
     if (!document.documentElement) return;
     S.observer?.disconnect();
-    const style = host();
-    style.textContent = '';
-    const all = declarations();
-    all.forEach(restore);
-    measure();
-    all.forEach(remap);
-    const variables = Object.entries(T.variables || {})
-      .map(([name, value]) => `--ai-${name}:${value}!important;`)
-      .join('');
-    style.textContent = `:root{color-scheme:${T.scheme}!important;${variables}}${T.css}`;
+    S.busy = true;
+    try {
+      const style = host();
+      style.textContent = '';
+      const all = declarations();
+      all.forEach(restore);
+      measure(all);
+      all.forEach(remap);
+      const variables = Object.entries(T.variables || {})
+        .map(([name, value]) => `--ai-${name}:${value}!important;`)
+        .join('');
+      style.textContent = `:root{color-scheme:${T.scheme}!important;${variables}}${T.css}`;
+      links(document);
+    } finally {
+      S.busy = false;
+    }
     S.observer?.takeRecords();
     watch();
   };
@@ -235,6 +276,41 @@
     restore(element.style);
     remap(element.style);
   };
+
+  // Map the whole document again, once, shortly after a change to its rules.
+  S.schedule = () => {
+    if (S.queued) return;
+    S.queued = true;
+    // A timer, not a frame: a hidden page gets no frames.
+    setTimeout(() => {
+      S.queued = false;
+      window[KEY].apply();
+    }, 16);
+  };
+
+  // Rules changed through the style sheet objects leave no DOM record.
+  if (!S.patched) {
+    S.patched = true;
+    const notice = (prototype, name, rules) => {
+      const original = prototype[name];
+      if (typeof original !== 'function') return;
+      prototype[name] = function (...values) {
+        const result = original.apply(this, values);
+        const state = window[KEY];
+        if (!state.busy && (!rules || this.parentRule)) {
+          if (result instanceof Promise) result.then(state.schedule, () => {});
+          else state.schedule();
+        }
+        return result;
+      };
+    };
+    for (const name of ['insertRule', 'deleteRule', 'replace', 'replaceSync']) {
+      notice(CSSStyleSheet.prototype, name, false);
+    }
+    for (const name of ['setProperty', 'removeProperty']) {
+      notice(CSSStyleDeclaration.prototype, name, true);
+    }
+  }
 
   const watch = () => {
     S.observer = S.observer || new MutationObserver((records) => window[KEY].changed(records));
@@ -249,6 +325,7 @@
       node && node.id !== ID && (node.nodeName === 'STYLE' || node.nodeName === 'LINK');
     let whole = false;
     const elements = new Set();
+    const added = [];
     for (const record of records) {
       if (record.type === 'attributes') {
         elements.add(record.target);
@@ -263,21 +340,22 @@
           if (!(node instanceof Element)) continue;
           if (node.hasAttribute('style')) elements.add(node);
           node.querySelectorAll('[style]').forEach((element) => elements.add(element));
+          added.push(node);
         }
       }
     }
     if (whole) {
-      if (!S.queued) {
-        S.queued = true;
-        requestAnimationFrame(() => {
-          S.queued = false;
-          window[KEY].apply();
-        });
-      }
+      S.schedule();
       return;
     }
     S.observer.disconnect();
-    elements.forEach(touch);
+    S.busy = true;
+    try {
+      elements.forEach(touch);
+      added.forEach(links);
+    } finally {
+      S.busy = false;
+    }
     S.observer.takeRecords();
     watch();
   };
