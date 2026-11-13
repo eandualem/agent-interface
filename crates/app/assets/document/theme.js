@@ -164,7 +164,10 @@
   // Properties defined as another one, as in `--panel: var(--base)`: a
   // channel property's alias makes the property it names one too.
   let aliases = new Map();
-  const CHANNELS = /\b(rgba?|hsla?)\(\s*var\(\s*(--[\w-]+)\s*[,)]/gi;
+  // The channel argument may hold fallbacks, as in
+  // `rgb(var(--theme-bg, var(--background)))`; every property it names counts.
+  const CHANNELS =
+    /\b(rgba?|hsla?)\(\s*(var\((?:[^()]|\((?:[^()]|\([^()]*\))*\))*\))/gi;
   const ALIASES = /(--[\w-]+)\s*:\s*(var\([^;}]*)/g;
   const REFERENCES = /var\(\s*(--[\w-]+)/g;
   // Note the channel properties and aliases `text` uses; whether any channel
@@ -186,8 +189,10 @@
         if (channels.has(name)) add(target, channels.get(name));
       }
     }
-    for (const [, fn, name] of text.matchAll(CHANNELS)) {
-      add(name, fn.toLowerCase().startsWith('hsl') ? 'hsl' : 'rgb');
+    for (const [, fn, argument] of text.matchAll(CHANNELS)) {
+      for (const [, name] of argument.matchAll(REFERENCES)) {
+        add(name, fn.toLowerCase().startsWith('hsl') ? 'hsl' : 'rgb');
+      }
     }
     return fresh;
   };
