@@ -246,11 +246,13 @@
     if (kept !== token) return kept;
     const call = /^([a-z-]+)\(([^]*)\)$/i.exec(token);
     if (!call) return token;
-    const channel = /^\s*var\(\s*(--[\w-]+)\s*,\s*([^]+)\)\s*$/.exec(call[2]);
+    // The fallback may be followed by an alpha, as in
+    // `rgb(var(--bg, 255 255 255) / 0.9)`, which is kept.
+    const channel = /^\s*var\(\s*(--[\w-]+)\s*,\s*([^()]+)\)(\s*(?:\/|,)[^]*)?$/.exec(call[2]);
     if (/^(rgba?|hsla?)$/i.test(call[1]) && channel) {
       const fn = call[1].toLowerCase().startsWith('hsl') ? 'hsl' : 'rgb';
       const mapped = rechannel(channel[2], fn);
-      return mapped ? `${call[1]}(var(${channel[1]}, ${mapped}))` : token;
+      return mapped ? `${call[1]}(var(${channel[1]}, ${mapped})${channel[3] || ''})` : token;
     }
     return `${call[1]}(${recolor(call[2], fill)})`;
   };
