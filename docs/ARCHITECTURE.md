@@ -675,15 +675,18 @@ Stored HTML is not rewritten; the script changes the page in memory:
   the channels of a colour, as in `rgb(var(--bg))` or
   `hsl(var(--background))`, directly or through aliases, is mapped in its own
   format, keeping any alpha it carries. A colour function whose alpha is a
-  `var()` keeps that alpha. A `background`, `border` or other colour shorthand
+  `var()` keeps that alpha; in any other colour function with a `var()`, such
+  as `color-mix()`, the literal colours and channel fallbacks are mapped and
+  the references kept. A `background`, `border` or other colour shorthand
   written with `var()` is mapped as a whole.
 - **Left as authored:** shadows, SVG (its inline styles, rules that reach only
-  SVG, and the colour custom properties it uses from outside), images, video,
-  canvas, keyframes and any style sheet the page cannot read. A graphic holds
-  the authored values of those properties through a host rule with no
-  specificity, so its own rules (such as `svg:hover`) and inline style still
-  win; the values are taken again when the graphic or an element around it
-  changes, after hover and focus changes, and after a resize.
+  SVG, state rules such as `svg:hover` included, and the colour custom
+  properties it uses from outside), images, video, canvas, keyframes and any
+  style sheet the page cannot read. A graphic holds the authored values of
+  those properties through a host rule with no specificity, so its own rules
+  (such as `svg:hover`) and inline style still win; the values are taken again
+  when the graphic or an element around it changes, after hover and focus
+  changes, and after a resize.
 - **Theme changes** map from the authored values, which the script keeps, with
   no reload; so does a change of the system appearance, which can switch the
   document's own light or dark rules. The document's transitions are held while colours are restored,

@@ -237,6 +237,24 @@
     return `rgb(${part(r)} ${part(g)} ${part(b)} / ${match[3]})`;
   };
 
+  // A colour function with a var() in it: an alpha var() keeps its alpha; a
+  // channel var()'s fallback channels are mapped, as in
+  // `rgb(var(--bg, 255 255 255))`; otherwise the literal colours among its
+  // arguments are, as in `color-mix(in srgb, var(--accent) 10%, white)`.
+  const within = (token, fill) => {
+    const kept = alpha(token, fill);
+    if (kept !== token) return kept;
+    const call = /^([a-z-]+)\(([^]*)\)$/i.exec(token);
+    if (!call) return token;
+    const channel = /^\s*var\(\s*(--[\w-]+)\s*,\s*([^]+)\)\s*$/.exec(call[2]);
+    if (/^(rgba?|hsla?)$/i.test(call[1]) && channel) {
+      const fn = call[1].toLowerCase().startsWith('hsl') ? 'hsl' : 'rgb';
+      const mapped = rechannel(channel[2], fn);
+      return mapped ? `${call[1]}(var(${channel[1]}, ${mapped}))` : token;
+    }
+    return `${call[1]}(${recolor(call[2], fill)})`;
+  };
+
   // `value` with each colour in it mapped, as a fill or a foreground.
   const recolor = (value, fill) => {
     if (value.includes('url(')) return value;
@@ -245,7 +263,7 @@
       const after = value[at + token.length] || '';
       const word = /^[a-z]+$/i.test(token);
       if (word && (/[-\w]/.test(before) || /[-\w(]/.test(after))) return token;
-      if (token.includes('var(')) return alpha(token, fill);
+      if (token.includes('var(')) return within(token, fill);
       const color = parse(token);
       return color && color.a > 0 ? mapped(color, fill) : token;
     });
@@ -274,9 +292,11 @@
 
   // A rule that reaches only SVG content, which keeps its own colours like
   // the graphic's inline styles; a rule matching nothing yet is mapped.
+  // State pseudo-classes are set aside, so `svg:hover` counts before a hover.
+  const STATE = /:(?:hover|focus|focus-within|focus-visible|active|visited|checked|target)\b/g;
   const graphic = (rule) => {
     try {
-      const found = document.querySelectorAll(rule.selectorText);
+      const found = document.querySelectorAll(rule.selectorText.replace(STATE, ''));
       return found.length > 0 && Array.from(found).every((element) => element.closest('svg'));
     } catch {
       return false;
