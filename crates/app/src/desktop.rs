@@ -954,6 +954,12 @@ impl Browser {
         self.profile_picker = None;
         self.profile_picker_requested = false;
         self.profile_flow = None;
+        // First run belongs to the default library: another library ends it,
+        // unfinished, so it returns at the next launch.
+        self.onboarding = None;
+        self.first_open = false;
+        self.first_open_saving = false;
+        self.first_bind = None;
         self.pending_profile = None;
         self.bind_after_save = None;
         self.views.clear();
