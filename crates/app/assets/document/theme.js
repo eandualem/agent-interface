@@ -346,7 +346,7 @@
 
   // Whether any rule depends on hover, focus or press, which change fills
   // without changing the document.
-  const STATES = /:(?:hover|focus|focus-within|focus-visible|active)\b/;
+  const STATES = /:(?:hover|focus|focus-within|focus-visible|active|checked|indeterminate)\b/;
   let interactive = false;
   // Whether the document styles its own selection.
   let selecting = false;
@@ -632,7 +632,10 @@
       if (!always && state.pins) state.schedule();
       else state.recheck();
     };
-    for (const name of ['pointerover', 'pointerout', 'pointerdown', 'pointerup', 'focusin', 'focusout']) {
+    for (const name of [
+      'pointerover', 'pointerout', 'pointerdown', 'pointerup', 'focusin', 'focusout',
+      'change', 'input',
+    ]) {
       document.addEventListener(name, recheck(false), true);
     }
     // A fill that moves to its new colour is read again where it settles.
@@ -761,6 +764,12 @@
     // A rule kept for SVG alone that now reaches other elements, as when a
     // paragraph takes a class only SVG text had, is mapped with the rest.
     if (any && (S.kept || []).some((rule) => !graphic(rule))) {
+      S.schedule();
+      return;
+    }
+    // A selector such as `.selected + .chart` can change what a graphic
+    // inherits from outside its ancestors, so held values are taken again.
+    if (any && S.pins) {
       S.schedule();
       return;
     }
