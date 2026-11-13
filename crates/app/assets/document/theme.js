@@ -446,10 +446,18 @@
       return [svg, [...props].map((name) => [name, style.getPropertyValue(name)])];
     });
     return () => {
+      // Only the properties the mapping changed: a layout value such as a
+      // width keeps following its media queries.
+      const mapped = new Set();
+      for (const [style] of all) {
+        for (const [name] of S.saved.get(style) || []) {
+          if (name.startsWith('--')) mapped.add(name);
+        }
+      }
       for (const [svg, values] of authored) {
         const saved = [];
         for (const [name, value] of values) {
-          if (!value) continue;
+          if (!value || !mapped.has(name)) continue;
           const before = [svg.style.getPropertyValue(name), svg.style.getPropertyPriority(name)];
           // Inline, without !important, so the document can still set it.
           svg.style.setProperty(name, value.trim());
@@ -552,6 +560,18 @@
       },
       true,
     );
+    // The document's own light or dark rules take over when the system
+    // appearance changes, so its page and text are measured again. A
+    // resize can change which values a graphic should hold.
+    window.matchMedia?.('(prefers-color-scheme: dark)').addEventListener?.('change', () => {
+      window[KEY].schedule();
+    });
+    window.addEventListener('resize', () => {
+      const state = window[KEY];
+      if (!state.pins?.length) return;
+      clearTimeout(state.resizing);
+      state.resizing = setTimeout(() => state.apply(), 150);
+    });
   }
 
   // Rules changed through the style sheet objects leave no DOM record.
