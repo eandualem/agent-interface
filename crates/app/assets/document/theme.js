@@ -420,10 +420,12 @@
 
   // SVG keeps its authored colours, including those it takes from custom
   // properties set outside it: each outermost graphic holds the values they
-  // had before mapping. What it held before is put back on the next apply.
+  // had before mapping. What it held before is put back on the next apply,
+  // unless the document has since set that property itself.
   const pin = (all) => {
     for (const [svg, saved] of S.pins || []) {
-      for (const [name, value, priority] of saved) {
+      for (const [name, value, priority, applied] of saved) {
+        if (svg.style.getPropertyValue(name) !== applied) continue;
         if (value) svg.style.setProperty(name, value, priority);
         else svg.style.removeProperty(name);
       }
@@ -448,8 +450,10 @@
         const saved = [];
         for (const [name, value] of values) {
           if (!value) continue;
-          saved.push([name, svg.style.getPropertyValue(name), svg.style.getPropertyPriority(name)]);
-          svg.style.setProperty(name, value.trim(), 'important');
+          const before = [svg.style.getPropertyValue(name), svg.style.getPropertyPriority(name)];
+          // Inline, without !important, so the document can still set it.
+          svg.style.setProperty(name, value.trim());
+          saved.push([name, ...before, svg.style.getPropertyValue(name)]);
         }
         S.pins.push([svg, saved]);
       }
@@ -601,8 +605,10 @@
       if (record.type === 'attributes') {
         if (record.attributeName.startsWith('data-ai-')) continue;
         any = true;
-        // A sheet's href, media or disabled state changes which rules apply.
+        // A sheet's href, media or disabled state changes which rules apply,
+        // and a change around a graphic can change the values it holds.
         if (top(record.target) || sheet(record.target)) whole = true;
+        else if (record.target.querySelector?.('svg')) whole = true;
         // Only a style attribute holds colours; any other attribute can still
         // change a fill through a selector, such as [aria-selected], which the
         // check below covers.

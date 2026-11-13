@@ -674,8 +674,9 @@ Stored HTML is not rewritten; the script changes the page in memory:
   colour expression it reads as its root value. A `background`, `border` or
   other colour shorthand written with `var()` is mapped as a whole.
 - **Left as authored:** shadows, SVG (its inline styles, rules that reach only
-  SVG, and the custom properties it uses from outside), images, video, canvas,
-  keyframes and any style sheet the page cannot read.
+  SVG, and the custom properties it uses from outside, taken again when an
+  element around it changes), images, video, canvas, keyframes and any style
+  sheet the page cannot read.
 - **Theme changes** map from the authored values, which the script keeps, with
   no reload. The document's transitions are held while colours are restored,
   measured and mapped.
