@@ -5,11 +5,15 @@
    keeps the text mapped for it, inside it too; lines and shape are forced. */
 :where(html) { background: var(--ai-background); color: var(--ai-text); font-family: system-ui; }
 body * { -webkit-user-select: text !important; user-select: text !important; }
-::selection { background: var(--ai-selection) !important; color: var(--ai-text) !important; }
-:is(a, a *):not(svg, svg *, [data-ai-filled], [data-ai-filled] *) {
+/* Selected text keeps its own colour over a translucent accent, as native. */
+::selection { background: var(--ai-selection) !important; }
+/* The script marks with data-ai-own the links and code where the theme's
+   colour would not read against their fill; those keep their mapped colour. */
+:is(a, a *):not(svg, svg *, [data-ai-own], [data-ai-own] *) {
   color: var(--ai-accent) !important;
 }
-:where(code, kbd, samp) { background-color: var(--ai-code-fill); color: var(--ai-code); }
+:where(code, kbd, samp) { background-color: var(--ai-code-fill); }
+:where(:is(code, kbd, samp):not([data-ai-own])) { color: var(--ai-code); }
 :is(code, kbd, samp) { border-color: var(--ai-line) !important; border-radius: 4px; }
 :where(pre) { background-color: var(--ai-block); color: var(--ai-text); }
 pre { border: 1px solid var(--ai-line) !important; border-radius: 6px; }

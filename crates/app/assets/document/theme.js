@@ -95,7 +95,12 @@
   const theme = Object.fromEntries(
     Object.entries(T.ramp || {}).map(([name, value]) => [name, parse(value)]),
   );
-  const link = parse((T.variables || {}).accent || '');
+  // The theme colours the stylesheet gives these elements where they read.
+  const own = [
+    ['a', parse((T.variables || {}).accent || '')],
+    ['code, kbd, samp', parse((T.variables || {}).code || '')],
+  ];
+  const OWN = own.map(([selector]) => selector).join(', ');
   const hues = (T.hues || []).map((value) => {
     const color = parse(value);
     return { color, h: oklch(color).h };
@@ -158,9 +163,16 @@
     });
   };
 
+  // Shorthands that carry a colour. Written with var(), their longhands read
+  // as empty until the page is drawn, so the shorthand itself is mapped.
+  const SHORTHAND =
+    /^(?:background|border(?:-(?:top|right|bottom|left|block|inline)(?:-(?:start|end))?)?|outline|text-decoration|column-rule|text-emphasis)$/;
+
   const names = (style) => {
     const found = new Set(Array.from(style));
-    for (const [, name] of style.cssText.matchAll(/(?:^|[;{\s])(--[\w-]+)\s*:/g)) found.add(name);
+    for (const [, name] of style.cssText.matchAll(/(?:^|[;{\s])(--[\w-]+|[a-z-]+)\s*:/g)) {
+      if (name.startsWith('--') || SHORTHAND.test(name)) found.add(name);
+    }
     return found;
   };
 
@@ -198,7 +210,7 @@
         } else if (/gradient\(|^\s*var\(/i.test(value)) {
           next = recolor(value);
         }
-      } else if (COLOR.test(name)) {
+      } else if (COLOR.test(name) || (SHORTHAND.test(name) && value.includes('var('))) {
         next = recolor(value);
       }
       if (next && next !== value) changes.push([name, value, style.getPropertyPriority(name), next]);
@@ -278,8 +290,8 @@
     return style;
   };
 
-  // The fill a link is read against: its own, else the nearest behind it;
-  // null when that is an image or gradient.
+  // The fill an element is read against: its own, else the nearest behind
+  // it; null when that is an image or gradient.
   const behind = (element) => {
     for (let at = element; at; at = at.parentElement) {
       const style = getComputedStyle(at);
@@ -290,15 +302,17 @@
     return theme.page;
   };
 
-  // The stylesheet gives links the theme's link colour, except where that
-  // would be hard to read against what is behind them; those keep the text
-  // colour mapped for their fill.
-  const links = (root) => {
+  // The stylesheet gives links and inline code the theme's link and code
+  // colours, except where that would be hard to read against what is behind
+  // them; those keep the text colour mapped for their fill.
+  const readable = (root) => {
     if (!root) return;
-    const found = root.matches?.('a') ? [root] : [];
-    for (const element of [...found, ...root.querySelectorAll('a')]) {
+    const found = root.matches?.(OWN) ? [root] : [];
+    for (const element of [...found, ...root.querySelectorAll(OWN)]) {
+      if (element.closest('pre, svg')) continue;
+      const color = own.find(([selector]) => element.matches(selector))[1];
       const fill = behind(element);
-      element.toggleAttribute('data-ai-filled', !fill || !link || contrast(fill, link) < 3);
+      element.toggleAttribute('data-ai-own', !fill || !color || contrast(fill, color) < 3);
     }
   };
 
@@ -317,7 +331,7 @@
         .map(([name, value]) => `--ai-${name}:${value}!important;`)
         .join('');
       style.textContent = `:root{color-scheme:${T.scheme}!important;${variables}}${T.css}`;
-      links(document);
+      readable(document);
       S.interactive = interactive;
     } finally {
       S.busy = false;
@@ -344,10 +358,10 @@
     }, 16);
   };
 
-  // Hover, focus and press change fills without a DOM record: check the
-  // links again just after, when the document has rules for those states,
+  // Hover, focus and press change fills without a DOM record: check links
+  // and code again just after, when the document has rules for those states,
   // and whenever a transition or animation ends.
-  S.links = links;
+  S.readable = readable;
   if (!S.listening) {
     S.listening = true;
     const recheck = (always) => () => {
@@ -356,7 +370,7 @@
       state.rechecking = true;
       setTimeout(() => {
         state.rechecking = false;
-        state.links(document);
+        state.readable(document);
       }, 30);
     };
     for (const name of ['pointerover', 'pointerout', 'pointerdown', 'pointerup', 'focusin', 'focusout']) {
@@ -414,7 +428,7 @@
     const added = [];
     for (const record of records) {
       if (record.type === 'attributes') {
-        if (record.attributeName === 'data-ai-filled') continue;
+        if (record.attributeName === 'data-ai-own') continue;
         if (top(record.target)) whole = true;
         else if (record.attributeName === 'style' || record.attributeName === 'class') {
           elements.add(record.target);
@@ -442,11 +456,11 @@
     S.busy = true;
     try {
       elements.forEach(touch);
-      // A changed fill changes which links stand out against it.
+      // A changed fill changes which links and code read against it.
       for (const element of [...elements, ...added]) {
         if (!(element instanceof Element)) continue;
-        links(element);
-        links(element.parentElement?.closest('a'));
+        readable(element);
+        readable(element.parentElement?.closest(OWN));
       }
     } finally {
       S.busy = false;

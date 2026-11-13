@@ -663,29 +663,32 @@ nearest in hue, as a soft tint when it is a fill near the page. Cards, status
 colours and chips therefore keep their meaning in any theme, and a document
 written for a light page reads correctly in a dark theme whatever the system
 appearance. The authored values are kept in the page, so a theme change maps
-from them again without a reload. Links take the theme's link colour unless it
-would be hard to read (below 3:1) against the fill behind them, in which case
-they keep the colour mapped for that fill. Links are checked again shortly after
-hover, focus and press changes when the document has rules for those states, and
-when a transition or animation ends. Later changes to style elements (also
-inside added subtrees), inline styles, classes, any attribute of the root or
-body and rules changed through `insertRule`, `deleteRule`, `replace`,
-`replaceSync`, `setProperty` and `removeProperty` are mapped too; a rule changed
-by assigning a style property directly is mapped at the next of those. A custom
-property is mapped where it is defined when it holds one colour, a gradient or a
-`var()` reference with a fallback; inside a larger colour expression it reads as
-its root value. `assets/document/theme.css` then gives tables, code, quotes,
-rules and links the shared reading look. It forces only their lines and shape;
-their fills and text colours are defaults, so a fill the document gives an
-element keeps the text mapped for it. It also exposes the theme as `--ai-*`
-custom properties that a document may use. Colours in any CSS syntax are mapped,
-including `oklch()`, `lab()` and `color()`, which the script converts through a
-one-pixel canvas. Shadows, SVG (its inline styles and rules that reach only
-SVG), images, video, canvas and keyframes keep their authored colours, as does a
-style sheet the page cannot read. Layout and media retain their authored
-presentation. Stored HTML is not rewritten. The view is hidden while native
-overlays or pane dragging need that space. Closing the document or hiding its
-pane releases the web view, so reopening starts a fresh document runtime. Native terminals, menus and report views do not use WebKit.
+from them again without a reload. Links and inline code take the theme's link
+and code colours unless those would be hard to read (below 3:1) against the fill
+behind them, in which case they keep the colour mapped for that fill. They are
+checked again shortly after hover, focus and press changes when the document has
+rules for those states, and when a transition or animation ends. Later changes
+to style elements (also inside added subtrees), inline styles, classes, any
+attribute of the root or body and rules changed through `insertRule`,
+`deleteRule`, `replace`, `replaceSync`, `setProperty` and `removeProperty` are
+mapped too; a rule changed by assigning a style property directly is mapped at
+the next of those. A custom property is mapped where it is defined when it holds
+one colour, a gradient or a `var()` reference with a fallback; inside a larger
+colour expression it reads as its root value. A `background`, `border` or other
+colour shorthand written with `var()` is mapped as a whole. Selected text keeps
+its own colour over a translucent accent, as in native readers.
+`assets/document/theme.css` then gives tables, code, quotes, rules and links the
+shared reading look. It forces only their lines and shape; their fills and text
+colours are defaults, so a fill the document gives an element keeps the text
+mapped for it. It also exposes the theme as `--ai-*` custom properties that a
+document may use. Colours in any CSS syntax are mapped, including `oklch()`,
+`lab()` and `color()`, which the script converts through a one-pixel canvas.
+Shadows, SVG (its inline styles and rules that reach only SVG), images, video,
+canvas and keyframes keep their authored colours, as does a style sheet the page
+cannot read. Layout and media retain their authored presentation. Stored HTML is
+not rewritten. The view is hidden while native overlays or pane dragging need
+that space. Closing the document or hiding its pane releases the web view, so
+reopening starts a fresh document runtime. Native terminals, menus and report views do not use WebKit.
 WebKit's platform processes belong to the renderer; the app adds no daemon.
 Linux uses WebKitGTK on X11, with XWayland on Wayland desktops and WSLg;
 the integration and event loop are described below.
