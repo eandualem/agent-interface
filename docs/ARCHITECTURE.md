@@ -433,6 +433,14 @@ nested formatting without rescanning every mark for each span.
 Markdown nesting beyond 32 containers falls back to the complete source text,
 bounding parsing, element-tree rendering and destruction. URL recognition scans
 forward and closes each link by replacing only entries within its own label.
+Parsed blocks are kept by source text in a per-thread cache bounded at 8 MiB of
+source, dropping the entries used longest ago when full, so a frame that draws
+unchanged text parses nothing: a 40 KB document costs about 18 µs to look up
+against 555 µs to parse (release build, the ignored `parse_cost` test in
+`views/markdown.rs`). Table columns share the width by their longest cell.
+`views/reading.rs` names the colours of tables, code, quotes, rules, links and
+selection once; native Markdown draws from it and the stylesheet for HTML
+documents is generated from it, so both surfaces show the same element alike.
 WebKit handles those selectors through the macOS responder chain, without a
 clipboard JavaScript bridge.
 
@@ -644,14 +652,81 @@ Discovery reads metadata off the UI thread every two seconds while visible;
 the catalog retains the newest 200 entries. HTML is read only on opening a
 document and is limited to 4 MiB, including inline assets.
 
-`desktop::views::artifact_web` is the system-webview boundary. On macOS and Linux it
-creates a Wry/WebKit child view only for an opened document, positions it in
-the pane's content rectangle, and updates its host theme stylesheet. Text,
-backgrounds and controls follow the active app theme; layout and media retain
-their authored presentation. Stored HTML is not rewritten. The view is
-hidden while native overlays or pane dragging need that space. Closing the
-document or hiding its pane releases the web view, so reopening starts a fresh
-document runtime. Native terminals, menus and report views do not use WebKit.
+`desktop::views::artifact_web` is the system-webview boundary. On macOS and
+Linux it creates a Wry/WebKit child view only for an opened document, positions
+it in the pane's content rectangle, and runs the host theme script
+(`assets/document/theme.js`, built once per theme by `views/reading.rs`).
+Stored HTML is not rewritten; the script changes the page in memory:
+
+- **Colours are mapped, not erased.** Each colour in the document's own style
+  rules (imported sheets too) and inline styles becomes the theme colour
+  playing the same part: a neutral by where it sits between the document's own
+  page and text colour, a chromatic colour by the theme colour nearest in hue,
+  placed as far from the page as the authored colour was: a pale tint stays a
+  tint, a deep badge under light text stays deep. Text, borders and other
+  foregrounds reach the full theme colour by halfway to the text colour, where
+  most text colours sit. Cards, status colours and chips keep their meaning,
+  and a document written for a light page reads correctly in a dark theme
+  whatever the system appearance. Any CSS colour syntax is read, including
+  `oklch()`, `lab()` and `color()`, converted through a one-pixel canvas.
+- **Variables.** A custom property is mapped where it is defined when it holds
+  one colour, a gradient, a colour function or a `var()` reference with a
+  fallback, so CSS resolves it on each element as written. A property used as
+  the channels of a colour, as in `rgb(var(--bg))` or
+  `hsl(var(--background))`, directly or through aliases and their fallbacks,
+  is mapped in its own format, keeping any alpha it carries. Separate
+  component properties, as in `rgb(var(--r) var(--g) var(--b))`, are mapped
+  together where one block defines all three; components defined in different
+  blocks keep their values. A colour function whose alpha is a `var()` keeps
+  that alpha; in any other colour function with a `var()`, such as
+  `color-mix()`, the literal colours and channel fallbacks are mapped and the
+  references kept. A `background`, `border` or other colour shorthand written
+  with `var()` is mapped as a whole.
+- **Left as authored:** shadows, SVG (its inline styles, rules that reach only
+  SVG, state rules such as `svg:hover` included, and the colour custom
+  properties it uses from outside), images, video, canvas, keyframes and any
+  style sheet the page cannot read. A graphic holds the authored values of
+  those properties through a host rule with no specificity, so its own rules
+  (such as `svg:hover`) and inline style still win; the values are taken again
+  after any change to the page, after hover and focus changes, and after a
+  resize. A rule kept for SVG alone is mapped once it reaches other elements.
+- **Theme changes** map from the authored values, which the script keeps, with
+  no reload; so does a change of the system appearance, which can switch the
+  document's own light or dark rules, and so does a resize, after it settles,
+  since a media query can change the page's own colours. The document's
+  transitions are held while colours are restored, measured and mapped, and in
+  a document that uses `light-dark()` the theme's light or dark scheme already
+  applies, so it is measured as it will be drawn.
+- **Later changes** are mapped too: style elements and style sheet links (also
+  inside added subtrees, when their attributes change, and when a sheet
+  finishes loading), inline styles, any attribute of the root or body, and
+  rules changed through `insertRule`, `deleteRule`, `replace`, `replaceSync`,
+  `setProperty` and `removeProperty`. A rule changed by assigning a style
+  property directly is mapped at the next of those.
+- **Reading elements.** `assets/document/theme.css` gives tables, code,
+  quotes, rules and links the shared reading look. It forces only their lines
+  and shape; fills and text colours are defaults, so a fill the document gives
+  an element keeps the text mapped for it. Unstyled form controls take the
+  theme's field and text colours. Code, a code block or a table header takes
+  the default fill only where all the text in it reads on it. It exposes the
+  theme as `--ai-*` custom properties that a document may use.
+- **Links, inline code and quotes** take the theme's link, code and muted
+  colours unless those would read below 3:1 against the fill behind them
+  (translucent fills laid over what is behind them); then they keep the colour
+  mapped for that fill, or take the theme's text or page colour, whichever
+  reads, when the document gives them none. A part of a link with its own fill
+  is checked the same way. All of them are checked again shortly after any
+  change to the page (a selector such as `.selected + a` reaches beyond the
+  changed element), after a resize, after a transition or animation ends, and
+  after hover, focus, press and form input when the document has rules for
+  those states.
+- **Selection.** Selected text keeps its own colour over a translucent accent,
+  as in native readers, unless the document styles its own selection.
+
+Layout and media keep their authored presentation. The view is hidden while
+native overlays or pane dragging need that space. Closing the document or
+hiding its pane releases the web view, so reopening starts a fresh document
+runtime. Native terminals, menus and report views do not use WebKit.
 WebKit's platform processes belong to the renderer; the app adds no daemon.
 Linux uses WebKitGTK on X11, with XWayland on Wayland desktops and WSLg;
 the integration and event loop are described below.
@@ -756,7 +831,8 @@ build-time advisory exception are described below.
   screenshot-drop staging. Each is MIT OR Apache-2.0.
 - **`pulldown-cmark` 0.13.6:** MIT-licensed CommonMark parser, pinned exactly
   with default features off, behind the one Markdown reader that skills,
-  policies, reports, answers and conversation messages use (`views/markdown.rs`).
+  policies, reports, answers, conversation messages, interaction messages and
+  plan step details use (`views/markdown.rs`).
   Authored messages treat a leading `---` as a rule rather than front matter.
   It adds tables,
   strikethrough and task lists; the app draws the parsed blocks natively.

@@ -125,7 +125,7 @@ pub(super) fn render(
             .flex()
             .flex_col()
             .gap(px(t.space.s12))
-            .child(markdown::render(&markdown::parse(text), pane, cx))
+            .child(markdown::render(&markdown::document(text), pane, cx))
             .when(cut, |el| {
                 el.child(
                     ui::text(div().text_color(c.muted), &t.text.meta)

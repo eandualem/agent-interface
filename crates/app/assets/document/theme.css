@@ -1,0 +1,46 @@
+/* What the host adds to every HTML document, after its colours are mapped.
+   The theme arrives as --ai-* variables; a document may use them too.
+   Reading elements take the look native Markdown gives them. Lines and
+   shape are forced. Fills and text colours are defaults (:where) that the
+   script checks against the text and fills around them, so a fill the
+   document gives an element keeps the text mapped for it. */
+:where(html) { background: var(--ai-background); color: var(--ai-text); font-family: system-ui; }
+body * { -webkit-user-select: text !important; user-select: text !important; }
+/* The script marks with data-ai-own the links, code and quotes where the
+   theme's colour would not read against their fill, and with
+   data-ai-own-fill the code blocks and headers whose text would not read on
+   the default fill; those keep what the document gives them, mapped. */
+:is(a, a *):not(svg, svg *, a[data-ai-own], a[data-ai-own] *, a [data-ai-own], a [data-ai-own] *) {
+  color: var(--ai-accent) !important;
+}
+/* Where the document gives such an element no colour of its own. */
+:where([data-ai-own="ink"]) { color: var(--ai-text); }
+:where([data-ai-own="page"]) { color: var(--ai-background); }
+:where(:is(code, kbd, samp):not([data-ai-own-fill])) { background-color: var(--ai-code-fill); }
+:where(:is(code, kbd, samp):not([data-ai-own])) { color: var(--ai-code); }
+:is(code, kbd, samp) { border-color: var(--ai-line) !important; border-radius: 4px; }
+:where(pre:not([data-ai-own-fill])) { background-color: var(--ai-block); }
+pre { border: 1px solid var(--ai-line) !important; border-radius: 6px; }
+:where(pre) :where(code, kbd, samp) { background-color: transparent; color: inherit; }
+table {
+  border-collapse: separate !important; border-spacing: 0 !important;
+  border: 1px solid var(--ai-line) !important; border-radius: 6px;
+}
+:is(th, td) { border: 0 !important; border-bottom: 1px solid var(--ai-line) !important; }
+:where(th) { font-weight: 600; }
+:where(th:not([data-ai-own-fill])) { background-color: var(--ai-table-head); }
+table > :last-child > tr:last-child > :is(th, td) { border-bottom: 0 !important; }
+table > :first-child > tr:first-child > :first-child { border-top-left-radius: 5px; }
+table > :first-child > tr:first-child > :last-child { border-top-right-radius: 5px; }
+table > :last-child > tr:last-child > :first-child { border-bottom-left-radius: 5px; }
+table > :last-child > tr:last-child > :last-child { border-bottom-right-radius: 5px; }
+blockquote { border-left: 2px solid var(--ai-line-strong) !important; }
+:where(blockquote) { margin-left: 0; padding-left: 12px; }
+:where(blockquote:not([data-ai-own])) { color: var(--ai-muted); }
+hr { border: 0 !important; height: 1px; background-color: var(--ai-line) !important; }
+/* Controls the document leaves unstyled: the system's own may pair a light
+   fill with the theme's light text. */
+:where(button, input, select, textarea) {
+  background-color: var(--ai-field); color: var(--ai-text); border-color: var(--ai-line);
+}
+:where(input, textarea)::placeholder { color: var(--ai-muted); }

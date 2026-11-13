@@ -85,7 +85,8 @@ pub(super) struct Surface {
     /// The page zoom, including any difference between GPUI and GTK display scale.
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     zoom: f32,
-    theme: String,
+    /// The theme script the page last ran.
+    theme: Option<std::rc::Rc<str>>,
     occluded: bool,
     #[cfg(target_os = "linux")]
     failure: std::rc::Rc<std::cell::RefCell<Option<String>>>,
@@ -119,7 +120,7 @@ impl Surface {
             self.view = None;
         }
         self.bounds = None;
-        self.theme.clear();
+        self.theme = None;
     }
 
     pub fn occlude(&mut self, occluded: bool) {
@@ -141,7 +142,7 @@ impl Surface {
         window: &Window,
         cx: &gpui::App,
         html: &str,
-        theme: &str,
+        theme: &std::rc::Rc<str>,
         on_focus: impl Fn() + 'static,
     ) -> Result<(), String> {
         #[cfg(target_os = "linux")]
@@ -212,7 +213,7 @@ impl Surface {
                         .map_err(|error| error.to_string())?;
                 }
                 self.zoom = zoom;
-                if self.theme != theme {
+                if self.theme.as_ref() != Some(theme) {
                     view.set_background_color(background())
                         .map_err(|error| error.to_string())?;
                     view.evaluate_script(theme)
@@ -264,7 +265,7 @@ impl Surface {
                     // The only bridge is a focus notification, never a command channel.
                     .with_initialization_script("document.addEventListener('pointerdown',()=>window.ipc.postMessage('focus'),true);")
                     .with_ipc_handler(move |request| { if request.body() == "focus" { on_focus(); } })
-                    .with_initialization_script(theme)
+                    .with_initialization_script(&**theme)
                     .build_as_child(parent).map_err(|error| error.to_string())?;
                 #[cfg(target_os = "linux")]
                 configure_linux(&view, on_key, {
@@ -288,7 +289,7 @@ impl Surface {
                 self.view = Some(NativeView::new(view));
             }
             self.bounds = Some(bounds);
-            self.theme = theme.into();
+            self.theme = Some(theme.clone());
             Ok(())
         }
         #[cfg(not(any(target_os = "macos", target_os = "linux")))]
@@ -308,43 +309,6 @@ fn background() -> wry::RGBA {
         (color.g * 255.).round() as u8,
         (color.b * 255.).round() as u8,
         255,
-    )
-}
-
-/// The host owns document text and surface colours; authored layout and media remain intact.
-pub(super) fn theme() -> String {
-    let c = crate::desktop::design::colors();
-    let color = |value: gpui::Rgba| {
-        format!(
-            "#{:02x}{:02x}{:02x}",
-            (value.r * 255.).round() as u8,
-            (value.g * 255.).round() as u8,
-            (value.b * 255.).round() as u8
-        )
-    };
-    let scheme = if crate::desktop::design::is_light() {
-        "light"
-    } else {
-        "dark"
-    };
-    let css = format!(
-        r#":root{{--ai-background:{}!important;--ai-surface:{}!important;--ai-text:{}!important;--ai-muted:{}!important;--ai-accent:{}!important;--ai-line:{}!important;color-scheme:{scheme}!important;}}
-html,body{{background:var(--ai-background)!important;color:var(--ai-text)!important;font-family:system-ui;-webkit-text-fill-color:currentColor!important;}}
-body :not(svg,svg *,img,picture,video,canvas){{background-color:transparent!important;background-image:none!important;color:var(--ai-text)!important;border-color:var(--ai-line)!important;text-shadow:none!important;-webkit-text-fill-color:currentColor!important;-webkit-user-select:text!important;user-select:text!important;}}
-body :is(pre,code,kbd,th,input,textarea,select,button){{background-color:var(--ai-surface)!important;}}
-body :is(a,a *){{color:var(--ai-accent)!important;}}
-body ::selection{{background:var(--ai-accent)!important;color:{}!important;}}"#,
-        color(c.surface),
-        color(c.selected),
-        color(c.text),
-        color(c.muted),
-        color(c.accent),
-        color(c.line),
-        color(c.on_accent)
-    );
-    format!(
-        "(()=>{{const apply=()=>{{let s=document.getElementById('agent-interface-theme');if(!s){{s=document.createElement('style');s.id='agent-interface-theme';}}s.textContent={};document.head.append(s);}};if(document.head)apply();else document.addEventListener('DOMContentLoaded',apply,{{once:true}});}})();",
-        serde_json::to_string(&css).expect("CSS string")
     )
 }
 
