@@ -348,6 +348,7 @@ impl Browser {
             return;
         };
         let client = client.clone();
+        let generation = self.library_generation;
         self.profile_picker = None;
         let work = cx.background_executor().spawn(async move {
             let live = || true;
@@ -375,6 +376,10 @@ impl Browser {
         cx.spawn_in(window, async move |this, cx| {
             let result = work.await;
             let _ = this.update_in(cx, |browser, window, cx| {
+                // Another library opened meanwhile: this one was not asked.
+                if browser.library_generation != generation {
+                    return;
+                }
                 let opened = match result {
                     Ok((session, profile_id, label)) => {
                         if browser.open_setup_agent(
