@@ -532,6 +532,8 @@ impl Onboarding {
                     "Agent Interface keeps your terminals running with tmux, and your agents use Git for their work."
                 }
             };
+            // Terminals need only tmux: without Git, they can still go on.
+            let terminals = !names.contains(&"tmux");
             let busy = self.installing == Some(Installing::Running);
             let label = if busy {
                 format!("Installing {what}\u{2026}")
@@ -555,6 +557,16 @@ impl Onboarding {
                     )),
                     Some(Installing::Failed(reason)) => Some(note(reason.clone().into(), true)),
                     _ => None,
+                })
+                .when(terminals, |body| {
+                    body.child(div().pt(px(t.space.s12)).flex().justify_center().child(
+                        ui::text_action("terminals-only", "Continue with terminals").on_click(
+                            cx.listener(|view, _, _, cx| {
+                                cx.emit(Event::Terminal);
+                                view.leave(cx);
+                            }),
+                        ),
+                    ))
                 })
                 .into_any_element();
             return Some((
