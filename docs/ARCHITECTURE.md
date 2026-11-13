@@ -691,12 +691,13 @@ Stored HTML is not rewritten; the script changes the page in memory:
   rules changed through `insertRule`, `deleteRule`, `replace`, `replaceSync`,
   `setProperty` and `removeProperty`. A rule changed by assigning a style
   property directly is mapped at the next of those.
-- **Reading elements.** `assets/document/theme.css` gives tables, code, quotes,
-  rules and links the shared reading look. It forces only their lines and
-  shape; fills and text colours are defaults, so a fill the document gives an
-  element keeps the text mapped for it. Code, a code block or a table header
-  takes the default fill only where all the text in it reads on it. It exposes the theme as `--ai-*`
-  custom properties that a document may use.
+- **Reading elements.** `assets/document/theme.css` gives tables, code,
+  quotes, rules and links the shared reading look. It forces only their lines
+  and shape; fills and text colours are defaults, so a fill the document gives
+  an element keeps the text mapped for it. Unstyled form controls take the
+  theme's field and text colours. Code, a code block or a table header takes
+  the default fill only where all the text in it reads on it. It exposes the
+  theme as `--ai-*` custom properties that a document may use.
 - **Links, inline code and quotes** take the theme's link, code and muted
   colours unless those would read below 3:1 against the fill behind them
   (translucent fills laid over what is behind them); then they keep the colour

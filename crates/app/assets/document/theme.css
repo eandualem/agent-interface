@@ -38,3 +38,9 @@ blockquote { border-left: 2px solid var(--ai-line-strong) !important; }
 :where(blockquote) { margin-left: 0; padding-left: 12px; }
 :where(blockquote:not([data-ai-own])) { color: var(--ai-muted); }
 hr { border: 0 !important; height: 1px; background-color: var(--ai-line) !important; }
+/* Controls the document leaves unstyled: the system's own may pair a light
+   fill with the theme's light text. */
+:where(button, input, select, textarea) {
+  background-color: var(--ai-field); color: var(--ai-text); border-color: var(--ai-line);
+}
+:where(input, textarea)::placeholder { color: var(--ai-muted); }

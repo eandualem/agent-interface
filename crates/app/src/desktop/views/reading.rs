@@ -101,6 +101,7 @@ fn script(c: &crate::desktop::design::Colors, light: bool) -> String {
         // What a document may use as `var(--ai-…)`.
         "variables": {
             "background": hex(c.surface),
+            "field": hex(c.field),
             "surface": hex(look.tint),
             "text": hex(c.text),
             "muted": hex(c.muted),
