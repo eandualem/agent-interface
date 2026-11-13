@@ -345,13 +345,14 @@
   };
 
   // Hover, focus and press change fills without a DOM record: check the
-  // links again just after, when the document has rules for those states.
+  // links again just after, when the document has rules for those states,
+  // and whenever a transition or animation ends.
   S.links = links;
   if (!S.listening) {
     S.listening = true;
-    const recheck = () => {
+    const recheck = (always) => () => {
       const state = window[KEY];
-      if (!state.interactive || state.rechecking) return;
+      if ((!always && !state.interactive) || state.rechecking) return;
       state.rechecking = true;
       setTimeout(() => {
         state.rechecking = false;
@@ -359,7 +360,11 @@
       }, 30);
     };
     for (const name of ['pointerover', 'pointerout', 'pointerdown', 'pointerup', 'focusin', 'focusout']) {
-      document.addEventListener(name, recheck, true);
+      document.addEventListener(name, recheck(false), true);
+    }
+    // A fill that moves to its new colour is read again where it settles.
+    for (const name of ['transitionend', 'animationend']) {
+      document.addEventListener(name, recheck(true), true);
     }
   }
 

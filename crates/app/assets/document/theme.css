@@ -1,36 +1,30 @@
 /* What the host adds to every HTML document, after its colours are mapped.
    The theme arrives as --ai-* variables; a document may use them too.
-   Reading elements take the look native Markdown gives them. */
+   Reading elements take the look native Markdown gives them. Fills and text
+   colours are defaults (:where), so a fill the document gives an element
+   keeps the text mapped for it, inside it too; lines and shape are forced. */
 :where(html) { background: var(--ai-background); color: var(--ai-text); font-family: system-ui; }
 body * { -webkit-user-select: text !important; user-select: text !important; }
 ::selection { background: var(--ai-selection) !important; color: var(--ai-text) !important; }
 :is(a, a *):not(svg, svg *, [data-ai-filled], [data-ai-filled] *) {
   color: var(--ai-accent) !important;
 }
-:is(code, kbd, samp) {
-  background-color: var(--ai-code-fill) !important; color: var(--ai-code) !important;
-  border-color: var(--ai-line) !important; border-radius: 4px;
-}
-pre {
-  background-color: var(--ai-block) !important; color: var(--ai-text) !important;
-  border: 1px solid var(--ai-line) !important; border-radius: 6px;
-}
-pre :is(code, kbd, samp) { background-color: transparent !important; color: inherit !important; }
+:where(code, kbd, samp) { background-color: var(--ai-code-fill); color: var(--ai-code); }
+:is(code, kbd, samp) { border-color: var(--ai-line) !important; border-radius: 4px; }
+:where(pre) { background-color: var(--ai-block); color: var(--ai-text); }
+pre { border: 1px solid var(--ai-line) !important; border-radius: 6px; }
+:where(pre) :where(code, kbd, samp) { background-color: transparent; color: inherit; }
 table {
   border-collapse: separate !important; border-spacing: 0 !important;
   border: 1px solid var(--ai-line) !important; border-radius: 6px;
 }
 :is(th, td) { border: 0 !important; border-bottom: 1px solid var(--ai-line) !important; }
-th {
-  background-color: var(--ai-table-head) !important; color: var(--ai-text) !important;
-  font-weight: 600;
-}
+:where(th) { background-color: var(--ai-table-head); color: var(--ai-text); font-weight: 600; }
 table > :last-child > tr:last-child > :is(th, td) { border-bottom: 0 !important; }
 table > :first-child > tr:first-child > :first-child { border-top-left-radius: 5px; }
 table > :first-child > tr:first-child > :last-child { border-top-right-radius: 5px; }
 table > :last-child > tr:last-child > :first-child { border-bottom-left-radius: 5px; }
 table > :last-child > tr:last-child > :last-child { border-bottom-right-radius: 5px; }
 blockquote { border-left: 2px solid var(--ai-line-strong) !important; }
-/* Fills and text colours a document gives these keep their mapped pair. */
 :where(blockquote) { margin-left: 0; padding-left: 12px; color: var(--ai-muted); }
 hr { border: 0 !important; height: 1px; background-color: var(--ai-line) !important; }
