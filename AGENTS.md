@@ -109,12 +109,14 @@ swarm brief repeats them:
 - Keep the most recent build of each active checkout warm, so the next build
   and test cycle does not start from scratch. Never `cargo clean` a checkout
   you are still working in.
-- Sweep a live `target/` around every build with
-  [cargo-sweep](https://github.com/holmgr/cargo-sweep) (MIT,
-  `cargo install cargo-sweep`): `cargo sweep --stamp` before the build and
-  `cargo sweep --file` after it, which deletes every artifact the latest
-  build did not use and keeps exactly the most recent build. Delete
-  `target/debug/incremental` once it passes 2 GB.
+- Sweep a live `target/` after every build and test cycle by running the
+  cycle through `python3 scripts/sweep_target.py`. It runs the checks each
+  commit needs (see Branches) and a build, then deletes every artifact the cycle did not use, keeping
+  exactly the most recent build, and deletes `target/debug/incremental`
+  once it passes 2 GB. It reads what the cycle used from cargo's own
+  report, not from file access times, which macOS updates only after a
+  write. Arguments after `--` go to `cargo test`. A worktree that builds
+  into another checkout's `target/` is not swept: give it its own.
 - Remove build profiles, targets and caches not in use now, such as a
   packaging target once its build is installed, or `.zig-cache`.
 - When a branch is merged or abandoned, remove its linked worktree and the
