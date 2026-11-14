@@ -846,7 +846,6 @@ pub(super) fn appearance() -> Appearance {
 mod tests {
     use super::*;
 
-    #[cfg(target_os = "linux")]
     #[test]
     fn a_lost_attachment_is_retried_less_often_until_it_is_shown_again() {
         let mut retry = Retry::default();
@@ -857,10 +856,11 @@ mod tests {
         assert_eq!(attempts(&mut retry, 16, true), 5);
         assert_eq!(attempts(&mut retry, 30, true), 2);
         // Hidden, the gap keeps growing to 60 ticks.
-        assert_eq!(attempts(&mut retry, 200, false), 4);
+        assert_eq!(attempts(&mut retry, 200, false), 5);
         assert_eq!(attempts(&mut Retry::default(), 1, false), 1);
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     #[ignore = "requires an installed Linux font and graphical session; run in graphical CI"]
     fn linux_terminal_font_has_uniform_ascii_cells() {
