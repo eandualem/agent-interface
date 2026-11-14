@@ -2741,6 +2741,10 @@ impl Render for Browser {
                     })
                     .flatten();
                 let terminal = cx.new(|cx| LiveTerminal::new(target, selected, environment, cx));
+                // A terminal made while panes move keeps its session's size too.
+                if self.pane_motion.is_some() {
+                    terminal.update(cx, |terminal, cx| terminal.hold_size(true, cx));
+                }
                 cx.subscribe_in(
                     &terminal,
                     window,
