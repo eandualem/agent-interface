@@ -145,6 +145,9 @@ struct Grid {
     /// The size last declared to tmux for an embedded view, in cells.
     requested: Option<(u16, u16)>,
     contributes_size: bool,
+    /// While set, an embedded view keeps the size it last declared and scales
+    /// to its bounds instead: its pane is moving, not resizing.
+    hold_size: bool,
 }
 
 impl TerminalView {
@@ -267,6 +270,7 @@ impl TerminalView {
                 selection: None,
                 requested: None,
                 contributes_size: false,
+                hold_size: false,
             })),
             input: (!embedded).then_some(input),
             initial_input: input,
@@ -359,6 +363,16 @@ impl TerminalView {
                 self.closed_reported = true;
                 cx.emit(Disconnected(self.panes().failure()));
             }
+        }
+    }
+
+    /// While held, an embedded view declares no new size to tmux and scales
+    /// what it shows to its bounds. Releasing it declares the size again.
+    pub(crate) fn hold_size(&mut self, hold: bool, cx: &mut Context<Self>) {
+        let mut grid = self.grid.borrow_mut();
+        if grid.hold_size != hold {
+            grid.hold_size = hold;
+            cx.notify();
         }
     }
 
@@ -1094,7 +1108,8 @@ impl Render for TerminalView {
                             // these bounds would, then scale only until tmux
                             // reports the new layout.
                             let size = grid.cells_in(bounds);
-                            if grid.requested != Some(size)
+                            if !grid.hold_size
+                                && grid.requested != Some(size)
                                 && let Some(panes) = &panes
                                 && panes.set_size(size.0, size.1).is_ok()
                             {

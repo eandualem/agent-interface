@@ -156,11 +156,6 @@ impl Browser {
             chooser: self.chooser.as_ref(),
             split_bounds: &self.split_bounds,
             pane_bounds: &self.pane_bounds,
-            drop_target: self
-                .pane_drag
-                .as_ref()
-                .filter(|drag| drag.dragging)
-                .and_then(|drag| drag.destination.as_ref()),
             leaf_states,
         };
         let node = tree
@@ -172,7 +167,23 @@ impl Browser {
             })
             .or_else(|| self.resize.as_ref().map(split_resize::Drag::tree))
             .unwrap_or(&tab.tree);
-        let element = Self::tree(node, &cards, cx);
+        // While a pane is carried, and until the layout settles after it is
+        // dropped, the panes are placed by hand; then the tree lays them out.
+        let motion = self.pane_motion.take();
+        let was_moving = motion.is_some();
+        let mut motion = motion.filter(|_| tree.is_none());
+        let moving = motion
+            .as_mut()
+            .and_then(|motion| Self::panes_in_motion(motion, node, &cards, window, cx));
+        let settled = was_moving && moving.is_none();
+        let element = moving.unwrap_or_else(|| Self::tree(node, &cards, cx));
+        self.pane_motion = motion.filter(|_| !settled);
+        if settled {
+            // Landed: the sessions take the sizes of their new places.
+            for terminal in self.terminals.values() {
+                terminal.update(cx, |terminal, cx| terminal.hold_size(false, cx));
+            }
+        }
         if self.profile_status_unavailable() {
             return area
                 .flex()

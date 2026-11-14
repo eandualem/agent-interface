@@ -363,6 +363,14 @@ impl LiveTerminal {
             .is_some_and(|view| view.read(cx).has_focus(window))
     }
 
+    /// Keep the session's size while this pane moves; see
+    /// [`TerminalView::hold_size`].
+    pub fn hold_size(&mut self, hold: bool, cx: &mut Context<Self>) {
+        if let Some(view) = &self.view {
+            view.update(cx, |view, cx| view.hold_size(hold, cx));
+        }
+    }
+
     pub fn focus_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.connecting
             && let Some(view) = &self.view

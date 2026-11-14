@@ -53,12 +53,19 @@ fixtures, `bench` runs measurements, and `bench-rio` provides an isolated
 comparison-engine executable.
 
 Pane rearrangement lives in `app::desktop::pane_drag`; `core` moves an existing
-leaf within its tab and collapses its previous parent. Dragging paints only a
-destination highlight, so pointer motion does not resize terminal sessions.
-On release, the UI previews the detached tree while the existing save worker
-commits it. Leaf identities retain their terminal/view entities. A changed
-tab, tree or pane geometry cancels an in-progress drag; persistence keeps the
-existing schema and conflict rules.
+leaf within its tab and collapses its previous parent. While a pane is dragged
+it follows the pointer, and the others are drawn in the arrangement a release
+would save. The pointer is read against the tab without the dragged pane, so
+the moving preview never changes what the pointer is over.
+`app::desktop::pane_motion` places every pane at a rectangle that eases toward
+its place in the previewed tree, and keeps doing so after release until all
+have arrived; then the split layout draws them again. Terminals keep the size
+they last declared to tmux throughout and scale what they show, so pointer
+motion does not resize sessions: each declares its new size once, when the
+panes have settled. On release, the existing save worker commits the detached
+tree. Leaf identities retain their terminal/view entities. A changed tab or
+tree cancels an in-progress drag; persistence keeps the existing schema and
+conflict rules.
 
 ## Output, drawing and input
 
