@@ -1789,6 +1789,9 @@ impl Conversation {
         cx: &mut Context<Self>,
     ) -> gpui::Div {
         let done = self.copied.as_ref() == Some(group);
+        // Out of sight until the pointer is over the message, or until Copy
+        // has keyboard focus, which shows the button with its ring.
+        let hidden = !(shown || done);
         let (pressed, activated) = (
             (text.to_owned(), group.clone()),
             (text.to_owned(), group.clone()),
@@ -1800,8 +1803,13 @@ impl Conversation {
         .role(gpui::accesskit::Role::Button)
         .aria_label(if done { "Copied" } else { "Copy" })
         .focusable()
+        .when(hidden, |el| {
+            el.opacity(0.0)
+                .group_hover(group.clone(), |style| style.opacity(1.0))
+        })
         .focus_visible(|el| {
-            el.border(px(tokens().size.focus_ring))
+            el.opacity(1.0)
+                .border(px(tokens().size.focus_ring))
                 .border_color(colors().focus)
         })
         // On the press: the thread takes focus on a press and draws again,
@@ -1817,17 +1825,15 @@ impl Conversation {
         .on_click(cx.listener(move |conversation, _, _, cx| {
             conversation.copy(&activated.0, activated.1.clone(), cx);
         }));
+        let time = div().child(time).when(hidden, |el| {
+            el.opacity(0.0)
+                .group_hover(group.clone(), |style| style.opacity(1.0))
+        });
         let meta = ui::message_meta();
-        let meta = if own {
+        if own {
             meta.child(time).child(copy)
         } else {
             meta.child(copy).child(time)
-        };
-        if shown || done {
-            meta
-        } else {
-            meta.opacity(0.0)
-                .group_hover(group.clone(), |style| style.opacity(1.0))
         }
     }
 
@@ -1871,6 +1877,8 @@ impl Conversation {
                     div()
                         .id(SharedString::from(format!("{group}-expand")))
                         .role(gpui::accesskit::Role::Button)
+                        .focusable()
+                        .focus_visible(|el| el.underline().text_color(colors().text))
                         .child(if open { "Show less" } else { "Show more" })
                         .on_click(cx.listener(move |conversation, _, _, cx| {
                             if !conversation.expanded.remove(&key) {
