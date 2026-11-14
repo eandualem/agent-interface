@@ -37,11 +37,10 @@ allow = [
     "Zlib",
 ]
 confidence-threshold = 0.9
-# MPL-2.0 for these crates only, unmodified, as GPUI uses them.
+# Licence exceptions for these crates only, unmodified, as GPUI and GTK use them.
 exceptions = [
     { crate = "target-lexicon", allow = ["Apache-2.0 WITH LLVM-exception"] },
     { crate = "cbindgen", allow = ["MPL-2.0"] },
-    { crate = "dwrote", allow = ["MPL-2.0"] },
     { crate = "option-ext", allow = ["MPL-2.0"] },
 ]
 
@@ -62,14 +61,10 @@ deny = [
     { crate = "agent-interface-term", wrappers = ["agent-interface-app", "agent-interface-bench"], reason = "only app connects the terminal engine to the other crates; the benchmark harness measures the same path" },
     { crate = "agent-interface-roster", wrappers = ["agent-interface-app"], reason = "only app maps roster data into the model" },
     { crate = "agent-interface-test-support", wrappers = [
-        "agent-interface-core",
-        "agent-interface-store",
         "agent-interface-tmux",
-        "agent-interface-term",
-        "agent-interface-roster",
         "agent-interface-app",
         "agent-interface-bench",
-    ], reason = "only the six crates, as a development dependency, and the development-only benchmark harness use the test fixtures; review checks the dependency kind, which cargo-deny cannot tell apart" },
+    ], reason = "only tmux and app, as a development dependency, and the development-only benchmark harness use the test fixtures; review checks the dependency kind, which cargo-deny cannot tell apart" },
 ]
 
 [sources]

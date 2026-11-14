@@ -308,10 +308,9 @@ fn copied(part: &Part, range: Range<usize>) -> String {
 pub(super) fn text<V: Selectable>(
     view: &V,
     text: &str,
-    marks: &[(Range<usize>, Mark)],
     cx: &mut Context<V>,
 ) -> gpui::Stateful<gpui::Div> {
-    linked(view, text, marks, &[], cx)
+    linked(view, text, &[], &[], cx)
 }
 
 /// [`text`] with links: each label in `links` is drawn in the accent and

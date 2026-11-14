@@ -24,7 +24,7 @@ pub(super) struct Page<'a> {
     /// Where the back button returns to, such as "Skills".
     pub back: String,
     /// The document's name, beside the back button.
-    pub name: Option<String>,
+    pub name: String,
     /// Its place in the list that opened it, and that list's length.
     pub at: Option<usize>,
     pub count: usize,
@@ -98,10 +98,7 @@ pub(super) fn render(
                 pane.close(cx);
             })),
         )
-        .children(
-            page.name
-                .map(|name| mono(name).min_w_0().text_color(c.text)),
-        )
+        .child(mono(page.name).min_w_0().text_color(c.text))
         .child(div().flex_1())
         .child(step("reader-previous", "chevron-up", -1, cx))
         .child(

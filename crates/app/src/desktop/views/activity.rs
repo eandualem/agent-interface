@@ -122,9 +122,6 @@ fn lanes<'a>(
 /// The colour a state is drawn in on the timeline.
 fn span_color(state: &str) -> Rgba {
     let c = colors();
-    if state == "offline" {
-        return c.selected;
-    }
     match AgentState::from_runtime(state) {
         AgentState::NeedsYou | AgentState::Blocked => c.attention,
         AgentState::Working | AgentState::Starting => c.accent,

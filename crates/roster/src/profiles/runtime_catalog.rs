@@ -66,7 +66,6 @@ pub struct Catalog {
 
 #[derive(Deserialize)]
 struct Wire {
-    schema_version: u32,
     #[serde(flatten)]
     identity: Identity,
     items: Vec<Runtime>,
@@ -93,9 +92,6 @@ impl Catalog {
             None => return Err(Error::Invalid),
         }
         let wire: Wire = serde_json::from_value(value).map_err(|_| Error::Invalid)?;
-        if wire.schema_version != 2 {
-            return Err(Error::Unsupported);
-        }
         if wire.identity != *expected {
             return Err(Error::BindingMismatch);
         }

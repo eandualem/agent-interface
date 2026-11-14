@@ -410,7 +410,7 @@ fn detail(
         header,
         reader::Page {
             back: "Skills".into(),
-            name: Some(name),
+            name,
             at,
             count: targets.len(),
             card,

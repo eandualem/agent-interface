@@ -861,13 +861,12 @@ fn ledger(view: &mut Interactions, cx: &mut Context<Interactions>) -> AnyElement
             &t.text.key,
         ));
     }
-    for (i, item) in view
+    for (_, item) in view
         .items()
         .iter()
         .enumerate()
         .filter(|(i, _)| !visible_ids.contains(i))
     {
-        let _ = i;
         rail_layer = rail_layer.child(
             div()
                 .absolute()
@@ -1369,7 +1368,7 @@ impl Render for Interactions {
             }
             if self.selected.is_some() {
                 self.selection.borrow_mut().begin();
-                let reader = reader::body(self, window, cx);
+                let reader = reader::body(self, cx);
                 self.selection.borrow_mut().finish();
                 content = content.child(
                     div()

@@ -26,17 +26,6 @@ pub(super) struct Target {
     pub source: Result<PathBuf, String>,
 }
 
-impl PartialEq for Target {
-    fn eq(&self, other: &Self) -> bool {
-        self.leaf == other.leaf
-            && self.directory == other.directory
-            && self.source == other.source
-            && self.connection.as_ref().map(|c| c.connection_key())
-                == other.connection.as_ref().map(|c| c.connection_key())
-    }
-}
-impl Eq for Target {}
-
 impl Target {
     fn profile_matches(&self, space: &agent_interface_core::Workspace) -> bool {
         space.profile_id.as_deref()

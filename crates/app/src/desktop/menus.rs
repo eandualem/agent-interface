@@ -147,16 +147,12 @@ impl Browser {
             return menu;
         };
         let ticket = self.workspace_menu_ticket.clone();
-        let states = self.agent_states();
         for (index, space) in model.workspaces.iter().enumerate() {
             let ticket = ticket.clone();
             let origin = self.navigation_origin(&space.id);
             let id = space.id.clone();
             let current = model.selected == id;
-            let needs_you = space
-                .tabs
-                .iter()
-                .any(|tab| self.tab_needs_you(tab, states.as_deref()));
+            let needs_you = space.tabs.iter().any(|tab| self.tab_needs_you(tab));
             let key = (index < 9).then(|| {
                 if cfg!(target_os = "macos") {
                     format!("⌥⌘{}", index + 1)

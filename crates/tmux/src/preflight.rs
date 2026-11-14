@@ -1,42 +1,12 @@
 //! Read-only executable preflight; no server connection or product activation.
 
-use std::{cmp::Ordering, env, io, path::Path, process::Command, time::Duration};
+use std::{cmp::Ordering, io, path::Path, process::Command, time::Duration};
 
 use unicode_properties::{GeneralCategory, GeneralCategoryGroup, UnicodeGeneralCategory};
 
-const MISSING: &str = "tmux not found; tmux 3.4 or newer is required. Install it on this host.";
 const CANNOT_RUN: &str =
     "Cannot run tmux -V; tmux 3.4 or newer is required. Check the tmux executable in PATH.";
 const UNKNOWN: &str = "Cannot verify tmux version; tmux 3.4 or newer is required. Install a numbered build and check tmux -V.";
-
-/// Find tmux on PATH and verify its numbered version is at least 3.4.
-///
-/// Runs only `tmux -V`, which contacts no server, with a five-second deadline
-/// and bounded stdout/stderr capture. Patch and numbered development suffixes
-/// follow the Python preflight. Returns the trimmed version report on success.
-/// Failed/malformed output and stderr are never included in diagnostics.
-/// Call on an I/O worker; product startup wiring is separate.
-pub fn check_tmux() -> io::Result<String> {
-    let paths = env::var_os("PATH").unwrap_or_else(|| "/bin:/usr/bin".into());
-    if paths.is_empty() {
-        return Err(io::Error::other(MISSING));
-    }
-    // Keep PATH entries literal, including tilde. An empty entry within a
-    // nonempty PATH means this directory; use ./tmux to avoid a second search.
-    let binary = env::split_paths(&paths)
-        .map(|directory| {
-            if directory.as_os_str().is_empty() {
-                Path::new(".").join("tmux")
-            } else {
-                directory.join("tmux")
-            }
-        })
-        .find(|path| {
-            !path.is_dir() && rustix::fs::access(path, rustix::fs::Access::EXEC_OK).is_ok()
-        })
-        .ok_or_else(|| io::Error::other(MISSING))?;
-    check_executable(&binary)
-}
 
 /// Verify the executable selected by the connection layer, including its
 /// platform-specific fallback locations, without contacting a server.
@@ -128,7 +98,7 @@ fn number(text: &str, floor: u32) -> Option<(Ordering, &str)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{fs, os::unix::fs::PermissionsExt, time::Instant};
+    use std::{env, fs, os::unix::fs::PermissionsExt, time::Instant};
 
     #[test]
     fn version_floor_accepts_patch_and_numbered_development_builds() {
@@ -160,7 +130,7 @@ mod tests {
     }
 
     #[test]
-    fn public_preflight_uses_path_only_and_bounds_failures() {
+    fn preflight_clears_the_tmux_context_and_bounds_failures() {
         let directory = tempfile::tempdir().unwrap();
         let binary = directory.path().join("tmux");
         const VALID: &str = r#"#!/bin/sh
@@ -168,30 +138,18 @@ mod tests {
 printf ' tmux 3.7c\n'
 "#;
         for (mode, script) in [
-            ("valid", Some(VALID)),
-            ("nonexec", Some(VALID)),
-            ("old", Some("#!/bin/sh\nprintf 'tmux 3.2a\\n'\n")),
+            ("valid", VALID),
+            ("old", "#!/bin/sh\nprintf 'tmux 3.2a\\n'\n"),
             (
                 "unknown",
-                Some(
-                    "#!/bin/sh\nprintf 'fixture-private-output'\nprintf 'fixture-private-stderr' >&2\n",
-                ),
+                "#!/bin/sh\nprintf 'fixture-private-output'\nprintf 'fixture-private-stderr' >&2\n",
             ),
-            ("failed", Some("#!/bin/sh\nprintf 'tmux 3.7c\\n'\nexit 1\n")),
-            ("broken", Some("#!/missing-preflight-fixture-interpreter\n")),
-            ("timeout", Some("#!/bin/sh\nexec /bin/sleep 30\n")),
-            ("missing", None),
+            ("failed", "#!/bin/sh\nprintf 'tmux 3.7c\\n'\nexit 1\n"),
+            ("broken", "#!/missing-preflight-fixture-interpreter\n"),
+            ("timeout", "#!/bin/sh\nexec /bin/sleep 30\n"),
         ] {
-            if let Some(script) = script {
-                fs::write(&binary, script).unwrap();
-                fs::set_permissions(
-                    &binary,
-                    fs::Permissions::from_mode(if mode == "nonexec" { 0o600 } else { 0o700 }),
-                )
-                .unwrap();
-            } else {
-                fs::remove_file(&binary).unwrap();
-            }
+            fs::write(&binary, script).unwrap();
+            fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
             let started = Instant::now();
             let status = Command::new(env::current_exe().unwrap())
                 .args([
@@ -199,7 +157,7 @@ printf ' tmux 3.7c\n'
                     "preflight::tests::preflight_fixture_child",
                     "--nocapture",
                 ])
-                .env("PATH", directory.path())
+                .env("TMUX_PREFLIGHT_BINARY", &binary)
                 .env("TMUX_PREFLIGHT_FIXTURE", mode)
                 .env("TMUX", "fixture-context")
                 .env("TMUX_PANE", "%fixture")
@@ -210,28 +168,6 @@ printf ' tmux 3.7c\n'
                 assert!(started.elapsed() < Duration::from_secs(15));
             }
         }
-        let literal = directory.path().join("~");
-        fs::create_dir(&literal).unwrap();
-        let binary = literal.join("tmux");
-        fs::write(&binary, VALID).unwrap();
-        fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
-        let status = Command::new(env::current_exe().unwrap())
-            .args(["--exact", "preflight::tests::preflight_fixture_child"])
-            .current_dir(directory.path())
-            .env("PATH", "~")
-            .env("HOME", directory.path().join("unused-home"))
-            .env("TMUX_PREFLIGHT_FIXTURE", "valid")
-            .status()
-            .unwrap();
-        assert!(status.success());
-        let status = Command::new(env::current_exe().unwrap())
-            .args(["--exact", "preflight::tests::preflight_fixture_child"])
-            .current_dir(&literal)
-            .env("PATH", "")
-            .env("TMUX_PREFLIGHT_FIXTURE", "missing")
-            .status()
-            .unwrap();
-        assert!(status.success());
     }
 
     #[test]
@@ -239,14 +175,13 @@ printf ' tmux 3.7c\n'
         let Ok(mode) = env::var("TMUX_PREFLIGHT_FIXTURE") else {
             return;
         };
-        let result = check_tmux();
+        let result = check_executable(Path::new(&env::var_os("TMUX_PREFLIGHT_BINARY").unwrap()));
         match mode.as_str() {
             "valid" => assert_eq!(result.unwrap(), "tmux 3.7c"),
             "old" => assert_eq!(
                 result.unwrap_err().to_string(),
                 "tmux 3.2a detected; tmux 3.4 or newer is required. Upgrade tmux."
             ),
-            "missing" | "nonexec" => assert_eq!(result.unwrap_err().to_string(), MISSING),
             "broken" | "timeout" => assert_eq!(result.unwrap_err().to_string(), CANNOT_RUN),
             "unknown" | "failed" => assert_eq!(result.unwrap_err().to_string(), UNKNOWN),
             _ => panic!("unknown fixture"),

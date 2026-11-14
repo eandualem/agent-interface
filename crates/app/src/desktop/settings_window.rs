@@ -849,7 +849,7 @@ impl SettingsWindow {
                 })
                 .child(glyph)
         };
-        let (min, max) = (9, 24);
+        let (min, max) = (*settings::FONT_SIZES.start(), *settings::FONT_SIZES.end());
         let sizes = super::zoom::SIZES;
         let at = sizes
             .iter()

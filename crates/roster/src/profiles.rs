@@ -1,5 +1,4 @@
 //! Profile contract r2: explicit discovery and a pinned local connection.
-//! Not used by legacy startup or the desktop profile selector.
 
 use std::{
     fs::OpenOptions,

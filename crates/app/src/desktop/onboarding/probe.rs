@@ -44,8 +44,8 @@ pub enum Backbone {
     NotSetUp,
     /// Set up, but the last request failed.
     Unreachable(&'static str),
-    /// Answering, with this many registered agents.
-    Running { agents: usize },
+    /// Answering.
+    Running,
 }
 
 /// One complete check.
@@ -243,9 +243,7 @@ pub fn backbone() -> Backbone {
         .and_then(|profile| profile.connect().ok())
         .and_then(|connection| connection.roster().ok());
     match roster {
-        Some(snapshot) => Backbone::Running {
-            agents: snapshot.states.len(),
-        },
+        Some(_) => Backbone::Running,
         None => Backbone::Unreachable(UNANSWERED),
     }
 }

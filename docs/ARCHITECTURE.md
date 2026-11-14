@@ -598,7 +598,7 @@ populate the next opening. The reader keeps its original metadata through catalo
 refreshes. Discussions are keyed by full origin, artifact and displayed revision,
 and retain that revision in outgoing message anchors and retries. Missing IDs and
 repository/runtime-local previews show unavailable; they do not fall back to local
-SKILL.md files. Profile selection and the Policy library remain separate work.
+SKILL.md files.
 
 The general read-only adapter in `roster::views::bound` captures the same
 verified connection for Team, Usage, Activity, Skills, Policies and Tags. Its
@@ -1025,7 +1025,7 @@ An explicitly bound Sheets client retains its verified profile identity and
 credential snapshot through pagination, range reads, exports and feedback.
 Prepared feedback retains that client for exact retries, even after credential
 rotation; another profile or lifecycle cannot submit them. Binding refusals
-preserve drafts without legacy fallback. Native bound Sheets wiring is separate.
+preserve drafts without legacy fallback.
 
 `desktop::views::sheets` supplies a read-only native GPUI grid beside Documents and
 Responses in Reports & updates. Agents manage workbook creation, cell and structural

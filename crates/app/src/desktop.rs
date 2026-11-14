@@ -2149,8 +2149,6 @@ impl Browser {
         cx.notify();
     }
 
-    /// The first-agent setup action already started the session. Open a saved
-    /// attachment, preserving every existing pane and applying normal save rules.
     /// Open a session setup points at, such as the agent first-run setup added, in
     /// a workspace bound to that setup's profile. On first run, a fresh window's
     /// untouched workspace takes the binding; reconcile then verifies the connection,
@@ -3452,8 +3450,6 @@ impl Render for Browser {
     }
 }
 
-/// The workspace, tab and pane showing an agent's session from this window's
-/// source: the current tab if it shows one, else the first in saved order.
 /// The saved change that shows `name` in `profile_id`'s workspace, or `None` when
 /// that workspace already shows it. Only first run takes over an untouched window.
 fn setup_agent_layout(
@@ -3521,6 +3517,8 @@ fn setup_agent_layout(
     added.then_some((base, proposed))
 }
 
+/// The workspace, tab and pane showing an agent's session from this window's
+/// source: the current tab if it shows one, else the first in saved order.
 fn agent_destination(
     model: &agent_interface_core::Layout,
     name: &str,

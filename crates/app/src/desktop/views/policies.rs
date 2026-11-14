@@ -186,7 +186,7 @@ pub(super) fn page<'a>(
     );
     reader::Page {
         back,
-        name: Some(source.name.to_string()),
+        name: source.name.to_string(),
         at: Some(at),
         count: sources.len(),
         card,

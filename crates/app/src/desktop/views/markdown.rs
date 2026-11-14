@@ -101,12 +101,12 @@ pub(super) enum Block {
     },
 }
 
-/// Parsed text by source, so drawing unchanged text again parses nothing.
-/// Entries are kept by use: when the sources held would pass [`CACHE_BYTES`],
-/// those used longest ago are dropped until half of it is free.
 /// Parsed blocks and when they were last used.
 type Kept = (Rc<Vec<Block>>, u64);
 
+/// Parsed text by source, so drawing unchanged text again parses nothing.
+/// Entries are kept by use: when the sources held would pass [`CACHE_BYTES`],
+/// those used longest ago are dropped until half of it is free.
 #[derive(Default)]
 struct Cache {
     /// Authored records, then documents with front matter.
@@ -632,7 +632,7 @@ fn column<V: Selectable>(blocks: &[Block], gap: f32, pane: &V, cx: &mut Context<
                     .overflow_hidden(),
                 &t.text.status,
             )
-            .child(selection::text(pane, code, &[], cx))
+            .child(selection::text(pane, code, cx))
             .into_any_element(),
             Block::Rule => div()
                 .my(px(t.space.s4))

@@ -3,10 +3,9 @@
 
 use super::super::clock::Local;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Preset {
     Hour,
-    #[default]
     SevenHours,
     Day,
     Custom,

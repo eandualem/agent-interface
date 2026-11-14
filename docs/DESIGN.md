@@ -286,7 +286,7 @@ Views follow four rules:
   `coordinator` first and the others beneath it.
 
 Agent states always pair a shape with a colour, so they read without colour.
-Backbone's states use four visual categories (`AgentState::from_report`):
+Backbone's states use four visual categories (`AgentState::from_runtime`):
 attention (`waiting_for_human`, `blocked`), active (`busy`, `starting`), idle
 (`idle`, `running`) and unknown. Labels preserve the difference between
 blocked and waiting, and between starting and working. The active arc rotates;

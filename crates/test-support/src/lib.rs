@@ -2,8 +2,8 @@
 //!
 //! [`TmuxServer`] is the only way tests, benchmarks and spikes start tmux
 //! (`docs/ARCHITECTURE.md`), so tmux
-//! isolation can be reviewed in this one file. This package is used only as a
-//! development dependency.
+//! isolation can be reviewed in this one file. Crates use this package as a
+//! development dependency; the benchmark harness depends on it directly.
 
 #![forbid(unsafe_code)]
 
