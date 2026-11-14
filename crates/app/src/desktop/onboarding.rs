@@ -286,7 +286,7 @@ impl Onboarding {
         let Some(probe) = self.probe.clone() else {
             return;
         };
-        if matches!(probe.backbone, Backbone::Running { .. }) && probe.client().is_some() {
+        if matches!(probe.backbone, Backbone::Running) && probe.client().is_some() {
             self.service = Service::Ready;
             if self.flow.is_none() {
                 self.pending_flow = probe.client();
@@ -894,7 +894,7 @@ fn start(probe: &Probe) -> Result<(), String> {
         "Its log: journalctl --user -u agent-backbone.service -n 80"
     };
     match &probe.backbone {
-        Backbone::Running { .. } => Err(format!(
+        Backbone::Running => Err(format!(
             "Agent Backbone answered, but its backbone command was not found on this computer's PATH ({}).",
             probe.path_env
         )),
@@ -933,7 +933,7 @@ fn start(probe: &Probe) -> Result<(), String> {
 fn answered() -> Option<()> {
     let deadline = Instant::now() + SERVICE_WAIT;
     while Instant::now() < deadline {
-        if matches!(probe::backbone(), Backbone::Running { .. }) {
+        if matches!(probe::backbone(), Backbone::Running) {
             return Some(());
         }
         std::thread::sleep(SERVICE_POLL);

@@ -693,10 +693,6 @@ impl Panes {
     /// Encode a key or paste using this pane's modes on its owning worker,
     /// then deliver it as one ordered input operation. Call off the UI thread.
     /// Recovery may delay encoding, bounded by the same capture deadline.
-    pub fn send_encoded_input(&self, pane: PaneId, input: Input) -> io::Result<()> {
-        self.send_reserved_input(pane, input, None)
-    }
-
     pub(crate) fn send_reserved_input(
         &self,
         pane: PaneId,
@@ -2599,7 +2595,7 @@ mod tests {
         .unwrap();
         wait_for_row(&panes, &woken, pane, "live-ready");
         panes
-            .send_encoded_input(pane, Input::Scroll(Scroll::Top))
+            .send_reserved_input(pane, Input::Scroll(Scroll::Top), None)
             .unwrap();
         wait_for_row(&panes, &woken, pane, "history-first");
         // Another private-fixture client produces a wrapping line while this
@@ -2615,7 +2611,7 @@ mod tests {
             .unwrap();
         wait_for_row(&panes, &woken, pane, "history-first");
         panes
-            .send_encoded_input(pane, Input::Paste("typed".into()))
+            .send_reserved_input(pane, Input::Paste("typed".into()), None)
             .unwrap();
         wait_for_row(&panes, &woken, pane, "live-readyxxx");
         assert_eq!(panes.failure(), None);
@@ -2679,17 +2675,18 @@ mod tests {
         .unwrap();
         wait_for_row(&panes, &woken, pane, "arrow-ready");
         panes
-            .send_encoded_input(
+            .send_reserved_input(
                 pane,
                 Input::Key(KeyPress {
                     key: "up".into(),
                     ..Default::default()
                 }),
+                None,
             )
             .unwrap();
         wait_for_row(&panes, &woken, pane, "extended-ready1b4f41");
         panes
-            .send_encoded_input(
+            .send_reserved_input(
                 pane,
                 Input::Key(KeyPress {
                     key: "h".into(),
@@ -2697,11 +2694,12 @@ mod tests {
                     shift: true,
                     ..Default::default()
                 }),
+                None,
             )
             .unwrap();
         wait_for_row(&panes, &woken, pane, &format!("paste-ready{extended}"));
         panes
-            .send_encoded_input(pane, Input::Paste("ok\n".into()))
+            .send_reserved_input(pane, Input::Paste("ok\n".into()), None)
             .unwrap();
         wait_for_row(&panes, &woken, pane, "paste:1b5b3230307e6f6b0a1b5b3230317e");
         let pointer = Pointer {
@@ -2714,10 +2712,10 @@ mod tests {
             ..Default::default()
         };
         panes
-            .send_encoded_input(pane, Input::Click(pointer, Button::Left))
+            .send_reserved_input(pane, Input::Click(pointer, Button::Left), None)
             .unwrap();
         panes
-            .send_encoded_input(pane, Input::Wheel(pointer, -1))
+            .send_reserved_input(pane, Input::Wheel(pointer, -1), None)
             .unwrap();
         wait_for_row(
             &panes,
@@ -2726,22 +2724,25 @@ mod tests {
             "mouse:1b5b3c303b333b344d1b5b3c303b333b346d1b5b3c36343b333b344d",
         );
         panes
-            .send_encoded_input(
+            .send_reserved_input(
                 pane,
                 Input::Mouse(pointer, MouseAction::Press(Button::Left)),
+                None,
             )
             .unwrap();
         let moved = Pointer { x: 4.5, ..pointer };
         panes
-            .send_encoded_input(
+            .send_reserved_input(
                 pane,
                 Input::Mouse(moved, MouseAction::Move(Some(Button::Left))),
+                None,
             )
             .unwrap();
         panes
-            .send_encoded_input(
+            .send_reserved_input(
                 pane,
                 Input::Mouse(moved, MouseAction::Release(Button::Left)),
+                None,
             )
             .unwrap();
         wait_for_row(
@@ -2752,7 +2753,11 @@ mod tests {
         );
         assert!(
             panes
-                .send_encoded_input(PaneId(u32::MAX), Input::Paste("wrong destination".into()))
+                .send_reserved_input(
+                    PaneId(u32::MAX),
+                    Input::Paste("wrong destination".into()),
+                    None
+                )
                 .is_err()
         );
         assert_eq!(panes.failure(), None);

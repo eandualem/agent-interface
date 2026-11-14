@@ -911,7 +911,6 @@ fn detail(
             ui::text(div().text_color(c.text), &t.text.card_title).child(selection::text(
                 pane,
                 &super::line(&item.text),
-                &[],
                 cx,
             )),
         );
@@ -958,7 +957,7 @@ fn detail(
             "Agent",
             div()
                 .text_color(c.attention_text)
-                .child(selection::text(pane, &super::line(&reason), &[], cx))
+                .child(selection::text(pane, &super::line(&reason), cx))
                 .into_any_element(),
         ));
     }
@@ -1133,7 +1132,6 @@ fn opened(
                     .child(selection::text(
                         pane,
                         &super::line(&plan.title),
-                        &[],
                         cx,
                     )),
                 )

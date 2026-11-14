@@ -164,8 +164,8 @@ sizing. Tests, benchmarks and scripts must never touch those sessions:
   (`feat:`, `fix:`, `docs:`, `chore:`), with a body that says why the change
   is needed.
 - **Review.** Every pull request is reviewed independently of its author. Include
-  the checks you ran and any platform you could not verify. Once hosted CI is
-  enabled, its required checks must pass before merging.
+  the checks you ran and any platform you could not verify. The required CI
+  checks must pass before merging.
 - **Architecture.** Keep [the architecture guide](docs/ARCHITECTURE.md) accurate
   when behavior or crate boundaries change. Explain the technical reason for a
   change in its pull request.

@@ -236,7 +236,7 @@ fn page<'a>(pane: &'a ViewPane, agent: &'a Agent) -> Option<reader::Page<'a>> {
                 );
             Some(reader::Page {
                 back: format!("{} · Skills", agent.name),
-                name: Some(row.name.to_owned()),
+                name: row.name.to_owned(),
                 at: Some(at),
                 count: rows.len(),
                 card,

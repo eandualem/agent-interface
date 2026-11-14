@@ -58,14 +58,6 @@ impl Input {
             }
         }
     }
-    /// Original input, for the formula bar rather than the rounded display.
-    pub fn text(&self) -> String {
-        match self {
-            Self::Text(s) | Self::Date(s) | Self::Formula(s) => s.clone(),
-            Self::Number(n) => n.to_string(),
-            Self::Boolean(b) => b.to_string(),
-        }
-    }
 }
 fn valid_date(s: &str) -> bool {
     let b = s.as_bytes();

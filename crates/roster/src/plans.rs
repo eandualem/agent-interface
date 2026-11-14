@@ -219,11 +219,6 @@ fn list_all_using(api: &Api<'_>) -> Result<PlansPage, Error> {
     }
 }
 
-/// Read one legacy page of current plans. Runs on an I/O worker.
-pub fn list(directory: &Path, after: Option<&str>) -> Result<PlansPage, Error> {
-    list_using(&Api::legacy(directory)?, after)
-}
-
 fn list_using(api: &Api<'_>, after: Option<&str>) -> Result<PlansPage, Error> {
     let mut path = "/api/current-plans?limit=50".to_owned();
     if let Some(after) = after {

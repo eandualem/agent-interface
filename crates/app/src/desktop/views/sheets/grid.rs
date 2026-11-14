@@ -213,7 +213,6 @@ impl Sheets {
                     .bg(c.panel)
                     .border_r(px(t.size.hairline))
                     .border_b(px(t.size.hairline))
-                    .border_r(px(t.size.hairline))
                     .border_color(c.line_strong)
                     .font_family(t.font.mono.clone())
                     .text_color(if selected_row { c.accent_text } else { c.muted }),

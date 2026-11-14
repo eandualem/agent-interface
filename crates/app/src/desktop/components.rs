@@ -41,7 +41,7 @@ pub fn icon(name: &str, size: f32, color: Rgba) -> Svg {
         .text_color(color)
 }
 
-/// A square button showing one icon; `label` names it for its tooltip.
+/// A square button showing one icon.
 pub fn icon_button(id: impl Into<SharedString>, name: &str) -> Stateful<Div> {
     let (t, c) = (tokens(), colors());
     div()
@@ -1563,7 +1563,6 @@ pub fn shelf() -> Div {
 
 /// A document or workbook on a shelf: its icon on a tile and its tags, the title on up to two
 /// lines, and the author, age and size at the bottom.
-#[allow(clippy::too_many_arguments)]
 pub fn shelf_card(
     id: impl Into<SharedString>,
     name: &str,

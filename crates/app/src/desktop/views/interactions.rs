@@ -913,11 +913,6 @@ impl Interactions {
             return false;
         }
         match key.key.as_str() {
-            "escape" if self.custom || self.peer_menu => {
-                self.custom = false;
-                self.peer_menu = false;
-                cx.notify();
-            }
             "escape" => self.go_back(cx),
             "p" => self.pivot(cx),
             "up" | "down" | "[" | "]" => {

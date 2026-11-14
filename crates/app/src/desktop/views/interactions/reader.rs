@@ -8,11 +8,7 @@ use crate::desktop::{
 };
 use gpui::{AnyElement, SharedString, div, px};
 
-pub(super) fn body(
-    view: &Interactions,
-    _window: &mut Window,
-    cx: &mut Context<Interactions>,
-) -> AnyElement {
+pub(super) fn body(view: &Interactions, cx: &mut Context<Interactions>) -> AnyElement {
     let Some(item) = view.selected.clone() else {
         return div().into_any_element();
     };
@@ -301,8 +297,7 @@ pub(super) fn body(
             item.status.evidence,
             item.attempt_count
         );
-        column =
-            column.child(selection::text(view, &details, &[], cx).font_family(t.font.mono.clone()));
+        column = column.child(selection::text(view, &details, cx).font_family(t.font.mono.clone()));
         for attempt in &item.attempts.items {
             column = column.child(
                 selection::text(
@@ -311,7 +306,6 @@ pub(super) fn body(
                         "{} · {} · {} · {}",
                         attempt.id, attempt.source, attempt.outcome, attempt.recorded_at
                     ),
-                    &[],
                     cx,
                 )
                 .font_family(t.font.mono.clone()),

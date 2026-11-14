@@ -106,8 +106,8 @@ Agent Interface runs on macOS and Linux (X11, or XWayland on Wayland desktops). 
 Linux package through WSL 2 with WSLg. Sessions run on the
 same computer as the app. Rich HTML Documents render on macOS and Linux, including Windows through WSLg.
 
-Not yet implemented: terminal input methods, accessible terminal text, key-release
-events and selection across history pages.
+Not yet implemented: terminal input methods, key-release events and selection
+across history pages.
 
 Agent Interface reimplements [tmux-workspaces](https://github.com/eandualem/tmux-workspaces)
 in Rust and opens its saved schema-v2 libraries. It needs no Python runtime.

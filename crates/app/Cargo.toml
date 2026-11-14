@@ -65,7 +65,6 @@ gpui_macos = { package = "gpui-pre-macos", version = "=0.3.9", default-features 
 
 [dev-dependencies]
 rusqlite.workspace = true
-tempfile.workspace = true
 agent-interface-test-support = { path = "../test-support" }
 
 # Benchmark scaffolding, not product UI.

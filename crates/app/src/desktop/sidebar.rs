@@ -204,11 +204,7 @@ impl Browser {
             .flatten()
     }
 
-    pub(super) fn tab_needs_you(
-        &self,
-        tab: &agent_interface_core::Tab,
-        _states: Option<&HashMap<String, AgentState>>,
-    ) -> bool {
+    pub(super) fn tab_needs_you(&self, tab: &agent_interface_core::Tab) -> bool {
         let Some(space) = self.layout.as_ref().and_then(|layout| {
             layout
                 .model()
@@ -248,7 +244,6 @@ impl Browser {
         let creation = self.creation_target();
         let (t, c) = (tokens(), colors());
         let width = self.sidebar_width(window);
-        let states = self.agent_states();
         div()
             .id("sidebar")
             .relative()
@@ -285,9 +280,9 @@ impl Browser {
                     }),
                 )),
             )
-            .child(self.tab_list(states.as_deref(), cx))
+            .child(self.tab_list(cx))
             .children(self.agents_block(window, cx))
-            .child(self.switcher(states.as_deref(), width, cx))
+            .child(self.switcher(width, cx))
             .child(
                 // The right edge resizes the panel.
                 div()
@@ -452,11 +447,7 @@ impl Browser {
     }
 
     /// The current workspace's tabs.
-    fn tab_list(
-        &mut self,
-        states: Option<&HashMap<String, AgentState>>,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
+    fn tab_list(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let creation = self.creation_target();
         let (t, c) = (tokens(), colors());
         let mut list = div()
@@ -578,7 +569,7 @@ impl Browser {
                         .child((index + 1).to_string()),
                     )
                     .child(name)
-                    .when(self.tab_needs_you(tab, states), |el| el.child(ui::dot(c.attention)))
+                    .when(self.tab_needs_you(tab), |el| el.child(ui::dot(c.attention)))
                     .when(!editing, |el| {
                         // The layout thumbnail gives way to the tab's options on hover.
                         el.child(
@@ -876,12 +867,7 @@ impl Browser {
     }
 
     /// One-click workspace switching, then Settings.
-    fn switcher(
-        &mut self,
-        states: Option<&HashMap<String, AgentState>>,
-        width: gpui::Pixels,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
+    fn switcher(&mut self, width: gpui::Pixels, cx: &mut Context<Self>) -> AnyElement {
         let (t, c) = (tokens(), colors());
         let row = div()
             .flex()
@@ -930,7 +916,7 @@ impl Browser {
                 let origin = self.navigation_origin(&space.id);
                 let id = space.id.clone();
                 let current = model.selected == id;
-                let needs_you = space.tabs.iter().any(|tab| self.tab_needs_you(tab, states));
+                let needs_you = space.tabs.iter().any(|tab| self.tab_needs_you(tab));
                 let glyph = icons::workspace(space.symbol.as_deref(), space.icon.as_deref());
                 let color = if current { c.accent } else { c.muted };
                 let mut element = slot(SharedString::from(format!("workspace-slot-{id}")))
