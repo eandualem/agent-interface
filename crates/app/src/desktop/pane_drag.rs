@@ -158,14 +158,17 @@ impl Drag {
         (self.tab != self.home.0).then_some(self.home.0.as_str())
     }
 
-    /// The pane as its own tab has it, while it is shown in another tab.
-    pub fn visitor(&self) -> Option<&agent_interface_core::Leaf> {
+    /// The pane, while it is shown in another tab than its own.
+    pub fn visitor(&self) -> Option<&str> {
         self.away_from()?;
-        self.home
-            .1
-            .leaves()
-            .into_iter()
-            .find(|leaf| leaf.id == self.source)
+        (!self.cancelled).then_some(self.source.as_str())
+    }
+
+    /// The tab to show again when the pane was not placed: its own, unless
+    /// `model` already shows another tab than the one the gesture selected.
+    pub fn returns_to(&self, model: &Layout) -> Option<&str> {
+        self.away_from()
+            .filter(|_| model.tab().is_some_and(|tab| tab.id == self.tab))
     }
 
     /// The pane, when `model` still shows the tab it was carried into with
@@ -429,10 +432,22 @@ impl Browser {
             .and_then(|layout| layout.model().tab())
             .map(|tab| tab.tree.leaves().into_iter().cloned().collect())
             .unwrap_or_default();
+        // As the layout has it now, wherever in the workspace it is.
         if let Some(visitor) = self.pane_drag.as_ref().and_then(Drag::visitor)
-            && !leaves.iter().any(|leaf| leaf.id == visitor.id)
+            && !leaves.iter().any(|leaf| leaf.id == visitor)
+            && let Some(leaf) = self
+                .layout
+                .as_ref()
+                .and_then(|layout| layout.model().workspace())
+                .and_then(|space| {
+                    space
+                        .tabs
+                        .iter()
+                        .flat_map(|tab| tab.tree.leaves())
+                        .find(|leaf| leaf.id == visitor)
+                })
         {
-            leaves.push(visitor.clone());
+            leaves.push(leaf.clone());
         }
         leaves
     }
@@ -501,7 +516,9 @@ impl Browser {
             self.pending_save = Some(proposal);
             self.pane_drag = Some(drag);
             self.save(cx);
-        } else if let (Some(home), Some(layout)) = (drag.away_from(), &mut self.layout) {
+        } else if let Some(layout) = &mut self.layout
+            && let Some(home) = drag.returns_to(layout.model())
+        {
             // Not placed: back to the tab the pane never left.
             layout.model_mut().choose_tab(home);
         }
@@ -707,9 +724,15 @@ mod tests {
             Drag::begin(window.model(), &source, &bounds, point(px(20.), px(10.))).unwrap();
         drag.motion(point(px(-40.), px(60.)), Some(AREA));
         assert!(drag.enter(window.model(), &home));
+        window.model_mut().choose_tab(&home);
+        assert_eq!(drag.visitor(), Some(source.as_str()));
         drag.cancel();
         assert!(drag.tree().is_none());
-        assert_eq!(drag.away_from(), Some(other.as_str()));
+        assert_eq!(drag.visitor(), None);
+        assert_eq!(drag.returns_to(window.model()), Some(other.as_str()));
+        // A tab chosen meanwhile stays.
+        window.model_mut().choose_tab(&other);
+        assert_eq!(drag.returns_to(window.model()), None);
     }
 
     #[test]
