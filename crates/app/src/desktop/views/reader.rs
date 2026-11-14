@@ -110,7 +110,12 @@ pub(super) fn render(
             ),
         )
         .child(step("reader-next", "chevron-down", 1, cx))
-        .children(copy);
+        .children(copy)
+        .children(
+            pane.conversation
+                .clone()
+                .and_then(|conversation| conversation.update(cx, |c, cx| c.collapsed(cx))),
+        );
     let content: AnyElement = match page.text {
         Text::Loading => ui::text(div().text_color(c.muted), &t.text.body)
             .child("Reading…")

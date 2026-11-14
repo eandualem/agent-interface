@@ -927,6 +927,7 @@ fn detail(
             color: c.text_2,
             line_height: 1.45,
             gap: t.space.s6,
+            compact: false,
         };
         column = column.child(markdown::render_in(
             &markdown::authored(&item.detail),
@@ -1022,7 +1023,9 @@ fn step_panel(
         Some(conversation) => conversation.update(cx, |conversation, cx| {
             conversation.panel(Some(context.into_any_element()), window, cx)
         }),
-        None => ui::conversation_panel().child(context).into_any_element(),
+        None => ui::conversation_panel()
+            .child(ui::conversation_card().child(context))
+            .into_any_element(),
     }
 }
 

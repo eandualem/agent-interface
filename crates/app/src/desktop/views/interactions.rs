@@ -632,15 +632,9 @@ impl Interactions {
         use crate::desktop::{components as ui, design::tokens};
         let t = tokens();
         let open = self.discussion_open(cx);
+        // A closed discussion is a pill over the reader and takes no width.
         let discussion = if open {
             ui::conversation_panel_width(self.width.get())
-        } else if self.conversation.is_some()
-            || self
-                .selected
-                .as_ref()
-                .is_some_and(|item| item.conversation.supported)
-        {
-            t.size.conversation_rail
         } else {
             0.
         };

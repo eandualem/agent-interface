@@ -309,9 +309,10 @@ document and choose **More from this author** to follow its stable author even
 after an agent is renamed or removed. **Back** restores the selected page and
 filter. **Refresh** returns to the newest documents.
 
-An open report, Response or Document has a conversation with its author on
-the right edge. Choose its button, or press **C**, to open it; press **C** or
-Esc in the message field to close it again, keeping the draft. Enter adds a
+An open report, Response or Document has a conversation with its author: a
+pill at the right end of the reader's toolbar. Choose it, or press **C**, to open it
+as a card beside the record; choose the card's minimize button, or press **C**
+or Esc in the message field, to close it again, keeping the draft. Enter adds a
 paragraph and **⌘↵** sends. The app sets no length limit; Agent Backbone sets
 its own (4,000 characters in 0.5.1, 64,000 in later versions), and a longer
 message shows **Not sent** with that reason. Each message includes a
@@ -322,8 +323,8 @@ and **Edit** to move the text back into an empty message field.
 When Agent Backbone keeps conversations, the thread is the record's stored
 conversation: your messages, the author's replies and the record's new
 revisions, in order, with a **new** divider before what arrived since you last
-looked. It is read every few seconds while open, and the rail shows a mark when
-something new arrives while it is closed. **Earlier messages** loads older
+looked. It is read every few seconds while open, and its pill counts what is
+new while it is closed. **Earlier messages** loads older
 ones. Retrying a message Backbone did not confirm is safe: it is stored once.
 A message whose delivery failed after Backbone stored it offers **Retry**,
 which delivers it again without adding it twice.

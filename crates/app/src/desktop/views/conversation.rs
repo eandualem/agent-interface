@@ -1,5 +1,6 @@
 //! The conversation beside an authored record. Every reader shows this one
-//! component: a rail while closed, a thread and a composer while open.
+//! component: a pill while closed, a card with a thread and a message box
+//! while open.
 //!
 //! When Agent Backbone keeps the record's conversation, the thread is the
 //! stored one: the owner's and agents' messages and the record's own events,
@@ -147,6 +148,10 @@ pub(super) struct Conversation {
     /// person drags its left edge to resize it.
     bounds: Rc<Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
     resizing: Option<gpui::Pixels>,
+    /// The message whose text was just copied, until its button rests.
+    copied: Option<SharedString>,
+    /// The person's long messages shown in full; the others are cut short.
+    expanded: std::collections::HashSet<SharedString>,
     /// Text selected in the thread, and the focus that copies it.
     selection: RefCell<Selection>,
     thread_focus: FocusHandle,
@@ -377,8 +382,13 @@ enum Redelivery {
     Note(String),
 }
 
+/// How many lines of the person's own message show before it is cut short.
+const OWN_LINES: usize = 6;
+/// How many characters fit one of those lines in the narrowest card.
+const OWN_LINE_CHARS: usize = 32;
+
 /// How often the shown conversation is read: often while open, for its
-/// replies, and slowly while closed, for the rail's mark.
+/// replies, and slowly while closed, for the pill's count.
 const OPEN_POLL: Duration = Duration::from_secs(5);
 const CLOSED_POLL: Duration = Duration::from_secs(25);
 
@@ -858,6 +868,8 @@ impl Conversation {
             visible: Rc::new(Cell::new(true)),
             bounds: Rc::new(Cell::new(None)),
             resizing: None,
+            copied: None,
+            expanded: std::collections::HashSet::new(),
             selection: RefCell::default(),
             thread_focus: cx.focus_handle(),
             _poll: None,
@@ -1625,18 +1637,82 @@ impl Conversation {
         });
     }
 
-    fn rail(&self, cx: &mut Context<Self>) -> AnyElement {
-        ui::conversation_rail(
-            div().id("conversation-open").on_click(
-                cx.listener(|conversation, _, window, cx| conversation.toggle(window, cx)),
-            ),
-            self.mark(),
-            self.stored
-                .as_ref()
-                .and_then(|stored| stored.page.as_ref())
-                .is_some_and(|page| page.unread > 0),
-        )
+    /// The responsible agent's live status while it is registered and either
+    /// working or waiting for the person.
+    fn status(&self) -> Option<Rc<crate::desktop::agent_status::Status>> {
+        let registered = if self.needs_recipient() {
+            self.recipient.is_some()
+        } else if let Some(page) = self
+            .stored
+            .as_ref()
+            .and_then(|stored| stored.page.as_ref())
+            .filter(|page| !page.responsible.name.is_empty())
+        {
+            page.responsible.status == "active"
+        } else {
+            self.record.as_ref().is_none_or(|(item, _)| item.registered)
+        };
+        Some(self.agents.get(&self.agent()))
+            .filter(|status| registered && (status.state.working() || status.state.needs_you()))
+    }
+
+    /// Whether nobody has been chosen to ask yet.
+    fn unchosen(&self) -> bool {
+        self.needs_recipient() && self.recipient.is_none()
+    }
+
+    /// The closed conversation: a pill that opens it.
+    fn pill(&self, cx: &mut Context<Self>) -> AnyElement {
+        let agent = self.agent();
+        let unread = self
+            .stored
+            .as_ref()
+            .and_then(|stored| stored.page.as_ref())
+            .map_or(0, |page| page.unread);
+        let state = self
+            .status()
+            .map_or(ui::AgentState::Unknown, |status| status.state);
+        let said = if unread > 0 {
+            format!(", {unread} new")
+        } else if state.needs_you() {
+            ", needs you".to_owned()
+        } else if state.working() {
+            ", working".to_owned()
+        } else {
+            String::new()
+        };
+        let button = div()
+            .id("conversation-open")
+            .role(gpui::accesskit::Role::Button)
+            .aria_label(if self.unchosen() {
+                "Open the conversation".to_owned()
+            } else {
+                format!("Open the conversation with {agent}{said}")
+            })
+            .on_click(cx.listener(|conversation, _, window, cx| conversation.toggle(window, cx)));
+        if self.unchosen() {
+            ui::conversation_pill(button, "", "Ask", unread, state)
+        } else {
+            ui::conversation_pill(button, &agent, agent.clone(), unread, state)
+        }
         .into_any_element()
+    }
+
+    /// A skill or policy Backbone keeps no conversation for shows none.
+    fn hidden(&self) -> bool {
+        self.record.is_none()
+            && self
+                .stored
+                .as_ref()
+                .is_some_and(|stored| stored.source.is_some() && stored.supported == Some(false))
+            && self.disposable()
+    }
+
+    /// The closed conversation's pill, which its reader places at the end of
+    /// its toolbar or header: floating over the reader would cover the
+    /// reader's own controls, or a document's system view.
+    pub fn collapsed(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        (!self.open && !self.hidden()).then(|| self.pill(cx))
     }
 
     /// With nobody responsible, the agents the person can ask, one chosen.
@@ -1645,40 +1721,31 @@ impl Conversation {
             return None;
         }
         let t = tokens();
-        // Bounded so a large team never pushes the composer out of the pane.
+        // Bounded so a large team never pushes the field out of the card.
         let mut row = div()
             .id("conversation-chooser")
             .role(gpui::accesskit::Role::RadioGroup)
             .aria_label("Who to ask")
-            .flex_shrink_0()
             .max_h(px(t.size.chooser_height))
             .overflow_y_scroll()
             .flex()
             .flex_wrap()
-            .gap(px(t.space.s6))
-            .px(px(t.space.s14))
-            .py(px(t.space.s8))
-            .border_b(px(t.size.hairline))
-            .border_color(colors().line);
+            .gap(px(t.space.s6));
         for name in self.askable() {
             let chosen = self.recipient.as_deref() == Some(name.as_str());
+            let label = self
+                .interaction_roles
+                .get(&name)
+                .map_or(name.clone(), |(_, role)| format!("{name} · {role}"));
             row = row.child(
-                ui::chip(
+                ui::composer_choice(
                     SharedString::from(format!("conversation-ask-{name}")),
-                    SharedString::from(
-                        self.interaction_roles
-                            .get(&name)
-                            .map_or(name.clone(), |(_, role)| format!("{name} · {role}")),
-                    ),
+                    SharedString::from(label.clone()),
                     chosen,
                 )
                 .role(gpui::accesskit::Role::RadioButton)
                 .aria_selected(chosen)
-                .aria_label(
-                    self.interaction_roles
-                        .get(&name)
-                        .map_or(name.clone(), |(_, role)| format!("{name} · {role}")),
-                )
+                .aria_label(label)
                 .focusable()
                 .focus_visible(|el| {
                     el.border(px(t.size.focus_ring))
@@ -1710,6 +1777,139 @@ impl Conversation {
             .unwrap_or_else(|| self.agent.clone())
     }
 
+    /// Under a message: when it was written and a button that copies it,
+    /// shown while the pointer is over the message unless `shown`.
+    fn actions(
+        &self,
+        group: &SharedString,
+        time: String,
+        text: &str,
+        own: bool,
+        shown: bool,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        let done = self.copied.as_ref() == Some(group);
+        // Out of sight until the pointer is over the message, or until Copy
+        // has keyboard focus, which shows the button with its ring.
+        let hidden = !(shown || done);
+        let (pressed, activated) = (
+            (text.to_owned(), group.clone()),
+            (text.to_owned(), group.clone()),
+        );
+        let copy = ui::message_action(
+            SharedString::from(format!("{group}-copy")),
+            if done { "check" } else { "copy" },
+        )
+        .role(gpui::accesskit::Role::Button)
+        .aria_label(if done { "Copied" } else { "Copy" })
+        .focusable()
+        .when(hidden, |el| {
+            el.opacity(0.0)
+                .group_hover(group.clone(), |style| style.opacity(1.0))
+        })
+        .focus_visible(|el| {
+            el.opacity(1.0)
+                .border(px(tokens().size.focus_ring))
+                .border_color(colors().focus)
+        })
+        // On the press: the thread takes focus on a press and draws again,
+        // which must not lose the click.
+        .on_mouse_down(
+            gpui::MouseButton::Left,
+            cx.listener(move |conversation, _, _, cx| {
+                cx.stop_propagation();
+                conversation.copy(&pressed.0, pressed.1.clone(), cx);
+            }),
+        )
+        // From the keyboard or an assistive technology.
+        .on_click(cx.listener(move |conversation, _, _, cx| {
+            conversation.copy(&activated.0, activated.1.clone(), cx);
+        }));
+        let time = div().child(time).when(hidden, |el| {
+            el.opacity(0.0)
+                .group_hover(group.clone(), |style| style.opacity(1.0))
+        });
+        let meta = ui::message_meta();
+        if own {
+            meta.child(time).child(copy)
+        } else {
+            meta.child(copy).child(time)
+        }
+    }
+
+    /// Copy a message's text and show a check on its button for a moment.
+    fn copy(&mut self, text: &str, key: SharedString, cx: &mut Context<Self>) {
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string(text.to_owned()));
+        self.copied = Some(key.clone());
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(1500))
+                .await;
+            let _ = this.update(cx, |conversation, cx| {
+                if conversation.copied.as_ref() == Some(&key) {
+                    conversation.copied = None;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// The person's message in its bubble. A long one shows its start, with
+    /// a link that shows the rest and one that folds it again. Only the text
+    /// shown is drawn, so selection never reaches what is folded away.
+    fn own_body(&self, group: &SharedString, text: &str, cx: &mut Context<Self>) -> gpui::Div {
+        let (t, c) = (tokens(), colors());
+        let Some(start) = folded(text) else {
+            return self.body(text, true, cx);
+        };
+        let open = self.expanded.contains(group);
+        let key = group.clone();
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(t.space.s4))
+            .min_w_0()
+            .child(self.body(if open { text } else { &start }, true, cx))
+            .child(
+                ui::link(
+                    div()
+                        .id(SharedString::from(format!("{group}-expand")))
+                        .role(gpui::accesskit::Role::Button)
+                        .focusable()
+                        .focus_visible(|el| el.underline().text_color(colors().text))
+                        .child(if open { "Show less" } else { "Show more" })
+                        .on_click(cx.listener(move |conversation, _, _, cx| {
+                            if !conversation.expanded.remove(&key) {
+                                conversation.expanded.insert(key.clone());
+                            }
+                            cx.notify();
+                        })),
+                )
+                .text_color(c.muted),
+            )
+    }
+
+    /// Whether the thread has anything to show.
+    fn has_thread(&self) -> bool {
+        self.stored
+            .as_ref()
+            .filter(|stored| stored.live())
+            .is_some_and(|stored| {
+                stored.earlier_cursor.is_some()
+                    || !stored.earlier.is_empty()
+                    || stored
+                        .page
+                        .as_ref()
+                        .is_some_and(|page| !page.entries.is_empty())
+            })
+            || self
+                .messages
+                .iter()
+                .any(|message| !matches!(message.delivery, Delivery::Moved | Delivery::Stored))
+    }
+
     /// Backbone's entries in order, with the "new" divider and day dividers.
     fn entries(
         &self,
@@ -1717,7 +1917,7 @@ impl Conversation {
         day: &mut Option<Local>,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
-        let c = colors();
+        let (t, c) = (tokens(), colors());
         let Some(stored) = self.stored.as_ref().filter(|stored| stored.live()) else {
             return Vec::new();
         };
@@ -1732,19 +1932,42 @@ impl Conversation {
         };
         let new = entries.iter().filter(|entry| unseen(entry)).count();
         let mut first_new = entries.iter().position(|entry| unseen(entry));
+        let reply = |entry: &stored::Entry| {
+            !matches!(entry.author, Author::Owner) && matches!(entry.body, Body::Message { .. })
+        };
+        // The latest reply keeps its time and actions in view.
+        let latest = entries.iter().rposition(|entry| reply(entry));
+        let agent = self.agent();
         let mut out = Vec::new();
         if stored.earlier_cursor.is_some() {
             out.push(
-                ui::link(
-                    div()
-                        .id("conversation-earlier")
-                        .text_color(c.accent_text)
+                div()
+                    .flex()
+                    .flex_shrink_0()
+                    .justify_center()
+                    .py(px(t.space.s4))
+                    .child(
+                        ui::text(
+                            div()
+                                .id("conversation-earlier")
+                                .flex()
+                                .items_center()
+                                .h(px(t.size.conversation_chip))
+                                .px(px(t.space.s12))
+                                .rounded_full()
+                                .border(px(t.size.hairline))
+                                .border_color(c.line_strong)
+                                .text_color(c.text_2)
+                                .cursor_pointer()
+                                .hover(|el| el.bg(colors().selected)),
+                            &t.text.meta,
+                        )
                         .child("Earlier messages")
                         .on_click(
                             cx.listener(|conversation, _, _, cx| conversation.load_earlier(cx)),
                         ),
-                )
-                .into_any_element(),
+                    )
+                    .into_any_element(),
             );
         }
         for (at, entry) in entries.iter().enumerate() {
@@ -1760,49 +1983,76 @@ impl Conversation {
                 out.push(ui::thread_divider(format!("{new} new"), true).into_any_element());
             }
             let time = local.map(|local| local.time()).unwrap_or_default();
-            let who = match &entry.author {
-                Author::Owner => "You".to_owned(),
-                Author::Agent { name, .. } => name.clone(),
-                Author::System => "Backbone".to_owned(),
-            };
             let label = entry
                 .anchor
                 .as_ref()
                 .and_then(|anchor| anchor.label.clone());
             out.push(match &entry.body {
                 Body::Message { text, delivery, .. } => {
-                    let from_you = matches!(entry.author, Author::Owner);
-                    let failed = *delivery == Some(stored::Delivery::Failed);
-                    let meta = ui::message_meta().children(label.map(ui::anchor));
                     let id = entry.id;
-                    let redelivery = stored.redelivery.get(&id);
-                    let meta = if failed
-                        && matches!(redelivery, Some(Redelivery::Asking | Redelivery::Queued(_)))
-                    {
-                        meta.child(ui::sending_spinner()).child("Sending…")
-                    } else if failed {
-                        let why = match redelivery {
-                            Some(Redelivery::Note(why)) => Some(why.clone()),
-                            _ => None,
+                    let group = SharedString::from(format!("conversation-entry-{id}"));
+                    if matches!(entry.author, Author::Owner) {
+                        let failed = *delivery == Some(stored::Delivery::Failed);
+                        let redelivery = stored.redelivery.get(&id);
+                        let meta = if failed
+                            && matches!(
+                                redelivery,
+                                Some(Redelivery::Asking | Redelivery::Queued(_))
+                            ) {
+                            ui::message_meta()
+                                .child(ui::sending_spinner())
+                                .child("Sending…")
+                        } else if failed {
+                            ui::message_meta()
+                                .text_color(c.attention_text)
+                                .child(match redelivery {
+                                    Some(Redelivery::Note(why)) => format!("Not sent: {why}"),
+                                    _ => "Not sent".to_owned(),
+                                })
+                                .child(
+                                    ui::link(
+                                        div()
+                                            .id(SharedString::from(format!(
+                                                "conversation-redeliver-{id}"
+                                            )))
+                                            .underline()
+                                            .child("Retry")
+                                            .on_click(cx.listener(
+                                                move |conversation, _, _, cx| {
+                                                    conversation.redeliver(id, cx)
+                                                },
+                                            )),
+                                    )
+                                    .text_color(c.attention_text),
+                                )
+                        } else {
+                            self.actions(&group, time, text, true, false, cx)
                         };
-                        meta.text_color(c.attention_text)
-                            .child(match why {
-                                Some(why) => format!("Not sent: {why} ·"),
-                                None => "Not sent ·".to_owned(),
-                            })
-                            .child(ui::link(
-                                div()
-                                    .id(SharedString::from(format!("conversation-redeliver-{id}")))
-                                    .underline()
-                                    .child("Retry")
-                                    .on_click(cx.listener(move |conversation, _, _, cx| {
-                                        conversation.redeliver(id, cx)
-                                    })),
-                            ))
+                        let body = self.own_body(&group, text, cx);
+                        ui::message_sent(
+                            group,
+                            label.map(ui::message_reference),
+                            body,
+                            failed,
+                            meta,
+                        )
+                        .into_any_element()
                     } else {
-                        meta.child(format!("{who} · {time}"))
-                    };
-                    ui::message(from_you, failed, meta, self.body(text, cx)).into_any_element()
+                        let who = match &entry.author {
+                            Author::Agent { name, .. } => name.as_str(),
+                            _ => "Backbone",
+                        };
+                        let meta = self
+                            .actions(&group, time, text, false, latest == Some(at), cx)
+                            .children(label.map(ui::anchor));
+                        ui::message_reply(
+                            group,
+                            (who != agent).then_some(who),
+                            self.body(text, false, cx),
+                            meta,
+                        )
+                        .into_any_element()
+                    }
                 }
                 Body::Revision { revision } => {
                     let changed: Vec<&str> = revision
@@ -1810,22 +2060,39 @@ impl Conversation {
                         .iter()
                         .map(|cell| cell.label.as_str())
                         .collect();
-                    let mut happened = format!("published {}", revision.label);
+                    let mut subject = revision.label.clone();
                     if !changed.is_empty() {
-                        happened.push_str(&format!(" · changed {}", changed.join(", ")));
+                        subject.push_str(&format!(" · {}", changed.join(", ")));
                     }
-                    ui::thread_event("history", who, format!("{happened} · {time}"))
-                        .into_any_element()
+                    ui::thread_pill(ui::thread_event(
+                        ui::icon("history", t.size.icon - 2.0, c.muted),
+                        "Published",
+                        subject,
+                        time,
+                    ))
+                    .into_any_element()
                 }
                 Body::Step { step } => {
-                    let happened = match step.status.as_str() {
-                        "in_progress" => format!("started {}", step.title),
-                        "done" => format!("finished {}", step.title),
-                        "blocked" => format!("is blocked on {}", step.title),
-                        _ => format!("queued {}", step.title),
+                    let blocked = step.status == "blocked";
+                    let (mark, happened) = match step.status.as_str() {
+                        "in_progress" => ("corner-down-right", "Started"),
+                        "done" => ("check", "Finished"),
+                        "blocked" => ("info", "Blocked on"),
+                        _ => ("clock", "Queued"),
                     };
-                    ui::thread_event("corner-down-right", who, format!("{happened} · {time}"))
-                        .into_any_element()
+                    ui::thread_event(
+                        ui::icon(
+                            mark,
+                            t.size.icon - 2.0,
+                            if blocked { c.attention_text } else { c.muted },
+                        ),
+                        happened,
+                        step.title.clone(),
+                        format!("· {time}"),
+                    )
+                    .py(px(t.space.s4))
+                    .when(blocked, |el| el.text_color(c.attention_text))
+                    .into_any_element()
                 }
             });
             if stored.kind == Kind::Interaction
@@ -1842,41 +2109,18 @@ impl Conversation {
         out
     }
 
-    /// A message's text as Markdown, selectable like a reader's.
-    fn body(&self, text: &str, cx: &mut Context<Self>) -> gpui::Div {
+    /// A message's text as Markdown, selectable like a reader's: the person's
+    /// in a bubble, an agent's as plain text with more air between lines.
+    fn body(&self, text: &str, own: bool, cx: &mut Context<Self>) -> gpui::Div {
         let (t, c) = (tokens(), colors());
         let look = markdown::Look {
-            style: &t.text.row,
+            style: &t.text.doc_body,
             color: c.text,
-            line_height: 1.45,
-            gap: t.space.s6,
+            line_height: if own { 1.5 } else { 1.62 },
+            gap: t.space.s8,
+            compact: true,
         };
         markdown::render_in(&markdown::authored(text), &look, self, cx).min_w_0()
-    }
-
-    fn mark(&self) -> Option<gpui::Div> {
-        let (item, _) = self.record.as_ref()?;
-        if !matches!(item.content, ReportContent::Progress { .. }) {
-            return None;
-        }
-        let registered = if self.needs_recipient() {
-            self.recipient.is_some()
-        } else if let Some(page) = self
-            .stored
-            .as_ref()
-            .and_then(|stored| stored.page.as_ref())
-            .filter(|page| !page.responsible.name.is_empty())
-        {
-            page.responsible.status == "active"
-        } else {
-            item.registered
-        };
-        let name = if registered {
-            self.agent()
-        } else {
-            String::new()
-        };
-        Some(ui::agent_symbol(self.agents.get(&name).state))
     }
 
     fn thread(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -1884,19 +2128,14 @@ impl Conversation {
         let kind = self.about.trim_start_matches("about this ");
         let now = Local::now();
         let mut day: Option<Local> = None;
-        let entries = self.entries(now, &mut day, cx);
-        let local = self
-            .messages
-            .iter()
-            .any(|message| !matches!(message.delivery, Delivery::Moved | Delivery::Stored));
-        if entries.is_empty() && !local {
+        if !self.has_thread() {
             let agent = self.agent();
             let note = if let Some(error) = self.read_error.filter(|error| {
                 !self.stored_live() || matches!(error, stored::Error::Connection(_))
             }) {
                 error.message().to_owned()
-            } else if self.needs_recipient() && self.recipient.is_none() {
-                "Choose an agent above to enable Send. Your draft stays here while you choose."
+            } else if self.unchosen() {
+                "Choose an agent below to enable Send. Your draft stays here while you choose."
                     .to_owned()
             } else if self.stored_live() {
                 if self
@@ -1918,17 +2157,35 @@ impl Conversation {
             return div()
                 .flex_1()
                 .min_h_0()
-                .child(ui::empty_state(
-                    ui::empty_tile("message-square", c.selected, c.text_2),
-                    if self.needs_recipient() && self.recipient.is_none() {
-                        "Choose who to ask".to_owned()
-                    } else {
-                        format!("Talk to {agent} here")
-                    },
-                    note,
-                ))
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .gap(px(t.space.s6))
+                .px(px(t.space.s28))
+                .child(
+                    ui::text(div().text_color(c.text), &t.text.empty_title).child(
+                        if self.unchosen() {
+                            "Choose who to ask"
+                        } else {
+                            "No messages yet"
+                        },
+                    ),
+                )
+                .child(
+                    ui::text(
+                        div()
+                            .max_w(px(t.size.empty_width))
+                            .text_center()
+                            .line_height(gpui::relative(1.55))
+                            .text_color(c.muted),
+                        &t.text.body,
+                    )
+                    .child(note),
+                )
                 .into_any_element();
         }
+        let entries = self.entries(now, &mut day, cx);
         // The handle still describes the previous frame here. Preserve an
         // older reading position, or follow the bottom through the new layout.
         if self.scroll.bounds().size.height <= px(0.)
@@ -1976,13 +2233,12 @@ impl Conversation {
             .overflow_y_scroll()
             .flex()
             .flex_col()
-            .gap(px(t.space.s12))
-            .p(px(t.space.s14))
-            .children(
-                self.read_error
-                    .filter(|error| matches!(error, stored::Error::Connection(_)))
-                    .map(|error| ui::thread_event("unplug", "Original profile", error.message())),
-            )
+            .gap(px(t.space.s4))
+            .px(px(t.space.s18))
+            .pt(px(t.space.s16))
+            .pb(px(t.space.s8))
+            // A short thread rests on the message box, as a chat does.
+            .child(div().flex_1())
             .children(entries);
         for (index, message) in self.messages.iter().enumerate() {
             if matches!(message.delivery, Delivery::Moved | Delivery::Stored) {
@@ -1996,53 +2252,63 @@ impl Conversation {
                 day = Some(local);
             }
             let time = local.map(|local| local.time()).unwrap_or_default();
-            let meta = ui::message_meta().children(message.anchor.clone().map(ui::anchor));
+            let group = SharedString::from(format!("conversation-local-{index}"));
             let action = |id: &str, label: &'static str| {
                 ui::link(
                     div()
                         .id(SharedString::from(format!("conversation-{id}-{index}")))
-                        .text_color(c.attention_text)
                         .underline()
                         .child(label),
                 )
             };
             let meta = match &message.delivery {
                 Delivery::Moved | Delivery::Stored => continue,
-                Delivery::Sending => meta.child(ui::sending_spinner()).child("Sending…"),
-                Delivery::Sent => meta.child(format!("You · {time}")),
-                Delivery::NotSent(reason) => {
-                    meta.text_color(c.attention_text)
-                        .child(SharedString::from(format!("Not sent: {reason}")))
-                        .when(message.via != Some(Via::Owner), |meta| {
-                            meta.child(action("retry", "Retry").on_click(cx.listener(
-                                move |conversation, _, _, cx| conversation.retry(index, cx),
-                            )))
-                        })
-                        .child(action("edit", "Edit").on_click(cx.listener(
-                            move |conversation, _, window, cx| conversation.edit(index, window, cx),
-                        )))
-                }
-                Delivery::Unconfirmed(reason) if message.via != Some(Via::Feedback) => meta
-                    .child(SharedString::from(format!("Not confirmed: {reason}")))
-                    .child(ui::link(
-                        div()
-                            .id(SharedString::from(format!("conversation-retry-{index}")))
-                            .underline()
-                            .child("Retry the same request")
-                            .on_click(cx.listener(move |conversation, _, _, cx| {
-                                conversation.retry(index, cx)
+                Delivery::Sending => ui::message_meta()
+                    .child(ui::sending_spinner())
+                    .child("Sending…"),
+                Delivery::Sent => self.actions(&group, time, &message.text, true, false, cx),
+                Delivery::NotSent(reason) => ui::message_meta()
+                    .text_color(c.attention_text)
+                    .child(SharedString::from(format!("Not sent: {reason}")))
+                    .when(message.via != Some(Via::Owner), |meta| {
+                        meta.child(
+                            action("retry", "Retry")
+                                .text_color(c.attention_text)
+                                .on_click(cx.listener(move |conversation, _, _, cx| {
+                                    conversation.retry(index, cx)
+                                })),
+                        )
+                    })
+                    .child(
+                        action("edit", "Edit")
+                            .text_color(c.attention_text)
+                            .on_click(cx.listener(move |conversation, _, window, cx| {
+                                conversation.edit(index, window, cx)
                             })),
-                    )),
-                Delivery::Unconfirmed(reason) => meta.child(SharedString::from(format!(
-                    "Not confirmed: {reason} Ask {} before sending it again.",
-                    self.agent
-                ))),
+                    ),
+                Delivery::Unconfirmed(reason) if message.via != Some(Via::Feedback) => {
+                    ui::message_meta()
+                        .child(SharedString::from(format!("Not confirmed: {reason}")))
+                        .child(action("retry", "Retry the same request").on_click(
+                            cx.listener(move |conversation, _, _, cx| {
+                                conversation.retry(index, cx)
+                            }),
+                        ))
+                }
+                Delivery::Unconfirmed(reason) => {
+                    ui::message_meta().child(SharedString::from(format!(
+                        "Not confirmed: {reason} Ask {} before sending it again.",
+                        self.agent
+                    )))
+                }
             };
-            thread = thread.child(ui::message(
-                true,
+            let body = self.own_body(&group, &message.text, cx);
+            thread = thread.child(ui::message_sent(
+                group,
+                message.anchor.clone().map(ui::message_reference),
+                body,
                 matches!(message.delivery, Delivery::NotSent(_)),
                 meta,
-                self.body(&message.text, cx),
             ));
         }
         let scroll = self.scroll.clone();
@@ -2087,6 +2353,24 @@ impl Conversation {
     }
 }
 
+/// The start of a long message of the person's own: its first
+/// [`OWN_LINES`] lines, at most [`OWN_LINE_CHARS`] characters a line, then
+/// an ellipsis.
+/// `None` when the whole message fits.
+fn folded(text: &str) -> Option<String> {
+    let text = text.trim_end();
+    let lines = text
+        .match_indices('\n')
+        .nth(OWN_LINES - 1)
+        .map_or(text.len(), |(at, _)| at);
+    let chars = text
+        .char_indices()
+        .nth(OWN_LINES * OWN_LINE_CHARS)
+        .map_or(text.len(), |(at, _)| at);
+    let end = lines.min(chars);
+    (end < text.len()).then(|| format!("{}…", text[..end].trim_end()))
+}
+
 fn read_marker_due(last_attempt: Option<std::time::Instant>, now: std::time::Instant) -> bool {
     last_attempt.is_none_or(|at| now.saturating_duration_since(at) >= Duration::from_secs(5))
 }
@@ -2116,51 +2400,89 @@ impl Conversation {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        // A skill or policy Backbone keeps no conversation for shows none.
-        if self.record.is_none()
-            && self
-                .stored
-                .as_ref()
-                .is_some_and(|stored| stored.source.is_some() && stored.supported == Some(false))
-            && self.disposable()
-        {
+        if self.hidden() {
             return div().into_any_element();
         }
         if std::mem::take(&mut self.toggle_requested) {
             self.toggle(window, cx);
         }
+        let t = tokens();
         if !self.open {
-            let rail = self.rail(cx);
             return match context {
+                // The context keeps its card; the pill sits beside it.
                 Some(context) => ui::conversation_panel()
-                    .flex_row()
                     .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .h_full()
-                            .flex()
-                            .flex_col()
-                            .child(context),
+                        ui::conversation_card()
+                            .flex_row()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .h_full()
+                                    .flex()
+                                    .flex_col()
+                                    .child(context),
+                            )
+                            .child(div().flex_shrink_0().p(px(t.space.s8)).child(self.pill(cx))),
                     )
-                    .child(rail)
                     .into_any_element(),
-                None => rail,
+                // Its reader places the pill: see `collapsed`.
+                None => div().into_any_element(),
             };
         }
-        let t = tokens();
         let can_send = self.can_send(cx);
-        ui::conversation_panel()
+        let agent = self.agent();
+        let status = self.status().map(|status| {
+            div().child(ui::agent_symbol(status.state)).child(
+                ui::agent_status_text(&status)
+                    .min_w_0()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis(),
+            )
+        });
+        let chooser = self.chooser(cx);
+        let reference = self.anchor.clone().map(ui::composer_reference);
+        let above = (chooser.is_some() || reference.is_some()).then(|| {
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(t.space.s6))
+                .children(chooser)
+                .children(reference.map(|reference| div().flex().child(reference)))
+        });
+        let placeholder = if self.unchosen() {
+            "Choose who to ask…".to_owned()
+        } else if self.has_thread() {
+            format!("Reply to {agent}…")
+        } else {
+            format!("Message {agent}…")
+        };
+        let alert =
+            self.read_error
+                .filter(|error| matches!(error, stored::Error::Connection(_)) && self.has_thread())
+                .map(|error| {
+                    ui::thread_alert(
+                        error.message(),
+                        div().id("conversation-reread").child("Try again").on_click(
+                            cx.listener(|conversation, _, _, cx| conversation.refresh(cx)),
+                        ),
+                    )
+                });
+        let focused = self.field.read(cx).focus.is_focused(window);
+        let card = ui::conversation_card()
             .child(ui::conversation_header(
-                self.mark(),
-                self.agent(),
-                self.about,
-                ui::icon_button("conversation-close", "panel-right-close").on_click(
-                    cx.listener(|conversation, _, window, cx| conversation.close(window, cx)),
-                ),
+                if self.unchosen() { "" } else { &agent },
+                agent.clone(),
+                status,
+                ui::icon_button("conversation-close", "minus")
+                    .role(gpui::accesskit::Role::Button)
+                    .aria_label("Minimize conversation")
+                    .on_click(
+                        cx.listener(|conversation, _, window, cx| conversation.close(window, cx)),
+                    ),
             ))
             .children(context)
-            .children(self.chooser(cx))
             .child(loop {
                 // As in a reader: a block that changed after earlier ones
                 // were drawn clears the selection, so draw them again.
@@ -2170,10 +2492,12 @@ impl Conversation {
                     break thread;
                 }
             })
+            .children(alert)
             .child(ui::composer(
+                above,
                 div()
                     .relative()
-                    .text_size(t.text.row.size())
+                    .text_size(t.text.doc_body.size())
                     .child(self.field.clone())
                     // The board's placeholder, until something is typed.
                     .when(self.draft(cx).is_empty(), |el| {
@@ -2182,24 +2506,20 @@ impl Conversation {
                                 .absolute()
                                 .top_0()
                                 .left_0()
-                                .text_color(colors().faint)
-                                .child(if self.needs_recipient() && self.recipient.is_none() {
-                                    "Choose a recipient above…".to_owned()
-                                } else {
-                                    format!("Message {} {}…", self.agent(), self.about)
-                                }),
+                                .text_color(colors().muted)
+                                .child(placeholder),
                         )
                     }),
-                self.anchor.clone().map(|label| {
-                    ui::anchor(label)
-                        .max_w(gpui::relative(0.6))
-                        .overflow_hidden()
-                        .whitespace_nowrap()
-                        .text_ellipsis()
-                }),
+                self.blocked.then(|| "Waiting to send".into()),
                 ui::send_button("conversation-send", can_send)
+                    .role(gpui::accesskit::Role::Button)
+                    .aria_label("Send")
                     .on_click(cx.listener(|conversation, _, _, cx| conversation.send(cx))),
-            ))
+                focused,
+                self.blocked,
+            ));
+        ui::conversation_panel()
+            .child(card)
             // Last, so the edge is above the thread where they overlap.
             .children(self.resize_handle(cx))
             .into_any_element()
@@ -2223,6 +2543,21 @@ fn interaction_recipient(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_long_messages_of_your_own_are_folded() {
+        assert_eq!(folded("short\n\nstill short\n"), None);
+        let lines = "line\n".repeat(OWN_LINES + 2);
+        assert_eq!(
+            folded(&lines),
+            Some(format!("{}…", "line\n".repeat(OWN_LINES).trim_end()))
+        );
+        let long = "é".repeat(OWN_LINES * OWN_LINE_CHARS + 1);
+        assert_eq!(
+            folded(&long),
+            Some(format!("{}…", "é".repeat(OWN_LINES * OWN_LINE_CHARS)))
+        );
+    }
 
     #[test]
     fn interaction_recipient_follows_focused_identity_in_either_direction() {

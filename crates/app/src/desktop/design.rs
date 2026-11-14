@@ -210,7 +210,7 @@ group!(
         key: f32 = number, icon_button: f32 = number, menu_item: f32 = number,
         row: f32 = number,
         slot: f32 = number, pane: f32 = number, popover: f32 = number, pill: f32 = number,
-        bubble: f32 = number,
+        bubble: f32 = number, card: f32 = number, composer: f32 = number,
     }
 );
 
@@ -248,7 +248,8 @@ group!(
         group_row: f32 = number, record_who: f32 = number, record_age: f32 = number,
         question_row: f32 = number, shelf_card: f32 = number, reader_width: f32 = number,
         reader_label: f32 = number, reference_row: f32 = number,
-        conversation_rail: f32 = number, rail_button: f32 = number,
+        conversation_avatar: f32 = number,
+        conversation_chip: f32 = number,
         conversation_width: f32 = number, conversation_header: f32 = number,
         composer_field: f32 = number, send_button: f32 = number, anchor: f32 = number,
         chooser_height: f32 = number,

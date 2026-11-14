@@ -299,12 +299,19 @@ pub(super) fn step(pane: &mut ViewPane, page: &ReportPage, by: isize, cx: &mut C
 }
 
 /// A reader's frame: the header and toolbar across the top, then the record
-/// with its footer, and its conversation on the right.
+/// with its footer, and its conversation on the right. A closed
+/// conversation is a pill at the toolbar's end, where it covers nothing.
 pub(super) fn reader_frame(
     pane: &ViewPane,
     toolbar: gpui::Div,
     content: impl IntoElement,
+    cx: &mut Context<ViewPane>,
 ) -> AnyElement {
+    let pill = pane
+        .conversation
+        .clone()
+        .and_then(|conversation| conversation.update(cx, |c, cx| c.collapsed(cx)));
+    let toolbar = toolbar.children(pill);
     div()
         .size_full()
         .flex()
@@ -409,6 +416,7 @@ fn reader(
         color: c.text,
         line_height,
         gap: t.space.s8,
+        compact: false,
     };
     let body = look(&t.text.doc_body, 1.55);
     let authored = |text: &str, look: &markdown::Look, cx: &mut Context<ViewPane>| {
@@ -577,7 +585,7 @@ fn reader(
                 .child(column),
         )
         .child(ui::view_footer(&hints, note));
-    reader_frame(pane, reader_toolbar(pane, page, item, cx), content)
+    reader_frame(pane, reader_toolbar(pane, page, item, cx), content, cx)
 }
 
 pub(super) fn body(pane: &ViewPane, page: &ReportPage, cx: &mut Context<ViewPane>) -> AnyElement {

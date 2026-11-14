@@ -265,5 +265,5 @@ pub(super) fn reader(pane: &ViewPane, cx: &mut Context<ViewPane>) -> AnyElement 
         )
         .children(newer)
         .child(div().flex_1().min_h_0().child(body));
-    super::reports::reader_frame(pane, toolbar, content)
+    super::reports::reader_frame(pane, toolbar, content, cx)
 }

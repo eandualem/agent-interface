@@ -1388,26 +1388,6 @@ impl Render for Interactions {
                 if let Some(conversation) = self.conversation.clone() {
                     content =
                         content.child(conversation.update(cx, |c, cx| c.panel(None, window, cx)));
-                } else if self
-                    .selected
-                    .as_ref()
-                    .is_some_and(|item| item.conversation.supported)
-                {
-                    // The discussion entry point exists on first selection,
-                    // before a thread has ever been opened or instantiated.
-                    content = content.child(ui::conversation_rail(
-                        div()
-                            .id("interaction-discussion-open")
-                            .role(gpui::accesskit::Role::Button)
-                            .aria_label("Discuss this message")
-                            .focusable()
-                            .focus_visible(|el| {
-                                el.border(px(t.size.focus_ring)).border_color(c.focus)
-                            })
-                            .on_click(cx.listener(|view, _, window, cx| view.ask(window, cx))),
-                        None,
-                        false,
-                    ));
                 }
             }
             content.into_any_element()
