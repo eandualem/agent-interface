@@ -115,6 +115,8 @@ pub(super) struct Card {
     name: String,
     error: Option<&'static str>,
     visible: Rc<Cell<bool>>,
+    /// Seconds since the last read began; `u64::MAX` before the first.
+    waited: u64,
     _poll: Task<()>,
 }
 
@@ -132,9 +134,22 @@ impl Card {
             .expect("validated registration");
         let poll = cx.spawn(async move |this, cx| {
             loop {
-                if this.update(cx, |card, cx| card.refresh(cx)).is_err() {
+                // The pace of the unbound agent view: its libraries change
+                // rarely. Waking every three seconds lets a section change
+                // take its own pace at once.
+                let Ok(()) = this.update(cx, |card, cx| {
+                    let every = match card.section {
+                        AgentSection::Skills | AgentSection::Policies => 30,
+                        AgentSection::Usage => 15,
+                        _ => 3,
+                    };
+                    if card.waited >= every {
+                        card.refresh(cx);
+                    }
+                    card.waited = card.waited.saturating_add(3);
+                }) else {
                     return;
-                }
+                };
                 cx.background_executor().timer(Duration::from_secs(3)).await;
             }
         });
@@ -154,6 +169,7 @@ impl Card {
             name,
             error: None,
             visible,
+            waited: u64::MAX,
             _poll: poll,
         }
     }
@@ -209,6 +225,7 @@ impl Card {
             return;
         };
         let section = self.section;
+        self.waited = 0;
         let work = cx.background_executor().spawn(async move {
             let result = reader.read(section);
             (reader, result)
@@ -218,6 +235,12 @@ impl Card {
             let _ = this.update(cx, |card, cx| {
                 card.reader = Some(reader);
                 if card.removal == Removal::Done {
+                    return;
+                }
+                if card.section != section {
+                    // The section changed while this read ran: read it now
+                    // instead of showing another section's snapshot.
+                    card.refresh(cx);
                     return;
                 }
                 match result {
