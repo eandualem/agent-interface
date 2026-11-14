@@ -179,6 +179,9 @@ impl Browser {
         let element = moving.unwrap_or_else(|| Self::tree(node, &cards, cx));
         self.pane_motion = motion.filter(|_| !settled);
         if settled {
+            // One more frame: this one decided what native web content
+            // shows before the motion ended.
+            window.request_animation_frame();
             // Landed: the sessions take the sizes of their new places.
             for terminal in self.terminals.values() {
                 terminal.update(cx, |terminal, cx| terminal.hold_size(false, cx));

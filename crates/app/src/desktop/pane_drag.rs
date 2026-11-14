@@ -296,6 +296,10 @@ impl Browser {
                 for terminal in self.terminals.values() {
                     terminal.update(cx, |terminal, cx| terminal.hold_size(true, cx));
                 }
+                // The area is known only now: read the pointer against it, so
+                // the preview already shows where a release would land.
+                let area = self.pane_motion.as_ref().and_then(Motion::area);
+                drag.motion(event.position, area);
             }
             if let Some(motion) = &mut self.pane_motion {
                 motion.follow(event.position);
