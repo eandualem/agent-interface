@@ -1,6 +1,4 @@
 //! Command-line options: `--name value` pairs.
-//!
-//! `agent-interface-bench-rio` includes this file.
 
 use std::collections::HashMap;
 use std::str::FromStr;

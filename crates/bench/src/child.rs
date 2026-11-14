@@ -7,8 +7,6 @@
 //! kept at the end) for one replay and `peak_rss` in bytes, to its standard
 //! output. It writes the last replay's
 //! final screen, in the comparison format, to the `--screen` file.
-//!
-//! `agent-interface-bench-rio` includes this file.
 
 use std::fs;
 

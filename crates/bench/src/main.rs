@@ -27,7 +27,7 @@ mod stats;
 
 /// The owned display data the engines fill, from the `term` crate.
 mod display {
-    pub use agent_interface_term::{Attributes, Color, Cursor, Screen, Style, Underline, Width};
+    pub use agent_interface_term::{Attributes, Color, Screen, Underline, Width};
 }
 
 use std::process::ExitCode;
@@ -38,7 +38,7 @@ const USAGE: &str = "usage: agent-interface-bench gate1 --out DIR [options]
   --size BYTES        bytes of each payload (20000000)
   --seed N            payload seed (1)
   --payloads LIST     comma-separated: ascii,unicode,color,scroll (all)
-  --engines LIST      comma-separated: libghostty-vt,rio-vt,alacritty_terminal (all)
+  --engines LIST      comma-separated: libghostty-vt (all)
   --tmux-warmup N     tmux runs before timing (1)
   --tmux-runs N       timed tmux runs per payload (10)
   --engine-warmup N   replays before timing (2)

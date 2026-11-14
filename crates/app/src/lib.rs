@@ -10,7 +10,6 @@ pub mod artifacts;
 mod compat;
 pub mod desktop;
 pub mod diagnostics;
-pub mod keymap;
 pub mod library;
 pub mod panes;
 pub mod profiles;

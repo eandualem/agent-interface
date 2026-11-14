@@ -14,7 +14,7 @@ and record the revision, OS, hardware, tmux version and display refresh rate.
 
 ```sh
 python3 scripts/prepare-native.py
-LIBGHOSTTY_VT_SYS_OPTIMIZE=ReleaseFast cargo build --release --locked -p agent-interface-bench -p agent-interface-bench-rio
+LIBGHOSTTY_VT_SYS_OPTIMIZE=ReleaseFast cargo build --release --locked -p agent-interface-bench
 ```
 
 The native engine uses `ReleaseFast` for measurements. Keep the default

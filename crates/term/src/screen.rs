@@ -1,8 +1,5 @@
 //! Owned display data: a copy of a terminal's visible screen that a renderer
 //! can draw without access to the engine.
-//!
-//! This file uses nothing but the standard library, so that the benchmark's
-//! `rio-vt` program, which cannot link the engine, can include it.
 
 use std::mem::size_of;
 

@@ -1,14 +1,5 @@
-//! The engines this program measures: `libghostty-vt` through the `term`
-//! crate, the path the app uses, and `alacritty_terminal` for comparison.
-//! Both expose the same owned display data.
-//!
-//! `rio-vt` runs in `agent-interface-bench-rio` instead: it and
-//! `libghostty-vt` both contain the simdutf C++ library, and a program that
-//! links both crashes.
-
-pub mod alacritty;
-#[cfg(test)]
-pub mod common;
+//! The engine this program measures: `libghostty-vt` through the `term`
+//! crate, the path the app uses.
 
 use agent_interface_term::{Screen, Terminal};
 
@@ -36,22 +27,5 @@ impl Engine for Ghostty {
 
     fn history(&self) -> usize {
         self.0.history().expect("read the libghostty-vt history")
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::engines::alacritty::Alacritty;
-
-    #[test]
-    fn alacritty_agrees_with_libghostty_vt_on_common_output() {
-        for (input, bytes) in common::INPUTS {
-            common::assert_same_screen(
-                input,
-                &common::read::<Ghostty>(bytes),
-                &common::read::<Alacritty>(bytes),
-            );
-        }
     }
 }

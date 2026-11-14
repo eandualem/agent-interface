@@ -1,6 +1,4 @@
 //! The process's peak memory, read from the operating system.
-//!
-//! `agent-interface-bench-rio` includes this file.
 
 #![allow(unsafe_code)]
 
