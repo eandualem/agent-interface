@@ -248,7 +248,7 @@ group!(
         group_row: f32 = number, record_who: f32 = number, record_age: f32 = number,
         question_row: f32 = number, shelf_card: f32 = number, reader_width: f32 = number,
         reader_label: f32 = number, reference_row: f32 = number,
-        conversation_pill: f32 = number, conversation_avatar: f32 = number,
+        conversation_avatar: f32 = number,
         conversation_chip: f32 = number,
         conversation_width: f32 = number, conversation_header: f32 = number,
         composer_field: f32 = number, send_button: f32 = number, anchor: f32 = number,

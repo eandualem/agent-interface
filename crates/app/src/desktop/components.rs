@@ -2430,28 +2430,19 @@ pub fn conversation_avatar(name: &str, size: f32, round: bool) -> Div {
 }
 
 /// A closed conversation: a pill that opens it, with the agent's mark and
-/// name, then how many replies are new or the agent's state. It floats over
-/// a reader's top right corner; `compact` is the size that sits in a row.
+/// name, then how many replies are new or the agent's state. It sits at the
+/// end of its reader's toolbar or header.
 pub fn conversation_pill(
     button: Stateful<Div>,
     agent: &str,
     label: impl Into<SharedString>,
     unread: u64,
     state: AgentState,
-    compact: bool,
 ) -> Stateful<Div> {
     let (t, c) = (tokens(), colors());
-    let height = if compact {
-        t.size.icon_button
-    } else {
-        t.size.conversation_pill
-    };
+    let height = t.size.icon_button;
     // The mark sits the same distance from the pill's top, bottom and left.
-    let inset = if compact {
-        t.space.s2 + 1.0
-    } else {
-        t.space.s4 + 1.0
-    };
+    let inset = t.space.s2 + 1.0;
     let badge = height - 2.0 * (inset + t.space.s2 + 1.0);
     let tail = if unread > 0 {
         Some(
@@ -2479,17 +2470,16 @@ pub fn conversation_pill(
     };
     text(
         button
-            .occlude()
             .flex()
             .flex_shrink_0()
             .items_center()
-            .gap(px(if compact { t.space.s6 } else { t.space.s8 }))
+            .gap(px(t.space.s6))
             .h(px(height))
             .pl(px(inset))
             .pr(px(if tail.is_some() {
                 inset + t.space.s2
             } else {
-                t.space.s12
+                t.space.s10
             }))
             .rounded_full()
             .bg(c.field)
@@ -2498,15 +2488,6 @@ pub fn conversation_pill(
                 c.attention
             } else {
                 c.line_strong
-            })
-            .when(!compact, |el| {
-                el.shadow(vec![BoxShadow {
-                    color: c.shadow.into(),
-                    offset: point(px(0.0), px(t.size.popover_shadow_offset / 2.0)),
-                    blur_radius: px(t.size.popover_shadow_blur / 2.0),
-                    spread_radius: px(0.0),
-                    inset: false,
-                }])
             })
             .cursor_pointer()
             .hover(|el| el.bg(colors().selected))

@@ -148,8 +148,6 @@ pub(super) struct Conversation {
     /// person drags its left edge to resize it.
     bounds: Rc<Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
     resizing: Option<gpui::Pixels>,
-    /// The view that shows it places the closed pill in its own header.
-    header_pill: bool,
     /// The message whose text was just copied, until its button rests.
     copied: Option<SharedString>,
     /// The person's long messages shown in full; the others are cut short.
@@ -868,7 +866,6 @@ impl Conversation {
             visible: Rc::new(Cell::new(true)),
             bounds: Rc::new(Cell::new(None)),
             resizing: None,
-            header_pill: false,
             copied: None,
             expanded: std::collections::HashSet::new(),
             selection: RefCell::default(),
@@ -1663,7 +1660,7 @@ impl Conversation {
     }
 
     /// The closed conversation: a pill that opens it.
-    fn pill(&self, compact: bool, cx: &mut Context<Self>) -> AnyElement {
+    fn pill(&self, cx: &mut Context<Self>) -> AnyElement {
         let agent = self.agent();
         let unread = self
             .stored
@@ -1692,9 +1689,9 @@ impl Conversation {
             })
             .on_click(cx.listener(|conversation, _, window, cx| conversation.toggle(window, cx)));
         if self.unchosen() {
-            ui::conversation_pill(button, "", "Ask", unread, state, compact)
+            ui::conversation_pill(button, "", "Ask", unread, state)
         } else {
-            ui::conversation_pill(button, &agent, agent.clone(), unread, state, compact)
+            ui::conversation_pill(button, &agent, agent.clone(), unread, state)
         }
         .into_any_element()
     }
@@ -1709,25 +1706,11 @@ impl Conversation {
             && self.disposable()
     }
 
-    /// Whether its reader places the closed pill in a row of its own: a
-    /// document's page is a system view that nothing floats over, and a view
-    /// may keep its own controls in that corner.
-    fn placed_by_reader(&self) -> bool {
-        self.header_pill
-            || self
-                .record
-                .as_ref()
-                .is_some_and(|(item, _)| matches!(item.content, ReportContent::Document(_)))
-    }
-
-    /// Leave the closed pill to the view's header, through [`Self::collapsed`].
-    pub fn place_pill_in_header(&mut self) {
-        self.header_pill = true;
-    }
-
-    /// The closed conversation's pill, for a reader that places it itself.
+    /// The closed conversation's pill, which its reader places at the end of
+    /// its toolbar or header: floating over the reader would cover the
+    /// reader's own controls, or a document's system view.
     pub fn collapsed(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        (!self.open && !self.hidden() && self.placed_by_reader()).then(|| self.pill(true, cx))
+        (!self.open && !self.hidden()).then(|| self.pill(cx))
     }
 
     /// With nobody responsible, the agents the person can ask, one chosen.
@@ -2414,23 +2397,11 @@ impl Conversation {
                                     .flex_col()
                                     .child(context),
                             )
-                            .child(
-                                div()
-                                    .flex_shrink_0()
-                                    .p(px(t.space.s8))
-                                    .child(self.pill(true, cx)),
-                            ),
+                            .child(div().flex_shrink_0().p(px(t.space.s8)).child(self.pill(cx))),
                     )
                     .into_any_element(),
                 // Its reader places the pill: see `collapsed`.
-                None if self.placed_by_reader() => div().into_any_element(),
-                // Over the reader's top right corner, taking none of its width.
-                None => div()
-                    .absolute()
-                    .top(px(t.space.s12))
-                    .right(px(t.space.s14))
-                    .child(self.pill(false, cx))
-                    .into_any_element(),
+                None => div().into_any_element(),
             };
         }
         let can_send = self.can_send(cx);

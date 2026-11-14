@@ -427,7 +427,6 @@ fn header(view: &Interactions, item: &Interaction, cx: &mut Context<Interactions
                 "Discuss",
                 0,
                 ui::AgentState::Unknown,
-                true,
             )
             .into_any_element(),
         ),

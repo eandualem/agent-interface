@@ -297,7 +297,6 @@ shelf_card = 132.0          # the least height of a document card on a shelf
 reader_width = 680.0        # the widest a record reader's column grows
 reader_label = 96.0         # the label column of a report's sections
 reference_row = 34.0        # an authored link in a report
-conversation_pill = 36.0    # a closed conversation, over a reader's top right corner
 conversation_avatar = 24.0  # the agent's mark atop an open conversation
 conversation_chip = 26.0    # a reference in the message box; a published revision in a thread
 conversation_width = 320.0  # an open conversation beside a reader

@@ -310,7 +310,7 @@ after an agent is renamed or removed. **Back** restores the selected page and
 filter. **Refresh** returns to the newest documents.
 
 An open report, Response or Document has a conversation with its author: a
-pill over the reader's top right corner. Choose it, or press **C**, to open it
+pill at the right end of the reader's toolbar. Choose it, or press **C**, to open it
 as a card beside the record; choose the card's minimize button, or press **C**
 or Esc in the message field, to close it again, keeping the draft. Enter adds a
 paragraph and **⌘↵** sends. The app sets no length limit; Agent Backbone sets

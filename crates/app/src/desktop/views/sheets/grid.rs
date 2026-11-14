@@ -111,7 +111,7 @@ impl Sheets {
             .min_h_0()
             .flex()
             .flex_col()
-            .child(self.selection_bar(open))
+            .child(self.selection_bar(open, cx))
             .child(table)
             .child(self.page_controls(cx));
         div()
@@ -125,7 +125,7 @@ impl Sheets {
 
     /// Over the grid: the selected cells as a label and how many there are,
     /// and that the workbook is read-only.
-    fn selection_bar(&self, open: &Open) -> gpui::Div {
+    fn selection_bar(&self, open: &Open, cx: &mut Context<Self>) -> gpui::Div {
         let (t, c) = (tokens(), colors());
         let (label, count) = match (self.selection, self.anchor(open)) {
             (Some(selection), Some(anchor)) => {
@@ -183,6 +183,10 @@ impl Sheets {
         .child(div().flex_1())
         .child(ui::icon("lock", t.size.icon - 1.0, c.muted))
         .child("Read-only")
+        .children(
+            self.conversation
+                .update(cx, |conversation, cx| conversation.collapsed(cx)),
+        )
     }
 
     fn row(&self, row: usize, cx: &mut Context<Self>) -> gpui::Div {

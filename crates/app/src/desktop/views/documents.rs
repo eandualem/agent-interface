@@ -261,17 +261,9 @@ pub(super) fn reader(pane: &ViewPane, cx: &mut Context<ViewPane>) -> AnyElement 
                     .supersedes_id
                     .map(|older| format!(" · replaces #{older}"))
                     .unwrap_or_default()
-            )))
-            // A document's page is a system view, which nothing floats over:
-            // its closed conversation sits in this row.
-            .child(div().flex_1())
-            .children(
-                pane.conversation
-                    .clone()
-                    .and_then(|conversation| conversation.update(cx, |c, cx| c.collapsed(cx))),
-            ),
+            ))),
         )
         .children(newer)
         .child(div().flex_1().min_h_0().child(body));
-    super::reports::reader_frame(pane, toolbar, content)
+    super::reports::reader_frame(pane, toolbar, content, cx)
 }
