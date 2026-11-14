@@ -132,10 +132,21 @@ impl Card {
             .expect("validated registration");
         let poll = cx.spawn(async move |this, cx| {
             loop {
-                if this.update(cx, |card, cx| card.refresh(cx)).is_err() {
+                // The pace of the unbound agent view: its libraries change
+                // rarely, and a section change reads at once.
+                let Ok(seconds) = this.update(cx, |card, cx| {
+                    card.refresh(cx);
+                    match card.section {
+                        AgentSection::Skills | AgentSection::Policies => 30,
+                        AgentSection::Usage => 15,
+                        _ => 3,
+                    }
+                }) else {
                     return;
-                }
-                cx.background_executor().timer(Duration::from_secs(3)).await;
+                };
+                cx.background_executor()
+                    .timer(Duration::from_secs(seconds))
+                    .await;
             }
         });
         Self {
