@@ -69,6 +69,7 @@ pub(super) fn body(view: &Interactions, cx: &mut Context<Interactions>) -> AnyEl
         color: c.text,
         line_height: 1.55,
         gap: t.space.s8,
+        compact: false,
     };
     let message = ui::message_frame(markdown::render_in(
         &markdown::authored(retained),

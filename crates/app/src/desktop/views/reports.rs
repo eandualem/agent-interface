@@ -409,6 +409,7 @@ fn reader(
         color: c.text,
         line_height,
         gap: t.space.s8,
+        compact: false,
     };
     let body = look(&t.text.doc_body, 1.55);
     let authored = |text: &str, look: &markdown::Look, cx: &mut Context<ViewPane>| {

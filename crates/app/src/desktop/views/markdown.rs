@@ -29,6 +29,9 @@ pub(super) struct Look<'a> {
     pub color: gpui::Rgba,
     pub line_height: f32,
     pub gap: f32,
+    /// Headings stay near the text's size, as in a message; a document's
+    /// title and section headings are larger.
+    pub compact: bool,
 }
 
 /// An inline style over part of a run of text.
@@ -536,6 +539,7 @@ pub(super) fn render<V: Selectable>(blocks: &[Block], pane: &V, cx: &mut Context
         color: c.text_2,
         line_height: 1.6,
         gap: t.space.s12,
+        compact: false,
     };
     render_in(blocks, &look, pane, cx)
 }
@@ -556,17 +560,25 @@ pub(super) fn render_in<V: Selectable>(
             .line_height(gpui::relative(look.line_height)),
         look.style,
     );
-    selection::area(document, cx).child(column(blocks, look.gap, pane, cx))
+    selection::area(document, cx).child(column(blocks, look.gap, look.compact, pane, cx))
 }
 
 /// `blocks` one under another, `gap` apart.
-fn column<V: Selectable>(blocks: &[Block], gap: f32, pane: &V, cx: &mut Context<V>) -> gpui::Div {
+fn column<V: Selectable>(
+    blocks: &[Block],
+    gap: f32,
+    compact: bool,
+    pane: &V,
+    cx: &mut Context<V>,
+) -> gpui::Div {
     let (t, c, look) = (tokens(), colors(), reading::look());
     let mut out = div().flex().flex_col().gap(px(gap)).min_w_0();
     for (at, block) in blocks.iter().enumerate() {
         out = out.child(match block {
             Block::Heading(level, text) => {
-                let style = if *level == 1 {
+                let style = if compact {
+                    &t.text.workspace
+                } else if *level == 1 {
                     &t.text.doc_title
                 } else {
                     &t.text.doc_heading
@@ -574,7 +586,12 @@ fn column<V: Selectable>(blocks: &[Block], gap: f32, pane: &V, cx: &mut Context<
                 ui::text(div().text_color(c.text), style)
                     // Headings after the first stand apart from what precedes them.
                     .when(at > 0 && *level > 1, |el| el.mt(px(t.space.s8)))
-                    .when(*level > 2, |el| el.text_size(t.text.doc_body.size()))
+                    .when(*level > 2 && !compact, |el| {
+                        el.text_size(t.text.doc_body.size())
+                    })
+                    .when(*level < 3 && compact, |el| {
+                        el.text_size(t.text.doc_heading.size())
+                    })
                     .child(styled(text, pane, cx))
                     .into_any_element()
             }
@@ -605,7 +622,7 @@ fn column<V: Selectable>(blocks: &[Block], gap: f32, pane: &V, cx: &mut Context<
                                 div()
                                     .flex_1()
                                     .min_w_0()
-                                    .child(column(item, t.space.s6, pane, cx)),
+                                    .child(column(item, t.space.s6, compact, pane, cx)),
                             ),
                     );
                 }
@@ -616,7 +633,7 @@ fn column<V: Selectable>(blocks: &[Block], gap: f32, pane: &V, cx: &mut Context<
                 .border_l(px(t.space.s2))
                 .border_color(look.quote_bar)
                 .text_color(look.quote_text)
-                .child(column(blocks, gap, pane, cx))
+                .child(column(blocks, gap, compact, pane, cx))
                 .into_any_element(),
             Block::Code(code) => ui::text(
                 div()

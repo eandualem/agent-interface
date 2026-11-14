@@ -1395,19 +1395,30 @@ impl Render for Interactions {
                 {
                     // The discussion entry point exists on first selection,
                     // before a thread has ever been opened or instantiated.
-                    content = content.child(ui::conversation_rail(
+                    content = content.child(
                         div()
-                            .id("interaction-discussion-open")
-                            .role(gpui::accesskit::Role::Button)
-                            .aria_label("Discuss this message")
-                            .focusable()
-                            .focus_visible(|el| {
-                                el.border(px(t.size.focus_ring)).border_color(c.focus)
-                            })
-                            .on_click(cx.listener(|view, _, window, cx| view.ask(window, cx))),
-                        None,
-                        false,
-                    ));
+                            .absolute()
+                            .top(px(t.space.s12))
+                            .right(px(t.space.s14))
+                            .child(ui::conversation_pill(
+                                div()
+                                    .id("interaction-discussion-open")
+                                    .role(gpui::accesskit::Role::Button)
+                                    .aria_label("Discuss this message")
+                                    .focusable()
+                                    .focus_visible(|el| {
+                                        el.border(px(t.size.focus_ring)).border_color(c.focus)
+                                    })
+                                    .on_click(
+                                        cx.listener(|view, _, window, cx| view.ask(window, cx)),
+                                    ),
+                                "",
+                                "Discuss",
+                                0,
+                                ui::AgentState::Unknown,
+                                false,
+                            )),
+                    );
                 }
             }
             content.into_any_element()

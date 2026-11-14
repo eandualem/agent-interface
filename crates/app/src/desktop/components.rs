@@ -2392,56 +2392,131 @@ pub fn reference(
 // ---------------------------------------------------------------- conversation
 //
 // One conversation beside every authored thing a person can talk about. The
-// pieces stay the same whatever the conversation is about; only the anchor
-// and the subject line change.
+// pieces stay the same whatever the conversation is about; only the reference
+// changes.
 
-/// A closed conversation: a rail on the reader's right edge with the button
-/// that opens it and the agent's mark. `unread` puts a dot on the button.
-pub fn conversation_rail(button: Stateful<Div>, mark: Option<Div>, unread: bool) -> Div {
+/// An agent's mark in a conversation: the first letter of its name on a soft
+/// tint chosen from the name, or a message icon when nobody is named.
+pub fn conversation_avatar(name: &str, size: f32, round: bool) -> Div {
     let (t, c) = (tokens(), colors());
-    div()
+    let hash = name.bytes().fold(0u32, |hash, byte| {
+        hash.wrapping_mul(31).wrapping_add(u32::from(byte))
+    });
+    let tint = [c.info, c.violet, c.green][hash as usize % 3];
+    let tile = div()
         .flex_shrink_0()
-        .w(px(t.size.conversation_rail))
-        .h_full()
+        .size(px(size))
+        .rounded(px(if round { size / 2.0 } else { size / 3.0 }))
         .flex()
-        .flex_col()
         .items_center()
-        .gap(px(t.space.s12))
-        .py(px(t.space.s8))
-        .border_l(px(t.size.hairline))
-        .border_color(c.line)
-        .bg(c.panel)
-        .child(
-            button
-                .relative()
-                .size(px(t.size.rail_button))
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(px(t.radius.row))
-                .cursor_pointer()
-                .when(unread, |el| el.bg(c.accent_soft))
-                .when(!unread, |el| el.hover(|el| el.bg(colors().selected)))
-                .child(icon(
-                    "message-square",
-                    t.size.icon_large,
-                    if unread { c.accent_text } else { c.text_2 },
-                ))
-                .when(unread, |el| {
-                    el.child(
-                        div()
-                            .absolute()
-                            .top(px(t.space.s4 + 1.0))
-                            .right(px(t.space.s4 + 1.0))
-                            .size(px(t.size.dot + 1.0))
-                            .rounded_full()
-                            .bg(c.accent)
-                            .border(px(t.space.s2))
-                            .border_color(c.panel),
-                    )
-                }),
+        .justify_center();
+    match name.chars().next() {
+        Some(letter) => text(
+            tile.bg(Rgba { a: 0.14, ..tint })
+                .font_family(t.font.mono.clone())
+                .text_color(tint),
+            if size < t.size.conversation_avatar {
+                &t.text.key
+            } else {
+                &t.text.meta
+            },
         )
-        .children(mark)
+        .font_weight(t.text.label.weight())
+        .child(letter.to_lowercase().to_string()),
+        None => tile
+            .bg(c.selected)
+            .child(icon("message-square", size / 2.0, c.text_2)),
+    }
+}
+
+/// A closed conversation: a pill that opens it, with the agent's mark and
+/// name, then how many replies are new or the agent's state. It floats over
+/// a reader's top right corner; `compact` is the size that sits in a row.
+pub fn conversation_pill(
+    button: Stateful<Div>,
+    agent: &str,
+    label: impl Into<SharedString>,
+    unread: u64,
+    state: AgentState,
+    compact: bool,
+) -> Stateful<Div> {
+    let (t, c) = (tokens(), colors());
+    let height = if compact {
+        t.size.icon_button
+    } else {
+        t.size.conversation_pill
+    };
+    // The mark sits the same distance from the pill's top, bottom and left.
+    let inset = if compact {
+        t.space.s2 + 1.0
+    } else {
+        t.space.s4 + 1.0
+    };
+    let badge = height - 2.0 * (inset + t.space.s2 + 1.0);
+    let tail = if unread > 0 {
+        Some(
+            text(
+                div()
+                    .flex_shrink_0()
+                    .min_w(px(badge))
+                    .h(px(badge))
+                    .px(px(t.space.s6))
+                    .rounded_full()
+                    .bg(c.accent)
+                    .text_color(c.on_accent)
+                    .flex()
+                    .items_center()
+                    .justify_center(),
+                &t.text.label,
+            )
+            .font_weight(gpui::FontWeight::BOLD)
+            .child(unread.to_string()),
+        )
+    } else if state.working() || state.needs_you() {
+        Some(agent_symbol(state))
+    } else {
+        None
+    };
+    text(
+        button
+            .occlude()
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .gap(px(if compact { t.space.s6 } else { t.space.s8 }))
+            .h(px(height))
+            .pl(px(inset))
+            .pr(px(if tail.is_some() {
+                inset + t.space.s2
+            } else {
+                t.space.s12
+            }))
+            .rounded_full()
+            .bg(c.field)
+            .border(px(t.size.hairline))
+            .border_color(if state.needs_you() && unread == 0 {
+                c.attention
+            } else {
+                c.line_strong
+            })
+            .when(!compact, |el| {
+                el.shadow(vec![BoxShadow {
+                    color: c.shadow.into(),
+                    offset: point(px(0.0), px(t.size.popover_shadow_offset / 2.0)),
+                    blur_radius: px(t.size.popover_shadow_blur / 2.0),
+                    spread_radius: px(0.0),
+                    inset: false,
+                }])
+            })
+            .cursor_pointer()
+            .hover(|el| el.bg(colors().selected))
+            .font_family(t.font.mono.clone())
+            .text_color(c.text),
+        &t.text.status,
+    )
+    .child(conversation_avatar(agent, height - 2.0 * inset, true))
+    .child(label.into())
+    .children(tail)
 }
 
 /// Resolve the shared panel's width for responsive sibling layout.
@@ -2452,10 +2527,11 @@ pub fn conversation_panel_width(available: f32) -> f32 {
         .min(available * 0.75)
 }
 
-/// The frame of an open conversation: the width it was dragged to, else a
-/// share of the reader, never narrower than `conversation_width`.
+/// Where an open conversation sits beside a reader: the width it was dragged
+/// to, else a share of the reader, never narrower than `conversation_width`.
+/// It holds a [`conversation_card`], inset from the reader's edges.
 pub fn conversation_panel() -> Div {
-    let (t, c) = (tokens(), colors());
+    let t = tokens();
     div()
         .relative()
         .flex_shrink_0()
@@ -2469,18 +2545,39 @@ pub fn conversation_panel() -> Div {
         .min_h_0()
         .flex()
         .flex_col()
-        .border_l(px(t.size.hairline))
-        .border_color(c.line)
-        .bg(c.panel)
+        .py(px(t.space.s8))
+        .pr(px(t.space.s8))
 }
 
-/// The top of an open conversation: the agent's mark and name, what the
-/// conversation is about and the button that closes it.
+/// The card an open conversation is drawn on.
+pub fn conversation_card() -> Div {
+    let (t, c) = (tokens(), colors());
+    div()
+        .flex_1()
+        .min_h_0()
+        .flex()
+        .flex_col()
+        .overflow_hidden()
+        .rounded(px(t.radius.card))
+        .border(px(t.size.hairline))
+        .border_color(c.line_strong)
+        .bg(c.panel)
+        .shadow(vec![BoxShadow {
+            color: c.shadow.into(),
+            offset: point(px(0.0), px(t.size.popover_shadow_offset)),
+            blur_radius: px(t.size.popover_shadow_blur),
+            spread_radius: px(0.0),
+            inset: false,
+        }])
+}
+
+/// The top of an open conversation: the agent's mark and name, its state
+/// while it works or needs the person, and the button that minimizes it.
 pub fn conversation_header(
-    mark: Option<Div>,
-    agent: impl Into<SharedString>,
-    about: impl Into<SharedString>,
-    close: Stateful<Div>,
+    agent: &str,
+    label: impl Into<SharedString>,
+    status: Option<Div>,
+    minimize: Stateful<Div>,
 ) -> Div {
     let (t, c) = (tokens(), colors());
     div()
@@ -2489,54 +2586,72 @@ pub fn conversation_header(
         .items_center()
         .gap(px(t.space.s8))
         .h(px(t.size.conversation_header))
-        .pl(px(t.space.s14))
+        .pl(px(t.space.s12))
         .pr(px(t.space.s8))
         .border_b(px(t.size.hairline))
         .border_color(c.line)
-        .children(mark)
+        .child(conversation_avatar(
+            agent,
+            t.size.conversation_avatar,
+            false,
+        ))
         .child(
             text(
-                div().font_family(t.font.mono.clone()).text_color(c.text),
-                &t.text.row,
+                div()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .font_family(t.font.mono.clone())
+                    .text_color(c.text),
+                &t.text.body,
             )
-            .child(agent.into()),
+            .child(label.into()),
         )
-        .child(text(div().text_color(c.muted), &t.text.meta).child(about.into()))
+        .children(status.map(|status| {
+            text(
+                status
+                    .flex()
+                    .flex_shrink_0()
+                    .items_center()
+                    .gap(px(t.space.s4)),
+                &t.text.meta,
+            )
+        }))
         .child(div().flex_1())
-        .child(close)
+        .child(minimize)
 }
 
-/// A rule across a thread with a label in it: a day, or how many messages
-/// are new (`new` draws it in the accent).
+/// A marker across a thread: a day, centred, or how many messages are new
+/// (`new`), in the accent between two rules.
 pub fn thread_divider(label: impl Into<SharedString>, new: bool) -> Div {
     let (t, c) = (tokens(), colors());
-    let rule = || {
-        div()
-            .flex_1()
-            .h(px(t.size.hairline))
-            .bg(if new { c.focus } else { c.line })
-    };
-    text(
+    let rule = || div().flex_1().h(px(t.size.hairline)).bg(c.focus);
+    let row = text(
         div()
             .flex()
             .flex_shrink_0()
             .items_center()
-            .gap(px(t.space.s8))
+            .justify_center()
+            .gap(px(t.space.s10))
+            .py(px(t.space.s4))
             .text_color(if new { c.accent_text } else { c.muted }),
         &t.text.label,
-    )
-    .font_weight(t.text.meta.weight())
-    .child(rule())
-    .child(label.into())
-    .child(rule())
+    );
+    if new {
+        row.child(rule()).child(label.into()).child(rule())
+    } else {
+        row.child(label.into())
+    }
 }
 
-/// Something the artifact did, in its thread: an icon, the agent in mono
-/// and what happened.
+/// Something the artifact did, in its thread: an icon, what happened and
+/// what it happened to, as one muted line. [`thread_pill`] frames it.
 pub fn thread_event(
-    icon: &'static str,
-    actor: impl Into<SharedString>,
+    mark: impl IntoElement,
     happened: impl Into<SharedString>,
+    subject: impl Into<SharedString>,
+    time: impl Into<SharedString>,
 ) -> Div {
     let (t, c) = (tokens(), colors());
     text(
@@ -2545,73 +2660,199 @@ pub fn thread_event(
             .flex_shrink_0()
             .items_center()
             .gap(px(t.space.s6))
-            .py(px(t.space.s2))
+            .min_w_0()
             .text_color(c.muted),
         &t.text.meta,
     )
-    .child(self::icon(icon, t.size.icon, c.muted))
+    .child(mark)
+    .child(div().flex_shrink_0().child(happened.into()))
     .child(
         div()
-            .font_family(t.font.mono.clone())
+            .min_w_0()
+            .overflow_hidden()
+            .whitespace_nowrap()
+            .text_ellipsis()
             .text_color(c.text_2)
-            .child(actor.into()),
+            .child(subject.into()),
     )
-    .child(happened.into())
+    .child(div().flex_shrink_0().child(time.into()))
 }
 
-/// Who sent a message and when, above or below its bubble.
+/// A published revision in a thread: its event line in a centred pill.
+pub fn thread_pill(event: Div) -> Div {
+    let (t, c) = (tokens(), colors());
+    div()
+        .flex()
+        .flex_shrink_0()
+        .justify_center()
+        .py(px(t.space.s4))
+        .child(
+            event
+                .h(px(t.size.conversation_chip))
+                .max_w_full()
+                .px(px(t.space.s10))
+                .rounded_full()
+                .border(px(t.size.hairline))
+                .border_color(c.line),
+        )
+}
+
+/// Above the message box when Backbone stopped answering: what the thread
+/// still shows, and a way to ask again.
+pub fn thread_alert(message: impl Into<SharedString>, retry: Stateful<Div>) -> Div {
+    let (t, c) = (tokens(), colors());
+    text(
+        div()
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .gap(px(t.space.s8))
+            .min_h(px(t.size.button))
+            .mx(px(t.space.s12))
+            .mb(px(t.space.s8))
+            .px(px(t.space.s10))
+            .py(px(t.space.s6))
+            .rounded(px(t.radius.pane))
+            .bg(c.attention_soft)
+            .text_color(c.text),
+        &t.text.meta,
+    )
+    .child(icon("unplug", t.size.icon - 2.0, c.attention_text))
+    .child(div().flex_1().min_w_0().child(message.into()))
+    .child(link(retry.underline()).text_color(c.attention_text))
+}
+
+/// The small line under a message: its state, or its time and actions.
 pub fn message_meta() -> Div {
     let (t, c) = (tokens(), colors());
     text(
         div()
             .flex()
+            .flex_wrap()
             .items_center()
             .gap(px(t.space.s6))
+            .min_h(px(t.size.anchor))
             .text_color(c.muted),
         &t.text.label,
     )
     .font_weight(t.text.meta.weight())
 }
 
-/// One message: the person's on the right on `selected`, an agent's on the
-/// left on `surface` with a hairline; a message that was not sent has a
-/// dashed `attention` outline. `meta` goes above an agent's message and
-/// below the person's.
-pub fn message(from_you: bool, failed: bool, meta: Div, body: impl IntoElement) -> Div {
+/// A square button for one action under a message, such as Copy.
+pub fn message_action(id: impl Into<SharedString>, name: &str) -> Stateful<Div> {
     let (t, c) = (tokens(), colors());
-    let tail = px(t.radius.key);
-    let bubble = text(
+    div()
+        .id(id.into())
+        .flex_shrink_0()
+        .size(px(t.size.anchor))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(t.radius.key))
+        .cursor_pointer()
+        .hover(|el| el.bg(colors().selected))
+        .child(icon(name, t.size.icon - 2.0, c.muted))
+}
+
+/// The person's message: a bubble on the right on `selected`, with what it
+/// refers to atop it; one that was not sent has a dashed `attention` outline
+/// instead. `meta` goes under it.
+pub fn message_sent(
+    group: impl Into<SharedString>,
+    reference: Option<Div>,
+    body: impl IntoElement,
+    failed: bool,
+    meta: Div,
+) -> Div {
+    let (t, c) = (tokens(), colors());
+    let bubble = div()
+        .flex()
+        .flex_col()
+        .gap(px(t.space.s4))
+        .min_w_0()
+        .max_w_full()
+        .px(px(t.space.s12 + 1.0))
+        .py(px(t.space.s8))
+        .rounded(px(t.radius.bubble))
+        .rounded_br(px(t.radius.icon_button))
+        .children(reference)
+        .child(body);
+    div()
+        .group(group.into())
+        .flex()
+        .flex_shrink_0()
+        .flex_col()
+        .items_end()
+        .gap(px(t.space.s2))
+        .self_end()
+        .max_w(relative(0.86))
+        .child(if failed {
+            bubble
+                .border(px(t.size.hairline))
+                .border_dashed()
+                .border_color(c.attention)
+        } else {
+            bubble.bg(c.selected)
+        })
+        .child(meta)
+}
+
+/// What a message refers to, atop its bubble: a revision, a section or cells.
+pub fn message_reference(label: impl Into<SharedString>) -> Div {
+    let (t, c) = (tokens(), colors());
+    text(
         div()
-            .px(px(t.space.s10 + 1.0))
-            .py(px(t.space.s8))
-            .rounded(px(t.radius.bubble))
-            .text_color(c.text),
-        &t.text.row,
+            .flex()
+            .items_center()
+            .gap(px(t.space.s4 + 1.0))
+            .min_w_0()
+            .font_family(t.font.mono.clone())
+            .text_color(c.accent_text),
+        &t.text.label,
     )
-    .child(body);
-    let bubble = match (from_you, failed) {
-        (_, true) => bubble
-            .border(px(t.size.hairline))
-            .border_dashed()
-            .border_color(c.attention),
-        (true, false) => bubble.bg(c.selected).rounded_br(tail),
-        (false, false) => bubble
-            .bg(c.surface)
-            .border(px(t.size.hairline))
-            .border_color(c.line)
-            .rounded_bl(tail),
-    };
-    let frame = div()
+    .font_weight(t.text.meta.weight())
+    .child(icon("corner-down-right", t.size.icon - 3.0, c.muted))
+    .child(
+        div()
+            .min_w_0()
+            .overflow_hidden()
+            .whitespace_nowrap()
+            .text_ellipsis()
+            .child(label.into()),
+    )
+}
+
+/// An agent's reply: plain text across the thread, with no bubble. `author`
+/// names an agent other than the one the conversation is with. `meta` goes
+/// under it.
+pub fn message_reply(
+    group: impl Into<SharedString>,
+    author: Option<&str>,
+    body: impl IntoElement,
+    meta: Div,
+) -> Div {
+    let (t, c) = (tokens(), colors());
+    div()
+        .group(group.into())
         .flex()
         .flex_shrink_0()
         .flex_col()
         .gap(px(t.space.s4))
-        .max_w(relative(0.9));
-    if from_you {
-        frame.self_end().items_end().child(bubble).child(meta)
-    } else {
-        frame.items_start().child(meta).child(bubble)
-    }
+        .children(author.map(|name| {
+            text(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(t.space.s6))
+                    .font_family(t.font.mono.clone())
+                    .text_color(c.text),
+                &t.text.status,
+            )
+            .child(conversation_avatar(name, t.size.agent_symbol + 2.0, false))
+            .child(SharedString::from(name.to_owned()))
+        }))
+        .child(body)
+        .child(meta)
 }
 
 /// What a message refers to, such as a revision or a cell range.
@@ -2634,16 +2875,85 @@ pub fn anchor(label: impl Into<SharedString>) -> Div {
     .child(label.into())
 }
 
-/// The message box at the bottom of a conversation: the field, then the
-/// anchor, the send key and the send button.
-pub fn composer(field: impl IntoElement, anchor: Option<Div>, send: Stateful<Div>) -> Div {
+/// In the message box: what the next message will refer to.
+pub fn composer_reference(label: impl Into<SharedString>) -> Div {
+    let (t, c) = (tokens(), colors());
+    text(
+        div()
+            .flex()
+            .items_center()
+            .gap(px(t.space.s4 + 1.0))
+            .h(px(t.size.conversation_chip))
+            .min_w_0()
+            .max_w_full()
+            .px(px(t.space.s8))
+            .rounded(px(t.radius.slot))
+            .bg(c.accent_soft)
+            .font_family(t.font.mono.clone())
+            .text_color(c.accent_text),
+        &t.text.meta,
+    )
+    .child(icon("corner-down-right", t.size.icon - 2.0, c.accent_text))
+    .child(
+        div()
+            .min_w_0()
+            .overflow_hidden()
+            .whitespace_nowrap()
+            .text_ellipsis()
+            .child(label.into()),
+    )
+}
+
+/// In the message box: one agent the person may ask, filled while chosen.
+pub fn composer_choice(
+    id: impl Into<SharedString>,
+    label: impl Into<SharedString>,
+    chosen: bool,
+) -> Stateful<Div> {
+    let (t, c) = (tokens(), colors());
+    text(
+        div()
+            .id(id.into())
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .h(px(t.size.icon_button))
+            .px(px(t.space.s8 + 1.0))
+            .rounded_full()
+            .border(px(t.size.hairline))
+            .font_family(t.font.mono.clone())
+            .cursor_pointer(),
+        &t.text.label,
+    )
+    .font_weight(t.text.meta.weight())
+    .when(chosen, |el| {
+        el.bg(c.accent_soft)
+            .border_color(c.focus)
+            .text_color(c.accent_text)
+    })
+    .when(!chosen, |el| {
+        el.border_color(c.line_strong)
+            .text_color(c.text_2)
+            .hover(|el| el.bg(colors().selected))
+    })
+    .child(label.into())
+}
+
+/// The message box at the bottom of a conversation: who to ask and what the
+/// message refers to, the field, then a note and the send button. `focused`
+/// rings it in the accent; `held` dims it while nothing can be sent.
+pub fn composer(
+    above: Option<Div>,
+    field: impl IntoElement,
+    note: Option<SharedString>,
+    send: Stateful<Div>,
+    focused: bool,
+    held: bool,
+) -> Div {
     let (t, c) = (tokens(), colors());
     div()
         .flex_shrink_0()
-        .border_t(px(t.size.hairline))
-        .border_color(c.line)
         .px(px(t.space.s12))
-        .pt(px(t.space.s10))
         .pb(px(t.space.s12))
         .child(
             div()
@@ -2651,40 +2961,61 @@ pub fn composer(field: impl IntoElement, anchor: Option<Div>, send: Stateful<Div
                 .flex_col()
                 .gap(px(t.space.s6))
                 .p(px(t.space.s8))
-                .pl(px(t.space.s10))
-                .rounded(px(t.radius.pane))
-                .bg(c.field)
+                .rounded(px(t.radius.composer))
                 .border(px(t.size.hairline))
-                .border_color(c.line_strong)
-                .child(field)
+                .map(|el| match (held, focused) {
+                    (true, _) => el.bg(c.surface).border_color(c.line),
+                    (false, true) => el.bg(c.field).border_color(c.focus).shadow(vec![BoxShadow {
+                        color: c.focus_halo.into(),
+                        offset: point(px(0.0), px(0.0)),
+                        blur_radius: px(0.0),
+                        spread_radius: px(t.size.focus_halo),
+                        inset: false,
+                    }]),
+                    (false, false) => el.bg(c.field).border_color(c.line_strong),
+                })
+                .children(above)
+                .child(div().px(px(t.space.s4)).pt(px(t.space.s4)).child(field))
                 .child(
                     div()
                         .flex()
                         .items_center()
                         .gap(px(t.space.s8))
-                        .children(anchor)
+                        .pl(px(t.space.s4))
+                        .children(note.map(|note| {
+                            text(div().min_w_0().text_color(c.muted), &t.text.label)
+                                .font_weight(t.text.meta.weight())
+                                .child(note)
+                        }))
                         .child(div().flex_1())
-                        .child(key_hint("⌘↵"))
                         .child(send),
                 ),
         )
 }
 
-/// The composer's send button; dimmed while there is nothing to send.
+/// The composer's send button: the accent once there is something to send.
 pub fn send_button(id: impl Into<SharedString>, enabled: bool) -> Stateful<Div> {
     let (t, c) = (tokens(), colors());
     div()
         .id(id.into())
         .flex_shrink_0()
         .size(px(t.size.send_button))
-        .rounded(px(t.radius.row))
-        .bg(c.accent)
+        .rounded(px(t.radius.pane))
         .flex()
         .items_center()
         .justify_center()
-        .when(enabled, |el| el.cursor_pointer())
-        .when(!enabled, |el| el.opacity(0.45))
-        .child(icon("send", t.size.icon - 1.0, c.on_accent))
+        .map(|el| {
+            if enabled {
+                el.bg(c.accent).cursor_pointer()
+            } else {
+                el.bg(c.selected)
+            }
+        })
+        .child(icon(
+            "send",
+            t.size.icon + 1.0,
+            if enabled { c.on_accent } else { c.faint },
+        ))
 }
 
 /// A small spinner beside a message that is still sending.

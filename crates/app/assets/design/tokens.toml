@@ -214,7 +214,9 @@ slot = 8.0                  # workspace slots, tiles
 pane = 9.0
 popover = 10.0              # popovers, cards
 pill = 11.0                 # filter chips
-bubble = 10.0               # a conversation message; its tail corner uses `key`
+bubble = 16.0               # the person's message; its tail corner uses `icon_button`
+card = 12.0                 # an open conversation
+composer = 14.0             # the message box in a conversation
 
 # ---------------------------------------------------------------- sizes
 
@@ -295,12 +297,13 @@ shelf_card = 132.0          # the least height of a document card on a shelf
 reader_width = 680.0        # the widest a record reader's column grows
 reader_label = 96.0         # the label column of a report's sections
 reference_row = 34.0        # an authored link in a report
-conversation_rail = 44.0    # a closed conversation, on a reader's right edge
-rail_button = 32.0          # the button atop that rail
+conversation_pill = 36.0    # a closed conversation, over a reader's top right corner
+conversation_avatar = 24.0  # the agent's mark atop an open conversation
+conversation_chip = 26.0    # a reference in the message box; a published revision in a thread
 conversation_width = 320.0  # an open conversation beside a reader
-conversation_header = 40.0  # the agent and subject atop it
+conversation_header = 44.0  # the agent atop it
 composer_field = 56.0       # the message field in a conversation
-send_button = 26.0
+send_button = 30.0
 anchor = 18.0               # what a message refers to: a revision or cells
 chooser_height = 84.0       # the most the recipient chooser takes before it scrolls
 plan_step = 24.0            # a step on a plan card's track

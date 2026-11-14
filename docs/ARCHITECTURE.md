@@ -536,7 +536,8 @@ symbol comes from the shared live model. Authored status and blocker text do not
 change runtime state or grant approval.
 
 Every reader places one native conversation (`views/conversation.rs`) beside
-the authored content: a rail while closed, a thread and composer while open.
+the authored content: a pill over the reader's corner while closed, a card
+with a thread and a message box while open.
 No authored HTML can reach it. It retains its thread and draft by provider,
 author and record identity while its saved pane exists, including hidden tabs.
 Hidden readers pause polling and release their web surface; delivery workers
