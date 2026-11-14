@@ -32,7 +32,6 @@ pub(super) struct Cards<'a> {
     pub chooser: Option<&'a Attaching>,
     pub split_bounds: &'a Rc<RefCell<HashMap<String, Bounds<Pixels>>>>,
     pub pane_bounds: &'a Rc<RefCell<HashMap<String, Bounds<Pixels>>>>,
-    pub drop_target: Option<&'a (String, super::pane_drag::Edge)>,
     /// The agent state shown in each pane, by leaf.
     pub leaf_states: HashMap<String, AgentState>,
 }
@@ -121,7 +120,7 @@ impl Browser {
         }
     }
 
-    fn card(leaf: &Leaf, cards: &Cards<'_>, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn card(leaf: &Leaf, cards: &Cards<'_>, cx: &mut Context<Self>) -> AnyElement {
         let (t, c) = (tokens(), colors());
         let id = leaf.id.clone();
         let focused = leaf.id == cards.focus;
@@ -311,10 +310,6 @@ impl Browser {
             .child(
                 gpui::canvas(|_, _, _| (), {
                     let bounds = Rc::clone(cards.pane_bounds);
-                    let edge = cards
-                        .drop_target
-                        .filter(|(target, _)| target == &id)
-                        .map(|(_, edge)| *edge);
                     move |area, (), window, _| {
                         bounds.borrow_mut().insert(id.clone(), area);
                         // GPUI clips children to a rectangle. Cover the portions
@@ -335,18 +330,6 @@ impl Browser {
                             c.ground,
                             gpui::BorderStyle::Solid,
                         ));
-                        if let Some(edge) = edge {
-                            let mut tint: gpui::Hsla = colors().focus.into();
-                            tint.a = 0.18;
-                            window.paint_quad(gpui::quad(
-                                edge.preview(area).inset(px(3.)),
-                                px(6.),
-                                tint,
-                                px(2.),
-                                colors().focus,
-                                gpui::BorderStyle::Solid,
-                            ));
-                        }
                     }
                 })
                 .absolute()

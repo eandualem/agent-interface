@@ -34,6 +34,7 @@ mod navigation_origin;
 mod onboarding;
 mod pane_cards;
 mod pane_drag;
+mod pane_motion;
 mod profile_management;
 mod profile_picker;
 mod settings;
@@ -736,6 +737,8 @@ struct Browser {
     terminal_to_focus: Option<String>,
     resize: Option<split_resize::Drag>,
     pane_drag: Option<pane_drag::Drag>,
+    /// Panes easing to their places during and just after a pane drag.
+    pane_motion: Option<pane_motion::Motion>,
     pane_bounds: Rc<RefCell<HashMap<String, Bounds<gpui::Pixels>>>>,
     split_bounds: Rc<RefCell<HashMap<String, Bounds<gpui::Pixels>>>>,
     resize_activation: Option<gpui::Subscription>,
@@ -975,6 +978,7 @@ impl Browser {
         self.shell_to_open = None;
         self.resize = None;
         self.pane_drag = None;
+        self.pane_motion = None;
         self.name_click = None;
         self.tab_menu = None;
         self.save_notice = None;
@@ -1603,6 +1607,10 @@ impl Browser {
         self.shell_to_open = None;
         self.resize = None;
         self.pane_drag = None;
+        // A carried pane has no drag left to let it go.
+        if let Some(motion) = &mut self.pane_motion {
+            motion.release();
+        }
         self.save_failed = false;
         self.save_notice = None;
         self.error = None;
@@ -1834,6 +1842,8 @@ impl Browser {
             || self.resize.is_some()
             || self.sidebar_drag.is_some()
             || self.pane_drag.as_ref().is_some_and(|drag| drag.dragging)
+            // Native web content covers every pane drawn under it.
+            || self.pane_motion.is_some()
     }
 
     fn icon_event_is_current(
@@ -2573,6 +2583,9 @@ impl Render for Browser {
                             && drag.dragging
                         {
                             drag.cancel();
+                            if let Some(motion) = &mut browser.pane_motion {
+                                motion.release();
+                            }
                             cx.notify();
                         }
                     }
@@ -2597,6 +2610,9 @@ impl Render for Browser {
                 && drag.dragging
             {
                 drag.cancel();
+                if let Some(motion) = &mut self.pane_motion {
+                    motion.release();
+                }
             } else {
                 self.pane_drag = None;
             }
@@ -2730,6 +2746,10 @@ impl Render for Browser {
                     })
                     .flatten();
                 let terminal = cx.new(|cx| LiveTerminal::new(target, selected, environment, cx));
+                // A terminal made while panes move keeps its session's size too.
+                if self.pane_motion.is_some() {
+                    terminal.update(cx, |terminal, cx| terminal.hold_size(true, cx));
+                }
                 cx.subscribe_in(
                     &terminal,
                     window,
@@ -3183,6 +3203,9 @@ impl Render for Browser {
                         && drag.dragging
                     {
                         drag.cancel();
+                        if let Some(motion) = &mut browser.pane_motion {
+                            motion.release();
+                        }
                         cx.notify();
                         if event.keystroke.key == "escape" {
                             cx.stop_propagation();

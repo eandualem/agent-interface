@@ -813,6 +813,14 @@ fn find_leaf<'a>(node: &'a mut Node, id: &str) -> Option<&'a mut Node> {
     }
 }
 
+impl Node {
+    /// This tree without the leaf `target`: its sibling takes the place of
+    /// their split. `None` when the tree was only that leaf.
+    pub fn without_leaf(self, target: &str) -> Option<Node> {
+        remove_leaf(self, target)
+    }
+}
+
 fn remove_leaf(node: Node, target: &str) -> Option<Node> {
     match node {
         Node::Leaf(ref leaf) if leaf.id == target => None,
