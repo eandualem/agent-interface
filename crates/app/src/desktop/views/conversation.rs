@@ -1706,17 +1706,22 @@ impl Conversation {
             && self.disposable()
     }
 
-    /// Whether the record is a document, whose page is a system view.
-    fn beside_page(&self) -> bool {
+    /// Whether its reader places the closed pill in a row of its own: a
+    /// document's page is a system view that nothing floats over, and a
+    /// message's reader keeps its navigation in that corner.
+    fn placed_by_reader(&self) -> bool {
         self.record
             .as_ref()
             .is_some_and(|(item, _)| matches!(item.content, ReportContent::Document(_)))
+            || self
+                .stored
+                .as_ref()
+                .is_some_and(|stored| stored.kind == Kind::Interaction)
     }
 
-    /// The closed conversation's pill for a reader that places it in a row of
-    /// its own: a document's page is a system view, which nothing floats over.
+    /// The closed conversation's pill, for a reader that places it itself.
     pub fn collapsed(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        (!self.open && !self.hidden() && self.beside_page()).then(|| self.pill(true, cx))
+        (!self.open && !self.hidden() && self.placed_by_reader()).then(|| self.pill(true, cx))
     }
 
     /// With nobody responsible, the agents the person can ask, one chosen.
@@ -1839,14 +1844,14 @@ impl Conversation {
         }
     }
 
-    /// The person's message in its bubble. A long one is cut after a few
-    /// lines, with a link that shows the rest and one that folds it again.
+    /// The person's message in its bubble. A long one shows its start, with
+    /// a link that shows the rest and one that folds it again. Only the text
+    /// shown is drawn, so selection never reaches what is folded away.
     fn own_body(&self, group: &SharedString, text: &str, cx: &mut Context<Self>) -> gpui::Div {
         let (t, c) = (tokens(), colors());
-        let body = self.body(text, true, cx);
-        if text.lines().count() <= OWN_LINES && text.chars().count() <= OWN_LINES * 60 {
-            return body;
-        }
+        let Some(start) = folded(text) else {
+            return self.body(text, true, cx);
+        };
         let open = self.expanded.contains(group);
         let key = group.clone();
         div()
@@ -1854,14 +1859,7 @@ impl Conversation {
             .flex_col()
             .gap(px(t.space.s4))
             .min_w_0()
-            .child(if open {
-                body
-            } else {
-                div()
-                    .max_h(t.text.doc_body.size() * (1.5 * OWN_LINES as f32))
-                    .overflow_hidden()
-                    .child(body)
-            })
+            .child(self.body(if open { text } else { &start }, true, cx))
             .child(
                 ui::link(
                     div()
@@ -2341,6 +2339,23 @@ impl Conversation {
     }
 }
 
+/// The start of a long message of the person's own: its first
+/// [`OWN_LINES`] lines, at most 60 characters a line, then an ellipsis.
+/// `None` when the whole message fits.
+fn folded(text: &str) -> Option<String> {
+    let text = text.trim_end();
+    let lines = text
+        .match_indices('\n')
+        .nth(OWN_LINES - 1)
+        .map_or(text.len(), |(at, _)| at);
+    let chars = text
+        .char_indices()
+        .nth(OWN_LINES * 60)
+        .map_or(text.len(), |(at, _)| at);
+    let end = lines.min(chars);
+    (end < text.len()).then(|| format!("{}…", text[..end].trim_end()))
+}
+
 fn read_marker_due(last_attempt: Option<std::time::Instant>, now: std::time::Instant) -> bool {
     last_attempt.is_none_or(|at| now.saturating_duration_since(at) >= Duration::from_secs(5))
 }
@@ -2402,7 +2417,7 @@ impl Conversation {
                     )
                     .into_any_element(),
                 // Its reader places the pill: see `collapsed`.
-                None if self.beside_page() => div().into_any_element(),
+                None if self.placed_by_reader() => div().into_any_element(),
                 // Over the reader's top right corner, taking none of its width.
                 None => div()
                     .absolute()
@@ -2525,6 +2540,21 @@ fn interaction_recipient(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_long_messages_of_your_own_are_folded() {
+        assert_eq!(folded("short\n\nstill short\n"), None);
+        let lines = "line\n".repeat(OWN_LINES + 2);
+        assert_eq!(
+            folded(&lines),
+            Some(format!("{}…", "line\n".repeat(OWN_LINES).trim_end()))
+        );
+        let long = "é".repeat(OWN_LINES * 60 + 1);
+        assert_eq!(
+            folded(&long),
+            Some(format!("{}…", "é".repeat(OWN_LINES * 60)))
+        );
+    }
 
     #[test]
     fn interaction_recipient_follows_focused_identity_in_either_direction() {

@@ -411,6 +411,29 @@ fn header(view: &Interactions, item: &Interaction, cx: &mut Context<Interactions
             })),
         );
     }
+    // The discussion's closed pill sits beside the navigation it would cover.
+    let pill = match &view.conversation {
+        Some(conversation) => conversation.update(cx, |c, cx| c.collapsed(cx)),
+        None if item.conversation.supported => Some(
+            ui::conversation_pill(
+                div()
+                    .id("interaction-discussion-open")
+                    .role(gpui::accesskit::Role::Button)
+                    .aria_label("Discuss this message")
+                    .focusable()
+                    .focus_visible(|el| el.border(px(t.size.focus_ring)).border_color(c.focus))
+                    .on_click(cx.listener(|view, _, window, cx| view.ask(window, cx))),
+                "",
+                "Discuss",
+                0,
+                ui::AgentState::Unknown,
+                true,
+            )
+            .into_any_element(),
+        ),
+        None => None,
+    };
+    navigation = navigation.children(pill);
     let when = Local::at(epoch(&item.accepted_at))
         .map(|date| format!("{}, {} · {}", date.date(), date.seconds(), date.offset()))
         .unwrap_or_default();
