@@ -2610,11 +2610,7 @@ pub fn conversation_header(
         )
         .children(status.map(|status| {
             text(
-                status
-                    .flex()
-                    .flex_shrink_0()
-                    .items_center()
-                    .gap(px(t.space.s4)),
+                status.flex().min_w_0().items_center().gap(px(t.space.s4)),
                 &t.text.meta,
             )
         }))

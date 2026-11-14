@@ -1706,10 +1706,17 @@ impl Conversation {
             && self.disposable()
     }
 
+    /// Whether the record is a document, whose page is a system view.
+    fn beside_page(&self) -> bool {
+        self.record
+            .as_ref()
+            .is_some_and(|(item, _)| matches!(item.content, ReportContent::Document(_)))
+    }
+
     /// The closed conversation's pill for a reader that places it in a row of
     /// its own: a document's page is a system view, which nothing floats over.
     pub fn collapsed(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        (!self.open && !self.hidden() && self.surface.is_some()).then(|| self.pill(true, cx))
+        (!self.open && !self.hidden() && self.beside_page()).then(|| self.pill(true, cx))
     }
 
     /// With nobody responsible, the agents the person can ask, one chosen.
@@ -2395,7 +2402,7 @@ impl Conversation {
                     )
                     .into_any_element(),
                 // Its reader places the pill: see `collapsed`.
-                None if self.surface.is_some() => div().into_any_element(),
+                None if self.beside_page() => div().into_any_element(),
                 // Over the reader's top right corner, taking none of its width.
                 None => div()
                     .absolute()
@@ -2408,9 +2415,13 @@ impl Conversation {
         let can_send = self.can_send(cx);
         let agent = self.agent();
         let status = self.status().map(|status| {
-            div()
-                .child(ui::agent_symbol(status.state))
-                .child(ui::agent_status_text(&status))
+            div().child(ui::agent_symbol(status.state)).child(
+                ui::agent_status_text(&status)
+                    .min_w_0()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis(),
+            )
         });
         let chooser = self.chooser(cx);
         let reference = self.anchor.clone().map(ui::composer_reference);
