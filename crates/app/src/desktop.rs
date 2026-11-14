@@ -1547,6 +1547,12 @@ impl Browser {
                             let follow = browser.creation_from.as_ref()
                                 .is_some_and(|original| original.unchanged(layout.model()));
                             browser.reset_focus |= layout.saved(base, &result);
+                            // A pane dropped into another tab keeps the focus it was given there.
+                            if !result.conflict
+                                && let Some(pane) = browser.pane_drag.as_ref().and_then(|drag| drag.landed(layout.model()))
+                            {
+                                browser.reset_focus |= layout.model_mut().choose_pane(pane);
+                            }
                             if follow && !result.conflict {
                                 layout_edit::select_created(layout.model_mut(), &local);
                                 browser.reset_focus = true;
@@ -2658,19 +2664,12 @@ impl Render for Browser {
         self.show_requested_profile_picker(window, cx);
         // A new entity owns each connection generation. Results from a removed
         // leaf cannot install a view or accept keys in its replacement.
-        let leaves = self
-            .layout
-            .as_ref()
-            .and_then(|layout| layout.model().tab())
-            .map(|tab| {
-                tab.tree
-                    .leaves()
-                    .into_iter()
-                    .filter(|leaf| leaf.runs_terminal())
-                    .cloned()
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
+        let drawn = self.drawn_leaves();
+        let leaves = drawn
+            .iter()
+            .filter(|leaf| leaf.runs_terminal())
+            .cloned()
+            .collect::<Vec<_>>();
         // Hidden tabs retain their clients. Record window choices for targets
         // that may need to reconnect after a saved arrangement changes.
         for (id, terminal) in &self.terminals {
@@ -2860,18 +2859,10 @@ impl Render for Browser {
                 terminal.update(cx, |terminal, cx| terminal.set_agent(agent, cx));
             }
         }
-        let shown: Vec<(String, View)> = self
-            .layout
-            .as_ref()
-            .and_then(|layout| layout.model().tab())
-            .map(|tab| {
-                tab.tree
-                    .leaves()
-                    .into_iter()
-                    .filter_map(|leaf| Some((leaf.id.clone(), leaf.view.clone()?)))
-                    .collect()
-            })
-            .unwrap_or_default();
+        let shown: Vec<(String, View)> = drawn
+            .iter()
+            .filter_map(|leaf| Some((leaf.id.clone(), leaf.view.clone()?)))
+            .collect();
         self.views.retain(|id, (pane, _)| {
             let pane = pane.read(cx);
             shown
@@ -2981,14 +2972,8 @@ impl Render for Browser {
                 .then(|| model.tab().map(|tab| tab.focus.as_str()))
                 .flatten()
         });
-        // A pane carried into another tab is drawn there before it belongs to it.
-        let visiting = self
-            .pane_drag
-            .as_ref()
-            .filter(|drag| drag.away_from().is_some())
-            .map(|drag| drag.source().to_owned());
         for (id, terminal) in &self.terminals {
-            if (!leaves.iter().any(|leaf| &leaf.id == id) && visiting.as_ref() != Some(id))
+            if !leaves.iter().any(|leaf| &leaf.id == id)
                 || expanded.is_some_and(|focused| focused != id)
             {
                 terminal.update(cx, |terminal, cx| terminal.hide(cx));
@@ -3007,19 +2992,11 @@ impl Render for Browser {
             // popover or geometry gesture needs that space or its pointer input.
             view.read(cx).occlude_web(self.web_content_occluded(), cx);
         }
-        let empty: Vec<String> = self
-            .layout
-            .as_ref()
-            .and_then(|layout| layout.model().tab())
-            .map(|tab| {
-                tab.tree
-                    .leaves()
-                    .into_iter()
-                    .filter(|leaf| leaf.empty && leaf.attachment.is_none())
-                    .map(|leaf| leaf.id.clone())
-                    .collect()
-            })
-            .unwrap_or_default();
+        let empty: Vec<String> = drawn
+            .iter()
+            .filter(|leaf| leaf.empty && leaf.attachment.is_none())
+            .map(|leaf| leaf.id.clone())
+            .collect();
         self.new_panes.retain(|id, _| empty.contains(id));
         for id in empty {
             if !self.new_panes.contains_key(&id) {

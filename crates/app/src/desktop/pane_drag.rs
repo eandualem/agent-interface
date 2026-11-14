@@ -70,8 +70,6 @@ pub(super) struct Drag {
     /// A detached copy of the layout, for previewing moves. In another tab
     /// the pane has already moved there.
     model: Layout,
-    /// The layout as it was when the gesture began.
-    begun: Layout,
     bounds: HashMap<String, Bounds<Pixels>>,
     start: Point<Pixels>,
     preview: Option<Node>,
@@ -127,7 +125,6 @@ impl Drag {
             visiting: None,
             base: tab.tree.clone().without_leaf(source),
             model: model.clone(),
-            begun: model.clone(),
             bounds: bounds.clone(),
             start: position,
             preview: None,
@@ -158,6 +155,25 @@ impl Drag {
         (self.tab != self.home.0).then_some(self.home.0.as_str())
     }
 
+    /// The pane as its own tab has it, while it is shown in another tab.
+    pub fn visitor(&self) -> Option<&agent_interface_core::Leaf> {
+        self.away_from()?;
+        self.home
+            .1
+            .leaves()
+            .into_iter()
+            .find(|leaf| leaf.id == self.source)
+    }
+
+    /// The pane, when `model` shows the tab it was carried into.
+    pub fn landed(&self, model: &Layout) -> Option<&str> {
+        self.away_from()?;
+        model
+            .tab()
+            .is_some_and(|tab| tab.id == self.tab)
+            .then_some(self.source.as_str())
+    }
+
     /// Carry the pane into another tab of the workspace, or back into its
     /// own. The caller shows that tab; the pane is previewed at its right
     /// until the pointer chooses a place.
@@ -165,7 +181,11 @@ impl Drag {
         if self.cancelled || !self.active || tab == self.tab || !self.valid(model) {
             return false;
         }
-        let mut moved = self.begun.clone();
+        // From the layout as it is now, with the pane still in its own tab.
+        let mut moved = model.clone();
+        if !moved.choose_tab(&self.home.0) {
+            return false;
+        }
         if tab == self.home.0 {
             self.visiting = None;
             self.original = self.home.1.clone();
@@ -347,6 +367,9 @@ impl Browser {
             .pane_drag
             .as_ref()
             .is_some_and(|drag| self.selected_origin_is_current(drag.origin.as_ref()));
+        if origin_valid && event.dragging() {
+            self.pane_drag_enter_tab(event.position, cx);
+        }
         let Some(drag) = &mut self.pane_drag else {
             return;
         };
@@ -392,12 +415,46 @@ impl Browser {
         }
     }
 
+    /// The panes the content area draws: the selected tab's, and a pane
+    /// carried into it from another tab.
+    pub(super) fn drawn_leaves(&self) -> Vec<agent_interface_core::Leaf> {
+        let mut leaves: Vec<_> = self
+            .layout
+            .as_ref()
+            .and_then(|layout| layout.model().tab())
+            .map(|tab| tab.tree.leaves().into_iter().cloned().collect())
+            .unwrap_or_default();
+        if let Some(visitor) = self.pane_drag.as_ref().and_then(Drag::visitor)
+            && !leaves.iter().any(|leaf| leaf.id == visitor.id)
+        {
+            leaves.push(visitor.clone());
+        }
+        leaves
+    }
+
     /// The pointer carries a pane over a tab's row: show that tab, so the
     /// pane can be placed in it.
-    pub(super) fn pane_drag_enter_tab(&mut self, tab: &str, cx: &mut Context<Self>) {
-        let (Some(drag), Some(layout)) = (&mut self.pane_drag, &mut self.layout) else {
+    fn pane_drag_enter_tab(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
+        // Rows are the tab list's children, in tab order.
+        let tab = self
+            .tabs_scroll
+            .bounds()
+            .contains(&position)
+            .then(|| self.layout.as_ref()?.model().workspace())
+            .flatten()
+            .and_then(|space| {
+                space.tabs.iter().enumerate().find(|(index, _)| {
+                    self.tabs_scroll
+                        .bounds_for_item(*index)
+                        .is_some_and(|row| row.contains(&position))
+                })
+            })
+            .map(|(_, tab)| tab.id.clone());
+        let (Some(tab), Some(drag), Some(layout)) = (tab, &mut self.pane_drag, &mut self.layout)
+        else {
             return;
         };
+        let tab = tab.as_str();
         if self.saving || self.save_failed || !drag.dragging || !drag.enter(layout.model(), tab) {
             return;
         }
