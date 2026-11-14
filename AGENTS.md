@@ -99,16 +99,37 @@ merges.
 
 ## Build output
 
-Rust and Zig builds are large. Clearing outdated build output is routine
-work at every task boundary, not something left until the disk is full:
+Rust and Zig builds are large, and cargo keeps every superseded artifact in
+`deps/` and every old session in `incremental/`, so a live `target/` grows
+without limit unless it is swept. Keep build output small continuously,
+without asking. These rules bind everyone working in this repository's
+checkouts, swarm coordinators, coders and reviewers included, and every
+swarm brief repeats them:
 
-- When no task needs the current build, run `cargo clean` and remove
-  `.zig-cache`. During longer work, remove `target/debug/incremental` and
-  build profiles that are no longer in use.
-- When a branch is merged or abandoned, remove its linked worktree together
-  with the `target/` inside it, after saving any uncommitted, untracked or
+- Keep the most recent build of each active checkout warm, so the next build
+  and test cycle does not start from scratch. Never `cargo clean` a checkout
+  you are still working in.
+- Sweep a live `target/` after every build and test cycle by running the
+  cycle through `python3 scripts/sweep_target.py`. It runs the checks each
+  commit needs (see Branches) and a build, deletes every artifact the
+  cycle did not use, keeping exactly the most recent build, deletes
+  `target/debug/incremental` once it passes 2 GB, then runs the tests. It
+  reads what the cycle used from cargo's own report, not from file access
+  times, which macOS updates only after a write, and removes nothing while
+  another build holds `target/`. Arguments after `--` go to `cargo test`.
+  A worktree that builds into another checkout's `target/` is not swept:
+  give it its own.
+- Remove build profiles, targets and caches not in use now, such as a
+  packaging target once its build is installed, or `.zig-cache`.
+- When a branch is merged or abandoned, remove its linked worktree and the
+  `target/` inside it at once, after saving any uncommitted, untracked or
   ignored files that are still needed. The main checkout is never removed;
   switch it to another branch instead.
+- Remove a review checkout as soon as its review finishes.
+- Check by size, not only by free disk: after every build and every merge,
+  measure the repository's total build output (main checkout, every
+  worktree and every review checkout) and keep it within 5 GB for each
+  active checkout. One warm build is 3 to 5 GB.
 - Delete the app bundle copies and preview bundles you made yourself; the
   installed app needs no rollback copy. Delete archives you built locally
   in `dist/` once a newer build replaces them.
