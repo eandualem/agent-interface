@@ -158,10 +158,11 @@ impl Drag {
         (self.tab != self.home.0).then_some(self.home.0.as_str())
     }
 
-    /// The pane, while it is shown in another tab than its own.
+    /// The pane, while another tab than its own is shown. A cancelled
+    /// gesture keeps it until the release shows its own tab again, so its
+    /// content is not rebuilt for a move that did not happen.
     pub fn visitor(&self) -> Option<&str> {
-        self.away_from()?;
-        (!self.cancelled).then_some(self.source.as_str())
+        self.away_from().map(|_| self.source.as_str())
     }
 
     /// The tab to show again when the pane was not placed: its own, unless
@@ -728,7 +729,7 @@ mod tests {
         assert_eq!(drag.visitor(), Some(source.as_str()));
         drag.cancel();
         assert!(drag.tree().is_none());
-        assert_eq!(drag.visitor(), None);
+        assert_eq!(drag.visitor(), Some(source.as_str()));
         assert_eq!(drag.returns_to(window.model()), Some(other.as_str()));
         // A tab chosen meanwhile stays.
         window.model_mut().choose_tab(&other);
