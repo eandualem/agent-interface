@@ -281,6 +281,9 @@ impl Browser {
                 layer = layer.child(
                     at(*rect)
                         .id(SharedString::from(format!("moving-{}", leaf.id)))
+                        // Cards overlap while they move: the one on top
+                        // takes the pointer.
+                        .occlude()
                         .child(Self::card(leaf, cards, cx)),
                 );
             }
@@ -305,6 +308,9 @@ impl Browser {
                 layer = layer.child(
                     at(*rect)
                         .id(SharedString::from(format!("moving-{}", leaf.id)))
+                        // Cards overlap while they move: the one on top
+                        // takes the pointer.
+                        .occlude()
                         .rounded(px(t.radius.pane))
                         .opacity(0.94)
                         .shadow(vec![BoxShadow {

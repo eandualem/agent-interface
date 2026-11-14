@@ -143,6 +143,11 @@ impl Drag {
         &self.source
     }
 
+    /// Where the header was pressed.
+    pub fn start(&self) -> Point<Pixels> {
+        self.start
+    }
+
     pub fn is_cancelled(&self) -> bool {
         self.cancelled
     }
@@ -291,7 +296,7 @@ impl Browser {
         if drag.active && !drag.is_cancelled() {
             // A drag begun while an earlier one still settles carries anew.
             if !self.pane_motion.as_ref().is_some_and(Motion::is_carrying) {
-                self.pane_motion = Motion::carrying(drag.source(), drag.bounds(), event.position);
+                self.pane_motion = Motion::carrying(drag.source(), drag.bounds(), drag.start());
                 // The panes move; their sessions keep their sizes until they land.
                 for terminal in self.terminals.values() {
                     terminal.update(cx, |terminal, cx| terminal.hold_size(true, cx));
