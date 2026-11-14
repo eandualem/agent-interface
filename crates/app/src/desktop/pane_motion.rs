@@ -178,6 +178,10 @@ impl Motion {
         self.area.get()
     }
 
+    pub fn is_carrying(&self) -> bool {
+        self.carried.is_some()
+    }
+
     pub fn follow(&mut self, pointer: Point<Pixels>) {
         if let Some(carried) = &mut self.carried {
             carried.pointer = pointer;

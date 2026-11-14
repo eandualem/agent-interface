@@ -182,7 +182,12 @@ impl Drag {
                 // In the gap between two panes, the nearer one.
                 places
                     .into_iter()
-                    .min_by(|a, b| a.1.distance(x, y).total_cmp(&b.1.distance(x, y)))
+                    .min_by(|a, b| {
+                        a.1.distance(x, y)
+                            .total_cmp(&b.1.distance(x, y))
+                            // Midway between two panes, always the same one.
+                            .then_with(|| a.0.cmp(&b.0))
+                    })
                     .map(|(id, rect)| (id, Edge::nearest(rect, x, y)))
             });
         let changed = was_active != self.active || destination != self.destination;
@@ -284,7 +289,8 @@ impl Browser {
         let area = self.pane_motion.as_ref().and_then(Motion::area);
         drag.motion(event.position, area);
         if drag.active && !drag.is_cancelled() {
-            if self.pane_motion.is_none() {
+            // A drag begun while an earlier one still settles carries anew.
+            if !self.pane_motion.as_ref().is_some_and(Motion::is_carrying) {
                 self.pane_motion = Motion::carrying(drag.source(), drag.bounds(), event.position);
                 // The panes move; their sessions keep their sizes until they land.
                 for terminal in self.terminals.values() {

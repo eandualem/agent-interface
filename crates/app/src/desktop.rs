@@ -1837,6 +1837,8 @@ impl Browser {
             || self.resize.is_some()
             || self.sidebar_drag.is_some()
             || self.pane_drag.as_ref().is_some_and(|drag| drag.dragging)
+            // Native web content covers every pane drawn under it.
+            || self.pane_motion.is_some()
     }
 
     fn icon_event_is_current(

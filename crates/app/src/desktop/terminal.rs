@@ -281,6 +281,8 @@ pub(super) struct LiveTerminal {
     agent: Option<(Option<PathBuf>, String)>,
     launching: bool,
     launch_result: Option<agent_interface_roster::lifecycle::Outcome>,
+    /// Whether panes are moving: a view connected meanwhile is held too.
+    hold_size: bool,
     _windows: Task<()>,
 }
 
@@ -366,6 +368,7 @@ impl LiveTerminal {
     /// Keep the session's size while this pane moves; see
     /// [`TerminalView::hold_size`].
     pub fn hold_size(&mut self, hold: bool, cx: &mut Context<Self>) {
+        self.hold_size = hold;
         if let Some(view) = &self.view {
             view.update(cx, |view, cx| view.hold_size(hold, cx));
         }
@@ -417,6 +420,7 @@ impl LiveTerminal {
             agent: None,
             launching: false,
             launch_result: None,
+            hold_size: false,
             _windows: cx.spawn(async |this, cx| {
                 // tmux shows a session's windows live. Follow additions,
                 // removals and renames without a refresh control.
@@ -568,6 +572,9 @@ impl LiveTerminal {
                                 cx,
                             )
                         });
+                        if terminal.hold_size {
+                            view.update(cx, |view, cx| view.hold_size(true, cx));
+                        }
                         terminal.closed = Some(cx.subscribe(
                             &view,
                             |terminal, _, event: &crate::view::Disconnected, cx| {
