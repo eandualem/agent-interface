@@ -319,6 +319,8 @@ pub(super) struct LiveTerminal {
     /// Refresh ticks between attempts to reach a lost attachment, and those
     /// left before the next one.
     retry: Retry,
+    /// Whether panes are moving: a view connected meanwhile is held too.
+    hold_size: bool,
     _windows: Task<()>,
 }
 
@@ -415,6 +417,15 @@ impl LiveTerminal {
             .is_some_and(|view| view.read(cx).has_focus(window))
     }
 
+    /// Keep the session's size while this pane moves; see
+    /// [`TerminalView::hold_size`].
+    pub fn hold_size(&mut self, hold: bool, cx: &mut Context<Self>) {
+        self.hold_size = hold;
+        if let Some(view) = &self.view {
+            view.update(cx, |view, cx| view.hold_size(hold, cx));
+        }
+    }
+
     pub fn focus_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.connecting
             && let Some(view) = &self.view
@@ -463,6 +474,7 @@ impl LiveTerminal {
             launch_result: None,
             shown: true,
             retry: Retry::default(),
+            hold_size: false,
             _windows: cx.spawn(async |this, cx| {
                 // tmux shows a session's windows live. Follow additions,
                 // removals and renames without a refresh control.
@@ -617,6 +629,9 @@ impl LiveTerminal {
                                 cx,
                             )
                         });
+                        if terminal.hold_size {
+                            view.update(cx, |view, cx| view.hold_size(true, cx));
+                        }
                         terminal.closed = Some(cx.subscribe(
                             &view,
                             |terminal, _, event: &crate::view::Disconnected, cx| {
