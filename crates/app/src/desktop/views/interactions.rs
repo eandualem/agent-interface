@@ -821,6 +821,8 @@ impl Interactions {
         };
         self.close_conversation(cx);
         conversation.update(cx, |c, cx| {
+            // The reader's navigation holds the corner a pill would float over.
+            c.place_pill_in_header();
             c.set_active(true, cx);
             c.open_panel(window, cx);
         });
@@ -860,6 +862,8 @@ impl Interactions {
         };
         self.close_conversation(cx);
         conversation.update(cx, |c, cx| {
+            // The reader's navigation holds the corner a pill would float over.
+            c.place_pill_in_header();
             c.set_active(true, cx);
             c.open_panel(window, cx);
         });

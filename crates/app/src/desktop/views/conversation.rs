@@ -148,6 +148,8 @@ pub(super) struct Conversation {
     /// person drags its left edge to resize it.
     bounds: Rc<Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
     resizing: Option<gpui::Pixels>,
+    /// The view that shows it places the closed pill in its own header.
+    header_pill: bool,
     /// The message whose text was just copied, until its button rests.
     copied: Option<SharedString>,
     /// The person's long messages shown in full; the others are cut short.
@@ -866,6 +868,7 @@ impl Conversation {
             visible: Rc::new(Cell::new(true)),
             bounds: Rc::new(Cell::new(None)),
             resizing: None,
+            header_pill: false,
             copied: None,
             expanded: std::collections::HashSet::new(),
             selection: RefCell::default(),
@@ -1707,16 +1710,19 @@ impl Conversation {
     }
 
     /// Whether its reader places the closed pill in a row of its own: a
-    /// document's page is a system view that nothing floats over, and a
-    /// message's reader keeps its navigation in that corner.
+    /// document's page is a system view that nothing floats over, and a view
+    /// may keep its own controls in that corner.
     fn placed_by_reader(&self) -> bool {
-        self.record
-            .as_ref()
-            .is_some_and(|(item, _)| matches!(item.content, ReportContent::Document(_)))
+        self.header_pill
             || self
-                .stored
+                .record
                 .as_ref()
-                .is_some_and(|stored| stored.kind == Kind::Interaction)
+                .is_some_and(|(item, _)| matches!(item.content, ReportContent::Document(_)))
+    }
+
+    /// Leave the closed pill to the view's header, through [`Self::collapsed`].
+    pub fn place_pill_in_header(&mut self) {
+        self.header_pill = true;
     }
 
     /// The closed conversation's pill, for a reader that places it itself.
