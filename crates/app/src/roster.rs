@@ -194,6 +194,10 @@ impl ViewSource {
                     );
                     let interval = match request {
                         views::Request::Agent(_, views::Part::Usage(_)) => Duration::from_secs(15),
+                        // The same libraries as the team-wide views, at their pace.
+                        views::Request::Agent(_, views::Part::Skills | views::Part::Policies) => {
+                            Duration::from_secs(30)
+                        }
                         _ => every,
                     };
                     let published = {

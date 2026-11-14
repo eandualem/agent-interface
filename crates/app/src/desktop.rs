@@ -2977,6 +2977,8 @@ impl Render for Browser {
                 || expanded.is_some_and(|focused| focused != id)
             {
                 terminal.update(cx, |terminal, cx| terminal.hide(cx));
+            } else if !terminal.read(cx).is_shown() {
+                terminal.update(cx, |terminal, _| terminal.show());
             }
         }
         for (id, (view, _)) in &self.views {

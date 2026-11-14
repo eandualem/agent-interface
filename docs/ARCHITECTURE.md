@@ -75,8 +75,12 @@ output into each pane's terminal state. It publishes owned `Screen` data for the
 UI thread to draw, so drawing does not borrow a live engine or wait for I/O.
 If copying a screen fails, the worker reports a connection failure and stops
 publishing updates. Partially copied frames never replace the last complete
-display. Embedded attachments retry the saved socket and session on the existing
-two-second window-refresh loop; retries never create a session. A stopped
+display. Embedded attachments retry the saved socket and session on the
+two-second window-refresh loop: at once, then half as often after each failure,
+up to every 30 seconds while shown and every two minutes while hidden. Showing
+the pane, or a change in its agent, starts again from two seconds. Retries never
+create a session. A hidden terminal keeps its connection but does not query its
+session's window list until it is shown. A stopped
 Backbone agent's pane can ask Backbone to start or resume it (one authenticated
 local request, never retried), after which the same loop connects. An ordinary
 shell that cannot be reached is started once through the same guarded creation
@@ -502,7 +506,8 @@ allocations between groups. Expanded skill and policy groups are limited to 4,09
 rows and 16 MiB of display work; policy sources are bounded while decoding for
 both team and agent views, and each collected brief must fit the team's remaining
 budget. Excessive responses leave the last view stale. They poll
-every 30 seconds. An agent view reads only the part its shown section needs.
+every 30 seconds, as do an agent view's Skills and Policies sections. An agent
+view reads only the part its shown section needs.
 The Activity timeline draws the last hour from `/api/agents/states`, the
 states Backbone observed. It reads from six hours before the hour, so a state
 that began within those six hours is drawn from the hour's start; an older

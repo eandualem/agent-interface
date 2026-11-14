@@ -1497,7 +1497,7 @@ impl Grid {
                 } else if is_cursor {
                     Some(self.appearance.cursor.into())
                 } else {
-                    self.colors(cell.style).1
+                    self.background(cell.style)
                 }
             });
             if run.map(|(_, color)| Some(color)) == Some(background) {
@@ -1531,6 +1531,9 @@ impl Grid {
         let mut run = String::new();
         let mut run_start = 0;
         let mut run_style: Option<TextRun> = None;
+        // The cell style and selection of the run's last cell: a cell with
+        // the same ones joins the run without building its text style.
+        let mut run_key = None;
         for col in 0..screen.cols() {
             let Some((text, cell)) = screen.cell(row, col) else {
                 break;
@@ -1539,18 +1542,25 @@ impl Grid {
                 continue;
             }
             let is_cursor = cursor.visible && cursor.row == row && cursor.col == col;
-            let mut style = self.text_run(cell.style);
-            if selected.contains(&col) {
-                style.color = self.appearance.selection_text.into();
-            } else if is_cursor {
-                style.color = self.appearance.background.into();
-            }
+            let is_selected = selected.contains(&col);
             let text = if text.is_empty() { " " } else { text };
             let plain = self.batch_ascii
                 && cell.width == Width::Narrow
                 && matches!(text.as_bytes(), [byte] if byte.is_ascii_graphic() || *byte == b' ');
+            let key = (cell.style, is_selected);
+            if plain && !is_cursor && run_style.is_some() && run_key == Some(key) {
+                run.push_str(text);
+                continue;
+            }
+            let mut style = self.text_run(cell.style);
+            if is_selected {
+                style.color = self.appearance.selection_text.into();
+            } else if is_cursor {
+                style.color = self.appearance.background.into();
+            }
             if plain && !is_cursor && run_style.as_ref() == Some(&style) {
                 run.push_str(text);
+                run_key = Some(key);
                 continue;
             }
             self.paint_run(&mut run, run_start, run_style.take(), x, y, window, cx);
@@ -1558,6 +1568,7 @@ impl Grid {
                 run.push_str(text);
                 run_start = col;
                 run_style = Some(style);
+                run_key = Some(key);
             } else {
                 let mut single = text.to_owned();
                 self.paint_run(&mut single, col, Some(style), x, y, window, cx);
@@ -1653,6 +1664,19 @@ impl Grid {
             (text.into(), Some(foreground.into()))
         } else {
             (foreground.into(), background.map(Into::into))
+        }
+    }
+
+    /// The background half of [`Self::colors`], without converting the text
+    /// colour: most cells have the default background.
+    fn background(&self, style: Style) -> Option<Hsla> {
+        if style.attributes.contains(Attributes::INVERSE) {
+            let foreground = self
+                .color(style.foreground)
+                .unwrap_or(self.appearance.foreground);
+            Some(foreground.into())
+        } else {
+            self.color(style.background).map(Into::into)
         }
     }
 
