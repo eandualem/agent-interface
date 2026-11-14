@@ -263,6 +263,38 @@ fn connect_selected(
     Ok(ready)
 }
 
+/// How often a lost attachment is tried again, in two-second refresh ticks:
+/// at once, then half as often after each failure, up to a limit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Retry {
+    every: u32,
+    left: u32,
+}
+
+impl Default for Retry {
+    fn default() -> Self {
+        Self { every: 1, left: 0 }
+    }
+}
+
+impl Retry {
+    /// Thirty seconds while shown, two minutes while hidden.
+    const fn limit(shown: bool) -> u32 {
+        if shown { 15 } else { 60 }
+    }
+
+    /// Count one tick; when an attempt is due, schedule the one after it.
+    fn due(&mut self, shown: bool) -> bool {
+        if self.left > 0 {
+            self.left -= 1;
+            return false;
+        }
+        self.left = self.every - 1;
+        self.every = (self.every * 2).min(Self::limit(shown));
+        true
+    }
+}
+
 pub(super) struct LiveTerminal {
     pub target: Target,
     view: Option<Entity<TerminalView>>,
@@ -281,6 +313,12 @@ pub(super) struct LiveTerminal {
     agent: Option<(Option<PathBuf>, String)>,
     launching: bool,
     launch_result: Option<agent_interface_roster::lifecycle::Outcome>,
+    /// Whether the browser shows this terminal. A hidden one keeps its
+    /// connection but does not follow its session's window list.
+    shown: bool,
+    /// Refresh ticks between attempts to reach a lost attachment, and those
+    /// left before the next one.
+    retry: Retry,
     _windows: Task<()>,
 }
 
@@ -310,6 +348,7 @@ impl LiveTerminal {
         if self.agent != agent {
             self.agent = agent;
             self.launch_result = None;
+            self.retry = Retry::default();
             cx.notify();
         }
     }
@@ -351,9 +390,22 @@ impl LiveTerminal {
     }
 
     pub fn hide(&mut self, cx: &mut Context<Self>) {
+        self.shown = false;
         if let Some(view) = &self.view {
             view.update(cx, |view, cx| view.hide(cx));
         }
+    }
+
+    /// Whether [`Self::show`] has anything to do.
+    pub fn is_shown(&self) -> bool {
+        self.shown
+    }
+
+    /// The browser shows this terminal again: follow the window list, and
+    /// try a lost attachment at the next refresh.
+    pub fn show(&mut self) {
+        self.shown = true;
+        self.retry = Retry::default();
     }
 
     /// Whether this leaf's terminal has keyboard focus.
@@ -409,6 +461,8 @@ impl LiveTerminal {
             agent: None,
             launching: false,
             launch_result: None,
+            shown: true,
+            retry: Retry::default(),
             _windows: cx.spawn(async |this, cx| {
                 // tmux shows a session's windows live. Follow additions,
                 // removals and renames without a refresh control.
@@ -420,7 +474,7 @@ impl LiveTerminal {
                         if let Some(view) = &terminal.view {
                             view.update(cx, |view, cx| view.refresh_connection(cx));
                         }
-                        (!terminal.connecting)
+                        (!terminal.connecting && terminal.shown)
                             .then(|| {
                                 terminal
                                     .socket
@@ -457,7 +511,9 @@ impl LiveTerminal {
                                 terminal.windows = windows;
                                 cx.notify();
                             }
-                            if terminal.error.is_some() && terminal.target.leaf.attachment.is_some()
+                            if terminal.error.is_some()
+                                && terminal.target.leaf.attachment.is_some()
+                                && terminal.retry.due(terminal.shown)
                             {
                                 // Retry only the saved attachment. This never
                                 // starts an agent, server or replacement shell.
@@ -540,6 +596,7 @@ impl LiveTerminal {
                 terminal.connecting = false;
                 match result {
                     Ok(mut ready) => {
+                        terminal.retry = Retry::default();
                         terminal.error = None;
                         terminal.restoring = false;
                         terminal.launch_result = None;
@@ -790,6 +847,20 @@ mod tests {
     use super::*;
 
     #[cfg(target_os = "linux")]
+    #[test]
+    fn a_lost_attachment_is_retried_less_often_until_it_is_shown_again() {
+        let mut retry = Retry::default();
+        let attempts = |retry: &mut Retry, ticks: u32, shown: bool| {
+            (0..ticks).filter(|_| retry.due(shown)).count()
+        };
+        // Ticks 0, 1, 3, 7 and 15, then every 15 ticks.
+        assert_eq!(attempts(&mut retry, 16, true), 5);
+        assert_eq!(attempts(&mut retry, 30, true), 2);
+        // Hidden, the gap keeps growing to 60 ticks.
+        assert_eq!(attempts(&mut retry, 200, false), 4);
+        assert_eq!(attempts(&mut Retry::default(), 1, false), 1);
+    }
+
     #[test]
     #[ignore = "requires an installed Linux font and graphical session; run in graphical CI"]
     fn linux_terminal_font_has_uniform_ascii_cells() {
