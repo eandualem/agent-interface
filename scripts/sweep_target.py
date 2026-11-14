@@ -147,7 +147,8 @@ def main(test_args):
     steps = [
         ["cargo", "fmt", "--check"],
         ["cargo", "clippy", "--all-targets", json_output, "--", "-D", "warnings"],
-        ["cargo", "test", "--no-run", json_output, *test_args],
+        # Cargo builds doc tests only when it runs them.
+        ["cargo", "test", "--no-run", json_output, *(a for a in test_args if a != "--doc")],
         ["cargo", "build", json_output],
     ]
     hashes = set()
@@ -167,7 +168,11 @@ def main(test_args):
         return run(["cargo", "test", *test_args], hashes)
     debug = target / "debug"
     held = take_locks(debug)
-    if held is None or written_since(debug, collected):
+    if held is not None and written_since(debug, collected):
+        for handle in held:
+            handle.close()
+        held = None
+    if held is None:
         print("Nothing removed: another build is using target/.", file=sys.stderr)
     else:
         freed = 0
