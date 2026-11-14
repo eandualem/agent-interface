@@ -1,7 +1,5 @@
 //! Replaying a recording through the path the app takes from control-mode
 //! output to display data: decoding, the terminal engine and the read-out.
-//!
-//! `agent-interface-bench-rio` includes this file.
 
 use std::time::{Duration, Instant};
 

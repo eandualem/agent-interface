@@ -2,9 +2,8 @@
 //! from control-mode output to display data runs, against tmux's own rate.
 //!
 //! For each payload, the gate records tmux runs on fresh private servers,
-//! then replays the last recording in one child process per engine, and
-//! compares the engines' final screens with each other and with tmux's
-//! capture of the pane.
+//! then replays the last recording in a child process and compares the
+//! engine's final screen with tmux's capture of the pane.
 
 use std::fmt::Write as _;
 use std::fs;
@@ -25,7 +24,7 @@ use crate::record::{self, Recording};
 use crate::stats::{self, Summary};
 
 /// Every engine the gate can measure, the leading one first.
-const ENGINES: [&str; 3] = ["libghostty-vt", "rio-vt", "alacritty_terminal"];
+const ENGINES: [&str; 1] = ["libghostty-vt"];
 /// The engine the pass or fail decision is about.
 const LEADING: &str = "libghostty-vt";
 /// The rate the ASCII payload must reach, in MB/s.
@@ -150,11 +149,9 @@ pub fn run(options: &Options) -> Result<(), String> {
 pub fn replay_child(options: &Options) -> Result<(), String> {
     use crate::child;
     use crate::engines::Ghostty;
-    use crate::engines::alacritty::Alacritty;
 
     match options.required("engine")? {
         "libghostty-vt" => child::run::<Ghostty>(options),
-        "alacritty_terminal" => child::run::<Alacritty>(options),
         other => Err(format!("this program does not measure {other}")),
     }
 }
@@ -253,24 +250,8 @@ fn replay(
     screen: &Path,
 ) -> Result<EngineResult, String> {
     let this = std::env::current_exe().map_err(|error| error.to_string())?;
-    let mut command;
-    if engine == "rio-vt" {
-        let program = this.with_file_name(format!(
-            "agent-interface-bench-rio{}",
-            std::env::consts::EXE_SUFFIX
-        ));
-        command = Command::new(&program);
-        if !program.exists() {
-            return Err(format!(
-                "{} is missing: build it with the same profile, \
-                 cargo build -p agent-interface-bench-rio",
-                program.display()
-            ));
-        }
-    } else {
-        command = Command::new(&this);
-        command.args(["replay", "--engine", engine]);
-    }
+    let mut command = Command::new(&this);
+    command.args(["replay", "--engine", engine]);
     let output = command
         .arg("--wire")
         .arg(wire)
@@ -545,8 +526,8 @@ fn describe(difference: &compare::Difference, label: &str, examples: &mut String
 }
 
 /// The gate's decision on the leading engine, and the reasons. Its timing
-/// on a payload counts only if its final screen matches every other
-/// engine's, before comparing processing rates.
+/// on a payload counts only if its final screen has the text and cursor of
+/// tmux's capture, before comparing processing rates.
 fn verdict(results: &[PayloadResult]) -> (&'static str, Vec<String>) {
     let mut reasons = Vec::new();
     let mut pass = true;
@@ -556,12 +537,15 @@ fn verdict(results: &[PayloadResult]) -> (&'static str, Vec<String>) {
         let Some(engine) = result.engines.iter().find(|engine| engine.name == LEADING) else {
             continue;
         };
-        let others = result.engines.iter().filter(|other| other.name != LEADING);
         let mut disqualified = Vec::new();
-        for other in others {
-            if !compare::compare(&engine.screen, &other.screen).is_none() {
-                disqualified.push(format!("its final screen differs from {}'s", other.name));
-            }
+        let rows = compare::differing_rows(&result.tmux_rows, &compare::dump_rows(&engine.screen));
+        if rows > 0 {
+            disqualified.push(format!(
+                "{rows} rows of its final screen differ from tmux's capture"
+            ));
+        }
+        if compare::dump_cursor(&engine.screen) != Some(result.tmux_cursor) {
+            disqualified.push("its cursor differs from tmux's".to_owned());
         }
         if disqualified.is_empty() {
             reasons.push(format!("{name}: {LEADING}'s timing counts"));
