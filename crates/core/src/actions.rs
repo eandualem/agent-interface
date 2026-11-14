@@ -708,6 +708,58 @@ impl Layout {
         true
     }
 
+    /// Move a pane of the selected tab into another tab of the same
+    /// workspace, at the right of that tab, and select that tab. The pane's
+    /// identity and contents survive, and focus follows it. The tab it leaves
+    /// keeps at least one pane; anything else changes nothing.
+    pub fn transfer_pane(&mut self, source: &str, tab: &str) -> bool {
+        let Some(space) = self.workspace_mut() else {
+            return false;
+        };
+        let selected = space.selected.clone();
+        if selected == tab || !space.tabs.iter().any(|other| other.id == tab) {
+            return false;
+        }
+        let Some(from) = space.tabs.iter_mut().find(|other| other.id == selected) else {
+            return false;
+        };
+        let Some(leaf) = from
+            .tree
+            .leaves()
+            .into_iter()
+            .find(|leaf| leaf.id == source)
+            .cloned()
+        else {
+            return false;
+        };
+        let Some(rest) = remove_leaf(from.tree.clone(), source) else {
+            return false;
+        };
+        if from.focus == source {
+            from.focus = rest
+                .leaves()
+                .first()
+                .map(|leaf| leaf.id.clone())
+                .unwrap_or_default();
+        }
+        from.tree = rest;
+        from.expanded = false;
+        let Some(into) = space.tabs.iter_mut().find(|other| other.id == tab) else {
+            return false;
+        };
+        into.tree = Node::Split {
+            id: identity(),
+            direction: Direction::Right,
+            ratio: 0.5,
+            first: Box::new(into.tree.clone()),
+            second: Box::new(Node::Leaf(leaf)),
+        };
+        into.focus = source.into();
+        into.expanded = false;
+        space.selected = tab.into();
+        true
+    }
+
     /// Change only the focused leaf's attachment reference and end its chooser
     /// state. Names, cwd and the ordinary shell identity remain unchanged.
     /// The caller validates the session/socket reference before saving.
@@ -999,6 +1051,47 @@ mod tests {
         assert!(!model.move_pane("missing", &destination, Direction::Below, false));
         assert!(!model.move_pane(&source, "missing", Direction::Below, false));
         assert_eq!(model, original);
+    }
+
+    #[test]
+    fn a_pane_moves_to_another_tab_and_the_tab_it_leaves_keeps_one() {
+        let mut model = Layout::initial("/tmp".into());
+        let home = model.tab().unwrap().id.clone();
+        let stays = model.pane().unwrap().id.clone();
+        model.split(Direction::Right, "/tmp".into(), true);
+        let source = model.pane().unwrap().id.clone();
+        let moved = model.pane().unwrap().clone();
+        assert!(model.add_tab(None, "/tmp".into(), true));
+        let other = model.tab().unwrap().id.clone();
+        let resident = model.pane().unwrap().id.clone();
+        assert!(model.choose_tab(&home));
+        let original = model.clone();
+
+        assert!(!model.transfer_pane(&source, &home));
+        assert!(!model.transfer_pane(&source, "missing"));
+        assert!(!model.transfer_pane("missing", &other));
+        assert_eq!(model, original);
+
+        assert!(model.transfer_pane(&source, &other));
+        let tab = model.tab().unwrap();
+        assert_eq!((tab.id.as_str(), tab.focus.as_str()), (&*other, &*source));
+        let leaves = tab.tree.leaves();
+        assert_eq!(
+            leaves
+                .iter()
+                .map(|leaf| leaf.id.as_str())
+                .collect::<Vec<_>>(),
+            [resident.as_str(), source.as_str()]
+        );
+        assert_eq!(*leaves[1], moved);
+        assert!(model.choose_tab(&home));
+        let tab = model.tab().unwrap();
+        assert_eq!(tab.focus, stays);
+        assert!(matches!(&tab.tree, Node::Leaf(leaf) if leaf.id == stays));
+        // The last pane of a tab stays where it is.
+        let before = model.clone();
+        assert!(!model.transfer_pane(&stays, &other));
+        assert_eq!(model, before);
     }
 
     #[test]

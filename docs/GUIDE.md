@@ -205,7 +205,12 @@ To rearrange panes within a tab, drag a pane by its header. The pane comes
 with the pointer, and the other panes rearrange as you move to show where it
 would land: beside the nearest edge of the pane under the pointer, marked by
 a highlight. Release to move it into an equal split there; its session or
-view stays intact. Drop outside the panes, or press Escape, to cancel. Restore an
+view stays intact. Drop outside the panes, or press Escape, to cancel.
+
+To move a pane to another tab of the workspace, carry it over that tab in the
+sidebar. The tab opens with the pane at its right, and you place it there in
+the same way; a release anywhere leaves it in that tab, and Escape takes it
+back. The last pane of a tab stays in it. Restore an
 expanded pane before rearranging it. Terminal headers must be set to Always
 or On hover in Settings. Saving uses the same Retry and Discard controls.
 

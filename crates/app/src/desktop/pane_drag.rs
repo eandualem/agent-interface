@@ -55,12 +55,22 @@ pub(super) struct Drag {
     pub destination: Option<(String, Edge)>,
     source: String,
     workspace: String,
+    /// The tab being shown: the pane's own, or one entered while carrying.
     tab: String,
+    /// That tab's tree as the library has it.
     original: Node,
+    /// The tab the pane began in and that tab's tree.
+    home: (String, Node),
+    /// In another tab: that tab with the pane at its right, shown while no
+    /// other place is previewed.
+    visiting: Option<Node>,
+    /// The shown tab's selected pane when the pane was released there.
+    released: Option<String>,
     /// The tab without the carried pane: where the pointer is read against,
     /// so the rearranging preview never changes what the pointer is over.
     base: Option<Node>,
-    /// A detached copy of the layout, for previewing moves.
+    /// A detached copy of the layout, for previewing moves. In another tab
+    /// the pane has already moved there.
     model: Layout,
     bounds: HashMap<String, Bounds<Pixels>>,
     start: Point<Pixels>,
@@ -113,6 +123,9 @@ impl Drag {
             workspace: model.selected.clone(),
             tab: tab.id.clone(),
             original: tab.tree.clone(),
+            home: (tab.id.clone(), tab.tree.clone()),
+            visiting: None,
+            released: None,
             base: tab.tree.clone().without_leaf(source),
             model: model.clone(),
             bounds: bounds.clone(),
@@ -132,6 +145,79 @@ impl Drag {
             && model
                 .tab()
                 .is_some_and(|tab| tab.id == self.tab && tab.tree == self.original)
+            && model.workspace().is_some_and(|space| {
+                space
+                    .tabs
+                    .iter()
+                    .any(|tab| tab.id == self.home.0 && tab.tree == self.home.1)
+            })
+    }
+
+    /// The tab the pane began in, while another tab is shown.
+    pub fn away_from(&self) -> Option<&str> {
+        (self.tab != self.home.0).then_some(self.home.0.as_str())
+    }
+
+    /// The pane, while another tab than its own is shown. A cancelled
+    /// gesture keeps it until the release shows its own tab again, so its
+    /// content is not rebuilt for a move that did not happen.
+    pub fn visitor(&self) -> Option<&str> {
+        self.away_from().map(|_| self.source.as_str())
+    }
+
+    /// The tab to show again when the pane was not placed: its own, unless
+    /// `model` already shows another tab than the one the gesture selected.
+    pub fn returns_to(&self, model: &Layout) -> Option<&str> {
+        self.away_from()
+            .filter(|_| model.tab().is_some_and(|tab| tab.id == self.tab))
+    }
+
+    /// The pane, when `model` still shows the tab it was carried into with
+    /// the pane selection it had at release.
+    pub fn landed(&self, model: &Layout) -> Option<&str> {
+        self.away_from()?;
+        model
+            .tab()
+            .is_some_and(|tab| tab.id == self.tab && Some(&tab.focus) == self.released.as_ref())
+            .then_some(self.source.as_str())
+    }
+
+    /// Carry the pane into another tab of the workspace, or back into its
+    /// own. The caller shows that tab; the pane is previewed at its right
+    /// until the pointer chooses a place.
+    pub fn enter(&mut self, model: &Layout, tab: &str) -> bool {
+        if self.cancelled || !self.active || tab == self.tab || !self.valid(model) {
+            return false;
+        }
+        // From the layout as it is now, with the pane still in its own tab.
+        let mut moved = model.clone();
+        if !moved.choose_tab(&self.home.0) {
+            return false;
+        }
+        if tab == self.home.0 {
+            self.visiting = None;
+            self.original = self.home.1.clone();
+            self.base = self.home.1.clone().without_leaf(&self.source);
+        } else {
+            let Some(shown) = model
+                .workspace()
+                .and_then(|space| space.tabs.iter().find(|other| other.id == tab))
+                .filter(|other| !other.expanded)
+            else {
+                return false;
+            };
+            if !moved.transfer_pane(&self.source, tab) {
+                return false;
+            }
+            self.visiting = moved.tab().map(|tab| tab.tree.clone());
+            self.original = shown.tree.clone();
+            self.base = Some(shown.tree.clone());
+        }
+        self.tab = tab.into();
+        self.model = moved;
+        self.destination = None;
+        self.preview = None;
+        true
     }
 
     /// The panes as they were when the gesture began.
@@ -157,6 +243,7 @@ impl Drag {
         self.cancelled = true;
         self.destination = None;
         self.preview = None;
+        self.visiting = None;
     }
 
     /// Follow the pointer. `area` is where the tab's panes are laid out; the
@@ -205,7 +292,9 @@ impl Drag {
                     .then(|| model.tab().map(|tab| tab.tree.clone()))
                     .flatten()
                     // Back where it began: keep the tree and its ratios.
-                    .filter(|tree| !same_shape(tree, &self.original))
+                    .filter(|tree| {
+                        !same_shape(tree, self.visiting.as_ref().unwrap_or(&self.original))
+                    })
             });
             self.destination = destination;
         }
@@ -218,12 +307,25 @@ impl Drag {
         if !self.active || !self.valid(window.model()) {
             return None;
         }
-        self.preview.as_ref()?;
-        let (destination, edge) = self.destination.as_ref()?;
-        let (direction, before) = edge.placement();
         let (base, mut model) = window.save_snapshot();
-        if !model.move_pane(&self.source, destination, direction, before) {
-            return None;
+        self.released = model.tab().map(|tab| tab.focus.clone());
+        if self.visiting.is_some() {
+            // Released in another tab: the pane stays there, at the
+            // previewed place or at the tab's right.
+            if !model.choose_tab(&self.home.0) || !model.transfer_pane(&self.source, &self.tab) {
+                return None;
+            }
+            if let (Some(_), Some((destination, edge))) = (&self.preview, &self.destination) {
+                let (direction, before) = edge.placement();
+                model.move_pane(&self.source, destination, direction, before);
+            }
+        } else {
+            self.preview.as_ref()?;
+            let (destination, edge) = self.destination.as_ref()?;
+            let (direction, before) = edge.placement();
+            if !model.move_pane(&self.source, destination, direction, before) {
+                return None;
+            }
         }
         self.preview = Some(model.tab()?.tree.clone());
         self.dragging = false;
@@ -231,7 +333,7 @@ impl Drag {
     }
 
     pub fn tree(&self) -> Option<&Node> {
-        self.preview.as_ref()
+        self.preview.as_ref().or(self.visiting.as_ref())
     }
 }
 
@@ -274,6 +376,9 @@ impl Browser {
             .pane_drag
             .as_ref()
             .is_some_and(|drag| self.selected_origin_is_current(drag.origin.as_ref()));
+        if origin_valid && event.dragging() {
+            self.pane_drag_enter_tab(event.position, cx);
+        }
         let Some(drag) = &mut self.pane_drag else {
             return;
         };
@@ -319,6 +424,66 @@ impl Browser {
         }
     }
 
+    /// The panes the content area draws: the selected tab's, and a pane
+    /// carried into it from another tab.
+    pub(super) fn drawn_leaves(&self) -> Vec<agent_interface_core::Leaf> {
+        let mut leaves: Vec<_> = self
+            .layout
+            .as_ref()
+            .and_then(|layout| layout.model().tab())
+            .map(|tab| tab.tree.leaves().into_iter().cloned().collect())
+            .unwrap_or_default();
+        // As the layout has it now, wherever in the workspace it is.
+        if let Some(visitor) = self.pane_drag.as_ref().and_then(Drag::visitor)
+            && !leaves.iter().any(|leaf| leaf.id == visitor)
+            && let Some(leaf) = self
+                .layout
+                .as_ref()
+                .and_then(|layout| layout.model().workspace())
+                .and_then(|space| {
+                    space
+                        .tabs
+                        .iter()
+                        .flat_map(|tab| tab.tree.leaves())
+                        .find(|leaf| leaf.id == visitor)
+                })
+        {
+            leaves.push(leaf.clone());
+        }
+        leaves
+    }
+
+    /// The pointer carries a pane over a tab's row: show that tab, so the
+    /// pane can be placed in it.
+    fn pane_drag_enter_tab(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
+        // Rows are the tab list's children, in tab order.
+        let tab = self
+            .tabs_scroll
+            .bounds()
+            .contains(&position)
+            .then(|| self.layout.as_ref()?.model().workspace())
+            .flatten()
+            .and_then(|space| {
+                space.tabs.iter().enumerate().find(|(index, _)| {
+                    // Rows are measured before the list's scroll is applied.
+                    self.tabs_scroll
+                        .bounds_for_item(*index)
+                        .is_some_and(|row| (row + self.tabs_scroll.offset()).contains(&position))
+                })
+            })
+            .map(|(_, tab)| tab.id.clone());
+        let (Some(tab), Some(drag), Some(layout)) = (tab, &mut self.pane_drag, &mut self.layout)
+        else {
+            return;
+        };
+        let tab = tab.as_str();
+        if self.saving || self.save_failed || !drag.dragging || !drag.enter(layout.model(), tab) {
+            return;
+        }
+        layout.model_mut().choose_tab(tab);
+        cx.notify();
+    }
+
     pub(super) fn finish_pane_drag(&mut self, event: &gpui::MouseUpEvent, cx: &mut Context<Self>) {
         let Some(mut drag) = self.pane_drag.take() else {
             return;
@@ -352,6 +517,11 @@ impl Browser {
             self.pending_save = Some(proposal);
             self.pane_drag = Some(drag);
             self.save(cx);
+        } else if let Some(layout) = &mut self.layout
+            && let Some(home) = drag.returns_to(layout.model())
+        {
+            // Not placed: back to the tab the pane never left.
+            layout.model_mut().choose_tab(home);
         }
         cx.notify();
     }
@@ -464,6 +634,106 @@ mod tests {
         assert!(cancelled.tree().is_none());
         assert!(!cancelled.motion(point(px(308.), px(10.)), Some(AREA)));
         assert!(cancelled.proposal(&window).is_none());
+    }
+
+    #[test]
+    fn a_pane_carried_over_another_tab_is_placed_there_or_goes_back() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut base = Store::open_or_create(directory.path())
+            .unwrap()
+            .load()
+            .unwrap();
+        let mut store = Store::open_existing_writable(directory.path()).unwrap();
+        let mut model = base.model().clone();
+        model.add_tab(None, "/tmp".into(), true);
+        let home = model.tab().unwrap().id.clone();
+        let stays = model.pane().unwrap().id.clone();
+        model.split(Direction::Right, "/tmp".into(), true);
+        let source = model.pane().unwrap().id.clone();
+        model.add_tab(None, "/tmp".into(), true);
+        let other = model.tab().unwrap().id.clone();
+        let resident = model.pane().unwrap().id.clone();
+        model.choose_tab(&home);
+        assert!(!store.save(&mut base, &model).unwrap().conflict);
+        let mut window = WindowLayout::new(base);
+        let (mut bounds, [left, right]) = two_panes();
+        bounds.insert(stays.clone(), left);
+        bounds.insert(source.clone(), right);
+        let mut drag =
+            Drag::begin(window.model(), &source, &bounds, point(px(220.), px(10.))).unwrap();
+        // Nothing is carried until the gesture starts.
+        assert!(!drag.enter(window.model(), &other));
+        drag.motion(point(px(-40.), px(60.)), Some(AREA));
+        assert!(!drag.enter(window.model(), &home));
+        assert!(!drag.enter(window.model(), "missing"));
+        assert!(drag.enter(window.model(), &other));
+        assert_eq!(drag.away_from(), Some(home.as_str()));
+        window.model_mut().choose_tab(&other);
+        // Shown at the tab's right until the pointer chooses a place.
+        let ids = |tree: &Node| {
+            tree.leaves()
+                .iter()
+                .map(|leaf| leaf.id.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            ids(drag.tree().unwrap()),
+            [resident.clone(), source.clone()]
+        );
+        drag.motion(point(px(20.), px(100.)), Some(AREA));
+        assert_eq!(drag.destination, Some((resident.clone(), Edge::Left)));
+        assert_eq!(
+            ids(drag.tree().unwrap()),
+            [source.clone(), resident.clone()]
+        );
+        // Back over its own tab, the pane is where it began.
+        assert!(drag.enter(window.model(), &home));
+        window.model_mut().choose_tab(&home);
+        assert_eq!(drag.away_from(), None);
+        assert!(drag.tree().is_none());
+        assert!(drag.proposal(&window).is_none());
+
+        assert!(drag.enter(window.model(), &other));
+        window.model_mut().choose_tab(&other);
+        drag.motion(point(px(20.), px(100.)), Some(AREA));
+        let (mut base, proposed) = drag.proposal(&window).unwrap();
+        assert_eq!(
+            ids(&proposed.tab().unwrap().tree),
+            [source.clone(), resident.clone()]
+        );
+        assert_eq!(proposed.tab().unwrap().focus, source);
+        assert!(!store.save(&mut base, &proposed).unwrap().conflict);
+        let saved = store.load().unwrap();
+        let space = saved.model().workspace().unwrap();
+        assert_eq!(space.selected, other);
+        let tab = |id: &str| space.tabs.iter().find(|tab| tab.id == id).unwrap();
+        assert_eq!(ids(&tab(&home).tree), std::slice::from_ref(&stays));
+        assert_eq!(ids(&tab(&other).tree), [source.clone(), resident.clone()]);
+
+        // Released over the tab's row, it lands at the tab's right; a
+        // cancelled gesture shows the tab as it is.
+        let mut window = WindowLayout::new(saved);
+        let mut drag =
+            Drag::begin(window.model(), &source, &bounds, point(px(20.), px(10.))).unwrap();
+        drag.motion(point(px(-40.), px(60.)), Some(AREA));
+        assert!(drag.enter(window.model(), &home));
+        window.model_mut().choose_tab(&home);
+        let (_, proposed) = drag.proposal(&window).unwrap();
+        assert_eq!(ids(&proposed.tab().unwrap().tree), [stays, source.clone()]);
+        window.model_mut().choose_tab(&other);
+        let mut drag =
+            Drag::begin(window.model(), &source, &bounds, point(px(20.), px(10.))).unwrap();
+        drag.motion(point(px(-40.), px(60.)), Some(AREA));
+        assert!(drag.enter(window.model(), &home));
+        window.model_mut().choose_tab(&home);
+        assert_eq!(drag.visitor(), Some(source.as_str()));
+        drag.cancel();
+        assert!(drag.tree().is_none());
+        assert_eq!(drag.visitor(), Some(source.as_str()));
+        assert_eq!(drag.returns_to(window.model()), Some(other.as_str()));
+        // A tab chosen meanwhile stays.
+        window.model_mut().choose_tab(&other);
+        assert_eq!(drag.returns_to(window.model()), None);
     }
 
     #[test]
