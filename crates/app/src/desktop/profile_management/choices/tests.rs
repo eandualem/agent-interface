@@ -23,6 +23,7 @@ fn choice() -> Selection<'static> {
     Selection {
         name: "worker",
         project: Path::new("/example/project"),
+        create: false,
         runtime: "codex",
         model: None,
         brief: Some("Do the project work"),
@@ -62,6 +63,26 @@ fn explicit_choices_freeze_original_tuple_and_identical_cancel_body() {
         catalog.items()[0].authentication,
         Authentication::NotAuthenticated
     );
+}
+#[test]
+fn a_tool_that_takes_the_brief_as_its_first_turn_gets_no_second_greeting() {
+    // The default brief asks the agent to greet; custom instructions may not.
+    for (id, brief, greeting) in [
+        ("gemini", None, false),
+        ("antigravity", None, false),
+        ("gemini", Some("Do the project work"), true),
+        ("codex", None, true),
+    ] {
+        let mut wire = fixtures()["runtime_catalog"]["catalog"].clone();
+        wire["items"][0]["id"] = json!(id);
+        let mut selected = choice();
+        selected.runtime = id;
+        selected.brief = brief;
+        selected.greeting = true;
+        let prepared = freeze("request", &profile(), &catalog(&wire), selected).unwrap();
+        let first: Value = serde_json::from_slice(prepared.bytes(Action::FirstAgent)).unwrap();
+        assert_eq!(first["start_greeting"], greeting, "{id}");
+    }
 }
 #[test]
 fn changed_origin_or_stale_runtime_model_cannot_prepare() {
@@ -188,4 +209,19 @@ fn an_agent_is_named_after_its_folder() {
 #[test]
 fn a_typed_name_with_spaces_becomes_hyphens() {
     assert_eq!(super::agent_name(" new  agent "), "new-agent");
+}
+#[test]
+fn a_guide_asks_setup_to_make_its_own_folder() {
+    let catalog = catalog(&fixtures()["runtime_catalog"]["catalog"].clone());
+    let mut guide = choice();
+    guide.name = "guide";
+    guide.project = Path::new("/home/person/Agents/guide");
+    guide.create = true;
+    guide.brief = None;
+    let prepared = freeze("guide-request", &profile(), &catalog, guide).unwrap();
+    let first: Value = serde_json::from_slice(prepared.bytes(Action::FirstAgent)).unwrap();
+    assert_eq!(first["agent"]["name"], "guide");
+    assert_eq!(first["agent"]["directory"], "/home/person/Agents/guide");
+    assert_eq!(first["agent"]["create_directory"], true);
+    assert_eq!(first["agent"]["brief"]["template"], "orchestrator-v1");
 }

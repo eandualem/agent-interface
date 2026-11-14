@@ -237,12 +237,17 @@ struct LivePane {
     captured: bool,
     needs_capture: bool,
     recovery_deadline: Option<Instant>,
+    // Set by a snapshot taken with tmux's parser in ground state, until the
+    // pane's next output. tmux holds a partly received UTF-8 character there
+    // without reporting it as pending, so that output can start inside one.
+    expects_character_start: bool,
 }
 
 impl LivePane {
     fn restored(snapshot: Snapshot, scrollback: usize) -> Result<Self, String> {
         let mut restore = crate::restore::restore(&snapshot);
         let captured = restore.cursor.0 >= restore.width;
+        let expects_character_start = restore.pending.is_empty();
         if captured {
             restore.cursor = (0, 0);
             restore.cursor_visible = false;
@@ -257,6 +262,7 @@ impl LivePane {
             captured,
             needs_capture: false,
             recovery_deadline: None,
+            expects_character_start,
         })
     }
 
@@ -273,6 +279,15 @@ impl LivePane {
     }
 
     fn output(&mut self, bytes: &[u8]) -> Result<(), String> {
+        if let Some(&first) = bytes.first()
+            && std::mem::take(&mut self.expects_character_start)
+            && (0x80..0xc0).contains(&first)
+        {
+            // The snapshot missed the start of this character. Rebuild rather
+            // than draw the rest as replacement characters, which would also
+            // shift every later cell and cursor position.
+            self.needs_capture = true;
+        }
         if self.captured || self.needs_capture {
             self.needs_capture |= !bytes.is_empty();
         } else {
@@ -402,6 +417,7 @@ impl WindowState {
                         captured: false,
                         needs_capture: true,
                         recovery_deadline: None,
+                        expects_character_start: false,
                     },
                 ));
             }
@@ -970,10 +986,11 @@ fn read(
         }
         let size: usize = batch.iter().map(Event::size).sum();
         let mut state = shared.lock();
-        while state.queued > QUEUE_LIMIT && !state.cancelled {
+        while state.queued > QUEUE_LIMIT && !state.cancelled && !state.finished {
             state = shared.wait(state);
         }
-        if state.cancelled {
+        // Nothing takes output once the worker has stopped.
+        if state.cancelled || state.finished {
             break;
         }
         state.queued += size;
@@ -1258,8 +1275,13 @@ fn work(
             state = shared.wait(state);
         }
     }
+    // Stopped by cancellation or failure: release the reader and every
+    // waiting input or history request, which nothing will now answer.
     state.finished = true;
+    state.queue.clear();
+    state.queued = 0;
     drop(state);
+    shared.changed.notify_all();
     wake();
 }
 
@@ -1525,6 +1547,7 @@ mod tests {
                     captured: false,
                     needs_capture: false,
                     recovery_deadline: None,
+                    expects_character_start: false,
                 },
             )],
             geometry_changed: false,
@@ -1711,6 +1734,37 @@ mod tests {
     }
 
     #[test]
+    fn reader_stops_waiting_for_room_once_the_worker_has_stopped() {
+        let shared = Shared {
+            state: Mutex::new(State::default()),
+            changed: Condvar::new(),
+        };
+        shared.lock().queued = QUEUE_LIMIT + 1;
+        thread::scope(|scope| {
+            let reader = scope.spawn(|| {
+                read(
+                    &shared,
+                    &b"%sessions-changed\n"[..],
+                    Decoder::new(),
+                    0,
+                    None,
+                    vec![],
+                )
+            });
+            thread::sleep(Duration::from_millis(50));
+            assert!(!reader.is_finished(), "the queue is full");
+            shared.lock().finished = true;
+            shared.changed.notify_all();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !reader.is_finished() {
+                assert!(Instant::now() < deadline, "the reader is still waiting");
+                thread::sleep(Duration::from_millis(10));
+            }
+        });
+        assert!(shared.lock().closed);
+    }
+
+    #[test]
     fn successful_recovery_does_not_lend_its_deadline_to_the_next_margin() {
         let expired = Instant::now() - Duration::from_secs(1);
         let mut terminal = LivePane {
@@ -1720,6 +1774,7 @@ mod tests {
             captured: false,
             needs_capture: false,
             recovery_deadline: None,
+            expects_character_start: false,
         };
         terminal
             .resume_after_recovery(b"restored\r\n", Some(expired))
@@ -1734,6 +1789,31 @@ mod tests {
             .resume_after_recovery(b"more", Some(expired))
             .unwrap();
         assert_eq!(terminal.recovery_deadline, Some(expired));
+    }
+
+    #[test]
+    fn output_that_starts_inside_a_character_after_a_snapshot_is_rebuilt() {
+        let pane = |expects_character_start| LivePane {
+            terminal: Terminal::new(80, 24, 0).unwrap(),
+            size: (80, 24),
+            offset: (0, 0),
+            captured: false,
+            needs_capture: false,
+            recovery_deadline: None,
+            expects_character_start,
+        };
+        // The last two bytes of a box-drawing line, U+2500, whose first byte
+        // tmux's parser held when the snapshot was taken.
+        let mut split = pane(true);
+        split.output(b"\x94\x80rest").unwrap();
+        assert!(split.needs_capture);
+        assert_eq!(split.terminal.cursor().unwrap(), (0, 0));
+        // Only the first output after the snapshot is checked.
+        let mut whole = pane(true);
+        whole.output(b"").unwrap();
+        whole.output("\u{2500}".as_bytes()).unwrap();
+        whole.output(b"\x80").unwrap();
+        assert!(!whole.needs_capture);
     }
 
     #[test]

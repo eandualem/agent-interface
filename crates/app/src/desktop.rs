@@ -14,6 +14,7 @@ use gpui::{
 };
 
 use crate::library::{Library, Update, WindowLayout};
+mod agent_groups;
 mod agent_status;
 mod chooser;
 mod chooser_source;
@@ -43,6 +44,8 @@ mod sidebar;
 mod split_resize;
 mod status;
 mod terminal;
+mod theme_editor;
+mod themes;
 mod views;
 mod window_controls;
 mod workspace;
@@ -66,7 +69,7 @@ actions!(
         /// Show the Settings window.
         OpenSettings,
         /// Open first-run setup again.
-        RunSetup,
+        NewProfile,
         /// Close the focused pane; the last pane closes its tab.
         ClosePane,
         /// Close the selected tab, leaving its sessions under tmux's ownership.
@@ -122,15 +125,7 @@ pub fn run(directory: Option<PathBuf>) -> Result<(), String> {
             // Defer: a window that is dispatching this action cannot be updated
             // until dispatch returns.
             cx.on_action(|_: &OpenSettings, cx| cx.defer(settings_window::show));
-            // Setup always adds its agent to Default, whichever workspace is
-            // selected, so any window may open it.
-            cx.on_action(|_: &RunSetup, cx| {
-                cx.defer(|cx| {
-                    if let Err(error) = onboarding::show(false, cx) {
-                        tracing::error!(event = "setup_window_failed", %error, "Cannot open setup");
-                    }
-                })
-            });
+            cx.on_action(|_: &NewProfile, cx| cx.defer(new_profile));
             cx.on_action(|_: &ClosePane, cx| {
                 if let Some(window) = cx.active_window() {
                     cx.defer(move |cx| {
@@ -138,7 +133,7 @@ pub fn run(directory: Option<PathBuf>) -> Result<(), String> {
                             let _ = browser.update(cx, |browser, window, cx| {
                                 browser.close_pane(window, cx);
                             });
-                        } else {
+                        } else if settings_window::may_close_window(window, cx) {
                             let _ = window.update(cx, |_, window, _| window.remove_window());
                         }
                     });
@@ -170,7 +165,9 @@ pub fn run(directory: Option<PathBuf>) -> Result<(), String> {
             cx.on_action(|_: &CloseWindow, cx| {
                 if let Some(window) = cx.active_window() {
                     cx.defer(move |cx| {
-                        let _ = window.update(cx, |_, window, _| window.remove_window());
+                        if settings_window::may_close_window(window, cx) {
+                            let _ = window.update(cx, |_, window, _| window.remove_window());
+                        }
                     });
                 }
             });
@@ -184,7 +181,16 @@ pub fn run(directory: Option<PathBuf>) -> Result<(), String> {
                 }
             });
             cx.on_action(|_: &Quit, cx| {
-                cx.quit();
+                // Deferred: the action may have come from the Settings window.
+                // Termination by the system (the Dock's Quit, logging out)
+                // does not pass here and cannot be refused; edits not yet
+                // saved in the theme editor are then lost, as the editor's
+                // "Unsaved changes" line warns.
+                cx.defer(|cx| {
+                    if settings_window::may_quit(cx) {
+                        cx.quit();
+                    }
+                });
             });
             cx.on_action(|_: &NewWindow, cx| {
                 // Dispatch currently borrows the originating window. Open after it
@@ -207,12 +213,18 @@ pub fn run(directory: Option<PathBuf>) -> Result<(), String> {
                 }
             })
             .detach();
-            // A fresh install opens through setup; an explicit library never does.
-            let result = if directory.is_none() && onboarding::first_run(&preferences) {
-                onboarding::show(!preferences.intro_seen, cx)
-            } else {
-                open_browser(directory, source, cx)
-            };
+            // A fresh install opens with first run over the window; an explicit
+            // library never does.
+            let first = directory.is_none() && onboarding::first_run(&preferences);
+            let result = open_browser(directory, source, cx);
+            if first
+                && result.is_ok()
+                && let Some(handle) = browser_window(cx)
+            {
+                let _ = handle.update(cx, |browser, window, cx| {
+                    browser.start_onboarding(window, cx)
+                });
+            }
             if let Err(error) = result {
                 *opened.borrow_mut() = Some(format!("cannot open window: {error}"));
                 cx.spawn(async |cx| cx.update(|cx| cx.quit())).detach();
@@ -258,7 +270,7 @@ fn configure_menu(cx: &mut App) {
                 MenuItem::action("New Window", NewWindow),
                 MenuItem::action("Open Library…", OpenLibrary),
                 MenuItem::action("Settings…", OpenSettings),
-                MenuItem::action("Set Up Agent Interface…", RunSetup),
+                MenuItem::action("New Profile…", NewProfile),
                 MenuItem::action("Close Pane", ClosePane),
                 MenuItem::action("Detach", DetachSession),
                 MenuItem::action("Close Tab", CloseTab),
@@ -302,6 +314,44 @@ fn browser_window(cx: &App) -> Option<gpui::WindowHandle<Browser>> {
                 .into_iter()
                 .find_map(|window| window.downcast::<Browser>())
         })
+}
+
+/// New profile, from the application menu: its two screens in the active
+/// workspace window, which opens if there is none.
+fn new_profile(cx: &mut App) {
+    cx.spawn(async |cx| {
+        let client = cx
+            .background_executor()
+            .spawn(async { onboarding::probe::profile_client() })
+            .await;
+        cx.update(|cx| {
+            if browser_window(cx).is_none() {
+                let source = crate::sessions::source_socket(None).map_err(|e| e.to_string());
+                if let Err(error) = open_browser(None, source, cx) {
+                    tracing::error!(event = "new_profile_window_failed", %error, "Cannot open a window");
+                    return;
+                }
+            }
+            if let Some(handle) = browser_window(cx) {
+                let _ = handle.update(cx, |browser, window, cx| {
+                    if let Some(client) = client {
+                        browser.use_profile_client(client);
+                    }
+                    window.activate_window();
+                    if !matches!(browser.profile_client, Some(Ok(_))) {
+                        browser.save_notice = Some(
+                            "New profile needs the agent service, which isn't answering. Try again in a moment."
+                                .into(),
+                        );
+                        cx.notify();
+                        return;
+                    }
+                    browser.open_profile_flow(String::new(), window, cx);
+                });
+            }
+        });
+    })
+    .detach();
 }
 
 fn open_browser(
@@ -381,6 +431,7 @@ fn open_browser_with_status(
                 browser.roster_updates =
                     Some(cx.observe_global::<agent_status::Sources>(|browser, cx| {
                         browser.refresh_source_matches(cx);
+                        browser.close_finished_swarm_tabs(cx);
                     }));
             }
             // Stopping the library joins its storage worker, which can wait on
@@ -530,6 +581,25 @@ struct Attaching {
     _events: gpui::Subscription,
 }
 
+/// Remember a running swarm's server and sessions. Sessions add up, since a
+/// tab opened earlier may still show a member that has left; another server
+/// starts over.
+fn watch_swarm(
+    watched: &mut HashMap<(String, String), (String, std::collections::HashSet<String>)>,
+    key: (String, String),
+    source: &str,
+    initiator: &str,
+    members: &[String],
+) {
+    let (seen, sessions) = watched.entry(key).or_default();
+    if seen != source {
+        *seen = source.to_owned();
+        sessions.clear();
+    }
+    sessions.extend(members.iter().cloned());
+    sessions.insert(initiator.to_owned());
+}
+
 fn close_tab_proposal(
     layout: &WindowLayout,
     workspace: &str,
@@ -600,7 +670,18 @@ struct Browser {
         gpui::Entity<profile_picker::ProfilePicker>,
         gpui::Subscription,
     )>,
-    /// New profile, shown beside the workspace it is made for.
+    /// First run, a layer over the whole window until it fades.
+    onboarding: Option<(gpui::Entity<onboarding::Onboarding>, gpui::Subscription)>,
+    /// First run asked to open its guide's pane and waits to hear how it went.
+    first_open: bool,
+    /// That pane is in the save now running: first run hears when it ends.
+    first_open_saving: bool,
+    /// First run's profile, waiting for the library to load to be bound.
+    first_bind: Option<onboarding::FirstBind>,
+    /// Counts the libraries this window has opened: work started under an
+    /// earlier one is dropped when it ends.
+    library_generation: u64,
+    /// New profile, across the content area of the workspace it is made for.
     profile_flow: Option<(
         gpui::Entity<profile_management::flow::Flow>,
         gpui::Subscription,
@@ -638,6 +719,12 @@ struct Browser {
     pending_save: Option<(Document, Layout)>,
     pending_creation: Option<(Create, String)>,
     creation_from: Option<Selection>,
+    /// Agents whose swarms are listed under them in the navigation panel.
+    expanded_agents: std::collections::HashSet<String>,
+    /// Swarms seen running, by workspace and swarm name, with their server
+    /// and every session seen in them; kept until no tab is left to close
+    /// for a finished one.
+    watched_swarms: HashMap<(String, String), (String, std::collections::HashSet<String>)>,
     tabs_scroll: gpui::ScrollHandle,
     workspaces_scroll: gpui::ScrollHandle,
     shown_workspace: Option<(String, gpui::Pixels)>,
@@ -787,15 +874,6 @@ impl Browser {
 
     /// A finished sign-in has nothing left to show, so its pane goes.
     fn close_ended_pane(&mut self, target: &Target, window: &mut Window, cx: &mut Context<Self>) {
-        if let (Some((flow, _)), Some(profile), Some(attachment)) = (
-            &self.profile_flow,
-            target.connection.as_ref(),
-            target.leaf.attachment.as_ref(),
-        ) && let Some(runtime) = attachment.session.strip_prefix("sign-in-")
-        {
-            let profile = profile.identity().profile_id.clone();
-            flow.update(cx, |flow, cx| flow.sign_in_ended(&profile, runtime, cx));
-        }
         if self.saving || self.save_failed {
             return;
         }
@@ -879,10 +957,18 @@ impl Browser {
         self.profile_picker = None;
         self.profile_picker_requested = false;
         self.profile_flow = None;
+        // First run belongs to the default library: another library ends it,
+        // unfinished, so it returns at the next launch.
+        self.onboarding = None;
+        self.first_open = false;
+        self.first_open_saving = false;
+        self.first_bind = None;
+        self.library_generation += 1;
         self.pending_profile = None;
         self.bind_after_save = None;
         self.views.clear();
         self.new_panes.clear();
+        self.watched_swarms.clear();
         self.editing = None;
         self.chooser = None;
         self.shell_after_save = None;
@@ -1193,36 +1279,13 @@ impl Browser {
             cx.notify();
             return;
         }
-        let Some(layout) = &self.layout else {
+        let Some(cwd) = self.launch_directory() else {
+            self.save_notice = Some("Cannot read the launch directory as text.".into());
+            cx.notify();
             return;
         };
-        // An app opened from the Dock or Finder runs in "/". New terminals
-        // start in the home folder instead, as other terminal apps do.
-        let cwd = if layout
-            .model()
-            .workspace()
-            .is_some_and(|space| space.profile_id.is_some())
-        {
-            "/".into()
-        } else {
-            match std::env::current_dir()
-                .ok()
-                .map(|path| {
-                    if path.as_os_str() == "/" {
-                        crate::library::location::user_home(None).unwrap_or(path)
-                    } else {
-                        path
-                    }
-                })
-                .and_then(|path| path.to_str().map(str::to_owned))
-            {
-                Some(cwd) => cwd,
-                None => {
-                    self.save_notice = Some("Cannot read the launch directory as text.".into());
-                    cx.notify();
-                    return;
-                }
-            }
+        let Some(layout) = &self.layout else {
+            return;
         };
         self.creation_from = Some(Selection::capture(layout.model()));
         self.pending_creation = Some((action, cwd));
@@ -1234,6 +1297,200 @@ impl Browser {
             window.focus(focus, cx);
         }
         self.save(cx);
+    }
+
+    /// Where a new pane in the selected workspace starts, or none when the
+    /// launch directory is not text.
+    fn launch_directory(&self) -> Option<String> {
+        if self
+            .layout
+            .as_ref()
+            .and_then(|layout| layout.model().workspace())
+            .is_some_and(|space| space.profile_id.is_some())
+        {
+            return Some("/".into());
+        }
+        // An app opened from the Dock or Finder runs in "/". New terminals
+        // start in the home folder instead, as other terminal apps do.
+        std::env::current_dir()
+            .ok()
+            .map(|path| {
+                if path.as_os_str() == "/" {
+                    crate::library::location::user_home(None).unwrap_or(path)
+                } else {
+                    path
+                }
+            })
+            .and_then(|path| path.to_str().map(str::to_owned))
+    }
+
+    /// Show a swarm in a tab of its own, named after it: the initiator in the
+    /// left half and the members tiled in the right half. A tab already
+    /// carrying the swarm's name is shown instead. Nothing is started.
+    fn open_swarm_tab(
+        &mut self,
+        (initiator, name, members): (&str, &str, &[String]),
+        target: Option<&creation_origin::Target>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.saving || self.save_failed {
+            return;
+        }
+        if let Some(update) = self.library.as_ref().and_then(Library::take_update) {
+            self.apply(update);
+        }
+        if !target.is_some_and(|target| self.creation_is_current(target)) {
+            self.save_notice = Some("The destination changed. Open the swarm again.".into());
+            cx.notify();
+            return;
+        }
+        let Some(space) = self
+            .layout
+            .as_ref()
+            .and_then(|layout| layout.model().workspace())
+        else {
+            return;
+        };
+        let existing = space
+            .tabs
+            .iter()
+            .find(|tab| tab.name == name)
+            .map(|tab| tab.id.clone());
+        let key = (space.id.clone(), name.to_owned());
+        let source = self.swarm_source(space);
+        let cwd = self.launch_directory();
+        self.close_menus();
+        if let Some(focus) = &self.navigation {
+            window.focus(focus, cx);
+        }
+        let Some(layout) = &mut self.layout else {
+            return;
+        };
+        if let Some(tab) = existing {
+            self.reset_focus |= layout.model_mut().choose_tab(&tab);
+            cx.notify();
+            return;
+        }
+        let (Some(source), Some(cwd)) = (source, cwd) else {
+            self.save_notice = Some("The workspace session source is unavailable.".into());
+            cx.notify();
+            return;
+        };
+        let attachment = |session: &str| Attachment {
+            session: session.into(),
+            source_socket: Some(source.clone()),
+        };
+        // The tab shows these sessions whether or not a later read lists them.
+        watch_swarm(&mut self.watched_swarms, key, &source, initiator, members);
+        let (base, mut proposed) = layout.save_snapshot();
+        if !proposed.add_group_tab(
+            name.into(),
+            attachment(initiator),
+            members.iter().map(|member| attachment(member)).collect(),
+            cwd,
+        ) {
+            return;
+        }
+        // The new tab is not in the displayed model yet; select it once saved.
+        self.creation_from = Some(Selection::capture(layout.model()));
+        self.pending_save = Some((base, proposed));
+        self.save(cx);
+    }
+
+    /// The tmux server holding the sessions of a workspace's swarms.
+    fn swarm_source(&self, space: &agent_interface_core::Workspace) -> Option<String> {
+        match self.workspace_profiles.route(space) {
+            workspace_profiles::Route::Bound(connection) => {
+                connection.tmux_socket().to_str().map(str::to_owned)
+            }
+            workspace_profiles::Route::Legacy => self
+                .source
+                .as_ref()
+                .and_then(|source| source.as_ref().ok())
+                .and_then(|path| path.to_str())
+                .map(str::to_owned),
+            workspace_profiles::Route::Unavailable => None,
+        }
+    }
+
+    /// Close the tabs of swarms that finished: once a list read in full no
+    /// longer names a swarm seen running, a tab still showing only that swarm
+    /// goes. What is running is noted on every update; closing waits until
+    /// nothing else is being saved or edited.
+    fn close_finished_swarm_tabs(&mut self, cx: &mut Context<Self>) {
+        let Some(layout) = &self.layout else {
+            return;
+        };
+        let mut read: HashMap<&str, (String, Vec<agent_interface_roster::Swarm>)> = HashMap::new();
+        for space in &layout.model().workspaces {
+            if let Some(swarms) = self
+                .workspace_agents(space)
+                .and_then(agent_status::LiveAgents::read_swarms)
+                && let Some(source) = self.swarm_source(space)
+            {
+                read.insert(&space.id, (source, swarms));
+            }
+        }
+        let mut watched = std::mem::take(&mut self.watched_swarms);
+        let spaces = &layout.model().workspaces;
+        // A list from another server says nothing about a swarm seen on this
+        // one, so a workspace that changed server forgets what it watched.
+        watched.retain(|(space, _), (seen, _)| {
+            spaces.iter().any(|other| other.id == *space)
+                && read
+                    .get(space.as_str())
+                    .is_none_or(|(source, _)| source == seen)
+        });
+        // A workspace without a readable list keeps what it watched.
+        let mut finished: Vec<(String, String)> = watched
+            .keys()
+            .filter(|(space, _)| read.contains_key(space.as_str()))
+            .cloned()
+            .collect();
+        for (space, (source, swarms)) in &read {
+            for swarm in swarms {
+                let key = ((*space).to_owned(), swarm.name.clone());
+                finished.retain(|other| *other != key);
+                watch_swarm(&mut watched, key, source, &swarm.initiator, &swarm.members);
+            }
+        }
+        self.watched_swarms = watched;
+        // A save started here must not overlap one the person is about to
+        // make; the swarm stays watched and the next update tries again.
+        if finished.is_empty()
+            || self.saving
+            || self.save_failed
+            || self.pending_save.is_some()
+            || self.editing.is_some()
+            || self.resize.is_some()
+            || self.pane_drag.is_some()
+        {
+            return;
+        }
+        if let Some(update) = self.library.as_ref().and_then(Library::take_update) {
+            self.apply(update);
+        }
+        let Some(layout) = &self.layout else {
+            return;
+        };
+        let (base, mut proposed) = layout.save_snapshot();
+        let mut closed = false;
+        for key in finished {
+            let (source, sessions) = &self.watched_swarms[&key];
+            let sessions: Vec<&str> = sessions.iter().map(String::as_str).collect();
+            if proposed.close_group_tabs(&key.0, &key.1, source, &sessions) {
+                // Kept until a later read finds the tab gone, so a save the
+                // library refused is tried again.
+                closed = true;
+            } else {
+                self.watched_swarms.remove(&key);
+            }
+        }
+        if closed {
+            self.pending_save = Some((base, proposed));
+            self.save(cx);
+        }
     }
 
     fn save(&mut self, cx: &mut Context<Self>) {
@@ -1307,11 +1564,19 @@ impl Browser {
                         if let Some((item, connection, name)) = browser.bind_after_save.take() {
                             browser.bind_workspace(item, connection, &name, cx);
                         }
+                        browser.first_open_saved(!result.conflict, cx);
                     }
                     Err(error) => {
                         browser.save_failed = true;
                         browser.pending_save = Some((base, local));
                         browser.error = Some(format!("Changes not saved: {error}. Retry saving."));
+                        if browser.first_open_saving {
+                            // First run covers the window, so its own Try again
+                            // repeats the edit; the failed one is dropped.
+                            tracing::warn!(event = "first_run_pane_save_failed", %error, "First run's pane was not saved");
+                            browser.discard_save(cx);
+                            browser.first_open_saved(false, cx);
+                        }
                     }
                 }
                 cx.notify();
@@ -1554,6 +1819,7 @@ impl Browser {
 
     fn web_content_occluded(&self) -> bool {
         if self.profile_picker.is_some()
+            || self.onboarding.is_some()
             || self.profile_picker_requested
             || self.profile_content_unavailable()
         {
@@ -1886,14 +2152,15 @@ impl Browser {
     /// The first-agent setup action already started the session. Open a saved
     /// attachment, preserving every existing pane and applying normal save rules.
     /// Open a session setup points at, such as the agent first-run setup added, in
-    /// a workspace bound to that setup's profile. A fresh window's untouched workspace
-    /// takes the binding; reconcile then verifies the connection, and the pane attaches
-    /// once it is. `label` names a workspace this creates.
+    /// a workspace bound to that setup's profile. On first run, a fresh window's
+    /// untouched workspace takes the binding; reconcile then verifies the connection,
+    /// and the pane attaches once it is. `label` names a workspace this creates.
     fn open_setup_agent(
         &mut self,
         name: &str,
         profile_id: &str,
         label: &str,
+        first_run: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
@@ -1906,7 +2173,8 @@ impl Browser {
         let Some(layout) = &self.layout else {
             return false;
         };
-        let Some((base, proposed)) = setup_agent_layout(layout, name, profile_id, label) else {
+        let Some((base, proposed)) = setup_agent_layout(layout, name, profile_id, label, first_run)
+        else {
             // Already shown: go to it.
             let shown = layout
                 .model()
@@ -2362,6 +2630,13 @@ impl Render for Browser {
                 if !focus.contains_focused(window, cx) {
                     window.focus(&focus, cx);
                 }
+            } else if self
+                .onboarding
+                .as_ref()
+                .is_some_and(|(onboarding, _)| onboarding.read(cx).reveal().is_none())
+            {
+                // First run covers the window and keeps the focus it placed,
+                // until it starts to fade.
             } else if let Some(focus) = &self.navigation {
                 window.focus(focus, cx);
             }
@@ -2472,6 +2747,17 @@ impl Render for Browser {
                     |browser, terminal, _: &terminal::SignInEnded, window, cx| {
                         let target = terminal.read(cx).target.clone();
                         browser.close_ended_pane(&target, window, cx);
+                        // Settings › Profiles waits on this sign-in too.
+                        if let (Some(connection), Some(attachment)) =
+                            (&target.connection, &target.leaf.attachment)
+                            && let Some(runtime) = attachment.session.strip_prefix("sign-in-")
+                        {
+                            let profile_id = connection.identity().profile_id.clone();
+                            let runtime = runtime.to_owned();
+                            cx.defer(move |cx| {
+                                settings_window::sign_in_ended(&profile_id, &runtime, cx)
+                            });
+                        }
                     },
                 )
                 .detach();
@@ -2804,7 +3090,31 @@ impl Render for Browser {
                 terminal.open_shell(leaf, environment, cx)
             });
         }
+        if let Some(bind) = &self.first_bind
+            && self.adopt_first_profile(&bind.clone(), cx)
+        {
+            self.first_bind = None;
+        }
+        self.home_profile_flow(cx);
         let sidebar = self.sidebar(window, cx);
+        // As first run fades, the panel eases in from the left.
+        let sidebar = match self
+            .onboarding
+            .as_ref()
+            .and_then(|(onboarding, _)| onboarding.read(cx).reveal())
+        {
+            Some(reveal) => {
+                let eased = gpui::ease_out_quint()(reveal);
+                div()
+                    .relative()
+                    .flex()
+                    .left(px(-design::tokens().space.s24 * (1.0 - eased)))
+                    .opacity(eased)
+                    .child(sidebar)
+                    .into_any_element()
+            }
+            None => sidebar.into_any_element(),
+        };
         let content = self.content(window, cx);
         let content = self.beside_profile_flow(content, cx);
         let status = self.status_bar(window, cx);
@@ -2859,6 +3169,14 @@ impl Render for Browser {
             .capture_key_down(
                 cx.listener(|browser, event: &gpui::KeyDownEvent, window, cx| {
                     if browser.profile_picker.is_some() {
+                        return;
+                    }
+                    // First run has the keyboard until it fades.
+                    if browser
+                        .onboarding
+                        .as_ref()
+                        .is_some_and(|(onboarding, _)| onboarding.read(cx).reveal().is_none())
+                    {
                         return;
                     }
                     if let Some(drag) = &mut browser.pane_drag
@@ -3107,6 +3425,11 @@ impl Render for Browser {
             )
             .child(status)
             .children(overlay)
+            .children(
+                self.onboarding
+                    .as_ref()
+                    .map(|(onboarding, _)| onboarding.clone()),
+            )
             // Last painted means first in the bubble phase. Let every button
             // clear its press in capture before suppressing drag-generated clicks.
             .child(
@@ -3132,12 +3455,13 @@ impl Render for Browser {
 /// The workspace, tab and pane showing an agent's session from this window's
 /// source: the current tab if it shows one, else the first in saved order.
 /// The saved change that shows `name` in `profile_id`'s workspace, or `None` when
-/// that workspace already shows it.
+/// that workspace already shows it. Only first run takes over an untouched window.
 fn setup_agent_layout(
     layout: &WindowLayout,
     name: &str,
     profile_id: &str,
     label: &str,
+    first_run: bool,
 ) -> Option<(Document, Layout)> {
     let bound =
         |space: &agent_interface_core::Workspace| space.profile_id.as_deref() == Some(profile_id);
@@ -3166,7 +3490,8 @@ fn setup_agent_layout(
         .iter()
         .find(|space| bound(space))
         .map(|space| space.id.clone());
-    let untouched = layout.model().workspaces.len() == 1
+    let untouched = first_run
+        && layout.model().workspaces.len() == 1
         && layout.model().workspaces[0].profile_id.is_none()
         && layout.model().workspaces[0]
             .tabs
@@ -3284,6 +3609,21 @@ mod tests {
         model.choose_tab(&tab);
         assert!(model.detach_pane());
         assert!(!saved_view(&model, &id, &view));
+    }
+
+    #[test]
+    fn a_watched_swarm_keeps_past_members_and_starts_over_on_another_server() {
+        let mut watched = HashMap::new();
+        let key = || ("space".to_owned(), "fix".to_owned());
+        watch_swarm(&mut watched, key(), "/one", "lead", &["coder".into()]);
+        watch_swarm(&mut watched, key(), "/one", "lead", &["helper".into()]);
+        let (source, sessions) = &watched[&key()];
+        assert_eq!(source, "/one");
+        assert_eq!(sessions.len(), 3);
+        watch_swarm(&mut watched, key(), "/two", "lead", &[]);
+        let (source, sessions) = &watched[&key()];
+        assert_eq!(source, "/two");
+        assert_eq!(sessions.len(), 1);
     }
 
     #[test]
@@ -3750,29 +4090,36 @@ mod tests {
         let fresh = window(
             r#"{"version":2,"workspaces":[{"id":"000000000001","name":"Workspace","tabs":[],"selected":""}],"selected":"000000000001","focus":true}"#,
         );
-        let (_, opened) = setup_agent_layout(&fresh, "guide", "default-id", "Default").unwrap();
+        let (_, opened) =
+            setup_agent_layout(&fresh, "guide", "default-id", "Default", true).unwrap();
         assert_eq!(opened.workspaces.len(), 1);
         let space = &opened.workspaces[0];
         assert_eq!(space.profile_id.as_deref(), Some("default-id"));
         let attachment = opened.pane().unwrap().attachment.clone().unwrap();
         assert_eq!(attachment.session, "guide");
         assert_eq!(attachment.source_socket, None);
+        // Outside first run, such as from Settings, it gets a workspace of its own.
+        let (_, own) = setup_agent_layout(&fresh, "guide", "default-id", "Default", false).unwrap();
+        assert_eq!(own.workspaces.len(), 2);
+        assert_eq!(own.workspaces[0].profile_id, None);
         // A repeat with that workspace saved adds nothing.
         let with = |model: &Layout| {
             let path = std::path::Path::new("layouts.db");
             WindowLayout::new(fresh.save_snapshot().0.with_model(model, path).unwrap())
         };
         let saved = with(&opened);
-        assert!(setup_agent_layout(&saved, "guide", "default-id", "Default").is_none());
+        assert!(setup_agent_layout(&saved, "guide", "default-id", "Default", true).is_none());
         // Another agent joins the same workspace.
-        let (_, second) = setup_agent_layout(&saved, "second", "default-id", "Default").unwrap();
+        let (_, second) =
+            setup_agent_layout(&saved, "second", "default-id", "Default", true).unwrap();
         assert_eq!(second.workspaces.len(), 1);
         assert_eq!(second.workspaces[0].tabs.len(), 2);
         // Work in an unbound workspace stays put, unbound.
         let mut busy = opened.clone();
         busy.workspaces[0].profile_id = None;
         let busy = with(&busy);
-        let (_, separate) = setup_agent_layout(&busy, "guide", "default-id", "Default").unwrap();
+        let (_, separate) =
+            setup_agent_layout(&busy, "guide", "default-id", "Default", true).unwrap();
         assert_eq!(separate.workspaces.len(), 2);
         assert_eq!(separate.workspaces[0].profile_id, None);
         assert_eq!(

@@ -11,6 +11,8 @@ use super::{
     design::{self, colors, tokens},
     settings::{self, PaneHeaders, Settings},
     shortcuts,
+    theme_editor::{EditorEvent, ThemeEditor},
+    themes,
 };
 
 #[cfg(target_os = "macos")]
@@ -59,11 +61,86 @@ pub struct SettingsWindow {
     /// The command waiting for its new keys, and why the last keys were refused.
     recording: Option<shortcuts::Command>,
     refusal: Option<String>,
+    /// Every theme, with its colours for a preview, or none when it cannot be read.
+    themes: Vec<(themes::Entry, Option<design::Colors>)>,
+    /// The colour theme chosen in VS Code on this machine, if it is found.
+    vscode: Option<themes::vscode::Chosen>,
+    /// What the last theme action did, or why it failed.
+    theme_note: Option<String>,
+    /// The theme file open in the editor.
+    editing: Option<Editing>,
     _keys: gpui::Subscription,
+}
+
+/// A theme of the person's own, open in the JSON editor.
+struct Editing {
+    id: String,
+    editor: gpui::Entity<ThemeEditor>,
+    /// The text as last saved, for Revert and the unsaved mark.
+    saved: String,
+    /// Why the text is not a theme, if it is not.
+    problem: Option<themes::Error>,
+    /// Back was pressed with unsaved changes; pressing it again discards them.
+    discarding: bool,
+    _events: gpui::Subscription,
+}
+
+/// Every theme, with the colours its card previews.
+fn theme_list() -> Vec<(themes::Entry, Option<design::Colors>)> {
+    themes::list()
+        .into_iter()
+        .map(|entry| {
+            let colours = themes::resolve(&entry.id).ok().map(|design| design.colors);
+            (entry, colours)
+        })
+        .collect()
 }
 
 struct Open(WindowHandle<SettingsWindow>);
 impl Global for Open {}
+
+/// Tell an open Settings › Profiles page that a profile's sign-in pane closed.
+pub fn sign_in_ended(profile_id: &str, runtime: &str, cx: &mut App) {
+    let Some(handle) = cx.try_global::<Open>().map(|Open(handle)| *handle) else {
+        return;
+    };
+    let _ = handle.update(cx, |view, _, cx| {
+        if let Some(profiles) = &view.profiles {
+            profiles.update(cx, |page, cx| page.sign_in_ended(profile_id, runtime, cx));
+        }
+    });
+}
+
+/// Whether `window` may close now: always, unless it is Settings holding
+/// unsaved theme edits, which asks on the first request.
+pub fn may_close_window(window: gpui::AnyWindowHandle, cx: &mut App) -> bool {
+    let Some(handle) = cx.try_global::<Open>().map(|Open(handle)| *handle) else {
+        return true;
+    };
+    if handle.window_id() != window.window_id() {
+        return true;
+    }
+    handle
+        .update(cx, |view, _, cx| view.may_close(cx))
+        .unwrap_or(true)
+}
+
+/// Whether the app may quit now. With unsaved theme edits, the first
+/// request brings Settings forward and asks; a second quits.
+pub fn may_quit(cx: &mut App) -> bool {
+    let Some(handle) = cx.try_global::<Open>().map(|Open(handle)| *handle) else {
+        return true;
+    };
+    handle
+        .update(cx, |view, window, cx| {
+            let may = view.may_close(cx);
+            if !may {
+                window.activate_window();
+            }
+            may
+        })
+        .unwrap_or(true)
+}
 
 /// Bring the Settings window forward, opening it if it is not open.
 pub fn show(cx: &mut App) {
@@ -101,6 +178,12 @@ pub fn show(cx: &mut App) {
     if let Ok(handle) = cx.open_window(options, |window, cx| {
         let id = window.window_handle().window_id();
         cx.new(|cx| {
+            let closing = cx.entity().downgrade();
+            window.on_window_should_close(cx, move |_, cx| {
+                closing
+                    .update(cx, |view: &mut SettingsWindow, cx| view.may_close(cx))
+                    .unwrap_or(true)
+            });
             // Record before shortcut dispatch, so keys such as Command-W are
             // assigned instead of closing the window.
             let view = cx.entity().downgrade();
@@ -124,6 +207,10 @@ pub fn show(cx: &mut App) {
                 focus: cx.focus_handle(),
                 recording: None,
                 refusal: None,
+                themes: theme_list(),
+                vscode: themes::vscode::chosen(),
+                theme_note: None,
+                editing: None,
                 _keys: keys,
             }
         })
@@ -138,8 +225,11 @@ impl SettingsWindow {
         let mut next = Settings::current();
         update(&mut next);
         let resized = next.interface_size != Settings::current().interface_size;
+        let controls = |size: &design::Size| (size.window_controls_x, size.window_controls_y);
+        let before = controls(&tokens().size);
         next.apply();
-        if resized {
+        // A theme may move the native window buttons, as a new scale does.
+        if resized || controls(&tokens().size) != before {
             // Each window takes the new scale and lays out again; deferred so
             // this window is no longer borrowed.
             cx.defer(|cx| {
@@ -208,6 +298,148 @@ impl SettingsWindow {
             }
         }
         true
+    }
+
+    /// Whether the window may close now. Unsaved theme edits are only
+    /// dropped on a second request: the first shows the editor and asks.
+    fn may_close(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(editing) = &mut self.editing else {
+            return true;
+        };
+        if editing.discarding || editing.editor.read(cx).value() == editing.saved {
+            return true;
+        }
+        editing.discarding = true;
+        self.page = Page::Appearance;
+        cx.notify();
+        false
+    }
+
+    /// Open the person's theme `id` in the JSON editor.
+    fn edit_theme(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let text = match themes::source(id) {
+            Ok(Some(text)) => text,
+            Ok(None) => return,
+            Err(error) => {
+                self.theme_note = Some(error.to_string());
+                cx.notify();
+                return;
+            }
+        };
+        let editor = cx.new(|cx| ThemeEditor::new(&text, cx));
+        let events = cx.subscribe(&editor, |view, editor, event, cx| match event {
+            EditorEvent::Changed => {
+                if let Some(editing) = &mut view.editing {
+                    let text = editor.read(cx).value().to_owned();
+                    editing.problem = themes::resolve_text(&editing.id, &text).err();
+                    editing.discarding = false;
+                    cx.notify();
+                }
+            }
+            EditorEvent::Save => view.save_theme(cx),
+        });
+        let focus = editor.read(cx).focus.clone();
+        window.focus(&focus, cx);
+        self.editing = Some(Editing {
+            id: id.to_owned(),
+            problem: themes::resolve_text(id, &text).err(),
+            editor,
+            saved: text,
+            discarding: false,
+            _events: events,
+        });
+        self.theme_note = None;
+        cx.notify();
+    }
+
+    /// Save the open theme and use it, unless it is not a theme yet.
+    fn save_theme(&mut self, cx: &mut Context<Self>) {
+        let Some(editing) = &mut self.editing else {
+            return;
+        };
+        let text = editing.editor.read(cx).value().to_owned();
+        if let Err(error) = themes::resolve_text(&editing.id, &text) {
+            editing.editor.update(cx, |editor, cx| {
+                editor.show_mistake(error.line, error.column, cx)
+            });
+            editing.problem = Some(error);
+            cx.notify();
+            return;
+        }
+        if let Err(error) = themes::save(&editing.id, &text) {
+            editing.problem = Some(themes::Error::new(format!("Not saved: {error}")));
+            cx.notify();
+            return;
+        }
+        editing.saved = text;
+        editing.problem = None;
+        let id = editing.id.clone();
+        self.themes = theme_list();
+        self.change(|settings| settings.theme = id, cx);
+    }
+
+    /// Copy the theme in use as one of the person's own and open it.
+    fn customize_theme(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match themes::customize(&themes::current()) {
+            Ok(id) => {
+                self.themes = theme_list();
+                let chosen = id.clone();
+                self.change(|settings| settings.theme = chosen, cx);
+                self.edit_theme(&id, window, cx);
+            }
+            Err(error) => {
+                self.theme_note = Some(error.to_string());
+                cx.notify();
+            }
+        }
+    }
+
+    /// Import the VS Code colour theme at `path` as one of the person's own
+    /// themes and use it.
+    fn import_theme(
+        &mut self,
+        path: &std::path::Path,
+        light: Option<bool>,
+        name: Option<&str>,
+        cx: &mut Context<Self>,
+    ) {
+        let imported = themes::vscode::import_file(path, light, name).and_then(|(name, json)| {
+            let id = themes::new_id(&name);
+            themes::save(&id, &json)
+                .map(|()| id)
+                .map_err(|error| themes::Error::new(format!("Not saved: {error}")))
+        });
+        match imported {
+            Ok(id) => {
+                self.themes = theme_list();
+                self.theme_note = None;
+                self.change(|settings| settings.theme = id, cx);
+            }
+            Err(error) => {
+                self.theme_note = Some(format!("Not imported. {error}"));
+                cx.notify();
+            }
+        }
+    }
+
+    /// Ask for a VS Code colour theme file and import it.
+    fn import_theme_file(&mut self, cx: &mut Context<Self>) {
+        let paths = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Import".into()),
+        });
+        cx.spawn(async move |this, cx| {
+            let Ok(Ok(Some(paths))) = paths.await else {
+                return;
+            };
+            let Some(path) = paths.into_iter().next() else {
+                return;
+            };
+            let _ = this.update(cx, |view, cx| view.import_theme(&path, None, None, cx));
+        })
+        .detach();
     }
 
     fn heading(label: &'static str) -> gpui::Div {
@@ -347,14 +579,158 @@ impl SettingsWindow {
             })
     }
 
+    /// The open theme file in the JSON editor, with Save, Revert and Back.
+    fn theme_editor(&self, editing: &Editing, cx: &mut Context<Self>) -> gpui::Div {
+        let (t, c) = (tokens(), colors());
+        let unsaved = editing.editor.read(cx).value() != editing.saved;
+        let name = self
+            .themes
+            .iter()
+            .find(|(entry, _)| entry.id == editing.id)
+            .map_or(editing.id.clone(), |(entry, _)| entry.name.clone());
+        let file = themes::file(&editing.id)
+            .map(|path| {
+                let path = path.display().to_string();
+                match std::env::var("HOME") {
+                    Ok(home) if !home.is_empty() && path.starts_with(&home) => {
+                        format!("~{}", &path[home.len()..])
+                    }
+                    _ => path,
+                }
+            })
+            .unwrap_or_default();
+        let save_key = if cfg!(target_os = "macos") {
+            "⌘S"
+        } else {
+            "Ctrl+S"
+        };
+        let status = match &editing.problem {
+            // The warning comes first: another request drops the edits.
+            _ if editing.discarding => ui::text(
+                div().text_color(c.attention_text),
+                &t.text.status,
+            )
+            .child(format!(
+                "This theme has unsaved changes. {save_key} saves them; Discard changes, or closing or quitting again, drops them.{}",
+                editing
+                    .problem
+                    .as_ref()
+                    .map_or(String::new(), |problem| format!(" {problem}"))
+            )),
+            Some(problem) => ui::text(div().text_color(c.attention_text), &t.text.status)
+                .child(problem.to_string()),
+            None => Self::note(if unsaved {
+                format!("Unsaved changes. {save_key} saves and applies the theme.")
+            } else {
+                "Saved and in use. Values you leave out come from the theme it extends; docs/DESIGN.md lists every token.".into()
+            }),
+        };
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .gap(px(t.space.s12))
+            .pb(px(t.space.s16))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(t.space.s8))
+                    .child(
+                        ui::button(
+                            "theme-back",
+                            if editing.discarding {
+                                "Discard changes"
+                            } else {
+                                "Back"
+                            },
+                            if editing.discarding {
+                                ui::Button::Danger
+                            } else {
+                                ui::Button::Secondary
+                            },
+                        )
+                        .on_click(cx.listener(|view, _, _, cx| {
+                            // Unsaved changes are only dropped on a second press.
+                            let unsaved = view.editing.as_ref().is_some_and(|editing| {
+                                editing.editor.read(cx).value() != editing.saved
+                            });
+                            match &mut view.editing {
+                                Some(editing) if unsaved && !editing.discarding => {
+                                    editing.discarding = true
+                                }
+                                _ => view.editing = None,
+                            }
+                            cx.notify();
+                        })),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .child(
+                                ui::text(div().text_color(c.text), &t.text.group_title).child(name),
+                            )
+                            .child(
+                                ui::text(
+                                    div()
+                                        .overflow_hidden()
+                                        .whitespace_nowrap()
+                                        .text_ellipsis()
+                                        .text_color(c.muted)
+                                        .font_family(t.font.mono.clone()),
+                                    &t.text.meta,
+                                )
+                                .child(file),
+                            ),
+                    )
+                    .child(
+                        ui::button("theme-revert", "Revert", ui::Button::Secondary)
+                            .when(!unsaved, |el| el.opacity(0.5))
+                            .on_click(cx.listener(|view, _, _, cx| {
+                                if let Some(editing) = &view.editing {
+                                    let saved = editing.saved.clone();
+                                    editing
+                                        .editor
+                                        .update(cx, |editor, cx| editor.set_value(&saved, cx));
+                                }
+                            })),
+                    )
+                    .child(
+                        ui::button("theme-save", "Save", ui::Button::Primary)
+                            .on_click(cx.listener(|view, _, _, cx| view.save_theme(cx))),
+                    ),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .p(px(t.space.s8))
+                    .rounded(px(t.radius.row))
+                    .bg(c.field)
+                    .border(px(t.size.hairline))
+                    .border_color(if editing.problem.is_some() {
+                        c.attention
+                    } else {
+                        c.line_strong
+                    })
+                    .child(editing.editor.clone()),
+            )
+            .child(status)
+    }
+
     fn appearance(&self, cx: &mut Context<Self>) -> gpui::Div {
         let (t, c) = (tokens(), colors());
         let current = Settings::current();
-        let card = |id: &'static str,
-                    name: &'static str,
-                    colours: &'static design::Colors,
-                    light: bool| {
-            let chosen = current.light == light;
+        let own = self
+            .themes
+            .iter()
+            .any(|(entry, _)| entry.id == current.theme && entry.origin == themes::Origin::User);
+        let card = |entry: &themes::Entry, colours: &design::Colors| {
+            let theme = entry.id.clone();
+            let chosen = current.theme == theme;
             let bar = |fill: gpui::Rgba, width: f32| {
                 div()
                     .h(px(t.space.s4))
@@ -363,7 +739,7 @@ impl SettingsWindow {
                     .bg(fill)
             };
             div()
-                .id(id)
+                .id(SharedString::from(format!("theme-card-{theme}")))
                 .w(px(t.size.theme_card))
                 .flex()
                 .flex_col()
@@ -437,13 +813,21 @@ impl SettingsWindow {
                         .justify_between()
                         .px(px(t.space.s2))
                         .when(chosen, |el| el.font_weight(t.text.row_selected.weight()))
-                        .child(name)
+                        .child(
+                            div()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_ellipsis()
+                                .child(entry.name.clone()),
+                        )
                         .when(chosen, |el| {
                             el.child(ui::icon("check", t.size.icon, c.accent))
                         }),
                 )
                 .on_click(cx.listener(move |view, _, _, cx| {
-                    view.change(|settings| settings.light = light, cx)
+                    view.theme_note = None;
+                    view.change(|settings| settings.theme = theme.clone(), cx)
                 }))
         };
         let size = current.font_size as u32;
@@ -530,11 +914,76 @@ impl SettingsWindow {
                 Self::label("THEME").into_any_element(),
                 div()
                     .flex()
+                    .flex_wrap()
                     .gap(px(t.space.s12))
-                    .child(card("theme-dark", "Dark", &design::tokens().dark, false))
-                    .child(card("theme-light", "Light", &design::tokens().light, true))
+                    .children(self.themes.iter().filter_map(|(entry, colours)| {
+                        Some(card(entry, colours.as_ref()?))
+                    }))
                     .into_any_element(),
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap(px(t.space.s8))
+                    .pt(px(t.space.s4))
+                    .child(
+                        ui::button("theme-customize", "Customize…", ui::Button::Secondary)
+                            .on_click(cx.listener(|view, _, window, cx| {
+                                view.customize_theme(window, cx)
+                            })),
+                    )
+                    .when(own, |el| {
+                        el.child(
+                            ui::button("theme-edit", "Edit JSON", ui::Button::Secondary)
+                                .on_click(cx.listener(|view, _, window, cx| {
+                                    view.edit_theme(&themes::current(), window, cx)
+                                })),
+                        )
+                    })
+                    .when_some(self.vscode.clone(), |el, chosen| {
+                        el.child(
+                            ui::button(
+                                "theme-import-current",
+                                format!("Import \"{}\" from VS Code", chosen.name),
+                                ui::Button::Secondary,
+                            )
+                            .on_click(cx.listener(
+                                move |view, _, _, cx| {
+                                    view.import_theme(
+                                        &chosen.path,
+                                        chosen.light,
+                                        Some(&chosen.name),
+                                        cx,
+                                    )
+                                },
+                            )),
+                        )
+                    })
+                    .child(
+                        ui::button(
+                            "theme-import",
+                            "Import VS Code theme file…",
+                            ui::Button::Secondary,
+                        )
+                        .on_click(cx.listener(|view, _, _, cx| view.import_theme_file(cx))),
+                    )
+                    .into_any_element(),
+                Self::note(if own {
+                    "Your theme is a JSON file you can edit here. Unset values come from the theme it extends."
+                } else {
+                    "Customize copies this theme into a JSON file of your own to edit."
+                })
+                .into_any_element(),
             ]))
+            .when_some(
+                self.theme_note.clone().or_else(themes::problem),
+                |el, note| {
+                    el.child(
+                        ui::text(div().pb(px(t.space.s16)).text_color(c.attention_text), &t.text.status)
+                            .child(note),
+                    )
+                },
+            )
             .child(Self::section([
                 Self::label("INTERFACE SIZE").into_any_element(),
                 div()
@@ -959,9 +1408,13 @@ impl Render for SettingsWindow {
                     })),
             );
         }
+        let editing = self.page == Page::Appearance && self.editing.is_some();
         let content = match self.page {
             Page::General => self.general(cx),
-            Page::Appearance => self.appearance(cx),
+            Page::Appearance => match &self.editing {
+                Some(editing) => self.theme_editor(editing, cx),
+                None => self.appearance(cx),
+            },
             Page::Shortcuts => self.shortcuts(cx),
             Page::Agents => self.agents(cx),
             Page::Profiles => {
@@ -991,7 +1444,9 @@ impl Render for SettingsWindow {
                 .h_full()
                 .pt(px(t.size.titlebar - t.space.s24))
                 .px(px(t.space.s24))
-                .overflow_y_scroll()
+                // The editor scrolls itself and fills the page.
+                .when(editing, |el| el.flex().flex_col())
+                .when(!editing, |el| el.overflow_y_scroll())
                 .child(content)
                 .when_some(self.error.clone(), |el, error| {
                     el.child(

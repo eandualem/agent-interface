@@ -1,5 +1,5 @@
 //! What first-run setup checks on this computer: the tools a terminal finds
-//! and whether Agent Backbone answers. Read-only; nothing is installed here.
+//! and whether Agent Backbone answers. Read-only; `install` holds the fixes.
 
 use std::{
     os::unix::{fs::FileExt, process::CommandExt},
@@ -10,9 +10,7 @@ use std::{
 
 /// Commands looked up through the user's own shell. tmux is not among them:
 /// terminals use the app's own resolver, so setup checks with that.
-const COMMANDS: &[&str] = &[
-    "git", "gh", "backbone", "claude", "codex", "gemini", "opencode",
-];
+const COMMANDS: &[&str] = &["git", "backbone", "claude", "codex", "gemini", "opencode"];
 
 /// Agent tools Backbone can run: command, name, official install command.
 pub const TOOLS: &[(&str, &str, &str)] = &[
@@ -78,6 +76,12 @@ impl Probe {
             tmux: agent_interface_tmux::connection::tmux_binary().ok(),
             backbone: backbone(),
         }
+    }
+
+    /// A profile client for the Backbone this check found, with its PATH.
+    pub fn client(&self) -> Option<crate::profiles::Client> {
+        let executable = self.path("backbone")?.clone();
+        crate::profiles::Client::new(executable, self.path_env.clone().into()).ok()
     }
 
     /// Where a terminal finds this command, if it does.
@@ -216,8 +220,9 @@ fn path_lookup(path_env: &str, home: Option<&Path>) -> (Vec<(&'static str, PathB
     (found, path_env)
 }
 
-/// A fresh install's first profile is Default, read through its verified connection.
-fn backbone() -> Backbone {
+/// Whether Agent Backbone's Default profile answers, read through its
+/// verified connection. Blocks for a moment; call off the UI thread.
+pub fn backbone() -> Backbone {
     use agent_interface_roster::profiles::Kind;
     const UNANSWERED: &str = "The Default profile is not answering";
     let live = || true;
@@ -243,6 +248,16 @@ fn backbone() -> Backbone {
         },
         None => Backbone::Unreachable(UNANSWERED),
     }
+}
+
+/// The PATH a new terminal has: the login shell's, plus the usual install
+/// folders. Blocks for up to a few seconds; call off the UI thread.
+pub fn login_path() -> String {
+    let path_env = shell_lookup()
+        .map(|(_, path_env)| path_env)
+        .unwrap_or_else(|| std::env::var("PATH").unwrap_or_default());
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    path_lookup(&path_env, home.as_deref()).1
 }
 
 /// Resolve only the provider executable; never probe ambient provider content.

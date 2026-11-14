@@ -1,6 +1,6 @@
 //! Artifact discovery and document lifecycle, separate from Backbone polling.
 
-use super::artifact_web::{self, Surface};
+use super::artifact_web::Surface;
 use crate::{
     artifacts::{self, Catalog, Entry},
     desktop::{
@@ -163,7 +163,7 @@ impl Render for ArtifactPane {
             } else if let Some(html) = &self.html {
                 let surface = self.surface.clone();
                 let html = html.clone();
-                let theme = artifact_web::theme();
+                let theme = super::reading::document_script();
                 let entity = cx.entity().downgrade();
                 let focus_entity = entity.clone();
                 let async_cx = Rc::new(RefCell::new(cx.to_async()));

@@ -339,7 +339,7 @@ impl LiveTerminal {
         let work = cx.background_executor().spawn(async move {
             use agent_interface_roster::lifecycle;
             match (connection, &target.0) {
-                (Some(connection), _) => connection.start_agent(&target.1, resume),
+                (Some(connection), _) => connection.start_agent(&target.1, resume, Some(defaults)),
                 (None, Some(data_dir)) => {
                     lifecycle::start_with_defaults(data_dir, &target.1, resume, defaults)
                 }
@@ -790,6 +790,8 @@ pub(super) fn appearance() -> Appearance {
         foreground: terminal.text,
         background: terminal.background,
         cursor: terminal.cursor,
+        selection: terminal.selection,
+        selection_text: terminal.selection_text,
         palette: terminal.palette,
     }
 }

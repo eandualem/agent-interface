@@ -1,17 +1,20 @@
-//! The one Markdown reader every view uses: skills, policies, reports, answers
-//! and conversation messages. Authored messages keep leading rules as content.
+//! The one Markdown reader every view uses: skills, policies, reports, answers,
+//! plan step details, conversation and interaction messages. Authored messages keep leading rules as content.
 //! CommonMark with tables, strikethrough and task lists is parsed by
 //! `pulldown-cmark` into blocks, drawn in the document styles. Web addresses
 //! read as their site and open when clicked; it loads no images.
 
-use std::ops::Range;
+use std::{cell::RefCell, collections::HashMap, ops::Range, rc::Rc};
 
 use gpui::{
     Context, FontStyle, FontWeight, HighlightStyle, StrikethroughStyle, div, prelude::*, px,
 };
 use pulldown_cmark::{Event, LinkType, Options, Parser, Tag, TagEnd, TextMergeStream};
 
-use super::selection::{self, Selectable};
+use super::{
+    reading,
+    selection::{self, Selectable},
+};
 
 use crate::desktop::{
     components as ui,
@@ -40,11 +43,11 @@ pub(super) enum Mark {
 impl Mark {
     /// Add this mark's look to `style`.
     pub fn apply(self, style: &mut HighlightStyle) {
-        let c = colors();
         match self {
             Self::Code => {
-                style.color = Some(c.code.into());
-                style.background_color = Some(c.selected.into());
+                let look = reading::look();
+                style.color = Some(look.code_text.into());
+                style.background_color = Some(look.code_fill.into());
             }
             Self::Strong => style.font_weight = Some(FontWeight::SEMIBOLD),
             Self::Emphasis => style.font_style = Some(FontStyle::Italic),
@@ -98,12 +101,87 @@ pub(super) enum Block {
     },
 }
 
+/// Parsed text by source, so drawing unchanged text again parses nothing.
+/// Entries are kept by use: when the sources held would pass [`CACHE_BYTES`],
+/// those used longest ago are dropped until half of it is free.
+/// Parsed blocks and when they were last used.
+type Kept = (Rc<Vec<Block>>, u64);
+
+#[derive(Default)]
+struct Cache {
+    /// Authored records, then documents with front matter.
+    kinds: [HashMap<Box<str>, Kept>; 2],
+    bytes: usize,
+    used: u64,
+}
+
+const CACHE_BYTES: usize = 8 * 1024 * 1024;
+
+thread_local! {
+    static CACHE: RefCell<Cache> = RefCell::default();
+}
+
+fn cached(text: &str, front_matter: bool) -> Rc<Vec<Block>> {
+    CACHE.with_borrow_mut(|cache| {
+        cache.used += 1;
+        let used = cache.used;
+        if let Some((blocks, last)) = cache.kinds[usize::from(front_matter)].get_mut(text) {
+            *last = used;
+            return blocks.clone();
+        }
+        let blocks = Rc::new(parse_with(text, front_matter));
+        if text.len() > CACHE_BYTES / 4 {
+            return blocks;
+        }
+        if cache.bytes + text.len() > CACHE_BYTES {
+            // Make room down to half the limit, oldest first, so a full
+            // cache is not sorted again on the next new text.
+            let mut ages: Vec<(u64, usize)> = cache
+                .kinds
+                .iter()
+                .flat_map(|kind| kind.iter().map(|(text, (_, last))| (*last, text.len())))
+                .collect();
+            ages.sort_unstable();
+            let mut bytes = cache.bytes;
+            let mut keep = 0;
+            for (last, len) in ages {
+                if bytes + text.len() <= CACHE_BYTES / 2 {
+                    break;
+                }
+                bytes -= len;
+                keep = last;
+            }
+            for kind in &mut cache.kinds {
+                kind.retain(|_, (_, last)| *last > keep);
+            }
+            cache.bytes = bytes;
+        }
+        cache.bytes += text.len();
+        cache.kinds[usize::from(front_matter)].insert(text.into(), (blocks.clone(), used));
+        blocks
+    })
+}
+
+/// The blocks of a document, after any front matter between `---` lines;
+/// kept for the next frame.
+pub(super) fn document(text: &str) -> Rc<Vec<Block>> {
+    cached(text, true)
+}
+
+/// The blocks of an authored record, which has no front matter: a leading
+/// `---` is a rule. Kept for the next frame.
+pub(super) fn authored(text: &str) -> Rc<Vec<Block>> {
+    cached(text, false)
+}
+
 /// The blocks of a document, after any front matter between `---` lines.
+#[cfg(test)]
 pub(super) fn parse(text: &str) -> Vec<Block> {
     parse_with(text, true)
 }
 
 /// Authored records contain no front matter; a leading `---` is a rule.
+#[cfg(test)]
 pub(super) fn parse_authored(text: &str) -> Vec<Block> {
     parse_with(text, false)
 }
@@ -483,7 +561,7 @@ pub(super) fn render_in<V: Selectable>(
 
 /// `blocks` one under another, `gap` apart.
 fn column<V: Selectable>(blocks: &[Block], gap: f32, pane: &V, cx: &mut Context<V>) -> gpui::Div {
-    let (t, c) = (tokens(), colors());
+    let (t, c, look) = (tokens(), colors(), reading::look());
     let mut out = div().flex().flex_col().gap(px(gap)).min_w_0();
     for (at, block) in blocks.iter().enumerate() {
         out = out.child(match block {
@@ -536,8 +614,8 @@ fn column<V: Selectable>(blocks: &[Block], gap: f32, pane: &V, cx: &mut Context<
             Block::Quote(blocks) => div()
                 .pl(px(t.space.s12))
                 .border_l(px(t.space.s2))
-                .border_color(c.line_strong)
-                .text_color(c.muted)
+                .border_color(look.quote_bar)
+                .text_color(look.quote_text)
                 .child(column(blocks, gap, pane, cx))
                 .into_any_element(),
             Block::Code(code) => ui::text(
@@ -545,9 +623,9 @@ fn column<V: Selectable>(blocks: &[Block], gap: f32, pane: &V, cx: &mut Context<
                     .px(px(t.space.s14))
                     .py(px(t.space.s12))
                     .rounded(px(t.radius.slot))
-                    .bg(c.ground)
+                    .bg(look.block_fill)
                     .border(px(t.size.hairline))
-                    .border_color(c.line)
+                    .border_color(look.block_line)
                     .font_family(t.font.mono.clone())
                     .text_color(c.text_2)
                     .line_height(gpui::relative(1.5))
@@ -559,21 +637,35 @@ fn column<V: Selectable>(blocks: &[Block], gap: f32, pane: &V, cx: &mut Context<
             Block::Rule => div()
                 .my(px(t.space.s4))
                 .h(px(t.size.hairline))
-                .bg(c.line)
+                .bg(look.rule)
                 .into_any_element(),
             Block::Table { head, rows } => {
+                // A column's share of the width follows its longest cell,
+                // within bounds so no column vanishes or takes the table.
+                let widths: Vec<f32> = (0..head.len().max(1))
+                    .map(|column| {
+                        std::iter::once(head)
+                            .chain(rows)
+                            .filter_map(|cells| cells.get(column))
+                            .map(|cell| cell.text.chars().count())
+                            .max()
+                            .unwrap_or(0)
+                            .clamp(6, 48) as f32
+                    })
+                    .collect();
                 let row = |cells: &[Inline], header: bool, cx: &mut Context<V>| {
                     let mut line = div()
                         .flex()
                         .border_t(px(t.size.hairline))
-                        .border_color(c.line)
-                        .when(header, |el| el.border_t_0().bg(c.field).text_color(c.text));
-                    for cell in cells {
+                        .border_color(look.table_line)
+                        .when(header, |el| {
+                            el.border_t_0().bg(look.table_head).text_color(c.text)
+                        });
+                    for (column, cell) in cells.iter().enumerate() {
+                        let mut slot = div().flex_1().min_w_0();
+                        slot.style().flex_grow = widths.get(column).copied();
                         line = line.child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .px(px(t.space.s10))
+                            slot.px(px(t.space.s10))
                                 .py(px(t.space.s6))
                                 .when(header, |el| el.font_weight(FontWeight::SEMIBOLD))
                                 .child(styled(cell, pane, cx)),
@@ -586,7 +678,7 @@ fn column<V: Selectable>(blocks: &[Block], gap: f32, pane: &V, cx: &mut Context<
                     .flex_col()
                     .rounded(px(t.radius.slot))
                     .border(px(t.size.hairline))
-                    .border_color(c.line)
+                    .border_color(look.table_line)
                     .overflow_hidden();
                 if !head.is_empty() {
                     table = table.child(row(head, true, cx));
@@ -610,6 +702,66 @@ mod tests {
             text: text.into(),
             ..Inline::default()
         }
+    }
+
+    #[test]
+    fn unchanged_text_is_parsed_once_and_old_entries_leave() {
+        let first = authored("**once**");
+        assert!(Rc::ptr_eq(&first, &authored("**once**")));
+        // The same text read as a document is a different reading.
+        assert!(!Rc::ptr_eq(&first, &document("**once**")));
+        assert_eq!(*document("---\na: b\n---\nbody"), parse("body"));
+        // Filling the cache drops what was used longest ago, never the newest.
+        let filler = "x".repeat(CACHE_BYTES / 5);
+        for at in 0..6 {
+            authored(&format!("{at}{filler}"));
+        }
+        let held = CACHE.with_borrow(|cache| cache.bytes);
+        assert!(held <= CACHE_BYTES, "{held}");
+        assert!(!Rc::ptr_eq(&first, &authored("**once**")));
+        let newest = authored(&format!("5{filler}"));
+        assert!(Rc::ptr_eq(&newest, &authored(&format!("5{filler}"))));
+        // Many small old entries do not let large new ones pass the limit.
+        for at in 0..10_000 {
+            authored(&format!("small {at}"));
+        }
+        for at in 6..16 {
+            authored(&format!("{at}{filler}"));
+            let held = CACHE.with_borrow(|cache| cache.bytes);
+            assert!(held <= CACHE_BYTES, "{held}");
+        }
+        let held = CACHE.with_borrow(|cache| {
+            let counted: usize = cache
+                .kinds
+                .iter()
+                .flat_map(HashMap::keys)
+                .map(|t| t.len())
+                .sum();
+            assert_eq!(counted, cache.bytes);
+            cache.bytes
+        });
+        assert!(held <= CACHE_BYTES, "{held}");
+    }
+
+    /// `cargo test --release -p agent-interface-app --lib parse_cost -- --ignored --nocapture`
+    #[test]
+    #[ignore = "a measurement, not a check"]
+    fn parse_cost() {
+        let section = "## Heading\n\nA paragraph with **bold**, `code` and [a link](https://example.com/a).\n\n- one\n- two https://example.com/b\n\n| a | b |\n|---|---|\n| 1 | `2` |\n\n";
+        let text = section.repeat(40_000 / section.len());
+        let runs = 2_000;
+        let start = std::time::Instant::now();
+        for _ in 0..runs {
+            std::hint::black_box(parse(std::hint::black_box(&text)));
+        }
+        let parsed = start.elapsed() / runs;
+        document(&text);
+        let start = std::time::Instant::now();
+        for _ in 0..runs {
+            std::hint::black_box(document(std::hint::black_box(&text)));
+        }
+        let cached = start.elapsed() / runs;
+        println!("{} bytes: parse {parsed:?}, cached {cached:?}", text.len());
     }
 
     #[test]

@@ -35,7 +35,6 @@ pub(super) struct Cards<'a> {
     pub drop_target: Option<&'a (String, super::pane_drag::Edge)>,
     /// The agent state shown in each pane, by leaf.
     pub leaf_states: HashMap<String, AgentState>,
-    pub unavailable: HashMap<String, &'static str>,
 }
 
 impl Browser {
@@ -149,15 +148,7 @@ impl Browser {
             ),
             PaneHeaders::Off => (None, None),
         };
-        let body = if let Some(message) = cards.unavailable.get(&leaf.id) {
-            div()
-                .size_full()
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(*message)
-                .into_any_element()
-        } else if let Some(chooser) = cards
+        let body = if let Some(chooser) = cards
             .chooser
             .filter(|chooser| chooser.destination.pane == leaf.id)
         {

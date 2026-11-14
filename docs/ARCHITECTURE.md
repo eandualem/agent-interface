@@ -81,6 +81,9 @@ output. Capture and restore segments share immutable hyperlink strings, avoiding
 per-segment copies of long targets. Initial snapshots are released after restoration. The reader queues
 output only for panes in its selected window. Recovery uses the state tmux
 can report; it cannot reconstruct every historical parser or input mode.
+tmux does not report a partly received UTF-8 character as pending, so when the
+first output after a snapshot starts inside a character, the pane is rebuilt
+again instead of drawing the rest as replacement characters.
 
 tmux writes a capture's text into the control connection unchanged, so a
 captured line could match the line that ends tmux's reply and make the reader
@@ -191,83 +194,119 @@ session-termination commands; navigation keeps them attached.
 
 ## First-run setup
 
-Until setup is explicitly completed, an ordinary launch opens a setup window
-instead of the workspace window. Existing libraries and preferences, including
-pre-rename data, are preserved and do not count as completed setup. An explicit
-`--data-dir` launch opens that library directly. Setup has an eight-second opening scene, played once, then steps
-that check tmux, Agent Backbone, Git and the agent tools, create a first agent,
-and show the main shortcuts. tmux uses the terminal pane's `tmux_binary` resolver. Git, GitHub CLI,
-Backbone and agent tools are looked up after the user's interactive login shell
-runs its startup files, because an app opened from the Dock has a short PATH.
-The probe itself runs in `/bin/sh` so non-POSIX login shells can supply PATH too.
-Standard installation directories, including OpenCode's `~/.opencode/bin`, are
-appended without overriding the shell's PATH order. Refresh checks those paths
-again and passes the refreshed PATH to both runtime discovery and first-agent
-setup. Submitted requests retain their original environment for replay.
-The shell has an eight-second deadline; its output goes to a temporary file
-instead of a pipe, with positional reads limited to 256 KiB. The lookup falls
-back to PATH and the usual install folders. The
-Backbone check is a single read-only roster request. These checks install nothing.
-The welcome window offers the same persistent interface-size setting as the
-workspace, including during the opening scene, so display scaling can be adjusted
-before setup is complete. On Wayland, increasing this size asks the compositor
-to maximize setup, or uses the display extent alone if maximizing is unsupported;
-global window positions are unavailable, so app-calculated position limits cannot
-safely place it. macOS and X11 instead bound resizing
-against the display, respecting the platform resize anchor.
+Until setup is explicitly completed, an ordinary launch shows first run as a
+layer over the workspace window (`desktop/onboarding.rs`, hosted by
+`Browser::start_onboarding`). No other window opens or closes during first run.
+Existing libraries and preferences, including pre-rename data, are preserved
+and do not count as completed setup. An explicit `--data-dir` launch opens that
+library directly.
 
-The first-agent step calls the selected engine's `runtimes --json --check-setup`
-(falling back to `runtimes --json` when an older CLI rejects the option), then submits
-`setup --file REQUEST --jsonl` only after an explicit Start action. It offers the
-`orchestrator-v1` brief or custom instructions, a name and a folder. Discovery
-reports installed tools and opt-in setup compatibility, never verified login;
-discovery never chooses a tool automatically. Refresh preserves an explicit choice
-when the tool remains in the catalog. Selecting any listed agent tool shows only
-its own diagnostic and executable; an incompatible choice cannot start setup.
-The same selected row controls the diagnostic, Start label and submitted runtime
-and hooks, so another installed tool cannot block it. Permission and login prompts stay
-in the actual agent terminal. First-agent selection also requires an explicit
-`setup_supported: true`; older providers and unsupported tools remain unavailable
-for this setup path. Start also requests an initial greeting, which may
-use the selected account. A submitted greeting is not reported as a received reply.
+First run is the person's first profile. A profile is where agents, sign-ins,
+skills and policies live, so first run makes one with New profile's own screens
+and asks for nothing it can check or default instead. On a ready computer it
+takes two presses: Continue on the name, then Start on the guide.
 
-The app saves the exact request, launcher and effective login-shell PATH in a
-private `onboarding-agent-<installation-digest>.json` beside settings before
-executing it. The resolved provider directory scopes each saved operation.
-Recovery loads that record even when fresh tool discovery cannot find an engine. An interrupted
-attempt reuses that request ID. Change agent tool first durably records cancellation
-intent, then submits the same fields and ID with `action=cancel_first_agent`.
-Cancellation uses the active or discovered engine and refreshed PATH when
-available, falling back to the saved executable and PATH. Normal setup replay
-always uses the saved launcher and PATH.
-Only a matching `request_cancelled` completion with `can_start_new_request=true`
-retires the local request and unlocks the form. The name, folder and brief survive;
-tool discovery and the login-shell PATH refresh before a new request is created.
-After interruption, cancellation intent resumes cancellation rather than starting
-the previous tool. The provider refuses cancellation after setup effects begin;
-the app retains the original record on refusal or an uncertain result. Saving,
-execution, cancellation and archiving serialize through a sibling file lock, and
-each worker checks that its request is still current before invoking the engine. The engine
-owns durable operation receipts and mutation deduplication. Requests are capped at
-32 KiB; stdout uses positional reads with a 1 MiB total limit, 64 KiB lines,
-1,024 events and a five-minute deadline. Request identity, sequence, final state
-and exit status must agree. Missing or contradictory results preserve the saved
-request and show an unknown outcome. Discovery has a fifteen-second deadline.
-Inherited authority remains intact; the app never substitutes an operator key.
+It opens with a scene of about five seconds, played once: the app's face
+laughs, looks around and winks into the icon, with the same keyframes as the
+website, then shrinks and rises to the top of the first-run column, where it
+stays while each screen's words change under it. Any key, a click or Skip jumps
+to its handoff, and a system that asks for reduced motion opens without it. The
+scene is a pure function of time, redrawn every frame, so tests check its beats
+and that its last frame is the app icon. Its clock starts on the second painted
+frame, so a slow first frame cannot eat the laugh.
 
-An installer activation record under the private engine root may select an
-immutable payload launcher only when its data directory matches the current
-connection and its canonical entrypoint remains inside that payload. Otherwise
-setup uses the detected Backbone CLI. Existing agents can be used without creating
-another agent; fresh installations may choose terminals for now and reopen setup
-later. A saved request remains intact when the user chooses terminals after an
-attempt finishes, even if that attempt needs recovery. Rechecking the computer
-refreshes unsubmitted discovery inputs while
-retaining any saved operation unchanged. Opening a created agent adds a saved terminal attachment through
-the normal workspace save path.
-Progress is saved as `[setup]` in `settings.toml`: an interrupted setup resumes
-without the scene, and **Set Up Agent Interface…** in the application menu
-reopens it. An explicit library directory skips setup.
+Behind the scene, first run checks this computer. tmux uses the terminal pane's
+`tmux_binary` resolver. Git and the Backbone CLI are looked up after the user's
+interactive login shell runs its startup files, because an app opened from the
+Dock has a short PATH. The probe itself runs in `/bin/sh` so non-POSIX login
+shells can supply PATH too. Standard installation directories, including
+OpenCode's `~/.opencode/bin`, are appended without overriding the shell's PATH
+order. The shell has an eight-second deadline; its output goes to a temporary
+file instead of a pipe, with positional reads limited to 256 KiB. Backbone
+counts as answering when its Default profile lists, shows, connects and returns
+its roster; these reads change nothing. The scene waits on the icon at its
+handoff until the check has answered, and the tagline then reads "Getting
+things ready…".
+
+The agent service is started without asking and is never named on screen
+unless the person opens Details. One that is installed but not answering is
+restarted once, the way the installer starts it (`launchctl` on macOS, the
+systemd user unit on Linux and WSL), and given 30 seconds to answer. One that
+was never set up is set up with the installer's own request,
+`backbone setup --file REQUEST --jsonl` with `action: initialize`,
+`service: user` and the `core-v1` starter profile, which keeps any existing
+data. If it still does not answer, "Agents can't start yet" offers Try again
+and Continue with terminals; Details holds the technical reason and where the
+service's log is. tmux and Git, when missing, are one screen with one Install
+button. They install through the system's own installer: Apple's command line
+tools or Homebrew on macOS, and on Linux the package manager behind `pkexec`'s
+graphical password prompt; without a package manager or that prompt, the
+screen says so. Installs run off the UI thread with a fifteen-minute deadline,
+write their output to a temporary file, and explain a failure with its last
+line. First run checks again when an install ends and every few seconds while a
+system installer it opened is running. GitHub CLI is not checked: nothing in
+the app depends on it.
+
+The first profile's screens are New profile's `Flow` in first-run mode
+(`profile_management/flow.rs`): "Name your first profile", with Personal
+selected so typing replaces it, and no way back, since there is nothing to go
+back to. Under the name, a line shows the Git name and email the profile's
+agents will commit as: this computer's own (`git config --global`), never
+another profile's. With both set and unchanged, the create request asks Agent
+Backbone to copy them in (`git_identity: copy`). Change opens two fields; left
+empty, the profile starts with none. Continue creates and starts the profile
+and runs the authenticated selection, as New profile does. Profile requests
+keep their journal in the library folder, so creation makes that folder (0700,
+as the library does) when first run reaches it before the window's library
+has. The workspace window then binds the library's untouched starting
+workspace to the profile (a new workspace when the library already holds
+more), as soon as its library has loaded.
+
+The guide's screen (`profile_management/choices.rs` in guide mode) has its
+name, the tool it runs in and Start. Each tool card says whether that tool is
+signed in in the profile, will ask to sign in when it starts, isn't installed
+(Install, with the tool's official installer and the login shell's PATH) or
+needs an update. The first choice is a signed-in tool, else an installed one.
+Folder, instructions, model, hooks and greeting sit under More options. The
+guide starts as `guide`, working in `~/Agents/guide`, which setup creates
+(`create_directory`); a folder the person chooses must already exist. Its brief
+is the coordinating `orchestrator-v1` template or the person's own
+instructions. While it starts, the provider's steps show as one status line
+under the button, and as soon as the guide is running, or waiting for a sign-in
+or permission, its pane opens: a tool that needs signing in asks in that
+terminal. The layer then fades over `reveal_ms` while the panel eases in. Use a
+terminal instead leaves the workspace on a terminal. A start that fails keeps
+the choices, and Try again repeats the same request when nothing changed and
+the provider allows it.
+
+The layer offers the same persistent interface-size setting as the workspace,
+including during the opening scene. Progress is saved as `[setup]` in
+`settings.toml`: an interrupted first run resumes without the scene, and a
+profile made before the app closed (`profile`) goes straight to its guide.
+**New Profile…** in the application menu shows the same two screens in the
+content area, titled "New profile" and "Start its guide", with Cancel and Skip
+for now. An explicit library directory skips first run. Earlier versions made
+the first agent in the Default profile through `setup --file REQUEST --jsonl`
+and kept a private `onboarding-agent-*.json` record for its recovery. Setup no
+longer reads or writes that record; an agent such a request made stays in
+Default, with the person's own CLI sign-ins.
+
+### Limitations with Agent Backbone 0.5
+
+- A Git name and email typed on the name screen are not part of the create
+  request: Agent Backbone can only copy this computer's own. Once the profile
+  is running, first run opens a shell in it (`ensure_shell`, which starts in
+  the profile's home) and runs `git config --global` there. This is best
+  effort: a failure is logged, the profile still works, and the person can set
+  them later inside the profile.
+- Access to repositories is not set up. An isolated profile has its own home,
+  so the GitHub CLI sign-in and SSH keys of the person's own account are not
+  visible to its agents. Running `gh auth login` and `gh auth setup-git` in a
+  shell in that profile is the supported way today.
+- The service repair restarts and sets up the Default profile's login service
+  only. Under WSL it needs systemd enabled in `/etc/wsl.conf`; without it the
+  restart fails and first run offers Continue with terminals. WSL has not been
+  verified with this flow.
 
 ## Appearance and integrations
 
@@ -283,6 +322,20 @@ Application shutdown waits up to ten seconds for accepted layout writes and
 two seconds for settings writes, including writes from already-closed windows.
 The wait tracks file workers, independently of their UI result handlers. A
 write still blocked beyond that shutdown allowance may remain unfinished.
+
+Themes are JSON files: twelve bundled into the binary and the person's own
+in `themes/` beside `settings.toml`, read up to 256 KiB each (VS Code imports
+up to 1 MiB). `settings.toml` stores only the chosen theme's id. A theme is
+merged over the TOML table of the theme it extends, so one checked reader
+(`design.rs`) builds every theme, and each mistake is reported with its token
+path, which the JSON lexer turns into a line and column. The theme in use is
+an interned `&'static` design behind a lock read once per lookup: views keep
+calling `tokens()` and `colors()` as before, and a theme switch repaints every
+window. The cost is that each distinct theme applied stays in memory until
+the app quits, a few kilobytes each; the editor applies only on save. Terminals
+take their colours and font from the theme when they are created and when
+appearance changes, never per cell. Files are saved atomically, and a theme
+that fails to read leaves Dark in use with the reason shown in Settings.
 
 The legacy keymap inspection commands do not replace native Settings
 shortcuts.
@@ -380,6 +433,14 @@ nested formatting without rescanning every mark for each span.
 Markdown nesting beyond 32 containers falls back to the complete source text,
 bounding parsing, element-tree rendering and destruction. URL recognition scans
 forward and closes each link by replacing only entries within its own label.
+Parsed blocks are kept by source text in a per-thread cache bounded at 8 MiB of
+source, dropping the entries used longest ago when full, so a frame that draws
+unchanged text parses nothing: a 40 KB document costs about 18 µs to look up
+against 555 µs to parse (release build, the ignored `parse_cost` test in
+`views/markdown.rs`). Table columns share the width by their longest cell.
+`views/reading.rs` names the colours of tables, code, quotes, rules, links and
+selection once; native Markdown draws from it and the stylesheet for HTML
+documents is generated from it, so both surfaces show the same element alike.
 WebKit handles those selectors through the macOS responder chain, without a
 clipboard JavaScript bridge.
 
@@ -410,7 +471,13 @@ Agent views cache unchanged render trees; data, size, focus and appearance
 changes invalidate them. Visible working and starting indicators animate using GPUI; other states are
 static. State labels retain the distinction between starting and busy, and
 between blocked and waiting for a person. Each connection-owned roster worker reads
-immediately and then two seconds after each completed request. Its live model
+immediately and then two seconds after each completed request. After a good
+roster it also reads the running swarms, which only group agents in the
+navigation panel: a failed swarm read clears the grouping without marking agent
+states stale. Each window remembers the swarms it has seen running; when a
+readable list stops naming one, it closes the tabs still named after that swarm
+whose every pane attaches to a session seen in that swarm, on its tmux server. A failed or partly unreadable list never counts as
+a finish, and a swarm that ends while the app is closed leaves its tab. Its live model
 constructs each agent's status, label and ordering once per observation; windows,
 navigation badges, choosers and information views retain that connection's model.
 Shared UI components render its symbol, colour and label. Roster changes
@@ -585,14 +652,81 @@ Discovery reads metadata off the UI thread every two seconds while visible;
 the catalog retains the newest 200 entries. HTML is read only on opening a
 document and is limited to 4 MiB, including inline assets.
 
-`desktop::views::artifact_web` is the system-webview boundary. On macOS and Linux it
-creates a Wry/WebKit child view only for an opened document, positions it in
-the pane's content rectangle, and updates its host theme stylesheet. Text,
-backgrounds and controls follow the active app theme; layout and media retain
-their authored presentation. Stored HTML is not rewritten. The view is
-hidden while native overlays or pane dragging need that space. Closing the
-document or hiding its pane releases the web view, so reopening starts a fresh
-document runtime. Native terminals, menus and report views do not use WebKit.
+`desktop::views::artifact_web` is the system-webview boundary. On macOS and
+Linux it creates a Wry/WebKit child view only for an opened document, positions
+it in the pane's content rectangle, and runs the host theme script
+(`assets/document/theme.js`, built once per theme by `views/reading.rs`).
+Stored HTML is not rewritten; the script changes the page in memory:
+
+- **Colours are mapped, not erased.** Each colour in the document's own style
+  rules (imported sheets too) and inline styles becomes the theme colour
+  playing the same part: a neutral by where it sits between the document's own
+  page and text colour, a chromatic colour by the theme colour nearest in hue,
+  placed as far from the page as the authored colour was: a pale tint stays a
+  tint, a deep badge under light text stays deep. Text, borders and other
+  foregrounds reach the full theme colour by halfway to the text colour, where
+  most text colours sit. Cards, status colours and chips keep their meaning,
+  and a document written for a light page reads correctly in a dark theme
+  whatever the system appearance. Any CSS colour syntax is read, including
+  `oklch()`, `lab()` and `color()`, converted through a one-pixel canvas.
+- **Variables.** A custom property is mapped where it is defined when it holds
+  one colour, a gradient, a colour function or a `var()` reference with a
+  fallback, so CSS resolves it on each element as written. A property used as
+  the channels of a colour, as in `rgb(var(--bg))` or
+  `hsl(var(--background))`, directly or through aliases and their fallbacks,
+  is mapped in its own format, keeping any alpha it carries. Separate
+  component properties, as in `rgb(var(--r) var(--g) var(--b))`, are mapped
+  together where one block defines all three; components defined in different
+  blocks keep their values. A colour function whose alpha is a `var()` keeps
+  that alpha; in any other colour function with a `var()`, such as
+  `color-mix()`, the literal colours and channel fallbacks are mapped and the
+  references kept. A `background`, `border` or other colour shorthand written
+  with `var()` is mapped as a whole.
+- **Left as authored:** shadows, SVG (its inline styles, rules that reach only
+  SVG, state rules such as `svg:hover` included, and the colour custom
+  properties it uses from outside), images, video, canvas, keyframes and any
+  style sheet the page cannot read. A graphic holds the authored values of
+  those properties through a host rule with no specificity, so its own rules
+  (such as `svg:hover`) and inline style still win; the values are taken again
+  after any change to the page, after hover and focus changes, and after a
+  resize. A rule kept for SVG alone is mapped once it reaches other elements.
+- **Theme changes** map from the authored values, which the script keeps, with
+  no reload; so does a change of the system appearance, which can switch the
+  document's own light or dark rules, and so does a resize, after it settles,
+  since a media query can change the page's own colours. The document's
+  transitions are held while colours are restored, measured and mapped, and in
+  a document that uses `light-dark()` the theme's light or dark scheme already
+  applies, so it is measured as it will be drawn.
+- **Later changes** are mapped too: style elements and style sheet links (also
+  inside added subtrees, when their attributes change, and when a sheet
+  finishes loading), inline styles, any attribute of the root or body, and
+  rules changed through `insertRule`, `deleteRule`, `replace`, `replaceSync`,
+  `setProperty` and `removeProperty`. A rule changed by assigning a style
+  property directly is mapped at the next of those.
+- **Reading elements.** `assets/document/theme.css` gives tables, code,
+  quotes, rules and links the shared reading look. It forces only their lines
+  and shape; fills and text colours are defaults, so a fill the document gives
+  an element keeps the text mapped for it. Unstyled form controls take the
+  theme's field and text colours. Code, a code block or a table header takes
+  the default fill only where all the text in it reads on it. It exposes the
+  theme as `--ai-*` custom properties that a document may use.
+- **Links, inline code and quotes** take the theme's link, code and muted
+  colours unless those would read below 3:1 against the fill behind them
+  (translucent fills laid over what is behind them); then they keep the colour
+  mapped for that fill, or take the theme's text or page colour, whichever
+  reads, when the document gives them none. A part of a link with its own fill
+  is checked the same way. All of them are checked again shortly after any
+  change to the page (a selector such as `.selected + a` reaches beyond the
+  changed element), after a resize, after a transition or animation ends, and
+  after hover, focus, press and form input when the document has rules for
+  those states.
+- **Selection.** Selected text keeps its own colour over a translucent accent,
+  as in native readers, unless the document styles its own selection.
+
+Layout and media keep their authored presentation. The view is hidden while
+native overlays or pane dragging need that space. Closing the document or
+hiding its pane releases the web view, so reopening starts a fresh document
+runtime. Native terminals, menus and report views do not use WebKit.
 WebKit's platform processes belong to the renderer; the app adds no daemon.
 Linux uses WebKitGTK on X11, with XWayland on Wayland desktops and WSLg;
 the integration and event loop are described below.
@@ -647,6 +781,12 @@ build-time advisory exception are described below.
   carry LGPL-2.1-or-later, MIT-CMU and BSD terms, preserved in the
   [Linux protocol notices](../packaging/wayland-notices.txt). Cargo licence
   metadata alone does not describe those generated-binding inputs.
+- **Bundled colour themes:** colour values from MIT-licensed theme projects
+  (Dracula, One Dark Pro, Tokyo Night, Catppuccin, Nord, Gruvbox, Solarized,
+  GitHub Primer, One Light), stored as the app's own theme JSON. Their
+  copyright notices are in
+  [`packaging/extra-notices.txt`](../packaging/extra-notices.txt). No code is
+  taken from them, and no crate is added.
 - **`libghostty-vt`:** terminal emulation behind the `term` boundary, pinned with
   its native binding. MIT OR Apache-2.0; Ghostty's core is MIT-licensed.
 - **`rusqlite`:** transactional access to the existing SQLite library format.
@@ -676,7 +816,7 @@ build-time advisory exception are described below.
 - **Hyper 1.12.0, hyper-util 0.1.21, http-body-util 0.1.5 and Tokio 1.53.3:**
   MIT HTTP/runtime dependencies, pinned exactly, for HTTP over a connected
   Unix socket after the peer identity check.
-- **`rustix` 1.1.5:** effective-UID access for that check. MIT OR Apache-2.0
+- **`rustix` 1.1.6:** effective-UID access for that check. MIT OR Apache-2.0
   OR Apache-2.0 WITH LLVM-exception. The app also uses this pinned workspace
   dependency for safe nonblocking pipes and owned discovery-process cleanup.
 - **`objc2-web-kit` 0.3.2:** MIT-licensed bindings, pinned exactly, used by the
@@ -691,7 +831,8 @@ build-time advisory exception are described below.
   screenshot-drop staging. Each is MIT OR Apache-2.0.
 - **`pulldown-cmark` 0.13.6:** MIT-licensed CommonMark parser, pinned exactly
   with default features off, behind the one Markdown reader that skills,
-  policies, reports, answers and conversation messages use (`views/markdown.rs`).
+  policies, reports, answers, conversation messages, interaction messages and
+  plan step details use (`views/markdown.rs`).
   Authored messages treat a leading `---` as a rule rather than front matter.
   It adds tables,
   strikethrough and task lists; the app draws the parsed blocks natively.
@@ -881,8 +1022,8 @@ Agent Backbone owns canonical data, calculated results, engine versions, storage
 admission and atomic updates. The app does not calculate formulas.
 
 An explicitly bound Sheets client retains its verified profile identity and
-credential snapshot through pagination, range reads, exports and mutations.
-Prepared mutations retain that client for exact retries, even after credential
+credential snapshot through pagination, range reads, exports and feedback.
+Prepared feedback retains that client for exact retries, even after credential
 rotation; another profile or lifecycle cannot submit them. Binding refusals
 preserve drafts without legacy fallback. Native bound Sheets wiring is separate.
 
@@ -1006,8 +1147,8 @@ A prepared feedback request retains exact bytes and its retry key after an uncer
 response. The composer freezes while that request is unresolved and offers a retry of
 the same operation. Accepted feedback retains its receipt and distinguishes delivery
 states without claiming an agent answer. No agent workflow or service is started by
-the view. The typed adapter also represents provider mutation APIs, but the native
-Sheets view calls only reads, export and feedback submission.
+the view. The typed adapter exposes only reads, export and feedback submission;
+agents change workbooks through Backbone.
 
 JSON/XLSX exports preserve supported workbook features; CSV/TSV export one tab as
 values. Export warnings are bounded and displayed; malformed diagnostics fail
@@ -1179,10 +1320,10 @@ delayed retries cannot discard a different or already recovered connection.
 Close Pane and Close Tab capture the selected origin before consuming library
 updates and reject changed bindings or connection epochs even when tab and pane
 IDs are unchanged. Fresh local closes still work for unavailable profiles.
-The application-menu setup command opens first-run setup from any workspace.
-Setup always adds its agent to the Default profile, never to the selected
-workspace's profile, and Settings › Profiles offers the same flow as Add agent on
-Default.
+**New Profile…** in the application menu shows New profile's screens in the
+active workspace window. Settings › Profiles offers Add agent for an isolated
+profile; for Default, which keeps the person's own environment and refuses bound
+setup, the same button opens New profile instead.
 
 Save reconciliation treats a workspace's profile binding and its tab contents as
 an ownership boundary: a concurrent binding change cannot merge with a pane edit,
@@ -1361,28 +1502,26 @@ Worker generations reject stale results and controls. Successful receipts remain
 progress metadata: workspace selection still performs the authenticated handshake.
 Fresh first-agent setup choices remain separate from saved-request recovery.
 
-New profile runs as three steps in its workspace: name, sign in, first agent. Only
-signing in sits beside a pane.
-The name step takes an explicit profile name and the one baseline the provider can
-create today, and records one immutable create request in the same durable
-lifecycle journal. The provider creates a profile without starting it, so the step
-then records and submits a start request and runs the authenticated selection;
-only that verified selection binds the workspace. An unconfirmed create is checked
-again under its original key rather than sent anew. A profile starts clean: the
-person may opt in to `git_identity: "copy"` on the create request, which has the
-provider copy only their Git name and email. Omitting the field keeps the request's
-bytes unchanged, and recovery restores whichever request was saved. The sign-in step reads the
-profile's runtime catalog and opens sign-in sessions in the bound workspace. It asks
-`GET /api/profile/accounts/status` once for each installed CLI, then only for a CLI
-being signed in, every two seconds while that sign-in is open, because each read
-starts the CLI's own check. Signed in means a stored sign-in, not a working account.
-A sign-in session that ends closes its pane, and one more read decides the row: an
-ended session proves nothing. The first-agent step submits the same setup request as
-Add agent. Setup is complete once the CLI has started, whatever it shows; first-run
-screens are between the CLI and the person. The steps then say so, and leaving them
-opens the agent, so focus lands in its terminal. A CLI that exits right away is a
-failed setup with the provider's explanation; recovery of its saved request stays in
-the profile's Settings page.
+New profile runs as two screens across its workspace's content area: name, then
+its guide.
+The name screen takes an explicit profile name and the one baseline the provider
+can create today, and records one immutable create request in the same durable
+lifecycle journal. The provider creates a profile without starting it, so the
+screen then records and submits a start request and runs the authenticated
+selection; only that verified selection binds the workspace. An unconfirmed create
+is checked again under its original key rather than sent anew. A profile starts
+clean: when this computer's own Git name and email are kept, the create request
+carries `git_identity: "copy"`, which has the provider copy only those. Otherwise
+the field is omitted, keeping the request's bytes unchanged, and recovery restores
+whichever request was saved. The guide screen reads the profile's runtime catalog
+and asks `GET /api/profile/accounts/status` once for each installed CLI, so each
+tool card can say whether it is signed in; signed in means a stored sign-in, not a
+working account. Its Start submits the same setup request as Add agent. Setup is
+complete once the CLI has started, or is waiting for a sign-in or permission,
+whatever it shows: its pane opens then, so a sign-in happens in its terminal and
+focus lands there. A CLI that exits right away is a failed setup with the
+provider's explanation, shown under the button; recovery of its saved request
+stays under Earlier setups and in the profile's Settings page.
 
 Native profile management exposes saved first-agent setup separately from the
 current runtime catalog. It opens a private setup journal from the already
@@ -1406,10 +1545,10 @@ check, and the bounded scan has a read budget. Catalog-facing pending reads are
 observations only: actual admission repeats the check atomically. This local
 journal rule does not replace the provider's own request serialization.
 
-First run stays with the installer's Default profile: the installer initializes it,
-onboarding adds the first agent through schema-1 setup, and the app then opens that
-agent in a workspace bound to Default, through the same handshake as any profile.
-tmux-only use, with no Backbone, stays unbound.
+First run makes the person's first profile with New profile's steps and binds a
+workspace to it through the same handshake as any profile. The installer's Default
+profile remains, keeping the person's own CLI sign-ins. tmux-only use, with no
+Backbone, stays unbound.
 
 A profile workspace separates connecting from a failed connection and shows the
 reason. A profile's service does not restart itself after a reboot and its agents
@@ -1424,7 +1563,10 @@ client before loading choices. It checks the independent private setup journal
 for open requests, which it points to without blocking other agent names, and then
 reads that instance's schema-2 runtime catalog.
 An explicit project folder, name, brief, runtime and optional catalog model are
-frozen with hook and greeting choices into one original request. Compatibility
+frozen with hook and greeting choices into one original request. Gemini CLI and
+Antigravity CLI can't take a brief silently, so Agent Backbone sends it as their
+first turn; with the default brief, which asks the agent to greet, the request
+asks for no separate greeting. Compatibility
 and authentication observations remain separate; neither opens a terminal or
 connects a workspace. Confirmation hands the retained controller and prepared
 request to recovery with its original key established before admission or I/O.

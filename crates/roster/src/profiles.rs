@@ -312,6 +312,14 @@ impl Connection {
         if snapshot.error.is_some() {
             return Err(Error::Invalid);
         }
+        // Swarms only group agents, so their own failure clears them. A refused
+        // binding is about the connection and is never hidden.
+        let swarms = match self.response("/api/swarms", None, RESPONSE_LIMIT) {
+            Err(error @ (Error::BindingRequired | Error::BindingMismatch)) => return Err(error),
+            Err(_) => None,
+            Ok(response) => successful(&response).is_ok().then_some(response),
+        };
+        snapshot.update_swarms(swarms.as_ref().map(|response| response.body.as_slice()));
         Ok(snapshot)
     }
 
@@ -387,7 +395,10 @@ impl Connection {
             runtime: String,
             authentication: runtime_catalog::Authentication,
         }
-        let path = format!("/api/profile/accounts/status?runtime={runtime}");
+        let path = format!(
+            "/api/profile/accounts/status?runtime={}",
+            crate::views::encode(runtime)
+        );
         let response = self.response(&path, None, RESPONSE_LIMIT)?;
         if response.status == 404 {
             return Err(Error::Unsupported);
@@ -402,13 +413,29 @@ impl Connection {
 
     /// Start this stopped agent, continuing its saved conversation or opening a new
     /// one. The provider's start route takes the name only, so a replacement under
-    /// the same name would start instead. Runs on an I/O worker.
-    pub fn start_agent(&self, name: &str, resume: bool) -> crate::lifecycle::Outcome {
-        use crate::lifecycle::{Outcome, start_outcome};
+    /// the same name would start instead. `defaults` go with the request when
+    /// the agent's runtime advertises support. Runs on an I/O worker.
+    pub fn start_agent(
+        &self,
+        name: &str,
+        resume: bool,
+        defaults: Option<crate::lifecycle::TerminalDefaults>,
+    ) -> crate::lifecycle::Outcome {
+        use crate::lifecycle::{Outcome, start_outcome, supports_defaults};
         if !crate::valid_agent(name) {
             return Outcome::Refused("This session is not a registered agent.".into());
         }
-        let body = serde_json::json!({ "resume": resume, "wait": false });
+        let mut body = serde_json::json!({ "resume": resume, "wait": false });
+        let read = |path: &str| {
+            self.response(path, None, RESPONSE_LIMIT)
+                .ok()
+                .filter(|response| (200..300).contains(&response.status))
+                .map(|response| response.body)
+        };
+        if let Some(defaults) = defaults.filter(|_| supports_defaults(read, name)) {
+            body["terminal_defaults"] =
+                serde_json::to_value(defaults).expect("terminal colours JSON");
+        }
         let Ok(body) = serde_json::to_vec(&body) else {
             return Outcome::Unknown;
         };

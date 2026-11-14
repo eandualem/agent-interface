@@ -10,6 +10,8 @@ is built, where each part lives, and how to change it.
 | What | File | Change it to… |
 | --- | --- | --- |
 | Every colour, size, radius, type style and timing | [`crates/app/assets/design/tokens.toml`](../crates/app/assets/design/tokens.toml) | restyle the app without touching Rust |
+| The bundled themes | [`crates/app/assets/themes/`](../crates/app/assets/themes/) | change or add a shipped theme |
+| Theme files, the editor and VS Code import | `desktop/themes.rs`, `desktop/theme_editor.rs` | change how themes are read |
 | The typed loader and its checks | `crates/app/src/desktop/design.rs` | add a new token |
 | Shared pieces (rows, buttons, keycaps, menus, agent symbols…) | `crates/app/src/desktop/components.rs` | change how a component is built |
 | The navigation panel | `desktop/sidebar.rs` | rearrange the panel |
@@ -19,6 +21,7 @@ is built, where each part lives, and how to change it.
 | Tab, workspace and icon menus | `desktop/menus.rs` | change menus |
 | Jump (Command-K) | `desktop/jump.rs` | change search results |
 | The Settings window | `desktop/settings_window.rs` | change Settings pages |
+| The opening scene | `desktop/onboarding/scene.rs` | change the first-run scene |
 | Icons | `crates/app/assets/icons/`, listed in `desktop/icons.rs` | add an icon |
 
 **The rule:** views use tokens and components, never their own values. A
@@ -87,8 +90,9 @@ a similar one in a view.
 
 ## Colour tokens
 
-Each theme defines the same names (`[color.dark]`, `[color.light]` in
-`tokens.toml`). Views read the current theme through `design::colors()`.
+The built-in themes define the same names (`[color.dark]`, `[color.light]` in
+`tokens.toml`). Views read the theme in use through `design::colors()`, and
+every other token through `design::tokens()`, so any theme can change them.
 
 | Token | Role |
 | --- | --- |
@@ -109,14 +113,73 @@ Each theme defines the same names (`[color.dark]`, `[color.light]` in
 | `ok` | Saved light, connected |
 | `info`, `violet`, `green` | Inbound events and cache reads; cache writes; output tokens (Backbone views) |
 | `shadow` | Popover shadow |
+| `mark_from`, `mark_to`, `mark_edge`, `mark_glyph`, `mark_eye`, `mark_glow` | The app mark in the opening scene: its tile's gradient and hairline, the closed eye and mouth, the open eyes and the cursor eye's glow. The same in both themes, like the icon |
 | `pane_dim` | Opacity of unfocused panes' content |
 
 Terminal defaults per theme (`[terminal.dark]`, `[terminal.light]`): the
-default text, background and cursor colours and the 16 ANSI colours. The light
+default text, background and cursor colours, the selection's background and
+text (`selection`, `selection_text`) and the 16 ANSI colours. The light
 terminal and native readers share a warm off-white background. Darker neutral
 gaps and borders separate the panes; an amber outline identifies the focused
 pane. Dark keeps Ghostty's
 defaults; light is Tomorrow, darkened to pass 4.5:1.
+
+## Themes
+
+Besides the built-in Dark and Light, the app ships twelve themes as JSON in
+`crates/app/assets/themes/`, and people add their own in
+`agent-interface/themes/` beside the settings file (Settings › Appearance ›
+Customize, or Import VS Code theme). A theme names the theme it `extends` and
+sets any tokens it changes, using the group and token names in this page:
+
+```jsonc
+{
+  "name": "Night Shift",
+  "extends": "dark",              // "dark", "light", or another theme's id
+  "color": { "accent": "#7aa2f7", "focus": "#7aa2f773" },
+  "terminal": { "background": "#16161e", "cursor": "#7aa2f7" },
+  "font": { "ui": "Inter", "mono": "JetBrains Mono" },
+  "text": { "row": { "size": 14 } },
+  "radius": { "pane": 4 }
+}
+```
+
+- Anything left out comes from the extended theme; `type` (`"dark"` or
+  `"light"`) is inherited too and tells web views and window captions which
+  kind of theme it is.
+- Comments and trailing commas are allowed. Colours are `#rrggbb` or
+  `#rrggbbaa`; numbers are pixels, weights 100 to 900, and `pane_dim` an
+  opacity. `terminal.palette` lists all 16 colours.
+- The terminal text size and the interface size stay in Settings, so
+  `font.terminal_size` is not a theme setting; `font.mono` applies on every
+  system.
+- An unknown or malformed token is refused with its line and column. A theme
+  that cannot be read leaves Dark in use, and Settings says why.
+
+The file's id is its name without `.json`: lowercase letters, digits and
+hyphens. Each applied theme stays in memory until the app quits, so the views
+keep plain references to its tokens; applying the same theme again reuses it.
+
+**Importing from VS Code** reads a colour theme's `colors` map: editor and side
+bar backgrounds become `surface` and `panel`, list hover and selection become
+`hover` and `selected`, the first visible highlight among badge, progress
+bar, button, focus border and link becomes the accent, error colours become
+`attention`, and `terminal.*` keys set the terminal colours. Tints the app
+needs and VS Code has no key for are made from those colours, and colours it
+leaves out keep Dark's or Light's. Syntax colours (`tokenColors`) have no
+place in the app. A theme file's `include`d parents are read first, and a
+theme that does not say whether it is light is judged by its editor
+background. Settings also offers the theme chosen in VS Code directly: it
+reads `workbench.colorTheme` from VS Code's user settings and finds that
+theme among the installed and built-in extensions. The result is a full
+theme file to adjust in the editor.
+
+**The bundled themes** were made the same way, from each project's own VS Code
+theme or published palette (Dracula, One Dark Pro, Tokyo Night, Catppuccin
+Mocha and Latte, Nord, Gruvbox, Solarized Dark and Light, GitHub Dark and
+Light, One Light), with an accent chosen where the original's buttons are
+grey. Their sources and MIT licences are listed in
+[`packaging/extra-notices.txt`](../packaging/extra-notices.txt).
 
 ## Type
 
@@ -136,6 +199,7 @@ weight, applied with `components::text`:
 | `empty_title`, `body` | Empty and error states; explanatory text |
 | `figure` | The headline number in a view |
 | `card_title`, `step_key`, `step_mark` | A plan's title on its card; DONE or NOW atop a step in an opened plan; the `!` in a waiting step's mark |
+| `scene_title`, `scene_line` | The app's name and the line beneath it in the opening scene, then every first-run screen's title and line |
 
 ## Spacing, radii and sizes
 
@@ -171,6 +235,7 @@ All in `components.rs`; each takes its look from the tokens.
 | `badge` | Small mono label, such as an agent's CLI |
 | `view_choice` | A row of the new-pane views list: icon tile, label, description, scope |
 | `fact` | A label and value, one line of an agent's card |
+| `tool_card` | An agent tool to pick, for a profile's first agent and for Add agent alike: a radio mark (a turning arc while it installs), the name in `row_selected` and its state in `meta` (for an agent, whether it starts signed in or asks to sign in), `attention` when it needs the person; selected, the accent tint and ring. Callers add the click and any Install or Update |
 | `choice_button`, `filter_frame`, `choice_frame`, `choice_key`, `hint_bar` | The chooser's two buttons, filter, selectable row with its ring, number key and centred key row |
 | `view_header`, `back_button`, `pill`, `info_card` | A view's 28 px header; the reading view's way back; a tag; a summary panel |
 | `tag` with `Tone` | How something is delivered: `Plain` for `all` and plain facts, `Tag` in the accent tint for a tag, `Quiet` outline for a direct assignment; a record's state: `Tag` for active, `Attention` for waiting on the person, `Done` for complete |
@@ -266,6 +331,66 @@ reader composition are separate modules under `desktop/views/interactions/`.
 No view-specific colours or new font families are added. Native accessibility
 exposes rows as named buttons with selected state, the rail as an image description,
 and the window, direction and recipient controls as radio groups.
+
+## Opening scene
+
+The first time the app opens, its face introduces it, as the website's hero
+does: it laughs with both eyes open, looks right, looks left, and only then
+winks, the left eye closing from an amber stroke into the white `>` while the
+mouth lifts into the icon's smile. The wink is the last beat, never the first.
+The name and its line rise while the face looks around. The face then settles:
+it shrinks from `scene_mark` to `setup_mark` and rises to the top of the
+first-run column over `scene_settle_ms`, while the name and tagline fade and
+the first screen's title and line appear in their place, its body following.
+
+`desktop/onboarding/scene.rs` holds the face's keyframes, which are the
+website's (five seconds, `cubic-bezier(.45, 0, .2, 1)`, the bob in
+`ease-in-out`), and the scene around them, both pure functions of time. The
+tile is a gradient div; the closing eye and the mouth are stroked paths on a
+canvas, with round ends drawn as dots; the open eye is a quad with a glow.
+`[motion]` places it (`scene_ms`, `scene_face_ms`, `scene_words_ms`,
+`scene_handoff_ms`, `scene_settle_ms`), and a test checks that its last frame
+is `packaging/icon/agent-interface.svg`.
+
+Any key, a click or Skip (bottom left, with its `esc` keycap) jumps to the
+handoff. Interface size stays available at the bottom right throughout first
+run.
+
+## First-run screens
+
+Every first-run and New profile screen is one shape, built once as
+`components::setup_stage(mark, title, line, body)`: `ground` fills the window,
+and a `setup_column` (420) wide column is centred, its top at
+`max(titlebar + s12, (window height − setup_stage) / 2)`, so the mark, title
+and line never move between screens. The mark is the app face at rest at
+`setup_mark` (48); the title is `scene_title` in `text`, `s16` under it; the
+line is `scene_line` in `muted`, `s6` under that, two lines at most; the body
+starts `s24` lower. Screens cross-fade their words and body over `step_ms`.
+
+Fields are `setup_field`: `setup_control` (36) tall, `field` with a
+`line_strong` border, `accent` while focused. The name field leads with a
+neutral `profile_mark` showing the first letter as it is typed; the guide's
+leads with the `bot` icon in `muted`. Labels are `meta` in `muted`, `s6` above
+their control, groups `s16` apart. The main button is `setup_button`: the
+column's width, `setup_control` tall, `s20` above; off it stays legible in
+`field` and `muted`, busy it turns an arc. Quiet actions are `text_action`:
+`meta` in `muted`, `text` with a `hover` fill under the pointer, `s12` under
+the button at the column's ends.
+
+Name shows "Git commits as" the name and email on one `meta` line, the name in
+`text`, with Change at its end; Change, or a computer with no Git name, opens
+two fields. The guide shows its Name, "Runs in" with `tool_card`s two to a row
+(`s8` apart; selected takes `accent_soft` and the `focus` ring; the state line
+is `meta`, with a trailing Install or Update), then Start, and More options
+opens one `panel` group with folder, instructions, model, hooks and greeting.
+Errors are `meta` in `attention_text` under the button. When something needs
+the person, the same shape holds one button: "Install tmux to continue", or
+"Agents can't start yet" with Continue with terminals and Details, whose
+reason is `meta` in the mono font on `field`.
+
+When the guide's pane opens, the stage fades over `reveal_ms` and the
+navigation panel eases in from 24 px to the left. New profile, from the menu,
+shows the same screens across the content area.
 
 ## Interaction patterns
 

@@ -533,6 +533,109 @@ impl Layout {
         true
     }
 
+    /// Add and select a tab showing a group of sessions: the lead in the left
+    /// half, the others tiled in rows of two in the right half, in order. With
+    /// no others the lead fills the tab. Returns false when there is no workspace.
+    pub fn add_group_tab(
+        &mut self,
+        name: String,
+        lead: Attachment,
+        others: Vec<Attachment>,
+        cwd: String,
+    ) -> bool {
+        let Some(space) = self.workspace_mut() else {
+            return false;
+        };
+        let pane = |attachment| {
+            Node::Leaf(Leaf {
+                attachment: Some(attachment),
+                ..leaf(cwd.clone(), false)
+            })
+        };
+        let split = |direction, ratio, first, second| Node::Split {
+            id: identity(),
+            direction,
+            ratio,
+            first: Box::new(first),
+            second: Box::new(second),
+        };
+        let lead = Leaf {
+            attachment: Some(lead),
+            ..leaf(cwd.clone(), false)
+        };
+        let focus = lead.id.clone();
+        let mut rows: Vec<Node> = Vec::new();
+        let mut others = others.into_iter();
+        while let Some(first) = others.next() {
+            rows.push(match others.next() {
+                Some(second) => split(Direction::Right, 0.5, pane(first), pane(second)),
+                None => pane(first),
+            });
+        }
+        // Fold from the bottom so every row gets the same height.
+        let mut right: Option<Node> = None;
+        for (below, row) in rows.into_iter().rev().enumerate() {
+            right = Some(match right {
+                Some(rest) => split(Direction::Below, 1.0 / (below + 1) as f64, row, rest),
+                None => row,
+            });
+        }
+        let tree = match right {
+            Some(right) => split(Direction::Right, 0.5, Node::Leaf(lead), right),
+            None => Node::Leaf(lead),
+        };
+        let tab = Tab {
+            id: identity(),
+            name,
+            tree,
+            focus,
+            expanded: false,
+        };
+        space.selected = tab.id.clone();
+        space.tabs.push(tab);
+        true
+    }
+
+    /// Remove the tabs of `workspace` that still show only a finished group:
+    /// named `name`, with every pane attached to one of `sessions` on the
+    /// `source` server. A tab the person renamed or gave another pane is
+    /// theirs and stays. A removed selection moves to the first remaining
+    /// tab. No session is stopped.
+    pub fn close_group_tabs(
+        &mut self,
+        workspace: &str,
+        name: &str,
+        source: &str,
+        sessions: &[&str],
+    ) -> bool {
+        let Some(space) = self
+            .workspaces
+            .iter_mut()
+            .find(|space| space.id == workspace)
+        else {
+            return false;
+        };
+        let before = space.tabs.len();
+        space.tabs.retain(|tab| {
+            tab.name != name
+                || !tab.tree.leaves().iter().all(|leaf| {
+                    leaf.attachment.as_ref().is_some_and(|attachment| {
+                        // Session names are only unique within one server.
+                        attachment.source_socket.as_deref() == Some(source)
+                            && sessions.contains(&attachment.session.as_str())
+                    })
+                })
+        });
+        if !space.tabs.iter().any(|tab| tab.id == space.selected) {
+            space.selected = space
+                .tabs
+                .first()
+                .map(|tab| tab.id.clone())
+                .unwrap_or_default();
+        }
+        space.tabs.len() != before
+    }
+
     /// Split the focused leaf, retaining its identity and attachment as the first
     /// child and focusing the new second child. An empty workspace gets a tab.
     /// The caller supplies cwd and checks schema limits before persisting.
@@ -738,6 +841,91 @@ mod tests {
     use super::*;
     use crate::ViewKind;
     use std::collections::HashSet;
+
+    #[test]
+    fn a_group_tab_puts_the_lead_left_and_tiles_the_others_in_equal_rows() {
+        let attachment = |name: &str| Attachment {
+            session: name.into(),
+            source_socket: Some("/fixture/source".into()),
+        };
+        let mut model = Layout::initial("/tmp".into());
+        let others = ["a", "b", "c", "d", "e"].map(attachment).to_vec();
+        assert!(model.add_group_tab("swarm".into(), attachment("lead"), others, "/tmp".into()));
+        let tab = model.tab().unwrap();
+        assert_eq!(tab.name, "swarm");
+        let sessions: Vec<_> = tab
+            .tree
+            .leaves()
+            .into_iter()
+            .map(|leaf| leaf.attachment.as_ref().unwrap().session.as_str())
+            .collect();
+        assert_eq!(sessions, ["lead", "a", "b", "c", "d", "e"]);
+        assert_eq!(model.pane().unwrap().attachment, Some(attachment("lead")));
+        let Node::Split {
+            direction,
+            ratio,
+            second,
+            ..
+        } = &tab.tree
+        else {
+            panic!("the lead shares the tab");
+        };
+        assert_eq!((*direction, *ratio), (Direction::Right, 0.5));
+        // Three rows: the first takes a third, the second half of the rest.
+        let Node::Split {
+            direction,
+            ratio,
+            second: rest,
+            ..
+        } = &**second
+        else {
+            panic!("rows are stacked");
+        };
+        assert_eq!(*direction, Direction::Below);
+        assert!((ratio - 1.0 / 3.0).abs() < 1e-9);
+        assert!(
+            matches!(&**rest, Node::Split { direction: Direction::Below, ratio, .. } if *ratio == 0.5)
+        );
+
+        assert!(model.add_group_tab("alone".into(), attachment("lead"), vec![], "/tmp".into()));
+        assert!(matches!(model.tab().unwrap().tree, Node::Leaf(_)));
+    }
+
+    #[test]
+    fn a_finished_group_closes_only_tabs_still_showing_just_that_group() {
+        let attachment = |name: &str| Attachment {
+            session: name.into(),
+            source_socket: Some("/fixture/source".into()),
+        };
+        let mut model = Layout::initial("/tmp".into());
+        let space = model.selected.clone();
+        let first = model.tab().unwrap().id.clone();
+        let group = |model: &mut Layout| {
+            model.add_group_tab(
+                "fix".into(),
+                attachment("lead"),
+                vec![attachment("coder")],
+                "/tmp".into(),
+            )
+        };
+        // A tab the person gave a shell of their own stays.
+        assert!(group(&mut model) && model.split(Direction::Right, "/tmp".into(), false));
+        let kept = model.tab().unwrap().id.clone();
+        assert!(group(&mut model));
+        let sessions = ["lead", "coder"];
+        let source = "/fixture/source";
+        assert!(!model.close_group_tabs(&space, "other", source, &sessions));
+        assert!(!model.close_group_tabs("elsewhere", "fix", source, &sessions));
+        assert!(!model.close_group_tabs(&space, "fix", source, &["lead"]));
+        // The same names on another server are other sessions.
+        assert!(!model.close_group_tabs(&space, "fix", "/fixture/other", &sessions));
+        assert!(model.close_group_tabs(&space, "fix", source, &sessions));
+        let space = model.workspace().unwrap();
+        let tabs: Vec<_> = space.tabs.iter().map(|tab| tab.id.clone()).collect();
+        assert_eq!(tabs, [first.clone(), kept]);
+        // The closed tab was selected, so the first one is now.
+        assert_eq!(space.selected, first);
+    }
 
     #[test]
     fn moving_panes_preserves_contents_and_collapses_the_old_parent() {

@@ -278,6 +278,9 @@ fn appearance(config: &str) -> Result<Appearance, String> {
         foreground: foreground.ok_or_else(|| missing("foreground"))?,
         background: background.ok_or_else(|| missing("background"))?,
         cursor: cursor.ok_or_else(|| missing("cursor-color"))?,
+        // The benchmark never selects text; these are the built-in dark theme's.
+        selection: gpui::rgb(0x345b89),
+        selection_text: gpui::rgb(0xffffff),
         palette: base,
     })
 }

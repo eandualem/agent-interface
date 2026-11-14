@@ -12,7 +12,6 @@ use super::{
     ViewPane,
     markdown::{Link, Mark},
 };
-use crate::desktop::design::colors;
 
 /// A view whose rendered text can be selected and copied.
 pub(super) trait Selectable: 'static {
@@ -326,7 +325,7 @@ pub(super) fn linked<V: Selectable>(
 ) -> gpui::Stateful<gpui::Div> {
     let index = view.selection().borrow_mut().register(text, links);
     let selected = view.selection().borrow().range(index);
-    let c = colors();
+    let look = super::reading::look();
     let highlights = highlight_spans(text.len(), marks, links, selected)
         .into_iter()
         .map(|span| {
@@ -337,17 +336,11 @@ pub(super) fn linked<V: Selectable>(
                 }
             }
             if span.linked {
-                style.color = Some(c.accent_text.into());
+                style.color = Some(look.link.into());
             }
             if span.selected {
                 // Selected text keeps its own colour over a translucent accent.
-                style.background_color = Some(
-                    gpui::Rgba {
-                        a: 0.35,
-                        ..c.accent
-                    }
-                    .into(),
-                );
+                style.background_color = Some(look.selection.into());
             }
             (span.range, style)
         });

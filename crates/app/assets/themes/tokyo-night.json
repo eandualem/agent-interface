@@ -1,0 +1,53 @@
+{
+  "name": "Tokyo Night",
+  "extends": "dark",
+  "color": {
+    "ground": "#16161e",
+    "panel": "#16161e",
+    "surface": "#1a1b26",
+    "field": "#14141b",
+    "hover": "#13131a",
+    "selected": "#202330",
+    "line": "#101014",
+    "line_strong": "#292e42",
+    "edge": "#101014",
+    "text": "#a9b1d6",
+    "text_2": "#787c99",
+    "muted": "#787c99",
+    "faint": "#363b54",
+    "accent": "#3d59a1",
+    "accent_text": "#7aa2f7",
+    "on_accent": "#a9b1d6",
+    "accent_soft": "#3d59a124",
+    "focus": "#3d59a173",
+    "focus_halo": "#3d59a114",
+    "attention": "#f7768e",
+    "attention_text": "#f7768e",
+    "on_attention": "#1a1b26",
+    "attention_soft": "#f7768e1f",
+    "ok": "#449dab",
+    "info": "#0da0ba",
+    "violet": "#bb9af7",
+    "green": "#73daca",
+    "code": "#e0af68",
+    "shadow": "#00000073",
+    "mark_from": "#2a2d33",
+    "mark_to": "#121315",
+    "mark_edge": "#ffffff12",
+    "mark_glyph": "#e7e8eb",
+    "mark_eye": "#e8a85f",
+    "mark_glow": "#e8a85f8c",
+    "pane_dim": 0.72
+  },
+  "terminal": {
+    "text": "#787c99",
+    "background": "#16161e",
+    "cursor": "#c0caf5",
+    "selection": "#282b3b",
+    "selection_text": "#787c99",
+    "palette": [
+      "#363b54", "#f7768e", "#73daca", "#e0af68", "#7aa2f7", "#bb9af7", "#7dcfff", "#787c99",
+      "#363b54", "#f7768e", "#73daca", "#e0af68", "#7aa2f7", "#bb9af7", "#7dcfff", "#acb0d0"
+    ]
+  }
+}

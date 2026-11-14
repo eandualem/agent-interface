@@ -40,6 +40,17 @@ pub struct AgentDetails {
     pub state_since: Option<f64>,
 }
 
+/// A running swarm: the agent that started it and the agents working in it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Swarm {
+    /// Swarm name.
+    pub name: String,
+    /// The agent that started the swarm.
+    pub initiator: String,
+    /// Member agent names, the coordinator first, without the initiator.
+    pub members: Vec<String>,
+}
+
 /// Cached metadata, separate from tmux attachment availability.
 ///
 /// Names, states and their presentation details are retained. An API `online` value
@@ -51,6 +62,11 @@ pub struct Snapshot {
     pub states: BTreeMap<String, String>,
     /// Details observed together with `states`.
     pub details: BTreeMap<String, AgentDetails>,
+    /// Running swarms from the same poll; empty when their read failed.
+    pub swarms: Vec<Swarm>,
+    /// Whether `swarms` came from a response read in full, so a swarm missing
+    /// from it has finished. False after a failed read or a skipped record.
+    pub swarms_read: bool,
     /// A fixed diagnostic when cached states are stale; none after success.
     pub error: Option<&'static str>,
     /// Last successful response time, or none before any successful response.
@@ -71,6 +87,14 @@ impl Snapshot {
             }
             None => self.unavailable(),
         }
+    }
+
+    /// Apply one response from the swarms endpoint, or its failure. Swarms only
+    /// group agents, so an unreadable list clears them without marking states stale.
+    pub fn update_swarms(&mut self, response: Option<&[u8]>) {
+        let (swarms, complete) = response.and_then(decode_swarms).unwrap_or_default();
+        self.swarms_read = complete;
+        self.swarms = swarms;
     }
 
     /// Mark a transport or configuration failure without retaining its details.
@@ -125,6 +149,72 @@ fn decode(response: &[u8]) -> Option<Decoded> {
         states.insert(name, state);
     }
     Some((states, details))
+}
+
+/// Members shown for one swarm; more would not fit a tab or the saved layout.
+const SWARM_MEMBERS: usize = 32;
+
+/// The running swarms, and whether every record was understood.
+fn decode_swarms(response: &[u8]) -> Option<(Vec<Swarm>, bool)> {
+    // Null or mistyped fields drop that swarm, never the whole list.
+    #[derive(serde::Deserialize, Default)]
+    #[serde(default)]
+    struct Raw {
+        name: Option<String>,
+        status: Option<String>,
+        initiator: Option<String>,
+        coordinator: Option<String>,
+        members: Option<Vec<Box<RawValue>>>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Document {
+        items: Vec<Box<RawValue>>,
+    }
+    if response.len() > RESPONSE_LIMIT || !within_depth(response) {
+        return None;
+    }
+    let document: Document = serde_json::from_slice(response).ok()?;
+    let mut swarms = Vec::new();
+    let mut complete = true;
+    for item in document.items {
+        let Ok(swarm) = serde_json::from_str::<Raw>(item.get()) else {
+            complete = false;
+            continue;
+        };
+        if matches!(
+            swarm.status.as_deref(),
+            Some("done" | "disbanded" | "failed")
+        ) {
+            continue;
+        }
+        let (Some(name), Some(initiator)) = (swarm.name, swarm.initiator) else {
+            complete = false;
+            continue;
+        };
+        // The name becomes a tab name, so it follows the agent-name rule too.
+        if !valid_agent(&name) || !valid_agent(&initiator) {
+            complete = false;
+            continue;
+        }
+        let mut members: Vec<String> = Vec::new();
+        let mut seen = std::collections::BTreeSet::new();
+        for member in swarm.members.iter().flatten() {
+            if let Some(member) = views::member_name(member)
+                && member != initiator
+                && seen.insert(member.clone())
+            {
+                members.push(member);
+            }
+        }
+        members.sort_by_key(|member| Some(member) != swarm.coordinator.as_ref());
+        members.truncate(SWARM_MEMBERS);
+        swarms.push(Swarm {
+            name,
+            initiator,
+            members,
+        });
+    }
+    Some((swarms, complete))
 }
 
 // RawValue skips nested data without the normal Value recursion limit. Bound
@@ -190,6 +280,45 @@ fn truthy(value: &RawValue) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn swarms_keep_running_groups_with_the_coordinator_first() {
+        let mut snapshot = Snapshot::default();
+        snapshot.update_swarms(Some(
+            br#"{"items":[
+            {"name":"fix-7","status":"active","initiator":"lead","coordinator":"fix-7-coordinator",
+             "members":["fix-7-coder",{"name":"fix-7-coordinator"},"lead","not an agent","fix-7-coder"]},
+            {"name":"old","status":"done","initiator":"lead","coordinator":null,"members":["old-coder"]},
+            {"name":"orphan","status":"active","initiator":null,"members":["x"]},
+            {"name":"not a tab\tname","status":"active","initiator":"lead","members":["x"]},
+            {"name":["mistyped"],"initiator":"lead"}, 7
+        ]}"#,
+        ));
+        assert_eq!(
+            snapshot.swarms,
+            [Swarm {
+                name: "fix-7".into(),
+                initiator: "lead".into(),
+                members: vec!["fix-7-coordinator".into(), "fix-7-coder".into()],
+            }]
+        );
+        assert!(snapshot.error.is_none());
+        let crowd: Vec<String> = (0..100).map(|index| format!("\"m{index}\"")).collect();
+        let crowd = format!(
+            r#"{{"items":[{{"name":"big","initiator":"lead","members":[{}]}}]}}"#,
+            crowd.join(",")
+        );
+        snapshot.update_swarms(Some(crowd.as_bytes()));
+        assert_eq!(snapshot.swarms[0].members.len(), SWARM_MEMBERS);
+        snapshot.update_swarms(Some(b"not JSON"));
+        assert!(snapshot.swarms.is_empty() && snapshot.error.is_none());
+        assert!(!snapshot.swarms_read);
+        snapshot.update_swarms(Some(br#"{"items":[{"name":"old","status":"done"}]}"#));
+        assert!(snapshot.swarms_read);
+        // A running swarm that cannot be listed leaves the answer unknown.
+        snapshot.update_swarms(Some(br#"{"items":[{"name":"fix","status":"active"}]}"#));
+        assert!(snapshot.swarms.is_empty() && !snapshot.swarms_read);
+    }
 
     #[test]
     fn malformed_details_do_not_discard_valid_fields() {

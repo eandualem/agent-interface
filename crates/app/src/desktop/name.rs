@@ -17,33 +17,45 @@ pub(super) enum NameEvent {
     Changed(String),
 }
 
+/// Editable text with a selection and an input method's marked range,
+/// shared by the one-line fields here and the theme editor.
 #[derive(Default)]
-struct Text {
-    value: String,
-    anchor: usize,
-    cursor: usize,
-    marked: Option<Range<usize>>,
+pub(super) struct Text {
+    pub(super) value: String,
+    pub(super) anchor: usize,
+    pub(super) cursor: usize,
+    pub(super) marked: Option<Range<usize>>,
     search: bool,
-    feedback: bool,
+    /// Line breaks and tabs are text, and there is no length limit.
+    pub(super) feedback: bool,
 }
 
 impl Text {
-    fn selection(&self) -> Range<usize> {
+    /// Multiline text with no length limit, the caret at its start.
+    pub(super) fn multiline(value: &str) -> Self {
+        Self {
+            value: value.to_owned(),
+            feedback: true,
+            ..Self::default()
+        }
+    }
+
+    pub(super) fn selection(&self) -> Range<usize> {
         self.anchor.min(self.cursor)..self.anchor.max(self.cursor)
     }
 
-    fn utf16(&self, range: Range<usize>) -> Range<usize> {
+    pub(super) fn utf16(&self, range: Range<usize>) -> Range<usize> {
         self.value[..range.start].encode_utf16().count()
             ..self.value[..range.end].encode_utf16().count()
     }
 
-    fn bytes(&self, range: Range<usize>) -> Range<usize> {
+    pub(super) fn bytes(&self, range: Range<usize>) -> Range<usize> {
         from_utf16(&self.value, range.start)..from_utf16(&self.value, range.end)
     }
 
     /// The text as one accessible run, with the selection's anchor and caret
     /// as character indices into it, so dictation finds an editable field.
-    fn accessible_run(&self) -> (Node, usize, usize) {
+    pub(super) fn accessible_run(&self) -> (Node, usize, usize) {
         let mut run = Node::new(Role::TextRun);
         run.set_value(self.value.clone());
         run.set_character_lengths(
@@ -57,7 +69,12 @@ impl Text {
         (run, index(self.anchor), index(self.cursor))
     }
 
-    fn replace(&mut self, range: Option<Range<usize>>, text: &str, marked: bool) -> Range<usize> {
+    pub(super) fn replace(
+        &mut self,
+        range: Option<Range<usize>>,
+        text: &str,
+        marked: bool,
+    ) -> Range<usize> {
         let range = range
             .map(|range| self.bytes(range))
             .or_else(|| self.marked.clone())
@@ -75,14 +92,11 @@ impl Text {
                             GeneralCategoryGroup::Other | GeneralCategoryGroup::Separator
                         ))
             })
-            .take(
-                (if self.feedback {
-                    agent_interface_roster::feedback::TEXT_LIMIT
-                } else {
-                    80usize
-                })
-                .saturating_sub(remaining),
-            )
+            .take(if self.feedback {
+                usize::MAX
+            } else {
+                80usize.saturating_sub(remaining)
+            })
             .collect();
         let end = range.start + inserted.len();
         self.value.replace_range(range.clone(), &inserted);
@@ -92,7 +106,7 @@ impl Text {
         range.start..end
     }
 
-    fn compose(
+    pub(super) fn compose(
         &mut self,
         range: Option<Range<usize>>,
         text: &str,
@@ -106,7 +120,7 @@ impl Text {
         }
     }
 
-    fn snap(&self, offset: usize) -> usize {
+    pub(super) fn snap(&self, offset: usize) -> usize {
         self.value
             .grapheme_indices(true)
             .map(|(i, _)| i)
@@ -114,7 +128,7 @@ impl Text {
             .unwrap_or(self.value.len())
     }
 
-    fn boundary(&self, right: bool) -> usize {
+    pub(super) fn boundary(&self, right: bool) -> usize {
         if right {
             self.value
                 .grapheme_indices(true)
@@ -155,6 +169,8 @@ pub(super) struct NameField {
     dragging: bool,
     cancel_on_blur: bool,
     read_only: bool,
+    /// Drawn without its own frame, inside a caller's field frame.
+    bare: bool,
     _blur: Subscription,
 }
 
@@ -185,6 +201,7 @@ impl NameField {
             dragging: false,
             cancel_on_blur: true,
             read_only: false,
+            bare: false,
             _blur: blur,
         }
     }
@@ -206,6 +223,23 @@ impl NameField {
             None => window.blur(cx),
         }
         field
+    }
+
+    /// A one-line field drawn without a frame, for a caller's own field frame,
+    /// that keeps the current keyboard focus.
+    pub fn bare(value: &str, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let mut field = Self::filter(window, cx);
+        field.text.search = false;
+        field.bare = true;
+        field.set_value(value, cx);
+        field
+    }
+
+    /// Select the whole text, so typing replaces it.
+    pub fn select_all(&mut self, cx: &mut Context<Self>) {
+        self.text.anchor = 0;
+        self.text.cursor = self.text.value.len();
+        cx.notify();
     }
 
     /// A multiline feedback field that keeps the current keyboard focus.
@@ -665,14 +699,14 @@ impl Render for NameField {
             .min_w_0()
             .h(px(if feedback {
                 super::design::tokens().size.composer_field
-            } else if search {
+            } else if search || self.bare {
                 super::design::tokens().size.jump_field
             } else {
                 super::design::tokens().size.row - super::design::tokens().space.s8
             }))
             .text_color(super::design::colors().text)
             // A message field sits bare inside the conversation's composer frame.
-            .when(!feedback, |field| {
+            .when(!feedback && !self.bare, |field| {
                 field
                     .px(px(super::design::tokens().space.s6))
                     .rounded(px(super::design::tokens().radius.key))
@@ -782,7 +816,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn feedback_preserves_paragraphs_and_unicode_beyond_the_name_limit() {
+    fn feedback_preserves_paragraphs_and_unicode_without_a_length_limit() {
         let mut text = Text {
             feedback: true,
             ..Text::default()
@@ -791,15 +825,9 @@ mod tests {
         text.replace(None, &message, false);
         assert_eq!(text.value, message);
         assert_eq!(text.cursor, message.len());
-        text.replace(
-            None,
-            &"x".repeat(agent_interface_roster::feedback::TEXT_LIMIT),
-            false,
-        );
-        assert_eq!(
-            text.value.chars().count(),
-            agent_interface_roster::feedback::TEXT_LIMIT
-        );
+        // Feedback has no local length limit; Backbone answers for its own.
+        text.replace(None, &"x".repeat(20_000), false);
+        assert_eq!(text.value.chars().count(), message.chars().count() + 20_000);
     }
 
     #[test]

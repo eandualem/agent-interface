@@ -1,7 +1,7 @@
 //! The original text is selectable plain text, never reconstructed from its
 //! preview and never rewritten by the separately anchored discussion.
 use super::*;
-use crate::desktop::views::clock::Local;
+use crate::desktop::views::{clock::Local, markdown};
 use crate::desktop::{
     components as ui,
     design::{colors, tokens},
@@ -67,7 +67,19 @@ pub(super) fn body(
         column = column.child(ui::notice("info", error.message(), None));
     }
     let retained = item.body.text.as_deref().unwrap_or(&item.preview);
-    let message = ui::message_frame(selection::text(view, retained, &[], cx));
+    // The message reads as its author wrote it, Markdown included.
+    let look = markdown::Look {
+        style: &t.text.doc_body,
+        color: c.text,
+        line_height: 1.55,
+        gap: t.space.s8,
+    };
+    let message = ui::message_frame(markdown::render_in(
+        &markdown::authored(retained),
+        &look,
+        view,
+        cx,
+    ));
     column = column
         .child(
             div()

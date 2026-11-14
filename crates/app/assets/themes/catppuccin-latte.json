@@ -1,0 +1,53 @@
+{
+  "name": "Catppuccin Latte",
+  "extends": "light",
+  "color": {
+    "ground": "#dce0e8",
+    "panel": "#e6e9ef",
+    "surface": "#eff1f5",
+    "field": "#ffffff",
+    "hover": "#d9dce4",
+    "selected": "#ccd0da",
+    "line": "#ccd0da",
+    "line_strong": "#bcc0cc",
+    "edge": "#bcc0cc",
+    "text": "#4c4f69",
+    "text_2": "#5c5f77",
+    "muted": "#6c6f85",
+    "faint": "#8c8fa1",
+    "accent": "#8839ef",
+    "accent_text": "#1e66f5",
+    "on_accent": "#eff1f5",
+    "accent_soft": "#8839ef1f",
+    "focus": "#8839ef",
+    "focus_halo": "#8839ef1a",
+    "attention": "#d20f39",
+    "attention_text": "#d20f39",
+    "on_attention": "#eff1f5",
+    "attention_soft": "#d20f391a",
+    "ok": "#2e7d32",
+    "info": "#1e66f5",
+    "violet": "#7f4fa0",
+    "green": "#4f7a1f",
+    "code": "#8a6000",
+    "shadow": "#4c4f6926",
+    "mark_from": "#2a2d33",
+    "mark_to": "#121315",
+    "mark_edge": "#ffffff12",
+    "mark_glyph": "#e7e8eb",
+    "mark_eye": "#e8a85f",
+    "mark_glow": "#e8a85f8c",
+    "pane_dim": 0.8
+  },
+  "terminal": {
+    "text": "#4c4f69",
+    "background": "#eff1f5",
+    "cursor": "#dc8a78",
+    "selection": "#ccd0da",
+    "selection_text": "#4c4f69",
+    "palette": [
+      "#5c5f77", "#d20f39", "#40a02b", "#df8e1d", "#1e66f5", "#ea76cb", "#179299", "#acb0be",
+      "#6c6f85", "#de293e", "#49af3d", "#eea02d", "#456eff", "#fe85d8", "#2d9fa8", "#bcc0cc"
+    ]
+  }
+}

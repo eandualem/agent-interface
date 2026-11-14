@@ -13,14 +13,19 @@ pub const FONT_SIZES: std::ops::RangeInclusive<u32> = 9..=24;
 static FONT_SIZE: AtomicU32 = AtomicU32::new(0);
 /// Navigation panel widths the settings accept, from the design tokens.
 fn sidebar_widths() -> std::ops::RangeInclusive<u32> {
-    let size = &super::design::tokens().size;
+    sidebar_widths_in(&super::design::tokens().size)
+}
+fn sidebar_widths_in(size: &super::design::Size) -> std::ops::RangeInclusive<u32> {
     size.panel_min as u32..=size.panel_max as u32
 }
 /// The dragged panel width, or zero for the default of 22 terminal cells.
 static SIDEBAR_WIDTH: AtomicU32 = AtomicU32::new(0);
 /// Conversation panel widths the settings accept, from the design's minimum.
 fn conversation_widths() -> std::ops::RangeInclusive<u32> {
-    super::design::tokens().size.conversation_width as u32..=4000
+    conversation_widths_in(&super::design::tokens().size)
+}
+fn conversation_widths_in(size: &super::design::Size) -> std::ops::RangeInclusive<u32> {
+    size.conversation_width as u32..=super::design::CONVERSATION_WIDTH_MAX
 }
 /// The dragged conversation width, or zero for a share of the reader.
 static CONVERSATION_WIDTH: AtomicU32 = AtomicU32::new(0);
@@ -52,6 +57,9 @@ impl PaneHeaders {
 static PANE_HEADERS: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 static INTRO_SEEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static SETUP_DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static SETUP_PROFILE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+static SETUP_REQUEST: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+static SETUP_IDENTITY: std::sync::Mutex<Option<(String, String)>> = std::sync::Mutex::new(None);
 
 /// How panes show their header now.
 pub fn pane_headers() -> PaneHeaders {
@@ -66,7 +74,9 @@ pub fn pane_headers() -> PaneHeaders {
 pub struct Settings {
     /// Persistent, explicit local diagnostic verbosity.
     pub logging: crate::diagnostics::Level,
-    pub light: bool,
+    /// The theme's id: `dark`, `light`, a bundled theme or one of the
+    /// person's own (see `themes`).
+    pub theme: String,
     pub font_size: f32,
     /// The interface size in percent, one of [`super::zoom::SIZES`].
     pub interface_size: u32,
@@ -80,13 +90,19 @@ pub struct Settings {
     pub intro_seen: bool,
     /// First-run setup was finished.
     pub setup_done: bool,
+    /// The first profile first run made, until its guide starts.
+    pub setup_profile: Option<String>,
+    /// The request that makes first run's profile, until it is made.
+    pub setup_request: Option<String>,
+    /// The Git name and email typed for that request, set once it is made.
+    pub setup_identity: Option<(String, String)>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Self {
             logging: crate::diagnostics::Level::Warnings,
-            light: false,
+            theme: "dark".into(),
             font_size: super::design::tokens().font.terminal_size,
             interface_size: 100,
             shortcuts: super::shortcuts::Bindings::default(),
@@ -95,6 +111,9 @@ impl Default for Settings {
             pane_headers: PaneHeaders::Always,
             intro_seen: false,
             setup_done: false,
+            setup_profile: None,
+            setup_request: None,
+            setup_identity: None,
         }
     }
 }
@@ -114,9 +133,14 @@ impl Settings {
         {
             settings.logging = *level;
         }
-        if let Some(theme) = table.get("theme").and_then(toml::Value::as_str) {
-            settings.light = theme == "light";
+        if let Some(theme) = table.get("theme").and_then(toml::Value::as_str)
+            && super::themes::valid_id(theme)
+        {
+            settings.theme = theme.to_owned();
         }
+        // Saved widths are checked against the chosen theme's limits.
+        let design = super::themes::resolve(&settings.theme)
+            .unwrap_or_else(|_| super::design::builtin(false).clone());
         if let Some(size) = table.get("font_size").and_then(toml::Value::as_integer)
             && u32::try_from(size).is_ok_and(|size| FONT_SIZES.contains(&size))
         {
@@ -132,7 +156,7 @@ impl Settings {
         }
         if let Some(width) = table.get("sidebar_width").and_then(toml::Value::as_integer)
             && let Ok(width) = u32::try_from(width)
-            && sidebar_widths().contains(&width)
+            && sidebar_widths_in(&design.size).contains(&width)
         {
             settings.sidebar_width = Some(width);
         }
@@ -140,7 +164,7 @@ impl Settings {
             .get("conversation_width")
             .and_then(toml::Value::as_integer)
             && let Ok(width) = u32::try_from(width)
-            && conversation_widths().contains(&width)
+            && conversation_widths_in(&design.size).contains(&width)
         {
             settings.conversation_width = Some(width);
         }
@@ -153,6 +177,30 @@ impl Settings {
             let flag = |key| setup.get(key).and_then(toml::Value::as_bool) == Some(true);
             settings.intro_seen = flag("intro_seen");
             settings.setup_done = flag("done");
+            let id = |key| {
+                setup
+                    .get(key)
+                    .and_then(toml::Value::as_str)
+                    .filter(|id| {
+                        !id.is_empty()
+                            && id.len() <= 128
+                            && id
+                                .bytes()
+                                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+                    })
+                    .map(str::to_owned)
+            };
+            settings.setup_profile = id("profile");
+            settings.setup_request = id("request");
+            let text = |key| {
+                setup
+                    .get(key)
+                    .and_then(toml::Value::as_str)
+                    // One may be empty: the form accepts a name or an email alone.
+                    .filter(|value| value.len() <= 1024)
+                    .map(str::to_owned)
+            };
+            settings.setup_identity = text("git_name").zip(text("git_email"));
         }
         if let Some(shortcuts) = table.get("shortcuts").and_then(toml::Value::as_table) {
             settings.shortcuts = super::shortcuts::Bindings::from_entries(
@@ -166,8 +214,8 @@ impl Settings {
 
     pub fn to_toml(&self) -> String {
         let mut text = format!(
-            "theme = \"{}\"\nfont_size = {}\n",
-            if self.light { "light" } else { "dark" },
+            "theme = {}\nfont_size = {}\n",
+            toml::Value::String(self.theme.clone()),
             self.font_size as u32
         );
         text.push_str(&format!("logging = \"{}\"\n", self.logging.name()));
@@ -186,11 +234,35 @@ impl Settings {
         if let Some(width) = self.conversation_width {
             text.push_str(&format!("conversation_width = {width}\n"));
         }
-        if self.intro_seen || self.setup_done {
+        if self.intro_seen
+            || self.setup_done
+            || self.setup_profile.is_some()
+            || self.setup_request.is_some()
+            || self.setup_identity.is_some()
+        {
             text.push_str(&format!(
                 "\n[setup]\nintro_seen = {}\ndone = {}\n",
                 self.intro_seen, self.setup_done
             ));
+            if let Some(profile) = &self.setup_profile {
+                text.push_str(&format!(
+                    "profile = {}\n",
+                    toml::Value::String(profile.clone())
+                ));
+            }
+            if let Some(request) = &self.setup_request {
+                text.push_str(&format!(
+                    "request = {}\n",
+                    toml::Value::String(request.clone())
+                ));
+            }
+            if let Some((name, email)) = &self.setup_identity {
+                text.push_str(&format!(
+                    "git_name = {}\ngit_email = {}\n",
+                    toml::Value::String(name.clone()),
+                    toml::Value::String(email.clone())
+                ));
+            }
         }
         let changed = self.shortcuts.changed();
         if !changed.is_empty() {
@@ -205,7 +277,7 @@ impl Settings {
     /// Make these the settings every window draws with.
     pub fn apply(&self) {
         crate::diagnostics::set_level(self.logging);
-        super::design::set_light(self.light);
+        super::themes::apply(&self.theme);
         PANE_HEADERS.store(self.pane_headers as u8, Ordering::Relaxed);
         FONT_SIZE.store(self.font_size.to_bits(), Ordering::Relaxed);
         super::zoom::set(self.interface_size);
@@ -214,13 +286,22 @@ impl Settings {
         CONVERSATION_WIDTH.store(self.conversation_width.unwrap_or(0), Ordering::Relaxed);
         INTRO_SEEN.store(self.intro_seen, Ordering::Relaxed);
         SETUP_DONE.store(self.setup_done, Ordering::Relaxed);
+        *SETUP_PROFILE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = self.setup_profile.clone();
+        *SETUP_REQUEST
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = self.setup_request.clone();
+        *SETUP_IDENTITY
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = self.setup_identity.clone();
     }
 
     /// The settings windows are drawing with now.
     pub fn current() -> Self {
         Self {
             logging: crate::diagnostics::level(),
-            light: super::design::is_light(),
+            theme: super::themes::current(),
             font_size: font_size(),
             interface_size: (super::zoom::factor() * 100.0).round() as u32,
             shortcuts: super::shortcuts::current(),
@@ -229,6 +310,18 @@ impl Settings {
             pane_headers: pane_headers(),
             intro_seen: INTRO_SEEN.load(Ordering::Relaxed),
             setup_done: SETUP_DONE.load(Ordering::Relaxed),
+            setup_profile: SETUP_PROFILE
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone(),
+            setup_request: SETUP_REQUEST
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone(),
+            setup_identity: SETUP_IDENTITY
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone(),
         }
     }
 }
@@ -408,9 +501,11 @@ pub fn save(settings: &Settings, path: &Path) -> io::Result<()> {
 }
 
 fn save_to_temporary(settings: &Settings, path: &Path, temporary: &Path) -> io::Result<()> {
+    // Owner-only: it can hold a Git name and email typed during setup.
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
+        .mode(0o600)
         .open(temporary)?;
     let written = file
         .write_all(settings.to_toml().as_bytes())
@@ -538,7 +633,7 @@ mod tests {
             .unwrap();
         let light = Settings {
             logging: crate::diagnostics::Level::Warnings,
-            light: true,
+            theme: "solarized-light".into(),
             font_size: 16.0,
             interface_size: 150,
             shortcuts,
@@ -547,8 +642,16 @@ mod tests {
             pane_headers: PaneHeaders::Hover,
             intro_seen: true,
             setup_done: false,
+            setup_profile: Some("0123abcd".into()),
+            setup_request: Some("89ef4567".into()),
+            setup_identity: Some(("Sam O'Brien \"ops\"".into(), "sam@example.com".into())),
         };
         assert_eq!(Settings::parse(&light.to_toml()), light);
+        let partial = Settings {
+            setup_identity: Some((String::new(), "sam@example.com".into())),
+            ..light.clone()
+        };
+        assert_eq!(Settings::parse(&partial.to_toml()), partial);
         // Shortcuts are global; other tests rely on the defaults.
         let applied = Settings {
             shortcuts: super::super::shortcuts::Bindings::default(),
@@ -560,12 +663,15 @@ mod tests {
         assert_eq!(Settings::current(), Settings::default());
         assert_eq!(Settings::parse("not toml ["), Settings::default());
         let odd = Settings::parse(
-            "theme = \"sepia\"\nfont_size = 99\ninterface_size = 130\nsidebar_width = 9000\nconversation_width = 10\nother = 1\n",
+            "theme = \"Sepia!\"\nfont_size = 99\ninterface_size = 130\nsidebar_width = 9000\nconversation_width = 10\nother = 1\n",
         );
         assert_eq!(odd, Settings::default());
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("nested/settings.toml");
         save(&light, &path).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
         assert_eq!(
             Settings::parse(&std::fs::read_to_string(&path).unwrap()),
             light

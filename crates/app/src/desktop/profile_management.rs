@@ -31,6 +31,8 @@ mod setup;
 const PAGE_SIZE: usize = 16;
 /// How many checks a sign-in opened from Settings gets, about five minutes.
 pub(super) const SIGN_IN_CHECKS: usize = 150;
+/// How often an open sign-in is checked. The provider's check is local and quick.
+const SIGN_IN_CHECK: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Each CLI's sign-in, one request each. An unanswered read can't be told from
 /// a signed-out CLI, so it's reported as unavailable. Runs on an I/O worker.
@@ -108,6 +110,8 @@ pub(super) struct Management {
     signed: BTreeMap<String, Authentication>,
     /// Sign-ins opened from here and not yet reported as finished.
     signing: BTreeSet<String>,
+    /// Sign-ins opened here for each CLI, so a late read can't end a newer one.
+    sign_ins: BTreeMap<String, u64>,
     watching: Option<gpui::Task<()>>,
     /// Lifecycle requests for this profile without a confirmed outcome.
     unfinished: usize,
@@ -139,6 +143,7 @@ impl Management {
             connection: None,
             signed: BTreeMap::new(),
             signing: BTreeSet::new(),
+            sign_ins: BTreeMap::new(),
             watching: None,
             unfinished: 0,
             more: false,
@@ -185,6 +190,7 @@ impl Management {
         };
         let profile_id = profile.item().profile_id.clone();
         self.signing.insert(runtime.clone());
+        *self.sign_ins.entry(runtime.clone()).or_default() += 1;
         cx.emit(Open::SignIn {
             profile_id,
             runtime,
@@ -192,7 +198,7 @@ impl Management {
         if self.watching.is_none() {
             self.watching = Some(cx.spawn(async move |this, cx| {
                 for _ in 0..SIGN_IN_CHECKS {
-                    cx.background_executor().timer(flow::SIGN_IN_CHECK).await;
+                    cx.background_executor().timer(SIGN_IN_CHECK).await;
                     let Ok(ids) = this.read_with(cx, |pane, _| pane.signing.clone()) else {
                         return;
                     };
@@ -223,6 +229,46 @@ impl Management {
             }));
         }
         cx.notify();
+    }
+
+    /// A sign-in pane for this profile closed: read that CLI once more and
+    /// stop waiting for it, rather than until the checks run out.
+    pub fn sign_in_ended(&mut self, profile_id: &str, runtime: &str, cx: &mut Context<Self>) {
+        if self.profile_id.as_deref() != Some(profile_id) || !self.signing.contains(runtime) {
+            return;
+        }
+        let Some(connection) = self.connection.clone() else {
+            return;
+        };
+        let attempt = self.sign_ins.get(runtime).copied();
+        let runtime = runtime.to_owned();
+        let id = runtime.clone();
+        let read = cx
+            .background_executor()
+            .spawn(async move { read_accounts(&connection, vec![id]) });
+        cx.spawn(async move |this, cx| {
+            let read = read.await;
+            let _ = this.update(cx, |pane, cx| {
+                // Sign in was pressed again meanwhile: that attempt goes on.
+                if pane.sign_ins.get(&runtime).copied() != attempt {
+                    return;
+                }
+                // A read that failed says nothing yet: keep checking.
+                if read
+                    .iter()
+                    .any(|(_, status)| *status == Authentication::Unavailable)
+                {
+                    return;
+                }
+                pane.signed.extend(read);
+                pane.signing.remove(&runtime);
+                if pane.signing.is_empty() {
+                    pane.watching = None;
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     fn complete(&mut self, result: Result<Page, controller::Error>) {
@@ -379,7 +425,8 @@ impl Management {
                 }
                 let setup =
                     match event {
-                        choices::Event::Back => None,
+                        // Only a guide opens its own pane; this form adds agents.
+                        choices::Event::Back | choices::Event::Opened(_) => None,
                         choices::Event::Recover => {
                             let Some(controller) = form.read(cx).controller() else {
                                 return;
@@ -905,21 +952,23 @@ impl Render for Management {
                     let expected = ticket.clone();
                     let default = item.kind == Kind::LegacyDefault;
                     body = body.child(
-                        div().flex().items_center().justify_between()
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
                             .child(ui::group_title("Agents", ""))
-                            .child(ui::button("new-agent-setup", "Add agent", ui::Button::Secondary).on_click(cx.listener(move |pane, _, window, cx| {
-                                // Default keeps its host environment, so the provider refuses its
-                                // bound setup; first-run setup adds Default's agents instead.
-                                if default {
-                                    cx.defer(|cx| {
-                                        if let Err(error) = super::onboarding::show(false, cx) {
-                                            tracing::error!(event = "setup_window_failed", %error, "Cannot open setup");
+                            .child(
+                                ui::button("new-agent-setup", "Add agent", ui::Button::Secondary)
+                                    .on_click(cx.listener(move |pane, _, window, cx| {
+                                        // Default keeps its host environment, so the provider refuses its
+                                        // bound setup; a new profile, with its own guide, is the way on.
+                                        if default {
+                                            cx.defer(super::new_profile);
+                                        } else {
+                                            pane.choices(&expected, window, cx)
                                         }
-                                    });
-                                } else {
-                                    pane.choices(&expected, window, cx)
-                                }
-                            }))),
+                                    })),
+                            ),
                     );
                     if let Some((form, _)) = &self.choices {
                         body = body.child(form.clone());

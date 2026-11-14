@@ -1,7 +1,8 @@
-//! Retained workbooks, edited through Backbone's authenticated local API.
+//! Retained workbooks, read through Backbone's authenticated local API.
 //!
-//! Reads pin immutable revisions. Writes are explicit, atomic operator actions;
-//! a lost reply retains a byte-identical request for a deliberate safe retry.
+//! Reads pin immutable revisions. Agents edit workbooks; the person sends
+//! feedback, and a lost reply retains a byte-identical request for a
+//! deliberate safe retry.
 //! Transport, parsing and validation run on I/O workers, never the UI thread.
 
 use crate::profiles::{Connection, Identity};
@@ -383,44 +384,6 @@ impl Client {
             }
         }
     }
-    /// Freeze a validated human edit before sending it.
-    pub fn prepare_edit(&self, sheet: &Id, edit: &Edit) -> Result<Prepared, Error> {
-        if !edit.valid() {
-            return Err(Error::Invalid);
-        }
-        self.prepare(
-            format!("/api/sheets/{sheet}/revisions"),
-            edit,
-            METADATA_LIMIT,
-            Expected::Revision {
-                sheet: sheet.clone(),
-                base: edit.base_revision_id.clone(),
-            },
-        )
-    }
-    /// Freeze initial workbook creation with the owner's explicit attribution.
-    pub fn prepare_create(&self, create: &Create) -> Result<Prepared, Error> {
-        if !create.valid() {
-            return Err(Error::Invalid);
-        }
-        self.prepare("/api/sheets".into(), create, FILE_LIMIT, Expected::Create)
-    }
-    /// Import a new workbook; existing workbooks are never replaced by import.
-    pub fn prepare_import(&self, import: &Import) -> Result<Prepared, Error> {
-        if import.author.len() > 128
-            || !crate::valid_agent(&import.author)
-            || import.title.trim().is_empty()
-            || import.title.chars().count() > 240
-        {
-            return Err(Error::Invalid);
-        }
-        self.prepare(
-            "/api/sheets/import".into(),
-            import,
-            FILE_LIMIT,
-            Expected::Import,
-        )
-    }
     /// Freeze feedback at its observed revision and stable selection.
     pub fn prepare_feedback(&self, sheet: &Id, feedback: &Feedback) -> Result<Prepared, Error> {
         if !feedback.valid() {
@@ -486,31 +449,6 @@ impl Client {
                 }
                 Ok(Accepted::Feedback(result))
             }
-            Expected::Import => {
-                let result: Imported =
-                    serde_json::from_slice(&bytes).map_err(|_| Error::Unknown)?;
-                if !result.record.valid() || !valid_warnings(&result.warnings) {
-                    return Err(Error::Unknown);
-                }
-                Ok(Accepted::Imported {
-                    record: result.record,
-                    warnings: result.warnings,
-                })
-            }
-            expected => {
-                let result: Mutation =
-                    serde_json::from_slice(&bytes).map_err(|_| Error::Unknown)?;
-                if !result.record.valid() {
-                    return Err(Error::Unknown);
-                }
-                if let Expected::Revision { sheet, base } = expected
-                    && (&result.record.sheet_id != sheet
-                        || result.record.parent_revision_id.as_ref() != Some(base))
-                {
-                    return Err(Error::Unknown);
-                }
-                Ok(Accepted::Revision(result.record))
-            }
         }
     }
     /// Export one immutable revision. CSV/TSV require a specific tab and contain
@@ -558,10 +496,6 @@ struct Failure {
     code: String,
     current_revision_id: Option<Id>,
 }
-#[derive(Deserialize)]
-struct Mutation {
-    record: Record,
-}
 fn page_path(base: &str, cursor: Option<&str>, limit: usize) -> Result<String, Error> {
     let mut path = format!("{base}?limit={limit}");
     if let Some(cursor) = cursor {
@@ -595,9 +529,6 @@ pub struct RangeQuery {
 }
 #[derive(Clone, Debug)]
 enum Expected {
-    Create,
-    Import,
-    Revision { sheet: Id, base: Id },
     Feedback { sheet: Id, revision: Id },
 }
 /// Immutable request, retained while its outcome is uncertain. Bytes and route
@@ -612,15 +543,6 @@ pub struct Prepared {
 /// A confirmed mutation response.
 #[derive(Clone, Debug)]
 pub enum Accepted {
-    /// The committed immutable revision (which may since have been superseded).
-    Revision(Record),
-    /// Imported workbook and explicit interchange loss diagnostics.
-    Imported {
-        /// New immutable workbook revision.
-        record: Record,
-        /// Provider-supplied bounded diagnostics, never discarded.
-        warnings: Vec<String>,
-    },
     /// Actual feedback routing receipt, not an agent answer.
     Feedback(FeedbackReceipt),
 }
@@ -691,25 +613,6 @@ impl Format {
     }
 }
 
-/// Import payload. Binary XLSX content is standard base64; other formats are UTF-8.
-#[derive(Clone, Debug, Serialize)]
-pub struct Import {
-    /// Registered owner selected by the operator.
-    pub author: String,
-    /// Stable idempotency key.
-    pub request_id: Id,
-    /// New workbook title.
-    pub title: String,
-    /// Explicit format, never inferred by the server from arbitrary content.
-    pub format: Format,
-    /// Bounded file content in the format's wire representation.
-    pub content: String,
-}
-#[derive(Deserialize)]
-struct Imported {
-    record: Record,
-    warnings: Vec<String>,
-}
 /// A bounded immutable export, including diagnostics that must be shown.
 pub struct Exported {
     /// File bytes, at most 16 MiB.

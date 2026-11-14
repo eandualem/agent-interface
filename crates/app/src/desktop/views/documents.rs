@@ -7,10 +7,7 @@ use agent_interface_roster::views::{
 };
 use gpui::{AnyElement, Context, SharedString, div, prelude::*, px};
 
-use super::{
-    ViewEvent, ViewPane,
-    artifact_web::{self, Surface},
-};
+use super::{ViewEvent, ViewPane, artifact_web::Surface};
 use crate::desktop::{
     components as ui,
     design::{colors, tokens},
@@ -200,7 +197,7 @@ pub(super) fn reader(pane: &ViewPane, cx: &mut Context<ViewPane>) -> AnyElement 
     } else if let Some(document) = &pane.documents.loaded {
         let surface = pane.documents.surface.clone();
         let html = document.html.clone();
-        let theme = artifact_web::theme();
+        let theme = super::reading::document_script();
         let entity = cx.entity().downgrade();
         let focus_entity = entity.clone();
         let async_cx = Rc::new(RefCell::new(cx.to_async()));

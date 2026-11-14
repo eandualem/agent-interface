@@ -425,7 +425,7 @@ impl Team {
 }
 
 // A member is a name, or an object with one.
-fn member_name(raw: &RawValue) -> Option<String> {
+pub(crate) fn member_name(raw: &RawValue) -> Option<String> {
     #[derive(Deserialize)]
     struct Named {
         name: String,
@@ -1408,7 +1408,13 @@ pub fn epoch_seconds(text: &str) -> Option<f64> {
     let hour: i64 = time.next()?.parse().ok()?;
     let minute: i64 = time.next()?.parse().ok()?;
     let second: f64 = time.next()?.parse().ok()?;
-    if !(1..=12).contains(&month) || !(1..=31).contains(&day) || hour > 23 || minute > 59 {
+    if !(0..=9999).contains(&year)
+        || !(1..=12).contains(&month)
+        || !(1..=31).contains(&day)
+        || !(0..=23).contains(&hour)
+        || !(0..=59).contains(&minute)
+        || !(0.0..61.0).contains(&second)
+    {
         return None;
     }
     let days = days_from_civil(year, month, day);
@@ -1672,6 +1678,16 @@ mod tests {
         assert_eq!(iso(1_792_740_351), "2026-10-23T07:25:51Z");
         assert_eq!(epoch_seconds("2026-13-01T00:00:00Z"), None);
         assert_eq!(epoch_seconds("not a time"), None);
+        for invalid in [
+            "2026-11-10T-5:00:00Z",
+            "2026-11-10T00:-9:00Z",
+            "2026-11-10T00:00:NaNZ",
+            "2026-11-10T00:00:-infZ",
+            "99999999999999999-01-01T00:00:00Z",
+            "-9223372036854775808-01-01T00:00:00Z",
+        ] {
+            assert_eq!(epoch_seconds(invalid), None, "{invalid}");
+        }
     }
 
     #[test]

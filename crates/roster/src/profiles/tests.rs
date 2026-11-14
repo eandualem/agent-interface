@@ -529,10 +529,11 @@ fn account_status_reads_one_cli_and_refuses_another_answer() {
         Ok(Authentication::Authenticated)
     );
     assert_eq!(connection.account_status("codex"), Err(Error::Invalid));
-    assert_eq!(connection.account_status("codex"), Err(Error::Refused(422)));
+    assert_eq!(connection.account_status("a&b#c"), Err(Error::Refused(422)));
     let requests = server.join().unwrap();
     let query = sessions["account_status_query"].as_str().unwrap();
     assert!(requests[1].starts_with(&format!("get {query} ")));
+    assert!(requests[3].starts_with("get /api/profile/accounts/status?runtime=a%26b%23c "));
 }
 
 #[test]
@@ -553,23 +554,23 @@ fn starting_a_stopped_agent_uses_the_bound_route_and_reports_the_outcome() {
     );
     let connection = profile.connect().unwrap();
     assert!(matches!(
-        connection.start_agent("worker", false),
+        connection.start_agent("worker", false, None),
         Outcome::Accepted(_)
     ));
     assert_eq!(
-        connection.start_agent("worker", true),
+        connection.start_agent("worker", true, None),
         Outcome::AlreadyRunning
     );
     assert!(matches!(
-        connection.start_agent("worker", false),
+        connection.start_agent("worker", false, None),
         Outcome::Refused(_)
     ));
     assert!(matches!(
-        connection.start_agent("worker", true),
+        connection.start_agent("worker", true, None),
         Outcome::Refused(_)
     ));
     assert!(matches!(
-        connection.start_agent("../other", false),
+        connection.start_agent("../other", false, None),
         Outcome::Refused(_)
     ));
     let requests = server.join().unwrap();
@@ -578,6 +579,43 @@ fn starting_a_stopped_agent_uses_the_bound_route_and_reports_the_outcome() {
     let body = requests[2].rsplit("\r\n\r\n").next().unwrap();
     let sent: Value = serde_json::from_str(body).unwrap();
     assert_eq!(sent, json!({"resume": true, "wait": false}));
+}
+
+#[test]
+fn a_bound_start_sends_terminal_colours_when_the_runtime_supports_them() {
+    use crate::lifecycle::{Outcome, TerminalDefaults};
+    let (directory, listener, url) = crate::transport::tests::local_listener();
+    let (profile, identity) = profile_at(directory.path(), url.strip_prefix("unix:").unwrap());
+    let server = serve(
+        listener,
+        vec![
+            (200, identity.clone()),
+            (
+                200,
+                json!([{"id": "codex", "terminal_defaults_supported": true}]),
+            ),
+            (200, json!({"runtime": "codex"})),
+            (
+                200,
+                json!({"ok": true, "session": "worker", "already_existed": false, "ready": "not_waited"}),
+            ),
+        ],
+    );
+    let connection = profile.connect().unwrap();
+    let defaults = TerminalDefaults::new([255; 3], [24, 25, 29]);
+    assert!(matches!(
+        connection.start_agent("worker", false, Some(defaults.clone())),
+        Outcome::Accepted(_)
+    ));
+    let requests = server.join().unwrap();
+    assert!(requests[1].starts_with("get /api/runtimes "));
+    assert!(requests[2].starts_with("get /api/agents/worker/inspect "));
+    let body = requests[3].rsplit("\r\n\r\n").next().unwrap();
+    let sent: Value = serde_json::from_str(body).unwrap();
+    assert_eq!(
+        sent["terminal_defaults"],
+        serde_json::to_value(defaults).unwrap()
+    );
 }
 
 #[test]
@@ -653,13 +691,14 @@ fn agent_list_reads_again_while_registrations_settle_but_not_forever() {
         (200, identity.clone()),
         settling.clone(),
         (200, json!({"items": [], "total": 0})),
+        (200, json!({"items": []})),
     ];
     replies.extend(std::iter::repeat_n(settling, 41));
     let server = serve(listener, replies);
     let connection = profile.connect().unwrap();
     assert!(connection.roster().is_ok());
     assert_eq!(connection.roster().err(), Some(Error::Refused(409)));
-    assert_eq!(server.join().unwrap().len(), 44);
+    assert_eq!(server.join().unwrap().len(), 45);
 }
 
 #[test]
@@ -667,6 +706,7 @@ fn bound_roster_preserves_typed_failures_and_decodes_success() {
     let (directory, listener, url) = crate::transport::tests::local_listener();
     let (profile, identity) = profile_at(directory.path(), url.strip_prefix("unix:").unwrap());
     let required = fixture()["http_errors"]["binding_required"]["body"].clone();
+    let required_again = required.clone();
     let server = serve(
         listener,
         vec![
@@ -675,7 +715,16 @@ fn bound_roster_preserves_typed_failures_and_decodes_success() {
             (403, json!({})),
             (200, json!({"items": "invalid"})),
             (200, json!({"items": [{"name": "worker", "state": "busy"}]})),
+            (
+                200,
+                json!({"items": [{"name": "fix", "status": "active", "initiator": "worker", "members": ["fix-coder"]}]}),
+            ),
             (200, json!({"items": []})),
+            // An unreadable swarm list leaves the roster itself usable.
+            (500, json!({})),
+            // A binding refused on the swarm read is still a refused binding.
+            (200, json!({"items": []})),
+            (409, required_again),
         ],
     );
     let connection = profile.connect().unwrap();
@@ -685,11 +734,19 @@ fn bound_roster_preserves_typed_failures_and_decodes_success() {
     let roster = connection.roster().unwrap();
     assert_eq!(roster.states["worker"], "busy");
     assert!(roster.error.is_none() && roster.observed_at.is_some());
-    assert!(connection.roster().unwrap().states.is_empty());
+    assert_eq!(roster.swarms[0].members, ["fix-coder"]);
+    let empty = connection.roster().unwrap();
+    assert!(empty.states.is_empty() && empty.swarms.is_empty());
+    assert_eq!(connection.roster().err(), Some(Error::BindingRequired));
     let requests = server.join().unwrap();
-    assert_eq!(requests.len(), 6);
-    for request in &requests[1..] {
-        assert!(request.starts_with("get /api/agents "));
+    assert_eq!(requests.len(), 10);
+    for (index, request) in requests.iter().enumerate().skip(1) {
+        let path = if [5, 7, 9].contains(&index) {
+            "/api/swarms"
+        } else {
+            "/api/agents"
+        };
+        assert!(request.starts_with(&format!("get {path} ")));
         assert!(request.contains("x-backbone-lifecycle-id: lifecycle-a1\r\n"));
     }
 }

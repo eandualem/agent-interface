@@ -1,0 +1,53 @@
+{
+  "name": "Dracula",
+  "extends": "dark",
+  "color": {
+    "ground": "#191a21",
+    "panel": "#21222c",
+    "surface": "#282a36",
+    "field": "#21222c",
+    "hover": "#313341",
+    "selected": "#44475a",
+    "line": "#3b3d47",
+    "line_strong": "#44475a",
+    "edge": "#3f414b",
+    "text": "#f8f8f2",
+    "text_2": "#d9d9d6",
+    "muted": "#a3aed2",
+    "faint": "#6272a4",
+    "accent": "#bd93f9",
+    "accent_text": "#8be9fd",
+    "on_accent": "#282a36",
+    "accent_soft": "#bd93f924",
+    "focus": "#bd93f973",
+    "focus_halo": "#bd93f914",
+    "attention": "#ff5555",
+    "attention_text": "#ff5555",
+    "on_attention": "#282a36",
+    "attention_soft": "#ff55551f",
+    "ok": "#50fa7b",
+    "info": "#8be9fd",
+    "violet": "#ff79c6",
+    "green": "#50fa7b",
+    "code": "#f1fa8c",
+    "shadow": "#00000073",
+    "mark_from": "#2a2d33",
+    "mark_to": "#121315",
+    "mark_edge": "#ffffff12",
+    "mark_glyph": "#e7e8eb",
+    "mark_eye": "#e8a85f",
+    "mark_glow": "#e8a85f8c",
+    "pane_dim": 0.72
+  },
+  "terminal": {
+    "text": "#f8f8f2",
+    "background": "#282a36",
+    "cursor": "#f8f8f2",
+    "selection": "#44475a",
+    "selection_text": "#f8f8f2",
+    "palette": [
+      "#21222c", "#ff5555", "#50fa7b", "#f1fa8c", "#bd93f9", "#ff79c6", "#8be9fd", "#f8f8f2",
+      "#6272a4", "#ff6e6e", "#69ff94", "#ffffa5", "#d6acff", "#ff92df", "#a4ffff", "#ffffff"
+    ]
+  }
+}

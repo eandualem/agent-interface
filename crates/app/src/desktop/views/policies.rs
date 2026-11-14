@@ -19,10 +19,10 @@ pub(super) fn title(source: &Source) -> String {
         .text
         .as_deref()
         .and_then(|text| {
-            markdown::parse(text)
-                .into_iter()
+            markdown::document(text)
+                .iter()
                 .find_map(|block| match block {
-                    markdown::Block::Heading(_, heading) => Some(heading.text),
+                    markdown::Block::Heading(_, heading) => Some(heading.text.clone()),
                     _ => None,
                 })
         })

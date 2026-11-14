@@ -1851,7 +1851,7 @@ impl Conversation {
             line_height: 1.45,
             gap: t.space.s6,
         };
-        markdown::render_in(&markdown::parse_authored(text), &look, self, cx).min_w_0()
+        markdown::render_in(&markdown::authored(text), &look, self, cx).min_w_0()
     }
 
     fn mark(&self) -> Option<gpui::Div> {

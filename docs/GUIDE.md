@@ -78,6 +78,13 @@ workspace menu), a **Jump** field (Command-K) that finds tabs, panes, agents and
 commands across every workspace, the tabs with a thumbnail of each layout, and,
 with Agent Backbone installed, the **AGENTS** section: agents needing you first,
 each with a state symbol. Click an agent to show the tab holding its session.
+An agent running swarms shows the number of swarm members beside its name
+instead of listing them separately. Click the arrow to list each swarm with its
+members under the agent. Click a swarm to show it in a tab named after it: the
+agent that started it on the left and its members tiled on the right.
+The tab closes by itself when the swarm finishes, unless you renamed it or
+added a pane of your own. A swarm stays grouped under the agent that started it
+while that agent is offline, for example during a restart.
 The bottom row switches workspaces with one click (right-click for options,
 including **Choose icon…**) and opens Settings. Drag the panel's right edge to
 resize it. Panes are cards with a header naming what runs there; the focused
@@ -89,7 +96,7 @@ Double-click a pane header to expand it, then double-click again or press Escape
 to restore the split layout. Expansion belongs to that tab: switching tabs leaves
 their own layouts unchanged, and returning restores the tab's previous view.
 
-Settings (Command-comma) offers a dark or light theme, the interface size,
+Settings (Command-comma) offers a theme, the interface size,
 the terminal text size, whether panes show headers (always, on hover or never) and editable shortcuts;
 changes apply to every window at once and are saved in
 `$XDG_CONFIG_HOME/agent-interface/settings.toml`, or
@@ -97,6 +104,18 @@ changes apply to every window at once and are saved in
 **Interface size** (75% to 200%) scales the whole window, terminals included,
 on top of the display's own scale. Use it when a screen draws the app too
 small or too large, such as a 4K display under WSL.
+**Themes.** Settings › Appearance shows Dark and Light, twelve popular themes
+(Dracula, One Dark, Tokyo Night, Catppuccin, Nord, Gruvbox, Solarized, GitHub
+and One Light) and your own. Click one to use it everywhere at once.
+**Customize…** copies the theme in use into a JSON file of your own and opens
+it in the editor, where you can change any colour, the interface and terminal
+fonts, type sizes and spacing; Command-S (Control-S on Linux) saves and
+applies it, and a mistake is marked on its line. When VS Code is installed,
+**Import "…" from VS Code** brings in the colour theme you use there in one
+click; **Import VS Code theme file…** does the same for any colour theme
+file you choose. Your themes are
+files in `agent-interface/themes/` beside the settings file;
+[the design guide](DESIGN.md#themes) describes their format and every token.
 Some terminal programs choose their own colours when they start. If their colours
 remain from the previous theme, finish the current work and restart that program
 when convenient; changing the app theme does not restart running sessions.
@@ -287,7 +306,9 @@ filter. **Refresh** returns to the newest documents.
 An open report, Response or Document has a conversation with its author on
 the right edge. Choose its button, or press **C**, to open it; press **C** or
 Esc in the message field to close it again, keeping the draft. Enter adds a
-paragraph and **⌘↵** sends up to 4,000 characters. Each message includes a
+paragraph and **⌘↵** sends. The app sets no length limit; Agent Backbone sets
+its own (4,000 characters in 0.5.1, 64,000 in later versions), and a longer
+message shows **Not sent** with that reason. Each message includes a
 reference to the exact record being read, and the app checks that the author
 is still registered before sending. A message shows **Sending…** until Agent
 Backbone answers, then the time it was sent; **Not sent** offers **Retry**,

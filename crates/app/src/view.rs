@@ -49,6 +49,10 @@ pub struct Appearance {
     pub background: Rgba,
     /// The cursor's colour.
     pub cursor: Rgba,
+    /// Selected text's background.
+    pub selection: Rgba,
+    /// Selected text's colour.
+    pub selection_text: Rgba,
     /// The first sixteen palette colours. The rest of the 256-colour palette
     /// is the standard colour cube and grey ramp.
     pub palette: [Rgba; 16],
@@ -292,6 +296,8 @@ impl TerminalView {
             && grid.appearance.foreground == appearance.foreground
             && grid.appearance.background == appearance.background
             && grid.appearance.cursor == appearance.cursor
+            && grid.appearance.selection == appearance.selection
+            && grid.appearance.selection_text == appearance.selection_text
             && grid.appearance.palette == appearance.palette;
         if unchanged {
             return;
@@ -906,6 +912,22 @@ impl Render for TerminalView {
         let input = self.input.filter(|_| !self.panes().is_finished());
         let selection_move = Rc::new(cx.listener(Self::selection_move));
         let background = self.grid.borrow().appearance.background;
+        // The terminal's own red, with whichever of its text and background
+        // colours reads better on it, so a message shows in any theme.
+        let (alert, alert_text) = {
+            let grid = self.grid.borrow();
+            let appearance = &grid.appearance;
+            let red = appearance.palette[1];
+            let distance = |colour: Rgba| {
+                (colour.r - red.r).powi(2) + (colour.g - red.g).powi(2) + (colour.b - red.b).powi(2)
+            };
+            let text = if distance(appearance.background) >= distance(appearance.foreground) {
+                appearance.background
+            } else {
+                appearance.foreground
+            };
+            (red, text)
+        };
         let embedded = self.embedded;
         let panes = self.panes.clone();
         let message = self
@@ -1100,8 +1122,8 @@ impl Render for TerminalView {
                         .absolute()
                         .bottom_0()
                         .left_0()
-                        .bg(gpui::rgb(0x402020))
-                        .text_color(gpui::rgb(0xffffff))
+                        .bg(alert)
+                        .text_color(alert_text)
                         .text_sm()
                         .child(message),
                 )
@@ -1456,7 +1478,7 @@ impl Grid {
                     && cursor.row == row
                     && (cursor.col..cursor.col + cursor_cols).contains(&col);
                 if selected.contains(&col) {
-                    Some(gpui::rgb(0x345b89).into())
+                    Some(self.appearance.selection.into())
                 } else if is_cursor {
                     Some(self.appearance.cursor.into())
                 } else {
@@ -1504,7 +1526,7 @@ impl Grid {
             let is_cursor = cursor.visible && cursor.row == row && cursor.col == col;
             let mut style = self.text_run(cell.style);
             if selected.contains(&col) {
-                style.color = gpui::rgb(0xffffff).into();
+                style.color = self.appearance.selection_text.into();
             } else if is_cursor {
                 style.color = self.appearance.background.into();
             }

@@ -162,16 +162,6 @@ impl Browser {
                 .filter(|drag| drag.dragging)
                 .and_then(|drag| drag.destination.as_ref()),
             leaf_states,
-            unavailable: leaves
-                .iter()
-                .filter(|leaf| leaf.runs_terminal() && !self.terminal_available(&leaf.id))
-                .map(|leaf| {
-                    (
-                        leaf.id.clone(),
-                        "This terminal is unavailable for the workspace profile.",
-                    )
-                })
-                .collect(),
         };
         let node = tree
             .as_ref()
@@ -196,7 +186,8 @@ impl Browser {
         area.child(element).into_any_element()
     }
 
-    /// New profile's steps: alone until its workspace shows a pane, then beside it.
+    /// New profile's two screens, across the content area of the workspace
+    /// it belongs to.
     pub(super) fn beside_profile_flow(
         &self,
         content: AnyElement,
@@ -205,7 +196,6 @@ impl Browser {
         let Some((flow, _)) = &self.profile_flow else {
             return content;
         };
-        let t = tokens();
         let flow_state = flow.read(cx);
         let profile = flow_state.profile_id();
         let Some(space) = self
@@ -224,31 +214,11 @@ impl Browser {
         if !here {
             return content;
         }
-        let beside = flow_state.beside()
-            && profile.is_some()
-            && space
-                .tabs
-                .iter()
-                .flat_map(|tab| tab.tree.leaves())
-                .any(|leaf| leaf.attachment.is_some());
         div()
             .flex_1()
             .min_w_0()
             .h_full()
-            .flex()
-            .bg(colors().ground)
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .h_full()
-                    .pt(px(t.size.window_inset))
-                    .pb(px(t.size.pane_gap))
-                    .pl(px(t.size.pane_gap))
-                    .when(!beside, |el| el.pr(px(t.size.window_inset)))
-                    .child(flow.clone()),
-            )
-            .when(beside, |el| el.child(content))
+            .child(flow.clone())
             .into_any_element()
     }
 

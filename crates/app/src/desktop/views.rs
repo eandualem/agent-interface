@@ -30,7 +30,7 @@ use gpui::{
 };
 
 use super::{
-    components as ui,
+    components::{self as ui, mono},
     design::{colors, tokens},
     name::{NameEvent, NameField},
 };
@@ -52,6 +52,7 @@ mod markdown;
 mod plans;
 mod policies;
 mod reader;
+mod reading;
 mod reports;
 mod seen;
 mod selection;
@@ -1364,15 +1365,6 @@ fn line(text: &str) -> String {
     text.chars()
         .map(|ch| if ch.is_control() { ' ' } else { ch })
         .collect()
-}
-
-fn mono(text: impl Into<SharedString>) -> gpui::Div {
-    div()
-        .font_family(tokens().font.mono.clone())
-        .overflow_hidden()
-        .whitespace_nowrap()
-        .text_ellipsis()
-        .child(text.into())
 }
 
 #[cfg(test)]

@@ -13,7 +13,7 @@ use crate::profiles::{
     Client, Error,
     selection::{Attempt, Completion, Selection},
 };
-use gpui::{Context, Window, prelude::*};
+use gpui::{Context, Entity, Window, prelude::*};
 
 #[derive(Clone, PartialEq, Eq)]
 pub(super) enum Owner {
@@ -24,6 +24,8 @@ pub(super) enum Owner {
 #[derive(Default)]
 pub(super) struct Registry {
     entries: HashMap<String, Entry>,
+    /// Display names by profile id, from verified selections.
+    names: HashMap<String, String>,
 }
 
 struct Entry {
@@ -75,6 +77,7 @@ impl Registry {
                     )
                 })
                 .collect(),
+            names: self.names.clone(),
         }
     }
     /// Reconcile every workspace, not just the currently selected one.
@@ -139,8 +142,27 @@ impl Registry {
         let Some(result) = entry.selection.accept(finished.completion) else {
             return false;
         };
+        if let Ok(selected) = &result {
+            self.names.insert(
+                selected.item().profile_id.clone(),
+                selected.item().display_name.clone(),
+            );
+        }
         entry.result = Some(result.map(|selected| selected.connection().clone()));
         true
+    }
+
+    /// Remember a profile's display name for the status row.
+    pub fn remember_name(&mut self, item: &agent_interface_roster::profiles::Item) {
+        self.names
+            .insert(item.profile_id.clone(), item.display_name.clone());
+    }
+
+    /// A bound workspace's profile name, once a selection has reported it.
+    pub fn profile_name(&self, space: &Workspace) -> Option<&str> {
+        self.names
+            .get(space.profile_id.as_ref()?)
+            .map(String::as_str)
     }
 
     /// Install a picker result only after that exact workspace binding is saved.
@@ -316,10 +338,17 @@ impl Browser {
         cx: &mut Context<Self>,
     ) {
         use super::profile_management::Open;
+        // Whether first run asked travels with the request, so another
+        // request never answers for it.
+        let first_run = std::mem::take(&mut self.first_open);
         let Some(Ok(client)) = &self.profile_client else {
+            if first_run {
+                self.first_run_opened(Err("The profile could not be reached. Try again."), cx);
+            }
             return;
         };
         let client = client.clone();
+        let generation = self.library_generation;
         self.profile_picker = None;
         let work = cx.background_executor().spawn(async move {
             let live = || true;
@@ -347,9 +376,20 @@ impl Browser {
         cx.spawn_in(window, async move |this, cx| {
             let result = work.await;
             let _ = this.update_in(cx, |browser, window, cx| {
+                // Another library opened meanwhile: this one was not asked.
+                if browser.library_generation != generation {
+                    return;
+                }
                 let opened = match result {
                     Ok((session, profile_id, label)) => {
-                        if browser.open_setup_agent(&session, &profile_id, &label, window, cx) {
+                        if browser.open_setup_agent(
+                            &session,
+                            &profile_id,
+                            &label,
+                            first_run,
+                            window,
+                            cx,
+                        ) {
                             Ok(())
                         } else {
                             Err("Couldn't open it in a workspace. Try again.")
@@ -357,8 +397,15 @@ impl Browser {
                     }
                     Err(error) => Err(error),
                 };
-                if let Err(error) = opened {
-                    browser.save_notice = Some(error.into());
+                if !first_run {
+                    if let Err(error) = opened {
+                        browser.save_notice = Some(error.into());
+                    }
+                } else if let Some(opened) = browser.first_open_answer(opened) {
+                    browser.first_run_opened(opened, cx);
+                    if let Err(error) = opened {
+                        browser.save_notice = Some(error.into());
+                    }
                 }
                 cx.notify();
             });
@@ -423,21 +470,6 @@ impl Browser {
             return None;
         }
         self.layout.as_ref()?.model().pane()
-    }
-
-    pub(super) fn terminal_available(&self, pane: &str) -> bool {
-        let Some(space) = self
-            .layout
-            .as_ref()
-            .and_then(|layout| layout.model().workspace_for_pane(pane))
-        else {
-            return false;
-        };
-        match self.workspace_profiles.route(space) {
-            Route::Legacy => true,
-            Route::Bound(_) => true,
-            Route::Unavailable => false,
-        }
     }
 
     pub(super) fn retire_profile_panes(&mut self) {
@@ -541,6 +573,7 @@ impl Browser {
                 .find(|space| space.id == id)
             {
                 Some(space) => {
+                    self.workspace_profiles.remember_name(&item);
                     self.workspace_profiles.bind(space, connection);
                 }
                 // A conflicting save dropped the new workspace: make it again.
@@ -598,6 +631,7 @@ impl Browser {
             self.roster_updates =
                 Some(cx.observe_global::<agent_status::Sources>(|browser, cx| {
                     browser.refresh_source_matches(cx);
+                    browser.close_finished_swarm_tabs(cx);
                     cx.notify();
                 }));
         }
@@ -763,7 +797,23 @@ impl Browser {
         } else {
             name.trim()
         };
-        let Some((base, mut proposed)) = super::workspace::create_profile(layout, label) else {
+        let Some((base, proposed)) = super::workspace::create_profile(layout, label) else {
+            return;
+        };
+        self.propose_binding(base, proposed, item, connection, name, cx);
+    }
+
+    /// Save `proposed` with its selected workspace bound to the profile.
+    fn propose_binding(
+        &mut self,
+        base: agent_interface_store::Document,
+        mut proposed: agent_interface_core::Layout,
+        item: agent_interface_roster::profiles::Item,
+        connection: Connection,
+        name: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(layout) = &self.layout else {
             return;
         };
         let selected_id = proposed.selected.clone();
@@ -798,6 +848,159 @@ impl Browser {
         let flow = cx.new(|cx| {
             super::profile_management::flow::Flow::new(client, directory, name, home, window, cx)
         });
+        self.attach_profile_flow(flow, window, cx);
+    }
+
+    /// Show first run over this window: the scene, what this computer needs,
+    /// then the first profile and its guide.
+    pub(super) fn start_onboarding(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let directory = self.directory.clone();
+        let onboarding = cx.new(|cx| super::onboarding::Onboarding::new(directory, window, cx));
+        let events = cx.subscribe_in(&onboarding, window, |browser, _, event, window, cx| {
+            use super::onboarding::Event;
+            match event {
+                Event::Bind(bind) => {
+                    if !browser.adopt_first_profile(bind, cx) {
+                        browser.first_bind = Some((**bind).clone());
+                    }
+                }
+                Event::Open(open) => {
+                    browser.first_open = true;
+                    browser.open_from_setup(open.clone(), Some(String::new()), window, cx);
+                }
+                Event::Terminal => {
+                    let empty = browser
+                        .layout
+                        .as_ref()
+                        .is_some_and(|layout| layout.model().tab().is_none());
+                    if empty {
+                        let creation = browser.creation_target();
+                        browser.create_from(
+                            super::layout_edit::Create::Tab,
+                            creation.as_ref(),
+                            window,
+                            cx,
+                        );
+                    }
+                }
+                Event::Done => {
+                    browser.onboarding = None;
+                    // A guide's terminal that took focus as it opened keeps it.
+                    if window.focused(cx).is_none()
+                        && let Some(focus) = &browser.navigation
+                    {
+                        window.focus(focus, cx);
+                    }
+                }
+            }
+            cx.notify();
+        });
+        self.onboarding = Some((onboarding, events));
+        cx.notify();
+    }
+
+    /// Tell first run whether the pane it asked for opened.
+    fn first_run_opened(&mut self, opened: Result<(), &'static str>, cx: &mut Context<Self>) {
+        if let Some((onboarding, _)) = &self.onboarding {
+            onboarding.update(cx, |onboarding, cx| onboarding.opened(opened, cx));
+        }
+    }
+
+    /// What first run hears now about a pane it asked for. A pane queued to
+    /// save is not open yet: a conflict or a failure drops that edit, so the
+    /// answer comes when the save ends, and nothing said meanwhile replaces it.
+    fn first_open_answer(
+        &mut self,
+        opened: Result<(), &'static str>,
+    ) -> Option<Result<(), &'static str>> {
+        if self.first_open_saving {
+            return None;
+        }
+        if opened.is_ok() && self.saving {
+            self.first_open_saving = true;
+            return None;
+        }
+        Some(opened)
+    }
+
+    /// The save holding first run's guide pane ended, keeping the pane or not.
+    pub(super) fn first_open_saved(&mut self, kept: bool, cx: &mut Context<Self>) {
+        if !std::mem::take(&mut self.first_open_saving) {
+            return;
+        }
+        let opened = kept
+            .then_some(())
+            .ok_or("Couldn't open it in a workspace. Try again.");
+        self.first_run_opened(opened, cx);
+    }
+
+    /// New profile opened before this window's library loaded has no
+    /// workspace to show in yet: it takes the first one shown.
+    pub(super) fn home_profile_flow(&mut self, cx: &mut Context<Self>) {
+        let Some((flow, _)) = &self.profile_flow else {
+            return;
+        };
+        let Some(space) = self
+            .layout
+            .as_ref()
+            .and_then(|layout| layout.model().workspace())
+        else {
+            return;
+        };
+        if flow.read(cx).home.is_none() {
+            let home = space.id.clone();
+            flow.update(cx, |flow, _| flow.home = Some(home));
+        }
+    }
+
+    /// First run made the person's first profile: bind the library's
+    /// untouched starting workspace (or else a new one) to it. Returns false
+    /// while this window's library is still loading, to be asked again.
+    pub(super) fn adopt_first_profile(
+        &mut self,
+        bind: &super::onboarding::FirstBind,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.layout.is_none() || self.saving || self.save_failed {
+            return false;
+        }
+        self.use_profile_client(bind.client.clone());
+        // Carrying on after a restart: the workspace bound before is reused.
+        let bound = self.layout.as_ref().and_then(|layout| {
+            layout
+                .model()
+                .workspaces
+                .iter()
+                .find(|space| space.profile_id.as_deref() == Some(bind.item.profile_id.as_str()))
+                .cloned()
+        });
+        if let Some(space) = bound {
+            self.workspace_profiles
+                .bind(&space, bind.connection.clone());
+            cx.notify();
+            return true;
+        }
+        let claim = self
+            .layout
+            .as_ref()
+            .and_then(|layout| super::workspace::claim_first(layout, &bind.item.display_name));
+        let (item, connection) = (bind.item.clone(), bind.connection.clone());
+        match claim {
+            Some((base, proposed)) => {
+                self.propose_binding(base, proposed, item, connection, "", cx)
+            }
+            None => self.bind_workspace(item, connection, "", cx),
+        }
+        true
+    }
+
+    /// Show a profile flow's steps in the content area and follow its events.
+    fn attach_profile_flow(
+        &mut self,
+        flow: Entity<super::profile_management::flow::Flow>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         window.focus(&flow.read(cx).focus_handle(cx), cx);
         let events = cx.subscribe_in(&flow, window, |browser, flow, event, window, cx| {
             if !browser
@@ -832,6 +1035,7 @@ impl Browser {
                         );
                     }
                 }
+                Event::Creating(..) => {}
                 Event::Close => {
                     browser.profile_flow = None;
                     if let Some(focus) = &browser.navigation {
@@ -933,8 +1137,6 @@ mod tests {
         assert!(browser.active_agents().is_none());
         assert!(browser.profile_content_unavailable());
         assert!(browser.web_content_occluded());
-        assert!(!browser.terminal_available(&pane_b));
-        assert!(browser.terminal_available(&pane_a));
         assert_eq!(
             browser.attachment_state_in(&model.workspaces[0], &attachment),
             Some(AgentState::NeedsYou)
@@ -1080,5 +1282,21 @@ mod tests {
             Route::Legacy
         ));
         assert!(registry.entries.is_empty());
+    }
+
+    #[test]
+    fn first_run_waits_for_the_save_that_holds_its_guide_pane() {
+        let mut browser = super::super::Browser::default();
+        // Already shown, with nothing to save, or failed: first run hears at once.
+        assert_eq!(browser.first_open_answer(Ok(())), Some(Ok(())));
+        assert_eq!(browser.first_open_answer(Err("no")), Some(Err("no")));
+        assert!(!browser.first_open_saving);
+        // Queued to save: the answer waits for the save.
+        browser.saving = true;
+        assert_eq!(browser.first_open_answer(Ok(())), None);
+        assert!(browser.first_open_saving);
+        // A second request refused during that save does not answer for it.
+        assert_eq!(browser.first_open_answer(Err("no")), None);
+        assert!(browser.first_open_saving);
     }
 }

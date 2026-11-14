@@ -1,0 +1,53 @@
+{
+  "name": "Nord",
+  "extends": "dark",
+  "color": {
+    "ground": "#272c36",
+    "panel": "#2b303b",
+    "surface": "#2e3440",
+    "field": "#3b4252",
+    "hover": "#3b4252",
+    "selected": "#434c5e",
+    "line": "#3b4252",
+    "line_strong": "#4c566a",
+    "edge": "#3b4252",
+    "text": "#d8dee9",
+    "text_2": "#bfc5d0",
+    "muted": "#a5abb7",
+    "faint": "#4c566a",
+    "accent": "#88c0d0",
+    "accent_text": "#88c0d0",
+    "on_accent": "#2e3440",
+    "accent_soft": "#88c0d024",
+    "focus": "#88c0d073",
+    "focus_halo": "#88c0d014",
+    "attention": "#bf616a",
+    "attention_text": "#bf616a",
+    "on_attention": "#2e3440",
+    "attention_soft": "#bf616a1f",
+    "ok": "#a3be8c",
+    "info": "#81a1c1",
+    "violet": "#b48ead",
+    "green": "#a3be8c",
+    "code": "#ebcb8b",
+    "shadow": "#00000066",
+    "mark_from": "#2a2d33",
+    "mark_to": "#121315",
+    "mark_edge": "#ffffff12",
+    "mark_glyph": "#e7e8eb",
+    "mark_eye": "#e8a85f",
+    "mark_glow": "#e8a85f8c",
+    "pane_dim": 0.72
+  },
+  "terminal": {
+    "text": "#d8dee9",
+    "background": "#2e3440",
+    "cursor": "#d8dee9",
+    "selection": "#3f4758",
+    "selection_text": "#d8dee9",
+    "palette": [
+      "#3b4252", "#bf616a", "#a3be8c", "#ebcb8b", "#81a1c1", "#b48ead", "#88c0d0", "#e5e9f0",
+      "#4c566a", "#bf616a", "#a3be8c", "#ebcb8b", "#81a1c1", "#b48ead", "#8fbcbb", "#eceff4"
+    ]
+  }
+}

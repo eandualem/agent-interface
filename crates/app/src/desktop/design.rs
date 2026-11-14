@@ -1,37 +1,146 @@
-//! The design language, loaded from `assets/design/tokens.toml`.
+//! The design language, loaded from `assets/design/tokens.toml`, and the
+//! theme in use.
 //!
 //! Every colour, size, radius, type style and timing the chrome uses comes
-//! from that file through the typed tokens here, so the look can change
-//! without touching the views. `docs/DESIGN.md` describes each token.
+//! from the current theme through the typed tokens here, so the look can
+//! change without touching the views. The built-in Dark and Light themes are
+//! the tokens file; other themes are JSON files that change some of those
+//! values (see `themes`). `docs/DESIGN.md` describes each token.
 
-use std::sync::{
-    LazyLock,
-    atomic::{AtomicBool, Ordering},
-};
+use std::sync::{LazyLock, Mutex, RwLock};
 
 use gpui::{FontWeight, Pixels, Rgba, px};
 use toml::{Table, Value};
 
 const SOURCE: &str = include_str!("../../assets/design/tokens.toml");
 
+/// A token that is missing or malformed, by its dotted path.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TokenError {
+    /// The token's path, such as `color.ground`.
+    pub path: String,
+    /// What is wrong with it.
+    pub message: String,
+}
+
+impl std::fmt::Display for TokenError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} {}", self.path, self.message)
+    }
+}
+
+fn wrong(at: &str, key: &str, message: &str) -> TokenError {
+    TokenError {
+        path: if at.is_empty() {
+            key.to_owned()
+        } else {
+            format!("{at}.{key}")
+        },
+        message: message.to_owned(),
+    }
+}
+
+/// A token value that can be written back as JSON.
+trait Json {
+    fn json(&self, out: &mut String, indent: usize);
+}
+
+impl Json for Rgba {
+    fn json(&self, out: &mut String, _: usize) {
+        out.push('"');
+        out.push_str(&to_hex(*self));
+        out.push('"');
+    }
+}
+
+impl Json for f32 {
+    fn json(&self, out: &mut String, _: usize) {
+        // The shortest text that reads back as the same number, as 0.8, not 0.800000011920929.
+        out.push_str(&self.to_string());
+    }
+}
+
+impl Json for String {
+    fn json(&self, out: &mut String, _: usize) {
+        out.push_str(&serde_json::Value::from(self.as_str()).to_string());
+    }
+}
+
+impl Json for [Rgba; 16] {
+    fn json(&self, out: &mut String, indent: usize) {
+        out.push('[');
+        for (at, colour) in self.iter().enumerate() {
+            out.push_str(if at % 8 == 0 { "\n" } else { " " });
+            if at % 8 == 0 {
+                out.push_str(&" ".repeat(indent + 2));
+            }
+            colour.json(out, indent);
+            if at < 15 {
+                out.push(',');
+            }
+        }
+        out.push('\n');
+        out.push_str(&" ".repeat(indent));
+        out.push(']');
+    }
+}
+
 /// Define a token group: a struct whose fields are read from the TOML table
 /// of the same names, each with the reader that checks its kind.
 macro_rules! group {
     ($(#[$doc:meta])* $name:ident { $($field:ident: $ty:ty = $read:ident),* $(,)? }) => {
         $(#[$doc])*
-        #[derive(Clone, Debug)]
+        #[derive(Clone, Debug, PartialEq)]
         pub struct $name {
             $(pub $field: $ty,)*
         }
 
         impl $name {
-            fn read(table: &Table, at: &str) -> Result<Self, String> {
+            fn read(table: &Table, at: &str) -> Result<Self, TokenError> {
                 Ok(Self {
                     $($field: $read(table, stringify!($field), at)?,)*
                 })
             }
         }
+
+        impl Json for $name {
+            fn json(&self, out: &mut String, indent: usize) {
+                let fields: &[(&str, &dyn Json)] = &[$((stringify!($field), &self.$field)),*];
+                write_object(out, indent, fields);
+            }
+        }
+
+        impl $name {
+            /// Write the fields that differ from `base`, if any differ.
+            #[allow(dead_code, reason = "theme files write colours in full")]
+            fn changed_json(&self, base: &Self, out: &mut String, indent: usize) -> bool {
+                let mut fields: Vec<(&str, &dyn Json)> = Vec::new();
+                $(if self.$field != base.$field {
+                    fields.push((stringify!($field), &self.$field));
+                })*
+                if fields.is_empty() {
+                    return false;
+                }
+                write_object(out, indent, &fields);
+                true
+            }
+        }
     };
+}
+
+fn write_object(out: &mut String, indent: usize, fields: &[(&str, &dyn Json)]) {
+    out.push_str("{\n");
+    for (at, (key, value)) in fields.iter().enumerate() {
+        out.push_str(&" ".repeat(indent + 2));
+        out.push_str(&format!("\"{key}\": "));
+        value.json(out, indent + 2);
+        if at + 1 < fields.len() {
+            out.push(',');
+        }
+        out.push('\n');
+    }
+    out.push_str(&" ".repeat(indent));
+    out.push('}');
 }
 
 group!(
@@ -47,6 +156,8 @@ group!(
         attention_text: Rgba = color, on_attention: Rgba = color,
         attention_soft: Rgba = color, ok: Rgba = color, info: Rgba = color,
         violet: Rgba = color, green: Rgba = color, code: Rgba = color, shadow: Rgba = color,
+        mark_from: Rgba = color, mark_to: Rgba = color, mark_edge: Rgba = color,
+        mark_glyph: Rgba = color, mark_eye: Rgba = color, mark_glow: Rgba = color,
         pane_dim: f32 = number,
     }
 );
@@ -55,7 +166,8 @@ group!(
     /// A theme's terminal defaults.
     Terminal {
         text: Rgba = color, background: Rgba = color,
-        cursor: Rgba = color, palette: [Rgba; 16] = palette,
+        cursor: Rgba = color, selection: Rgba = color, selection_text: Rgba = color,
+        palette: [Rgba; 16] = palette,
     }
 );
 
@@ -79,6 +191,7 @@ group!(
         figure: TextStyle = style, group_title: TextStyle = style, doc_title: TextStyle = style,
         doc_heading: TextStyle = style, doc_body: TextStyle = style, quote: TextStyle = style,
         card_title: TextStyle = style, step_key: TextStyle = style, step_mark: TextStyle = style,
+        scene_title: TextStyle = style, scene_line: TextStyle = style,
     }
 );
 
@@ -119,11 +232,12 @@ group!(
         window_width: f32 = number, window_height: f32 = number,
         window_min_width: f32 = number, window_min_height: f32 = number,
         caret: f32 = number,
-        settings_width: f32 = number, settings_height: f32 = number, setup_height: f32 = number,
-        settings_nav: f32 = number, theme_card: f32 = number,
+        settings_width: f32 = number, settings_height: f32 = number,
+        scene_mark: f32 = number, setup_column: f32 = number, setup_stage: f32 = number,
+        setup_mark: f32 = number, setup_control: f32 = number, settings_nav: f32 = number, theme_card: f32 = number,
         empty_icon: f32 = number, empty_width: f32 = number,
         menu_heading: f32 = number, keycap: f32 = number, hairline: f32 = number,
-        profile_popover: f32 = number, profile_mark: f32 = number, profile_flow: f32 = number,
+        profile_popover: f32 = number, profile_mark: f32 = number,
         minimap_stroke: f32 = number, workspace_block_padding: f32 = number,
         pane_number_width: f32 = number, view_toolbar: f32 = number,
         view_footer: f32 = number, view_choice: f32 = number, view_tile: f32 = number,
@@ -168,17 +282,23 @@ group!(
 );
 
 group!(
-    /// Timings for visible working-agent indicators.
-    Motion { spinner_ms: f32 = number }
+    /// Timings for the working-agent indicator and the opening scene.
+    Motion {
+        spinner_ms: f32 = number, scene_ms: f32 = number, scene_face_ms: f32 = number,
+        scene_words_ms: f32 = number, scene_handoff_ms: f32 = number,
+        scene_settle_ms: f32 = number, step_ms: f32 = number, reveal_ms: f32 = number,
+    }
 );
 
-/// The whole design language.
-#[derive(Clone, Debug)]
+/// One theme: the whole design language as it is drawn.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Design {
-    pub dark: Colors,
-    pub light: Colors,
-    pub terminal_dark: Terminal,
-    pub terminal_light: Terminal,
+    /// The theme's name, as Settings shows it.
+    pub name: String,
+    /// Whether the theme is light, for web views and window captions.
+    pub light: bool,
+    pub colors: Colors,
+    pub terminal: Terminal,
     pub font: Fonts,
     pub text: Texts,
     pub space: Space,
@@ -187,32 +307,93 @@ pub struct Design {
     pub motion: Motion,
 }
 
+/// The widest the conversation panel may be dragged, in pixels.
+pub const CONVERSATION_WIDTH_MAX: u32 = 4000;
+
+/// The token groups a theme table holds, in the order they are written.
+pub const GROUPS: [&str; 8] = [
+    "color", "terminal", "font", "text", "space", "radius", "size", "motion",
+];
+
 impl Design {
-    /// Parse and check a tokens file.
-    pub fn parse(source: &str) -> Result<Self, String> {
-        let root: Table = source.parse().map_err(|e| format!("tokens.toml: {e}"))?;
-        let group = |path: &[&str]| -> Result<&Table, String> {
-            let mut table = &root;
-            for key in path {
-                table = table
-                    .get(*key)
-                    .and_then(Value::as_table)
-                    .ok_or_else(|| format!("tokens.toml: missing [{}]", path.join(".")))?;
-            }
-            Ok(table)
+    /// Read a theme from a table holding every token group.
+    pub fn from_table(table: &Table, name: &str, light: bool) -> Result<Self, TokenError> {
+        let group = |key: &str| -> Result<&Table, TokenError> {
+            table
+                .get(key)
+                .and_then(Value::as_table)
+                .ok_or_else(|| wrong("", key, "is missing"))
         };
         Ok(Self {
-            dark: Colors::read(group(&["color", "dark"])?, "color.dark")?,
-            light: Colors::read(group(&["color", "light"])?, "color.light")?,
-            terminal_dark: Terminal::read(group(&["terminal", "dark"])?, "terminal.dark")?,
-            terminal_light: Terminal::read(group(&["terminal", "light"])?, "terminal.light")?,
-            font: Fonts::read(group(&["font"])?, "font")?,
-            text: Texts::read(group(&["text"])?, "text")?,
-            space: Space::read(group(&["space"])?, "space")?,
-            radius: Radius::read(group(&["radius"])?, "radius")?,
-            size: Size::read(group(&["size"])?, "size")?,
-            motion: Motion::read(group(&["motion"])?, "motion")?,
+            name: name.to_owned(),
+            light,
+            colors: Colors::read(group("color")?, "color")?,
+            terminal: Terminal::read(group("terminal")?, "terminal")?,
+            font: Fonts::read(group("font")?, "font")?,
+            text: Texts::read(group("text")?, "text")?,
+            space: Space::read(group("space")?, "space")?,
+            radius: Radius::read(group("radius")?, "radius")?,
+            size: Size::read(group("size")?, "size")?,
+            motion: Motion::read(group("motion")?, "motion")?,
         })
+        .and_then(Self::check)
+    }
+
+    /// Settings clamp panel widths between these, so they must be in order.
+    fn check(self) -> Result<Self, TokenError> {
+        if self.size.panel_min as u32 > self.size.panel_max as u32 {
+            return Err(wrong(
+                "size",
+                "panel_min",
+                "must not be larger than size.panel_max",
+            ));
+        }
+        if self.size.conversation_width as u32 > CONVERSATION_WIDTH_MAX {
+            return Err(wrong("size", "conversation_width", "must be 4000 or less"));
+        }
+        // Animations divide by their duration.
+        let m = &self.motion;
+        for (key, value) in [
+            ("spinner_ms", m.spinner_ms),
+            ("scene_ms", m.scene_ms),
+            ("scene_face_ms", m.scene_face_ms),
+            ("scene_words_ms", m.scene_words_ms),
+            ("scene_handoff_ms", m.scene_handoff_ms),
+            ("scene_settle_ms", m.scene_settle_ms),
+            ("step_ms", m.step_ms),
+            ("reveal_ms", m.reveal_ms),
+        ] {
+            if value < 1.0 {
+                return Err(wrong("motion", key, "must be 1 or more"));
+            }
+        }
+        Ok(self)
+    }
+
+    /// The theme as the members of a theme file over `base`: every colour
+    /// and terminal colour, then only the other tokens that differ.
+    pub fn theme_json(&self, base: &Design) -> String {
+        let mut out = String::from("  \"color\": ");
+        self.colors.json(&mut out, 2);
+        out.push_str(",\n  \"terminal\": ");
+        self.terminal.json(&mut out, 2);
+        let mut group = |name: &str, write: &dyn Fn(&mut String) -> bool| {
+            let mut text = String::new();
+            if write(&mut text) {
+                out.push_str(&format!(",\n  \"{name}\": {text}"));
+            }
+        };
+        group("font", &|out| self.font.changed_json(&base.font, out, 2));
+        group("text", &|out| self.text.changed_json(&base.text, out, 2));
+        group("space", &|out| self.space.changed_json(&base.space, out, 2));
+        group("radius", &|out| {
+            self.radius.changed_json(&base.radius, out, 2)
+        });
+        group("size", &|out| self.size.changed_json(&base.size, out, 2));
+        group("motion", &|out| {
+            self.motion.changed_json(&base.motion, out, 2)
+        });
+        out
     }
 }
 
@@ -226,95 +407,159 @@ impl TextStyle {
     }
 }
 
-static DESIGN: LazyLock<Design> = LazyLock::new(|| {
+/// The tables of the built-in dark and light themes, from the tokens file.
+static BASES: LazyLock<[Table; 2]> = LazyLock::new(|| {
     // The bundled file is checked by a test, so this cannot fail at runtime.
-    let mut design = Design::parse(SOURCE).expect("bundled design tokens are valid");
-    if cfg!(target_os = "linux") {
-        design.font.mono.clone_from(&design.font.mono_linux);
-    }
-    design
+    bases(SOURCE).expect("bundled design tokens are valid")
 });
-static LIGHT: AtomicBool = AtomicBool::new(false);
 
-/// The design language.
+fn bases(source: &str) -> Result<[Table; 2], String> {
+    let root: Table = source.parse().map_err(|e| format!("tokens.toml: {e}"))?;
+    let theme = |variant: &str| -> Result<Table, String> {
+        let mut table = Table::new();
+        for group in GROUPS {
+            let value = match group {
+                "color" | "terminal" => root
+                    .get(group)
+                    .and_then(Value::as_table)
+                    .and_then(|table| table.get(variant)),
+                _ => root.get(group),
+            }
+            .filter(|value| value.is_table())
+            .ok_or_else(|| format!("tokens.toml: missing [{group}]"))?;
+            table.insert(group.into(), value.clone());
+        }
+        if cfg!(target_os = "linux")
+            && let Some(Value::Table(font)) = table.get_mut("font")
+            && let Some(linux) = font.get("mono_linux").cloned()
+        {
+            font.insert("mono".into(), linux);
+        }
+        Design::from_table(&table, variant, variant == "light")
+            .map_err(|e| format!("tokens.toml: {e}"))?;
+        Ok(table)
+    };
+    Ok([theme("dark")?, theme("light")?])
+}
+
+/// The table of the built-in dark or light theme.
+pub fn base(light: bool) -> &'static Table {
+    &BASES[usize::from(light)]
+}
+
+/// The built-in dark or light theme.
+pub fn builtin(light: bool) -> &'static Design {
+    static BUILTIN: LazyLock<[&'static Design; 2]> = LazyLock::new(|| {
+        [false, true].map(|light| {
+            let name = if light { "Light" } else { "Dark" };
+            intern(
+                Design::from_table(base(light), name, light)
+                    .expect("bundled design tokens are valid"),
+            )
+        })
+    });
+    BUILTIN[usize::from(light)]
+}
+
+/// Every theme applied so far. A theme is kept for the life of the process,
+/// so the tokens can be handed out as plain references; applying the same
+/// theme again reuses its copy.
+static INTERNED: Mutex<Vec<&'static Design>> = Mutex::new(Vec::new());
+static CURRENT: RwLock<Option<&'static Design>> = RwLock::new(None);
+
+fn intern(design: Design) -> &'static Design {
+    let mut interned = INTERNED
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(known) = interned.iter().find(|known| ***known == design) {
+        return known;
+    }
+    let design = Box::leak(Box::new(design));
+    interned.push(design);
+    design
+}
+
+/// The theme in use.
 pub fn tokens() -> &'static Design {
-    &DESIGN
+    let current = *CURRENT
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    current.unwrap_or_else(|| builtin(false))
 }
 
 /// The current theme's colours.
 pub fn colors() -> &'static Colors {
-    if is_light() {
-        &DESIGN.light
-    } else {
-        &DESIGN.dark
-    }
+    &tokens().colors
 }
 
 /// The current theme's terminal defaults.
 pub fn terminal() -> &'static Terminal {
-    if is_light() {
-        &DESIGN.terminal_light
-    } else {
-        &DESIGN.terminal_dark
-    }
+    &tokens().terminal
 }
 
-/// Whether the light theme is in use.
+/// Whether the theme in use is light.
 pub fn is_light() -> bool {
-    LIGHT.load(Ordering::Relaxed)
+    tokens().light
 }
 
-/// Switch every window's theme; windows repaint on their next frame.
-pub fn set_light(light: bool) {
-    LIGHT.store(light, Ordering::Relaxed);
+/// Use `design` in every window; windows repaint on their next frame.
+pub fn set_theme(design: Design) {
+    let design = intern(design);
+    *CURRENT
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(design);
 }
 
-fn value<'a>(table: &'a Table, key: &str, at: &str) -> Result<&'a Value, String> {
-    table
-        .get(key)
-        .ok_or_else(|| format!("tokens.toml: missing {at}.{key}"))
+fn value<'a>(table: &'a Table, key: &str, at: &str) -> Result<&'a Value, TokenError> {
+    table.get(key).ok_or_else(|| wrong(at, key, "is missing"))
 }
 
-fn number(table: &Table, key: &str, at: &str) -> Result<f32, String> {
-    match value(table, key, at)? {
-        Value::Float(n) => Ok(*n as f32),
-        Value::Integer(n) => Ok(*n as f32),
-        _ => Err(format!("tokens.toml: {at}.{key} must be a number")),
+fn number(table: &Table, key: &str, at: &str) -> Result<f32, TokenError> {
+    let number = match value(table, key, at)? {
+        Value::Float(n) => *n as f32,
+        Value::Integer(n) => *n as f32,
+        _ => return Err(wrong(at, key, "must be a number")),
+    };
+    if number.is_finite() {
+        Ok(number)
+    } else {
+        Err(wrong(at, key, "must be a finite number"))
     }
 }
 
-fn string(table: &Table, key: &str, at: &str) -> Result<String, String> {
+fn string(table: &Table, key: &str, at: &str) -> Result<String, TokenError> {
     value(table, key, at)?
         .as_str()
+        .filter(|text| !text.trim().is_empty())
         .map(str::to_owned)
-        .ok_or_else(|| format!("tokens.toml: {at}.{key} must be text"))
+        .ok_or_else(|| wrong(at, key, "must be text"))
 }
 
-fn style(table: &Table, key: &str, at: &str) -> Result<TextStyle, String> {
+fn style(table: &Table, key: &str, at: &str) -> Result<TextStyle, TokenError> {
     let style = value(table, key, at)?
         .as_table()
-        .ok_or_else(|| format!("tokens.toml: [{at}.{key}] must be a table"))?;
+        .ok_or_else(|| wrong(at, key, "must be an object with size and weight"))?;
     TextStyle::read(style, &format!("{at}.{key}"))
 }
 
-fn color(table: &Table, key: &str, at: &str) -> Result<Rgba, String> {
-    let text = value(table, key, at)?
+fn color(table: &Table, key: &str, at: &str) -> Result<Rgba, TokenError> {
+    value(table, key, at)?
         .as_str()
-        .ok_or_else(|| format!("tokens.toml: {at}.{key} must be a colour"))?;
-    hex(text).ok_or_else(|| format!("tokens.toml: {at}.{key} is not #rrggbb or #rrggbbaa"))
+        .and_then(hex)
+        .ok_or_else(|| wrong(at, key, "must be a colour, #rrggbb or #rrggbbaa"))
 }
 
-fn palette(table: &Table, key: &str, at: &str) -> Result<[Rgba; 16], String> {
+fn palette(table: &Table, key: &str, at: &str) -> Result<[Rgba; 16], TokenError> {
     let colours = value(table, key, at)?
         .as_array()
         .filter(|list| list.len() == 16)
-        .ok_or_else(|| format!("tokens.toml: {at}.{key} must list 16 colours"))?;
+        .ok_or_else(|| wrong(at, key, "must list 16 colours"))?;
     let mut palette = [Rgba::default(); 16];
     for (slot, colour) in palette.iter_mut().zip(colours) {
         *slot = colour
             .as_str()
             .and_then(hex)
-            .ok_or_else(|| format!("tokens.toml: {at}.{key} has an invalid colour"))?;
+            .ok_or_else(|| wrong(at, key, "has a colour that is not #rrggbb or #rrggbbaa"))?;
     }
     Ok(palette)
 }
@@ -335,26 +580,86 @@ pub fn hex(text: &str) -> Option<Rgba> {
     })
 }
 
+/// A colour as `#rrggbb`, with `aa` added when it is not opaque.
+pub fn to_hex(colour: Rgba) -> String {
+    let byte = |channel: f32| (channel.clamp(0.0, 1.0) * 255.0).round() as u8;
+    let mut text = format!(
+        "#{:02x}{:02x}{:02x}",
+        byte(colour.r),
+        byte(colour.g),
+        byte(colour.b)
+    );
+    if byte(colour.a) != 255 {
+        text.push_str(&format!("{:02x}", byte(colour.a)));
+    }
+    text
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn the_bundled_tokens_are_complete_and_well_formed() {
-        let design = Design::parse(SOURCE).unwrap();
-        assert_eq!(design.dark.ground, hex("#0f1012").unwrap());
-        assert!((design.dark.accent_soft.a - 0x24 as f32 / 255.0).abs() < 1e-6);
-        assert_eq!(design.size.panel_width, 232.0);
-        assert_eq!(design.text.row_selected.weight, 500.0);
+        let dark = builtin(false);
+        assert_eq!(dark.colors.ground, hex("#0f1012").unwrap());
+        assert!((dark.colors.accent_soft.a - 0x24 as f32 / 255.0).abs() < 1e-6);
+        assert_eq!(dark.size.panel_width, 232.0);
+        assert_eq!(dark.text.row_selected.weight, 500.0);
+        assert!(builtin(true).light && !dark.light);
         let missing = SOURCE.replace("ground = \"#0f1012\"", "");
-        assert!(
-            Design::parse(&missing)
-                .unwrap_err()
-                .contains("color.dark.ground")
-        );
+        assert!(bases(&missing).unwrap_err().contains("color.ground"));
         let malformed = SOURCE.replace("\"#0f1012\"", "\"#0f10\"");
-        assert!(Design::parse(&malformed).is_err());
+        assert!(bases(&malformed).is_err());
         assert_eq!(hex("#e8a85f24").unwrap().a, 0x24 as f32 / 255.0);
         assert!(hex("e8a85f").is_none());
+        assert_eq!(to_hex(hex("#e8a85f24").unwrap()), "#e8a85f24");
+        assert_eq!(to_hex(hex("#0F1012").unwrap()), "#0f1012");
+    }
+
+    #[test]
+    fn applying_a_theme_reuses_an_equal_copy() {
+        let mut design = builtin(false).clone();
+        design.colors.accent = hex("#123456").unwrap();
+        let first = intern(design.clone()) as *const Design;
+        assert_eq!(intern(design) as *const Design, first);
+        assert!(std::ptr::eq(intern(builtin(true).clone()), builtin(true)));
+    }
+
+    #[test]
+    fn a_theme_writes_its_colours_and_its_other_changes_as_json() {
+        let light = builtin(true);
+        let text = format!("{{\n{}\n}}", light.theme_json(light));
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(value["color"]["accent"], "#a35a16");
+        assert_eq!(value["color"]["pane_dim"], 0.8);
+        assert_eq!(value["terminal"]["palette"].as_array().unwrap().len(), 16);
+        assert!(value.get("font").is_none() && value.get("size").is_none());
+
+        let mut changed = light.clone();
+        changed.font.mono = "Iosevka".into();
+        changed.text.row.size = 15.0;
+        changed.radius.pane = 2.0;
+        let text = format!("{{\n{}\n}}", changed.theme_json(light));
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(value["font"], serde_json::json!({ "mono": "Iosevka" }));
+        assert_eq!(value["text"]["row"]["size"], 15.0);
+        assert_eq!(value["radius"], serde_json::json!({ "pane": 2 }));
+        assert!(value.get("space").is_none());
+    }
+
+    #[test]
+    fn panel_widths_stay_in_order_and_durations_are_not_zero() {
+        let mut table = base(false).clone();
+        table["size"]["panel_min"] = Value::Float(800.0);
+        let error = Design::from_table(&table, "x", false).unwrap_err();
+        assert_eq!(error.path, "size.panel_min");
+        let mut table = base(false).clone();
+        table["motion"]["spinner_ms"] = Value::Float(0.5);
+        let error = Design::from_table(&table, "x", false).unwrap_err();
+        assert_eq!(error.path, "motion.spinner_ms");
+        let mut table = base(false).clone();
+        table["size"]["conversation_width"] = Value::Float(5000.0);
+        assert!(Design::from_table(&table, "x", false).is_err());
     }
 }
