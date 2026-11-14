@@ -6,8 +6,7 @@ use std::{cell::Cell, collections::HashMap, rc::Rc, time::Instant};
 
 use agent_interface_core::{Direction, Node};
 use gpui::{
-    AnyElement, Bounds, BoxShadow, Context, Pixels, Point, SharedString, Window, div, point,
-    prelude::*, px,
+    AnyElement, Bounds, BoxShadow, Context, Pixels, Point, Window, div, point, prelude::*, px,
 };
 
 use super::{
@@ -178,6 +177,15 @@ impl Motion {
         self.area.get()
     }
 
+    /// Keep the area an earlier motion measured, instead of the one
+    /// estimated from panes that were still moving.
+    pub fn measured(self, area: Option<Rect>) -> Self {
+        if area.is_some() {
+            self.area.set(area);
+        }
+        self
+    }
+
     pub fn is_carrying(&self) -> bool {
         self.carried.is_some()
     }
@@ -279,8 +287,10 @@ impl Browser {
         {
             if let Some(rect) = motion.rects.get(&leaf.id) {
                 layer = layer.child(
+                    // No identity of its own: a card's element state, such as
+                    // a view's scroll position, keeps the path it has in
+                    // the split layout.
                     at(*rect)
-                        .id(SharedString::from(format!("moving-{}", leaf.id)))
                         // Cards overlap while they move: the one on top
                         // takes the pointer.
                         .occlude()
@@ -306,8 +316,10 @@ impl Browser {
             }
             if let Some(rect) = motion.rects.get(&leaf.id) {
                 layer = layer.child(
+                    // No identity of its own: a card's element state, such as
+                    // a view's scroll position, keeps the path it has in
+                    // the split layout.
                     at(*rect)
-                        .id(SharedString::from(format!("moving-{}", leaf.id)))
                         // Cards overlap while they move: the one on top
                         // takes the pointer.
                         .occlude()
