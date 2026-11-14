@@ -2471,7 +2471,8 @@ pub fn conversation_pill(
     text(
         button
             .flex()
-            .flex_shrink_0()
+            .min_w_0()
+            .max_w(px(t.size.conversation_width / 2.0))
             .items_center()
             .gap(px(t.space.s6))
             .h(px(height))
@@ -2496,7 +2497,14 @@ pub fn conversation_pill(
         &t.text.status,
     )
     .child(conversation_avatar(agent, height - 2.0 * inset, true))
-    .child(label.into())
+    .child(
+        div()
+            .min_w_0()
+            .overflow_hidden()
+            .whitespace_nowrap()
+            .text_ellipsis()
+            .child(label.into()),
+    )
     .children(tail)
 }
 

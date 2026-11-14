@@ -384,6 +384,8 @@ enum Redelivery {
 
 /// How many lines of the person's own message show before it is cut short.
 const OWN_LINES: usize = 6;
+/// How many characters fit one of those lines in the narrowest card.
+const OWN_LINE_CHARS: usize = 32;
 
 /// How often the shown conversation is read: often while open, for its
 /// replies, and slowly while closed, for the pill's count.
@@ -1786,39 +1788,35 @@ impl Conversation {
         shown: bool,
         cx: &mut Context<Self>,
     ) -> gpui::Div {
-        let copied = text.to_owned();
-        let key = group.clone();
         let done = self.copied.as_ref() == Some(group);
+        let (pressed, activated) = (
+            (text.to_owned(), group.clone()),
+            (text.to_owned(), group.clone()),
+        );
         let copy = ui::message_action(
             SharedString::from(format!("{group}-copy")),
             if done { "check" } else { "copy" },
         )
         .role(gpui::accesskit::Role::Button)
         .aria_label(if done { "Copied" } else { "Copy" })
+        .focusable()
+        .focus_visible(|el| {
+            el.border(px(tokens().size.focus_ring))
+                .border_color(colors().focus)
+        })
         // On the press: the thread takes focus on a press and draws again,
         // which must not lose the click.
         .on_mouse_down(
             gpui::MouseButton::Left,
             cx.listener(move |conversation, _, _, cx| {
-                cx.write_to_clipboard(gpui::ClipboardItem::new_string(copied.clone()));
-                conversation.copied = Some(key.clone());
                 cx.stop_propagation();
-                cx.notify();
-                let key = key.clone();
-                cx.spawn(async move |this, cx| {
-                    cx.background_executor()
-                        .timer(Duration::from_millis(1500))
-                        .await;
-                    let _ = this.update(cx, |conversation, cx| {
-                        if conversation.copied.as_ref() == Some(&key) {
-                            conversation.copied = None;
-                            cx.notify();
-                        }
-                    });
-                })
-                .detach();
+                conversation.copy(&pressed.0, pressed.1.clone(), cx);
             }),
-        );
+        )
+        // From the keyboard or an assistive technology.
+        .on_click(cx.listener(move |conversation, _, _, cx| {
+            conversation.copy(&activated.0, activated.1.clone(), cx);
+        }));
         let meta = ui::message_meta();
         let meta = if own {
             meta.child(time).child(copy)
@@ -1831,6 +1829,25 @@ impl Conversation {
             meta.opacity(0.0)
                 .group_hover(group.clone(), |style| style.opacity(1.0))
         }
+    }
+
+    /// Copy a message's text and show a check on its button for a moment.
+    fn copy(&mut self, text: &str, key: SharedString, cx: &mut Context<Self>) {
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string(text.to_owned()));
+        self.copied = Some(key.clone());
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(1500))
+                .await;
+            let _ = this.update(cx, |conversation, cx| {
+                if conversation.copied.as_ref() == Some(&key) {
+                    conversation.copied = None;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
     }
 
     /// The person's message in its bubble. A long one shows its start, with
@@ -2329,7 +2346,8 @@ impl Conversation {
 }
 
 /// The start of a long message of the person's own: its first
-/// [`OWN_LINES`] lines, at most 60 characters a line, then an ellipsis.
+/// [`OWN_LINES`] lines, at most [`OWN_LINE_CHARS`] characters a line, then
+/// an ellipsis.
 /// `None` when the whole message fits.
 fn folded(text: &str) -> Option<String> {
     let text = text.trim_end();
@@ -2339,7 +2357,7 @@ fn folded(text: &str) -> Option<String> {
         .map_or(text.len(), |(at, _)| at);
     let chars = text
         .char_indices()
-        .nth(OWN_LINES * 60)
+        .nth(OWN_LINES * OWN_LINE_CHARS)
         .map_or(text.len(), |(at, _)| at);
     let end = lines.min(chars);
     (end < text.len()).then(|| format!("{}…", text[..end].trim_end()))
@@ -2526,10 +2544,10 @@ mod tests {
             folded(&lines),
             Some(format!("{}…", "line\n".repeat(OWN_LINES).trim_end()))
         );
-        let long = "é".repeat(OWN_LINES * 60 + 1);
+        let long = "é".repeat(OWN_LINES * OWN_LINE_CHARS + 1);
         assert_eq!(
             folded(&long),
-            Some(format!("{}…", "é".repeat(OWN_LINES * 60)))
+            Some(format!("{}…", "é".repeat(OWN_LINES * OWN_LINE_CHARS)))
         );
     }
 
