@@ -57,7 +57,7 @@ deny = [
     { crate = "agent-interface-webview-host", wrappers = ["agent-interface-app"], reason = "only app embeds document views in native windows" },
     { crate = "agent-interface-core", wrappers = ["agent-interface-store", "agent-interface-app"], reason = "only store and app depend on the model" },
     { crate = "agent-interface-store", wrappers = ["agent-interface-app"], reason = "only app wires storage" },
-    { crate = "agent-interface-tmux", wrappers = ["agent-interface-app", "agent-interface-bench", "agent-interface-bench-rio"], reason = "only app connects tmux to the other crates; the benchmark harness measures the same path" },
+    { crate = "agent-interface-tmux", wrappers = ["agent-interface-app", "agent-interface-bench"], reason = "only app connects tmux to the other crates; the benchmark harness measures the same path" },
     { crate = "agent-interface-term", wrappers = ["agent-interface-app", "agent-interface-bench"], reason = "only app connects the terminal engine to the other crates; the benchmark harness measures the same path" },
     { crate = "agent-interface-roster", wrappers = ["agent-interface-app"], reason = "only app maps roster data into the model" },
     { crate = "agent-interface-test-support", wrappers = [

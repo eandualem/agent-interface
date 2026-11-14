@@ -444,28 +444,6 @@ A customized desktop may reserve other combinations; use Settings to change the
 configurable commands. Saved shortcut strings keep their literal meaning:
 `cmd` means Command on macOS and Super on Linux. macOS defaults are unchanged.
 
-## Inspect a legacy keymap
-
-After the [source build setup](../CONTRIBUTING.md#build-and-test), print the effective
-legacy keymap or a complete compatible TOML configuration:
-
-```sh
-cargo run -p agent-interface-app -- --print-keymap help
-cargo run -p agent-interface-app -- --keymap ./keymap.toml --print-keymap toml
-cargo run -p agent-interface-app -- --no-keymap --print-keymap toml
-```
-
-Selection follows `--keymap`, then `AGENT_INTERFACE_KEYMAP`, then
-`$XDG_CONFIG_HOME/agent-interface/keymap.toml` (or
-`~/.config/agent-interface/keymap.toml`). `--no-keymap` uses shipped defaults.
-Only a missing implicit default is ignored; invalid or explicitly missing files
-report an error. These commands create no library, start no terminal and write
-no configuration. These options inspect the Python-compatible `keymap.toml`;
-they do not configure the native desktop. Use **Settings → Shortcuts** for native
-bindings, which are saved separately in `settings.toml`. The legacy prefix is not
-dispatched by the desktop.
-
-
 ## Current plans
 
 **Reports & updates → Current plans** shows one card per agent: what its

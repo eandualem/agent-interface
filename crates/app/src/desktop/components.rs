@@ -9,6 +9,12 @@ use gpui::{
     Transformation, div, percentage, point, prelude::*, px, relative, svg,
 };
 
+use std::{
+    cell::RefCell,
+    collections::HashSet,
+    sync::atomic::{AtomicU32, Ordering},
+};
+
 use super::{
     design::{TextStyle, colors, tokens},
     icons,
@@ -1687,15 +1693,65 @@ pub fn step_dot(step: Step) -> Div {
 
 /// The accent arc that turns around a working mark of `size`.
 fn turning_arc(size: f32) -> Div {
-    let t = tokens();
+    let turn = ARC_STEP.load(Ordering::Relaxed) as f32 / ARC_STEPS as f32;
     div()
         .absolute()
         .inset_0()
-        .child(icon("agent-arc", size, colors().accent).with_animation(
-            "working-arc",
-            Animation::new(std::time::Duration::from_millis(t.motion.spinner_ms as u64)).repeat(),
-            |arc, delta| arc.with_transformation(Transformation::rotate(percentage(delta))),
+        .child(
+            icon("agent-arc", size, colors().accent)
+                .with_transformation(Transformation::rotate(percentage(turn))),
+        )
+        .child(gpui::canvas(
+            |_, window, cx| {
+                if window.visibility() == gpui::WindowVisibility::Visible && !cx.reduce_motion() {
+                    turn_arcs_in(window.current_view(), cx);
+                }
+            },
+            |_, _, _, _| (),
         ))
+}
+
+/// Positions in one turn of the working-agent arc.
+const ARC_STEPS: u32 = 24;
+static ARC_STEP: AtomicU32 = AtomicU32::new(0);
+
+thread_local! {
+    /// Views that drew a working-agent arc, and whether the clock is running.
+    static ARC_VIEWS: RefCell<(HashSet<gpui::EntityId>, bool)> = RefCell::default();
+}
+
+/// Keep the arc in `view` turning. A frame-driven animation redraws its view
+/// and every ancestor at the display's refresh rate, which for an arc in the
+/// sidebar is the whole window; this clock moves the arc one position at a
+/// time and wakes only the views that show one. It stops when none does.
+fn turn_arcs_in(view: gpui::EntityId, cx: &mut gpui::App) {
+    let start = ARC_VIEWS.with_borrow_mut(|(views, running)| {
+        views.insert(view);
+        !std::mem::replace(running, true)
+    });
+    if !start {
+        return;
+    }
+    let step =
+        std::time::Duration::from_millis((tokens().motion.spinner_ms / ARC_STEPS as f32) as u64);
+    cx.spawn(async move |cx| {
+        loop {
+            cx.background_executor().timer(step).await;
+            let views = ARC_VIEWS.with_borrow_mut(|(views, running)| {
+                *running = !views.is_empty();
+                std::mem::take(views)
+            });
+            if views.is_empty() {
+                break;
+            }
+            ARC_STEP.store(
+                (ARC_STEP.load(Ordering::Relaxed) + 1) % ARC_STEPS,
+                Ordering::Relaxed,
+            );
+            cx.update(|cx| views.into_iter().for_each(|view| cx.notify(view)));
+        }
+    })
+    .detach();
 }
 
 /// One step on a plan card's track: its mark and name, done in `muted`, now

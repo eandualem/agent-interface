@@ -89,6 +89,14 @@ with a body saying why. Once the workspace exists, keep `cargo fmt --check`,
 `cargo clippy --all-targets -- -D warnings` and `cargo test` passing before
 each commit.
 
+## Trying a feature in the installed app
+
+When the maintainer asks to try a feature before it merges, build its branch
+and install that build over the installed app. Make no backup of the
+installed app and plan no restore step: if the feature is dropped, build
+`develop` and install it; if it is kept, the branch goes through review and
+merges.
+
 ## Build output
 
 Rust and Zig builds are large. Clearing outdated build output is routine
@@ -101,10 +109,9 @@ work at every task boundary, not something left until the disk is full:
   with the `target/` inside it, after saving any uncommitted, untracked or
   ignored files that are still needed. The main checkout is never removed;
   switch it to another branch instead.
-- Of the app bundle copies you made yourself, keep one previous bundle as
-  the rollback for the installed app and delete older backups and preview
-  bundles. Delete archives you built locally in `dist/` once a newer build
-  replaces them.
+- Delete the app bundle copies and preview bundles you made yourself; the
+  installed app needs no rollback copy. Delete archives you built locally
+  in `dist/` once a newer build replaces them.
 - Leave alone the installed app, anything you did not create, the output of
   a build that is still running, and release archives waiting to be
   published.

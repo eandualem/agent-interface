@@ -34,7 +34,7 @@ another client's selected window.
 
 | Crate | Responsibility |
 | --- | --- |
-| `core` | Workspace, tab and split models; validation; local navigation; three-way merge rules; compatibility keymap data |
+| `core` | Workspace, tab and split models; validation; local navigation; three-way merge rules |
 | `store` | Initializing, reading and transactionally saving schema-v2 `layouts.db` files |
 | `tmux` | Server discovery and validation, control-mode protocol, pane capture, recovery and input commands |
 | `term` | Terminal engine ownership, input encoding and owned display snapshots |
@@ -49,8 +49,7 @@ terminal-engine types stay inside `term`. The dependency constraints are encoded
 in [`deny.toml`](../deny.toml).
 
 Development-only crates are separate: `test-support` provides disposable tmux
-fixtures, `bench` runs measurements, and `bench-rio` provides an isolated
-comparison-engine executable.
+fixtures and `bench` runs measurements.
 
 Pane rearrangement lives in `app::desktop::pane_drag`; `core` moves an existing
 leaf within its tab and collapses its previous parent. Dragging paints only a
@@ -340,9 +339,6 @@ the app quits, a few kilobytes each; the editor applies only on save. Terminals
 take their colours and font from the theme when they are created and when
 appearance changes, never per cell. Files are saved atomically, and a theme
 that fails to read leaves Dark in use with the reason shown in Settings.
-
-The legacy keymap inspection commands do not replace native Settings
-shortcuts.
 
 The active Agent Backbone adapter resolves configuration lazily and uses
 bounded, read-only requests to a local endpoint. Credential-bearing requests
@@ -843,12 +839,6 @@ build-time advisory exception are described below.
   strikethrough and task lists; the app draws the parsed blocks natively.
   Its transitive `unicase` 2.10.0 dependency (MIT OR Apache-2.0) supplies
   case-insensitive matching for Markdown reference labels.
-- **`alacritty_terminal` and `rio-vt` 0.5.29:** development-only comparison engines.
-  Apache-2.0 and MIT respectively. The exact Rio pin includes its Kitty graphics
-  file-path validation fix; the desktop terminal uses Ghostty. Its benchmark-only
-  support crates are `rio-graphics` and `rio-grapheme-width` (MIT), plus
-  `rio-unicode` (MIT OR Apache-2.0), all locked at 0.5.29 for graphics data,
-  grapheme widths and Unicode classification.
 - **`tracing` 0.1.44:** MIT-licensed structured diagnostic events in app, tmux
   and roster; pinned exactly. **`tracing-subscriber` 0.3.23** and
   **`tracing-appender` 0.2.5** (MIT, exact pins) provide the app-owned JSON
@@ -984,7 +974,7 @@ ordinary session across the current and legacy sockets. A verified current owner
 is used without inspecting unused legacy metadata. When no owner is verified,
 a metadata or discovery failure does not authorize creating a replacement shell
 on another server. Settings
-and keymaps fall back to the old configuration directory when the new file is absent; settings writes
+fall back to the old configuration directory when the new file is absent; settings writes
 use the new directory. Legacy environment overrides remain supported, with the new
 `AGENT_INTERFACE_*` names taking precedence. No database or running server is moved.
 The Linux launcher uses the packaged Agent Interface icon.
