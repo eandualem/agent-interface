@@ -978,6 +978,7 @@ impl Browser {
         self.shell_to_open = None;
         self.resize = None;
         self.pane_drag = None;
+        self.pane_motion = None;
         self.name_click = None;
         self.tab_menu = None;
         self.save_notice = None;
@@ -1606,6 +1607,10 @@ impl Browser {
         self.shell_to_open = None;
         self.resize = None;
         self.pane_drag = None;
+        // A carried pane has no drag left to let it go.
+        if let Some(motion) = &mut self.pane_motion {
+            motion.release();
+        }
         self.save_failed = false;
         self.save_notice = None;
         self.error = None;
