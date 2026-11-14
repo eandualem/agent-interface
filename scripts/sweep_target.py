@@ -17,17 +17,21 @@ share it.
 Usage: python3 scripts/sweep_target.py [-- TEST ARGS]
 """
 
+import fcntl
+import filecmp
 import json
 import re
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 # A unit's metadata hash, as cargo writes it after the unit's name.
 HASH = re.compile(r"-([0-9a-f]{16})(?=\.|$)")
 INCREMENTAL_LIMIT = 2 * 1024**3
 SWEPT = ("deps", ".fingerprint", "build", "examples")
+LOCKS = (".cargo-lock", ".cargo-build-lock", ".cargo-artifact-lock")
 
 
 def unit_hashes(message):
@@ -44,23 +48,68 @@ def unit_hashes(message):
     }
 
 
-def unit_names(message):
-    """Names to keep for an artifact cargo copied out of deps/ without its
-    hash, such as the app's binary, whose hash cargo does not report."""
-    if message.get("reason") != "compiler-artifact" or unit_hashes(message):
-        return set()
-    target = message.get("target", {}).get("name", "")
-    package = message.get("package_id", "").rsplit("#", 1)[-1].split("@")[0]
-    names = {target, target.replace("-", "_"), package}
-    return {name for name in names if name}
+def copied_hashes(message):
+    """The hash of an artifact cargo copied out under a plain name, such as
+    the app's binary, found as the hashed file beside it or in deps/ with
+    the same content. Cargo reports only the plain name."""
+    found = set()
+    if message.get("reason") != "compiler-artifact":
+        return found
+    for name in message.get("filenames") or []:
+        path = Path(name)
+        if HASH.search(path.name) or not path.is_file():
+            continue
+        stem = path.name.replace("-", "_")
+        for folder in (path.parent / "deps", path.parent):
+            if not folder.is_dir():
+                continue
+            for candidate in folder.iterdir():
+                match = HASH.search(candidate.name)
+                if (
+                    match
+                    and candidate.name == f"{stem}-{match.group(1)}"
+                    and candidate.is_file()
+                    and candidate.stat().st_size == path.stat().st_size
+                    and filecmp.cmp(candidate, path, shallow=False)
+                ):
+                    found.add(match.group(1))
+    return found
 
 
-def unused(entries, hashes, names):
+def unused(entries, hashes):
     """The entries no unit of the latest build owns."""
     for entry in entries:
         match = HASH.search(entry)
-        if match and match.group(1) not in hashes and entry[: match.start()] not in names:
+        if match and match.group(1) not in hashes:
             yield entry
+
+
+def take_locks(debug):
+    """Cargo's locks on the build directory, or None while a build holds one."""
+    held = []
+    for name in LOCKS:
+        if not (debug / name).exists():
+            continue
+        handle = open(debug / name, "a")
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            handle.close()
+            for other in held:
+                other.close()
+            return None
+        held.append(handle)
+    return held
+
+
+def written_since(debug, moment):
+    """Whether anything swept was written after `moment`, by another build."""
+    return any(
+        entry.lstat().st_mtime > moment
+        for folder in SWEPT
+        if (debug / folder).is_dir()
+        for entry in (debug / folder).iterdir()
+    )
 
 
 def size(path):
@@ -76,7 +125,7 @@ def remove(path):
         path.unlink()
 
 
-def run(command, hashes, names):
+def run(command, hashes):
     """Run one cargo step, showing its output, and note what it built."""
     process = subprocess.Popen(command, stdout=subprocess.PIPE, text=True)
     for line in process.stdout:
@@ -89,8 +138,7 @@ def run(command, hashes, names):
         elif message["reason"] == "compiler-message":
             sys.stdout.write(message["message"].get("rendered") or "")
         elif message["reason"] in ("compiler-artifact", "build-script-executed"):
-            hashes |= unit_hashes(message)
-            names |= unit_names(message)
+            hashes |= unit_hashes(message) | copied_hashes(message)
     return process.wait()
 
 
@@ -102,12 +150,13 @@ def main(test_args):
         ["cargo", "test", "--no-run", json_output, *test_args],
         ["cargo", "build", json_output],
     ]
-    hashes, names = set(), set()
+    hashes = set()
     for step in steps:
         print("+", " ".join(step), flush=True)
-        if code := run(step, hashes, names):
+        if code := run(step, hashes):
             print("Nothing removed: a step failed.", file=sys.stderr)
             return code
+    collected = time.time()
     metadata = json.loads(
         subprocess.check_output(["cargo", "metadata", "--format-version", "1", "--no-deps"])
     )
@@ -115,23 +164,29 @@ def main(test_args):
     target = Path(metadata["target_directory"]).resolve()
     if root not in target.parents:
         print(f"Nothing removed: {target} lies outside this checkout.", file=sys.stderr)
-        return run(["cargo", "test", *test_args], hashes, names)
+        return run(["cargo", "test", *test_args], hashes)
     debug = target / "debug"
-    freed = 0
-    for folder in SWEPT:
-        if (debug / folder).is_dir():
-            for entry in unused(sorted(p.name for p in (debug / folder).iterdir()), hashes, names):
-                path = debug / folder / entry
-                freed += size(path)
-                remove(path)
-    incremental = debug / "incremental"
-    if size(incremental) > INCREMENTAL_LIMIT:
-        freed += size(incremental)
-        shutil.rmtree(incremental)
-    print(f"Removed {freed / 1024**3:.1f} GB. target/ is {size(target) / 1024**3:.1f} GB.")
+    held = take_locks(debug)
+    if held is None or written_since(debug, collected):
+        print("Nothing removed: another build is using target/.", file=sys.stderr)
+    else:
+        freed = 0
+        for folder in SWEPT:
+            if (debug / folder).is_dir():
+                for entry in unused(sorted(p.name for p in (debug / folder).iterdir()), hashes):
+                    path = debug / folder / entry
+                    freed += size(path)
+                    remove(path)
+        incremental = debug / "incremental"
+        if size(incremental) > INCREMENTAL_LIMIT:
+            freed += size(incremental)
+            shutil.rmtree(incremental)
+        for handle in held:
+            handle.close()
+        print(f"Removed {freed / 1024**3:.1f} GB. target/ is {size(target) / 1024**3:.1f} GB.")
     command = ["cargo", "test", json_output, *test_args]
     print("+", " ".join(command), flush=True)
-    return run(command, hashes, names)
+    return run(command, hashes)
 
 
 if __name__ == "__main__":

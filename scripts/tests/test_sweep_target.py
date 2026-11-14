@@ -1,6 +1,7 @@
 """Check which artifacts the sweep keeps."""
 
 import importlib.util
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -32,24 +33,22 @@ class SweepTests(unittest.TestCase):
             "no-hash-here",
         ]
         self.assertEqual(
-            list(sweep.unused(entries, hashes, set())),
+            list(sweep.unused(entries, hashes)),
             ["libfoo-1111111111111111.rlib", "bar-2222222222222222"],
         )
 
-    def test_keeps_a_binary_copied_out_without_its_hash(self):
-        binary = {
-            "reason": "compiler-artifact",
-            "package_id": "path+file:///w/crates/app#agent-interface-app@0.3.0",
-            "target": {"name": "agent-interface"},
-            "filenames": ["/w/target/debug/agent-interface"],
-        }
-        names = sweep.unit_names(binary)
-        entries = [
-            "agent_interface-3333333333333333",
-            "agent-interface-app-4444444444444444",
-            "other-5555555555555555",
-        ]
-        self.assertEqual(list(sweep.unused(entries, set(), names)), ["other-5555555555555555"])
+    def test_finds_the_hash_of_a_binary_copied_out_without_it(self):
+        with tempfile.TemporaryDirectory() as root:
+            debug = Path(root)
+            (debug / "deps").mkdir()
+            (debug / "agent-interface").write_bytes(b"current")
+            (debug / "deps" / "agent_interface-aaaaaaaaaaaaaaaa").write_bytes(b"current")
+            (debug / "deps" / "agent_interface-bbbbbbbbbbbbbbbb").write_bytes(b"earlier")
+            binary = {
+                "reason": "compiler-artifact",
+                "filenames": [str(debug / "agent-interface")],
+            }
+            self.assertEqual(sweep.copied_hashes(binary), {"aaaaaaaaaaaaaaaa"})
 
 
 if __name__ == "__main__":
