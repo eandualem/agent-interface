@@ -2981,8 +2981,14 @@ impl Render for Browser {
                 .then(|| model.tab().map(|tab| tab.focus.as_str()))
                 .flatten()
         });
+        // A pane carried into another tab is drawn there before it belongs to it.
+        let visiting = self
+            .pane_drag
+            .as_ref()
+            .filter(|drag| drag.away_from().is_some())
+            .map(|drag| drag.source().to_owned());
         for (id, terminal) in &self.terminals {
-            if !leaves.iter().any(|leaf| &leaf.id == id)
+            if (!leaves.iter().any(|leaf| &leaf.id == id) && visiting.as_ref() != Some(id))
                 || expanded.is_some_and(|focused| focused != id)
             {
                 terminal.update(cx, |terminal, cx| terminal.hide(cx));

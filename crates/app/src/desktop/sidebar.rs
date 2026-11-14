@@ -550,6 +550,14 @@ impl Browser {
                                 browser.drop_tab(dragged, &destination, cx);
                             }))
                     })
+                    .on_mouse_move(cx.listener({
+                        let id = id.clone();
+                        move |browser, event: &gpui::MouseMoveEvent, _, cx| {
+                            if event.dragging() {
+                                browser.pane_drag_enter_tab(&id, cx);
+                            }
+                        }
+                    }))
                     .on_mouse_down(gpui::MouseButton::Right, cx.listener({
                         let id = id.clone();
                         let origin = origin.clone();

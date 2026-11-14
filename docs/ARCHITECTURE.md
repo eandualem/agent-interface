@@ -63,8 +63,12 @@ have arrived; then the split layout draws them again. Terminals keep the size
 they last declared to tmux throughout and scale what they show, so pointer
 motion does not resize sessions: each declares its new size once, when the
 panes have settled. On release, the existing save worker commits the detached
-tree. Leaf identities retain their terminal/view entities. A changed tab or
-tree cancels an in-progress drag; persistence keeps the existing schema and
+tree. Carrying a pane over another tab's row in the sidebar selects that tab
+and continues the gesture there: the detached layout moves the leaf to that
+tab's right with `core`'s tab-to-tab move, and the release saves that move
+together with the previewed place. Leaf identities retain their terminal/view
+entities. A changed tab or tree, in the shown tab or the one the pane came
+from, cancels an in-progress drag; persistence keeps the existing schema and
 conflict rules.
 
 ## Output, drawing and input
