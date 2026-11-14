@@ -148,6 +148,10 @@ pub(super) struct Conversation {
     /// person drags its left edge to resize it.
     bounds: Rc<Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
     resizing: Option<gpui::Pixels>,
+    /// The message whose text was just copied, until its button rests.
+    copied: Option<SharedString>,
+    /// The person's long messages shown in full; the others are cut short.
+    expanded: std::collections::HashSet<SharedString>,
     /// Text selected in the thread, and the focus that copies it.
     selection: RefCell<Selection>,
     thread_focus: FocusHandle,
@@ -377,6 +381,9 @@ enum Redelivery {
     /// What Backbone said when it did not queue it.
     Note(String),
 }
+
+/// How many lines of the person's own message show before it is cut short.
+const OWN_LINES: usize = 6;
 
 /// How often the shown conversation is read: often while open, for its
 /// replies, and slowly while closed, for the pill's count.
@@ -859,6 +866,8 @@ impl Conversation {
             visible: Rc::new(Cell::new(true)),
             bounds: Rc::new(Cell::new(None)),
             resizing: None,
+            copied: None,
+            expanded: std::collections::HashSet::new(),
             selection: RefCell::default(),
             thread_focus: cx.focus_handle(),
             _poll: None,
@@ -1777,24 +1786,90 @@ impl Conversation {
         cx: &mut Context<Self>,
     ) -> gpui::Div {
         let copied = text.to_owned();
-        let copy = ui::message_action(SharedString::from(format!("{group}-copy")), "copy")
-            .role(gpui::accesskit::Role::Button)
-            .aria_label("Copy")
-            .on_click(cx.listener(move |_, _, _, cx| {
+        let key = group.clone();
+        let done = self.copied.as_ref() == Some(group);
+        let copy = ui::message_action(
+            SharedString::from(format!("{group}-copy")),
+            if done { "check" } else { "copy" },
+        )
+        .role(gpui::accesskit::Role::Button)
+        .aria_label(if done { "Copied" } else { "Copy" })
+        // On the press: the thread takes focus on a press and draws again,
+        // which must not lose the click.
+        .on_mouse_down(
+            gpui::MouseButton::Left,
+            cx.listener(move |conversation, _, _, cx| {
                 cx.write_to_clipboard(gpui::ClipboardItem::new_string(copied.clone()));
-            }));
+                conversation.copied = Some(key.clone());
+                cx.stop_propagation();
+                cx.notify();
+                let key = key.clone();
+                cx.spawn(async move |this, cx| {
+                    cx.background_executor()
+                        .timer(Duration::from_millis(1500))
+                        .await;
+                    let _ = this.update(cx, |conversation, cx| {
+                        if conversation.copied.as_ref() == Some(&key) {
+                            conversation.copied = None;
+                            cx.notify();
+                        }
+                    });
+                })
+                .detach();
+            }),
+        );
         let meta = ui::message_meta();
         let meta = if own {
             meta.child(time).child(copy)
         } else {
             meta.child(copy).child(time)
         };
-        if shown {
+        if shown || done {
             meta
         } else {
-            meta.invisible()
-                .group_hover(group.clone(), |style| style.visible())
+            meta.opacity(0.0)
+                .group_hover(group.clone(), |style| style.opacity(1.0))
         }
+    }
+
+    /// The person's message in its bubble. A long one is cut after a few
+    /// lines, with a link that shows the rest and one that folds it again.
+    fn own_body(&self, group: &SharedString, text: &str, cx: &mut Context<Self>) -> gpui::Div {
+        let (t, c) = (tokens(), colors());
+        let body = self.body(text, true, cx);
+        if text.lines().count() <= OWN_LINES && text.chars().count() <= OWN_LINES * 60 {
+            return body;
+        }
+        let open = self.expanded.contains(group);
+        let key = group.clone();
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(t.space.s4))
+            .min_w_0()
+            .child(if open {
+                body
+            } else {
+                div()
+                    .max_h(t.text.doc_body.size() * (1.5 * OWN_LINES as f32))
+                    .overflow_hidden()
+                    .child(body)
+            })
+            .child(
+                ui::link(
+                    div()
+                        .id(SharedString::from(format!("{group}-expand")))
+                        .role(gpui::accesskit::Role::Button)
+                        .child(if open { "Show less" } else { "Show more" })
+                        .on_click(cx.listener(move |conversation, _, _, cx| {
+                            if !conversation.expanded.remove(&key) {
+                                conversation.expanded.insert(key.clone());
+                            }
+                            cx.notify();
+                        })),
+                )
+                .text_color(c.muted),
+            )
     }
 
     /// Whether the thread has anything to show.
@@ -1934,10 +2009,11 @@ impl Conversation {
                         } else {
                             self.actions(&group, time, text, true, false, cx)
                         };
+                        let body = self.own_body(&group, text, cx);
                         ui::message_sent(
                             group,
                             label.map(ui::message_reference),
-                            self.body(text, true, cx),
+                            body,
                             failed,
                             meta,
                         )
@@ -2207,10 +2283,11 @@ impl Conversation {
                     )))
                 }
             };
+            let body = self.own_body(&group, &message.text, cx);
             thread = thread.child(ui::message_sent(
                 group,
                 message.anchor.clone().map(ui::message_reference),
-                self.body(&message.text, true, cx),
+                body,
                 matches!(message.delivery, Delivery::NotSent(_)),
                 meta,
             ));
