@@ -1732,10 +1732,12 @@ fn turn_arcs_in(view: gpui::EntityId, cx: &mut gpui::App) {
     if !start {
         return;
     }
-    let step =
-        std::time::Duration::from_millis((tokens().motion.spinner_ms / ARC_STEPS as f32) as u64);
     cx.spawn(async move |cx| {
         loop {
+            // Read each time: a theme can change the timing while it runs.
+            let step = std::time::Duration::from_millis(
+                (tokens().motion.spinner_ms / ARC_STEPS as f32) as u64,
+            );
             cx.background_executor().timer(step).await;
             let views = ARC_VIEWS.with_borrow_mut(|(views, running)| {
                 *running = !views.is_empty();

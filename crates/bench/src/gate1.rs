@@ -526,8 +526,8 @@ fn describe(difference: &compare::Difference, label: &str, examples: &mut String
 }
 
 /// The gate's decision on the leading engine, and the reasons. Its timing
-/// on a payload counts only if its final screen matches every other
-/// engine's, before comparing processing rates.
+/// on a payload counts only if its final screen has the text and cursor of
+/// tmux's capture, before comparing processing rates.
 fn verdict(results: &[PayloadResult]) -> (&'static str, Vec<String>) {
     let mut reasons = Vec::new();
     let mut pass = true;
@@ -537,12 +537,15 @@ fn verdict(results: &[PayloadResult]) -> (&'static str, Vec<String>) {
         let Some(engine) = result.engines.iter().find(|engine| engine.name == LEADING) else {
             continue;
         };
-        let others = result.engines.iter().filter(|other| other.name != LEADING);
         let mut disqualified = Vec::new();
-        for other in others {
-            if !compare::compare(&engine.screen, &other.screen).is_none() {
-                disqualified.push(format!("its final screen differs from {}'s", other.name));
-            }
+        let rows = compare::differing_rows(&result.tmux_rows, &compare::dump_rows(&engine.screen));
+        if rows > 0 {
+            disqualified.push(format!(
+                "{rows} rows of its final screen differ from tmux's capture"
+            ));
+        }
+        if compare::dump_cursor(&engine.screen) != Some(result.tmux_cursor) {
+            disqualified.push("its cursor differs from tmux's".to_owned());
         }
         if disqualified.is_empty() {
             reasons.push(format!("{name}: {LEADING}'s timing counts"));
