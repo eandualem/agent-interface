@@ -64,6 +64,8 @@ pub(super) struct Drag {
     /// In another tab: that tab with the pane at its right, shown while no
     /// other place is previewed.
     visiting: Option<Node>,
+    /// The shown tab's selected pane when the pane was released there.
+    released: Option<String>,
     /// The tab without the carried pane: where the pointer is read against,
     /// so the rearranging preview never changes what the pointer is over.
     base: Option<Node>,
@@ -123,6 +125,7 @@ impl Drag {
             original: tab.tree.clone(),
             home: (tab.id.clone(), tab.tree.clone()),
             visiting: None,
+            released: None,
             base: tab.tree.clone().without_leaf(source),
             model: model.clone(),
             bounds: bounds.clone(),
@@ -165,12 +168,13 @@ impl Drag {
             .find(|leaf| leaf.id == self.source)
     }
 
-    /// The pane, when `model` shows the tab it was carried into.
+    /// The pane, when `model` still shows the tab it was carried into with
+    /// the pane selection it had at release.
     pub fn landed(&self, model: &Layout) -> Option<&str> {
         self.away_from()?;
         model
             .tab()
-            .is_some_and(|tab| tab.id == self.tab)
+            .is_some_and(|tab| tab.id == self.tab && Some(&tab.focus) == self.released.as_ref())
             .then_some(self.source.as_str())
     }
 
@@ -300,6 +304,7 @@ impl Drag {
             return None;
         }
         let (base, mut model) = window.save_snapshot();
+        self.released = model.tab().map(|tab| tab.focus.clone());
         if self.visiting.is_some() {
             // Released in another tab: the pane stays there, at the
             // previewed place or at the tab's right.
@@ -444,9 +449,10 @@ impl Browser {
             .flatten()
             .and_then(|space| {
                 space.tabs.iter().enumerate().find(|(index, _)| {
+                    // Rows are measured before the list's scroll is applied.
                     self.tabs_scroll
                         .bounds_for_item(*index)
-                        .is_some_and(|row| row.contains(&position))
+                        .is_some_and(|row| (row + self.tabs_scroll.offset()).contains(&position))
                 })
             })
             .map(|(_, tab)| tab.id.clone());
