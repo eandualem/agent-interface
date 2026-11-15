@@ -18,7 +18,7 @@ fn sidebar_widths() -> std::ops::RangeInclusive<u32> {
 fn sidebar_widths_in(size: &super::design::Size) -> std::ops::RangeInclusive<u32> {
     size.panel_min as u32..=size.panel_max as u32
 }
-/// The dragged panel width, or zero for the default of 22 terminal cells.
+/// The dragged panel width, or zero for the design's default width.
 static SIDEBAR_WIDTH: AtomicU32 = AtomicU32::new(0);
 /// Conversation panel widths the settings accept, from the design's minimum.
 fn conversation_widths() -> std::ops::RangeInclusive<u32> {
@@ -370,7 +370,7 @@ pub fn path() -> Option<PathBuf> {
 }
 
 /// The settings path from these variables; the account's home directory is
-/// used only when HOME is unset, as the library and keymap lookups do.
+/// used only when HOME is unset, as the library lookup does.
 fn path_from(
     xdg: Option<std::ffi::OsString>,
     home: Option<std::ffi::OsString>,

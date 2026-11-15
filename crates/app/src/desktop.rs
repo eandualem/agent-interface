@@ -704,7 +704,7 @@ struct Browser {
     roster_updates: Option<gpui::Subscription>,
     jump: Option<jump::Jump>,
     /// A navigation panel drag: where it started and the width then.
-    sidebar_drag: Option<(gpui::Pixels, gpui::Pixels)>,
+    sidebar_drag: Option<(gpui::Pixels, gpui::Pixels, Option<u32>)>,
     reset_focus: bool,
     painted_pane_focus: Option<String>,
     navigation: Option<gpui::FocusHandle>,
@@ -1579,7 +1579,8 @@ impl Browser {
                     Err(error) => {
                         browser.save_failed = true;
                         browser.pending_save = Some((base, local));
-                        browser.error = Some(format!("Changes not saved: {error}. Retry saving."));
+                        // The status bar leads with "Changes not saved".
+                        browser.error = Some(format!("{error}. Retry saving."));
                         if browser.first_open_saving {
                             // First run covers the window, so its own Try again
                             // repeats the edit; the failed one is dropped.
@@ -2455,7 +2456,13 @@ impl Browser {
 
     /// Keep a dragged panel width: save it and repaint every window.
     fn finish_sidebar_drag(&mut self, cx: &mut Context<Self>) {
-        self.sidebar_drag = None;
+        let saved_width = self.sidebar_drag.take().and_then(|drag| drag.2);
+        if saved_width == settings::sidebar_width() {
+            // Nothing to save, but a drag back to where it began still
+            // ends: draw what the drag held back.
+            cx.refresh_windows();
+            return;
+        }
         let (done, saved) = futures::channel::oneshot::channel();
         settings::save_in_background(settings::Settings::current(), move |result| {
             let _ = done.send(result);
@@ -2482,7 +2489,7 @@ impl Browser {
             self.pane_drag_motion(event, window, cx);
             return;
         }
-        if let Some((start, width)) = self.sidebar_drag {
+        if let Some((start, width, _)) = self.sidebar_drag {
             if event.dragging() {
                 let width = f32::from(width + event.position.x - start).round();
                 settings::set_sidebar_width(width.max(0.0) as u32);

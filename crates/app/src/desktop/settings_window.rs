@@ -590,13 +590,10 @@ impl SettingsWindow {
             .map_or(editing.id.clone(), |(entry, _)| entry.name.clone());
         let file = themes::file(&editing.id)
             .map(|path| {
-                let path = path.display().to_string();
-                match std::env::var("HOME") {
-                    Ok(home) if !home.is_empty() && path.starts_with(&home) => {
-                        format!("~{}", &path[home.len()..])
-                    }
-                    _ => path,
-                }
+                super::pane_cards::home_relative(
+                    &path.display().to_string(),
+                    std::env::var("HOME").ok().as_deref(),
+                )
             })
             .unwrap_or_default();
         let save_key = if cfg!(target_os = "macos") {

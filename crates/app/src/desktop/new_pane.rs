@@ -697,7 +697,11 @@ impl Render for NewPane {
                     "new-pane-terminal",
                     "terminal",
                     "Open terminal",
-                    "⌘↵",
+                    if cfg!(target_os = "macos") {
+                        "⌘↵"
+                    } else {
+                        "Ctrl+↵"
+                    },
                     false,
                 )
                 .on_click(cx.listener(|_, _, _, cx| {
@@ -940,7 +944,13 @@ impl NewPane {
     /// Number keys choose only from navigation; in the filter they are text.
     pub fn key(&mut self, key: &gpui::Keystroke, navigating: bool, cx: &mut Context<Self>) -> bool {
         let m = &key.modifiers;
-        if key.key == "enter" && m.platform && !m.control && !m.alt {
+        // The command key on macOS, Control elsewhere, as the button says.
+        let (command, other) = if cfg!(target_os = "macos") {
+            (m.platform, m.control)
+        } else {
+            (m.control, m.platform)
+        };
+        if key.key == "enter" && command && !other && !m.alt {
             cx.emit(NewPaneEvent::OpenTerminal);
             return true;
         }

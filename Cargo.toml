@@ -53,7 +53,7 @@ objc2-screen-capture-kit = { version = "0.3.2", default-features = false, featur
 signal-hook = "0.4.5"
 tempfile = "3.27.0"
 thiserror = "2.0.21"
-# Read-only schema-v2 library access.
+# Schema-v2 library access.
 rusqlite = { version = "=0.41.1", features = ["bundled"] }
 serde = "=1.0.229"
 toml = "=0.8.23"

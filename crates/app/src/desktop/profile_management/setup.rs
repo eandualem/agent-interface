@@ -795,11 +795,8 @@ impl Render for Pane {
                 }
             }
             Page::Operation {
-                key,
-                snapshot,
-                progress,
+                snapshot, progress, ..
             } => {
-                let _ = key;
                 if let Some(s) = snapshot {
                     body = body.child(
                         div()

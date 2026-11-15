@@ -54,23 +54,23 @@ fn native_cards_retain_registration_credentials_and_delayed_profile_origin() {
     let credential = a.credential_reference().to_owned();
     let worker = std::thread::spawn(move || {
         let mut reader = reader(a);
-        let snapshot = reader.read(AgentSection::Overview).unwrap();
+        let snapshot = reader.read(AgentSection::Permissions).unwrap();
         (reader, snapshot)
     });
     waiting.recv_timeout(Duration::from_secs(5)).unwrap();
     std::fs::write(credential, "BACKBONE_API_KEY=rotated\n").unwrap();
-    let snapshot_b = reader(b).read(AgentSection::Overview).unwrap();
+    let snapshot_b = reader(b).read(AgentSection::Permissions).unwrap();
     release.send(()).unwrap();
     let (mut reader_a, snapshot_a) = worker.join().unwrap();
     assert_eq!(snapshot_a.agent.repo, "sentinel-a");
-    assert_eq!(snapshot_a.permissions.allow, ["sentinel-a"]);
+    assert_eq!(snapshot_a.permissions.unwrap().allow, ["sentinel-a"]);
     assert_eq!(snapshot_b.agent.repo, "sentinel-b");
     assert_eq!(
-        reader_a.read(AgentSection::Overview).unwrap().agent.repo,
+        reader_a.read(AgentSection::Permissions).unwrap().agent.repo,
         "sentinel-a"
     );
     assert!(matches!(
-        reader_a.read(AgentSection::Overview),
+        reader_a.read(AgentSection::Permissions),
         Err(runtime_context::Error::RegistrationChanged)
     ));
     assert_eq!(reader_a.target.as_ref().unwrap().registration_id(), REG);
@@ -90,7 +90,7 @@ fn foreign_permission_context_cannot_publish_an_agent_snapshot() {
         ],
     );
     assert!(matches!(
-        reader(a).read(AgentSection::Overview),
+        reader(a).read(AgentSection::Permissions),
         Err(runtime_context::Error::Invalid)
     ));
     server.join().unwrap();
@@ -135,19 +135,24 @@ fn a_section_reads_on_the_card_connection_and_missing_parts_keep_the_card() {
         vec![
             Reply::ok(&inspect_path, inspect("a")),
             Reply {
-                status: 404,
-                ..Reply::ok(&context_path, json!({}))
-            },
-            Reply {
                 status: 503,
                 ..Reply::ok("/api/skills/preview/worker", json!({}))
             },
+            Reply::ok(&inspect_path, inspect("a")),
+            Reply {
+                status: 404,
+                ..Reply::ok(&context_path, json!({}))
+            },
         ],
     );
-    let snapshot = reader(a).read(AgentSection::Skills).unwrap();
+    let mut reader = reader(a);
+    // Only the Permissions section asks for permissions.
+    let snapshot = reader.read(AgentSection::Skills).unwrap();
     assert_eq!(snapshot.agent.repo, "sentinel-a");
-    assert!(snapshot.permissions.message().is_some());
+    assert!(snapshot.permissions.is_none());
     assert!(matches!(snapshot.agent.skills, Some(Err(_))));
+    let snapshot = reader.read(AgentSection::Permissions).unwrap();
+    assert!(snapshot.permissions.unwrap().message().is_some());
     server.join().unwrap();
 }
 

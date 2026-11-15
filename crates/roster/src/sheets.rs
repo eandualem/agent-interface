@@ -204,6 +204,8 @@ impl Client {
                         crate::profiles::Error::BindingRequired
                         | crate::profiles::Error::BindingMismatch => Error::BindingRefused,
                         _ if mutation => Error::Unknown,
+                        // An oversized reply, not a missing connection.
+                        crate::profiles::Error::Invalid => Error::Unreadable,
                         _ => Error::Unavailable,
                     })?
             }

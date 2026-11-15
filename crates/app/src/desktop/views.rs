@@ -158,7 +158,7 @@ pub(super) struct Open {
     bound_skill: Option<bound_skills::Open>,
     bound_policy: Option<bound_policies::Open>,
     /// A skill's text once read, and whether it was cut.
-    pub text: Option<Result<(String, bool), &'static str>>,
+    pub text: Option<Result<(std::sync::Arc<str>, bool), &'static str>>,
 }
 
 /// One view in one pane, with its newest data and what the person chose in it.
@@ -723,7 +723,7 @@ impl ViewPane {
             .source
             .text
             .as_ref()
-            .map(|text| Ok((text.to_string(), false)));
+            .map(|text| Ok((text.clone(), false)));
         let artifact = bound.artifact.clone();
         let ticket = bound.ticket();
         self.open = Some(Open {
@@ -758,7 +758,7 @@ impl ViewPane {
                                 .clone()
                                 .ok_or("This policy's source is unavailable.");
                             bound.snapshot = Some(snapshot);
-                            text.map(|text| (text, false))
+                            text.map(|text| (text.into(), false))
                         }
                         Err(error) => Err(error),
                     });
@@ -831,7 +831,7 @@ impl ViewPane {
                                     .clone()
                                     .ok_or("This skill's source is unavailable.");
                                 bound.snapshot = Some(snapshot);
-                                text.map(|text| (text, false))
+                                text.map(|text| (text.into(), false))
                             }
                             Err(error) => Err(error),
                         });
@@ -857,7 +857,7 @@ impl ViewPane {
                 if let Some(open) = &mut pane.open
                     && open.target == Target::Skill(folder)
                 {
-                    open.text = Some(text);
+                    open.text = Some(text.map(|(text, cut)| (text.into(), cut)));
                     cx.notify();
                 }
             });
@@ -1352,12 +1352,7 @@ fn since(at: Option<f64>) -> String {
 
 /// A path with the home directory written as `~`.
 fn home(path: &str) -> String {
-    match std::env::var("HOME") {
-        Ok(home) if !home.is_empty() && path.starts_with(&home) => {
-            format!("~{}", &path[home.len()..])
-        }
-        _ => path.to_owned(),
-    }
+    super::pane_cards::home_relative(path, std::env::var("HOME").ok().as_deref())
 }
 
 /// Text without control characters, on one line.

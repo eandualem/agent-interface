@@ -958,7 +958,7 @@ impl Conversation {
         Some(OPEN_POLL)
     }
 
-    /// The person can see this conversation's rail or panel.
+    /// The person can see this conversation's pill or panel.
     fn shown(&self) -> bool {
         self.active && self.visible.get()
     }

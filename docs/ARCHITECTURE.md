@@ -1138,8 +1138,8 @@ A failed state refresh retains earlier observations with a stale notice.
 
 The original is selectable plain text. Follow-up questions use the existing
 stored conversation component with kind `interaction`, pinned to the provider
-and immutable message ID. A collapsed discussion rail is visible from the first supported selection,
-before the thread is opened. Its width participates in the responsive layout.
+and immutable message ID. A closed discussion is a pill in the reader's toolbar
+from the first supported selection, before the thread is opened; it takes no width.
 The reader keeps direction, participants and navigation in one header, with the
 timestamp beneath; delivery evidence and technical attempts have separate sections,
 and the primary Ask action also opens the same retained discussion. Eligible

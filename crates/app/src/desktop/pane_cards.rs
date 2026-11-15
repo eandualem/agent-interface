@@ -527,7 +527,7 @@ impl Browser {
 }
 
 /// `path` with the home directory shown as `~`.
-fn home_relative(path: &str, home: Option<&str>) -> String {
+pub(super) fn home_relative(path: &str, home: Option<&str>) -> String {
     let Some(home) = home.filter(|home| !home.is_empty()) else {
         return path.to_owned();
     };

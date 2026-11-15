@@ -823,9 +823,7 @@ impl Render for Form {
                                 div()
                                     .flex()
                                     .flex_col()
-                                    .child(ui::text(div().text_color(c.text), &t.text.card_title).child(
-                                        if self.guide && !self.custom_brief { "Your guide" } else { "Your agent" },
-                                    ))
+                                    .child(ui::text(div().text_color(c.text), &t.text.card_title).child("Your agent"))
                                     .child(note(
                                         if self.custom_brief {
                                             "Follows the instructions you give it below."

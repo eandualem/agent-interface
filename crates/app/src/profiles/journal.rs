@@ -342,10 +342,19 @@ impl Journal {
         };
         let file = File::from(fd);
         private(&file, false)?;
-        match sys::flock(&file, FlockOperation::NonBlockingLockExclusive) {
-            Ok(()) => Ok(Lock { file }),
-            Err(rustix::io::Errno::WOULDBLOCK) => Err(Error::Busy),
-            Err(_) => Err(Error::Unavailable),
+        // Another writer holds the lock for one short save. Waiting briefly
+        // keeps a result that was already applied from being reported lost.
+        let mut waits = 0;
+        loop {
+            match sys::flock(&file, FlockOperation::NonBlockingLockExclusive) {
+                Ok(()) => return Ok(Lock { file }),
+                Err(rustix::io::Errno::WOULDBLOCK) if waits < 20 => {
+                    waits += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(rustix::io::Errno::WOULDBLOCK) => return Err(Error::Busy),
+                Err(_) => return Err(Error::Unavailable),
+            }
         }
     }
 
