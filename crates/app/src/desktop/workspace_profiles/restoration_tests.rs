@@ -325,3 +325,45 @@ fn workspaces_on_one_profile_share_one_connection() {
     );
     server.join().unwrap();
 }
+
+#[test]
+fn a_failed_shared_attempt_waits_for_retry_in_every_workspace() {
+    let root = tempfile::tempdir().unwrap();
+    let refusal = Reply {
+        status: 409,
+        ..Reply::ok(
+            "/api/profile",
+            json!({"detail":{"code":"binding_mismatch"}}),
+        )
+    };
+    let (a_dir, a, server) = provider_with_tmux(
+        "a",
+        vec![refusal, handshake("a", root.path())],
+        Some(root.path().join("a.sock")),
+    );
+    let client = discovery(root.path(), &[(a_dir.path(), &a)]);
+    let browser = restored_browser(root.path(), &["profile-a", "profile-a"]);
+    let saved = model(&browser);
+    let mut registry = Registry::default();
+    let work = registry.reconcile(&saved, Some(&client));
+    assert_eq!(work.len(), 1);
+    assert!(registry.accept(work.into_iter().next().unwrap().run()));
+    for space in &saved.workspaces {
+        assert!(registry.failure(space).is_some());
+    }
+    assert!(registry.reconcile(&saved, Some(&client)).is_empty());
+    registry.retry(&saved.workspaces[1]);
+    let retry = registry.reconcile(&saved, Some(&client));
+    assert_eq!(retry.len(), 1);
+    assert!(registry.accept(retry.into_iter().next().unwrap().run()));
+    assert!(matches!(
+        registry.route(&saved.workspaces[1]),
+        Route::Bound(_)
+    ));
+    assert!(registry.failure(&saved.workspaces[0]).is_some());
+    assert_eq!(
+        fs::read_to_string(root.path().join("calls")).unwrap(),
+        "profile-a\nprofile-a\n"
+    );
+    server.join().unwrap();
+}

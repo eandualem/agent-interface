@@ -161,15 +161,14 @@ impl Registry {
             );
         }
         let result = result.map(|selected| self.shared(selected.connection().clone()));
-        if let Ok(connection) = &result {
-            // Workspaces that waited for this attempt take its connection.
-            for entry in self.entries.values_mut() {
-                if entry.profile_id == profile_id
-                    && entry.result.is_none()
-                    && entry.selection.pending().is_none()
-                {
-                    entry.result = Some(Ok(connection.clone()));
-                }
+        // Workspaces that waited for this attempt take its outcome, so a
+        // failure waits for an explicit retry there too.
+        for entry in self.entries.values_mut() {
+            if entry.profile_id == profile_id
+                && entry.result.is_none()
+                && entry.selection.pending().is_none()
+            {
+                entry.result = Some(result.clone());
             }
         }
         if let Some(entry) = self.entries.get_mut(&finished.workspace) {
