@@ -48,30 +48,32 @@ pub(super) enum HomeProfile {
     Unread,
     Reading,
     /// Every workspace without a profile is bound to this one, in whichever
-    /// library the window shows, whenever nothing else is being saved.
-    Found(agent_interface_roster::profiles::Item),
+    /// library the window shows, whenever nothing else is being saved. With
+    /// it, the saved sockets that are other names for the unbound tmux server.
+    Found(
+        agent_interface_roster::profiles::Item,
+        std::rc::Rc<super::sidebar::SourceMatches>,
+    ),
+    /// The service names none, or the person discarded a binding's save.
     Absent,
 }
 
 /// Point attachments saved on the unbound tmux server at their workspace's
 /// profile instead, where the agents of the same names now run. One on
 /// another server stays as it is and says so when shown.
-fn follow_profile(node: &mut agent_interface_core::Node, source: &std::path::Path) {
+fn follow_profile(node: &mut agent_interface_core::Node, unbound: &dyn Fn(&str) -> bool) {
     use agent_interface_core::Node;
     match node {
         Node::Leaf(leaf) => {
             if let Some(attachment) = &mut leaf.attachment
-                && attachment
-                    .source_socket
-                    .as_deref()
-                    .is_some_and(|path| std::path::Path::new(path) == source)
+                && attachment.source_socket.as_deref().is_some_and(unbound)
             {
                 attachment.source_socket = None;
             }
         }
         Node::Split { first, second, .. } => {
-            follow_profile(first, source);
-            follow_profile(second, source);
+            follow_profile(first, unbound);
+            follow_profile(second, unbound);
         }
     }
 }
@@ -618,18 +620,27 @@ impl Browser {
     fn bind_unbound_workspaces(
         &mut self,
         item: agent_interface_roster::profiles::Item,
+        aliases: &super::sidebar::SourceMatches,
         cx: &mut Context<Self>,
     ) {
         let Some(layout) = &self.layout else { return };
         let (base, mut proposed) = layout.save_snapshot();
         let source = self.source.as_ref().and_then(|source| source.as_ref().ok());
+        let unbound = |path: &str| {
+            source.is_some_and(|source| std::path::Path::new(path) == source)
+                || aliases.contains(Some(path))
+        };
         let mut bound = Vec::new();
+        let mut shells = Vec::new();
         for space in &mut proposed.workspaces {
             if space.profile_id.is_none() {
                 space.profile_id = Some(item.profile_id.clone());
                 for tab in &mut space.tabs {
-                    if let Some(source) = source {
-                        follow_profile(&mut tab.tree, source);
+                    follow_profile(&mut tab.tree, &unbound);
+                    for leaf in tab.tree.leaves() {
+                        if leaf.attachment.is_none() && leaf.runs_terminal() {
+                            shells.push((space.name.clone(), tab.name.clone(), leaf.id.clone()));
+                        }
                     }
                 }
                 bound.push(format!("{} ({})", space.name, space.id));
@@ -638,7 +649,8 @@ impl Browser {
         if bound.is_empty() {
             return;
         }
-        tracing::info!(
+        // A warning, so that the default log level keeps it.
+        tracing::warn!(
             event = "workspaces_bound_to_home_profile",
             profile_id = %item.profile_id,
             workspaces = ?bound,
@@ -647,6 +659,34 @@ impl Browser {
         self.workspace_profiles.remember_name(&item);
         self.pending_save = Some((base, proposed));
         self.save(cx);
+        // The shells these panes showed keep running on the library's shell
+        // server but are no longer shown: say where each one is.
+        let directory = self.directory.clone();
+        cx.background_executor()
+            .spawn(async move {
+                let Ok(directory) = crate::library::library_directory(directory.as_deref()) else {
+                    return;
+                };
+                for (workspace, tab, leaf) in shells {
+                    let Ok(Some(socket)) = crate::library::existing_shell_socket(&directory, &leaf)
+                    else {
+                        continue;
+                    };
+                    let session = format!("terminal-{leaf}");
+                    let command =
+                        agent_interface_tmux::discovery::read_session_command(&socket, &session);
+                    tracing::warn!(
+                        event = "shell_left_running",
+                        %workspace,
+                        %tab,
+                        %session,
+                        socket = %socket.display(),
+                        command = command.as_deref().unwrap_or("unknown"),
+                        "A shell is no longer shown and keeps running; attach with tmux -S <socket> attach -t <session>"
+                    );
+                }
+            })
+            .detach();
     }
 
     pub(super) fn refresh_profiles(&mut self, cx: &mut Context<Self>) {
@@ -655,26 +695,47 @@ impl Browser {
         if unread && let Some(Ok(client)) = &self.profile_client {
             self.home_profile = HomeProfile::Reading;
             let client = client.clone();
-            let work = cx
-                .background_executor()
-                .spawn(async move { client.home(&|| true) });
+            let source = self.source.as_ref().and_then(|source| source.clone().ok());
+            let sockets = self
+                .layout
+                .iter()
+                .flat_map(|layout| &layout.model().workspaces)
+                .flat_map(|space| &space.tabs)
+                .flat_map(|tab| tab.tree.leaves())
+                .filter_map(|leaf| leaf.attachment.as_ref()?.source_socket.clone())
+                .collect();
+            // Resolving a socket's other names reads the file system.
+            let work = cx.background_executor().spawn(async move {
+                let home = client.home(&|| true).ok().flatten()?;
+                Some((
+                    home,
+                    super::sidebar::SourceMatches::resolve(source, sockets),
+                ))
+            });
             cx.spawn(async move |this, cx| {
-                let home = work.await.ok().flatten();
+                let home = work.await;
                 let _ = this.update(cx, |browser, cx| {
-                    browser.home_profile = home.map_or(HomeProfile::Absent, HomeProfile::Found);
+                    browser.home_profile = home.map_or(HomeProfile::Absent, |(item, aliases)| {
+                        HomeProfile::Found(item, std::rc::Rc::new(aliases))
+                    });
                     cx.notify();
                 });
             })
             .detach();
         }
         // Also after a save that a conflict dropped, and in another library.
+        // Never beside a save the person is about to make.
         if !self.saving
             && !self.save_failed
             && self.pending_save.is_none()
+            && self.editing.is_none()
+            && self.resize.is_none()
+            && self.pane_drag.is_none()
             && self.shows_unbound_agents()
-            && let HomeProfile::Found(item) = &self.home_profile
+            && let HomeProfile::Found(item, aliases) = &self.home_profile
         {
-            self.bind_unbound_workspaces(item.clone(), cx);
+            let (item, aliases) = (item.clone(), aliases.clone());
+            self.bind_unbound_workspaces(item, &aliases, cx);
         }
         let needed = self.profile_picker_requested
             || unread
@@ -1207,7 +1268,7 @@ mod tests {
         };
         let follow = |model: &mut Layout, server: &str| {
             let tree = &mut model.workspaces[0].tabs[0].tree;
-            follow_profile(tree, std::path::Path::new(server));
+            follow_profile(tree, &|path| path == server);
         };
         follow(&mut model, "/tmp/other");
         assert_eq!(source(&model).as_deref(), Some("/tmp/default"));

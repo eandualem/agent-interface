@@ -419,9 +419,12 @@ it bound. Attachments saved on the unbound tmux server lose their socket, so
 they follow the profile's server, where agents of the same names now run.
 Ordinary shell panes of such a workspace become shells of the profile, as in
 any bound workspace: the shells they showed keep running on the library's
-shell server and are no longer shown. The
+shell server and are no longer shown, and the log names each one's session,
+socket and running command. The
 list is read once in a window's life; the binding is made again after a save
-that a conflict dropped, and in any library the window opens.
+that a conflict dropped, and in any library the window opens. It waits while a
+name is being edited or a pane resized or dragged, and discarding a failed
+save ends it for that window.
 The explicit `app::roster::BoundRosterSource` owns one connection for its entire
 worker lifetime, with a private coalescing cache. Every update carries its
 verified identity and typed failure; a failed read retains only that worker's

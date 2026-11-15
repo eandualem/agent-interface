@@ -1611,6 +1611,14 @@ impl Browser {
         // Discarding the binding's own save drops it; saving it again could
         // fail the same way and leave nothing else to do.
         self.pending_profile = None;
+        // The discarded save may be the automatic binding's, which would
+        // otherwise be made again at once and fail the same way.
+        if matches!(
+            self.home_profile,
+            workspace_profiles::HomeProfile::Found(..)
+        ) {
+            self.home_profile = workspace_profiles::HomeProfile::Absent;
+        }
         let bind = self.bind_after_save.take();
         self.pending_save = None;
         if let Some(pane) = self.section_saving.take() {
