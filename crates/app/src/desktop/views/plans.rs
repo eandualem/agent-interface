@@ -1360,6 +1360,8 @@ mod tests {
         agents.update(snapshot.clone());
         assert_eq!(frame.state("worker"), ui::AgentState::Idle);
         snapshot.unavailable();
+        snapshot.observed_at =
+            std::time::Instant::now().checked_sub(crate::desktop::agent_status::TOLERANCE);
         agents.update(snapshot);
         assert_eq!(frame.state("worker"), ui::AgentState::Unavailable);
     }

@@ -399,8 +399,10 @@ one live poller per full profile/installation/lifecycle identity; explicit legac
 sources are keyed separately by provider directory. Closing the last owner
 releases its cache and disposes of the poller off the UI thread. Deferred wakes
 refer weakly to their original source, and bound updates must match that source's
-identity. Failed reads hide its active rows and show unavailable status without
-changing another source's attention state. No global selected source supplies
+identity. Failed reads keep the last roster for 30 seconds while the poller
+retries; after that they hide its active rows and show unavailable status
+without changing another source's attention state. That status appears in the
+sidebar only and never takes space from a pane, so it cannot resize a session. No global selected source supplies
 status to readers. Authored reports and historical events never update this model.
 `roster::views::content` reads only retained Reports, Responses and Documents
 through a captured connection, including pagination and roster enrichment.

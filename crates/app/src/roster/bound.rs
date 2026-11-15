@@ -46,7 +46,7 @@ impl BoundRosterSource {
                         }
                         Err(error) => {
                             update.snapshot.unavailable();
-                            update.error = Some(error);
+                            update.error = Some(standing(update.error, error));
                         }
                     }
                     *pending.lock().unwrap_or_else(|error| error.into_inner()) =
@@ -74,6 +74,15 @@ impl BoundRosterSource {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .take()
+    }
+}
+
+/// The failure to report after `error`. A refusal stands until a read
+/// succeeds: a later read that could not be made does not replace it.
+fn standing(reported: Option<Error>, error: Error) -> Error {
+    match reported {
+        Some(refusal) if refusal != Error::Unavailable && error == Error::Unavailable => refusal,
+        _ => error,
     }
 }
 

@@ -187,16 +187,6 @@ impl Browser {
                 terminal.update(cx, |terminal, cx| terminal.hold_size(false, cx));
             }
         }
-        if self.profile_status_unavailable() {
-            return area
-                .flex()
-                .flex_col()
-                .child(ui::group_note(
-                    "Agent status is unavailable right now. Terminals stay connected.",
-                ))
-                .child(div().flex_1().min_h_0().child(element))
-                .into_any_element();
-        }
         area.child(element).into_any_element()
     }
 

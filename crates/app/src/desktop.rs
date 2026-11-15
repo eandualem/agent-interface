@@ -4259,6 +4259,7 @@ mod tests {
             components::AgentState::from_runtime("unknown")
         );
         snapshot.update(b"invalid");
+        snapshot.observed_at = std::time::Instant::now().checked_sub(agent_status::TOLERANCE);
         roster.update(snapshot);
         assert!(browser.agent_states().is_none());
     }
