@@ -1519,7 +1519,10 @@ lifecycle journal; it does not invoke a lifecycle action. Start/Stop controls us
 an atomic registry record loaded before the buttons appear. Submitting switches
 the view to the original operation key before persistence or provider execution,
 so ambiguous writes and replies retain recovery identity. Reopening enumerates
-bounded record IDs and validates one page of durable snapshots at a time.
+bounded record IDs. The full history validates one page of durable snapshots at
+a time; a profile's page reads every record to find that profile's, and counts its
+unfinished requests the same way. Lifecycle records are kept, and the journal
+refuses new requests once it holds 4,096.
 Receipt lookup and identical retry are distinct explicit actions. Closing the
 view does not stop a start or stop already running; it finishes in the
 background, and its receipt is read the next time the profile is opened.
