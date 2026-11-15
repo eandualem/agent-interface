@@ -415,7 +415,10 @@ A workspace saved without a profile was served by the earlier Python service
 without a binding. Once the Rust service's list names exactly one serving
 profile whose home is this machine, a window whose library shows agents binds
 every such workspace to that profile, saves the library and logs the workspaces
-it bound. The list is read once in a window's life.
+it bound. Attachments saved on the unbound tmux server lose their socket, so
+they follow the profile's server, where agents of the same names now run. The
+list is read once in a window's life; the binding is made again after a save
+that a conflict dropped, and in any library the window opens.
 The explicit `app::roster::BoundRosterSource` owns one connection for its entire
 worker lifetime, with a private coalescing cache. Every update carries its
 verified identity and typed failure; a failed read retains only that worker's

@@ -47,9 +47,33 @@ pub(super) enum HomeProfile {
     #[default]
     Unread,
     Reading,
-    /// Waiting for a moment when nothing else is being saved.
+    /// Every workspace without a profile is bound to this one, in whichever
+    /// library the window shows, whenever nothing else is being saved.
     Found(agent_interface_roster::profiles::Item),
-    Done,
+    Absent,
+}
+
+/// Point attachments saved on the unbound tmux server at their workspace's
+/// profile instead, where the agents of the same names now run. One on
+/// another server stays as it is and says so when shown.
+fn follow_profile(node: &mut agent_interface_core::Node, source: &std::path::Path) {
+    use agent_interface_core::Node;
+    match node {
+        Node::Leaf(leaf) => {
+            if let Some(attachment) = &mut leaf.attachment
+                && attachment
+                    .source_socket
+                    .as_deref()
+                    .is_some_and(|path| std::path::Path::new(path) == source)
+            {
+                attachment.source_socket = None;
+            }
+        }
+        Node::Split { first, second, .. } => {
+            follow_profile(first, source);
+            follow_profile(second, source);
+        }
+    }
 }
 
 pub(super) struct Work {
@@ -598,10 +622,16 @@ impl Browser {
     ) {
         let Some(layout) = &self.layout else { return };
         let (base, mut proposed) = layout.save_snapshot();
+        let source = self.source.as_ref().and_then(|source| source.as_ref().ok());
         let mut bound = Vec::new();
         for space in &mut proposed.workspaces {
             if space.profile_id.is_none() {
                 space.profile_id = Some(item.profile_id.clone());
+                for tab in &mut space.tabs {
+                    if let Some(source) = source {
+                        follow_profile(&mut tab.tree, source);
+                    }
+                }
                 bound.push(format!("{} ({})", space.name, space.id));
             }
         }
@@ -631,20 +661,20 @@ impl Browser {
             cx.spawn(async move |this, cx| {
                 let home = work.await.ok().flatten();
                 let _ = this.update(cx, |browser, cx| {
-                    browser.home_profile = home.map_or(HomeProfile::Done, HomeProfile::Found);
+                    browser.home_profile = home.map_or(HomeProfile::Absent, HomeProfile::Found);
                     cx.notify();
                 });
             })
             .detach();
         }
+        // Also after a save that a conflict dropped, and in another library.
         if !self.saving
             && !self.save_failed
             && self.pending_save.is_none()
-            && matches!(self.home_profile, HomeProfile::Found(_))
-            && let HomeProfile::Found(item) =
-                std::mem::replace(&mut self.home_profile, HomeProfile::Done)
+            && self.shows_unbound_agents()
+            && let HomeProfile::Found(item) = &self.home_profile
         {
-            self.bind_unbound_workspaces(item, cx);
+            self.bind_unbound_workspaces(item.clone(), cx);
         }
         let needed = self.profile_picker_requested
             || unread
@@ -1162,6 +1192,28 @@ impl Browser {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bound_attachments_leave_only_the_unbound_server() {
+        use agent_interface_core::Attachment;
+        let mut model = Layout::initial("/tmp".into());
+        model.attach(Some(Attachment {
+            session: "worker".into(),
+            source_socket: Some("/tmp/default".into()),
+        }));
+        let source = |model: &Layout| {
+            let attachment = model.pane().unwrap().attachment.clone().unwrap();
+            attachment.source_socket
+        };
+        let follow = |model: &mut Layout, server: &str| {
+            let tree = &mut model.workspaces[0].tabs[0].tree;
+            follow_profile(tree, std::path::Path::new(server));
+        };
+        follow(&mut model, "/tmp/other");
+        assert_eq!(source(&model).as_deref(), Some("/tmp/default"));
+        follow(&mut model, "/tmp/default");
+        assert_eq!(source(&model), None);
+    }
     use crate::roster::content::tests::provider;
 
     #[test]
