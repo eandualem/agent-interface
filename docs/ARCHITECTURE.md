@@ -505,8 +505,11 @@ navigation badges, choosers and information views retain that connection's model
 Shared UI components render its symbol, colour and label. Roster changes
 invalidate retained view painting even when an authored record or plan is held
 open. Offline stays distinct from idle; an unavailable roster suppresses working
-indicators rather than presenting cached observations as current. Requests have
-a three-second deadline. Team and agent-card metadata still poll every three
+indicators rather than presenting cached observations as current. Requests to a
+legacy provider have a three-second deadline, and requests on a profile connection
+fifteen seconds. Right after an agent is removed, a profile's agent list refuses
+reads until its next refresh, so the roster read tries again every quarter second
+for up to ten seconds. Team and agent-card metadata still poll every three
 seconds; these reads do not supply live status. Activity's historical spans
 remain separate from its current-state labels.
 Team-wide libraries (`roster::views::library`) are gathered from per-agent
