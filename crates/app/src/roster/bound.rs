@@ -34,7 +34,7 @@ impl BoundRosterSource {
         let updates = Arc::new(Mutex::new(None));
         let pending = Arc::clone(&updates);
         let (stop, stopped) = mpsc::channel();
-        let stream = watch(connection.clone(), stop.clone())?;
+        let (watched, refresh) = (connection.clone(), stop.clone());
         let worker = thread::Builder::new()
             .name("bound roster polling".into())
             .spawn(move || {
@@ -70,12 +70,15 @@ impl BoundRosterSource {
                     }
                 }
             })?;
-        Ok(Self {
+        let mut source = Self {
             updates,
             stop,
             worker: Some(worker),
-            stream,
-        })
+            stream: None,
+        };
+        // A failure here drops the source, which stops the polling worker.
+        source.stream = watch(watched, refresh)?;
+        Ok(source)
     }
 
     /// Take the newest complete update. Failures replace unread successes and

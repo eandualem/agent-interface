@@ -416,7 +416,10 @@ without a binding. Once the Rust service's list names exactly one serving
 profile whose home is this machine, a window whose library shows agents binds
 every such workspace to that profile, saves the library and logs the workspaces
 it bound. Attachments saved on the unbound tmux server lose their socket, so
-they follow the profile's server, where agents of the same names now run. The
+they follow the profile's server, where agents of the same names now run.
+Ordinary shell panes of such a workspace become shells of the profile, as in
+any bound workspace: the shells they showed keep running on the library's
+shell server and are no longer shown. The
 list is read once in a window's life; the binding is made again after a save
 that a conflict dropped, and in any library the window opens.
 The explicit `app::roster::BoundRosterSource` owns one connection for its entire
