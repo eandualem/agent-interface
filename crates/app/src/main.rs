@@ -39,7 +39,10 @@ fn main() -> ExitCode {
         }
         Ok(Options::BindHomeProfile(directory)) => {
             match agent_interface_app::adoption::bind_home_profile(directory.as_deref()) {
-                Ok(report) => report.iter().for_each(|line| println!("{line}")),
+                // Names and commands come from saved data and from tmux.
+                Ok(report) => report.iter().for_each(|line| {
+                    println!("{}", line.replace(char::is_control, "?"));
+                }),
                 Err(error) => {
                     eprintln!("agent-interface: {}", error.escape_debug());
                     return ExitCode::FAILURE;

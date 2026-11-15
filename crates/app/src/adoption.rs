@@ -71,9 +71,14 @@ pub fn bind_home_profile(directory: Option<&Path>) -> Result<Vec<String>, String
                         let command = agent_interface_tmux::discovery::read_session_command(
                             &socket, &session,
                         );
+                        let command = match command.as_deref() {
+                            None => "running an unknown command",
+                            // Its command ended and the pane was kept.
+                            Some("") => "its command has ended",
+                            Some(command) => &format!("running {command}"),
+                        };
                         report.push(format!(
-                            "Shell left running, from {workspace} > {name}, running {}: tmux -S {} attach -t {session}",
-                            command.as_deref().unwrap_or("an unknown command"),
+                            "Shell left on its server, from {workspace} > {name}, {command}: tmux -S {} attach -t {session}",
                             socket.display(),
                         ));
                     }
@@ -105,6 +110,10 @@ pub fn bind_home_profile(directory: Option<&Path>) -> Result<Vec<String>, String
     if report.is_empty() {
         return Ok(vec!["Every workspace already has a profile.".into()]);
     }
+    // The default server follows TMUX_TMPDIR, as tmux does, so say which.
+    report.push(format!(
+        "Agents' sessions were taken to be on the tmux server at {source_text}"
+    ));
     let saved = store
         .save(&mut base, &layout)
         .map_err(|error| error.to_string())?;

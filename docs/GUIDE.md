@@ -432,7 +432,9 @@ computer's profile with one command:
 agent-interface bind-home-profile
 ```
 
-Add `--data-dir PATH` for another library. The command needs the service to
+Add `--data-dir PATH` for another library. Run it in the environment the app
+runs in: like tmux, it finds the default tmux server through `TMUX_TMPDIR`,
+and it prints the server it used. The command needs the service to
 list exactly one profile with its home on this computer, and it changes
 nothing when a workspace already has a profile. Panes attached to the
 profile's agents follow it. Panes attached to your own tmux sessions keep

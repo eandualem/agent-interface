@@ -114,6 +114,8 @@ impl Client {
     /// if its list names exactly one; see [`profiles::home`].
     pub fn home(&self, live: &dyn Fn() -> bool) -> Result<Option<Item>, Error> {
         let bytes = self.read(&["profiles", "list", "--json"], live, TIMEOUT)?;
+        // A list the app would refuse names no home either.
+        profiles::list(&bytes).map_err(Error::Profile)?;
         Ok(profiles::home(&bytes))
     }
 
