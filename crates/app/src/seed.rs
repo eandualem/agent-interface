@@ -44,10 +44,14 @@ impl Leftover {
         }
     }
 
-    /// Reads and deletes the buffers by `deadline`; once that succeeds,
-    /// none is left over.
-    pub(crate) fn take(&mut self, deadline: Instant) -> io::Result<Vec<Option<Vec<u8>>>> {
-        let contents = buffers::take(&self.socket, &self.names, deadline)?;
+    /// Reads and deletes the `listed` buffers, by `deadline`; once that
+    /// succeeds, none is left over.
+    pub(crate) fn take(
+        &mut self,
+        listed: &[(String, Option<usize>)],
+        deadline: Instant,
+    ) -> io::Result<Vec<Option<Vec<u8>>>> {
+        let contents = buffers::take(&self.socket, listed, deadline)?;
         self.names.clear();
         Ok(contents)
     }
@@ -236,8 +240,8 @@ fn capture<I: Write, O: Read>(
                             } else if snapshots.is_none() {
                                 let attach = attach.as_mut().expect("layout queried before capture");
                                 let mut step = attach.reply(reply).map_err(io::Error::other)?;
-                                if let Step::Read(_) = step {
-                                    step = attach.captured(leftover.take(deadline)?).map_err(io::Error::other)?;
+                                if let Step::Read(listed) = step {
+                                    step = attach.captured(leftover.take(&listed, deadline)?).map_err(io::Error::other)?;
                                 }
                                 match step {
                                     Step::Done(seeds) => snapshots = Some(seeds),
@@ -602,8 +606,8 @@ mod tests {
             "80", "24", "0", "0", "0", "0", "6", "0", "1", "0", "23", "8,16", "0", "0", "0", "1",
             "0", "0", "0", "0", "0", "0", "", "", "xterm", "",
         ]);
-        // Pending bytes and the command enabling output.
-        replies.extend(["0", "0", "", ""]);
+        // Pending bytes, the empty buffer listing and the command enabling output.
+        replies.extend(["0", "0", "", "", ""]);
         let mut wire = String::new();
         for (id, reply) in replies.iter().enumerate() {
             if id == 4 {

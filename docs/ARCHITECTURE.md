@@ -103,9 +103,11 @@ tmux writes a capture's text into the control connection unchanged, so a
 captured line could match the line that ends tmux's reply and make the reader
 take the rest of the capture for messages from tmux. The app requires tmux 3.4
 or newer and writes each capture into a named buffer
-instead of its reply, with a name unique to that line and process. After the
-line's replies, a separate tmux client on the same socket reads each buffer
-by its listed size using `show-buffer` and deletes it. This unattached client
+instead of its reply, with a name unique to that line and process. The line
+then lists its own buffers, which saves starting a tmux client for that. After
+the line's replies, a separate tmux client on the same socket reads each listed
+buffer by its size using `show-buffer` and deletes it; one client cannot read
+several, because tmux closes its output after the first. This unattached client
 receives exact bytes without invoking the user's `after-save-buffer` hook.
 A rebuild that does not finish tries to
 delete the buffers its line named, on a separate thread; this is best effort,

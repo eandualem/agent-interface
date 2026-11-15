@@ -1436,12 +1436,14 @@ fn apply(
                     let missing = missing_pane(&reply, pane);
                     let mut step = recovery.reply(reply).map_err(|e| e.to_string())?;
                     let read = matches!(step, Step::Read(_));
-                    if read {
+                    if let Step::Read(listed) = step {
                         // The line is done. Reading its buffers runs another
                         // tmux client, which input must not wait behind.
                         pending.pop_front();
                         drop(pending);
-                        let contents = leftover.take(*deadline).map_err(|e| e.to_string())?;
+                        let contents = leftover
+                            .take(&listed, *deadline)
+                            .map_err(|e| e.to_string())?;
                         step = recovery.captured(contents).map_err(|e| e.to_string())?;
                         pending = control.pending.lock().unwrap_or_else(|e| e.into_inner());
                     }
