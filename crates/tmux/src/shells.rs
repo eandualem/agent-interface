@@ -48,6 +48,7 @@ pub struct Environment {
     cwd: PathBuf,
     home: PathBuf,
     shell: PathBuf,
+    prepare: Option<fn(&mut Command)>,
 }
 
 impl Environment {
@@ -83,7 +84,16 @@ impl Environment {
                 .unwrap_or_else(|| home.clone()),
             home,
             shell,
+            prepare: None,
         })
+    }
+
+    /// Apply `prepare` to every tmux command before it starts. A command may
+    /// start the server, whose shells inherit the state it was started with,
+    /// such as the signal mask of the thread that started it.
+    pub fn prepared(mut self, prepare: fn(&mut Command)) -> Self {
+        self.prepare = Some(prepare);
+        self
     }
 
     fn shell_command(&self) -> OsString {
@@ -152,6 +162,9 @@ impl Environment {
             } else {
                 command.arg(arg);
             }
+        }
+        if let Some(prepare) = self.prepare {
+            prepare(&mut command);
         }
         crate::discovery::capture(command, Duration::from_secs(5))
     }

@@ -548,6 +548,10 @@ while True: time.sleep(60)
         for name in CONTEXT {
             environment.variables.remove(OsStr::new(name));
         }
+        // The command that starts the server is prepared by the caller.
+        let environment = environment.prepared(|command| {
+            command.env("TW_PREPARED", "1");
+        });
         ensure(
             socket,
             &[Request {
@@ -558,6 +562,13 @@ while True: time.sleep(60)
         )
     })
     .unwrap();
+    assert_eq!(
+        server
+            .run(&["show-environment", "-g", "TW_PREPARED"])
+            .unwrap()
+            .trim(),
+        "TW_PREPARED=1"
+    );
     let socket = server
         .run(&["display-message", "-p", "#{socket_path}"])
         .unwrap();

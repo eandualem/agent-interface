@@ -420,6 +420,15 @@ fn open_browser_with_status(
                 source: Some(source),
                 shell_environment: Some(
                     agent_interface_tmux::shells::Environment::capture()
+                        .map(|environment| {
+                            // Shells open from background workers, which block
+                            // every signal on macOS; the server and its shells
+                            // would inherit that and ignore Ctrl-C.
+                            #[cfg(target_os = "macos")]
+                            let environment =
+                                environment.prepared(agent_interface_native_fs::clear_signal_mask);
+                            environment
+                        })
                         .map_err(|error| error.to_string()),
                 ),
                 navigation: Some(cx.focus_handle()),
