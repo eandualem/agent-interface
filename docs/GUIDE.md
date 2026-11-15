@@ -288,7 +288,7 @@ above its terminal naming it on the right. When it has several windows, their
 names share that row: click one to view it without switching other clients.
 The chosen window is remembered locally when switching workspace tabs; reopening
 the library starts from the source's current window again.
-The list follows tmux, checking every two seconds. Custom tmux
+The list follows tmux within a few seconds of a change. Custom tmux
 prefix bindings, terminal input methods
 and key-release events are not yet wired into the product UI.
 

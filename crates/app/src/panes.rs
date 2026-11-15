@@ -94,6 +94,8 @@ struct State {
     declared_size: Option<(u16, u16)>,
     /// The default text and background colours tmux reports to each pane.
     colors: Option<Colors>,
+    /// Whether the session's windows changed since they were last listed.
+    windows_changed: bool,
 }
 
 /// Default text and background colours, as 8-bit RGB.
@@ -633,6 +635,12 @@ impl Panes {
                     "refresh-client -B 'source-window::#{session_id}/#{W:#{window_id};}'\n",
                     ReplyOwner::SourceSubscription,
                 )?;
+                // Reports an added, removed, renamed or renumbered window, so
+                // nothing has to list the session's windows on a timer.
+                panes.control.send(
+                    "refresh-client -B 'session-windows::#{W:#{window_id} #{window_index} #{window_name};}'\n",
+                    ReplyOwner::SourceSubscription,
+                )?;
             }
         }
         let (ready, initialized) = mpsc::channel();
@@ -838,6 +846,12 @@ impl Panes {
         state.finished && state.update.is_none()
     }
 
+    /// Returns whether the session's windows changed since the last call.
+    /// Only a client started in its session reports this.
+    pub fn take_windows_changed(&self) -> bool {
+        std::mem::take(&mut self.shared.lock().windows_changed)
+    }
+
     /// Cancel before releasing the UI's reference: an input writer may hold
     /// another reference while blocked on this client's pipe. Only the owned
     /// control client is terminated if it cannot detach promptly.
@@ -976,6 +990,11 @@ fn read(
                     shared.lock().failure = Some("Selected window left the source session".into());
                     exited = true;
                 }
+            }
+            Message::Notification(line)
+                if line.starts_with(b"%subscription-changed session-windows ") =>
+            {
+                shared.lock().windows_changed = true;
             }
             Message::Notification(line) if line == b"%exit" || line.starts_with(b"%exit ") => {
                 let reason = match line.strip_prefix(b"%exit ").unwrap_or_default() {
@@ -1843,6 +1862,23 @@ mod tests {
             }
         });
         assert!(shared.lock().closed);
+    }
+
+    #[test]
+    fn reader_notes_a_change_of_the_sessions_windows() {
+        let shared = Shared {
+            state: Mutex::new(State::default()),
+            changed: Condvar::new(),
+        };
+        read(
+            &shared,
+            &b"%subscription-changed session-windows $1 - - - : @1 0 main;\n"[..],
+            Decoder::new(),
+            1,
+            Some(1),
+            vec![],
+        );
+        assert!(shared.lock().windows_changed);
     }
 
     #[test]

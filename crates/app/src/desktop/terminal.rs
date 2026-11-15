@@ -321,6 +321,8 @@ pub(super) struct LiveTerminal {
     retry: Retry,
     /// Whether panes are moving: a view connected meanwhile is held too.
     hold_size: bool,
+    /// Whether the session's windows may differ from `windows`.
+    windows_stale: bool,
     _windows: Task<()>,
 }
 
@@ -475,18 +477,23 @@ impl LiveTerminal {
             shown: true,
             retry: Retry::default(),
             hold_size: false,
+            windows_stale: false,
             _windows: cx.spawn(async |this, cx| {
                 // tmux shows a session's windows live. Follow additions,
-                // removals and renames without a refresh control.
+                // removals and renames without a refresh control: list them
+                // when the client reports a change, or has gone.
                 loop {
                     cx.background_executor()
                         .timer(std::time::Duration::from_secs(2))
                         .await;
                     let Ok(query) = this.update(cx, |terminal, cx| {
-                        if let Some(view) = &terminal.view {
-                            view.update(cx, |view, cx| view.refresh_connection(cx));
-                        }
-                        (!terminal.connecting && terminal.shown)
+                        terminal.windows_stale |= terminal.view.as_ref().is_none_or(|view| {
+                            view.update(cx, |view, cx| {
+                                view.refresh_connection(cx);
+                                view.windows_changed()
+                            })
+                        });
+                        (terminal.windows_stale && !terminal.connecting && terminal.shown)
                             .then(|| {
                                 terminal
                                     .socket
@@ -518,10 +525,12 @@ impl LiveTerminal {
                             if let Some((socket, window, Ok(windows))) = listed
                                 && terminal.socket.as_ref() == Some(&socket)
                                 && terminal.selected_window.as_ref() == Some(&window)
-                                && terminal.windows != windows
                             {
-                                terminal.windows = windows;
-                                cx.notify();
+                                terminal.windows_stale = false;
+                                if terminal.windows != windows {
+                                    terminal.windows = windows;
+                                    cx.notify();
+                                }
                             }
                             if terminal.error.is_some()
                                 && terminal.target.leaf.attachment.is_some()

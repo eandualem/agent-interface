@@ -366,6 +366,12 @@ impl TerminalView {
         }
     }
 
+    /// Whether the session's windows may differ from the last listing: tmux
+    /// reported a change, or the client has gone and reports nothing.
+    pub(crate) fn windows_changed(&self) -> bool {
+        self.panes().take_windows_changed() || self.panes().is_finished()
+    }
+
     /// While held, an embedded view declares no new size to tmux and scales
     /// what it shows to its bounds. Releasing it declares the size again.
     pub(crate) fn hold_size(&mut self, hold: bool, cx: &mut Context<Self>) {
