@@ -178,13 +178,14 @@ impl LiveAgents {
 
     /// A missed read is not yet an outage: the last roster stays shown while
     /// the worker retries, so a slow provider does not flicker.
-    pub fn update(&self, snapshot: Snapshot) -> bool {
-        if snapshot.error.is_some()
-            && snapshot
-                .observed_at
-                .is_some_and(|read| read.elapsed() < TOLERANCE)
+    pub fn update(&self, mut snapshot: Snapshot) -> bool {
+        if snapshot
+            .observed_at
+            .is_some_and(|read| read.elapsed() < TOLERANCE)
         {
-            return false;
+            // A failed read carries the last good roster, which may be newer
+            // than the one shown when an unread success was replaced.
+            snapshot.error = None;
         }
         self.replace(snapshot)
     }
@@ -443,6 +444,10 @@ mod tests {
         // A failure soon after a good read keeps the last roster.
         assert!(!first.update(snapshot.clone()));
         assert_eq!(second.get("worker").state, AgentState::Working);
+        // A consumer that never saw that good read takes it from the failure.
+        let late = LiveAgents::default();
+        late.update(snapshot.clone());
+        assert_eq!(late.get("worker").state, AgentState::Working);
         snapshot.observed_at = std::time::Instant::now().checked_sub(TOLERANCE);
         assert!(snapshot.observed_at.is_some());
         first.update(snapshot.clone());
