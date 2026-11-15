@@ -940,13 +940,18 @@ impl Conversation {
         self.active = active;
         if active && !was {
             self.refresh(cx);
+            self.start_polling(cx);
         }
     }
 
     /// Read again if shown, and say when to look next; `None` stops polling
+    /// while the conversation is inactive, until it is activated again, and
     /// once Backbone turns out to keep no conversations.
     /// It wakes at the open rate, so opening the panel speeds it up at once.
     fn poll(&mut self, cx: &mut Context<Self>) -> Option<Duration> {
+        if !self.active {
+            return None;
+        }
         let stored = self.stored.as_ref()?;
         if stored.supported == Some(false) {
             return None;
