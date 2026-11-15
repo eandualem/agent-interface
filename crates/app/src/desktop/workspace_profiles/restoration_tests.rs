@@ -48,7 +48,7 @@ fn discovery(root: &Path, providers: &[(&Path, &Connection)]) -> Client {
         r#"#!/bin/sh
 base=$(/usr/bin/dirname "$0")
 [ "$#" = 5 ] && [ "$1 $2 $3 $4" = 'profiles show --json --' ] || exit 9
-case "$5" in profile-a|profile-b) ;; *) exit 9 ;; esac
+case "$5" in profile-a|profile-b|profile-c) ;; *) exit 9 ;; esac
 printf '%s\n' "$5" >> "$base/calls"
 /bin/cat "$base/$5.json"
 "#,
@@ -142,7 +142,8 @@ fn restored_workspace_change_discards_in_flight_handshake_without_retargeting_si
     );
     let rebound = browser.pane_connection(&pane_a).unwrap().unwrap();
     assert_eq!(rebound.identity(), b.identity());
-    assert!(rebound.connection_key() != retained_b.connection_key());
+    // The same verified snapshot is shared, so the sibling keeps its own.
+    assert!(rebound.connection_key() == retained_b.connection_key());
     assert_eq!(retained_b.tmux_socket(), b.tmux_socket());
     assert_eq!(
         fs::read_to_string(root.path().join("calls")).unwrap(),
@@ -236,13 +237,24 @@ fn restoration_refusal_requires_explicit_retry_and_leaves_other_workspace_connec
 #[test]
 fn restore_budget_and_removed_workspace_invalidate_queued_work_before_discovery() {
     let root = tempfile::tempdir().unwrap();
-    let (a_dir, a, server) = provider_with_tmux(
-        "a",
-        (0..3).map(|_| handshake("a", root.path())).collect(),
-        Some(root.path().join("a.sock")),
+    let providers: Vec<_> = ["a", "b", "c"]
+        .into_iter()
+        .map(|label| {
+            provider_with_tmux(
+                label,
+                vec![handshake(label, root.path())],
+                Some(root.path().join(format!("{label}.sock"))),
+            )
+        })
+        .collect();
+    let client = discovery(
+        root.path(),
+        &providers
+            .iter()
+            .map(|(dir, connection, _)| (dir.path(), connection))
+            .collect::<Vec<_>>(),
     );
-    let client = discovery(root.path(), &[(a_dir.path(), &a)]);
-    let browser = restored_browser(root.path(), &["profile-a", "profile-a", "profile-a"]);
+    let browser = restored_browser(root.path(), &["profile-a", "profile-b", "profile-c"]);
     let mut saved = model(&browser);
     let mut registry = Registry::default();
     let first = registry.reconcile(&saved, Some(&client));
@@ -267,8 +279,10 @@ fn restore_budget_and_removed_workspace_invalidate_queued_work_before_discovery(
         2
     );
     assert!(registry.accept(fresh.into_iter().next().unwrap().run()));
-    for space in &saved.workspaces {
-        assert!(matches!(registry.route(space), Route::Bound(c) if c.identity() == a.identity()));
+    for (space, (_, connection, _)) in saved.workspaces.iter().zip(&providers) {
+        assert!(
+            matches!(registry.route(space), Route::Bound(c) if c.identity() == connection.identity())
+        );
     }
     assert_eq!(
         fs::read_to_string(root.path().join("calls"))
@@ -276,6 +290,38 @@ fn restore_budget_and_removed_workspace_invalidate_queued_work_before_discovery(
             .lines()
             .count(),
         3
+    );
+    for (_, _, server) in providers {
+        server.join().unwrap();
+    }
+}
+
+#[test]
+fn workspaces_on_one_profile_share_one_connection() {
+    let root = tempfile::tempdir().unwrap();
+    let (a_dir, a, server) = provider_with_tmux(
+        "a",
+        vec![handshake("a", root.path())],
+        Some(root.path().join("a.sock")),
+    );
+    let client = discovery(root.path(), &[(a_dir.path(), &a)]);
+    let browser = restored_browser(root.path(), &["profile-a", "profile-a", "profile-a"]);
+    let saved = model(&browser);
+    let mut registry = Registry::default();
+    let work = registry.reconcile(&saved, Some(&client));
+    assert_eq!(work.len(), 1);
+    assert!(registry.accept(work.into_iter().next().unwrap().run()));
+    let Route::Bound(first) = registry.route(&saved.workspaces[0]) else {
+        panic!("the profile must be connected");
+    };
+    let key = first.connection_key();
+    for space in &saved.workspaces {
+        assert!(matches!(registry.route(space), Route::Bound(c) if c.connection_key() == key));
+    }
+    assert!(registry.can_transfer(&saved.workspaces[0], &saved.workspaces[2]));
+    assert_eq!(
+        fs::read_to_string(root.path().join("calls")).unwrap(),
+        "profile-a\n"
     );
     server.join().unwrap();
 }

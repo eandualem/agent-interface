@@ -1278,7 +1278,9 @@ ready profile. Restored bindings resolve through read-only registry discovery an
 an authenticated handshake, with bounded concurrent attempts and explicit retry.
 Unavailable bindings display a connection state instead of opening legacy content.
 
-Each workspace retains its verified connection and status source. Pane entities,
+Each workspace retains its verified connection and status source. Workspaces on
+one profile share one attempt and one connection while its identity, endpoints and
+credential are unchanged, so they share a status poller. Pane entities,
 attachment choosers, attention markers and new native windows inherit that authority.
 Changing a saved binding or explicitly reconnecting invalidates old pane owners;
 delayed callbacks cannot apply to their replacements. Cross-workspace tab transfers

@@ -311,6 +311,18 @@ impl Connection {
         self.connection_key.clone()
     }
 
+    /// Whether `other` verified the same identity, endpoints and credential, so
+    /// either can stand in for the other without using an older credential.
+    pub fn same_snapshot(&self, other: &Self) -> bool {
+        self.identity == other.identity
+            && self.kind == other.kind
+            && self.socket == other.socket
+            && self.tmux == other.tmux
+            && self.credential_reference == other.credential_reference
+            && self.key == other.key
+            && self.served == other.served
+    }
+
     /// The authenticated identity retained by every operation on this connection.
     pub fn identity(&self) -> &Identity {
         &self.identity

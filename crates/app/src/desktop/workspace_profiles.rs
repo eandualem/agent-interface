@@ -3,7 +3,7 @@
 #[cfg(test)]
 mod restoration_tests;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use agent_interface_core::{Layout, Workspace};
 use agent_interface_roster::profiles::Connection;
@@ -109,6 +109,13 @@ impl Registry {
             .filter(|entry| entry.selection.pending().is_some())
             .count();
         let mut work = Vec::new();
+        // Workspaces on a profile already being connected wait for that
+        // attempt, which `accept` hands to them.
+        let mut connecting: HashSet<String> = self
+            .entries
+            .values()
+            .filter_map(|entry| entry.selection.pending().map(str::to_owned))
+            .collect();
         // Saved order makes startup deterministic; an unsuccessful read waits
         // for explicit retry instead of continuously probing the provider.
         for space in &layout.workspaces {
@@ -118,12 +125,16 @@ impl Registry {
             let Some(entry) = self.entries.get_mut(&space.id) else {
                 continue;
             };
-            if entry.result.is_some() || entry.selection.pending().is_some() {
+            if entry.result.is_some()
+                || entry.selection.pending().is_some()
+                || connecting.contains(&entry.profile_id)
+            {
                 continue;
             }
             match entry.selection.begin(client, &entry.profile_id) {
                 Ok(attempt) => {
                     running += 1;
+                    connecting.insert(entry.profile_id.clone());
                     work.push(Work {
                         workspace: space.id.clone(),
                         attempt,
@@ -142,14 +153,41 @@ impl Registry {
         let Some(result) = entry.selection.accept(finished.completion) else {
             return false;
         };
+        let profile_id = entry.profile_id.clone();
         if let Ok(selected) = &result {
             self.names.insert(
                 selected.item().profile_id.clone(),
                 selected.item().display_name.clone(),
             );
         }
-        entry.result = Some(result.map(|selected| selected.connection().clone()));
+        let result = result.map(|selected| self.shared(selected.connection().clone()));
+        if let Ok(connection) = &result {
+            // Workspaces that waited for this attempt take its connection.
+            for entry in self.entries.values_mut() {
+                if entry.profile_id == profile_id
+                    && entry.result.is_none()
+                    && entry.selection.pending().is_none()
+                {
+                    entry.result = Some(Ok(connection.clone()));
+                }
+            }
+        }
+        if let Some(entry) = self.entries.get_mut(&finished.workspace) {
+            entry.result = Some(result);
+        }
         true
+    }
+
+    /// The connection another workspace holds for the same snapshot, if any,
+    /// so that workspaces on one profile share a connection: one roster
+    /// poller, and tabs can move between them.
+    fn shared(&self, connection: Connection) -> Connection {
+        self.entries
+            .values()
+            .filter_map(|entry| entry.result.as_ref()?.as_ref().ok())
+            .find(|held| held.same_snapshot(&connection))
+            .cloned()
+            .unwrap_or(connection)
     }
 
     /// Remember a profile's display name for the status row.
@@ -170,6 +208,7 @@ impl Registry {
         if space.profile_id.as_deref() != Some(&connection.identity().profile_id) {
             return false;
         }
+        let connection = self.shared(connection);
         self.entries.insert(
             space.id.clone(),
             Entry {
