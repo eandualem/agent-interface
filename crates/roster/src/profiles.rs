@@ -143,6 +143,8 @@ pub fn list(bytes: &[u8]) -> Result<Vec<Item>, Error> {
 /// service runs this machine: the only one in its list that it serves with
 /// its home here. Any other list, or none or several such profiles, gives none.
 pub fn home(bytes: &[u8]) -> Option<Item> {
+    // A list that is refused as a whole names no home.
+    list(bytes).ok()?;
     served(bytes, "profiles")
         .then(|| served::home(bytes))
         .flatten()

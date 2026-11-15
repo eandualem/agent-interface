@@ -17,8 +17,9 @@ use crate::library::{self, location::resolve_path};
 /// other session stays where it is. Ordinary shell panes become shells of the
 /// profile, as in any bound workspace, so each shell they showed is listed
 /// with the command that reaches it: it keeps running. Returns what was done,
-/// one line each. Nothing is written when anything needed cannot be read, or
-/// when the library changed meanwhile.
+/// one line each. Nothing is written when anything needed cannot be read. The
+/// save follows the store's rules: a change made meanwhile that does not
+/// touch the same parts is merged, and one that does stops the command.
 pub fn bind_home_profile(directory: Option<&Path>) -> Result<Vec<String>, String> {
     let live = || true;
     let client = crate::desktop::profile_client().ok_or("The backbone command was not found.")?;
@@ -118,7 +119,10 @@ pub fn bind_home_profile(directory: Option<&Path>) -> Result<Vec<String>, String
         .save(&mut base, &layout)
         .map_err(|error| error.to_string())?;
     if saved.conflict {
-        return Err("The library changed meanwhile and nothing was saved. Run this again.".into());
+        return Err(
+            "The library changed in the same places meanwhile and nothing was saved. Run this again."
+                .into(),
+        );
     }
     Ok(report)
 }
