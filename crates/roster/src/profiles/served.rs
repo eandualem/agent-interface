@@ -44,14 +44,15 @@ enum Entry {
 
 impl Entry {
     fn profile(self) -> Result<Option<Profile>, Error> {
-        let (profile_id, display_name, state, binding) = match self {
+        let (profile_id, display_name, kind, binding) = match self {
             Self::Unknown => return Ok(None),
             Self::Failed {
                 profile_id,
                 display_name,
             } => {
                 let name = display_name.unwrap_or_else(|| profile_id.clone());
-                (profile_id, name, State::Failed, None)
+                // Not the default: whatever asks for it must find a served one.
+                (profile_id, name, Kind::Isolated, None)
             }
             Self::Serving {
                 protocol_version,
@@ -83,15 +84,19 @@ impl Entry {
                     },
                     instance: Some(instance_id),
                 };
-                (profile_id, display_name, State::Ready, Some(binding))
+                // Agents of a served profile start with the person's own sign-ins.
+                (profile_id, display_name, Kind::LegacyDefault, Some(binding))
             }
         };
         let item = Item {
             profile_id,
             display_name,
-            // Agents of these profiles start with the person's own sign-ins.
-            kind: Kind::LegacyDefault,
-            state,
+            kind,
+            state: if binding.is_some() {
+                State::Ready
+            } else {
+                State::Failed
+            },
         };
         validate_item(&item)?;
         Ok(Some(Profile { item, binding }))
@@ -122,9 +127,14 @@ pub(super) fn show(bytes: &[u8]) -> Result<Profile, Error> {
     entry.profile()?.ok_or(Error::Unsupported)
 }
 
-/// The handshake reply must come from the profile, machine and service run
-/// that the entry just read named.
-pub(super) fn verify(bytes: &[u8], expected: &Identity, instance: &str) -> Result<(), Error> {
+/// The reply must come from the expected profile and machine and, when
+/// connecting, from the service run that the entry just read named. The
+/// service is new at each start, so later checks leave its run out.
+pub(super) fn verify(
+    bytes: &[u8],
+    expected: &Identity,
+    instance: Option<&str>,
+) -> Result<(), Error> {
     #[derive(Deserialize)]
     struct Reply {
         protocol_version: u32,
@@ -138,7 +148,7 @@ pub(super) fn verify(bytes: &[u8], expected: &Identity, instance: &str) -> Resul
     }
     if reply.profile_id != expected.profile_id
         || reply.machine.id != expected.installation_id
-        || reply.instance_id != instance
+        || instance.is_some_and(|instance| reply.instance_id != instance)
     {
         return Err(Error::BindingMismatch);
     }

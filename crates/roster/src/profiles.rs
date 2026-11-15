@@ -263,10 +263,10 @@ impl Profile {
             tmux: binding.tmux.clone(),
             credential_reference: path,
             key,
-            instance: binding.instance.clone(),
+            served: binding.instance.is_some(),
             connection_key: ConnectionKey(Arc::new(())),
         };
-        connection.verify()?;
+        connection.handshake(binding.instance.as_deref())?;
         Ok(connection)
     }
 }
@@ -299,7 +299,8 @@ pub struct Connection {
     tmux: Tmux,
     credential_reference: PathBuf,
     key: String,
-    instance: Option<String>,
+    /// Whether this is the Rust service, whose handshake has its own shape.
+    served: bool,
     connection_key: ConnectionKey,
 }
 
@@ -559,6 +560,10 @@ impl Connection {
 
     /// Verify again on the same binding, never by re-resolving registry or environment.
     pub fn verify(&self) -> Result<(), Error> {
+        self.handshake(None)
+    }
+
+    fn handshake(&self, instance: Option<&str>) -> Result<(), Error> {
         #[derive(Deserialize)]
         struct Reply {
             #[serde(flatten)]
@@ -571,7 +576,7 @@ impl Connection {
             return Err(Error::Unsupported);
         }
         successful(&response)?;
-        if let Some(instance) = &self.instance {
+        if self.served {
             return served::verify(&response.body, &self.identity, instance);
         }
         let reply: Reply = parse(&response.body)?;

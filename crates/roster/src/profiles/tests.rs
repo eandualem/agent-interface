@@ -885,8 +885,12 @@ fn rust_service_entries_list_and_connect_without_a_key() {
         (&State::Ready, &Kind::LegacyDefault)
     );
     assert_eq!(
-        (&items[1].state, items[1].display_name.as_str()),
-        (&State::Failed, "9f8e7d6c5b4a")
+        (
+            &items[1].state,
+            &items[1].kind,
+            items[1].display_name.as_str()
+        ),
+        (&State::Failed, &Kind::Isolated, "9f8e7d6c5b4a")
     );
     assert_eq!(
         Profile::parse(&serde_json::to_vec(&failed).unwrap())
@@ -914,6 +918,7 @@ fn rust_service_entries_list_and_connect_without_a_key() {
             (200, identity),
             (200, agents),
             (200, json!({"items": []})),
+            (200, restarted.clone()),
             (200, restarted),
         ],
     );
@@ -925,6 +930,8 @@ fn rust_service_entries_list_and_connect_without_a_key() {
         Path::new("/run/profile/tmux.sock")
     );
     assert_eq!(connection.roster().unwrap().states["worker"], "working");
+    // A restarted service still serves this connection; a new one reads its entry again.
+    assert_eq!(connection.verify(), Ok(()));
     assert_eq!(profile.connect().err(), Some(Error::BindingMismatch));
     for request in server.join().unwrap() {
         assert!(request.contains("x-backbone-profile-id: 0a1b2c3d4e5f\r\n"));
