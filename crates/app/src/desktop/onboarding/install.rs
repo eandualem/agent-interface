@@ -158,7 +158,7 @@ pub fn initialize_backbone(backbone: &Path, path_env: &str) -> Result<(), String
         .map(PathBuf::from)
         .ok_or("The home folder is unknown.")?;
     let data = data_dir(&home);
-    let request_id = uuid::Uuid::new_v4().simple().to_string();
+    let request_id = uuid::Uuid::now_v7().simple().to_string();
     let request = serde_json::json!({
         "schema_version": 1,
         "request_id": request_id,

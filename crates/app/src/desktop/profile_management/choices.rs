@@ -422,7 +422,7 @@ impl Form {
             cx.notify();
             return;
         }
-        let Some(prepared) = self.prepare(&uuid::Uuid::new_v4().simple().to_string(), cx) else {
+        let Some(prepared) = self.prepare(&uuid::Uuid::now_v7().simple().to_string(), cx) else {
             return;
         };
         let Some(controller) = self.controller() else {
@@ -544,7 +544,7 @@ impl Form {
             self.start_guide(cx);
             return;
         }
-        let Some(prepared) = self.prepare(&uuid::Uuid::new_v4().simple().to_string(), cx) else {
+        let Some(prepared) = self.prepare(&uuid::Uuid::now_v7().simple().to_string(), cx) else {
             return;
         };
         let Some(controller) = self.controller() else {

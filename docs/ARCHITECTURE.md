@@ -387,6 +387,15 @@ tmux socket. Its connection retains that credential and identity; every request
 carries all three identity headers, including the handshake and subsequent
 requests. Replacement or an unsupported provider fails explicitly without legacy
 fallback. `Connection::roster` reads the agents endpoint on that same binding.
+
+The Rust Backbone service lists profiles in another shape, recognised by its
+missing `schema_version`: one entry per profile, tagged `serving` or `failed`.
+A serving entry names the API and tmux sockets, and the owner-only socket is
+the credential, so no key is read or sent and each request carries the profile
+ID alone. Connecting compares the profile, the machine and the service's
+`instance_id` with the entry just read. The instance changes at every service
+start, so later checks on the same connection compare only the profile and
+the machine, and the machine ID fills the installation and lifecycle fields.
 The explicit `app::roster::BoundRosterSource` owns one connection for its entire
 worker lifetime, with a private coalescing cache. Every update carries its
 verified identity and typed failure; a failed read retains only that worker's

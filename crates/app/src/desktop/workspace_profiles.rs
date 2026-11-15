@@ -238,7 +238,7 @@ fn start_service(
     let journal =
         journal::Journal::open(&directory.join("profile-operations")).map_err(|_| FAILED)?;
     let controller = Controller::new(journal, &client);
-    let prepared = Prepared::start(&uuid::Uuid::new_v4().simple().to_string(), &profile)
+    let prepared = Prepared::start(&uuid::Uuid::now_v7().simple().to_string(), &profile)
         .map_err(|_| FAILED)?;
     let key = Controller::key(prepared.request_id());
     controller.enqueue(prepared).map_err(|_| FAILED)?;

@@ -859,3 +859,82 @@ fn adding_a_skill_and_a_document_keeps_the_providers_reason() {
     assert_eq!(document["request_id"], retried["request_id"]);
     assert_eq!(document["request_id"].as_str().unwrap().len(), 68);
 }
+
+fn served_entry(socket: &str) -> Value {
+    json!({
+        "state": "serving", "protocol_version": 1, "backbone_version": "0.1.0",
+        "profile_id": "0a1b2c3d4e5f", "display_name": "Work",
+        "instance_id": "0190c3a2c1107a3b8c9d0e1f2a3b4c5d",
+        "machine": {"id": "5f2c9e0d1b7a4e38", "name": "laptop"}, "home": true,
+        "socket": socket, "tmux_socket": "/run/profile/tmux.sock",
+        "credential_reference": {"type": "socket"}
+    })
+}
+
+#[test]
+fn rust_service_entries_list_and_connect_without_a_key() {
+    let (_directory, listener, url) = crate::transport::tests::local_listener();
+    let entry = served_entry(url.strip_prefix("unix:").unwrap());
+    let failed = json!({"state": "failed", "profile_id": "9f8e7d6c5b4a", "code": "database_unreachable", "reason": "fixture"});
+    let later = json!({"state": "moving", "profile_id": "1a2b3c4d5e6f"});
+    let listed = json!({"profiles": [entry, failed, later]});
+    let items = list(&serde_json::to_vec(&listed).unwrap()).unwrap();
+    assert_eq!(items.len(), 2);
+    assert_eq!(
+        (&items[0].state, &items[0].kind),
+        (&State::Ready, &Kind::LegacyDefault)
+    );
+    assert_eq!(
+        (
+            &items[1].state,
+            &items[1].kind,
+            items[1].display_name.as_str()
+        ),
+        (&State::Failed, &Kind::Isolated, "9f8e7d6c5b4a")
+    );
+    assert_eq!(
+        Profile::parse(&serde_json::to_vec(&failed).unwrap())
+            .unwrap()
+            .connect()
+            .err(),
+        Some(Error::NotReady)
+    );
+    assert_eq!(
+        Profile::parse(&serde_json::to_vec(&later).unwrap()).err(),
+        Some(Error::Unsupported)
+    );
+
+    let profile = Profile::parse(&serde_json::to_vec(&entry).unwrap()).unwrap();
+    let mut identity = entry.clone();
+    for field in ["state", "socket", "tmux_socket", "credential_reference"] {
+        identity.as_object_mut().unwrap().remove(field);
+    }
+    let mut restarted = identity.clone();
+    restarted["instance_id"] = json!("0190c3a2c1107a3b8c9d0e1f2a3b4c5e");
+    let agents = json!({"items": [{"name": "worker", "state": "working"}]});
+    let server = serve(
+        listener,
+        vec![
+            (200, identity),
+            (200, agents),
+            (200, json!({"items": []})),
+            (200, restarted.clone()),
+            (200, restarted),
+        ],
+    );
+    let connection = profile.connect().unwrap();
+    // The machine stands in for the generation, so a restart keeps the identity.
+    assert_eq!(connection.identity().lifecycle_id, "5f2c9e0d1b7a4e38");
+    assert_eq!(
+        connection.tmux_socket(),
+        Path::new("/run/profile/tmux.sock")
+    );
+    assert_eq!(connection.roster().unwrap().states["worker"], "working");
+    // A restarted service still serves this connection; a new one reads its entry again.
+    assert_eq!(connection.verify(), Ok(()));
+    assert_eq!(profile.connect().err(), Some(Error::BindingMismatch));
+    for request in server.join().unwrap() {
+        assert!(request.contains("x-backbone-profile-id: 0a1b2c3d4e5f\r\n"));
+        assert!(!request.contains("authorization") && !request.contains("lifecycle"));
+    }
+}
