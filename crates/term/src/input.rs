@@ -127,6 +127,11 @@ impl Terminal {
         self.extended_keys_csi_u = enabled;
     }
 
+    /// Whether the source server's extended-key wire format is CSI-u.
+    pub fn extended_keys_csi_u(&self) -> bool {
+        self.extended_keys_csi_u
+    }
+
     /// Current history row, or none when following the live screen.
     pub fn scrolled_row(&self) -> Result<Option<usize>, Error> {
         let bar = self.engine.scrollbar().map_err(Error)?;

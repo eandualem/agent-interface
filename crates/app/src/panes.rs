@@ -94,6 +94,8 @@ struct State {
     declared_size: Option<(u16, u16)>,
     /// The default text and background colours tmux reports to each pane.
     colors: Option<Colors>,
+    /// Whether the session's windows changed since they were last listed.
+    windows_changed: bool,
 }
 
 /// Default text and background colours, as 8-bit RGB.
@@ -103,7 +105,8 @@ enum Event {
     Output(PaneId, Vec<u8>),
     Reply(Reply),
     Layout(layout::Change),
-    Geometry,
+    /// The content-geometry subscription's reported value.
+    Geometry(Vec<u8>),
     Encode(InputRequest),
     Read(ReadRequest),
 }
@@ -114,7 +117,7 @@ impl Event {
             Self::Output(_, bytes) => bytes.len(),
             Self::Reply(reply) => reply.lines.iter().map(Vec::len).sum(),
             Self::Layout(change) => change.panes.len() * std::mem::size_of::<PaneLayout>(),
-            Self::Geometry => 0,
+            Self::Geometry(value) => value.len(),
             Self::Encode(request) => request.input.size() + std::mem::size_of::<InputRequest>(),
             Self::Read(_) => 0,
         }
@@ -402,6 +405,38 @@ impl WindowState {
             })
     }
 
+    /// Whether every pane was captured at the geometry and extended-key
+    /// format in `value`, the content-geometry subscription's report:
+    /// `%id/left/top/width/height;` for each pane, then `/format`.
+    fn holds(&self, value: &[u8]) -> bool {
+        let Some((panes, format)) = std::str::from_utf8(value)
+            .ok()
+            .and_then(|value| value.rsplit_once(";/"))
+        else {
+            return false;
+        };
+        let csi_u = format == "csi-u";
+        let mut reported = 0;
+        panes.split(';').all(|pane| {
+            reported += 1;
+            let mut fields = pane.split('/');
+            let id = fields.next().and_then(|id| id.strip_prefix('%'));
+            let mut number = || fields.next().and_then(|field| field.parse::<u16>().ok());
+            let (Some(id), Some(left), Some(top), Some(width), Some(height)) =
+                (id, number(), number(), number(), number())
+            else {
+                return false;
+            };
+            self.terminals.iter().any(|(pane, terminal)| {
+                id.parse() == Ok(pane.0)
+                    && !terminal.needs_capture
+                    && terminal.size == (width, height)
+                    && terminal.offset == (left, top)
+                    && terminal.terminal.extended_keys_csi_u() == csi_u
+            })
+        }) && reported == self.layout.panes.len()
+    }
+
     fn change_layout(&mut self, change: layout::Change, scrollback: usize) -> Result<(), String> {
         for pane in &change.panes {
             if let Some((_, terminal)) = self.terminals.iter_mut().find(|(id, _)| *id == pane.id) {
@@ -598,6 +633,12 @@ impl Panes {
             if session.is_some() {
                 panes.control.send(
                     "refresh-client -B 'source-window::#{session_id}/#{W:#{window_id};}'\n",
+                    ReplyOwner::SourceSubscription,
+                )?;
+                // Reports an added, removed, renamed or renumbered window, so
+                // nothing has to list the session's windows on a timer.
+                panes.control.send(
+                    "refresh-client -B 'session-windows::#{W:#{window_id} #{window_index} #{window_name};}'\n",
                     ReplyOwner::SourceSubscription,
                 )?;
             }
@@ -805,6 +846,12 @@ impl Panes {
         state.finished && state.update.is_none()
     }
 
+    /// Returns whether the session's windows changed since the last call.
+    /// Only a client started in its session reports this.
+    pub fn take_windows_changed(&self) -> bool {
+        std::mem::take(&mut self.shared.lock().windows_changed)
+    }
+
     /// Cancel before releasing the UI's reference: an input writer may hold
     /// another reference while blocked on this client's pipe. Only the owned
     /// control client is terminated if it cannot detach promptly.
@@ -920,7 +967,11 @@ fn read(
             Message::Notification(line)
                 if line.starts_with(b"%subscription-changed content-geometry ") =>
             {
-                batch.push(Event::Geometry);
+                let value = line
+                    .windows(3)
+                    .position(|part| part == b" : ")
+                    .map_or(&[][..], |at| &line[at + 3..]);
+                batch.push(Event::Geometry(value.to_vec()));
             }
             Message::Notification(line)
                 if session.is_some()
@@ -939,6 +990,11 @@ fn read(
                     shared.lock().failure = Some("Selected window left the source session".into());
                     exited = true;
                 }
+            }
+            Message::Notification(line)
+                if line.starts_with(b"%subscription-changed session-windows ") =>
+            {
+                shared.lock().windows_changed = true;
             }
             Message::Notification(line) if line == b"%exit" || line.starts_with(b"%exit ") => {
                 let reason = match line.strip_prefix(b"%exit ").unwrap_or_default() {
@@ -1310,9 +1366,13 @@ fn apply(
                 *changed = window.layout.panes.iter().map(|pane| pane.id).collect();
             }
         }
-        Event::Geometry => {
-            window.change_layout(window.layout.clone(), scrollback)?;
-            *changed = window.layout.panes.iter().map(|pane| pane.id).collect();
+        Event::Geometry(value) => {
+            // tmux reports a subscription's first value although nothing
+            // changed, and repeats a layout change the panes already hold.
+            if !window.holds(&value) {
+                window.change_layout(window.layout.clone(), scrollback)?;
+                *changed = window.layout.panes.iter().map(|pane| pane.id).collect();
+            }
         }
         Event::Output(pane, bytes) => {
             if let Some((recovery, _, _, _)) = recovering.as_mut()
@@ -1562,6 +1622,50 @@ mod tests {
     }
 
     #[test]
+    fn a_subscription_value_the_panes_already_hold_needs_no_recapture() {
+        let pane = PaneLayout {
+            id: PaneId(1),
+            cols: 10,
+            rows: 2,
+            left: 0,
+            top: 1,
+        };
+        let mut window = WindowState {
+            layout: layout::Change {
+                window: 0,
+                panes: vec![pane],
+            },
+            terminals: vec![(
+                PaneId(1),
+                LivePane {
+                    terminal: Terminal::new(10, 2, 0).unwrap(),
+                    size: (10, 2),
+                    offset: (0, 1),
+                    captured: false,
+                    needs_capture: false,
+                    recovery_deadline: None,
+                    expects_character_start: false,
+                },
+            )],
+            geometry_changed: false,
+            settle_at: None,
+            generation: 0,
+            inputs: vec![],
+            reported: None,
+        };
+        assert!(window.holds(b"%1/0/1/10/2;/xterm"));
+        assert!(window.holds(b"%1/0/1/10/2;/"));
+        // A moved pane, another format, another pane set or a malformed value.
+        assert!(!window.holds(b"%1/0/0/10/3;/xterm"));
+        assert!(!window.holds(b"%1/0/1/10/2;/csi-u"));
+        assert!(!window.holds(b"%1/0/1/10/2;%2/0/4/10/2;/xterm"));
+        assert!(!window.holds(b"%2/0/1/10/2;/xterm"));
+        assert!(!window.holds(b""));
+        window.terminals[0].1.needs_capture = true;
+        assert!(!window.holds(b"%1/0/1/10/2;/xterm"));
+    }
+
+    #[test]
     fn shutdown_unblocks_a_stopped_clients_writer_without_stopping_its_session() {
         let server = TmuxServer::start().unwrap();
         let layout = layout(&server);
@@ -1758,6 +1862,23 @@ mod tests {
             }
         });
         assert!(shared.lock().closed);
+    }
+
+    #[test]
+    fn reader_notes_a_change_of_the_sessions_windows() {
+        let shared = Shared {
+            state: Mutex::new(State::default()),
+            changed: Condvar::new(),
+        };
+        read(
+            &shared,
+            &b"%subscription-changed session-windows $1 - - - : @1 0 main;\n"[..],
+            Decoder::new(),
+            1,
+            Some(1),
+            vec![],
+        );
+        assert!(shared.lock().windows_changed);
     }
 
     #[test]
@@ -2041,6 +2162,8 @@ mod tests {
         .unwrap();
         panes.set_colors(gpui::rgb(0x111111), gpui::rgb(0xf7f4ee));
         // Ask until the report has reached tmux, which otherwise answers black.
+        // The answer clears the screen first: control mode streams no output
+        // for the screen reset of `respawn-pane`, so the old prompt remains.
         server
             .run(&[
                 "respawn-pane",
@@ -2049,7 +2172,7 @@ mod tests {
                 TmuxServer::SESSION,
                 &format!(r"stty -echo -icanon min 0 time 2; i=0; while [ $i -lt 50 ]; do
                     printf '\033]11;?\033\\'; r=$(dd bs=64 count=1 2>/dev/null | tr -d '\033\\')
-                    case $r in *{expected}*) printf 'BG %s' $r; exec sleep 60;; esac; i=$((i+1)); done
+                    case $r in *{expected}*) printf '\033[H\033[2JBG %s' $r; exec sleep 60;; esac; i=$((i+1)); done
                   printf NONE; exec sleep 60"),
             ])
             .unwrap();

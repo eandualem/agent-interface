@@ -70,12 +70,15 @@ impl Probe {
                 found.push((name, path));
             }
         }
-        Self {
+        let mut probe = Self {
             found,
             path_env,
             tmux: agent_interface_tmux::connection::tmux_binary().ok(),
-            backbone: backbone(),
-        }
+            backbone: Backbone::NotSetUp,
+        };
+        // The same executable and PATH a second login shell would find.
+        probe.backbone = answers(probe.client());
+        probe
     }
 
     /// A profile client for the Backbone this check found, with its PATH.
@@ -221,12 +224,13 @@ fn path_lookup(path_env: &str, home: Option<&Path>) -> (Vec<(&'static str, PathB
 }
 
 /// Whether Agent Backbone's Default profile answers, read through its
-/// verified connection. Blocks for a moment; call off the UI thread.
-pub fn backbone() -> Backbone {
+/// verified connection with a client already found, so the login shell is
+/// not asked again. Blocks for a moment; call off the UI thread.
+pub fn answers(client: Option<crate::profiles::Client>) -> Backbone {
     use agent_interface_roster::profiles::Kind;
     const UNANSWERED: &str = "The Default profile is not answering";
     let live = || true;
-    let Some(client) = profile_client() else {
+    let Some(client) = client else {
         return Backbone::NotSetUp;
     };
     let items = match client.list(&live) {
