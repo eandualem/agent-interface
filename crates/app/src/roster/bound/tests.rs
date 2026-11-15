@@ -231,3 +231,14 @@ fn bound_workers_keep_delayed_responses_credentials_and_stale_caches_separate() 
     server_a.join().unwrap();
     server_b.join().unwrap();
 }
+
+#[test]
+fn a_refusal_stands_until_a_read_succeeds() {
+    let refused = Error::Refused(401);
+    assert_eq!(standing(Some(refused), Error::Unavailable), refused);
+    assert_eq!(standing(None, Error::Unavailable), Error::Unavailable);
+    assert_eq!(
+        standing(Some(refused), Error::BindingMismatch),
+        Error::BindingMismatch
+    );
+}
