@@ -119,7 +119,7 @@ fn sizes(socket: &Path, names: &[String], timeout: Duration) -> io::Result<Vec<O
 }
 
 /// Returns the size of each buffer named in `names` from the lines of a
-/// listing in [`FORMAT`], or `None` for a name with no buffer.
+/// listing made by [`list_command`], or `None` for a name with no buffer.
 pub fn sizes_in<'a>(
     names: &[String],
     lines: impl IntoIterator<Item = &'a [u8]>,
