@@ -673,6 +673,7 @@ struct Browser {
     pane_owners: HashMap<String, workspace_profiles::Owner>,
     profile_client: Option<Result<crate::profiles::Client, ()>>,
     profile_client_loading: bool,
+    home_profile: workspace_profiles::HomeProfile,
     profile_picker_requested: bool,
     profile_picker: Option<(
         gpui::Entity<profile_picker::ProfilePicker>,

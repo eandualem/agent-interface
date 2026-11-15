@@ -398,12 +398,30 @@ ID alone. Connecting compares the profile, the machine and the service's
 `instance_id` with the entry just read. The instance changes at every service
 start, so later checks on the same connection compare only the profile and
 the machine, and the machine ID fills the installation and lifecycle fields.
+Its shell reply names the profile and the service's run, so the profile alone
+is compared there.
+
+The service also pushes agent state changes on `GET /api/stream`, as
+Server-Sent Events. `Connection::watch` follows that stream on a worker of its
+own and reads only each frame's kind: the opening `hello`, `agent.state` and
+`resync` each ask the roster worker for a read at once. The frames' values are
+not applied and no cursor is kept, so a stream opened again simply reads the
+states again. A stream that breaks, or stays silent for 45 seconds against the
+service's 15-second heartbeat, is opened again two seconds later. The
+two-second poll continues, because agents joining or leaving the roster are
+not pushed.
+
+A workspace saved without a profile was served by the earlier Python service
+without a binding. Once the Rust service's list names exactly one serving
+profile whose home is this machine, a window whose library shows agents binds
+every such workspace to that profile, saves the library and logs the workspaces
+it bound. The list is read once in a window's life.
 The explicit `app::roster::BoundRosterSource` owns one connection for its entire
 worker lifetime, with a private coalescing cache. Every update carries its
 verified identity and typed failure; a failed read retains only that worker's
 previous metadata and observation time, marked stale. A running worker cannot
-be rebound. Dropping it interrupts the polling wait and joins its bounded
-in-flight request, so UI owners must dispose of it off the UI thread.
+be rebound. Dropping it stops the stream worker, interrupts the polling wait
+and joins its bounded in-flight request, so UI owners must dispose of it off the UI thread.
 Desktop status observations are owned by explicit `LiveAgents` handles passed
 from each window to its views and child readers. A weak source registry shares
 one live poller per full profile/installation/lifecycle identity; explicit legacy

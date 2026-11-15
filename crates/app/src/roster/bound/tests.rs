@@ -220,8 +220,8 @@ fn bound_workers_keep_delayed_responses_credentials_and_stale_caches_separate() 
     assert!(next_b.snapshot.observed_at > first_b.snapshot.observed_at);
     // Stop before releasing the final callbacks, so a third poll cannot race
     // teardown after the fixture providers have finished serving responses.
-    source_a.stop.send(()).unwrap();
-    source_b.stop.send(()).unwrap();
+    source_a.stop.send(true).unwrap();
+    source_b.stop.send(true).unwrap();
     drop(resume_a);
     drop(resume_b);
     drop(source_a);
@@ -241,4 +241,105 @@ fn a_refusal_stands_until_a_read_succeeds() {
         standing(Some(refused), Error::BindingMismatch),
         Error::BindingMismatch
     );
+}
+
+#[test]
+fn a_pushed_state_change_reads_the_roster_at_once() {
+    let directory = tempfile::tempdir().unwrap();
+    fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
+    let path = directory.path().join("api.sock");
+    let listener = UnixListener::bind(&path).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    let identity = json!({
+        "protocol_version": 1, "profile_id": "0a1b2c3d4e5f", "display_name": "Work",
+        "instance_id": "0190c3a2c1107a3b8c9d0e1f2a3b4c5d",
+        "machine": {"id": "5f2c9e0d1b7a4e38", "name": "laptop"}, "home": true
+    });
+    let mut entry = identity.clone();
+    entry["state"] = json!("serving");
+    entry["socket"] = json!(path);
+    entry["tmux_socket"] = json!(directory.path().join("tmux.sock"));
+    entry["credential_reference"] = json!({"type": "socket"});
+    let profile = Profile::parse(&serde_json::to_vec(&entry).unwrap()).unwrap();
+    let (done, finished) = mpsc::channel::<()>();
+    let server = thread::spawn(move || {
+        listener.set_nonblocking(true).unwrap();
+        // The open stream, then when its state change was written.
+        let (mut stream, mut pushed) = (None::<std::os::unix::net::UnixStream>, None);
+        let mut quiet = Instant::now();
+        let mut reads_after_push = Vec::new();
+        while finished.try_recv() == Err(mpsc::TryRecvError::Empty) {
+            let mut socket = match listener.accept() {
+                Ok((socket, _)) => socket,
+                Err(_) => {
+                    // Push once the poller is waiting out its two seconds.
+                    if let (Some(open), None) = (&mut stream, pushed)
+                        && quiet.elapsed() > Duration::from_millis(300)
+                    {
+                        write!(open, "id: a:2\nevent: agent.state\ndata: {{}}\n\n").unwrap();
+                        pushed = Some(Instant::now());
+                    }
+                    thread::sleep(Duration::from_millis(5));
+                    continue;
+                }
+            };
+            socket.set_nonblocking(false).unwrap();
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                let mut byte = [0];
+                socket.read_exact(&mut byte).unwrap();
+                request.push(byte[0]);
+            }
+            let request = String::from_utf8(request).unwrap();
+            if request.starts_with("GET /api/stream?kinds=agent.state,resync ") {
+                write!(
+                    socket,
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\nevent: hello\ndata: {{}}\n\n"
+                )
+                .unwrap();
+                stream = Some(socket);
+                continue;
+            }
+            let body = if request.starts_with("GET /api/profile ") {
+                identity.to_string()
+            } else {
+                if request.starts_with("GET /api/agents ")
+                    && let Some(pushed) = pushed
+                {
+                    reads_after_push.push(pushed.elapsed());
+                }
+                let state = if pushed.is_some() { "working" } else { "idle" };
+                json!({"items": [{"name": "worker", "state": state}]}).to_string()
+            };
+            write!(
+                socket,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+            quiet = Instant::now();
+        }
+        reads_after_push
+    });
+    let (wake, woken) = mpsc::channel();
+    let source = BoundRosterSource::start(profile.connect().unwrap(), move || {
+        let _ = wake.send(());
+    })
+    .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        woken
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .unwrap();
+        if source.take_update().unwrap().snapshot.states["worker"] == "working" {
+            break;
+        }
+    }
+    let dropped = Instant::now();
+    drop(source);
+    assert!(dropped.elapsed() < Duration::from_secs(1));
+    done.send(()).unwrap();
+    // Without the stream the next read would come two seconds after the last.
+    let reads = server.join().unwrap();
+    assert!(reads[0] < Duration::from_secs(1), "{reads:?}");
 }

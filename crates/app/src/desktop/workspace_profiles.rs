@@ -40,6 +40,18 @@ pub(super) enum Route<'a> {
     Unavailable,
 }
 
+/// The Rust service's profile for workspaces saved without one, which the
+/// service it replaced served unbound. Looked for once in a window's life.
+#[derive(Default)]
+pub(super) enum HomeProfile {
+    #[default]
+    Unread,
+    Reading,
+    /// Waiting for a moment when nothing else is being saved.
+    Found(agent_interface_roster::profiles::Item),
+    Done,
+}
+
 pub(super) struct Work {
     workspace: String,
     attempt: Attempt,
@@ -568,8 +580,74 @@ impl Browser {
         }
     }
 
+    /// Whether a workspace without a profile shows agents, which only the
+    /// service that the Rust one replaces serves.
+    fn shows_unbound_agents(&self) -> bool {
+        self.layout.as_ref().is_some_and(|layout| {
+            let model = layout.model();
+            model.show_agents && model.workspaces.iter().any(|s| s.profile_id.is_none())
+        })
+    }
+
+    /// Bind every workspace without a profile to the Rust service's home
+    /// profile, and save. The log names them, since nobody chose this.
+    fn bind_unbound_workspaces(
+        &mut self,
+        item: agent_interface_roster::profiles::Item,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(layout) = &self.layout else { return };
+        let (base, mut proposed) = layout.save_snapshot();
+        let mut bound = Vec::new();
+        for space in &mut proposed.workspaces {
+            if space.profile_id.is_none() {
+                space.profile_id = Some(item.profile_id.clone());
+                bound.push(format!("{} ({})", space.name, space.id));
+            }
+        }
+        if bound.is_empty() {
+            return;
+        }
+        tracing::info!(
+            event = "workspaces_bound_to_home_profile",
+            profile_id = %item.profile_id,
+            workspaces = ?bound,
+            "Workspaces without a profile now use this computer's profile"
+        );
+        self.workspace_profiles.remember_name(&item);
+        self.pending_save = Some((base, proposed));
+        self.save(cx);
+    }
+
     pub(super) fn refresh_profiles(&mut self, cx: &mut Context<Self>) {
+        let unread =
+            matches!(self.home_profile, HomeProfile::Unread) && self.shows_unbound_agents();
+        if unread && let Some(Ok(client)) = &self.profile_client {
+            self.home_profile = HomeProfile::Reading;
+            let client = client.clone();
+            let work = cx
+                .background_executor()
+                .spawn(async move { client.home(&|| true) });
+            cx.spawn(async move |this, cx| {
+                let home = work.await.ok().flatten();
+                let _ = this.update(cx, |browser, cx| {
+                    browser.home_profile = home.map_or(HomeProfile::Done, HomeProfile::Found);
+                    cx.notify();
+                });
+            })
+            .detach();
+        }
+        if !self.saving
+            && !self.save_failed
+            && self.pending_save.is_none()
+            && matches!(self.home_profile, HomeProfile::Found(_))
+            && let HomeProfile::Found(item) =
+                std::mem::replace(&mut self.home_profile, HomeProfile::Done)
+        {
+            self.bind_unbound_workspaces(item, cx);
+        }
         let needed = self.profile_picker_requested
+            || unread
             || self.layout.as_ref().is_some_and(|layout| {
                 layout
                     .model()

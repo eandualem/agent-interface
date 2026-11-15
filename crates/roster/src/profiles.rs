@@ -19,6 +19,7 @@ pub mod runtime_catalog;
 pub mod runtime_context;
 mod served;
 pub mod setup;
+mod stream;
 
 use crate::{RESPONSE_LIMIT, Snapshot, transport::local};
 
@@ -136,6 +137,15 @@ pub fn list(bytes: &[u8]) -> Result<Vec<Item>, Error> {
         }
     }
     Ok(catalog.items)
+}
+
+/// The profile that takes the place of the unbound installation once the Rust
+/// service runs this machine: the only one in its list that it serves with
+/// its home here. Any other list, or none or several such profiles, gives none.
+pub fn home(bytes: &[u8]) -> Option<Item> {
+    served(bytes, "profiles")
+        .then(|| served::home(bytes))
+        .flatten()
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -323,6 +333,11 @@ impl Connection {
             && self.served == other.served
     }
 
+    /// Whether this connection is to the Rust service, which has a push stream.
+    pub fn served(&self) -> bool {
+        self.served
+    }
+
     /// The authenticated identity retained by every operation on this connection.
     pub fn identity(&self) -> &Identity {
         &self.identity
@@ -369,8 +384,11 @@ impl Connection {
     pub fn ensure_shell(&self, shell_id: &str, cwd: Option<&str>) -> Result<String, Error> {
         #[derive(Deserialize)]
         struct Reply {
-            #[serde(flatten)]
-            identity: Identity,
+            profile_id: String,
+            // The Rust service names its run instead of these two; its socket
+            // is pinned, so the profile alone tells a foreign reply.
+            installation_id: Option<String>,
+            lifecycle_id: Option<String>,
             shell_id: String,
             session: String,
         }
@@ -386,7 +404,13 @@ impl Connection {
         }
         successful(&response)?;
         let reply: Reply = parse(&response.body)?;
-        if reply.identity != self.identity {
+        let same = |field: &Option<String>, expected: &String| {
+            self.served || field.as_ref() == Some(expected)
+        };
+        if reply.profile_id != self.identity.profile_id
+            || !same(&reply.installation_id, &self.identity.installation_id)
+            || !same(&reply.lifecycle_id, &self.identity.lifecycle_id)
+        {
             return Err(Error::BindingMismatch);
         }
         if reply.shell_id != shell_id || reply.session.is_empty() {

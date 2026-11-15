@@ -18,18 +18,23 @@ pub struct BoundRosterUpdate {
 /// There is no operation to rebind a running worker to another profile.
 pub struct BoundRosterSource {
     updates: Arc<Mutex<Option<BoundRosterUpdate>>>,
-    stop: mpsc::Sender<()>,
+    /// True stops the polling worker; false asks it to read now.
+    stop: mpsc::Sender<bool>,
     worker: Option<JoinHandle<()>>,
+    /// Follows the Rust service's push stream, when the connection has one.
+    stream: Option<(Arc<AtomicBool>, JoinHandle<()>)>,
 }
 
 impl BoundRosterSource {
-    /// Read immediately, then two seconds after each completed attempt.
+    /// Read immediately, then two seconds after each completed attempt, and
+    /// at once when the Rust service's push stream reports a changed state.
     /// The connection retains its verified tuple, endpoint and credential for
     /// this worker's lifetime. `wake` runs after publishing a complete update.
     pub fn start(connection: Connection, wake: impl Fn() + Send + 'static) -> io::Result<Self> {
         let updates = Arc::new(Mutex::new(None));
         let pending = Arc::clone(&updates);
         let (stop, stopped) = mpsc::channel();
+        let stream = watch(connection.clone(), stop.clone())?;
         let worker = thread::Builder::new()
             .name("bound roster polling".into())
             .spawn(move || {
@@ -52,11 +57,16 @@ impl BoundRosterSource {
                     *pending.lock().unwrap_or_else(|error| error.into_inner()) =
                         Some(update.clone());
                     wake();
-                    if !matches!(
-                        stopped.recv_timeout(Duration::from_secs(2)),
-                        Err(mpsc::RecvTimeoutError::Timeout)
-                    ) {
-                        break;
+                    match stopped.recv_timeout(Duration::from_secs(2)) {
+                        Err(mpsc::RecvTimeoutError::Timeout) => {}
+                        // Several changes at once need one read; a stop among
+                        // them still stops.
+                        Ok(false) => {
+                            if stopped.try_iter().any(|stop| stop) {
+                                break;
+                            }
+                        }
+                        Ok(true) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
                     }
                 }
             })?;
@@ -64,6 +74,7 @@ impl BoundRosterSource {
             updates,
             stop,
             worker: Some(worker),
+            stream,
         })
     }
 
@@ -86,9 +97,47 @@ fn standing(reported: Option<Error>, error: Error) -> Error {
     }
 }
 
+/// Follow the connection's push stream on a worker of its own, asking the
+/// polling worker for a read at each change. The stream is opened again two
+/// seconds after it breaks. A connection without one gets no worker.
+fn watch(
+    connection: Connection,
+    refresh: mpsc::Sender<bool>,
+) -> io::Result<Option<(Arc<AtomicBool>, JoinHandle<()>)>> {
+    if !connection.served() {
+        return Ok(None);
+    }
+    let live = Arc::new(AtomicBool::new(true));
+    let wanted = Arc::clone(&live);
+    let worker = thread::Builder::new()
+        .name("bound roster stream".into())
+        .spawn(move || {
+            let live = || wanted.load(Ordering::Relaxed);
+            while live() {
+                let ended = connection.watch(&live, &mut || {
+                    let _ = refresh.send(false);
+                });
+                if ended == Err(Error::Unsupported) {
+                    break;
+                }
+                if live() {
+                    tracing::debug!(event = "roster_stream_ended", reason = ?ended, "Agent state stream ended");
+                    thread::park_timeout(Duration::from_secs(2));
+                }
+            }
+        })?;
+    Ok(Some((live, worker)))
+}
+
 impl Drop for BoundRosterSource {
     fn drop(&mut self) {
-        let _ = self.stop.send(());
+        if let Some((live, worker)) = self.stream.take() {
+            live.store(false, Ordering::Relaxed);
+            worker.thread().unpark();
+            // The stream notices within a quarter of a second.
+            let _ = worker.join();
+        }
+        let _ = self.stop.send(true);
         if let Some(worker) = self.worker.take() {
             // The in-flight bounded request finishes before this handle drops.
             let _ = worker.join();

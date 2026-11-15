@@ -110,6 +110,13 @@ impl Client {
         profiles::list(&bytes).map_err(Error::Profile)
     }
 
+    /// The profile that unbound workspaces belong to under the Rust service,
+    /// if its list names exactly one; see [`profiles::home`].
+    pub fn home(&self, live: &dyn Fn() -> bool) -> Result<Option<Item>, Error> {
+        let bytes = self.read(&["profiles", "list", "--json"], live, TIMEOUT)?;
+        Ok(profiles::home(&bytes))
+    }
+
     /// Read one atomic record and reject a response for a different profile.
     /// A returned record still needs its authenticated connection handshake.
     pub fn show(&self, profile_id: &str, live: &dyn Fn() -> bool) -> Result<Profile, Error> {

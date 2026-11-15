@@ -169,7 +169,7 @@ menu to close the whole window. Ordinary shells keep running; external sessions
 retain their own tmux lifetime policy.
 
 The agent roster refreshes immediately, then two seconds after each completed
-request. Team and agent views refresh three seconds after each read. A rotating
+request, and at once when the Rust Backbone service reports a changed state. Team and agent views refresh three seconds after each read. A rotating
 ring marks working or starting agents; labels distinguish starting, working,
 blocked, needs you, idle and unknown. Failed requests show unavailable or stale
 data, rather than treating the last successful state as current. These are
