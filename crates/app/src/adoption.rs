@@ -33,8 +33,9 @@ pub fn bind_home_profile(directory: Option<&Path>) -> Result<Vec<String>, String
         .ok_or("The profile's agents could not be read.")?;
     let agents: HashSet<String> = roster.states.into_keys().collect();
     // A session that is not an agent is pinned to the unbound tmux server by
-    // its path, so that path must be known.
-    let source = crate::sessions::source_socket(None).map_err(|error| error.to_string())?;
+    // its path, so that path must be known. The earlier service kept its
+    // agents on the default server, wherever this command is run from.
+    let source = library::location::default_source_socket().map_err(|error| error.to_string())?;
     let source_text = source
         .to_str()
         .ok_or("The tmux socket path is not UTF-8.")?;
@@ -59,9 +60,9 @@ pub fn bind_home_profile(directory: Option<&Path>) -> Result<Vec<String>, String
                 if let Some(attachment) = &mut leaf.attachment {
                     let agent = agents.contains(&attachment.session);
                     migrate_attachment(attachment, agent, source_text, &names_source);
-                } else if leaf.runs_terminal()
-                    && let Ok(Some(socket)) = library::existing_shell_socket(&directory, &leaf.id)
-                {
+                }
+                // A shell also waits behind an attachment, a chooser or a view.
+                if let Ok(Some(socket)) = library::existing_shell_socket(&directory, &leaf.id) {
                     // The profile's shell starts where this one is now.
                     let _ = library::remember_shell_directory(leaf, &socket);
                     let session = format!("terminal-{}", leaf.id);

@@ -420,9 +420,10 @@ opens no window and needs the Rust service's list to name exactly one serving
 profile whose home is this machine. It reads that profile's agents, binds every
 workspace without a profile to it and saves through the store's usual conflict
 rules, writing nothing when the library changed meanwhile. An attachment to one
-of the profile's agents on the unbound tmux server loses its socket, so it
+of the profile's agents on the default tmux server, where the Python service
+kept them whatever tmux session the command runs in, loses its socket, so it
 follows the profile's server, where the agent now runs. Any other attachment
-keeps its socket, or is given the unbound server's when it was saved without
+keeps its socket, or is given the default server's when it was saved without
 one, and its pane says that the session is on another server. Ordinary shell
 panes become shells of the profile, as in any bound workspace, starting in the
 folder the earlier shell was in. Those earlier shells keep running on the
