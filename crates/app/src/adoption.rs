@@ -50,6 +50,7 @@ pub fn bind_home_profile(directory: Option<&Path>) -> Result<Vec<String>, String
     let mut base = store.load().map_err(|error| error.to_string())?;
     let mut layout = base.model().clone();
     let mut report = Vec::new();
+    let mut unread = None;
     for space in &mut layout.workspaces {
         if space.profile_id.is_some() {
             continue;
@@ -62,24 +63,33 @@ pub fn bind_home_profile(directory: Option<&Path>) -> Result<Vec<String>, String
                     migrate_attachment(attachment, agent, source_text, &names_source);
                 }
                 // A shell also waits behind an attachment, a chooser or a view.
-                if let Ok(Some(socket)) = library::existing_shell_socket(&directory, &leaf.id) {
-                    // The profile's shell starts where this one is now. An
-                    // older saved folder may be gone, which the profile would
-                    // refuse, so without a reading it starts in its home.
-                    let folder = if library::remember_shell_directory(leaf, &socket).is_err() {
-                        leaf.cwd = None;
-                        "; its folder could not be read, so the new shell starts in the profile's home"
-                    } else {
-                        ""
-                    };
-                    let session = format!("terminal-{}", leaf.id);
-                    let command =
-                        agent_interface_tmux::discovery::read_session_command(&socket, &session);
-                    report.push(format!(
-                        "Shell left running, from {workspace} > {name}, running {}: tmux -S {} attach -t {session}{folder}",
-                        command.as_deref().unwrap_or("an unknown command"),
-                        socket.display(),
-                    ));
+                match library::existing_shell_socket(&directory, &leaf.id) {
+                    Ok(Some(socket)) => {
+                        // The profile's shell starts where this one is now.
+                        let _ = library::remember_shell_directory(leaf, &socket);
+                        let session = format!("terminal-{}", leaf.id);
+                        let command = agent_interface_tmux::discovery::read_session_command(
+                            &socket, &session,
+                        );
+                        report.push(format!(
+                            "Shell left running, from {workspace} > {name}, running {}: tmux -S {} attach -t {session}",
+                            command.as_deref().unwrap_or("an unknown command"),
+                            socket.display(),
+                        ));
+                    }
+                    Ok(None) => {}
+                    // A shell that cannot be looked for would be left
+                    // running unreported, with no second run to find it.
+                    Err(error) => unread = Some(error.to_string()),
+                }
+                // A profile refuses to start a shell in a folder that is gone,
+                // where an unbound shell would have started in the home folder.
+                if leaf
+                    .cwd
+                    .as_deref()
+                    .is_some_and(|cwd| !Path::new(cwd).is_dir())
+                {
+                    leaf.cwd = None;
                 }
             });
         }
@@ -88,6 +98,9 @@ pub fn bind_home_profile(directory: Option<&Path>) -> Result<Vec<String>, String
             "Bound workspace {} ({}) to profile {} ({})",
             space.name, space.id, home.display_name, home.profile_id
         ));
+    }
+    if let Some(error) = unread {
+        return Err(format!("The library's shells could not be read: {error}"));
     }
     if report.is_empty() {
         return Ok(vec!["Every workspace already has a profile.".into()]);

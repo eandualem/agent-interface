@@ -426,8 +426,8 @@ follows the profile's server, where the agent now runs. Any other attachment
 keeps its socket, or is given the default server's when it was saved without
 one, and its pane says that the session is on another server. Ordinary shell
 panes become shells of the profile, as in any bound workspace, starting in the
-folder the earlier shell was in, or in the profile's home when that folder
-cannot be read. Those earlier shells keep running on the
+folder the earlier shell was in, or in the profile's home when the saved
+folder no longer exists. Those earlier shells keep running on the
 library's shell server, and the command prints, for each, what it runs and the
 tmux command that attaches to it.
 
