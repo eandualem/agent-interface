@@ -63,13 +63,20 @@ pub fn bind_home_profile(directory: Option<&Path>) -> Result<Vec<String>, String
                 }
                 // A shell also waits behind an attachment, a chooser or a view.
                 if let Ok(Some(socket)) = library::existing_shell_socket(&directory, &leaf.id) {
-                    // The profile's shell starts where this one is now.
-                    let _ = library::remember_shell_directory(leaf, &socket);
+                    // The profile's shell starts where this one is now. An
+                    // older saved folder may be gone, which the profile would
+                    // refuse, so without a reading it starts in its home.
+                    let folder = if library::remember_shell_directory(leaf, &socket).is_err() {
+                        leaf.cwd = None;
+                        "; its folder could not be read, so the new shell starts in the profile's home"
+                    } else {
+                        ""
+                    };
                     let session = format!("terminal-{}", leaf.id);
                     let command =
                         agent_interface_tmux::discovery::read_session_command(&socket, &session);
                     report.push(format!(
-                        "Shell left running, from {workspace} > {name}, running {}: tmux -S {} attach -t {session}",
+                        "Shell left running, from {workspace} > {name}, running {}: tmux -S {} attach -t {session}{folder}",
                         command.as_deref().unwrap_or("an unknown command"),
                         socket.display(),
                     ));
