@@ -2458,7 +2458,9 @@ impl Browser {
     fn finish_sidebar_drag(&mut self, cx: &mut Context<Self>) {
         let saved_width = self.sidebar_drag.take().and_then(|drag| drag.2);
         if saved_width == settings::sidebar_width() {
-            // A click on the edge changed nothing.
+            // Nothing to save, but a drag back to where it began still
+            // ends: draw what the drag held back.
+            cx.refresh_windows();
             return;
         }
         let (done, saved) = futures::channel::oneshot::channel();

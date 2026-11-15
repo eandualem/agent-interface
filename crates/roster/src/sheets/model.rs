@@ -349,11 +349,12 @@ pub struct Grid {
     /// Every selected column.
     pub columns: Vec<Column>,
     /// Sparse cells; omitted coordinates are truly blank and unformatted.
-    pub cells: Vec<Cell>,
+    /// Read them through [`Grid::cell`]: its index relies on their order.
+    pub(super) cells: Vec<Cell>,
     /// Continuation offset in the same order and revision.
     pub next_row_offset: Option<usize>,
-    /// Where each coordinate's cell is, built at the first lookup: a page is
-    /// drawn cell by cell and is not changed once read.
+    /// Where each coordinate's cell is, built at the first lookup. Nothing
+    /// outside this module can change the cells after that.
     #[serde(skip)]
     index: OnceLock<HashMap<Id, HashMap<Id, usize>>>,
 }
