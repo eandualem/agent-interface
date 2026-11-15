@@ -299,13 +299,6 @@ impl Browser {
             })
     }
 
-    /// A failed roster read loses status, not access: tmux keeps the sessions
-    /// running and the attached panes stay connected while the read retries.
-    pub(super) fn profile_status_unavailable(&self) -> bool {
-        self.active_agents()
-            .is_some_and(|agents| agents.unavailable())
-    }
-
     /// Why the selected workspace has no connection. `None` while still connecting.
     pub(super) fn profile_failure(&self) -> Option<&'static str> {
         if matches!(self.profile_client, Some(Err(_))) {

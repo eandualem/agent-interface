@@ -122,6 +122,10 @@ impl Default for Current {
     }
 }
 
+/// How long failed reads keep showing the last roster before it is reported
+/// as unavailable.
+pub(super) const TOLERANCE: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Clones share the same current observation, including across native windows.
 #[derive(Clone, Default)]
 pub(super) struct LiveAgents(Rc<Source>);
@@ -168,20 +172,24 @@ impl LiveAgents {
         (snapshot.error.is_none() && snapshot.swarms_read).then(|| snapshot.swarms.clone())
     }
 
-    pub fn unavailable(&self) -> bool {
-        self.0
-            .current
-            .borrow()
-            .snapshot
-            .as_ref()
-            .is_some_and(|snapshot| snapshot.error.is_some())
-    }
-
     pub fn observed(&self) -> bool {
         self.0.current.borrow().snapshot.is_some()
     }
 
-    pub fn update(&self, mut snapshot: Snapshot) -> bool {
+    /// A missed read is not yet an outage: the last roster stays shown while
+    /// the worker retries, so a slow provider does not flicker.
+    pub fn update(&self, snapshot: Snapshot) -> bool {
+        if snapshot.error.is_some()
+            && snapshot
+                .observed_at
+                .is_some_and(|read| read.elapsed() < TOLERANCE)
+        {
+            return false;
+        }
+        self.replace(snapshot)
+    }
+
+    fn replace(&self, mut snapshot: Snapshot) -> bool {
         // For online agents Backbone supplies the read time, not the time of
         // a state transition. Only offline timestamps have presentation meaning.
         // Normalizing here also preserves retained painting on unchanged polls.
@@ -309,10 +317,19 @@ impl LiveAgents {
         if self.0.origin.as_ref() != Some(&Origin::Bound(update.identity)) {
             return false;
         }
-        if update.error.is_some() {
-            update.snapshot.unavailable();
+        match update.error {
+            None => self.update(update.snapshot),
+            Some(error) => {
+                update.snapshot.unavailable();
+                // Only a read that could not be made is retried quietly. A
+                // refusal is the provider's answer and is shown at once.
+                if error == agent_interface_roster::profiles::Error::Unavailable {
+                    self.update(update.snapshot)
+                } else {
+                    self.replace(update.snapshot)
+                }
+            }
         }
-        self.update(update.snapshot)
     }
 
     fn take_update(&self) -> Option<bool> {
@@ -423,6 +440,11 @@ mod tests {
         snapshot.update(br#"{"items":[{"name":"worker","state":"busy"}]}"#);
         first.update(snapshot.clone());
         snapshot.unavailable();
+        // A failure soon after a good read keeps the last roster.
+        assert!(!first.update(snapshot.clone()));
+        assert_eq!(second.get("worker").state, AgentState::Working);
+        snapshot.observed_at = std::time::Instant::now().checked_sub(TOLERANCE);
+        assert!(snapshot.observed_at.is_some());
         first.update(snapshot.clone());
         assert_eq!(second.get("worker").state, AgentState::Unavailable);
         assert_eq!(second.get("").state, AgentState::Unknown);

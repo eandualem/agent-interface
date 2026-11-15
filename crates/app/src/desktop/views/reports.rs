@@ -1005,6 +1005,8 @@ mod tests {
             matches!(&item.content, ReportContent::Progress { status, .. } if status == "active")
         );
         snapshot.unavailable();
+        snapshot.observed_at =
+            std::time::Instant::now().checked_sub(crate::desktop::agent_status::TOLERANCE);
         agents.update(snapshot);
         assert_eq!(current_state(&item, &agents), ui::AgentState::Unavailable);
         item.registered = false;
