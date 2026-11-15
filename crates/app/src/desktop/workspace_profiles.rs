@@ -48,32 +48,43 @@ pub(super) enum HomeProfile {
     Unread,
     Reading,
     /// Every workspace without a profile is bound to this one, in whichever
-    /// library the window shows, whenever nothing else is being saved. With
-    /// it, the saved sockets that are other names for the unbound tmux server.
-    Found(
-        agent_interface_roster::profiles::Item,
-        std::rc::Rc<super::sidebar::SourceMatches>,
-    ),
-    /// The service names none, or the person discarded a binding's save.
+    /// library the window shows, whenever nothing else is being saved.
+    Found(agent_interface_roster::profiles::Item),
+    /// A binding is reading what it needs.
+    Preparing,
+    /// The service names none or did not answer, or the person discarded a
+    /// binding's save.
     Absent,
 }
 
-/// Point attachments saved on the unbound tmux server at their workspace's
-/// profile instead, where the agents of the same names now run. One on
-/// another server stays as it is and says so when shown.
-fn follow_profile(node: &mut agent_interface_core::Node, unbound: &dyn Fn(&str) -> bool) {
+/// What a binding needs from outside the window, read on a worker.
+struct Migration {
+    /// Saved sockets that are other names for the unbound tmux server.
+    aliases: super::sidebar::SourceMatches,
+    /// The profile's agents, running or not.
+    agents: HashSet<String>,
+}
+
+/// Point attachments to the profile's agents at their workspace's profile,
+/// where those agents now run. Any other attachment stays as it is, and a
+/// bound pane says that its session is on another server.
+fn follow_profile(
+    node: &mut agent_interface_core::Node,
+    migrated: &dyn Fn(&agent_interface_core::Attachment) -> bool,
+) {
     use agent_interface_core::Node;
     match node {
         Node::Leaf(leaf) => {
             if let Some(attachment) = &mut leaf.attachment
-                && attachment.source_socket.as_deref().is_some_and(unbound)
+                && attachment.source_socket.is_some()
+                && migrated(attachment)
             {
                 attachment.source_socket = None;
             }
         }
         Node::Split { first, second, .. } => {
-            follow_profile(first, unbound);
-            follow_profile(second, unbound);
+            follow_profile(first, migrated);
+            follow_profile(second, migrated);
         }
     }
 }
@@ -615,20 +626,34 @@ impl Browser {
         })
     }
 
+    /// Whether a binding may be saved now: there is something to bind, and
+    /// no save is running, failed or about to be made by the person.
+    fn may_bind_unbound(&self) -> bool {
+        !self.saving
+            && !self.save_failed
+            && self.pending_save.is_none()
+            && self.editing.is_none()
+            && self.resize.is_none()
+            && self.pane_drag.is_none()
+            && self.shows_unbound_agents()
+    }
+
     /// Bind every workspace without a profile to the Rust service's home
     /// profile, and save. The log names them, since nobody chose this.
     fn bind_unbound_workspaces(
         &mut self,
         item: agent_interface_roster::profiles::Item,
-        aliases: &super::sidebar::SourceMatches,
+        migration: &Migration,
         cx: &mut Context<Self>,
     ) {
         let Some(layout) = &self.layout else { return };
         let (base, mut proposed) = layout.save_snapshot();
         let source = self.source.as_ref().and_then(|source| source.as_ref().ok());
-        let unbound = |path: &str| {
-            source.is_some_and(|source| std::path::Path::new(path) == source)
-                || aliases.contains(Some(path))
+        let unbound = |attachment: &agent_interface_core::Attachment| {
+            let socket = attachment.source_socket.as_deref();
+            migration.agents.contains(&attachment.session)
+                && (migration.aliases.contains(socket)
+                    || socket.map(std::path::Path::new) == source.map(|path| path.as_path()))
         };
         let mut bound = Vec::new();
         let mut shells = Vec::new();
@@ -695,6 +720,26 @@ impl Browser {
         if unread && let Some(Ok(client)) = &self.profile_client {
             self.home_profile = HomeProfile::Reading;
             let client = client.clone();
+            let work = cx
+                .background_executor()
+                .spawn(async move { client.home(&|| true) });
+            cx.spawn(async move |this, cx| {
+                let home = work.await.ok().flatten();
+                let _ = this.update(cx, |browser, cx| {
+                    browser.home_profile = home.map_or(HomeProfile::Absent, HomeProfile::Found);
+                    cx.notify();
+                });
+            })
+            .detach();
+        }
+        // Also after a save that a conflict dropped, and in another library.
+        if self.may_bind_unbound()
+            && let HomeProfile::Found(item) = &self.home_profile
+            && let Some(Ok(client)) = &self.profile_client
+        {
+            let (item, client) = (item.clone(), client.clone());
+            let generation = self.library_generation;
+            self.home_profile = HomeProfile::Preparing;
             let source = self.source.as_ref().and_then(|source| source.clone().ok());
             let sockets = self
                 .layout
@@ -704,38 +749,42 @@ impl Browser {
                 .flat_map(|tab| tab.tree.leaves())
                 .filter_map(|leaf| leaf.attachment.as_ref()?.source_socket.clone())
                 .collect();
-            // Resolving a socket's other names reads the file system.
+            let profile_id = item.profile_id.clone();
+            // Reads the service and the file system, so not here.
             let work = cx.background_executor().spawn(async move {
-                let home = client.home(&|| true).ok().flatten()?;
-                Some((
-                    home,
-                    super::sidebar::SourceMatches::resolve(source, sockets),
-                ))
+                let roster = client
+                    .show(&profile_id, &|| true)
+                    .ok()?
+                    .connect()
+                    .ok()?
+                    .roster()
+                    .ok()?;
+                Some(Migration {
+                    aliases: super::sidebar::SourceMatches::resolve(source, sockets),
+                    agents: roster.states.into_keys().collect(),
+                })
             });
             cx.spawn(async move |this, cx| {
-                let home = work.await;
+                let migration = work.await;
                 let _ = this.update(cx, |browser, cx| {
-                    browser.home_profile = home.map_or(HomeProfile::Absent, |(item, aliases)| {
-                        HomeProfile::Found(item, std::rc::Rc::new(aliases))
-                    });
+                    if !matches!(browser.home_profile, HomeProfile::Preparing) {
+                        return;
+                    }
+                    let Some(migration) = migration else {
+                        browser.home_profile = HomeProfile::Absent;
+                        return;
+                    };
+                    // What was read is for the library and layout of that
+                    // moment; anything else prepares again.
+                    let current = browser.library_generation == generation;
+                    browser.home_profile = HomeProfile::Found(item.clone());
+                    if current && browser.may_bind_unbound() {
+                        browser.bind_unbound_workspaces(item, &migration, cx);
+                    }
                     cx.notify();
                 });
             })
             .detach();
-        }
-        // Also after a save that a conflict dropped, and in another library.
-        // Never beside a save the person is about to make.
-        if !self.saving
-            && !self.save_failed
-            && self.pending_save.is_none()
-            && self.editing.is_none()
-            && self.resize.is_none()
-            && self.pane_drag.is_none()
-            && self.shows_unbound_agents()
-            && let HomeProfile::Found(item, aliases) = &self.home_profile
-        {
-            let (item, aliases) = (item.clone(), aliases.clone());
-            self.bind_unbound_workspaces(item, &aliases, cx);
         }
         let needed = self.profile_picker_requested
             || unread
@@ -1255,7 +1304,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bound_attachments_leave_only_the_unbound_server() {
+    fn only_attachments_to_the_profiles_agents_follow_it() {
         use agent_interface_core::Attachment;
         let mut model = Layout::initial("/tmp".into());
         model.attach(Some(Attachment {
@@ -1266,13 +1315,13 @@ mod tests {
             let attachment = model.pane().unwrap().attachment.clone().unwrap();
             attachment.source_socket
         };
-        let follow = |model: &mut Layout, server: &str| {
+        let follow = |model: &mut Layout, agent: &str| {
             let tree = &mut model.workspaces[0].tabs[0].tree;
-            follow_profile(tree, &|path| path == server);
+            follow_profile(tree, &|attachment| attachment.session == agent);
         };
-        follow(&mut model, "/tmp/other");
+        follow(&mut model, "another");
         assert_eq!(source(&model).as_deref(), Some("/tmp/default"));
-        follow(&mut model, "/tmp/default");
+        follow(&mut model, "worker");
         assert_eq!(source(&model), None);
     }
     use crate::roster::content::tests::provider;
