@@ -184,10 +184,14 @@ fn exchange(
                 request = request.header("Authorization", value);
             }
             if let Some(identity) = auth.identity {
-                request = request
-                    .header("X-Backbone-Profile-ID", &identity.profile_id)
-                    .header("X-Backbone-Installation-ID", &identity.installation_id)
-                    .header("X-Backbone-Lifecycle-ID", &identity.lifecycle_id);
+                request = request.header("X-Backbone-Profile-ID", &identity.profile_id);
+                // A connection without a key is to the Rust service, which
+                // takes the profile alone.
+                if !auth.key.is_empty() {
+                    request = request
+                        .header("X-Backbone-Installation-ID", &identity.installation_id)
+                        .header("X-Backbone-Lifecycle-ID", &identity.lifecycle_id);
+                }
             }
             let request = request
                 .body(Full::new(Bytes::from(body.unwrap_or_default())))

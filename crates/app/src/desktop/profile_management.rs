@@ -299,7 +299,7 @@ impl Management {
         let Some(controller) = self.controller.clone() else {
             return;
         };
-        let request = uuid::Uuid::new_v4().simple().to_string();
+        let request = uuid::Uuid::now_v7().simple().to_string();
         let prepared = match action {
             Action::Start => Prepared::start(&request, profile),
             Action::Stop => Prepared::stop(&request, profile),

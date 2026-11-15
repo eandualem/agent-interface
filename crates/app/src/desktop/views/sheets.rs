@@ -552,7 +552,7 @@ fn commit_cursor(trail: &mut Vec<Option<String>>, current: &Option<String>, next
     }
 }
 fn new_id() -> Id {
-    Id::parse(uuid::Uuid::new_v4().simple().to_string()).expect("UUID format")
+    Id::parse(uuid::Uuid::now_v7().simple().to_string()).expect("UUID format")
 }
 fn column_name(mut n: usize) -> String {
     let mut s = String::new();

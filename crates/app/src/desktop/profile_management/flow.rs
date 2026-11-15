@@ -378,7 +378,7 @@ impl Flow {
             return;
         }
         let resume = self.stalled.take();
-        let request = uuid::Uuid::new_v4().simple().to_string();
+        let request = uuid::Uuid::now_v7().simple().to_string();
         let prepared = match &resume {
             Some(Stalled::Unconfirmed(_) | Stalled::NotStarted | Stalled::Lookup(_)) => None,
             _ => match if self.identity(cx) == Identity::Computer {
@@ -1125,7 +1125,7 @@ fn make(
             "The profile was made but didn't start. Try again.",
         )
     };
-    let request = uuid::Uuid::new_v4().simple().to_string();
+    let request = uuid::Uuid::now_v7().simple().to_string();
     let start = Prepared::start(&request, &profile).map_err(|_| not_started(&profile))?;
     let key = Controller::key(start.request_id());
     let receipt = controller

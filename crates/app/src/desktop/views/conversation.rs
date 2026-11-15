@@ -1294,7 +1294,7 @@ impl Conversation {
             return;
         }
         stored.redelivery.insert(entry, Redelivery::Asking);
-        let request = uuid::Uuid::new_v4().simple().to_string();
+        let request = uuid::Uuid::now_v7().simple().to_string();
         let worker = cx
             .background_executor()
             .spawn(async move { target.redeliver(entry, &request) });
@@ -1424,7 +1424,7 @@ impl Conversation {
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0.0, |now| now.as_secs_f64());
         self.messages.push(Message {
-            request_id: uuid::Uuid::new_v4().simple().to_string(),
+            request_id: uuid::Uuid::now_v7().simple().to_string(),
             via: None,
             recipient: None,
             text,

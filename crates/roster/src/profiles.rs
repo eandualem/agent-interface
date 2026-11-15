@@ -17,11 +17,14 @@ use sha2::{Digest, Sha256};
 
 pub mod runtime_catalog;
 pub mod runtime_context;
+mod served;
 pub mod setup;
 
 use crate::{RESPONSE_LIMIT, Snapshot, transport::local};
 
 /// A registered provider instance. Display names and baseline versions are not identity.
+/// The Rust service has no installation or generation of its own: for its profiles
+/// both of those fields hold the machine's ID, which stays the same across restarts.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Deserialize)]
 pub struct Identity {
     /// Stable profile, including across registered-instance replacement.
@@ -82,7 +85,8 @@ pub struct AddedSkill {
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
-    /// The original installation, registered in place.
+    /// The original installation, registered in place. A profile of the Rust
+    /// service counts as one while its agents use the person's own sign-ins.
     LegacyDefault,
     /// A separately provisioned profile.
     Isolated,
@@ -120,6 +124,9 @@ struct Catalog {
 
 /// Decode a successful registry list. A registry command error must not call this.
 pub fn list(bytes: &[u8]) -> Result<Vec<Item>, Error> {
+    if served(bytes, "profiles") {
+        return served::list(bytes);
+    }
     let catalog: Catalog = parse(bytes)?;
     let mut ids = std::collections::HashSet::new();
     for item in &catalog.items {
@@ -140,7 +147,13 @@ enum Endpoint {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum Credential {
-    Dotenv { path: PathBuf, key: String },
+    Dotenv {
+        path: PathBuf,
+        key: String,
+    },
+    /// The owner-only socket is the credential; no key is read or sent.
+    #[serde(skip)]
+    Socket,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -155,6 +168,10 @@ struct Binding {
     endpoint: Endpoint,
     credential_reference: Credential,
     tmux: Tmux,
+    /// The Rust service's run, new at each of its starts. It is checked when
+    /// connecting and never kept as identity.
+    #[serde(skip)]
+    instance: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -175,6 +192,9 @@ pub struct Profile {
 impl Profile {
     /// Decode a bounded registry show reply and validate its binding consistency.
     pub fn parse(bytes: &[u8]) -> Result<Self, Error> {
+        if served(bytes, "state") {
+            return served::show(bytes);
+        }
         let record: Record = parse(bytes)?;
         validate_item(&record.item)?;
         let binding: Option<Binding> =
@@ -187,7 +207,10 @@ impl Profile {
             let Credential::Dotenv {
                 path: credential,
                 key,
-            } = &binding.credential_reference;
+            } = &binding.credential_reference
+            else {
+                return Err(Error::Invalid);
+            };
             if !valid_id(&binding.installation_id)
                 || !valid_id(&binding.lifecycle_id)
                 || !path.is_absolute()
@@ -224,8 +247,10 @@ impl Profile {
     /// Runs on an I/O worker; does not discover or start a service.
     pub fn connect(&self) -> Result<Connection, Error> {
         let binding = self.binding.as_ref().ok_or(Error::NotReady)?;
-        let Credential::Dotenv { path, .. } = &binding.credential_reference;
-        let key = credential(path)?;
+        let (path, key) = match &binding.credential_reference {
+            Credential::Dotenv { path, .. } => (path.clone(), credential(path)?),
+            Credential::Socket => Default::default(),
+        };
         let Endpoint::Unix { path: socket } = &binding.endpoint;
         let connection = Connection {
             identity: Identity {
@@ -236,8 +261,9 @@ impl Profile {
             kind: self.item.kind.clone(),
             socket: socket.clone(),
             tmux: binding.tmux.clone(),
-            credential_reference: path.clone(),
+            credential_reference: path,
             key,
+            instance: binding.instance.clone(),
             connection_key: ConnectionKey(Arc::new(())),
         };
         connection.verify()?;
@@ -273,6 +299,7 @@ pub struct Connection {
     tmux: Tmux,
     credential_reference: PathBuf,
     key: String,
+    instance: Option<String>,
     connection_key: ConnectionKey,
 }
 
@@ -296,6 +323,7 @@ impl Connection {
         &self.tmux.socket_path
     }
     /// The original credential locator; this connection never re-reads it.
+    /// Empty when the socket itself is the credential.
     pub fn credential_reference(&self) -> &Path {
         &self.credential_reference
     }
@@ -543,6 +571,9 @@ impl Connection {
             return Err(Error::Unsupported);
         }
         successful(&response)?;
+        if let Some(instance) = &self.instance {
+            return served::verify(&response.body, &self.identity, instance);
+        }
         let reply: Reply = parse(&response.body)?;
         if reply.baseline_version.is_empty() {
             return Err(Error::Invalid);
@@ -653,6 +684,15 @@ fn binding_refusal(response: &local::Response) -> Option<Error> {
         }
     }
     None
+}
+
+/// Whether this is the Rust service's output: it carries no `schema_version`,
+/// and `key` is the field its list or its single entry always has.
+fn served(bytes: &[u8], key: &str) -> bool {
+    type Fields = std::collections::HashMap<String, serde::de::IgnoredAny>;
+    bytes.len() <= RESPONSE_LIMIT
+        && serde_json::from_slice::<Fields>(bytes)
+            .is_ok_and(|fields| fields.contains_key(key) && !fields.contains_key("schema_version"))
 }
 
 fn schema(version: u32) -> Result<(), Error> {
