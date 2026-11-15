@@ -932,8 +932,13 @@ fn start(probe: &Probe) -> Result<(), String> {
 /// Wait for the agent service to answer, for up to [`SERVICE_WAIT`].
 fn answered() -> Option<()> {
     let deadline = Instant::now() + SERVICE_WAIT;
+    // Ask the login shell where Backbone is once, not on every attempt.
+    let mut client = None;
     while Instant::now() < deadline {
-        if matches!(probe::backbone(), Backbone::Running) {
+        if client.is_none() {
+            client = probe::profile_client();
+        }
+        if matches!(probe::answers(client.clone()), Backbone::Running) {
             return Some(());
         }
         std::thread::sleep(SERVICE_POLL);
