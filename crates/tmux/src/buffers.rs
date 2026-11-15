@@ -3,9 +3,10 @@
 //!
 //! tmux writes a capture's text into the control connection unchanged, and a
 //! line of it can match the line that ends tmux's reply. Recovery therefore
-//! captures into named tmux buffers inside its command line, and a separate
-//! tmux client reads and deletes them here (`docs/ARCHITECTURE.md`). Only the
-//! exact names one line created are read or deleted, never any other buffer.
+//! captures into named tmux buffers inside its command line, lists them there
+//! with [`list_command`], and a separate tmux client reads and deletes them
+//! here (`docs/ARCHITECTURE.md`). Only the exact names one line created are
+//! read or deleted, never any other buffer.
 
 use std::collections::hash_map::RandomState;
 use std::hash::BuildHasher;
@@ -34,18 +35,27 @@ pub fn prefix() -> String {
     )
 }
 
-/// Reads the buffers named `names` on the server at `socket`, in order, then
-/// deletes them, by `deadline`. A name with no buffer reads as `None`: tmux
-/// creates none for an empty capture. After an error, some may be left for
-/// the caller to [`delete`].
+/// The command that lists the buffers named with `prefix`, for a line to
+/// run after its captures; [`sizes_in`] reads its reply. Listing in the line
+/// saves running another tmux client.
+pub fn list_command(prefix: &str) -> String {
+    format!("list-buffers -F '{FORMAT}' -f '#{{m:{prefix}*,#{{buffer_name}}}}'")
+}
+
+/// Each buffer's size and name, as [`sizes_in`] reads them.
+const FORMAT: &str = "#{buffer_size} #{buffer_name}";
+
+/// Reads the buffers in `listed`, each a name and its listed size, on the
+/// server at `socket`, in order, then deletes them, by `deadline`. A name
+/// with no size reads as `None`: tmux creates no buffer for an empty
+/// capture. After an error, some may be left for the caller to [`delete`].
 pub fn take(
     socket: &Path,
-    names: &[String],
+    listed: &[(String, Option<usize>)],
     deadline: Instant,
 ) -> io::Result<Vec<Option<Vec<u8>>>> {
-    let sizes = sizes(socket, names, left(deadline)?)?;
-    let mut contents = Vec::with_capacity(names.len());
-    for (name, size) in names.iter().zip(&sizes) {
+    let mut contents = Vec::with_capacity(listed.len());
+    for (name, size) in listed {
         let Some(size) = *size else {
             contents.push(None);
             continue;
@@ -100,13 +110,22 @@ pub fn delete(socket: &Path, names: &[String]) -> io::Result<()> {
 /// with no buffer.
 fn sizes(socket: &Path, names: &[String], timeout: Duration) -> io::Result<Vec<Option<usize>>> {
     let mut command = crate::connection::command(socket)?;
-    command.args(["list-buffers", "-F", "#{buffer_size} #{buffer_name}"]);
+    command.args(["list-buffers", "-F", FORMAT]);
     let output = crate::discovery::capture(command, timeout)?;
     if !output.status.success() {
         return Err(io::Error::other("capture buffers could not be listed"));
     }
+    sizes_in(names, output.stdout.split(|&byte| byte == b'\n'))
+}
+
+/// Returns the size of each buffer named in `names` from the lines of a
+/// listing made by [`list_command`], or `None` for a name with no buffer.
+pub fn sizes_in<'a>(
+    names: &[String],
+    lines: impl IntoIterator<Item = &'a [u8]>,
+) -> io::Result<Vec<Option<usize>>> {
     let mut sizes = vec![None; names.len()];
-    for line in output.stdout.split(|&byte| byte == b'\n') {
+    for line in lines {
         let Some((size, name)) = std::str::from_utf8(line)
             .ok()
             .and_then(|line| line.split_once(' '))
@@ -161,6 +180,25 @@ mod tests {
         names
     }
 
+    /// Lists the buffers named with `prefix` as a line's [`list_command`] does.
+    fn list(server: &TmuxServer, prefix: &str, names: &[String]) -> Vec<(String, Option<usize>)> {
+        // The command quotes whole arguments, with no quote inside one.
+        let line = list_command(prefix);
+        let mut words = vec![String::new()];
+        let mut quoted = false;
+        for c in line.chars() {
+            match c {
+                '\'' => quoted = !quoted,
+                ' ' if !quoted => words.push(String::new()),
+                c => words.last_mut().unwrap().push(c),
+            }
+        }
+        let args: Vec<&str> = words.iter().map(String::as_str).collect();
+        let listing = server.run(&args).unwrap();
+        let sizes = sizes_in(names, listing.lines().map(str::as_bytes)).unwrap();
+        names.iter().cloned().zip(sizes).collect()
+    }
+
     #[test]
     fn prefixes_differ_and_use_only_name_safe_characters() {
         let (first, second) = (prefix(), prefix());
@@ -189,7 +227,9 @@ mod tests {
         let other = format!("{}0", self::prefix());
         server.run(&["set-buffer", "-b", &other, "theirs"]).unwrap();
 
-        let contents = take(&socket, &names, Instant::now() + TIMEOUT).unwrap();
+        let listed = list(&server, &prefix, &names);
+        assert_eq!(listed[1], (names[1].clone(), None));
+        let contents = take(&socket, &listed, Instant::now() + TIMEOUT).unwrap();
 
         assert_eq!(
             contents,
@@ -216,7 +256,12 @@ mod tests {
             ])
             .unwrap();
         assert_eq!(
-            take(&socket, &[name], Instant::now() + TIMEOUT).unwrap(),
+            take(
+                &socket,
+                &[(name, Some(text.len()))],
+                Instant::now() + TIMEOUT
+            )
+            .unwrap(),
             vec![Some(text.as_bytes().to_vec())]
         );
         assert!(buffers(&server).is_empty());
@@ -238,14 +283,16 @@ mod tests {
         let socket = socket(&server);
         let prefix = prefix();
         let names: Vec<String> = (0..2).map(|k| format!("{prefix}{k}")).collect();
+        let listed = list(&server, &prefix, &names);
         assert_eq!(
-            take(&socket, &names, Instant::now() + TIMEOUT).unwrap(),
+            take(&socket, &listed, Instant::now() + TIMEOUT).unwrap(),
             vec![None, None]
         );
         server
             .run(&["set-buffer", "-b", &names[0], "late"])
             .unwrap();
-        let error = take(&socket, &names, Instant::now()).unwrap_err();
+        let listed = list(&server, &prefix, &names);
+        let error = take(&socket, &listed, Instant::now()).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
 
         server

@@ -103,9 +103,11 @@ tmux writes a capture's text into the control connection unchanged, so a
 captured line could match the line that ends tmux's reply and make the reader
 take the rest of the capture for messages from tmux. The app requires tmux 3.4
 or newer and writes each capture into a named buffer
-instead of its reply, with a name unique to that line and process. After the
-line's replies, a separate tmux client on the same socket reads each buffer
-by its listed size using `show-buffer` and deletes it. This unattached client
+instead of its reply, with a name unique to that line and process. The line
+then lists its own buffers, which saves starting a tmux client for that. After
+the line's replies, a separate tmux client on the same socket reads each listed
+buffer by its size using `show-buffer` and deletes it; one client cannot read
+several, because tmux closes its output after the first. This unattached client
 receives exact bytes without invoking the user's `after-save-buffer` hook.
 A rebuild that does not finish tries to
 delete the buffers its line named, on a separate thread; this is best effort,
@@ -505,8 +507,11 @@ navigation badges, choosers and information views retain that connection's model
 Shared UI components render its symbol, colour and label. Roster changes
 invalidate retained view painting even when an authored record or plan is held
 open. Offline stays distinct from idle; an unavailable roster suppresses working
-indicators rather than presenting cached observations as current. Requests have
-a three-second deadline. Team and agent-card metadata still poll every three
+indicators rather than presenting cached observations as current. Requests to a
+legacy provider have a three-second deadline, and requests on a profile connection
+fifteen seconds. Right after an agent is removed, a profile's agent list refuses
+reads until its next refresh, so the roster read tries again every quarter second
+for up to ten seconds. Team and agent-card metadata still poll every three
 seconds; these reads do not supply live status. Activity's historical spans
 remain separate from its current-state labels.
 Team-wide libraries (`roster::views::library`) are gathered from per-agent
@@ -1278,7 +1283,9 @@ ready profile. Restored bindings resolve through read-only registry discovery an
 an authenticated handshake, with bounded concurrent attempts and explicit retry.
 Unavailable bindings display a connection state instead of opening legacy content.
 
-Each workspace retains its verified connection and status source. Pane entities,
+Each workspace retains its verified connection and status source. Workspaces on
+one profile share one attempt and one connection while its identity, endpoints and
+credential are unchanged, so they share a status poller. Pane entities,
 attachment choosers, attention markers and new native windows inherit that authority.
 Changing a saved binding or explicitly reconnecting invalidates old pane owners;
 delayed callbacks cannot apply to their replacements. Cross-workspace tab transfers
@@ -1512,7 +1519,10 @@ lifecycle journal; it does not invoke a lifecycle action. Start/Stop controls us
 an atomic registry record loaded before the buttons appear. Submitting switches
 the view to the original operation key before persistence or provider execution,
 so ambiguous writes and replies retain recovery identity. Reopening enumerates
-bounded record IDs and validates one page of durable snapshots at a time.
+bounded record IDs. The full history validates one page of durable snapshots at
+a time; a profile's page reads every record to find that profile's, and counts its
+unfinished requests the same way. Lifecycle records are kept, and the journal
+refuses new requests once it holds 4,096.
 Receipt lookup and identical retry are distinct explicit actions. Closing the
 view does not stop a start or stop already running; it finishes in the
 background, and its receipt is read the next time the profile is opened.

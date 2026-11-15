@@ -179,9 +179,10 @@ pub enum Step<T> {
     Send(String),
     /// Wait for more replies.
     Wait,
-    /// Read and delete these capture buffers with [`crate::buffers::take`],
+    /// Read and delete these capture buffers, each named with the size the
+    /// line listed (`None` when tmux made none), with [`crate::buffers::take`],
     /// in order, and hand their contents to the rebuild's `captured`.
-    Read(Vec<String>),
+    Read(Vec<(String, Option<usize>)>),
     /// The rebuild is ready.
     Done(T),
     /// A command failed, for example because the pane exited. The replies
@@ -287,12 +288,12 @@ impl Recovery {
             }
             Waiting::Line => {
                 self.replies.push(reply);
-                if self.replies.len() < replies_per_pane() + 1 {
+                if self.replies.len() < line_replies(1, self.buffers.is_some()) {
                     return Ok(Step::Wait);
                 }
                 if self.buffers.is_some() {
                     self.waiting = Waiting::Buffers;
-                    return Ok(Step::Read(self.buffers()));
+                    return Ok(Step::Read(listed(self.buffers(), &self.replies, 1)?));
                 }
                 self.finish()
             }
@@ -395,7 +396,7 @@ impl Attach {
         if !reply.ok {
             return Ok(Step::Failed);
         }
-        let expected = self.panes.len() * replies_per_pane() + 1;
+        let expected = line_replies(self.panes.len(), self.buffers.is_some());
         if self.replies.len() == expected {
             return Err(Error::UnexpectedReply);
         }
@@ -404,7 +405,11 @@ impl Attach {
             return Ok(Step::Wait);
         }
         if self.buffers.is_some() {
-            return Ok(Step::Read(self.buffers()));
+            return Ok(Step::Read(listed(
+                self.buffers(),
+                &self.replies,
+                self.panes.len(),
+            )?));
         }
         self.finish()
     }
@@ -414,8 +419,7 @@ impl Attach {
         &mut self,
         contents: Vec<Option<Vec<u8>>>,
     ) -> Result<Step<Vec<Snapshot>>, Error> {
-        if self.buffers.is_none() || self.replies.len() != self.panes.len() * replies_per_pane() + 1
-        {
+        if self.buffers.is_none() || self.replies.len() != line_replies(self.panes.len(), true) {
             return Err(Error::UnexpectedReply);
         }
         fill(&mut self.replies, contents)?;
@@ -454,6 +458,7 @@ pub fn hooks_break_recovery<'a>(lines: impl IntoIterator<Item = &'a [u8]>) -> bo
         [
             "after-capture-pane[",
             "after-display-message[",
+            "after-list-buffers[",
             "after-refresh-client[",
         ]
         .iter()
@@ -498,6 +503,25 @@ const FORMATS: [&str; 28] = [
 /// pending bytes.
 const fn replies_per_pane() -> usize {
     FORMATS.len() + 3
+}
+
+/// The replies to a line for `panes`: each pane's, the buffer listing when
+/// the captures go into buffers, and the last command's.
+const fn line_replies(panes: usize, buffers: bool) -> usize {
+    panes * replies_per_pane() + buffers as usize + 1
+}
+
+/// Pairs each of `names` with its size in the listing that follows the
+/// replies of `panes` panes.
+fn listed(
+    names: Vec<String>,
+    replies: &[Reply],
+    panes: usize,
+) -> Result<Vec<(String, Option<usize>)>, Error> {
+    let listing = &replies[panes * replies_per_pane()];
+    let sizes = crate::buffers::sizes_in(&names, lines(listing))
+        .map_err(|_| Error::Format("buffer_size"))?;
+    Ok(names.into_iter().zip(sizes).collect())
 }
 
 /// Returns `pane` as a target, quoted: in a control command, `%` starts a
@@ -549,6 +573,9 @@ fn line(
             commands.push(format!("display-message -p -t '{target}' '#{{{format}}}'"));
         }
         commands.push(format!("capture-pane {} -P -C -t '{target}'", to(2)));
+    }
+    if let Some(prefix) = buffers {
+        commands.push(crate::buffers::list_command(prefix));
     }
     commands.push(last.to_owned());
     let mut line = commands.join(" ; ");
@@ -905,14 +932,29 @@ mod tests {
         assert!(line.contains(" ; capture-pane -b 'p-7-1' -e -N -C -a -q "));
         assert!(line.contains(" ; capture-pane -b 'p-7-2' -P -C -t '%7' ; "));
         assert!(!line.contains("capture-pane -p"));
-        assert_eq!(line.matches(" ; ").count(), replies_per_pane());
+        assert!(line.ends_with(
+            " ; list-buffers -F '#{buffer_size} #{buffer_name}' -f '#{m:p-*,#{buffer_name}}' \
+             ; refresh-client -A '%7:continue'\n"
+        ));
+        assert_eq!(line.matches(" ; ").count(), replies_per_pane() + 1);
 
         recovery.output(b"after");
         for reply in buffered_replies() {
             assert_eq!(recovery.reply(reply).unwrap(), Step::Wait);
         }
+        let listing = ok(&["64 p-7-0", "5 p-7-2"]);
+        assert_eq!(recovery.reply(listing).unwrap(), Step::Wait);
         let names = vec!["p-7-0".to_owned(), "p-7-1".into(), "p-7-2".into()];
-        assert_eq!(recovery.reply(ok(&[])).unwrap(), Step::Read(names.clone()));
+        assert_eq!(
+            recovery.reply(ok(&[])).unwrap(),
+            Step::Read(
+                names
+                    .iter()
+                    .cloned()
+                    .zip([Some(64), None, Some(5)])
+                    .collect()
+            )
+        );
         assert_eq!(recovery.buffers(), names);
         assert_eq!(recovery.reply(ok(&[])), Err(Error::UnexpectedReply));
         // Text that imitates tmux's lines is only text. The saved capture is
@@ -979,6 +1021,7 @@ mod tests {
         for reply in buffered_replies() {
             assert_eq!(recovery.reply(reply).unwrap(), Step::Wait);
         }
+        assert_eq!(recovery.reply(ok(&[])).unwrap(), Step::Wait);
         assert!(matches!(recovery.reply(ok(&[])).unwrap(), Step::Read(_)));
         let screen = format!("screen\n{guard}\n{forged}\n").into_bytes();
         let Step::Done(rebuilt) = recovery
@@ -1002,13 +1045,17 @@ mod tests {
         assert!(line.contains("-b 'p-1-0'") && line.contains("-b 'p-4-2'"));
         let mut replies = buffered_replies();
         replies.extend(buffered_replies());
+        replies.push(ok(&["4 p-1-0"]));
         for reply in replies {
             assert_eq!(attach.reply(reply).unwrap(), Step::Wait);
         }
-        let Step::Read(names) = attach.reply(ok(&[])).unwrap() else {
+        let Step::Read(listed) = attach.reply(ok(&[])).unwrap() else {
             panic!("the buffers come next");
         };
+        let names: Vec<String> = listed.iter().map(|(name, _)| name.clone()).collect();
         assert_eq!(names, attach.buffers());
+        assert_eq!(listed[0].1, Some(4));
+        assert!(listed[1..].iter().all(|(_, size)| size.is_none()));
         assert_eq!(names[..4], ["p-1-0", "p-1-1", "p-1-2", "p-4-0"]);
         assert_eq!(attach.captured(vec![None; 5]), Err(Error::UnexpectedReply));
         let contents = [b"one\n".to_vec(), b"two\n".to_vec()]
@@ -1119,6 +1166,7 @@ mod tests {
         for set in [
             &b"after-capture-pane[0] run-shell true"[..],
             b"after-display-message[3] set -g @x 1",
+            b"after-list-buffers[0] run-shell true",
             b"after-refresh-client[0] run-shell true",
         ] {
             assert!(
