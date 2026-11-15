@@ -287,9 +287,22 @@ pub(crate) fn stream(
             let response = sender.send_request(request).await.map_err(|_| None)?;
             Ok((sender, response))
         };
-        let (_sender, response) = tokio::time::timeout(Duration::from_secs(15), open)
-            .await
-            .map_err(|_| None)??;
+        // A peer that accepts and then says nothing must not hold a stopped
+        // reader for the whole deadline.
+        let mut open = std::pin::pin!(open);
+        let mut waited = Duration::ZERO;
+        let (_sender, response) = loop {
+            match tokio::time::timeout(STEP, &mut open).await {
+                Ok(opened) => break opened?,
+                Err(_) if !live() => return Ok(()),
+                Err(_) => {
+                    waited += STEP;
+                    if waited >= Duration::from_secs(15) {
+                        return Err(None);
+                    }
+                }
+            }
+        };
         if !response.status().is_success() {
             return Err(Some(response.status().as_u16()));
         }

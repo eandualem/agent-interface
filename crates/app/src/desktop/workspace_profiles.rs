@@ -52,6 +52,8 @@ pub(super) enum HomeProfile {
     Found(agent_interface_roster::profiles::Item),
     /// A binding is reading what it needs.
     Preparing,
+    /// A binding's own save is running or has failed.
+    Saving(agent_interface_roster::profiles::Item),
     /// The service names none or did not answer, or the person discarded a
     /// binding's save.
     Absent,
@@ -65,27 +67,41 @@ struct Migration {
     agents: HashSet<String>,
 }
 
-/// Point attachments to the profile's agents at their workspace's profile,
-/// where those agents now run. Any other attachment stays as it is, and a
-/// bound pane says that its session is on another server.
+/// Apply `migrate` to every attachment under `node`, as its workspace is bound.
 fn follow_profile(
     node: &mut agent_interface_core::Node,
-    migrated: &dyn Fn(&agent_interface_core::Attachment) -> bool,
+    migrate: &dyn Fn(&mut agent_interface_core::Attachment),
 ) {
     use agent_interface_core::Node;
     match node {
         Node::Leaf(leaf) => {
-            if let Some(attachment) = &mut leaf.attachment
-                && attachment.source_socket.is_some()
-                && migrated(attachment)
-            {
-                attachment.source_socket = None;
+            if let Some(attachment) = &mut leaf.attachment {
+                migrate(attachment);
             }
         }
         Node::Split { first, second, .. } => {
-            follow_profile(first, migrated);
-            follow_profile(second, migrated);
+            follow_profile(first, migrate);
+            follow_profile(second, migrate);
         }
+    }
+}
+
+/// Where an attachment on the unbound tmux server belongs once its workspace
+/// is bound. An attachment without a socket means that server while unbound
+/// and the profile's server afterwards. So one of the profile's agents loses
+/// its socket and follows the profile, where the agent now runs, and any other
+/// session is pinned to the unbound server, where it still is: its bound pane
+/// then says that the session is on another server.
+fn migrate_attachment(
+    attachment: &mut agent_interface_core::Attachment,
+    agent: bool,
+    source: Option<&str>,
+    names_source: &dyn Fn(&str) -> bool,
+) {
+    match &attachment.source_socket {
+        Some(socket) if agent && names_source(socket) => attachment.source_socket = None,
+        None if !agent => attachment.source_socket = source.map(str::to_owned),
+        _ => {}
     }
 }
 
@@ -620,10 +636,26 @@ impl Browser {
     /// Whether a workspace without a profile shows agents, which only the
     /// service that the Rust one replaces serves.
     fn shows_unbound_agents(&self) -> bool {
-        self.layout.as_ref().is_some_and(|layout| {
-            let model = layout.model();
-            model.show_agents && model.workspaces.iter().any(|s| s.profile_id.is_none())
-        })
+        // Only where the earlier service was installed, so a workspace made
+        // for terminals alone stays as it is everywhere else; and never
+        // behind first run, which gives its starting workspace a profile.
+        self.backbone.is_some()
+            && self.onboarding.is_none()
+            && self.layout.as_ref().is_some_and(|layout| {
+                let model = layout.model();
+                model.show_agents && model.workspaces.iter().any(|s| s.profile_id.is_none())
+            })
+    }
+
+    /// Attachment sockets saved in the library, whose other names a binding resolves.
+    fn saved_sockets(&self) -> HashSet<String> {
+        self.layout
+            .iter()
+            .flat_map(|layout| &layout.model().workspaces)
+            .flat_map(|space| &space.tabs)
+            .flat_map(|tab| tab.tree.leaves())
+            .filter_map(|leaf| leaf.attachment.as_ref()?.source_socket.clone())
+            .collect()
     }
 
     /// Whether a binding may be saved now: there is something to bind, and
@@ -648,12 +680,15 @@ impl Browser {
     ) {
         let Some(layout) = &self.layout else { return };
         let (base, mut proposed) = layout.save_snapshot();
-        let source = self.source.as_ref().and_then(|source| source.as_ref().ok());
-        let unbound = |attachment: &agent_interface_core::Attachment| {
-            let socket = attachment.source_socket.as_deref();
-            migration.agents.contains(&attachment.session)
-                && (migration.aliases.contains(socket)
-                    || socket.map(std::path::Path::new) == source.map(|path| path.as_path()))
+        let source = self
+            .source
+            .as_ref()
+            .and_then(|source| source.as_ref().ok()?.to_str());
+        let migrate = |attachment: &mut agent_interface_core::Attachment| {
+            let agent = migration.agents.contains(&attachment.session);
+            migrate_attachment(attachment, agent, source, &|socket| {
+                Some(socket) == source || migration.aliases.contains(Some(socket))
+            });
         };
         let mut bound = Vec::new();
         let mut shells = Vec::new();
@@ -661,7 +696,7 @@ impl Browser {
             if space.profile_id.is_none() {
                 space.profile_id = Some(item.profile_id.clone());
                 for tab in &mut space.tabs {
-                    follow_profile(&mut tab.tree, &unbound);
+                    follow_profile(&mut tab.tree, &migrate);
                     for leaf in tab.tree.leaves() {
                         if leaf.attachment.is_none() && leaf.runs_terminal() {
                             shells.push((space.name.clone(), tab.name.clone(), leaf.id.clone()));
@@ -679,9 +714,10 @@ impl Browser {
             event = "workspaces_bound_to_home_profile",
             profile_id = %item.profile_id,
             workspaces = ?bound,
-            "Workspaces without a profile now use this computer's profile"
+            "Binding workspaces without a profile to this computer's profile"
         );
         self.workspace_profiles.remember_name(&item);
+        self.home_profile = HomeProfile::Saving(item);
         self.pending_save = Some((base, proposed));
         self.save(cx);
         // The shells these panes showed keep running on the library's shell
@@ -707,7 +743,7 @@ impl Browser {
                         %session,
                         socket = %socket.display(),
                         command = command.as_deref().unwrap_or("unknown"),
-                        "A shell is no longer shown and keeps running; attach with tmux -S <socket> attach -t <session>"
+                        "A shell keeps running and is not shown once its workspace is bound; attach with tmux -S <socket> attach -t <session>"
                     );
                 }
             })
@@ -732,7 +768,15 @@ impl Browser {
             })
             .detach();
         }
-        // Also after a save that a conflict dropped, and in another library.
+        // The binding's save ended. Workspaces it left without a profile,
+        // after a conflict, are bound again below.
+        if !self.saving
+            && !self.save_failed
+            && let HomeProfile::Saving(item) = &self.home_profile
+        {
+            self.home_profile = HomeProfile::Found(item.clone());
+        }
+        // Also in another library.
         if self.may_bind_unbound()
             && let HomeProfile::Found(item) = &self.home_profile
             && let Some(Ok(client)) = &self.profile_client
@@ -741,17 +785,16 @@ impl Browser {
             let generation = self.library_generation;
             self.home_profile = HomeProfile::Preparing;
             let source = self.source.as_ref().and_then(|source| source.clone().ok());
-            let sockets = self
-                .layout
-                .iter()
-                .flat_map(|layout| &layout.model().workspaces)
-                .flat_map(|space| &space.tabs)
-                .flat_map(|tab| tab.tree.leaves())
-                .filter_map(|leaf| leaf.attachment.as_ref()?.source_socket.clone())
-                .collect();
+            let sockets = self.saved_sockets();
+            let resolved = sockets.clone();
             let profile_id = item.profile_id.clone();
             // Reads the service and the file system, so not here.
             let work = cx.background_executor().spawn(async move {
+                // Another profile may have made its home here since.
+                let home = client.home(&|| true).ok()??;
+                if home.profile_id != profile_id {
+                    return None;
+                }
                 let roster = client
                     .show(&profile_id, &|| true)
                     .ok()?
@@ -774,11 +817,20 @@ impl Browser {
                         browser.home_profile = HomeProfile::Absent;
                         return;
                     };
-                    // What was read is for the library and layout of that
-                    // moment; anything else prepares again.
-                    let current = browser.library_generation == generation;
                     browser.home_profile = HomeProfile::Found(item.clone());
-                    if current && browser.may_bind_unbound() {
+                    // What was read is for the library and its sockets of
+                    // that moment; anything else prepares again.
+                    if let Some(update) = browser
+                        .library
+                        .as_ref()
+                        .and_then(crate::library::Library::take_update)
+                    {
+                        browser.apply(update);
+                    }
+                    if browser.library_generation == generation
+                        && browser.saved_sockets() == resolved
+                        && browser.may_bind_unbound()
+                    {
                         browser.bind_unbound_workspaces(item, &migration, cx);
                     }
                     cx.notify();
@@ -1302,29 +1354,40 @@ impl Browser {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::roster::content::tests::provider;
 
     #[test]
     fn only_attachments_to_the_profiles_agents_follow_it() {
         use agent_interface_core::Attachment;
-        let mut model = Layout::initial("/tmp".into());
-        model.attach(Some(Attachment {
-            session: "worker".into(),
-            source_socket: Some("/tmp/default".into()),
-        }));
-        let source = |model: &Layout| {
+        let migrated = |socket: Option<&str>, agent: bool| {
+            let mut model = Layout::initial("/tmp".into());
+            model.attach(Some(Attachment {
+                session: "worker".into(),
+                source_socket: socket.map(str::to_owned),
+            }));
+            follow_profile(&mut model.workspaces[0].tabs[0].tree, &|attachment| {
+                migrate_attachment(attachment, agent, Some("/tmp/default"), &|socket| {
+                    socket == "/tmp/default"
+                });
+            });
             let attachment = model.pane().unwrap().attachment.clone().unwrap();
             attachment.source_socket
         };
-        let follow = |model: &mut Layout, agent: &str| {
-            let tree = &mut model.workspaces[0].tabs[0].tree;
-            follow_profile(tree, &|attachment| attachment.session == agent);
-        };
-        follow(&mut model, "another");
-        assert_eq!(source(&model).as_deref(), Some("/tmp/default"));
-        follow(&mut model, "worker");
-        assert_eq!(source(&model), None);
+        // An agent on the unbound server follows the profile.
+        assert_eq!(migrated(Some("/tmp/default"), true), None);
+        assert_eq!(migrated(None, true), None);
+        // Another session stays on the unbound server, named or not.
+        assert_eq!(
+            migrated(Some("/tmp/default"), false).as_deref(),
+            Some("/tmp/default")
+        );
+        assert_eq!(migrated(None, false).as_deref(), Some("/tmp/default"));
+        // A session on a third server is left alone.
+        assert_eq!(
+            migrated(Some("/tmp/other"), true).as_deref(),
+            Some("/tmp/other")
+        );
     }
-    use crate::roster::content::tests::provider;
 
     #[test]
     fn browser_routes_hidden_panes_attention_and_failures_by_owning_workspace() {

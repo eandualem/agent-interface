@@ -412,22 +412,25 @@ two-second poll continues, because agents joining or leaving the roster are
 not pushed.
 
 A workspace saved without a profile was served by the earlier Python service
-without a binding. Once the Rust service's list names exactly one serving
-profile whose home is this machine, a window whose library shows agents binds
-every such workspace to that profile, saves the library and logs the workspaces
-it bound. Each binding first reads, on a worker, the profile's agents and
-which saved sockets are other names for the unbound tmux server. An attachment
+without a binding. Where that earlier installation is present and first run is
+over, once the Rust service's list names exactly one serving profile whose home
+is this machine, a window whose library shows agents binds every such workspace
+to that profile, saves the library and logs the workspaces it binds. Without
+the earlier installation a workspace made for terminals alone stays unbound.
+Each binding first reads, on a worker, the list again, the profile's agents
+and which saved sockets are other names for the unbound tmux server. An attachment
 to one of those agents on that server loses its socket, so it follows the
 profile's server, where the agent now runs. Any other attachment keeps its
-socket, and its pane says that the session is on another server.
+socket, or is given the unbound server's when it was saved without one, and
+its pane says that the session is on another server.
 Ordinary shell panes of such a workspace become shells of the profile, as in
 any bound workspace: the shells they showed keep running on the library's
 shell server and are no longer shown, and the log names each one's session,
-socket and running command. The list is read once in a window's life; the
-binding is made again after a save that a conflict dropped, and in any library
-the window opens. It waits while a name is being edited or a pane resized or
-dragged. Discarding a failed save, or a service that does not answer the
-binding's reads, ends it for that window.
+socket and running command. The binding is made again after a save that a
+conflict dropped, and in any library the window opens. It waits while a name
+is being edited or a pane resized or dragged. Discarding its failed save, a
+service that does not answer its reads, or a list that no longer names that
+one profile ends it for that window.
 The explicit `app::roster::BoundRosterSource` owns one connection for its entire
 worker lifetime, with a private coalescing cache. Every update carries its
 verified identity and typed failure; a failed read retains only that worker's

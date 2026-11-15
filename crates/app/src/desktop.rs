@@ -1611,14 +1611,13 @@ impl Browser {
         // Discarding the binding's own save drops it; saving it again could
         // fail the same way and leave nothing else to do.
         self.pending_profile = None;
-        // The discarded save may be the automatic binding's, which would
+        // Discarding the automatic binding's own save ends it: it would
         // otherwise be made again at once and fail the same way.
-        use workspace_profiles::HomeProfile;
         if matches!(
             self.home_profile,
-            HomeProfile::Found(_) | HomeProfile::Preparing
+            workspace_profiles::HomeProfile::Saving(_)
         ) {
-            self.home_profile = HomeProfile::Absent;
+            self.home_profile = workspace_profiles::HomeProfile::Absent;
         }
         let bind = self.bind_after_save.take();
         self.pending_save = None;

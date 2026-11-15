@@ -134,13 +134,13 @@ fn watch(
 
 impl Drop for BoundRosterSource {
     fn drop(&mut self) {
+        let _ = self.stop.send(true);
         if let Some((live, worker)) = self.stream.take() {
             live.store(false, Ordering::Relaxed);
             worker.thread().unpark();
             // The stream notices within a quarter of a second.
             let _ = worker.join();
         }
-        let _ = self.stop.send(true);
         if let Some(worker) = self.worker.take() {
             // The in-flight bounded request finishes before this handle drops.
             let _ = worker.join();
