@@ -4,7 +4,7 @@
 
 use std::{ffi::OsString, path::PathBuf, process::ExitCode};
 
-const USAGE: &str = "Usage: agent-interface [--data-dir PATH]\n       agent-interface [--data-dir PATH] artifact publish FILE.html --title TITLE [--author NAME]\n\nOpen saved workspaces, or publish a self-contained HTML artifact to the\nlibrary without opening a window.\n";
+const USAGE: &str = "Usage: agent-interface [--data-dir PATH]\n       agent-interface [--data-dir PATH] artifact publish FILE.html --title TITLE [--author NAME]\n       agent-interface [--data-dir PATH] bind-home-profile\n\nOpen saved workspaces, or publish a self-contained HTML artifact to the\nlibrary without opening a window. After a move from the Python Backbone\nservice to the Rust one, bind-home-profile binds the workspaces saved\nwithout a profile to this computer's profile, once.\n";
 
 fn main() -> ExitCode {
     match options(std::env::args_os().skip(1)) {
@@ -37,6 +37,15 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Ok(Options::BindHomeProfile(directory)) => {
+            match agent_interface_app::adoption::bind_home_profile(directory.as_deref()) {
+                Ok(report) => report.iter().for_each(|line| println!("{line}")),
+                Err(error) => {
+                    eprintln!("agent-interface: {}", error.escape_debug());
+                    return ExitCode::FAILURE;
+                }
+            }
+        }
         Ok(Options::Version) => println!("agent-interface {}", env!("CARGO_PKG_VERSION")),
         Err(error) => {
             eprintln!("agent-interface: {}\n{USAGE}", error.escape_debug());
@@ -55,6 +64,7 @@ enum Options {
         title: String,
         author: String,
     },
+    BindHomeProfile(Option<PathBuf>),
     Help,
     Version,
 }
@@ -63,6 +73,7 @@ fn options(mut arguments: impl Iterator<Item = OsString>) -> Result<Options, Str
     use std::os::unix::ffi::OsStrExt;
     let mut directory = None;
     let (mut artifact, mut title, mut author) = (None, None, None);
+    let mut bind = false;
     while let Some(argument) = arguments.next() {
         if argument == "--help" || argument == "-h" {
             return Ok(Options::Help);
@@ -77,6 +88,8 @@ fn options(mut arguments: impl Iterator<Item = OsString>) -> Result<Options, Str
             artifact = Some(PathBuf::from(
                 arguments.next().ok_or("artifact publish requires a file")?,
             ));
+        } else if argument == "bind-home-profile" && artifact.is_none() {
+            bind = true;
         } else if argument == "--title" || argument == "--author" {
             let value = arguments
                 .next()
@@ -96,6 +109,12 @@ fn options(mut arguments: impl Iterator<Item = OsString>) -> Result<Options, Str
         } else {
             return Err(format!("unknown argument: {}", argument.to_string_lossy()));
         }
+    }
+    if bind {
+        if artifact.is_some() || title.is_some() || author.is_some() {
+            return Err("bind-home-profile takes only --data-dir".into());
+        }
+        return Ok(Options::BindHomeProfile(directory));
     }
     if let Some(file) = artifact {
         return Ok(Options::Artifact {
@@ -132,6 +151,11 @@ mod tests {
                 Ok(Options::Open(Some("library with spaces".into())))
             );
         }
+        assert_eq!(
+            parse(&["--data-dir", "library", "bind-home-profile"]),
+            Ok(Options::BindHomeProfile(Some("library".into())))
+        );
+        assert!(parse(&["bind-home-profile", "--title", "A report"]).is_err());
         assert!(parse(&["--data-dir"]).is_err());
         assert!(parse(&["--unknown"]).is_err());
     }

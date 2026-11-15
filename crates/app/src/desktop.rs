@@ -317,6 +317,11 @@ fn browser_window(cx: &App) -> Option<gpui::WindowHandle<Browser>> {
         })
 }
 
+/// The Backbone command as a login shell finds it, for work that opens no window.
+pub(crate) fn profile_client() -> Option<crate::profiles::Client> {
+    onboarding::probe::profile_client()
+}
+
 /// New profile, from the application menu: its two screens in the active
 /// workspace window, which opens if there is none.
 fn new_profile(cx: &mut App) {
@@ -673,7 +678,6 @@ struct Browser {
     pane_owners: HashMap<String, workspace_profiles::Owner>,
     profile_client: Option<Result<crate::profiles::Client, ()>>,
     profile_client_loading: bool,
-    home_profile: workspace_profiles::HomeProfile,
     profile_picker_requested: bool,
     profile_picker: Option<(
         gpui::Entity<profile_picker::ProfilePicker>,
@@ -1611,14 +1615,6 @@ impl Browser {
         // Discarding the binding's own save drops it; saving it again could
         // fail the same way and leave nothing else to do.
         self.pending_profile = None;
-        // Discarding the automatic binding's own save ends it: it would
-        // otherwise be made again at once and fail the same way.
-        if matches!(
-            self.home_profile,
-            workspace_profiles::HomeProfile::Saving(_)
-        ) {
-            self.home_profile = workspace_profiles::HomeProfile::Absent;
-        }
         let bind = self.bind_after_save.take();
         self.pending_save = None;
         if let Some(pane) = self.section_saving.take() {

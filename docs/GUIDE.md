@@ -382,6 +382,24 @@ The author label defaults to `BACKBONE_AGENT`, then `local`; it is attribution,
 not a verified identity. The open Artifacts list discovers publications within
 its next two-second refresh. Choose a document to open it in that pane.
 
+### Moving a library to the Rust Backbone service
+
+Workspaces saved without a profile showed the agents of the Python Backbone
+service. Once the Rust service has taken its place, bind them to this
+computer's profile with one command:
+
+```sh
+agent-interface bind-home-profile
+```
+
+Add `--data-dir PATH` for another library. The command needs the service to
+list exactly one profile with its home on this computer, and it changes
+nothing when a workspace already has a profile. Panes attached to the
+profile's agents follow it. Panes attached to your own tmux sessions keep
+their server and say so. Ordinary shells become shells of the profile; the
+shells they showed keep running, and the command prints the `tmux` command
+that attaches to each one.
+
 Write one self-contained UTF-8 HTML file, up to 4 MiB including its assets.
 Inline CSS and JavaScript, SVG, canvas, animations and data URLs are supported.
 External scripts, styles, images and network requests do not load. Links cannot

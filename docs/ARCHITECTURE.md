@@ -407,35 +407,33 @@ own and reads only each frame's kind: the opening `hello`, `agent.state` and
 `resync` each ask the roster worker for a read at once. The frames' values are
 not applied and no cursor is kept, so a stream opened again simply reads the
 states again. A stream that breaks, or stays silent for 45 seconds against the
-service's 15-second heartbeat, is opened again two seconds later. The
+service's 15-second heartbeat, is opened again two seconds later. When the
+stream worker cannot start, the roster is polled as before. The
 two-second poll continues, because agents joining or leaving the roster are
 not pushed.
 
 A workspace saved without a profile was served by the earlier Python service
-without a binding. Where that earlier installation is present and first run is
-over, once the Rust service's list names exactly one serving profile whose home
-is this machine, a window whose library shows agents binds every such workspace
-to that profile, saves the library and logs the workspaces it binds. Without
-the earlier installation a workspace made for terminals alone stays unbound.
-Each binding first reads, on a worker, the list again, the profile's agents
-and which saved sockets are other names for the unbound tmux server. An attachment
-to one of those agents on that server loses its socket, so it follows the
-profile's server, where the agent now runs. Any other attachment keeps its
-socket, or is given the unbound server's when it was saved without one, and
-its pane says that the session is on another server.
-Ordinary shell panes of such a workspace become shells of the profile, as in
-any bound workspace: the shells they showed keep running on the library's
-shell server and are no longer shown, and the log names each one's session,
-socket and running command. The binding is made again after a save that a
-conflict dropped, and in any library the window opens. It waits while a name
-is being edited or a pane resized or dragged. Discarding its failed save, a
-service that does not answer its reads, or a list that no longer names that
-one profile ends it for that window.
+without a binding, and shows no agents once the Rust service has taken its
+place. `agent-interface bind-home-profile` is the one-off migration for such a
+library; the app itself never binds a workspace that a person did not bind. It
+opens no window and needs the Rust service's list to name exactly one serving
+profile whose home is this machine. It reads that profile's agents, binds every
+workspace without a profile to it and saves through the store's usual conflict
+rules, writing nothing when the library changed meanwhile. An attachment to one
+of the profile's agents on the unbound tmux server loses its socket, so it
+follows the profile's server, where the agent now runs. Any other attachment
+keeps its socket, or is given the unbound server's when it was saved without
+one, and its pane says that the session is on another server. Ordinary shell
+panes become shells of the profile, as in any bound workspace, starting in the
+folder the earlier shell was in. Those earlier shells keep running on the
+library's shell server, and the command prints, for each, what it runs and the
+tmux command that attaches to it.
+
 The explicit `app::roster::BoundRosterSource` owns one connection for its entire
 worker lifetime, with a private coalescing cache. Every update carries its
 verified identity and typed failure; a failed read retains only that worker's
 previous metadata and observation time, marked stale. A running worker cannot
-be rebound. Dropping it stops the stream worker, interrupts the polling wait
+be rebound. Dropping it interrupts the polling wait, stops the stream worker
 and joins its bounded in-flight request, so UI owners must dispose of it off the UI thread.
 Desktop status observations are owned by explicit `LiveAgents` handles passed
 from each window to its views and child readers. A weak source registry shares

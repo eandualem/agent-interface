@@ -76,8 +76,11 @@ impl BoundRosterSource {
             worker: Some(worker),
             stream: None,
         };
-        // A failure here drops the source, which stops the polling worker.
-        source.stream = watch(watched, refresh)?;
+        // Without a stream worker the roster is still polled.
+        source.stream = watch(watched, refresh).unwrap_or_else(|error| {
+            tracing::warn!(event = "roster_stream_not_started", %error, "Agent state stream not followed");
+            None
+        });
         Ok(source)
     }
 

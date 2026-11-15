@@ -66,7 +66,7 @@ pub(super) struct SourceMatches {
 }
 
 impl SourceMatches {
-    pub(super) fn resolve(source: Option<PathBuf>, sockets: HashSet<String>) -> Self {
+    fn resolve(source: Option<PathBuf>, sockets: HashSet<String>) -> Self {
         let resolve = |path: &std::path::Path| crate::library::location::resolve_path(path).ok();
         let source = source.as_deref().and_then(resolve);
         Self {

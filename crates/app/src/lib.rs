@@ -6,6 +6,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod adoption;
 pub mod artifacts;
 mod compat;
 pub mod desktop;
