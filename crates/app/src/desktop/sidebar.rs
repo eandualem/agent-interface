@@ -296,7 +296,8 @@ impl Browser {
                     .on_mouse_down(
                         gpui::MouseButton::Left,
                         cx.listener(move |browser, event: &gpui::MouseDownEvent, _, cx| {
-                            browser.sidebar_drag = Some((event.position.x, width));
+                            browser.sidebar_drag =
+                                Some((event.position.x, width, settings::sidebar_width()));
                             cx.stop_propagation();
                         }),
                     ),

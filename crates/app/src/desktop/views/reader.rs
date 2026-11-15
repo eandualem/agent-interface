@@ -16,7 +16,10 @@ use crate::desktop::{
 pub(super) enum Text<'a> {
     Loading,
     Failed(&'static str),
-    Ready { text: &'a str, cut: bool },
+    Ready {
+        text: &'a std::sync::Arc<str>,
+        cut: bool,
+    },
 }
 
 /// One open document.
@@ -43,7 +46,7 @@ pub(super) fn render(
     let (t, c) = (tokens(), colors());
     // Copy exactly what was read, clearly labelling a bounded preview.
     let source = match page.text {
-        Text::Ready { text, cut } => Some((text.to_owned(), cut)),
+        Text::Ready { text, cut } => Some((text.clone(), cut)),
         _ => None,
     };
     let copy = source.map(|(source, cut)| {
@@ -66,7 +69,7 @@ pub(super) fn render(
             c.muted,
         ))
         .on_click(cx.listener(move |pane, _, _, cx| {
-            cx.write_to_clipboard(gpui::ClipboardItem::new_string(source.clone()));
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string(source.to_string()));
             pane.copied = true;
             cx.notify();
             cx.spawn(async |pane, cx| {

@@ -22,7 +22,8 @@ struct Reader {
 
 struct Snapshot {
     agent: Agent,
-    permissions: Permissions,
+    /// Read only for the Permissions section, the one place it is shown.
+    permissions: Option<Permissions>,
 }
 
 impl Reader {
@@ -40,14 +41,20 @@ impl Reader {
         };
         // A provider without permission inspection still shows the rest of the
         // card; the Permissions section says it is unsupported.
-        let permissions = match self
-            .target
-            .as_ref()
-            .expect("inspected target")
-            .permissions()
-        {
-            Err(runtime_context::Error::Unsupported) => Permissions::unsupported(),
-            result => result?,
+        let permissions = if section == AgentSection::Permissions {
+            Some(
+                match self
+                    .target
+                    .as_ref()
+                    .expect("inspected target")
+                    .permissions()
+                {
+                    Err(runtime_context::Error::Unsupported) => Permissions::unsupported(),
+                    result => result?,
+                },
+            )
+        } else {
+            None
         };
         let part = match section {
             AgentSection::Skills => Part::Skills,
@@ -327,8 +334,11 @@ impl Render for Card {
                         .child(format!("{label}: {value}")),
                 );
             }
-        } else if let Some(snapshot) = &self.snapshot {
-            let permissions = &snapshot.permissions;
+        } else if let Some(permissions) = self
+            .snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.permissions.as_ref())
+        {
             if let Some(message) = permissions.message() {
                 body = body.child(ui::text(div().text_color(c.muted), &t.text.row).child(message));
             } else {

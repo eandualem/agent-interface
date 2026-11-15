@@ -11,7 +11,7 @@ Report suspected security defects privately through the repository's
 **Security → Report a vulnerability** form. Use a public issue for ordinary
 bugs that do not expose sensitive information.
 
-Include the app version (**About Agent Interface**, or `BUILD.json`), operating
+Include the app version (**Settings → General**, or `BUILD.json`), operating
 system, tmux version, relevant configuration, and a minimal reproduction.
 Describe what you expected, what happened, and the concrete impact on the
 product: for example, incorrect terminal output, unintended input routing,
@@ -49,7 +49,7 @@ document capabilities. It opens no network listener and runs no daemon of its ow
 | Agent Backbone | Credential-bearing requests use a Unix socket owned by your account, with a 0600 socket in a 0700 directory. Both ends check peer identity. There is no network fallback for these requests. This distinguishes accounts, not programs running as the same account. |
 | HTML documents | The document view has no network access, navigation, downloads, new windows or file chooser. WebRTC is disabled. On Linux, clipboard access is disabled and WebKit's process sandbox must be active. The view refuses to open if these settings cannot be applied. These restrictions belong to the embedded document capability, not to your terminal sessions. |
 | Links | Clicking an app-provided report or document link can open an `http` or `https` URL in your browser. |
-| Setup | First-run setup displays official installation commands for agent tools; it does not execute those installation commands. |
+| Setup | Setup installs only what you choose to install. For Git and tmux it runs Apple's command line tools installer or Homebrew on macOS, and on Linux the distribution's package manager behind the desktop's password prompt. For an agent tool it runs that tool's official installation command, which downloads a script and runs it in a shell under your account. |
 
 ## Optional diagnostics and functional data
 

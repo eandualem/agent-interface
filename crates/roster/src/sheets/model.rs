@@ -2,7 +2,11 @@
 //! supplied by Backbone; this module never evaluates formulas.
 
 use serde::{Deserialize, Deserializer, Serialize};
-use std::{collections::HashSet, fmt};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt,
+    sync::OnceLock,
+};
 
 /// An opaque, validated lowercase UUID, without separators.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
@@ -348,13 +352,26 @@ pub struct Grid {
     pub cells: Vec<Cell>,
     /// Continuation offset in the same order and revision.
     pub next_row_offset: Option<usize>,
+    /// Where each coordinate's cell is, built at the first lookup: a page is
+    /// drawn cell by cell and is not changed once read.
+    #[serde(skip)]
+    index: OnceLock<HashMap<Id, HashMap<Id, usize>>>,
 }
 impl Grid {
     /// Read a coordinate without inventing a cell for an absent blank.
     pub fn cell(&self, row: &Id, column: &Id) -> Option<&Cell> {
-        self.cells
-            .iter()
-            .find(|c| &c.row_id == row && &c.column_id == column)
+        let index = self.index.get_or_init(|| {
+            let mut index: HashMap<Id, HashMap<Id, usize>> = HashMap::new();
+            for (at, cell) in self.cells.iter().enumerate() {
+                index
+                    .entry(cell.row_id.clone())
+                    .or_default()
+                    .entry(cell.column_id.clone())
+                    .or_insert(at);
+            }
+            index
+        });
+        self.cells.get(*index.get(row)?.get(column)?)
     }
     pub(super) fn valid(&self) -> bool {
         let rows: HashSet<_> = self.rows.iter().map(|r| &r.row_id).collect();

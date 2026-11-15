@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     fs,
     io::{self, Read, Write},
-    os::unix::fs::OpenOptionsExt,
+    os::unix::fs::{DirBuilderExt, OpenOptionsExt},
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -95,7 +95,10 @@ pub fn publish(
         return Err(invalid("HTML is empty."));
     }
     let root = root(directory)?;
-    fs::create_dir_all(&root)?;
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&root)?;
     let entry = Entry {
         id: uuid::Uuid::new_v4().to_string(),
         title: title.into(),
@@ -155,16 +158,16 @@ pub fn catalog(directory: Option<&Path>) -> io::Result<Catalog> {
                     && valid_label(&meta.author, 100) =>
             {
                 catalog.entries.push(meta);
-                catalog
-                    .entries
-                    .sort_by(|a, b| b.created_ms.cmp(&a.created_ms).then(b.id.cmp(&a.id)));
-                if catalog.entries.len() > CATALOG_LIMIT {
-                    catalog.entries.pop();
-                    catalog.more = true;
-                }
             }
             _ => catalog.unreadable += 1,
         }
+    }
+    catalog
+        .entries
+        .sort_by(|a, b| b.created_ms.cmp(&a.created_ms).then(b.id.cmp(&a.id)));
+    if catalog.entries.len() > CATALOG_LIMIT {
+        catalog.entries.truncate(CATALOG_LIMIT);
+        catalog.more = true;
     }
     Ok(catalog)
 }
@@ -199,6 +202,12 @@ mod tests {
         assert!(catalog(Some(&directory)).unwrap().entries.is_empty());
         let entry = publish(Some(&directory), &source, "A report", "worker").unwrap();
         fs::remove_file(source).unwrap();
+        for created in [directory.clone(), directory.join("artifacts")] {
+            let mode = std::os::unix::fs::PermissionsExt::mode(
+                &fs::metadata(created).unwrap().permissions(),
+            );
+            assert_eq!(mode & 0o777, 0o700);
+        }
         assert_eq!(
             catalog(Some(&directory)).unwrap().entries,
             vec![entry.clone()]
