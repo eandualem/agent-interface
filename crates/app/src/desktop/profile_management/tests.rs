@@ -32,6 +32,7 @@ fn unknown_storage_and_submission_never_enable_replacement_submission() {
         request_id: "request-a".into(),
         identity: None,
         terminal: None,
+        copies_git_identity: false,
     };
     assert!(Command::Submit.allowed(Some(&snapshot)));
     assert!(!Command::Refresh.allowed(Some(&snapshot)));

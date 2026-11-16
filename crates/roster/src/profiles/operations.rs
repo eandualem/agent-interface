@@ -280,6 +280,13 @@ impl Prepared {
         body.get("display_name")?.as_str().map(str::to_owned)
     }
 
+    /// Whether this create request asks for this computer's Git name and
+    /// email, which the Rust service leaves to the app to set.
+    pub fn copies_git_identity(&self) -> bool {
+        serde_json::from_slice::<serde_json::Value>(&self.body)
+            .is_ok_and(|body| body.get("git_identity") == Some(&json!("copy")))
+    }
+
     /// Record the Rust service's answer to this create request: the entry of
     /// the profile it made, which it serves at once.
     pub fn observe_created(&mut self, profile: &Profile) -> Result<Receipt, Error> {

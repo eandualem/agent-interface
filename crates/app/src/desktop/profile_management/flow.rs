@@ -72,6 +72,8 @@ enum Stalled {
 struct Made {
     library: PathBuf,
     profile: Profile,
+    /// The create request asked for this computer's Git identity.
+    copies_git_identity: bool,
 }
 
 /// The Git name and email a new profile's agents commit as. A profile starts
@@ -427,6 +429,11 @@ impl Flow {
                 }
                 match result {
                     Ok(made) => {
+                        // A request resumed after the app closed keeps its own
+                        // choice; under the Rust service the app sets it.
+                        if made.copies_git_identity && flow.chosen == Some(Identity::None) {
+                            flow.chosen = Some(Identity::Computer);
+                        }
                         flow.library = Some(made.library);
                         flow.profile = Some(made.profile);
                         flow.connect(cx);
@@ -1088,6 +1095,7 @@ fn make(
     let controller = journal::Journal::open(&library.join("profile-operations"))
         .map(|journal| Controller::new(journal, &client))
         .map_err(|_| unavailable(&made))?;
+    let mut copies_git_identity = prepared.as_ref().is_some_and(Prepared::copies_git_identity);
     let profile =
         match (made, resume) {
             // Read it again: the start names its current lifecycle, which an
@@ -1104,7 +1112,12 @@ fn make(
                             .and_then(|_| controller.submit(&key, &alive));
                         result.map_err(|_| unconfirmed(key))?
                     }
-                    (None, Some(Stalled::Unconfirmed(key))) => recover(&controller, &key, &alive)?,
+                    (None, Some(Stalled::Unconfirmed(key))) => {
+                        copies_git_identity = controller
+                            .read(&key)
+                            .is_ok_and(|saved| saved.copies_git_identity);
+                        recover(&controller, &key, &alive)?
+                    }
                     _ => return Err((Stalled::Failed, None, "Give the profile a name.")),
                 };
                 match (receipt.status, receipt.identity) {
@@ -1152,7 +1165,11 @@ fn make(
     };
     // The Rust service serves a profile from the moment it makes it.
     if profile.served() {
-        return Ok(Made { library, profile });
+        return Ok(Made {
+            library,
+            profile,
+            copies_git_identity,
+        });
     }
     let request = uuid::Uuid::now_v7().simple().to_string();
     let start = Prepared::start(&request, &profile).map_err(|_| not_started(&profile))?;
@@ -1164,7 +1181,11 @@ fn make(
     if receipt.status != Status::Succeeded {
         return Err(not_started(&profile));
     }
-    Ok(Made { library, profile })
+    Ok(Made {
+        library,
+        profile,
+        copies_git_identity,
+    })
 }
 
 /// The receipt of a create request sent before, reading what is saved first:

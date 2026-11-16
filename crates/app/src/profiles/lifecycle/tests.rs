@@ -246,6 +246,13 @@ esac
         Err(Error::CommandFailed)
     ));
     fs::remove_file(dir.path().join("calls.unknown")).unwrap();
+    // A refused repeat cannot tell what the first send did: still unknown.
+    fs::write(dir.path().join("calls.refuse"), "").unwrap();
+    assert!(matches!(
+        operation.retry(&|| true),
+        Err(Error::CommandFailed)
+    ));
+    fs::remove_file(dir.path().join("calls.refuse")).unwrap();
     let receipt = operation.refresh(&|| true).unwrap();
     assert_eq!(receipt.status, Status::Succeeded);
     assert_eq!(
@@ -255,7 +262,7 @@ esac
     );
     assert_eq!(
         fs::read_to_string(&calls).unwrap(),
-        format!("profiles list --json\n{create}\nprofiles list --json\n{create}\n")
+        format!("profiles list --json\n{create}\n").repeat(3)
     );
 
     // A refusal made nothing, so a new request is safe.

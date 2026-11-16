@@ -66,6 +66,11 @@ impl Operation {
         self.prepared.bytes()
     }
 
+    /// Whether the original create request asks for this computer's Git identity.
+    pub fn copies_git_identity(&self) -> bool {
+        self.prepared.copies_git_identity()
+    }
+
     /// A previously validated terminal result, retained through private recovery.
     pub fn terminal(&self) -> Option<&Receipt> {
         self.prepared.terminal()
@@ -83,16 +88,32 @@ impl Operation {
         self.apply_with_timeout(live, APPLY_TIMEOUT)
     }
 
+    /// Send the exact original request again after an unknown outcome. Only
+    /// the earlier provider's receipt, or the Rust service's profile, settles
+    /// it: a refusal of the repeat says nothing about the first send.
+    pub fn retry(&mut self, live: &dyn Fn() -> bool) -> Result<Receipt, Error> {
+        self.submit(live, APPLY_TIMEOUT, true)
+    }
+
     fn apply_with_timeout(
         &mut self,
         live: &dyn Fn() -> bool,
         timeout: Duration,
     ) -> Result<Receipt, Error> {
+        self.submit(live, timeout, false)
+    }
+
+    fn submit(
+        &mut self,
+        live: &dyn Fn() -> bool,
+        timeout: Duration,
+        repeat: bool,
+    ) -> Result<Receipt, Error> {
         if !live() {
             return Err(Error::Cancelled);
         }
         if self.served_create(live)? {
-            return self.create_served(live, timeout);
+            return self.create_served(live, timeout, repeat);
         }
         let input = super::invocation_file::InvocationFile::new(self.prepared.bytes())?;
         let args: Vec<OsString> = vec![
@@ -116,7 +137,7 @@ impl Operation {
         // The Rust service keeps no operation to read. It answers the same
         // request ID with its first result, so asking again reads that.
         if self.served_create(live)? {
-            return self.create_served(live, TIMEOUT);
+            return self.create_served(live, TIMEOUT, true);
         }
         let args: Vec<OsString> = vec![
             "profiles".into(),
@@ -145,10 +166,12 @@ impl Operation {
 
     /// Make the profile with the Rust service under this request's own ID.
     /// It serves the profile at once, so there is nothing to start after.
+    /// A `repeat` follows an unknown outcome: only the profile settles it.
     fn create_served(
         &mut self,
         live: &dyn Fn() -> bool,
         timeout: Duration,
+        repeat: bool,
     ) -> Result<Receipt, Error> {
         let name = self
             .prepared
@@ -167,9 +190,10 @@ impl Operation {
             name.into(),
         ];
         let (status, bytes) = self.run(&args, live, timeout, None)?;
-        // 1 is a refusal, 2 a request it could not read and 3 a service it
-        // could not reach: nothing was made. Any other failure, 4 included,
-        // leaves the outcome unknown, and asking again under the same ID reads it.
+        // On a first send, 1 is a refusal, 2 a request it could not read and
+        // 3 a service it could not reach: nothing was made. Any other failure,
+        // 4 included, leaves the outcome unknown, and asking again under the
+        // same ID reads it. A repeat cannot tell what the first send did.
         let refused = match status.code() {
             Some(0) => {
                 let profile = profiles::Profile::parse(&bytes).map_err(Error::Profile)?;
@@ -178,8 +202,8 @@ impl Operation {
                     .observe_created(&profile)
                     .map_err(Error::Profile);
             }
-            Some(1 | 2) => "refused",
-            Some(3) => "unreachable",
+            Some(1 | 2) if !repeat => "refused",
+            Some(3) if !repeat => "unreachable",
             _ => return Err(Error::CommandFailed),
         };
         self.prepared
