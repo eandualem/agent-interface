@@ -82,7 +82,7 @@ pub(super) struct Status {
 }
 
 impl Status {
-    fn new(state: AgentState) -> Self {
+    pub fn new(state: AgentState) -> Self {
         Self {
             state,
             online: state.online(),

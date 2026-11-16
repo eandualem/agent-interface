@@ -1516,10 +1516,19 @@ impl Browser {
         let Some(layout) = &self.layout else {
             return;
         };
+        // A profile workspace's shells run on its profile's tmux server.
+        let profile_shells = layout.model().workspace().and_then(|space| {
+            match self.workspace_profiles.route(space) {
+                workspace_profiles::Route::Bound(connection) => {
+                    Some(connection.tmux_socket().to_owned())
+                }
+                _ => None,
+            }
+        });
         let previous = layout
             .model()
             .workspace()
-            .filter(|space| space.profile_id.is_none())
+            .filter(|space| space.profile_id.is_none() || profile_shells.is_some())
             .and_then(|_| layout.model().tab())
             .cloned();
         let creation = self.pending_creation.take();
@@ -1545,6 +1554,7 @@ impl Browser {
                 &mut base,
                 &mut local,
                 previous.as_ref(),
+                profile_shells.as_deref(),
                 creation,
             );
             (base, local, result)
@@ -2918,7 +2928,7 @@ impl Render for Browser {
                 let reports = view.kind == agent_interface_core::ViewKind::Reports;
                 let pane = cx.new(|cx| match connection {
                     Some(connection) => {
-                        views::ViewPane::new_bound(view, connection, agents, window, cx)
+                        views::ViewPane::new_bound(view, connection, directory, agents, window, cx)
                     }
                     None => views::ViewPane::new(view, backbone, directory, agents, window, cx),
                 });

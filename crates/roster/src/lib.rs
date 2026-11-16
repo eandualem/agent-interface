@@ -205,6 +205,12 @@ fn decode_swarms(response: &[u8]) -> Option<(Vec<Swarm>, bool)> {
             complete = false;
             continue;
         };
+        // The Rust service leaves the initiator empty for a swarm no agent
+        // started: it lists under its coordinator.
+        let initiator = match &swarm.coordinator {
+            Some(coordinator) if initiator.is_empty() => coordinator.clone(),
+            _ => initiator,
+        };
         // The name becomes a tab name, so it follows the agent-name rule too.
         if !valid_agent(&name) || !valid_agent(&initiator) {
             complete = false;
@@ -332,6 +338,19 @@ mod tests {
         // A running swarm that cannot be listed leaves the answer unknown.
         snapshot.update_swarms(Some(br#"{"items":[{"name":"fix","status":"active"}]}"#));
         assert!(snapshot.swarms.is_empty() && !snapshot.swarms_read);
+        snapshot.update_swarms(Some(
+            br#"{"items":[{"name":"docs","status":"active","initiator":"",
+                "coordinator":"docs-coordinator","members":["docs-coordinator","docs-coder"]}]}"#,
+        ));
+        assert_eq!(
+            snapshot.swarms,
+            [Swarm {
+                name: "docs".into(),
+                initiator: "docs-coordinator".into(),
+                members: vec!["docs-coder".into()],
+            }]
+        );
+        assert!(snapshot.swarms_read);
     }
 
     #[test]

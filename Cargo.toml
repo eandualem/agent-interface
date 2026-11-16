@@ -71,6 +71,9 @@ uzers = { version = "=0.12.2", default-features = false }
 # this version with the same feature, so it adds no new package.
 chrono = { version = "=0.4.45", default-features = false, features = ["clock"] }
 sha2 = "=0.10.9"
+# Skill files travel to the Rust Backbone service in Base64 (MIT OR Apache-2.0).
+# reqwest already builds this version, so it adds no new package.
+base64 = "=0.23.1"
 http = "=1.5.0"
 reqwest = { version = "=0.13.5", default-features = false, features = ["blocking"] }
 # Structured local diagnostics; filtering and file I/O belong to the app.

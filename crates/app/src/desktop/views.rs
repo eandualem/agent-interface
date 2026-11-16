@@ -265,11 +265,12 @@ impl ViewPane {
     pub fn new_bound(
         view: View,
         connection: Connection,
+        directory: Option<PathBuf>,
         agents: crate::desktop::agent_status::LiveAgents,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        Self::new_with(view, None, None, agents, Some(connection), window, cx)
+        Self::new_with(view, None, directory, agents, Some(connection), window, cx)
     }
 
     #[allow(clippy::too_many_arguments)]

@@ -113,7 +113,7 @@ pub(super) fn body(pane: &ViewPane, agent: &Agent, cx: &mut Context<ViewPane>) -
     }
 
     let content = match pane.section {
-        AgentSection::Overview => overview(agent, &status),
+        AgentSection::Overview => overview(agent, status.state),
         AgentSection::Permissions => permissions(agent),
         AgentSection::Connections => connections(agent),
         AgentSection::Skills => skills_section(agent, cx, Some(ViewPane::open)),
@@ -656,15 +656,17 @@ pub(super) fn tab(
     })
 }
 
-fn overview(agent: &Agent, status: &crate::desktop::agent_status::Status) -> AnyElement {
+/// `state` is the agent's state as the pane's header shows it: the card's
+/// details apply only while it is the state they were read with.
+pub(super) fn overview(agent: &Agent, state: AgentState) -> AnyElement {
     let (t, c) = (tokens(), colors());
-    let matching = status.state == AgentState::from_runtime(&agent.state);
+    let matching = state == AgentState::from_runtime(&agent.state);
     let age = matching.then_some(agent.state_age_seconds).flatten();
     let mut body = list("agent-overview")
         .px(px(t.space.s18))
         .py(px(t.space.s16))
         .gap(px(t.space.s16));
-    if status.state.needs_you() && matching {
+    if state.needs_you() && matching {
         body = body.child(
             div()
                 .flex_shrink_0()

@@ -68,15 +68,36 @@ pub(super) fn save(
     base: &mut Document,
     local: &mut Layout,
     previous: Option<&Tab>,
+    profile_shells: Option<&Path>,
     creation: Option<(Create, String)>,
 ) -> Result<Reconciliation, Error> {
     let started = Instant::now();
     let directory = library::library_directory(directory);
-    if let Ok(directory) = &directory
-        && let Some(previous) = previous
-        && local.workspaces.iter().any(|space| {
-            space.profile_id.is_none() && space.tabs.iter().any(|tab| tab.id == previous.id)
+    let bound = |local: &Layout, previous: &Tab, bound: bool| {
+        local.workspaces.iter().any(|space| {
+            space.profile_id.is_some() == bound
+                && space.tabs.iter().any(|tab| tab.id == previous.id)
         })
+    };
+    if let Some(socket) = profile_shells
+        && let Some(previous) = previous
+        && bound(local, previous, true)
+    {
+        // A profile's own shell is the session named after its pane, on the
+        // profile's tmux server.
+        remember_directories(local, previous, |leaf| {
+            if leaf.attachment.is_some() {
+                return Err(std::io::Error::other("Not the profile's own shell"));
+            }
+            let session = format!("shell-{}", leaf.id);
+            leaf.cwd = Some(agent_interface_tmux::discovery::read_session_directory(
+                socket, &session,
+            )?);
+            Ok(())
+        });
+    } else if let Ok(directory) = &directory
+        && let Some(previous) = previous
+        && bound(local, previous, false)
     {
         remember_directories(local, previous, |leaf| {
             let socket = library::existing_shell_socket(directory, &leaf.id)?
@@ -214,7 +235,7 @@ mod tests {
         let path = directory.path().to_owned();
         let write = std::thread::spawn(move || {
             let _pending = pending;
-            let result = save(Some(&path), &mut base, &mut local, None, None).unwrap();
+            let result = save(Some(&path), &mut base, &mut local, None, None, None).unwrap();
             assert!(!result.conflict);
         });
         let release = std::thread::spawn(move || {
@@ -260,6 +281,7 @@ mod tests {
                 &mut base,
                 &mut local,
                 previous.as_ref(),
+                None,
                 Some((Create::Tab, "/launch".into()))
             )
             .is_err()
@@ -284,6 +306,7 @@ mod tests {
             &mut local,
             previous.as_ref(),
             None,
+            None,
         )
         .unwrap();
         assert_eq!(
@@ -307,6 +330,7 @@ mod tests {
             &mut base,
             &mut local,
             previous.as_ref(),
+            None,
             Some((Create::Split(Direction::Right), "/launch".into())),
         )
         .unwrap();
@@ -363,5 +387,52 @@ mod tests {
         assert_eq!(leaves[2].cwd.as_deref(), Some("/saved"));
         assert_eq!(leaves[0].attachment, previous.tree.leaves()[0].attachment);
         assert!(server.run(&["list-clients"]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_split_in_a_profile_workspace_starts_in_its_shells_folder() {
+        use agent_interface_test_support::TmuxServer;
+        let server = TmuxServer::start().unwrap();
+        let socket = server
+            .run(&["display-message", "-p", "#{socket_path}"])
+            .unwrap();
+        let directory = server.address().0.join("current directory");
+        std::fs::create_dir(&directory).unwrap();
+        let directory = directory.canonicalize().unwrap();
+        let store = tempfile::tempdir().unwrap();
+        let mut base = Store::open_or_create(store.path()).unwrap().load().unwrap();
+        let mut local = base.model().clone();
+        local.workspaces[0].profile_id = Some("0a1b2c3d4e5f".into());
+        local.add_tab(None, "/".into(), false);
+        let previous = local.tab().unwrap().clone();
+        let session = format!("shell-{}", previous.tree.leaves()[0].id);
+        let folder = directory.to_str().unwrap();
+        server
+            .run(&[
+                "new-session",
+                "-d",
+                "-s",
+                &session,
+                "-c",
+                folder,
+                "sleep 60",
+            ])
+            .unwrap();
+        let _ = save(
+            Some(store.path()),
+            &mut base,
+            &mut local,
+            Some(&previous),
+            Some(Path::new(socket.trim_end())),
+            Some((Create::Split(Direction::Right), "/launch".into())),
+        )
+        .unwrap();
+        let leaves = local.tab().unwrap().tree.leaves();
+        assert_eq!(leaves.len(), 2);
+        assert!(
+            leaves
+                .iter()
+                .all(|leaf| leaf.cwd.as_deref() == Some(folder))
+        );
     }
 }

@@ -2,11 +2,17 @@
 //! its state, with the owner-only socket as the credential.
 
 use super::{
-    Binding, Credential, Endpoint, Error, Identity, Item, Kind, Profile, State, Tmux, valid_id,
-    validate_item,
+    AddError, Binding, Credential, Endpoint, Error, Identity, Item, Kind, Profile, State, Tmux,
+    valid_id, validate_item,
 };
+use base64::Engine as _;
 use serde::Deserialize;
-use std::path::PathBuf;
+use std::{
+    fs::{self, OpenOptions},
+    io::Read,
+    os::unix::fs::{OpenOptionsExt, PermissionsExt},
+    path::{Path, PathBuf},
+};
 
 #[derive(Deserialize)]
 struct Machine {
@@ -173,4 +179,84 @@ pub(super) fn verify(
         return Err(Error::BindingMismatch);
     }
     Ok(())
+}
+
+/// The most bytes of files the service keeps for one skill.
+const SKILL_BYTES: usize = 50 * 1024 * 1024;
+
+/// The body that adds the skill folder at `path` for every agent: the service
+/// takes the files themselves, read here, under the folder's own name. A
+/// `.git` entry, links and special files are not sent, as with its own
+/// command. The service checks the folder's other bounds.
+pub(super) fn skill(path: &Path) -> Result<serde_json::Value, AddError> {
+    let unreadable =
+        |error: std::io::Error| AddError::Refused(format!("The folder cannot be read: {error}"));
+    let root = path.canonicalize().map_err(unreadable)?;
+    let name = root.file_name().and_then(|name| name.to_str());
+    let name = name.ok_or(Error::Invalid)?;
+    let mut files = Vec::new();
+    let mut bytes = 0;
+    let mut directories = vec![(root.clone(), String::new())];
+    while let Some((directory, prefix)) = directories.pop() {
+        for entry in fs::read_dir(&directory).map_err(unreadable)? {
+            let entry = entry.map_err(unreadable)?;
+            let Ok(entry_name) = entry.file_name().into_string() else {
+                let refusal = "A name in the folder is not UTF-8, which the store cannot keep.";
+                return Err(AddError::Refused(refusal.to_owned()));
+            };
+            if entry_name == ".git" {
+                continue;
+            }
+            // The entry's own kind: a link is neither a directory nor a file.
+            let kind = entry.file_type().map_err(unreadable)?;
+            let at = format!("{prefix}{entry_name}");
+            if kind.is_dir() {
+                directories.push((entry.path(), format!("{at}/")));
+            }
+            if !kind.is_file() {
+                continue;
+            }
+            // Never through a link put there since, nor waiting on a pipe.
+            let mut file = OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+                .open(entry.path())
+                .map_err(unreadable)?;
+            let metadata = file.metadata().map_err(unreadable)?;
+            if !metadata.is_file() {
+                continue;
+            }
+            // One byte past the room left shows the folder is too large.
+            let room = SKILL_BYTES - bytes;
+            let mut content = Vec::new();
+            (&mut file)
+                .take(room as u64 + 1)
+                .read_to_end(&mut content)
+                .map_err(unreadable)?;
+            if content.len() > room {
+                let refusal = "The skill folder holds more than 50 MB.";
+                return Err(AddError::Refused(refusal.to_owned()));
+            }
+            bytes += content.len();
+            files.push((
+                at,
+                metadata.permissions().mode() & 0o777,
+                base64::engine::general_purpose::STANDARD.encode(content),
+            ));
+        }
+    }
+    files.sort();
+    let files: Vec<_> = files
+        .into_iter()
+        .map(|(path, mode, content)| {
+            serde_json::json!({"path": path, "mode": mode, "content_base64": content})
+        })
+        .collect();
+    Ok(serde_json::json!({
+        "name": name,
+        "tags": ["all"],
+        "replace": false,
+        "actor": "app",
+        "files": files,
+    }))
 }
