@@ -551,15 +551,19 @@ impl Connection {
     /// Copy the skill folder at `path` into this profile's store for every agent
     /// in the profile, leaving the folder in place. Runs on an I/O worker.
     pub fn add_skill(&self, path: &Path) -> Result<AddedSkill, AddError> {
-        let body = serde_json::to_vec(&serde_json::json!({
-            "path": path.to_str().ok_or(Error::Invalid)?,
-            "name": null,
-            "tags": ["all"],
-            "replace": false,
-            "mode": "copy",
-            "actor": "app",
-        }))
-        .map_err(|_| Error::Invalid)?;
+        let body = if self.served {
+            served::skill(path)?
+        } else {
+            serde_json::json!({
+                "path": path.to_str().ok_or(Error::Invalid)?,
+                "name": null,
+                "tags": ["all"],
+                "replace": false,
+                "mode": "copy",
+                "actor": "app",
+            })
+        };
+        let body = serde_json::to_vec(&body).map_err(|_| Error::Invalid)?;
         let response = self.response("/api/skills", Some(body), RESPONSE_LIMIT)?;
         added(&response)?;
         Ok(serde_json::from_slice(&response.body).map_err(|_| Error::Invalid)?)
@@ -682,7 +686,11 @@ fn added(response: &local::Response) -> Result<(), AddError> {
         serde_json::Value::Array(errors) => errors
             .first()
             .map_or("", |error| error["msg"].as_str().unwrap_or_default()),
-        detail => detail.as_str().unwrap_or_default(),
+        // The Rust service's reason is the message beside its code.
+        detail => detail
+            .as_str()
+            .or_else(|| detail["message"].as_str())
+            .unwrap_or_default(),
     };
     Err(if detail.is_empty() {
         AddError::Connection(Error::Refused(response.status))

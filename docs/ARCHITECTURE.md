@@ -891,6 +891,9 @@ build-time advisory exception are described below.
   function through the existing GPUI macOS package, pinned to 0.3.9.
 - **`sha2`:** existing MIT OR Apache-2.0 workspace dependency, also used by
   the document adapter to verify the server-provided HTML digest.
+- **`base64` 0.23.1:** MIT OR Apache-2.0, pinned exactly. The roster sends a
+  skill folder's files to the Rust Backbone service in Base64. `reqwest` and
+  `hyper-util` already build this version, so it adds no package.
 - **`serde`, `serde_json`, `uuid` and `tempfile`:** existing workspace
   dependencies also used by artifact metadata, publication IDs and atomic
   staging. The macOS adapter also uses `tempfile` 3.27.0 (exact pin) for private

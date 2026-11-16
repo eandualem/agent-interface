@@ -125,6 +125,10 @@ pub enum Delivery {
     Held,
     /// Refused or expired; it can be redelivered.
     Failed,
+    /// A state this client does not know. The message shows as stored: it is
+    /// neither followed nor offered for redelivery.
+    #[serde(other)]
+    Unknown,
 }
 
 /// Where an entry points: a version, and a range or plan item within it.
@@ -739,6 +743,18 @@ mod tests {
             entries[0].body,
             Body::Message {
                 delivery: Some(Delivery::Held),
+                ..
+            }
+        ));
+        let later: Entry = serde_json::from_str(
+            r#"{"id":1,"kind":"message","created_at":"2026-10-27T14:30:00Z",
+                "author":{"type":"owner"},"text":"Hello","delivery":"a_later_state"}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            later.body,
+            Body::Message {
+                delivery: Some(Delivery::Unknown),
                 ..
             }
         ));

@@ -962,3 +962,85 @@ fn rust_service_entries_list_and_connect_without_a_key() {
         assert!(!request.contains("authorization") && !request.contains("lifecycle"));
     }
 }
+
+#[test]
+fn the_rust_service_takes_a_skill_folders_files() {
+    let (directory, listener, url) = crate::transport::tests::local_listener();
+    let entry = served_entry(url.strip_prefix("unix:").unwrap());
+    let profile = Profile::parse(&serde_json::to_vec(&entry).unwrap()).unwrap();
+    let mut identity = entry.clone();
+    for field in ["state", "socket", "tmux_socket", "credential_reference"] {
+        identity.as_object_mut().unwrap().remove(field);
+    }
+    let folder = directory.path().join("page-layout");
+    fs::create_dir_all(folder.join("scripts")).unwrap();
+    fs::create_dir_all(folder.join(".git")).unwrap();
+    fs::write(folder.join("SKILL.md"), "---\nname: page-layout\n---\n").unwrap();
+    fs::write(folder.join("scripts/check.sh"), "#!/bin/sh\n").unwrap();
+    for (file, mode) in [("SKILL.md", 0o644), ("scripts/check.sh", 0o755)] {
+        fs::set_permissions(folder.join(file), fs::Permissions::from_mode(mode)).unwrap();
+    }
+    fs::write(folder.join(".git/HEAD"), "ref").unwrap();
+    std::os::unix::fs::symlink(folder.join("SKILL.md"), folder.join("link.md")).unwrap();
+    std::os::unix::fs::symlink(folder.join("scripts"), folder.join("linked")).unwrap();
+    let changed = json!({
+        "name": "page-layout", "description": "Lay out a page.", "tags": ["all"],
+        "error": null, "relinked": [], "warnings": ["builder was not reached"]
+    });
+    let refused =
+        json!({"detail": {"code": "conflict", "message": "page-layout is already in the store"}});
+    let server = serve(
+        listener,
+        vec![(200, identity), (200, changed), (409, refused)],
+    );
+    let connection = profile.connect().unwrap();
+    assert_eq!(
+        connection.add_skill(&folder),
+        Ok(AddedSkill {
+            name: "page-layout".into(),
+            warnings: vec!["builder was not reached".into()],
+        })
+    );
+    assert_eq!(
+        connection.add_skill(&folder),
+        Err(AddError::Refused(
+            "page-layout is already in the store".into()
+        ))
+    );
+    // The fixture server keeps each request in lower case.
+    let requests = server.join().unwrap();
+    let body: Value = serde_json::from_str(requests[1].split("\r\n\r\n").nth(1).unwrap()).unwrap();
+    assert_eq!(
+        body,
+        json!({
+            "name": "page-layout", "tags": ["all"], "replace": false, "actor": "app",
+            "files": [
+                {"path": "skill.md", "mode": 0o644,
+                 "content_base64": "ls0tcm5hbwu6ihbhz2utbgf5b3v0ci0tlqo="},
+                {"path": "scripts/check.sh", "mode": 0o755,
+                 "content_base64": "iyevymlul3nocg=="}
+            ]
+        })
+    );
+}
+
+#[test]
+fn a_skill_folder_is_read_within_the_services_bounds() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut deep = directory.path().join("deep");
+    for _ in 0..16 {
+        deep = deep.join("d");
+    }
+    fs::create_dir_all(&deep).unwrap();
+    let wide = directory.path().join("wide");
+    fs::create_dir(&wide).unwrap();
+    for index in 0..=2_000 {
+        fs::write(wide.join(format!("{index}.md")), "").unwrap();
+    }
+    for (folder, reason) in [("deep", "nested too deeply"), ("wide", "2,000 entries")] {
+        let Err(AddError::Refused(refusal)) = served::skill(&directory.path().join(folder)) else {
+            panic!("{folder} was read");
+        };
+        assert!(refusal.contains(reason), "{refusal}");
+    }
+}

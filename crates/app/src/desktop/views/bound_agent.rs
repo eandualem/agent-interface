@@ -1,7 +1,10 @@
 //! A native card whose saved registration and connection never change.
 
 use super::{agent, list, ui};
-use crate::desktop::design::{colors, tokens};
+use crate::desktop::{
+    agent_status::{AgentState, Status},
+    design::{colors, tokens},
+};
 use agent_interface_core::{AgentSection, View};
 use agent_interface_roster::{
     profiles::{
@@ -66,6 +69,11 @@ impl Reader {
         let _ = content::agent_part(&self.connection, &part, &mut agent, &|| true);
         Ok(Snapshot { agent, permissions })
     }
+}
+
+/// The agent's state as the card last read it.
+fn state(agent: &Agent) -> AgentState {
+    AgentState::from_runtime(&agent.state)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -323,17 +331,8 @@ impl Render for Card {
         } else if let Some(snapshot) = &self.snapshot
             && self.section == AgentSection::Overview
         {
-            for (label, value) in [
-                ("Runtime", snapshot.agent.runtime.as_str()),
-                ("Repository", snapshot.agent.repo.as_str()),
-                ("State", snapshot.agent.state.as_str()),
-                ("Project", snapshot.agent.dir.as_str()),
-            ] {
-                body = body.child(
-                    ui::text(div().text_color(c.text), &t.text.row)
-                        .child(format!("{label}: {value}")),
-                );
-            }
+            // The card reads the agent itself, so its details are its state's.
+            body = body.child(agent::overview(&snapshot.agent, state(&snapshot.agent)));
         } else if let Some(permissions) = self
             .snapshot
             .as_ref()
@@ -424,6 +423,16 @@ impl Render for Card {
             .bg(c.surface)
             .child(
                 ui::view_header("user", self.name.clone())
+                    .children(
+                        self.snapshot
+                            .as_ref()
+                            .map(|snapshot| ui::badge(snapshot.agent.runtime.clone())),
+                    )
+                    .children(
+                        self.snapshot
+                            .as_ref()
+                            .map(|snapshot| ui::agent_status(&Status::new(state(&snapshot.agent)))),
+                    )
                     .child(
                         ui::segment("bound-agent-refresh", "Refresh", false)
                             .on_click(cx.listener(|card, _, _, cx| card.refresh(cx))),
