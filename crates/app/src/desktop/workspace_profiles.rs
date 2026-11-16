@@ -735,7 +735,32 @@ impl Browser {
             return;
         };
         self.profile_picker_requested = false;
+        // The workspace whose profile is chosen, with the profile it had then.
+        let change = match self.profile_change.take() {
+            Some(id) => {
+                let Some(space) = self.layout.as_ref().and_then(|layout| {
+                    layout
+                        .model()
+                        .workspaces
+                        .iter()
+                        .find(|space| space.id == id)
+                }) else {
+                    return;
+                };
+                Some((
+                    space.id.clone(),
+                    space.profile_id.clone(),
+                    space.name.clone(),
+                ))
+            }
+            None => None,
+        };
         let Ok(client) = client else {
+            if change.is_some() {
+                self.save_notice =
+                    Some("Agent Backbone could not be found on this computer.".into());
+                return;
+            }
             // Without Agent Backbone the name is typed in place, as it always was.
             self.begin_workspace(window, cx);
             return;
@@ -748,47 +773,155 @@ impl Browser {
                 .iter()
                 .any(|space| space.profile_id.is_some())
         });
-        let picker = cx
-            .new(|cx| profile_picker::ProfilePicker::new(client, has_bound_workspaces, window, cx));
+        let title = change.as_ref().map(|(_, _, name)| name.clone());
+        let picker = cx.new(|cx| {
+            profile_picker::ProfilePicker::new(client, has_bound_workspaces, title, window, cx)
+        });
         window.focus(&picker.read(cx).focus_handle(cx), cx);
-        let events = cx.subscribe_in(&picker, window, |browser, picker, choice, window, cx| {
-            if !browser
-                .profile_picker
-                .as_ref()
-                .is_some_and(|(active, _)| active == picker)
+        let events = cx.subscribe_in(
+            &picker,
+            window,
+            move |browser, picker, choice, window, cx| {
+                if !browser
+                    .profile_picker
+                    .as_ref()
+                    .is_some_and(|(active, _)| active == picker)
+                {
+                    return;
+                }
+                // Every choice retires the popover, including when a concurrent
+                // save prevents its handoff.
+                browser.profile_picker = None;
+                if let Some(focus) = &browser.navigation {
+                    window.focus(focus, cx);
+                }
+                match choice {
+                    profile_picker::Choice::Cancel => {}
+                    profile_picker::Choice::Selected { selected, name } => match &change {
+                        Some((id, profile, _)) => {
+                            browser.change_profile(id, profile.as_deref(), selected, cx)
+                        }
+                        None => browser.bind_new_workspace(selected, name, cx),
+                    },
+                    profile_picker::Choice::NewProfile { name } => {
+                        browser.open_profile_flow(name.clone(), window, cx);
+                    }
+                    profile_picker::Choice::Plain { name } => {
+                        if !browser.saving
+                            && !browser.save_failed
+                            && let Some(layout) = &browser.layout
+                            && let Some(proposal) = super::workspace::create(layout, name)
+                        {
+                            browser.creation_from =
+                                Some(super::layout_edit::Selection::capture(layout.model()));
+                            browser.pending_save = Some(proposal);
+                            browser.save(cx);
+                        }
+                    }
+                }
+                cx.notify();
+            },
+        );
+        self.profile_picker = Some((picker, events));
+    }
+
+    /// Choose a profile for the selected workspace, which has none or cannot
+    /// reach its own. Changing a profile that answers is not offered.
+    pub(super) fn request_profile_change(
+        &mut self,
+        origin: Option<&super::navigation_origin::Origin>,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.selected_origin_is_current(origin) {
+            return;
+        }
+        let Some(id) = self
+            .layout
+            .as_ref()
+            .and_then(|layout| layout.model().workspace())
+            .map(|space| space.id.clone())
+        else {
+            return;
+        };
+        self.request_profile_workspace(cx);
+        if self.profile_picker_requested {
+            self.profile_change = Some(id);
+        }
+    }
+
+    /// Bind workspace `id`, which had `previous` as its profile, to a verified
+    /// profile, keeping its tabs and panes. A workspace without a profile is
+    /// bound as `bind-home-profile` binds it. A missing profile's panes stay as
+    /// they are: an attachment without a server follows the new profile.
+    fn change_profile(
+        &mut self,
+        id: &str,
+        previous: Option<&str>,
+        selected: &crate::profiles::selection::Selected,
+        cx: &mut Context<Self>,
+    ) {
+        const CHANGED: &str = "The workspace changed. Choose its profile again.";
+        if self.saving || self.save_failed {
+            self.save_notice = Some(CHANGED.into());
+            return;
+        }
+        let Some(layout) = &self.layout else {
+            return;
+        };
+        // Its own profile answers again: connect it instead.
+        let chosen = &selected.item().profile_id;
+        if previous == Some(chosen.as_str()) {
+            if let Some(space) = layout
+                .model()
+                .workspaces
+                .iter()
+                .find(|space| space.id == id)
             {
-                return;
+                self.workspace_profiles.retry(space);
             }
-            // Every choice retires the popover, including when a concurrent
-            // save prevents its handoff.
-            browser.profile_picker = None;
-            if let Some(focus) = &browser.navigation {
-                window.focus(focus, cx);
+            return;
+        }
+        let (base, mut proposed) = layout.save_snapshot();
+        let (id, previous) = (id.to_owned(), previous.map(str::to_owned));
+        let connection = selected.connection().clone();
+        let directory = self.directory.clone();
+        let generation = self.library_generation;
+        self.workspace_profiles.remember_name(selected.item());
+        // Reading the profile's agents and the library's shells is I/O.
+        let work = cx.background_executor().spawn(async move {
+            let profile_id = &connection.identity().profile_id;
+            let space = rebind(&mut proposed, &id, previous.as_deref(), profile_id)
+                .ok_or(CHANGED.to_owned())?;
+            if space.profile_id.is_none() {
+                let directory = crate::library::library_directory(directory.as_deref())
+                    .map_err(|error| error.to_string())?;
+                let binding = crate::adoption::Binding::read(&connection)?;
+                for line in binding.apply(space, &directory)? {
+                    tracing::info!(event = "workspace_profile_chosen", "{line}");
+                }
             }
-            match choice {
-                profile_picker::Choice::Cancel => {}
-                profile_picker::Choice::Selected { selected, name } => {
-                    browser.bind_new_workspace(selected, name, cx);
+            Ok::<_, String>((base, proposed))
+        });
+        cx.spawn(async move |this, cx| {
+            let result = work.await;
+            let _ = this.update(cx, |browser, cx| {
+                if browser.library_generation != generation {
+                    return;
                 }
-                profile_picker::Choice::NewProfile { name } => {
-                    browser.open_profile_flow(name.clone(), window, cx);
-                }
-                profile_picker::Choice::Plain { name } => {
-                    if !browser.saving
-                        && !browser.save_failed
-                        && let Some(layout) = &browser.layout
-                        && let Some(proposal) = super::workspace::create(layout, name)
-                    {
-                        browser.creation_from =
-                            Some(super::layout_edit::Selection::capture(layout.model()));
+                match result {
+                    Ok(_) if browser.saving || browser.save_failed => {
+                        browser.save_notice = Some(CHANGED.into());
+                    }
+                    Ok(proposal) => {
                         browser.pending_save = Some(proposal);
                         browser.save(cx);
                     }
+                    Err(error) => browser.save_notice = Some(error),
                 }
-            }
-            cx.notify();
-        });
-        self.profile_picker = Some((picker, events));
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// Make a workspace called `name`, or after the profile when empty, bound
@@ -1081,6 +1214,25 @@ impl Browser {
     }
 }
 
+/// Workspace `id` of `layout`, while its profile is still `previous`. One with
+/// a profile takes `profile_id`, and its panes stay as they are; one without
+/// is returned unchanged, to be bound.
+fn rebind<'a>(
+    layout: &'a mut Layout,
+    id: &str,
+    previous: Option<&str>,
+    profile_id: &str,
+) -> Option<&'a mut Workspace> {
+    let space = layout
+        .workspaces
+        .iter_mut()
+        .find(|space| space.id == id && space.profile_id.as_deref() == previous)?;
+    if previous.is_some() {
+        space.profile_id = Some(profile_id.to_owned());
+    }
+    Some(space)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1329,5 +1481,23 @@ mod tests {
         // A second request refused during that save does not answer for it.
         assert_eq!(browser.first_open_answer(Err("no")), None);
         assert!(browser.first_open_saving);
+    }
+
+    #[test]
+    fn a_changed_profile_keeps_the_workspaces_panes() {
+        let mut layout = Layout::initial("/tmp".into());
+        layout.workspaces[0].profile_id = Some("missing".into());
+        let id = layout.workspaces[0].id.clone();
+        let tabs = layout.workspaces[0].tabs.clone();
+        // Its profile changed meanwhile: nothing is rebound.
+        assert!(rebind(&mut layout, &id, None, "main").is_none());
+        assert!(rebind(&mut layout, &id, Some("other"), "main").is_none());
+        let space = rebind(&mut layout, &id, Some("missing"), "main").unwrap();
+        assert_eq!(space.profile_id.as_deref(), Some("main"));
+        assert_eq!(space.tabs, tabs);
+        // One without a profile is left to be bound.
+        layout.workspaces[0].profile_id = None;
+        let space = rebind(&mut layout, &id, None, "main").unwrap();
+        assert_eq!(space.profile_id, None);
     }
 }

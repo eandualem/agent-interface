@@ -679,6 +679,9 @@ struct Browser {
     profile_client: Option<Result<crate::profiles::Client, ()>>,
     profile_client_loading: bool,
     profile_picker_requested: bool,
+    /// The requested picker chooses this workspace's profile instead of
+    /// making a new workspace.
+    profile_change: Option<String>,
     profile_picker: Option<(
         gpui::Entity<profile_picker::ProfilePicker>,
         gpui::Subscription,
@@ -971,6 +974,7 @@ impl Browser {
         self.pane_owners.clear();
         self.profile_picker = None;
         self.profile_picker_requested = false;
+        self.profile_change = None;
         self.profile_flow = None;
         // First run belongs to the default library: another library ends it,
         // unfinished, so it returns at the next launch.
@@ -1849,6 +1853,7 @@ impl Browser {
         self.reset_focus |= self.profile_picker.is_some();
         self.profile_picker = None;
         self.profile_picker_requested = false;
+        self.profile_change = None;
         self.tab_menu = None;
         self.workspace_menu = false;
         self.icon_picker = false;

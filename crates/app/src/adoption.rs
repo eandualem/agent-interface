@@ -1,80 +1,90 @@
-//! A one-off migration for a library that was used with the Python Backbone
-//! service: bind its workspaces that have no profile to the profile the Rust
-//! service keeps on this computer. It opens no window.
+//! Binding a workspace saved without a profile to a profile, keeping its tabs
+//! and panes: the app's Choose profile, and the one-off migration for a
+//! library that was used with the Python Backbone service, which opens no
+//! window.
 
-use std::{collections::HashMap, path::Path};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+};
 
-use agent_interface_core::{Attachment, Leaf, Node, View, ViewKind};
-use agent_interface_roster::views;
+use agent_interface_core::{Attachment, Leaf, Node, View, ViewKind, Workspace};
+use agent_interface_roster::{profiles::Connection, views};
 use agent_interface_store::Store;
 
 use crate::library::{self, location::resolve_path};
 
-/// Bind every workspace without a profile to the one profile that the Rust
-/// service serves with its home on this computer, and save the library.
-///
-/// The Python service served such workspaces without a binding, and its agents
-/// ran on the unbound tmux server. Their attachments follow the profile; any
-/// other session stays where it is. Ordinary shell panes become shells of the
-/// profile, as in any bound workspace, so each shell they showed is listed
-/// with the command that reaches it: it keeps running. Returns what was done,
-/// one line each. Nothing is written when anything needed cannot be read. The
-/// save follows the store's rules: a compatible change made meanwhile is
-/// merged, and a conflicting one stops the command without writing.
-pub fn bind_home_profile(directory: Option<&Path>) -> Result<Vec<String>, String> {
-    let live = || true;
-    let client = crate::desktop::profile_client().ok_or("The backbone command was not found.")?;
-    let home = client
-        .home(&live)
-        .map_err(|_| "The profile list could not be read.")?
-        .ok_or("The service does not list exactly one profile with its home on this computer.")?;
-    let connection = client
-        .show(&home.profile_id, &live)
-        .ok()
-        .and_then(|profile| profile.connect().ok())
-        .ok_or("The profile did not answer.")?;
-    // Its agents, each with the registration that a bound agent view keeps.
-    let team = views::bound::read(&connection, &views::bound::Request::Team, &live);
-    let Ok(views::Data::Team(team)) = team.result else {
-        return Err("The profile's agents could not be read.".into());
-    };
-    let agents: HashMap<String, Option<String>> = team
-        .members
-        .into_iter()
-        .map(|member| (member.name, member.registration_id))
-        .collect();
-    // A session that is not an agent is pinned to the unbound tmux server by
-    // its path, so that path must be known. The earlier service kept its
-    // agents on the default server, wherever this command is run from.
-    let source = library::location::default_source_socket().map_err(|error| error.to_string())?;
-    let source_text = source
-        .to_str()
-        .ok_or("The tmux socket path is not UTF-8.")?;
-    let resolved = resolve_path(&source).ok();
-    let names_source = |socket: &str| {
-        socket == source_text
-            || (resolved.is_some() && resolve_path(Path::new(socket)).ok() == resolved)
-    };
+/// What binding a workspace without a profile to one profile needs: that
+/// profile's agents and the unbound tmux server.
+pub struct Binding {
+    profile_id: String,
+    /// Its agents, each with the registration that a bound agent view keeps.
+    agents: HashMap<String, Option<String>>,
+    source: String,
+    resolved: Option<PathBuf>,
+}
 
-    let directory = library::library_directory(directory).map_err(|error| error.to_string())?;
-    let mut store = Store::open_existing_writable(&directory).map_err(|error| error.to_string())?;
-    let mut base = store.load().map_err(|error| error.to_string())?;
-    let mut layout = base.model().clone();
-    let mut report = Vec::new();
-    let mut unread = None;
-    for space in &mut layout.workspaces {
-        if space.profile_id.is_some() {
-            continue;
-        }
+impl Binding {
+    /// Read the profile's agents through `connection`, and find the unbound
+    /// tmux server. This reads from the service and the file system.
+    pub fn read(connection: &Connection) -> Result<Self, String> {
+        let live = || true;
+        let team = views::bound::read(connection, &views::bound::Request::Team, &live);
+        let Ok(views::Data::Team(team)) = team.result else {
+            return Err("The profile's agents could not be read.".into());
+        };
+        let agents = team
+            .members
+            .into_iter()
+            .map(|member| (member.name, member.registration_id))
+            .collect();
+        // A session that is not an agent is pinned to the unbound tmux server
+        // by its path, so that path must be known. The earlier service kept
+        // its agents on the default server, wherever this is run from.
+        let source =
+            library::location::default_source_socket().map_err(|error| error.to_string())?;
+        let resolved = resolve_path(&source).ok();
+        let source = source
+            .to_str()
+            .ok_or("The tmux socket path is not UTF-8.")?
+            .to_owned();
+        Ok(Self {
+            profile_id: connection.identity().profile_id.clone(),
+            agents,
+            source,
+            resolved,
+        })
+    }
+
+    /// The unbound tmux server, where every session that is not one of the
+    /// profile's agents is left.
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+
+    /// Bind `space`, saved without a profile, to the profile, in the library
+    /// at `directory`. The profile's agents' attachments follow the profile;
+    /// any other session stays where it is. Ordinary shell panes become shells
+    /// of the profile, as in any bound workspace, so each shell they showed is
+    /// returned with the command that reaches it: it keeps running. An error
+    /// means a shell could not be looked for, and `space` must not be saved.
+    pub fn apply(&self, space: &mut Workspace, directory: &Path) -> Result<Vec<String>, String> {
+        let names_source = |socket: &str| {
+            socket == self.source
+                || (self.resolved.is_some()
+                    && resolve_path(Path::new(socket)).ok() == self.resolved)
+        };
+        let mut report = Vec::new();
+        let mut unread = None;
         for tab in &mut space.tabs {
             let (workspace, name) = (&space.name, &tab.name);
             each_leaf(&mut tab.tree, &mut |leaf| {
                 if let Some(attachment) = &mut leaf.attachment {
-                    let agent = agents.contains_key(&attachment.session);
-                    migrate_attachment(attachment, agent, source_text, &names_source);
+                    let agent = self.agents.contains_key(&attachment.session);
+                    migrate_attachment(attachment, agent, &self.source, &names_source);
                 }
                 if let Some(view) = &mut leaf.view
-                    && !register_agent_view(view, &agents)
+                    && !register_agent_view(view, &self.agents)
                 {
                     report.push(format!(
                         "The view of agent {}, in {workspace} > {name}, is not of this profile: reopen it from the Team view",
@@ -82,7 +92,7 @@ pub fn bind_home_profile(directory: Option<&Path>) -> Result<Vec<String>, String
                     ));
                 }
                 // A shell also waits behind an attachment, a chooser or a view.
-                match library::existing_shell_socket(&directory, &leaf.id) {
+                match library::existing_shell_socket(directory, &leaf.id) {
                     Ok(Some(socket)) => {
                         // The profile's shell starts where this one is now.
                         let _ = library::remember_shell_directory(leaf, &socket);
@@ -103,7 +113,7 @@ pub fn bind_home_profile(directory: Option<&Path>) -> Result<Vec<String>, String
                     }
                     Ok(None) => {}
                     // A shell that cannot be looked for would be left
-                    // running unreported, with no second run to find it.
+                    // running unreported.
                     Err(error) => unread = Some(error.to_string()),
                 }
                 // A profile refuses to start a shell in a folder that is gone,
@@ -117,21 +127,59 @@ pub fn bind_home_profile(directory: Option<&Path>) -> Result<Vec<String>, String
                 }
             });
         }
-        space.profile_id = Some(home.profile_id.clone());
+        if let Some(error) = unread {
+            return Err(format!("The library's shells could not be read: {error}"));
+        }
+        space.profile_id = Some(self.profile_id.clone());
+        Ok(report)
+    }
+}
+
+/// Bind every workspace without a profile to the one profile that the Rust
+/// service serves with its home on this computer, and save the library.
+///
+/// The Python service served such workspaces without a binding, and its agents
+/// ran on the unbound tmux server. Each workspace is bound as
+/// [`Binding::apply`] does. Returns what was done, one line each. Nothing is
+/// written when anything needed cannot be read. The save follows the store's
+/// rules: a compatible change made meanwhile is merged, and a conflicting one
+/// stops the command without writing.
+pub fn bind_home_profile(directory: Option<&Path>) -> Result<Vec<String>, String> {
+    let live = || true;
+    let client = crate::desktop::profile_client().ok_or("The backbone command was not found.")?;
+    let home = client
+        .home(&live)
+        .map_err(|_| "The profile list could not be read.")?
+        .ok_or("The service does not list exactly one profile with its home on this computer.")?;
+    let connection = client
+        .show(&home.profile_id, &live)
+        .ok()
+        .and_then(|profile| profile.connect().ok())
+        .ok_or("The profile did not answer.")?;
+    let binding = Binding::read(&connection)?;
+
+    let directory = library::library_directory(directory).map_err(|error| error.to_string())?;
+    let mut store = Store::open_existing_writable(&directory).map_err(|error| error.to_string())?;
+    let mut base = store.load().map_err(|error| error.to_string())?;
+    let mut layout = base.model().clone();
+    let mut report = Vec::new();
+    for space in &mut layout.workspaces {
+        if space.profile_id.is_some() {
+            continue;
+        }
+        report.extend(binding.apply(space, &directory)?);
         report.push(format!(
             "Bound workspace {} ({}) to profile {} ({})",
             space.name, space.id, home.display_name, home.profile_id
         ));
-    }
-    if let Some(error) = unread {
-        return Err(format!("The library's shells could not be read: {error}"));
     }
     if report.is_empty() {
         return Ok(vec!["Every workspace already has a profile.".into()]);
     }
     // The default server follows TMUX_TMPDIR, as tmux does, so say which.
     report.push(format!(
-        "Panes of the profile's agents now follow the profile's tmux server. The earlier server, where every other session was left, is {source_text}"
+        "Panes of the profile's agents now follow the profile's tmux server. The earlier server, where every other session was left, is {}",
+        binding.source()
     ));
     let saved = store
         .save(&mut base, &layout)
@@ -241,5 +289,38 @@ mod tests {
         }
         // Any other view needs none.
         assert!(register_agent_view(&mut View::of(ViewKind::Team), &agents));
+    }
+
+    #[test]
+    fn a_workspace_without_a_profile_is_bound_with_its_panes() {
+        let mut layout = agent_interface_core::Layout::initial("/gone/folder".into());
+        layout.attach(Some(Attachment {
+            session: "worker".into(),
+            source_socket: None,
+        }));
+        assert!(layout.split(agent_interface_core::Direction::Right, "/tmp".into(), true));
+        layout.attach(Some(Attachment {
+            session: "notes".into(),
+            source_socket: None,
+        }));
+        let binding = Binding {
+            profile_id: "main".into(),
+            agents: HashMap::from([("worker".to_owned(), None)]),
+            source: "/tmp/default".into(),
+            resolved: None,
+        };
+        let library = tempfile::tempdir().unwrap();
+        let space = &mut layout.workspaces[0];
+        assert!(binding.apply(space, library.path()).unwrap().is_empty());
+        assert_eq!(space.profile_id.as_deref(), Some("main"));
+        let leaves = space.tabs[0].tree.leaves();
+        let sockets: Vec<_> = leaves
+            .iter()
+            .map(|leaf| leaf.attachment.as_ref().unwrap().source_socket.as_deref())
+            .collect();
+        // The agent follows the profile; the other session keeps its server.
+        assert_eq!(sockets, [None, Some("/tmp/default")]);
+        // A folder that is gone is not kept for the profile's shell.
+        assert_eq!(leaves[0].cwd, None);
     }
 }

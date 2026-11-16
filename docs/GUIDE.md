@@ -184,6 +184,14 @@ Choose **Delete workspace** to remove an empty workspace; the last workspace and
 workspaces with tabs cannot be deleted. Deleting selects the first remaining
 workspace and leaves its tabs and sessions intact.
 
+A workspace without a profile has **Choose profile…** in its menu. One whose
+profile cannot be reached has **Change profile…**, in its menu and on its
+**Workspace profile unavailable** screen. Pick a ready profile; the workspace
+keeps its tabs and panes, and panes attached to that profile's agents show
+them. For a workspace that had no profile, the panes change as
+[Move a library to the Rust Backbone service](#move-a-library-to-the-rust-backbone-service)
+describes.
+
 Click **+** beside TABS or press Command-T to add an empty tab. Command-D splits
 right; Command-Shift-D splits below. Both split actions are also in tab options.
 Drag a tab onto another tab in the sidebar to move it to that position;
@@ -432,6 +440,7 @@ computer's profile with one command:
 agent-interface bind-home-profile
 ```
 
+To bind one workspace instead, choose **Choose profile…** in its menu.
 Add `--data-dir PATH` for another library. Run it in the environment the app
 runs in: like tmux, it finds the default tmux server through `TMUX_TMPDIR`,
 and it prints the server it used. The command needs the service to
