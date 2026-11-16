@@ -186,3 +186,45 @@ fn removing_an_agent_that_is_already_gone_succeeds() {
     assert_eq!(remove_checked(&a, "worker", REG), Ok(()));
     server.join().unwrap();
 }
+
+// The Rust service's preview names store skills without a folder or an
+// identity; each row opens the skill the catalog lists under its name.
+#[test]
+fn skill_rows_take_their_catalog_identity_by_name() {
+    let inspect_path = format!("/api/agents/worker/inspect?expected_registration_id={REG}");
+    let preview = json!({"name":"worker","runtime":"codex","tags":["coder"],"directories":[],
+        "skills":[
+            {"name":"review","tags":["all"],"description":"r","links":{}},
+            {"name":"notes","tags":["coder"],"description":"n","links":{}}
+        ],
+        "repository":[],"user_directories":[],"user":[],"notices":[]});
+    let catalog = json!({"items":[
+        {"name":"notes","description":"n","tags":["coder"],"error":null,"reaches":["worker"],"artifact_id":"artifact-2"},
+        {"name":"review","description":"r","tags":["all"],"error":null,"reaches":["worker"],"artifact_id":"artifact-1"}
+    ],"total":2});
+    let (_a, a, server) = provider(
+        "a",
+        vec![
+            Reply::ok(&inspect_path, inspect("a")),
+            Reply::ok("/api/skills/preview/worker", preview),
+            Reply::ok("/api/skills", catalog),
+        ],
+    );
+    let snapshot = reader(a).read(AgentSection::Skills).unwrap();
+    let Some(Ok(loadout)) = &snapshot.agent.skills else {
+        panic!("skills were not read");
+    };
+    let rows: Vec<_> = loadout
+        .skills
+        .iter()
+        .map(|skill| (skill.path.as_str(), skill.artifact_id.as_deref()))
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            ("review", Some("artifact-1")),
+            ("notes", Some("artifact-2"))
+        ]
+    );
+    server.join().unwrap();
+}

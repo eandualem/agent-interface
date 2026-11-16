@@ -80,7 +80,15 @@ pub struct Loadout {
 impl Loadout {
     pub(super) fn decode(body: &[u8]) -> Result<Self, &'static str> {
         document(body)?;
-        serde_json::from_slice(body).map_err(|_| super::UNREADABLE)
+        let mut loadout: Self = serde_json::from_slice(body).map_err(|_| super::UNREADABLE)?;
+        // The Rust service keeps store skills without folders: such a skill
+        // carries its name where the path was, so skills stay told apart.
+        for skill in &mut loadout.skills {
+            if skill.path.is_empty() {
+                skill.path = skill.name.clone();
+            }
+        }
+        Ok(loadout)
     }
 }
 

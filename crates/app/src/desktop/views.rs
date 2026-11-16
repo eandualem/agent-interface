@@ -340,8 +340,17 @@ impl ViewPane {
             }
             let connection = connection.clone();
             let visible = pane.visible.clone();
-            pane.bound_agent =
-                Some(cx.new(|cx| bound_agent::Card::new(connection, &pane.view, visible, cx)));
+            let card = cx.new(|cx| bound_agent::Card::new(connection, &pane.view, visible, cx));
+            // A chosen skill or policy opens in this pane's reader, in place of
+            // the card until the person goes back.
+            pane._search.push(
+                cx.subscribe(&card, |pane, _, opened: &bound_agent::Opened, cx| {
+                    pane.section = opened.section;
+                    pane.data = Some(Data::Agent(Box::new(opened.agent.clone())));
+                    pane.open(opened.target.clone(), cx);
+                }),
+            );
+            pane.bound_agent = Some(card);
             return pane;
         }
         if pane.view.kind == ViewKind::Artifacts {
@@ -706,6 +715,18 @@ impl ViewPane {
             self.open_policy(source.clone(), library.members.clone().into(), cx);
             return;
         }
+        if self.connection.is_some()
+            && let Target::Policy(path) = &target
+            && let Some(Data::Agent(agent)) = &self.data
+            && let Some(Ok(brief)) = &agent.brief
+            && let Some(source) = brief
+                .sources
+                .iter()
+                .find(|source| source.path.as_ref() == path)
+        {
+            self.open_policy(source.clone(), [agent.name.clone()].into(), cx);
+            return;
+        }
         self.open_with_skill(target, None, cx);
     }
 
@@ -792,6 +813,17 @@ impl ViewPane {
                             .map(|agent| agent.name.clone())
                             .collect::<Vec<_>>()
                             .into(),
+                    ),
+                    // An agent's skill is offered to that agent.
+                    Some(Data::Agent(agent)) => (
+                        agent
+                            .skills
+                            .as_ref()
+                            .and_then(|loadout| loadout.as_ref().ok())
+                            .and_then(|loadout| {
+                                loadout.skills.iter().find(|skill| &skill.path == path)
+                            }),
+                        [agent.name.clone()].into(),
                     ),
                     _ => (None, std::sync::Arc::from([])),
                 },
@@ -983,8 +1015,16 @@ impl Drop for ViewPane {
 
 impl Render for ViewPane {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if let Some(card) = &self.bound_agent {
-            return div().size_full().child(card.clone());
+        if let Some(card) = self.bound_agent.clone().filter(|_| self.open.is_none()) {
+            // Back from the reader: its conversation stops reading, kept with
+            // its draft, and its text can no longer be selected or copied.
+            if let Some(conversation) = self.conversation.take() {
+                conversation.update(cx, |conversation, cx| conversation.set_active(false, cx));
+            }
+            let mut selection = self.selection.borrow_mut();
+            selection.begin();
+            selection.finish();
+            return div().size_full().child(card);
         }
         if let Some(artifacts) = &self.artifacts {
             return div().size_full().child(artifacts.clone());
