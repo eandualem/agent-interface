@@ -131,7 +131,7 @@ pub fn bind_home_profile(directory: Option<&Path>) -> Result<Vec<String>, String
     }
     // The default server follows TMUX_TMPDIR, as tmux does, so say which.
     report.push(format!(
-        "Agents' sessions were taken to be on the tmux server at {source_text}"
+        "Panes of the profile's agents now follow the profile's tmux server. The earlier server, where every other session was left, is {source_text}"
     ));
     let saved = store
         .save(&mut base, &layout)
@@ -183,6 +183,10 @@ fn register_agent_view(view: &mut View, agents: &HashMap<String, Option<String>>
     }
     let registration = view.agent.as_ref().and_then(|agent| agents.get(agent));
     view.registration_id = registration.cloned().flatten();
+    // A registration the library would refuse is not kept.
+    if !view.is_valid() {
+        view.registration_id = None;
+    }
     view.registration_id.is_some()
 }
 
@@ -222,13 +226,15 @@ mod tests {
         let agents = HashMap::from([
             ("worker".to_owned(), Some(registration.to_owned())),
             ("unregistered".to_owned(), None),
+            ("malformed".to_owned(), Some(registration.to_uppercase())),
         ]);
         let mut view = View::agent("worker".into(), None);
         assert!(register_agent_view(&mut view, &agents));
         assert_eq!(view.registration_id.as_deref(), Some(registration));
         assert!(view.is_valid());
-        // An agent the profile does not have, or has not registered.
-        for name in ["stranger", "unregistered"] {
+        // An agent the profile does not have, has not registered, or names
+        // with a registration that a library does not hold.
+        for name in ["stranger", "unregistered", "malformed"] {
             let mut view = View::agent(name.into(), None);
             assert!(!register_agent_view(&mut view, &agents));
             assert_eq!(view.registration_id, None);
