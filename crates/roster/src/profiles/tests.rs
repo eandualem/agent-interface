@@ -982,6 +982,7 @@ fn the_rust_service_takes_a_skill_folders_files() {
     }
     fs::write(folder.join(".git/HEAD"), "ref").unwrap();
     std::os::unix::fs::symlink(folder.join("SKILL.md"), folder.join("link.md")).unwrap();
+    std::os::unix::fs::symlink(folder.join("scripts"), folder.join("linked")).unwrap();
     let changed = json!({
         "name": "page-layout", "description": "Lay out a page.", "tags": ["all"],
         "error": null, "relinked": [], "warnings": ["builder was not reached"]
@@ -1021,4 +1022,25 @@ fn the_rust_service_takes_a_skill_folders_files() {
             ]
         })
     );
+}
+
+#[test]
+fn a_skill_folder_is_read_within_the_services_bounds() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut deep = directory.path().join("deep");
+    for _ in 0..16 {
+        deep = deep.join("d");
+    }
+    fs::create_dir_all(&deep).unwrap();
+    let wide = directory.path().join("wide");
+    fs::create_dir(&wide).unwrap();
+    for index in 0..=2_000 {
+        fs::write(wide.join(format!("{index}.md")), "").unwrap();
+    }
+    for (folder, reason) in [("deep", "nested too deeply"), ("wide", "2,000 entries")] {
+        let Err(AddError::Refused(refusal)) = served::skill(&directory.path().join(folder)) else {
+            panic!("{folder} was read");
+        };
+        assert!(refusal.contains(reason), "{refusal}");
+    }
 }

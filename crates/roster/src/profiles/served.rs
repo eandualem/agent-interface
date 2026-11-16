@@ -8,9 +8,12 @@ use super::{
 use base64::Engine as _;
 use serde::Deserialize;
 use std::{
-    fs::{self, OpenOptions},
+    fs::File,
     io::Read,
-    os::unix::fs::{OpenOptionsExt, PermissionsExt},
+    os::{
+        fd::{AsFd, BorrowedFd},
+        unix::fs::PermissionsExt,
+    },
     path::{Path, PathBuf},
 };
 
@@ -181,72 +184,30 @@ pub(super) fn verify(
     Ok(())
 }
 
-/// The most bytes of files the service keeps for one skill.
+/// The service's bounds for one skill folder: the bytes of its files, its
+/// files and directories, how deep a file lies and how long its path is.
 const SKILL_BYTES: usize = 50 * 1024 * 1024;
+const SKILL_ENTRIES: usize = 2_000;
+const SKILL_DEPTH: usize = 16;
+const SKILL_PATH_BYTES: usize = 1024;
 
 /// The body that adds the skill folder at `path` for every agent: the service
 /// takes the files themselves, read here, under the folder's own name. A
 /// `.git` entry, links and special files are not sent, as with its own
-/// command. The service checks the folder's other bounds.
+/// command. Reading stops at the first of the service's bounds it crosses.
 pub(super) fn skill(path: &Path) -> Result<serde_json::Value, AddError> {
-    let unreadable =
-        |error: std::io::Error| AddError::Refused(format!("The folder cannot be read: {error}"));
+    use rustix::fs::{Mode, OFlags};
     let root = path.canonicalize().map_err(unreadable)?;
     let name = root.file_name().and_then(|name| name.to_str());
     let name = name.ok_or(Error::Invalid)?;
-    let mut files = Vec::new();
-    let mut bytes = 0;
-    let mut directories = vec![(root.clone(), String::new())];
-    while let Some((directory, prefix)) = directories.pop() {
-        for entry in fs::read_dir(&directory).map_err(unreadable)? {
-            let entry = entry.map_err(unreadable)?;
-            let Ok(entry_name) = entry.file_name().into_string() else {
-                let refusal = "A name in the folder is not UTF-8, which the store cannot keep.";
-                return Err(AddError::Refused(refusal.to_owned()));
-            };
-            if entry_name == ".git" {
-                continue;
-            }
-            // The entry's own kind: a link is neither a directory nor a file.
-            let kind = entry.file_type().map_err(unreadable)?;
-            let at = format!("{prefix}{entry_name}");
-            if kind.is_dir() {
-                directories.push((entry.path(), format!("{at}/")));
-            }
-            if !kind.is_file() {
-                continue;
-            }
-            // Never through a link put there since, nor waiting on a pipe.
-            let mut file = OpenOptions::new()
-                .read(true)
-                .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-                .open(entry.path())
-                .map_err(unreadable)?;
-            let metadata = file.metadata().map_err(unreadable)?;
-            if !metadata.is_file() {
-                continue;
-            }
-            // One byte past the room left shows the folder is too large.
-            let room = SKILL_BYTES - bytes;
-            let mut content = Vec::new();
-            (&mut file)
-                .take(room as u64 + 1)
-                .read_to_end(&mut content)
-                .map_err(unreadable)?;
-            if content.len() > room {
-                let refusal = "The skill folder holds more than 50 MB.";
-                return Err(AddError::Refused(refusal.to_owned()));
-            }
-            bytes += content.len();
-            files.push((
-                at,
-                metadata.permissions().mode() & 0o777,
-                base64::engine::general_purpose::STANDARD.encode(content),
-            ));
-        }
-    }
-    files.sort();
-    let files: Vec<_> = files
+    let opened = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC;
+    let top =
+        rustix::fs::open(&root, opened, Mode::empty()).map_err(|error| unreadable(error.into()))?;
+    let mut reading = Reading::default();
+    reading.walk(top.as_fd(), "", 1)?;
+    reading.files.sort();
+    let files: Vec<_> = reading
+        .files
         .into_iter()
         .map(|(path, mode, content)| {
             serde_json::json!({"path": path, "mode": mode, "content_base64": content})
@@ -259,4 +220,107 @@ pub(super) fn skill(path: &Path) -> Result<serde_json::Value, AddError> {
         "actor": "app",
         "files": files,
     }))
+}
+
+fn unreadable(error: std::io::Error) -> AddError {
+    AddError::Refused(format!("The folder cannot be read: {error}"))
+}
+
+fn refused(reason: &str) -> AddError {
+    AddError::Refused(reason.to_owned())
+}
+
+/// What has been read of a skill folder, held to the service's bounds.
+#[derive(Default)]
+struct Reading {
+    /// Each file's path in the folder, permission bits and Base64 content.
+    files: Vec<(String, u32, String)>,
+    entries: usize,
+    bytes: usize,
+}
+
+impl Reading {
+    /// Read the open directory `directory`, at `prefix` in the folder, whose
+    /// entries lie `depth` names deep. Every entry is opened relative to its
+    /// directory and never through a link, so one replaced by a link since
+    /// it was listed is left out, not followed out of the folder.
+    fn walk(
+        &mut self,
+        directory: BorrowedFd<'_>,
+        prefix: &str,
+        depth: usize,
+    ) -> Result<(), AddError> {
+        use rustix::fs::{AtFlags, Dir, FileType, Mode, OFlags, openat, statat};
+        use rustix::io::Errno;
+        let failed = |error: Errno| unreadable(error.into());
+        for entry in Dir::read_from(directory).map_err(failed)? {
+            let entry = entry.map_err(failed)?;
+            let name = entry.file_name();
+            if matches!(name.to_bytes(), b"." | b".." | b".git") {
+                continue;
+            }
+            let Ok(name) = name.to_str() else {
+                return Err(refused(
+                    "A name in the folder is not UTF-8, which the store cannot keep.",
+                ));
+            };
+            let kind = match statat(directory, name, AtFlags::SYMLINK_NOFOLLOW) {
+                Ok(stat) => FileType::from_raw_mode(stat.st_mode),
+                Err(Errno::NOENT) => continue,
+                Err(error) => return Err(failed(error)),
+            };
+            if !matches!(kind, FileType::Directory | FileType::RegularFile) {
+                continue;
+            }
+            self.entries += 1;
+            if self.entries > SKILL_ENTRIES {
+                return Err(refused("The skill folder has more than 2,000 entries."));
+            }
+            let path = format!("{prefix}{name}");
+            if kind == FileType::Directory {
+                if depth >= SKILL_DEPTH {
+                    return Err(refused("The skill folder is nested too deeply."));
+                }
+                let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+                match openat(directory, name, flags, Mode::empty()) {
+                    Ok(child) => self.walk(child.as_fd(), &format!("{path}/"), depth + 1)?,
+                    // Gone, or replaced by a link or a file, since it was listed.
+                    Err(Errno::NOENT | Errno::LOOP | Errno::NOTDIR) => {}
+                    Err(error) => return Err(failed(error)),
+                }
+                continue;
+            }
+            if path.len() > SKILL_PATH_BYTES {
+                return Err(refused("A file's path in the skill folder is too long."));
+            }
+            // Without waiting on a pipe put in the file's place.
+            let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC;
+            let mut file = match openat(directory, name, flags, Mode::empty()) {
+                Ok(file) => File::from(file),
+                Err(Errno::NOENT | Errno::LOOP) => continue,
+                Err(error) => return Err(failed(error)),
+            };
+            let metadata = file.metadata().map_err(unreadable)?;
+            if !metadata.is_file() {
+                continue;
+            }
+            // One byte past the room left shows the folder is too large.
+            let room = SKILL_BYTES - self.bytes;
+            let mut content = Vec::new();
+            (&mut file)
+                .take(room as u64 + 1)
+                .read_to_end(&mut content)
+                .map_err(unreadable)?;
+            if content.len() > room {
+                return Err(refused("The skill folder holds more than 50 MB."));
+            }
+            self.bytes += content.len();
+            self.files.push((
+                path,
+                metadata.permissions().mode() & 0o777,
+                base64::engine::general_purpose::STANDARD.encode(content),
+            ));
+        }
+        Ok(())
+    }
 }
