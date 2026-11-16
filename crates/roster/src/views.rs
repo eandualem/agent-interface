@@ -840,7 +840,8 @@ pub struct Skill {
     pub artifact_id: Option<String>,
     /// Skill name.
     pub name: String,
-    /// Its folder in the store, as Backbone reports it.
+    /// Its folder in the store, as Backbone reports it. In an agent's
+    /// skills, a skill the service keeps without a folder carries its name.
     pub path: String,
     /// When to use it.
     pub description: String,

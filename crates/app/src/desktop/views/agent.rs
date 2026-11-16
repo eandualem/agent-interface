@@ -40,6 +40,16 @@ pub(super) fn body(pane: &ViewPane, agent: &Agent, cx: &mut Context<ViewPane>) -
             ))
             .into_any_element();
     }
+    // A profile card's skill or policy: the card read this agent itself, so
+    // the reader goes back to the card rather than to this view's sections.
+    if let Some(card) = &pane.bound_agent {
+        let header =
+            ui::view_header("user", agent.name.clone()).child(ui::badge(agent.runtime.clone()));
+        return match page(pane, agent) {
+            Some(page) => reader::render(pane, header, page, cx),
+            None => div().size_full().child(card.clone()).into_any_element(),
+        };
+    }
     let status = pane.agents.get(&agent.name);
     let name = agent.name.clone();
     let header = ui::view_header("user", agent.name.clone())
@@ -232,7 +242,10 @@ fn page<'a>(pane: &'a ViewPane, agent: &'a Agent) -> Option<reader::Page<'a>> {
                         .gap_y(px(t.space.s6))
                         .text_color(c.muted)
                         .child(why(&row.why))
-                        .child(mono(row.path.to_owned()).text_color(c.muted)),
+                        // A skill kept without a folder has only its name.
+                        .when(row.path != row.name, |el| {
+                            el.child(mono(row.path.to_owned()).text_color(c.muted))
+                        }),
                 );
             Some(reader::Page {
                 back: format!("{} · Skills", agent.name),

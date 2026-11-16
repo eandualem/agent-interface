@@ -1,12 +1,13 @@
 //! A native card whose saved registration and connection never change.
 
-use super::{agent, list, ui};
+use super::{Target as Row, agent, list, ui};
 use crate::desktop::{
     agent_status::{AgentState, Status},
     design::{colors, tokens},
 };
 use agent_interface_core::{AgentSection, View};
 use agent_interface_roster::{
+    library_snapshots::{self, Kind},
     profiles::{
         Connection, Error as ProfileError,
         runtime_context::{self, Permissions, Target},
@@ -67,8 +68,45 @@ impl Reader {
         };
         // A section's own read failing leaves the card; the section says why.
         let _ = content::agent_part(&self.connection, &part, &mut agent, &|| true);
+        if let Some(Ok(loadout)) = &mut agent.skills
+            && !loadout.skills.is_empty()
+        {
+            attach_skill_artifacts(&self.connection, &mut loadout.skills);
+        }
         Ok(Snapshot { agent, permissions })
     }
+}
+
+/// Give each store skill the identity the profile's skill catalog lists for
+/// it, so opening its row reads that skill's own snapshot. The preview names a
+/// skill but carries no identity; a skill the catalog cannot match opens
+/// without a snapshot.
+fn attach_skill_artifacts(
+    connection: &Connection,
+    skills: &mut [agent_interface_roster::views::Skill],
+) {
+    let Ok(catalog) = library_snapshots::list(connection, Kind::Skill, &|| true) else {
+        return;
+    };
+    for skill in skills {
+        if let Some(entry) = catalog
+            .iter()
+            .find(|entry| entry.name == skill.name && entry.path == skill.path)
+        {
+            skill.artifact_id = entry
+                .artifact
+                .as_ref()
+                .map(|artifact| artifact.id().to_owned());
+        }
+    }
+}
+
+/// A skill or policy row the person chose, for the pane to open in its reader
+/// with the agent as the card last read it.
+pub(super) struct Opened {
+    pub target: Row,
+    pub agent: Agent,
+    pub section: AgentSection,
 }
 
 /// The agent's state as the card last read it.
@@ -189,6 +227,16 @@ impl Card {
         }
     }
 
+    fn open_row(&mut self, target: Row, cx: &mut Context<Self>) {
+        if let Some(snapshot) = &self.snapshot {
+            cx.emit(Opened {
+                target,
+                agent: snapshot.agent.clone(),
+                section: self.section,
+            });
+        }
+    }
+
     /// Runs only after the person confirmed it. A closed pane still finishes the
     /// removal it asked for; only the result goes unseen.
     fn remove(&mut self, cx: &mut Context<Self>) {
@@ -283,6 +331,8 @@ impl Card {
     }
 }
 
+impl gpui::EventEmitter<Opened> for Card {}
+
 impl Render for Card {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (t, c) = (tokens(), colors());
@@ -321,9 +371,11 @@ impl Render for Card {
         }) {
             let section = match self.section {
                 AgentSection::Connections => agent::connections(&snapshot.agent),
-                AgentSection::Skills => agent::skills_section::<Self>(&snapshot.agent, cx, None),
+                AgentSection::Skills => {
+                    agent::skills_section(&snapshot.agent, cx, Some(Self::open_row))
+                }
                 AgentSection::Policies => {
-                    agent::policies_section::<Self>(&snapshot.agent, cx, None)
+                    agent::policies_section(&snapshot.agent, cx, Some(Self::open_row))
                 }
                 _ => agent::usage_section(&snapshot.agent),
             };
