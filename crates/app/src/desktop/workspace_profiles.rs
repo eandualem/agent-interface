@@ -540,8 +540,25 @@ impl Browser {
             .retain(|id, _| self.pane_owners.get(id) == owners.get(id) && owners.contains_key(id));
         self.pane_owners = owners;
         if !changed.is_empty() {
-            self.save_notice =
-                Some("The workspace binding changed. Existing panes were closed.".into());
+            let closed = "The workspace binding changed. Existing panes were closed.";
+            // The shells that a workspace just given a profile left running.
+            let report = self
+                .binding_report
+                .take_if(|(workspace, _)| {
+                    changed.iter().any(|id| {
+                        self.layout.as_ref().is_some_and(|layout| {
+                            layout
+                                .model()
+                                .workspace_for_pane(id)
+                                .is_some_and(|space| &space.id == workspace)
+                        })
+                    })
+                })
+                .map(|(_, report)| report);
+            self.save_notice = Some(match report {
+                Some(report) => format!("{closed} {report}"),
+                None => closed.into(),
+            });
         }
     }
 
@@ -884,6 +901,7 @@ impl Browser {
         }
         let (base, mut proposed) = layout.save_snapshot();
         let (id, previous) = (id.to_owned(), previous.map(str::to_owned));
+        let workspace = id.clone();
         let connection = selected.connection().clone();
         let directory = self.directory.clone();
         // Its sessions without a server are on this window's.
@@ -918,11 +936,10 @@ impl Browser {
                     Ok((base, proposed, report)) => {
                         browser.pending_save = Some((base, proposed));
                         browser.save(cx);
-                        // Shells it showed keep running, and how to reach
-                        // them is said here; a conflict replaces this.
-                        if !report.is_empty() {
-                            browser.save_notice = Some(report.join(". "));
-                        }
+                        // Shells it showed keep running: how to reach them is
+                        // said when its panes close.
+                        browser.binding_report = (!report.is_empty())
+                            .then(|| (workspace.clone(), format!("{}.", report.join(". "))));
                     }
                     Err(error) => browser.save_notice = Some(error),
                 }

@@ -682,6 +682,9 @@ struct Browser {
     /// The requested picker chooses this workspace's profile instead of
     /// making a new workspace.
     profile_change: Option<String>,
+    /// The workspace just given a profile, and the shells it left running,
+    /// said once its panes close.
+    binding_report: Option<(String, String)>,
     profile_picker: Option<(
         gpui::Entity<profile_picker::ProfilePicker>,
         gpui::Subscription,
@@ -975,6 +978,7 @@ impl Browser {
         self.profile_picker = None;
         self.profile_picker_requested = false;
         self.profile_change = None;
+        self.binding_report = None;
         self.profile_flow = None;
         // First run belongs to the default library: another library ends it,
         // unfinished, so it returns at the next launch.
