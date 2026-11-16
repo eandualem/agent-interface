@@ -15,7 +15,7 @@ use agent_interface_store::Store;
 use crate::library::{self, location::resolve_path};
 
 /// What binding a workspace without a profile to one profile needs: that
-/// profile's agents and the unbound tmux server.
+/// profile's agents and the tmux server the workspace used unbound.
 pub struct Binding {
     profile_id: String,
     /// Its agents, each with the registration that a bound agent view keeps.
@@ -25,9 +25,10 @@ pub struct Binding {
 }
 
 impl Binding {
-    /// Read the profile's agents through `connection`, and find the unbound
-    /// tmux server. This reads from the service and the file system.
-    pub fn read(connection: &Connection) -> Result<Self, String> {
+    /// Read the profile's agents through `connection`. `source` is the tmux
+    /// server the workspace used unbound. This reads from the service and the
+    /// file system.
+    pub fn read(connection: &Connection, source: &Path) -> Result<Self, String> {
         let live = || true;
         let team = views::bound::read(connection, &views::bound::Request::Team, &live);
         let Ok(views::Data::Team(team)) = team.result else {
@@ -39,11 +40,8 @@ impl Binding {
             .map(|member| (member.name, member.registration_id))
             .collect();
         // A session that is not an agent is pinned to the unbound tmux server
-        // by its path, so that path must be known. The earlier service kept
-        // its agents on the default server, wherever this is run from.
-        let source =
-            library::location::default_source_socket().map_err(|error| error.to_string())?;
-        let resolved = resolve_path(&source).ok();
+        // by its path, so that path must be known.
+        let resolved = resolve_path(source).ok();
         let source = source
             .to_str()
             .ok_or("The tmux socket path is not UTF-8.")?
@@ -156,7 +154,10 @@ pub fn bind_home_profile(directory: Option<&Path>) -> Result<Vec<String>, String
         .ok()
         .and_then(|profile| profile.connect().ok())
         .ok_or("The profile did not answer.")?;
-    let binding = Binding::read(&connection)?;
+    // The earlier service kept its agents on the default server, wherever
+    // this command is run from.
+    let source = library::location::default_source_socket().map_err(|error| error.to_string())?;
+    let binding = Binding::read(&connection, &source)?;
 
     let directory = library::library_directory(directory).map_err(|error| error.to_string())?;
     let mut store = Store::open_existing_writable(&directory).map_err(|error| error.to_string())?;

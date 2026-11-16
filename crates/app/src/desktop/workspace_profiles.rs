@@ -871,13 +871,14 @@ impl Browser {
         // Its own profile answers again: connect it instead.
         let chosen = &selected.item().profile_id;
         if previous == Some(chosen.as_str()) {
-            if let Some(space) = layout
+            match layout
                 .model()
                 .workspaces
                 .iter()
-                .find(|space| space.id == id)
+                .find(|space| space.id == id && space.profile_id.as_deref() == previous)
             {
-                self.workspace_profiles.retry(space);
+                Some(space) => self.workspace_profiles.retry(space),
+                None => self.save_notice = Some(CHANGED.into()),
             }
             return;
         }
@@ -885,6 +886,8 @@ impl Browser {
         let (id, previous) = (id.to_owned(), previous.map(str::to_owned));
         let connection = selected.connection().clone();
         let directory = self.directory.clone();
+        // Its sessions without a server are on this window's.
+        let source = self.source.clone().and_then(Result::ok);
         let generation = self.library_generation;
         self.workspace_profiles.remember_name(selected.item());
         // Reading the profile's agents and the library's shells is I/O.
@@ -892,15 +895,15 @@ impl Browser {
             let profile_id = &connection.identity().profile_id;
             let space = rebind(&mut proposed, &id, previous.as_deref(), profile_id)
                 .ok_or(CHANGED.to_owned())?;
+            let mut report = Vec::new();
             if space.profile_id.is_none() {
                 let directory = crate::library::library_directory(directory.as_deref())
                     .map_err(|error| error.to_string())?;
-                let binding = crate::adoption::Binding::read(&connection)?;
-                for line in binding.apply(space, &directory)? {
-                    tracing::info!(event = "workspace_profile_chosen", "{line}");
-                }
+                let source = source.ok_or("This window's tmux server could not be found.")?;
+                let binding = crate::adoption::Binding::read(&connection, &source)?;
+                report = binding.apply(space, &directory)?;
             }
-            Ok::<_, String>((base, proposed))
+            Ok::<_, String>((base, proposed, report))
         });
         cx.spawn(async move |this, cx| {
             let result = work.await;
@@ -912,9 +915,14 @@ impl Browser {
                     Ok(_) if browser.saving || browser.save_failed => {
                         browser.save_notice = Some(CHANGED.into());
                     }
-                    Ok(proposal) => {
-                        browser.pending_save = Some(proposal);
+                    Ok((base, proposed, report)) => {
+                        browser.pending_save = Some((base, proposed));
                         browser.save(cx);
+                        // Shells it showed keep running, and how to reach
+                        // them is said here; a conflict replaces this.
+                        if !report.is_empty() {
+                            browser.save_notice = Some(report.join(". "));
+                        }
                     }
                     Err(error) => browser.save_notice = Some(error),
                 }
