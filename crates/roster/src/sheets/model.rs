@@ -8,7 +8,7 @@ use std::{
     sync::OnceLock,
 };
 
-/// An opaque, validated lowercase UUID, without separators.
+/// An opaque, validated lowercase UUID, with or without hyphens.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(transparent)]
 pub struct Id(String);
@@ -16,11 +16,7 @@ impl Id {
     /// Validate an externally supplied identifier.
     pub fn parse(value: impl Into<String>) -> Option<Self> {
         let value = value.into();
-        (value.len() == 32
-            && value
-                .bytes()
-                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
-        .then_some(Self(value))
+        crate::is_uuid(&value).then_some(Self(value))
     }
 }
 impl fmt::Display for Id {

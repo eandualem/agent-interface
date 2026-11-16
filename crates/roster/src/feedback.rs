@@ -125,12 +125,7 @@ fn send_using(api: &Api<'_>, item: &ReportItem, text: &str) -> Outcome {
     if text.trim().is_empty() {
         return refused("Enter feedback before sending.");
     }
-    let Some(author_id) = item.author_id.as_deref().filter(|id| {
-        id.len() == 32
-            && id
-                .bytes()
-                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-    }) else {
+    let Some(author_id) = item.author_id.as_deref().filter(|id| crate::is_uuid(id)) else {
         return refused("This record has no stable author identity. Refresh it before sending.");
     };
     if item.id == 0 || item.id > i64::MAX as u64 {
