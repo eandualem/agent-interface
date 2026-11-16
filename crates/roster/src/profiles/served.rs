@@ -200,7 +200,8 @@ pub(super) fn skill(path: &Path) -> Result<serde_json::Value, AddError> {
     let root = path.canonicalize().map_err(unreadable)?;
     let name = root.file_name().and_then(|name| name.to_str());
     let name = name.ok_or(Error::Invalid)?;
-    let opened = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC;
+    // The resolved path names no link, so one put there since is refused.
+    let opened = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
     let top =
         rustix::fs::open(&root, opened, Mode::empty()).map_err(|error| unreadable(error.into()))?;
     let mut reading = Reading::default();
