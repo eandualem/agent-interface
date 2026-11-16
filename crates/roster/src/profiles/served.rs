@@ -28,6 +28,9 @@ enum Entry {
         display_name: String,
         instance_id: String,
         machine: Machine,
+        /// Whether this machine is where the profile's agents live.
+        #[serde(default)]
+        home: bool,
         socket: PathBuf,
         tmux_socket: PathBuf,
         #[serde(rename = "credential_reference")]
@@ -120,6 +123,23 @@ pub(super) fn list(bytes: &[u8]) -> Result<Vec<Item>, Error> {
         }
     }
     Ok(items)
+}
+
+/// The profile this machine is home to, when the list serves exactly one.
+pub(super) fn home(bytes: &[u8]) -> Option<Item> {
+    #[derive(Deserialize)]
+    struct Catalog {
+        profiles: Vec<Entry>,
+    }
+    let catalog: Catalog = serde_json::from_slice(bytes).ok()?;
+    let mut homes = catalog
+        .profiles
+        .into_iter()
+        .filter(|entry| matches!(entry, Entry::Serving { home: true, .. }));
+    let (home, None) = (homes.next()?, homes.next()) else {
+        return None;
+    };
+    Some(home.profile().ok()??.item)
 }
 
 pub(super) fn show(bytes: &[u8]) -> Result<Profile, Error> {

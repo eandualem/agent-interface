@@ -398,12 +398,49 @@ ID alone. Connecting compares the profile, the machine and the service's
 `instance_id` with the entry just read. The instance changes at every service
 start, so later checks on the same connection compare only the profile and
 the machine, and the machine ID fills the installation and lifecycle fields.
+Its shell reply names the profile and the service's run, so the profile alone
+is compared there.
+
+The service also pushes agent state changes on `GET /api/stream`, as
+Server-Sent Events. `Connection::watch` follows that stream on a worker of its
+own and reads only each frame's kind: the opening `hello`, `agent.state` and
+`resync` each ask the roster worker for a read at once. The frames' values are
+not applied and no cursor is kept, so a stream opened again simply reads the
+states again. A stream that breaks, or stays silent for 45 seconds against the
+service's 15-second heartbeat, is opened again two seconds later. When the
+stream worker cannot start, the roster is polled as before. The
+two-second poll continues, because agents joining or leaving the roster are
+not pushed.
+
+A workspace saved without a profile was served by the earlier Python service
+without a binding, and shows no agents once the Rust service has taken its
+place. `agent-interface bind-home-profile` is the one-off migration for such a
+library; the app itself never binds a workspace that a person did not bind. It
+opens no window and needs the Rust service's list to name exactly one serving
+profile whose home is this machine. It reads that profile's agents, binds every
+workspace without a profile to it and saves through the store's usual rules:
+a compatible change made meanwhile is merged, and a conflicting one, such as
+an edit to a pane of a workspace being bound, stops the command, which then
+writes nothing. An attachment to one
+of the profile's agents on the default tmux server, where the Python service
+kept them whatever tmux session the command runs in, loses its socket, so it
+follows the profile's server, where the agent now runs. Any other attachment
+keeps its socket, or is given the default server's when it was saved without
+one, and its pane says that the session is on another server. A saved view of one
+of the profile's agents is given that agent's registration, which a bound view
+needs. Ordinary shell
+panes become shells of the profile, as in any bound workspace, starting in the
+folder the earlier shell was in, or in the profile's home when the saved
+folder no longer exists. Those earlier shells keep running on the
+library's shell server, and the command prints, for each, what it runs and the
+tmux command that attaches to it.
+
 The explicit `app::roster::BoundRosterSource` owns one connection for its entire
 worker lifetime, with a private coalescing cache. Every update carries its
 verified identity and typed failure; a failed read retains only that worker's
 previous metadata and observation time, marked stale. A running worker cannot
-be rebound. Dropping it interrupts the polling wait and joins its bounded
-in-flight request, so UI owners must dispose of it off the UI thread.
+be rebound. Dropping it interrupts the polling wait, stops the stream worker
+and joins its bounded in-flight request, so UI owners must dispose of it off the UI thread.
 Desktop status observations are owned by explicit `LiveAgents` handles passed
 from each window to its views and child readers. A weak source registry shares
 one live poller per full profile/installation/lifecycle identity; explicit legacy

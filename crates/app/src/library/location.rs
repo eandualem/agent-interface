@@ -69,6 +69,17 @@ pub fn source_socket(explicit: Option<&Path>) -> io::Result<PathBuf> {
     )
 }
 
+/// The default tmux server's socket, whatever tmux session the caller runs
+/// in: where the Python Backbone service kept its agents.
+pub(crate) fn default_source_socket() -> io::Result<PathBuf> {
+    resolve_source(
+        None,
+        &|name| (name != "TMUX").then(|| std::env::var_os(name)).flatten(),
+        &user_home,
+        uzers::get_current_uid(),
+    )
+}
+
 fn resolve_source(
     explicit: Option<&Path>,
     env: &impl Fn(&str) -> Option<OsString>,

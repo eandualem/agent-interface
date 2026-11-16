@@ -56,27 +56,39 @@ pub fn read_sessions(socket: &Path) -> io::Result<Vec<String>> {
 pub fn read_session_directory(socket: &Path, session: &str) -> io::Result<String> {
     let _span = tracing::trace_span!("tmux_query", operation = "read_directory").entered();
     let unavailable = || io::Error::other("Working directory unavailable");
-    if names(session).as_slice() != [session] {
+    let directory = display(socket, session, "#{pane_current_path}").ok_or_else(unavailable)?;
+    if !Path::new(&directory).is_absolute() || directory.contains('\0') {
         return Err(unavailable());
     }
-    let mut command = command(socket).ok_or_else(unavailable)?;
+    Ok(directory)
+}
+
+/// The command running in a session's active pane, read the same bounded,
+/// read-only way as its directory. None when it cannot be read.
+pub fn read_session_command(socket: &Path, session: &str) -> Option<String> {
+    let _span = tracing::trace_span!("tmux_query", operation = "read_command").entered();
+    display(socket, session, "#{pane_current_command}")
+}
+
+/// One format of a session's active pane, without its closing newline.
+fn display(socket: &Path, session: &str, format: &str) -> Option<String> {
+    if names(session).as_slice() != [session] {
+        return None;
+    }
+    let mut command = command(socket)?;
     command.args([
         "display-message",
         "-p",
         "-t",
         &format!("={session}:"),
-        "#{pane_current_path}",
+        format,
     ]);
-    let output = capture(command, TIMEOUT).map_err(|_| unavailable())?;
+    let output = capture(command, TIMEOUT).ok()?;
     if !output.status.success() {
-        return Err(unavailable());
+        return None;
     }
-    let output = std::str::from_utf8(&output.stdout).map_err(|_| unavailable())?;
-    let directory = output.strip_suffix('\n').ok_or_else(unavailable)?;
-    if !Path::new(directory).is_absolute() || directory.contains('\0') {
-        return Err(unavailable());
-    }
-    Ok(directory.to_owned())
+    let output = std::str::from_utf8(&output.stdout).ok()?;
+    Some(output.strip_suffix('\n')?.to_owned())
 }
 
 /// A session's identity on the queried server. IDs belong to that server

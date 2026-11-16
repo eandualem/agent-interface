@@ -35,13 +35,17 @@ impl Target {
                 .map(|c| c.identity().profile_id.as_str())
     }
     /// A provider's sign-in session. It does not come back once it ends.
+    /// A session of that name on another tmux server is a person's own.
     pub fn is_sign_in(&self) -> bool {
-        self.connection.is_some()
-            && self
-                .leaf
-                .attachment
-                .as_ref()
-                .is_some_and(|attachment| attachment.session.starts_with("sign-in-"))
+        self.connection.as_ref().is_some_and(|connection| {
+            self.leaf.attachment.as_ref().is_some_and(|attachment| {
+                attachment.session.starts_with("sign-in-")
+                    && attachment
+                        .source_socket
+                        .as_deref()
+                        .is_none_or(|path| std::path::Path::new(path) == connection.tmux_socket())
+            })
+        })
     }
 
     /// Remove this pane from whichever workspace of its profile holds it,

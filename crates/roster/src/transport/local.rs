@@ -120,18 +120,9 @@ fn method(body: &Option<Vec<u8>>) -> &'static str {
     if body.is_some() { "POST" } else { "GET" }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn exchange(
-    socket: &str,
-    method: &'static str,
-    path: &str,
-    auth: Authentication<'_>,
-    body: Option<Vec<u8>>,
-    limit: usize,
-    timeout: Duration,
-    retain_errors: bool,
-) -> Result<Response, Option<u16>> {
-    let socket = Path::new(socket);
+/// The effective user, once `socket` is this user's private socket in this
+/// user's private folder.
+fn owned(socket: &Path) -> Result<u32, Option<u16>> {
     let uid = rustix::process::geteuid().as_raw();
     let metadata = fs::symlink_metadata(socket).map_err(|error| {
         tracing::debug!(event = "provider_socket_metadata_failed", error_kind = ?error.kind(), os_error = error.raw_os_error(), "Provider socket metadata unavailable");
@@ -152,6 +143,22 @@ fn exchange(
         );
         return Err(None);
     }
+    Ok(uid)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn exchange(
+    socket: &str,
+    method: &'static str,
+    path: &str,
+    auth: Authentication<'_>,
+    body: Option<Vec<u8>>,
+    limit: usize,
+    timeout: Duration,
+    retain_errors: bool,
+) -> Result<Response, Option<u16>> {
+    let socket = Path::new(socket);
+    let uid = owned(socket)?;
     // The runtime is scoped to this request. Dropping it also cancels the HTTP
     // connection task on timeout, including a peer that never finishes its body.
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -233,5 +240,93 @@ fn exchange(
         })
         .await
         .map_err(|_| None)?
+    })
+}
+
+/// Read a response body that never ends, such as Server-Sent Events, until
+/// `live` is false, handing each chunk to `chunk` as it arrives. An error is a
+/// refusal's status, or none when the stream broke, `chunk` returned false or
+/// nothing arrived for `quiet`. The peer is the Rust service, which takes the
+/// profile alone.
+pub(crate) fn stream(
+    socket: &str,
+    path: &str,
+    profile_id: &str,
+    quiet: Duration,
+    live: &dyn Fn() -> bool,
+    chunk: &mut dyn FnMut(&[u8]) -> bool,
+) -> Result<(), Option<u16>> {
+    // How long a stopped reader may take to notice.
+    const STEP: Duration = Duration::from_millis(250);
+    let socket = Path::new(socket);
+    let uid = owned(socket)?;
+    // Dropping the runtime closes the connection, as for a single request.
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|_| None)?;
+    runtime.block_on(async {
+        let open = async {
+            let stream = UnixStream::connect(socket).await.map_err(|_| None)?;
+            if stream.peer_cred().map_err(|_| None)?.uid() != uid {
+                return Err(None);
+            }
+            let request = Request::builder()
+                .method("GET")
+                .uri(path)
+                .header("Host", "localhost")
+                .header("Accept", "text/event-stream")
+                .header("X-Backbone-Profile-ID", profile_id)
+                .body(Full::new(Bytes::new()))
+                .map_err(|_| None)?;
+            let (mut sender, connection) =
+                hyper::client::conn::http1::handshake(TokioIo::new(stream))
+                    .await
+                    .map_err(|_| None)?;
+            tokio::spawn(connection);
+            let response = sender.send_request(request).await.map_err(|_| None)?;
+            Ok((sender, response))
+        };
+        // A peer that accepts and then says nothing must not hold a stopped
+        // reader for the whole deadline.
+        let mut open = std::pin::pin!(open);
+        let mut waited = Duration::ZERO;
+        let (_sender, response) = loop {
+            match tokio::time::timeout(STEP, &mut open).await {
+                Ok(opened) => break opened?,
+                Err(_) if !live() => return Ok(()),
+                Err(_) => {
+                    waited += STEP;
+                    if waited >= Duration::from_secs(15) {
+                        return Err(None);
+                    }
+                }
+            }
+        };
+        if !response.status().is_success() {
+            return Err(Some(response.status().as_u16()));
+        }
+        let mut body = response.into_body();
+        let mut silent = Duration::ZERO;
+        while live() {
+            match tokio::time::timeout(STEP, body.frame()).await {
+                Err(_) => {
+                    silent += STEP;
+                    if silent >= quiet {
+                        return Err(None);
+                    }
+                }
+                Ok(None) => return Err(None),
+                Ok(Some(frame)) => {
+                    if let Ok(data) = frame.map_err(|_| None)?.into_data() {
+                        silent = Duration::ZERO;
+                        if !chunk(&data) {
+                            return Err(None);
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
     })
 }

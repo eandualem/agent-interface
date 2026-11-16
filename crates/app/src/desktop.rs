@@ -317,6 +317,11 @@ fn browser_window(cx: &App) -> Option<gpui::WindowHandle<Browser>> {
         })
 }
 
+/// The Backbone command as a login shell finds it, for work that opens no window.
+pub(crate) fn profile_client() -> Option<crate::profiles::Client> {
+    onboarding::probe::profile_client()
+}
+
 /// New profile, from the application menu: its two screens in the active
 /// workspace window, which opens if there is none.
 fn new_profile(cx: &mut App) {
@@ -2853,22 +2858,30 @@ impl Render for Browser {
                 self.terminals.insert(leaf.id.clone(), terminal);
             }
             // A stopped Backbone agent's pane offers Resume and Start new.
-            let agent = leaf.attachment.as_ref().and_then(|attachment| {
-                let connection = self.pane_connection(&leaf.id).ok()?;
-                if connection.is_some() {
-                    let space = self.layout.as_ref()?.model().workspace_for_pane(&leaf.id)?;
-                    let status = self.workspace_agents(space)?.get(&attachment.session);
-                    return (status.state == components::AgentState::Offline)
-                        .then(|| (None, attachment.session.clone()));
-                }
-                let status = self.roster.as_ref()?.get(&attachment.session);
-                if status.state != components::AgentState::Offline
-                    || !self.is_window_source(attachment.source_socket.as_deref())
-                {
-                    return None;
-                }
-                Some((Some(self.backbone.clone()?), attachment.session.clone()))
-            });
+            let agent =
+                leaf.attachment.as_ref().and_then(|attachment| {
+                    let connection = self.pane_connection(&leaf.id).ok()?;
+                    if let Some(connection) = connection {
+                        // A session on another tmux server is not this profile's
+                        // agent, whatever its name.
+                        if attachment.source_socket.as_deref().is_some_and(|path| {
+                            std::path::Path::new(path) != connection.tmux_socket()
+                        }) {
+                            return None;
+                        }
+                        let space = self.layout.as_ref()?.model().workspace_for_pane(&leaf.id)?;
+                        let status = self.workspace_agents(space)?.get(&attachment.session);
+                        return (status.state == components::AgentState::Offline)
+                            .then(|| (None, attachment.session.clone()));
+                    }
+                    let status = self.roster.as_ref()?.get(&attachment.session);
+                    if status.state != components::AgentState::Offline
+                        || !self.is_window_source(attachment.source_socket.as_deref())
+                    {
+                        return None;
+                    }
+                    Some((Some(self.backbone.clone()?), attachment.session.clone()))
+                });
             if let Some(terminal) = self.terminals.get(&leaf.id) {
                 terminal.update(cx, |terminal, cx| terminal.set_agent(agent, cx));
             }

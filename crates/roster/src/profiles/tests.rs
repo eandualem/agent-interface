@@ -880,6 +880,17 @@ fn rust_service_entries_list_and_connect_without_a_key() {
     let listed = json!({"profiles": [entry, failed, later]});
     let items = list(&serde_json::to_vec(&listed).unwrap()).unwrap();
     assert_eq!(items.len(), 2);
+    // One served home stands in for the unbound installation; two do not,
+    // nor does a profile whose home is another machine.
+    let home = |listed: &Value| home(&serde_json::to_vec(listed).unwrap());
+    assert_eq!(home(&listed).unwrap().profile_id, "0a1b2c3d4e5f");
+    let mut second = entry.clone();
+    second["profile_id"] = json!("2b3c4d5e6f7a");
+    assert!(home(&json!({"profiles": [entry, second]})).is_none());
+    let mut away = entry.clone();
+    away["home"] = json!(false);
+    assert!(home(&json!({"profiles": [away]})).is_none());
+    assert!(home(&json!({"schema_version": 1, "items": []})).is_none());
     assert_eq!(
         (&items[0].state, &items[0].kind),
         (&State::Ready, &Kind::LegacyDefault)
@@ -912,12 +923,22 @@ fn rust_service_entries_list_and_connect_without_a_key() {
     let mut restarted = identity.clone();
     restarted["instance_id"] = json!("0190c3a2c1107a3b8c9d0e1f2a3b4c5e");
     let agents = json!({"items": [{"name": "worker", "state": "working"}]});
+    // The service's shell reply names its run, with no installation or generation.
+    let opened = json!({
+        "schema_version": 1, "profile_id": "0a1b2c3d4e5f",
+        "instance_id": "0190c3a2c1107a3b8c9d0e1f2a3b4c5d",
+        "shell_id": "0123456789ab", "session": "shell-0123456789ab", "created": true
+    });
+    let mut foreign = opened.clone();
+    foreign["profile_id"] = json!("1a2b3c4d5e6f");
     let server = serve(
         listener,
         vec![
             (200, identity),
             (200, agents),
             (200, json!({"items": []})),
+            (200, opened.clone()),
+            (200, foreign),
             (200, restarted.clone()),
             (200, restarted),
         ],
@@ -930,6 +951,9 @@ fn rust_service_entries_list_and_connect_without_a_key() {
         Path::new("/run/profile/tmux.sock")
     );
     assert_eq!(connection.roster().unwrap().states["worker"], "working");
+    let shell = || connection.ensure_shell("0123456789ab", None);
+    assert_eq!(shell().as_deref(), Ok("shell-0123456789ab"));
+    assert_eq!(shell().err(), Some(Error::BindingMismatch));
     // A restarted service still serves this connection; a new one reads its entry again.
     assert_eq!(connection.verify(), Ok(()));
     assert_eq!(profile.connect().err(), Some(Error::BindingMismatch));
