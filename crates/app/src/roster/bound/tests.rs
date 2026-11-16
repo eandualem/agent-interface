@@ -331,7 +331,11 @@ fn a_pushed_state_change_reads_the_roster_at_once() {
         woken
             .recv_timeout(deadline.saturating_duration_since(Instant::now()))
             .unwrap();
-        if source.take_update().unwrap().snapshot.states["worker"] == "working" {
+        // Two wakes can announce one update: the second then finds none.
+        if source
+            .take_update()
+            .is_some_and(|update| update.snapshot.states["worker"] == "working")
+        {
             break;
         }
     }

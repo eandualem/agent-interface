@@ -117,6 +117,43 @@ mod tests {
         Ok(*library)
     }
 
+    // The Rust service keeps policies without files: an instruction source
+    // has a null path and a listed policy has none.
+    #[test]
+    fn policies_without_files_are_told_apart_by_name() {
+        let (_dir, connection, server) = provider(
+            "a",
+            vec![
+                Reply::ok(
+                    "/api/agents",
+                    json!({"items":[{"name":"worker","configured":true}]}),
+                ),
+                Reply::ok(
+                    "/api/agents/worker/instructions",
+                    json!({"sources":[
+                        {"name":"base","path":null,"scope":"base","applied":true,"text":"base text"},
+                        {"name":"first","path":null,"scope":"global","applied":true,"text":"one"},
+                        {"name":"second","path":null,"scope":"global, tag:web","applied":true,"text":"two"}
+                    ]}),
+                ),
+                Reply::ok(
+                    "/api/policies",
+                    json!({"items":[
+                        {"name":"first","built_in":false,"artifact_id":"artifact-1","status":"active","latest_revision_id":"3"},
+                        {"name":"second","built_in":true,"artifact_id":"artifact-2","status":"active","latest_revision_id":"7"}
+                    ],"total":2}),
+                ),
+            ],
+        );
+        let library = catalog(&connection).unwrap();
+        let names: Vec<_> = library.all().iter().map(|source| &*source.name).collect();
+        assert_eq!(names, ["base", "first", "second"]);
+        assert_eq!(library.global[0].artifact_id.as_deref(), Some("artifact-1"));
+        assert_eq!(library.global[1].artifact_id.as_deref(), Some("artifact-2"));
+        assert_eq!(&*library.global[1].scope, "global, tag:web");
+        server.join().unwrap();
+    }
+
     #[test]
     fn native_policy_snapshot_keeps_catalog_identity_recipients_and_original_connection() {
         let (arrived, wait) = mpsc::channel();

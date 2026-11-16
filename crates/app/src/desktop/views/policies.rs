@@ -174,7 +174,10 @@ pub(super) fn page<'a>(
             .gap_x(px(t.space.s14))
             .gap_y(px(t.space.s6))
             .text_color(c.muted)
-            .child(mono(source.path.to_string()).text_color(c.text_2))
+            // A source without a file carries its name as its path.
+            .when(source.path != source.name, |facts| {
+                facts.child(mono(source.path.to_string()).text_color(c.text_2))
+            })
             .child(scope(source))
             .when(one_agent, |facts| {
                 facts.child(if source.applied {
