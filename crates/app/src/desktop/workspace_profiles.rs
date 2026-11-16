@@ -913,15 +913,15 @@ impl Browser {
             let profile_id = &connection.identity().profile_id;
             let space = rebind(&mut proposed, &id, previous.as_deref(), profile_id)
                 .ok_or(CHANGED.to_owned())?;
-            let mut report = Vec::new();
+            let mut shells = Vec::new();
             if space.profile_id.is_none() {
                 let directory = crate::library::library_directory(directory.as_deref())
                     .map_err(|error| error.to_string())?;
                 let source = source.ok_or("This window's tmux server could not be found.")?;
                 let binding = crate::adoption::Binding::read(&connection, &source)?;
-                report = binding.apply(space, &directory)?;
+                shells = binding.apply(space, &directory)?.shells;
             }
-            Ok::<_, String>((base, proposed, report))
+            Ok::<_, String>((base, proposed, shells))
         });
         cx.spawn(async move |this, cx| {
             let result = work.await;
@@ -933,13 +933,13 @@ impl Browser {
                     Ok(_) if browser.saving || browser.save_failed => {
                         browser.save_notice = Some(CHANGED.into());
                     }
-                    Ok((base, proposed, report)) => {
+                    Ok((base, proposed, shells)) => {
                         browser.pending_save = Some((base, proposed));
                         browser.save(cx);
-                        // Shells it showed keep running: how to reach them is
+                        // Shells it showed keep running: how to list them is
                         // said when its panes close.
-                        browser.binding_report = (!report.is_empty())
-                            .then(|| (workspace.clone(), format!("{}.", report.join(". "))));
+                        browser.binding_report =
+                            shells_left(&shells).map(|report| (workspace.clone(), report));
                     }
                     Err(error) => browser.save_notice = Some(error),
                 }
@@ -1239,6 +1239,25 @@ impl Browser {
     }
 }
 
+/// A line short enough for the status row: how many shells were left running,
+/// and the command that lists each of their servers.
+fn shells_left(shells: &[std::path::PathBuf]) -> Option<String> {
+    let count = shells.len();
+    let mut servers: Vec<_> = shells.iter().map(|socket| socket.display()).collect();
+    servers.sort_by_key(ToString::to_string);
+    servers.dedup_by_key(|server| server.to_string());
+    let list = servers
+        .iter()
+        .map(|server| format!("tmux -S {server} ls"))
+        .collect::<Vec<_>>()
+        .join(" and ");
+    match count {
+        0 => None,
+        1 => Some(format!("1 earlier shell keeps running: {list}.")),
+        _ => Some(format!("{count} earlier shells keep running: {list}.")),
+    }
+}
+
 /// Workspace `id` of `layout`, while its profile is still `previous`. One with
 /// a profile takes `profile_id`, and its panes stay as they are; one without
 /// is returned unchanged, to be bound.
@@ -1506,6 +1525,21 @@ mod tests {
         // A second request refused during that save does not answer for it.
         assert_eq!(browser.first_open_answer(Err("no")), None);
         assert!(browser.first_open_saving);
+    }
+
+    #[test]
+    fn shells_left_running_are_listed_by_server() {
+        use std::path::PathBuf;
+        assert_eq!(shells_left(&[]), None);
+        let (a, b) = (PathBuf::from("/tmp/a"), PathBuf::from("/tmp/b"));
+        assert_eq!(
+            shells_left(std::slice::from_ref(&a)).as_deref(),
+            Some("1 earlier shell keeps running: tmux -S /tmp/a ls.")
+        );
+        assert_eq!(
+            shells_left(&[b.clone(), a.clone(), b]).as_deref(),
+            Some("3 earlier shells keep running: tmux -S /tmp/a ls and tmux -S /tmp/b ls.")
+        );
     }
 
     #[test]

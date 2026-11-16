@@ -14,6 +14,15 @@ use agent_interface_store::Store;
 
 use crate::library::{self, location::resolve_path};
 
+/// What [`Binding::apply`] did: one line each, and the tmux server of each
+/// shell it left running.
+pub struct Applied {
+    /// What was done, for a person to read.
+    pub lines: Vec<String>,
+    /// The tmux server of each shell left running.
+    pub shells: Vec<PathBuf>,
+}
+
 /// What binding a workspace without a profile to one profile needs: that
 /// profile's agents and the tmux server the workspace used unbound.
 pub struct Binding {
@@ -66,13 +75,14 @@ impl Binding {
     /// of the profile, as in any bound workspace, so each shell they showed is
     /// returned with the command that reaches it: it keeps running. An error
     /// means a shell could not be looked for, and `space` must not be saved.
-    pub fn apply(&self, space: &mut Workspace, directory: &Path) -> Result<Vec<String>, String> {
+    pub fn apply(&self, space: &mut Workspace, directory: &Path) -> Result<Applied, String> {
         let names_source = |socket: &str| {
             socket == self.source
                 || (self.resolved.is_some()
                     && resolve_path(Path::new(socket)).ok() == self.resolved)
         };
         let mut report = Vec::new();
+        let mut shells = Vec::new();
         let mut unread = None;
         for tab in &mut space.tabs {
             let (workspace, name) = (&space.name, &tab.name);
@@ -108,6 +118,7 @@ impl Binding {
                             "Shell left on its server, from {workspace} > {name}, {command}: tmux -S {} attach -t {session}",
                             socket.display(),
                         ));
+                        shells.push(socket);
                     }
                     Ok(None) => {}
                     // A shell that cannot be looked for would be left
@@ -129,7 +140,10 @@ impl Binding {
             return Err(format!("The library's shells could not be read: {error}"));
         }
         space.profile_id = Some(self.profile_id.clone());
-        Ok(report)
+        Ok(Applied {
+            lines: report,
+            shells,
+        })
     }
 }
 
@@ -168,7 +182,7 @@ pub fn bind_home_profile(directory: Option<&Path>) -> Result<Vec<String>, String
         if space.profile_id.is_some() {
             continue;
         }
-        report.extend(binding.apply(space, &directory)?);
+        report.extend(binding.apply(space, &directory)?.lines);
         report.push(format!(
             "Bound workspace {} ({}) to profile {} ({})",
             space.name, space.id, home.display_name, home.profile_id
@@ -312,7 +326,8 @@ mod tests {
         };
         let library = tempfile::tempdir().unwrap();
         let space = &mut layout.workspaces[0];
-        assert!(binding.apply(space, library.path()).unwrap().is_empty());
+        let applied = binding.apply(space, library.path()).unwrap();
+        assert!(applied.lines.is_empty() && applied.shells.is_empty());
         assert_eq!(space.profile_id.as_deref(), Some("main"));
         let leaves = space.tabs[0].tree.leaves();
         let sockets: Vec<_> = leaves
