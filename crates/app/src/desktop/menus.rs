@@ -201,10 +201,20 @@ impl Browser {
         let rename_ticket = ticket.clone();
         let icon_ticket = ticket.clone();
         let new_ticket = ticket.clone();
+        let profile_ticket = ticket.clone();
         let expected = space.id.clone();
         let origin = self.selected_navigation_origin();
         let rename_origin = origin.clone();
         let icon_origin = origin.clone();
+        let profile_origin = origin.clone();
+        // A workspace without a profile, or whose profile does not answer,
+        // can be given one while Agent Backbone is there.
+        let profile = (!matches!(self.profile_client, Some(Err(_))))
+            .then(|| match space.profile_id {
+                None => Some("Choose profile…"),
+                Some(_) => self.profile_failure().map(|_| "Change profile…"),
+            })
+            .flatten();
         let mark = |name: &str, color| Some(ui::icon(name, t.size.icon, color));
         let delete = ui::menu_item(
             "delete-workspace",
@@ -271,6 +281,18 @@ impl Browser {
                     cx.notify();
                 })),
             )
+            .when_some(profile, |menu, label| {
+                menu.child(
+                    ui::menu_item("change-profile", mark("users", c.muted), label, None).on_click(
+                        cx.listener(move |browser, _, _, cx| {
+                            if !browser.workspace_menu_is_current(&profile_ticket) {
+                                return;
+                            }
+                            browser.request_profile_change(profile_origin.as_ref(), cx)
+                        }),
+                    ),
+                )
+            })
             .child(delete)
             .child(ui::menu_rule())
             .child(

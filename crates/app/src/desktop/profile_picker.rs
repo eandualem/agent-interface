@@ -1,6 +1,7 @@
 //! The New workspace popover: a name, the profile it joins, or a new profile.
-//! Its owner binds the verified result to a workspace explicitly; constructing
-//! this popover does not change app sources.
+//! The same list, without the name or New profile, chooses the profile of an
+//! existing workspace. Its owner binds the verified result to a workspace
+//! explicitly; constructing this popover does not change app sources.
 
 use super::{
     components as ui,
@@ -144,17 +145,26 @@ pub(super) struct ProfilePicker {
     pub focus: FocusHandle,
     scroll: ScrollHandle,
     has_bound_workspaces: bool,
+    /// The name of the workspace whose profile this chooses, instead of
+    /// making a new workspace.
+    change: Option<String>,
 }
 impl EventEmitter<Choice> for ProfilePicker {}
 impl ProfilePicker {
     pub fn focus_handle(&self, cx: &gpui::App) -> FocusHandle {
+        // Choosing a workspace's profile has no name to type.
+        if self.change.is_some() {
+            return self.focus.clone();
+        }
         self.name.read(cx).focus.clone()
     }
     /// The caller supplies the already resolved executable and captured caller
     /// context. No ambient provider or Default profile is selected implicitly.
+    /// With `change`, it chooses the profile of the workspace of that name.
     pub fn new(
         client: Client,
         has_bound_workspaces: bool,
+        change: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -172,6 +182,7 @@ impl ProfilePicker {
             focus: cx.focus_handle(),
             scroll: ScrollHandle::new(),
             has_bound_workspaces,
+            change,
         };
         picker.refresh(cx);
         picker
@@ -198,7 +209,7 @@ impl ProfilePicker {
             let _ = this.update(cx, |picker, cx| {
                 let result = first_run(result, picker.has_bound_workspaces);
                 if !picker.closed && picker.catalog.complete(&ticket, result) {
-                    picker.on_new = picker.catalog.focused.is_none();
+                    picker.on_new = picker.catalog.focused.is_none() && picker.change.is_none();
                     picker.reveal_focus();
                     cx.notify();
                 }
@@ -267,7 +278,7 @@ impl ProfilePicker {
     }
     /// Enter: the chosen row, or a terminals-only workspace without profiles.
     fn confirm(&mut self, cx: &mut Context<Self>) {
-        if self.catalog.error.is_some() {
+        if self.catalog.error.is_some() && self.change.is_none() {
             let name = self.typed(cx);
             if !name.is_empty() {
                 self.finish(Choice::Plain { name }, cx);
@@ -287,7 +298,7 @@ impl ProfilePicker {
                 self.catalog.focus_last();
                 self.on_new = self.catalog.focused.is_none();
             }
-        } else if by > 0 && self.catalog.at_end() {
+        } else if by > 0 && self.catalog.at_end() && self.change.is_none() {
             self.on_new = true;
         } else {
             self.catalog.navigate(by);
@@ -417,9 +428,12 @@ impl Render for ProfilePicker {
                         .font_weight(t.text.row_selected.weight()),
                     &t.text.row,
                 )
-                .child("New workspace"),
+                .child(match &self.change {
+                    Some(name) => format!("Profile for {name}"),
+                    None => "New workspace".into(),
+                }),
             )
-            .child(field);
+            .when(self.change.is_none(), |menu| menu.child(field));
         if let Some(error) = self.catalog.error {
             return menu.child(
                 div()
@@ -431,7 +445,11 @@ impl Render for ProfilePicker {
                     .pb(px(t.space.s10))
                     .child(
                         ui::text(div().text_color(c.text_2), &t.text.status).child(
-                            "Profiles aren't available right now. This workspace can still run terminals.",
+                            if self.change.is_some() {
+                                "Profiles aren't available right now."
+                            } else {
+                                "Profiles aren't available right now. This workspace can still run terminals."
+                            },
                         ),
                     )
                     .child(ui::text(div().text_color(c.muted), &t.text.meta).child(message(&error)))
@@ -525,6 +543,9 @@ impl Render for ProfilePicker {
                 )
                 .child(message(error)),
             );
+        }
+        if self.change.is_some() {
+            return menu;
         }
         menu.child(ui::menu_rule()).child(
             ui::row("profiles-new", self.on_new)

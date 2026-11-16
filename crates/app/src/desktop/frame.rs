@@ -56,6 +56,7 @@ impl Browser {
         if self.profile_content_unavailable() {
             let origin = self.selected_navigation_origin();
             let start_origin = origin.clone();
+            let change_origin = origin.clone();
             let failure = self.profile_failure().filter(|_| !self.profile_starting);
             let (title, note) = match failure {
                 Some(failure) => ("Workspace profile unavailable", failure),
@@ -92,7 +93,25 @@ impl Browser {
                                     },
                                 )),
                             )
-                        }),
+                        })
+                        .when(
+                            failure.is_some() && !matches!(self.profile_client, Some(Err(_))),
+                            |state| {
+                                state.child(
+                                    ui::button(
+                                        "change-profile",
+                                        "Change profile…",
+                                        ui::Button::Secondary,
+                                    )
+                                    .on_click(cx.listener(
+                                        move |browser, _, _, cx| {
+                                            browser
+                                                .request_profile_change(change_origin.as_ref(), cx)
+                                        },
+                                    )),
+                                )
+                            },
+                        ),
                 )
                 .into_any_element();
         }

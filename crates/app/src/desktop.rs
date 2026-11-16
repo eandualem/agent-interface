@@ -679,6 +679,12 @@ struct Browser {
     profile_client: Option<Result<crate::profiles::Client, ()>>,
     profile_client_loading: bool,
     profile_picker_requested: bool,
+    /// The requested picker chooses this workspace's profile instead of
+    /// making a new workspace.
+    profile_change: Option<String>,
+    /// The workspace just given a profile, and the shells it left running,
+    /// said once its panes close.
+    binding_report: Option<(String, String)>,
     profile_picker: Option<(
         gpui::Entity<profile_picker::ProfilePicker>,
         gpui::Subscription,
@@ -971,6 +977,8 @@ impl Browser {
         self.pane_owners.clear();
         self.profile_picker = None;
         self.profile_picker_requested = false;
+        self.profile_change = None;
+        self.binding_report = None;
         self.profile_flow = None;
         // First run belongs to the default library: another library ends it,
         // unfinished, so it returns at the next launch.
@@ -1587,6 +1595,8 @@ impl Browser {
                         browser.shell_to_open = if result.conflict { browser.shell_after_save = None; None } else { browser.shell_after_save.take() };
                         browser.start_reader(cx);
                         if result.conflict {
+                            // A profile's binding that did not land left no shells.
+                            browser.binding_report = None;
                             if let Some(pane) = browser.section_saving.take() {
                                 browser.opening_sections.remove(&pane);
                             }
@@ -1625,6 +1635,7 @@ impl Browser {
         // Discarding the binding's own save drops it; saving it again could
         // fail the same way and leave nothing else to do.
         self.pending_profile = None;
+        self.binding_report = None;
         let bind = self.bind_after_save.take();
         self.pending_save = None;
         if let Some(pane) = self.section_saving.take() {
@@ -1849,6 +1860,7 @@ impl Browser {
         self.reset_focus |= self.profile_picker.is_some();
         self.profile_picker = None;
         self.profile_picker_requested = false;
+        self.profile_change = None;
         self.tab_menu = None;
         self.workspace_menu = false;
         self.icon_picker = false;
