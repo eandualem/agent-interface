@@ -222,7 +222,7 @@ fn list_all_using(api: &Api<'_>) -> Result<PlansPage, Error> {
 fn list_using(api: &Api<'_>, after: Option<&str>) -> Result<PlansPage, Error> {
     let mut path = "/api/current-plans?limit=50".to_owned();
     if let Some(after) = after {
-        if after.len() != 32 || !after.bytes().all(|b| b.is_ascii_hexdigit()) {
+        if !crate::is_uuid(after) {
             return Err(Error::Unreadable);
         }
         path.push_str("&after_author_id=");

@@ -49,8 +49,8 @@ impl DocumentMetadata {
 
     fn valid(&self) -> bool {
         valid_id(self.id)
-            && hex(&self.document_id, 32)
-            && hex(&self.author_id, 32)
+            && crate::is_uuid(&self.document_id)
+            && crate::is_uuid(&self.author_id)
             && hex(&self.content_sha256, 64)
             && self.content_bytes <= DOCUMENT_HTML_LIMIT
             && !self.title.is_empty()
@@ -98,7 +98,7 @@ pub(super) fn read_list(
         path.push_str(&format!("&before_id={id}"));
     }
     if let Some(author) = author_id {
-        if !hex(author, 32) {
+        if !crate::is_uuid(author) {
             return Err(UNREADABLE);
         }
         path.push_str("&author_id=");
@@ -286,5 +286,16 @@ mod tests {
         assert!(decoded.agents.is_empty());
         page["next_before_id"] = serde_json::Value::Null;
         assert!(decode_list(&serde_json::to_vec(&page).unwrap(), None).is_err());
+    }
+
+    #[test]
+    fn a_list_with_hyphenated_identifiers_is_read() {
+        let mut item = record("ok");
+        item.as_object_mut().unwrap().remove("html");
+        item["document_id"] = serde_json::json!("019a7b2c-5d10-7c3e-9a41-2f6b8c0d1e23");
+        item["author_id"] = serde_json::json!("019a7b20-1f00-7a52-8b13-6c4d2e9f0a17");
+        let page = serde_json::json!({"items":[item],"has_more":false,"next_before_id":null});
+        let decoded = decode_list(&serde_json::to_vec(&page).unwrap(), None).unwrap();
+        assert_eq!(decoded.items.len(), 1);
     }
 }

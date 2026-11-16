@@ -24,6 +24,20 @@ mod transport;
 pub mod views;
 
 const RESPONSE_LIMIT: usize = 1024 * 1024;
+
+/// Whether `value` is a lowercase UUID as Backbone writes one: 32 hex digits,
+/// or the same digits hyphenated 8-4-4-4-12.
+pub(crate) fn is_uuid(value: &str) -> bool {
+    let hex = |part: &str| {
+        part.bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    };
+    match value.len() {
+        32 => hex(value),
+        36 => value.split('-').map(str::len).eq([8, 4, 4, 4, 12]) && value.split('-').all(hex),
+        _ => false,
+    }
+}
 const UNAVAILABLE: &str = "Backbone unavailable; states stale";
 
 /// Presentation metadata from the same observation as an agent's state.
@@ -395,5 +409,20 @@ mod tests {
         snapshot.update(nested.as_bytes());
         assert_eq!(snapshot.states["worker"], "unknown");
         assert_eq!(snapshot.error, Some(UNAVAILABLE));
+    }
+
+    #[test]
+    fn a_uuid_is_read_with_or_without_hyphens() {
+        assert!(is_uuid("019a7b2c5d107c3e9a412f6b8c0d1e23"));
+        assert!(is_uuid("019a7b2c-5d10-7c3e-9a41-2f6b8c0d1e23"));
+        for refused in [
+            "019A7B2C-5D10-7C3E-9A41-2F6B8C0D1E23",
+            "019a7b2c5d10-7c3e-9a41-2f6b-8c0d1e23abcd",
+            "019a7b2c-5d10-7c3e-9a41-2f6b8c0d1e2",
+            "../a7b2c-5d10-7c3e-9a41-2f6b8c0d1e23",
+            "",
+        ] {
+            assert!(!is_uuid(refused), "{refused}");
+        }
     }
 }
