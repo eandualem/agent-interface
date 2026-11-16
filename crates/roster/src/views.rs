@@ -1178,7 +1178,9 @@ pub struct Source {
     pub artifact_id: Option<String>,
     /// The policy's name, or `base` or `swarm`.
     pub name: std::sync::Arc<str>,
-    /// Its file.
+    /// Its file, which also tells one source from another. A source the
+    /// service keeps without a file carries its name here.
+    #[serde(deserialize_with = "null_as_empty")]
     pub path: std::sync::Arc<str>,
     /// Why the agent gets it: `base`, `global`, `tag:…` or `swarm`.
     pub scope: std::sync::Arc<str>,
@@ -1222,6 +1224,13 @@ impl Instructions {
     }
 }
 
+// The Rust service sends null for a source that has no file.
+fn null_as_empty<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<std::sync::Arc<str>, D::Error> {
+    Ok(Option::<std::sync::Arc<str>>::deserialize(deserializer)?.unwrap_or_default())
+}
+
 // Both the team library and an individual agent use this decoder. Reject excess
 // rows before constructing the full list, including defaultable empty objects.
 fn policy_sources<'de, D: serde::Deserializer<'de>>(
@@ -1243,9 +1252,12 @@ fn policy_sources<'de, D: serde::Deserializer<'de>>(
             let mut rows = 0usize;
             let mut bytes = 0usize;
             while sources.len() < 4096 {
-                let Some(source) = sequence.next_element::<Source>()? else {
+                let Some(mut source) = sequence.next_element::<Source>()? else {
                     return Ok(sources);
                 };
+                if source.path.is_empty() {
+                    source.path = source.name.clone();
+                }
                 let count = source.scope.split(", ").count();
                 let size = source.name.len()
                     + source.path.len()

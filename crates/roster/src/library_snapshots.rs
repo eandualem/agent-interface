@@ -41,7 +41,8 @@ pub enum Error {
 pub struct Entry {
     /// The provider's display name.
     pub name: String,
-    /// Display-only source path.
+    /// Display-only source path, or the name when the provider keeps the
+    /// source without a file.
     pub path: String,
     /// Captured stable identity, when the provider has observed readable content.
     pub artifact: Option<Artifact>,
@@ -169,7 +170,8 @@ pub fn list(
     #[derive(Deserialize)]
     struct Row {
         name: String,
-        path: String,
+        #[serde(default)]
+        path: Option<String>,
         artifact_id: Option<String>,
     }
     let listing: Listing = read(connection, kind.route(), live)?;
@@ -182,7 +184,7 @@ pub fn list(
         .into_iter()
         .map(|raw| {
             let row: Row = object(raw.get().as_bytes())?;
-            if row.name.is_empty() || row.path.is_empty() {
+            if row.name.is_empty() || row.path.as_deref() == Some("") {
                 return Err(Error::Invalid);
             }
             let artifact = match row.artifact_id {
@@ -199,8 +201,8 @@ pub fn list(
                 None => None,
             };
             Ok(Entry {
+                path: row.path.unwrap_or_else(|| row.name.clone()),
                 name: row.name,
-                path: row.path,
                 artifact,
             })
         })
