@@ -1015,8 +1015,16 @@ impl Drop for ViewPane {
 
 impl Render for ViewPane {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if let Some(card) = self.bound_agent.as_ref().filter(|_| self.open.is_none()) {
-            return div().size_full().child(card.clone());
+        if let Some(card) = self.bound_agent.clone().filter(|_| self.open.is_none()) {
+            // Back from the reader: its conversation stops reading, kept with
+            // its draft, and its text can no longer be selected or copied.
+            if let Some(conversation) = self.conversation.take() {
+                conversation.update(cx, |conversation, cx| conversation.set_active(false, cx));
+            }
+            let mut selection = self.selection.borrow_mut();
+            selection.begin();
+            selection.finish();
+            return div().size_full().child(card);
         }
         if let Some(artifacts) = &self.artifacts {
             return div().size_full().child(artifacts.clone());
